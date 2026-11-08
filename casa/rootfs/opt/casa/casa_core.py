@@ -9,9 +9,7 @@ import json
 import logging
 import math
 import os
-import shutil
 import signal
-import stat
 import sys
 import time
 import uuid
@@ -40,10 +38,6 @@ from claude_runtime import (
 )
 from config import AgentConfig, resolve_model
 from config_git import commit_config, init_repo, snapshot_manual_edits
-import engagement_quiesce
-from engagement_uids import (
-    UID_BASE, UNALLOCATED_UID, UidAllocator, UidStateError, owner_uid_or_none,
-)
 from ingress_identity import (
     IngressIdentityError,
     ingress_identity,
@@ -60,7 +54,6 @@ from provenance import sanitize_external_context
 from session_registry import SessionRegistry
 from session_sweeper import SessionSweeper
 from rate_limit import RateLimiter, rate_limit_response
-from safe_fs import SymlinkRefused, atomic_write_beneath, read_text_beneath
 from timekeeping import resolve_tz
 from trigger_registry import TriggerRegistry
 from voice_delivery_config import load_voice_delivery_config
@@ -72,32 +65,22 @@ DATA_DIR = "/data"
 
 
 # ---------------------------------------------------------------------------
-# Plan 4b/3.6: internal Unix-socket AppRunner for svc-casa-mcp consumption
+# Plan 4b/3.6: internal Unix-socket AppRunner (broker and /admin/* routes)
 # ---------------------------------------------------------------------------
 
 
 async def start_internal_unix_runner(
     *,
     socket_path: str,
-    tool_dispatch: dict,
-    engagement_registry,
-    hook_policies: dict,
-    executor_hook_policies: dict | None = None,
     runtime=None,
-    telegram_channel=None,
 ) -> "web.AppRunner":
     """Build and start a second aiohttp AppRunner bound to a Unix socket.
 
     Routes:
-      POST /internal/tools/call    -> _make_internal_tools_call_handler(...)
-      POST /internal/hooks/resolve -> _make_internal_hooks_resolve_handler(...)
+      POST /internal/broker/*      -> result_broker / operator_calls handlers
       POST /admin/reload           -> build_admin_reload_handler(...)
         (Task E.1 -- casactl operator CLI dispatch)
-      POST /internal/channel/*     -> channels.channel_handlers._make_channel_handlers(...)
-        (E-12 v0.37.0 -- only registered when ``telegram_channel`` is not None;
-         Phase 1 exposes just /internal/channel/send_to_topic. Tests and any
-         fallback boot path without telegram skip this family entirely, so a
-         POST to /internal/channel/* on those runners returns 404.)
+      POST /admin/memory/*         -> the memory wipe/export/restore handlers
 
     Returns the AppRunner so the caller can `await runner.cleanup()` on
     shutdown. We register an `on_cleanup` hook on the internal app that
@@ -122,8 +105,6 @@ async def start_internal_unix_runner(
             )
 
     from internal_handlers import (
-        _make_internal_tools_call_handler,
-        _make_internal_hooks_resolve_handler,
         build_admin_memory_wipe_handler,
         build_admin_memory_export_handler,
         build_admin_memory_restore_handler,
@@ -132,29 +113,13 @@ async def start_internal_unix_runner(
     )
 
     # #467: gate the operator-only /admin/* family to a root peer via
-    # SO_PEERCRED. The forwarded /internal/* family passes through (its
-    # forwarder is non-root and is authorized per-engagement elsewhere).
+    # SO_PEERCRED.
     internal_app = web.Application(middlewares=[admin_peercred_middleware])
-    internal_app.router.add_post(
-        "/internal/tools/call",
-        _make_internal_tools_call_handler(
-            tool_dispatch=tool_dispatch,
-            engagement_registry=engagement_registry,
-        ),
-    )
-    internal_app.router.add_post(
-        "/internal/hooks/resolve",
-        _make_internal_hooks_resolve_handler(
-            hook_policies=hook_policies,
-            executor_hook_policies=executor_hook_policies,
-            engagement_registry=engagement_registry,
-        ),
-    )
     # #792: the result broker's two routes — a plugin's MCP server (a child of
     # the SDK-spawned CLI, running as casa-main's user) deposits a capability
     # here during a declared tool call and a declared consumer redeems it.
     # Unix-socket-only (0600, root): never registered on the public 8099 app
-    # and never forwarded by the 8100 bridge.
+    # and never forwarded anywhere.
     from result_broker import (
         build_broker_deposit_handler, build_broker_redeem_handler,
     )
@@ -217,47 +182,6 @@ async def start_internal_unix_runner(
 
         register_personality_admin_routes(internal_app, runtime=runtime)
 
-    # E-12 (v0.37.0): /internal/channel/* family — POSTed by per-engagement
-    # casa-engagement-channel MCP servers proxying outbound traffic to Telegram.
-    # Only registered if a TelegramChannel instance is available (production
-    # boots always have one; some test paths pass None).
-    if telegram_channel is not None:
-        from channels.channel_handlers import (
-            _make_channel_handlers,
-            _make_channel_get_handlers,
-        )
-        # W1: record each reply() text for the claude_code driver's live
-        # topic-stream relay reply de-dup. Resolved lazily — the driver is
-        # constructed later (in main), so this closure looks it up at request
-        # time via the agent module.
-        def _record_engagement_reply(engagement_id: str, text: str) -> None:
-            try:
-                import agent as _agent_mod
-                drv = getattr(_agent_mod, "active_claude_code_driver", None)
-                if drv is not None:
-                    drv.record_reply_text(engagement_id, text)
-            except Exception:  # noqa: BLE001 — de-dup hint is best-effort
-                pass
-
-        channel_handlers = _make_channel_handlers(
-            telegram_channel=telegram_channel,
-            engagement_registry=engagement_registry,
-            record_reply=_record_engagement_reply,
-        )
-        for path, handler_fn in channel_handlers.items():
-            internal_app.router.add_post(path, handler_fn)
-        channel_get_handlers = _make_channel_get_handlers(
-            engagement_registry=engagement_registry,
-        )
-        for path, handler_fn in channel_get_handlers.items():
-            internal_app.router.add_get(path, handler_fn)
-        logger.info(
-            "E-12: registered %d POST + %d GET /internal/channel/* routes "
-            "(POST: %s; GET: %s)",
-            len(channel_handlers), len(channel_get_handlers),
-            sorted(channel_handlers.keys()), sorted(channel_get_handlers.keys()),
-        )
-
     async def _unlink_socket_on_cleanup(_app: web.Application) -> None:
         try:
             os.unlink(socket_path)
@@ -297,215 +221,12 @@ async def healthz(_request: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
 
 
-# ------------------------------------------------------------------
-# Plan 4a Phase E: boot replay for claude_code engagements
-# ------------------------------------------------------------------
-
-
-def _regenerate_cc_settings(defn) -> dict:
-    """Task 6 (#360): rebuild the CC ``.claude/settings.json`` shape from
-    ``defn.hooks_document`` (the Task 3 load-time-validated snapshot) —
-    the one constructor provisioning uses
-    (``drivers.workspace.build_cc_settings``: hooks, permissions and the
-    cross-session inbound refusal), so boot replay and provisioning can never
-    drift. Raises whatever the constructor raises; the caller is responsible
-    for fail-closed handling (a snapshot that cannot yield a settings
-    document at all is refused, not silently skipped)."""
-    from drivers.workspace import build_cc_settings
-
-    return build_cc_settings(defn, getattr(defn, "hooks_document", None) or {})
-
-
-def _cc_settings_missing_floor(settings: dict) -> bool:
-    """Task 6 (#360) defense-in-depth: verify the regenerated settings
-    document actually carries every ``REQUIRED_CLAUDE_CODE_POLICIES`` entry
-    in its ``PreToolUse`` block, by policy name (the last whitespace-
-    separated token of the proxy command). ``translate_hooks_to_settings``
-    already appends the floor unconditionally (Task 4), so this should
-    never trip in practice — it exists so a future change to that emitter
-    (or a caller that bypasses it) fails boot replay closed rather than
-    silently shipping a hollow floor."""
-    from hooks import REQUIRED_CLAUDE_CODE_POLICIES
-
-    pre = (settings or {}).get("hooks", {}).get("PreToolUse", []) or []
-    declared: set = set()
-    for entry in pre:
-        if not isinstance(entry, dict):
-            continue
-        for hook in entry.get("hooks", []) or []:
-            command = hook.get("command", "") if isinstance(hook, dict) else ""
-            if command:
-                declared.add(command.rsplit(" ", 1)[-1])
-    return bool(REQUIRED_CLAUDE_CODE_POLICIES - declared)
-
-
-def _workspace_owner_ids(engagements_root: str) -> dict[int, set[str]]:
-    """Map each on-disk workspace-owner uid → the set of engagement-id basenames
-    it owns under ``engagements_root`` (containment Stage 2, Task 10, Sol r2).
-
-    Boot replay's uid-uniqueness gate consults this so a resumed record whose uid
-    already owns a workspace belonging to a DIFFERENT engagement — even one whose
-    registry record was pruned/lost, which the record-only check cannot see — is
-    refused rather than chowned/started onto a uid that could read that sibling
-    workspace. Best-effort: a missing/unreadable root or entry contributes
-    nothing. Root-owned (uid 0) dirs are irrelevant here (a dropped uid is always
-    ``>= UID_BASE``), but are recorded harmlessly."""
-    owners: dict[int, set[str]] = {}
-    try:
-        with os.scandir(engagements_root) as it:
-            for entry in it:
-                try:
-                    if entry.is_dir(follow_symlinks=False):
-                        owners.setdefault(
-                            entry.stat().st_uid, set()).add(entry.name)
-                except OSError:
-                    continue
-    except (FileNotFoundError, NotADirectoryError):
-        pass
-    return owners
-
-
-_UNSET = object()   # sentinel: distinguishes "not injected" from an injected None
-
-
-def _best_effort_kill_uid(uid: int, *, proc_root: str = "/proc",
-                          _pidfd_open=_UNSET, _pidfd_send=_UNSET,
-                          _close=os.close) -> None:
-    """Best-effort SIGKILL of any lingering process whose real/effective/saved/
-    fsuid is ``uid`` (an engagement's allocated uid, always ``>= UID_BASE``).
-
-    Containment Stage 2 (S1 r5, secondary defense-in-depth; the durable,
-    monotonic uid high-water is the actual non-reissue guarantee): after the
-    boot down-first sweep confirms an engagement's SERVICE down, a
-    ``setsid``/double-forked NON-root descendant could linger. Kill it so it
-    cannot keep reading its own soon-retained workspace. NEVER raises, NEVER
-    blocks; only ``uid >= UID_BASE`` is targeted, so casa-core (root) and
-    container services are never touched.
-
-    S1 r6 (Sol S2 — PID-reuse race): a numeric ``os.kill`` after a status read
-    can hit a REUSED pid (the inspected process exited and its pid was recycled
-    for an unrelated, possibly critical process) → self-DoS. Instead: open a
-    ``pidfd`` FIRST (pinning that exact process instance), verify the uid via
-    the now-current ``/proc/<pid>/status``, then signal via
-    ``signal.pidfd_send_signal`` — which only ever reaches the pinned process
-    (or ``ESRCH`` if it already exited), never a pid reuser. If the pidfd
-    primitives are unavailable, SKIP entirely (this is non-load-bearing DiD)
-    rather than signal a bare numeric pid.
-
-    (A CAP_DAC_OVERRIDE / root-equivalent survivor reads any workspace
-    regardless of uid; only a legacy pre-Stage-2 ROOT engagement could grant
-    such caps to a descendant across the single upgrade boot — post-migration
-    engagements are non-root with an empty bounding set + no_new_privs and
-    CANNOT. That residual is the excluded root-survivor class, Stage 3
-    mount/AppArmor/pid-namespace, not closed here.)"""
-    if uid < UID_BASE:
-        return
-    # v0.170.2: resolve via a sentinel so an injected ``None`` EXPLICITLY means
-    # "primitive unavailable" (reaches the skip guard), while the production
-    # default (``_UNSET``) uses the real primitives. The prior ``_pidfd_open or
-    # getattr(...)`` made an injected ``None`` fall back to the REAL
-    # ``os.pidfd_open`` — so the "unavailable" test path never skipped and, in
-    # CI (where the fake-proc pid numbers map to real kernel threads),
-    # ``os.pidfd_open`` succeeded and a signal was recorded.
-    pidfd_open = (getattr(os, "pidfd_open", None)
-                  if _pidfd_open is _UNSET else _pidfd_open)
-    pidfd_send = (getattr(signal, "pidfd_send_signal", None)
-                  if _pidfd_send is _UNSET else _pidfd_send)
-    if pidfd_open is None or pidfd_send is None:
-        return   # no race-free primitive → skip (never signal a bare pid)
-    try:
-        entries = list(os.scandir(proc_root))
-    except OSError:
-        return
-    for entry in entries:
-        if not entry.name.isdigit():
-            continue
-        pidfd = None
-        try:
-            # Pin the process instance BEFORE inspecting it, so the later signal
-            # can never reach a reused pid.
-            pidfd = pidfd_open(int(entry.name))
-            hit = False
-            with open(os.path.join(proc_root, entry.name, "status"),
-                      "r", encoding="utf-8") as fh:
-                for line in fh:
-                    if not line.startswith("Uid:"):
-                        continue
-                    for tok in line.split()[1:]:
-                        try:
-                            if int(tok) == uid:
-                                hit = True
-                                break
-                        except ValueError:
-                            continue
-                    break
-            if hit:
-                pidfd_send(pidfd, signal.SIGKILL)
-        except (OSError, ValueError):
-            continue   # process vanished / unreadable / already gone — skip
-        finally:
-            if pidfd is not None:
-                try:
-                    _close(pidfd)
-                except OSError:
-                    pass
-
-
-def _gather_reconstruct_evidence(registry, *, data_dir: str):
-    """Gather every real-uid evidence source for ``UidAllocator.reconstruct``
-    (Containment Stage 2; S1 r7 completed the artifact set, v0.170.1 corrected
-    the fresh-vs-loss key to REAL-uid evidence).
-
-    Returns ``(known_uids, dir_owner_uids)``:
-      - ``known_uids``: ``allocated_uid`` of EVERY record incl. terminal/retained
-        (a pruned-but-lingering process still holds its uid);
-      - ``dir_owner_uids``: the owner uid of every on-disk per-engagement dir
-        under ALL three artifact roots — ``<data_dir>/engagements/*``,
-        ``/data/engagement-ctl/*``, AND ``/data/plugin-outbox-eng/*`` (a leftover
-        dir chowned to a uid the counter never recorded is real-uid evidence).
-
-    Only OWNER uids are returned, NOT a "root exists" boolean: mere existence of
-    a pre-Stage-2 (root-owned, uid 0) engagement dir is NOT evidence a uid was
-    allocated — treating it as such refused allocation on every existing
-    install's first Stage-2 upgrade boot (v0.170.0 regression). ``reconstruct``
-    keys the fresh-vs-loss decision on whether any evidenced value is
-    ``>= UID_BASE``. Every source only ever RAISES the high-water; scanning is
-    best-effort (a missing/unreadable root or entry contributes nothing)."""
-    from plugin_outbox import ENGAGEMENT_OUTBOX_ROOT
-    known_uids = [
-        r.allocated_uid
-        for r in (list(registry.active_and_idle())
-                  + list(registry.terminal_records()))
-        if r.allocated_uid != UNALLOCATED_UID
-    ]
-    artifact_roots = (
-        os.path.join(data_dir, "engagements"),
-        "/data/engagement-ctl",
-        ENGAGEMENT_OUTBOX_ROOT,
-    )
-    dir_owner_uids: list[int] = []
-    for base in artifact_roots:
-        try:
-            with os.scandir(base) as it:
-                for entry in it:
-                    try:
-                        if entry.is_dir(follow_symlinks=False):
-                            dir_owner_uids.append(entry.stat().st_uid)
-                    except OSError:
-                        continue
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-    return known_uids, dir_owner_uids
-
-
-
 def read_followup_incomplete(engagement_driver, rec, token) -> str:
     """#692: the ``_driver_turn_incomplete`` seam's whole body, at module
     level so it can be tested as production code rather than reimplemented in
     a test double.
 
-    SYNCHRONOUS. Returns ``""`` for a ``claude_code`` record (that driver has
-    its own failure ownership) and for any driver that does not expose the
+    SYNCHRONOUS. Returns ``""`` for any driver that does not expose the
     accessor.
 
     ``getattr``-guarded on purpose: ``followup_turn_incomplete`` is
@@ -523,1459 +244,33 @@ def read_followup_incomplete(engagement_driver, rec, token) -> str:
     arm that survived because it was redundant and not because its test was
     weak.
     """
-    if rec.driver == "claude_code":
-        return ""
     fn = getattr(engagement_driver, "followup_turn_incomplete", None)
     return fn(rec.id, token) if callable(fn) else ""
 
 
-async def replay_undergoing_engagements(
-    *, registry, driver, executor_registry=None,
-    engagements_root: str = "/data/engagements",
-    telegram_ready=None,
-) -> None:
-    """On Casa boot: reconstruct s6 services for UNDERGOING claude_code engagements.
+def _repair_private_state() -> None:
+    """Private-state mode repair — GHSA-569r-7crq-xr43, INV-STATE-005.
 
-    Heal path (Plan 4a.1): when a UNDERGOING engagement's service dir is
-    missing but the workspace dir at /data/engagements/<id>/ still exists
-    and the executor is registered, re-render the run script and re-plant
-    the s6 service dir. Missing workspace dir remains a warn-and-skip case
-    (§7.3 of the 4a.1 spec).
+    ``main()`` calls this once on every boot, before any channel or agent
+    starts, so nothing that could start a privilege-dropped process runs ahead
+    of it.
+
+    This pass, not the write sites, is what repairs an already-deployed
+    install: every affected file already exists at 0644 and atomic_io
+    preserves an existing file's mode, so a file whose next write is days away
+    would otherwise stay exposed. Never raises: ``enforce`` reports instead of
+    raising, and anything unexpected is logged rather than allowed to stop boot.
     """
-    from drivers import s6_rc
-    from drivers.claude_code_driver import (
-        UidDropRefused, _check_plugin_dirs_readable,
-    )
-    from drivers.workspace import (
-        chown_workspace, cli_model_flags, fifo_path, refresh_claude_md,
-        render_log_run_script, render_run_script, workspace_mcp_token,
-        workspace_mcp_url,
-        write_workspace_mcp_json,
-    )
-
-    # Containment Stage 2 (Task 10): the allocator injected into the registry at
-    # boot (casa_core wiring). Used to regenerate each resumed uid's NSS identity
-    # (container /etc is ephemeral — design §7). Backfill of a legacy record's
-    # uid goes through ``registry.backfill_allocated_uid`` (strict-persisted).
-    _uid_allocator = getattr(registry, "_uid_allocator", None)
-
-    undergoing = [
-        r for r in registry.active_and_idle()
-        if r.driver == "claude_code"
-    ]
-    keep_ids = {r.id for r in undergoing}
-    # §3.8/Sol F5: engagements whose recorded plugin artifacts are gone are
-    # refused resume — and MUST be excluded from the start_service and
-    # background-task loops below, not merely skipped during rendering.
-    refused_ids: set[str] = set()
-    # #369 (Sol diff-gate r2): records whose clearance-downgrade context
-    # reset ran this boot — their durable rebuild flag clears only AFTER
-    # their service start succeeds; every refusal path leaves it set.
-    pending_rebuild_started_ids: set[str] = set()
-
-    # v0.83.0 (§A3(b), Sol r6-3/r7-3/4): the BOOT open-question reconciliation
-    # owner. Take a PRE-SERVICE snapshot of every claude_code record that has
-    # outstanding raw open_questions AND a topic — REGARDLESS of terminal status
-    # (the ownership predicate; the summary-adoption-failure path mark_error's the
-    # record TERMINAL before refused_ids is even consulted, so a non-terminal
-    # filter would miss exactly the case that must still settle). Snapshotting
-    # HERE, before any service start / background-task spawn, preserves the
-    # invariant that a fresh same-process ask registered by a just-resumed CLI is
-    # never captured + expired. A shared claimed-set guarantees exactly one
-    # reconciler per record per boot (the attached driver pass OR the casa_core
-    # pass below — never both).
-    reconcile_snapshots: dict[str, list[dict]] = {}
-    reconcile_claimed: set[str] = set()
-    _seen_snapshot_ids: set[str] = set()
-    for _rec in (list(registry.active_and_idle())
-                 + list(registry.terminal_records())):
-        if _rec.id in _seen_snapshot_ids:
-            continue
-        _seen_snapshot_ids.add(_rec.id)
-        if getattr(_rec, "driver", None) != "claude_code":
-            continue
-        if getattr(_rec, "topic_id", None) is None:
-            continue
-        # B3: record the per-record snapshot ALWAYS — an EMPTY list stays [] (a
-        # replay context that reconciles NOTHING), distinct from a missing entry.
-        # A record whose open_questions is empty at snapshot time must reconcile
-        # nothing so a fresh same-process ask created BETWEEN this snapshot and
-        # attach is never fresh-read + expired as prior-process.
-        _oq = list(getattr(_rec, "open_questions", ()) or ())
-        reconcile_snapshots[_rec.id] = [dict(q) for q in _oq]
-
-    async def _refuse_brief_resume(
-        rec, reason: str, *, kind: str = "refuse_teardown_failed",
-    ) -> None:
-        """Fail-closed teardown of an engagement we refuse to resume
-        (r11-B1/r13-B1/r14-B1; B2 Sol r2 reuses it for the migration path via
-        ``kind``). Source removal + recompile alone is NOT reliable —
-        ``remove_service_dir`` swallows OSError and the later compile can
-        fail-and-continue — so run the CHECKED teardown ladder, and land a
-        TERMINAL ``kind`` mark when physical containment can't be confirmed
-        (the marking ACCOMPANIES the removal, it does not replace it).
-        ``registry`` is the real parameter name here; ``_engagement_registry``
-        does not exist in this function and would NameError straight into the
-        per-record warn-and-continue."""
-        logger.warning(
-            "boot replay: engagement %s refuses resume — %s; "
-            "tearing down", rec.id[:8], reason,
-        )
-        refused_ids.add(rec.id)
-        down = await s6_rc.ensure_service_down(engagement_id=rec.id)
-        if down is False:
-            try:
-                await registry.mark_error(
-                    rec.id, kind=kind,
-                    message=(
-                        f"resume refused ({reason}) but the engagement "
-                        "service could not be confirmed down"
-                    ),
-                )
-            except Exception as exc:  # noqa: BLE001 — best-effort terminal mark
-                logger.warning(
-                    "boot replay: mark_error(%s) failed for %s: %s",
-                    kind, rec.id[:8], exc,
-                )
-        s6_rc.remove_service_dir(
-            svc_root=s6_rc.ENGAGEMENT_SOURCES_ROOT, engagement_id=rec.id,
-        )
-
-    async def _ensure_stdin_fifo(rec) -> bool:
-        """Sol r3-2 (#342): ensure the workspace stdin.fifo exists before
-        ANY path lets this record reach start_service — the run template
-        ``set -e``-reads it, so a missing FIFO is a guaranteed crash-loop.
-        Runs on BOTH the complete-pair fast path and the heal path: an
-        intact pair does not imply an intact FIFO (a prior refusal's pair
-        removal is best-effort and its error mark can fail, leaving an
-        intact pair + undergoing record for this boot's fast path).
-        True = present/created; False = resume refused via the
-        checked-teardown ladder (retryable next boot when containment is
-        confirmed, terminal-marked when it is not).
-
-        Task 4 (containment stage 2): the FIFO itself lives in the root-only
-        control dir now, not the workspace — moved so the workspace-symlink
-        primitive this whole stage removes could never again retarget IT.
-        The workspace-symlink guard below is kept regardless: other boot-
-        replay touches (CLAUDE.md refresh, .mcp.json rewrite) still reach
-        INTO the workspace and are not yet made symlink-safe (Task 5), so a
-        symlinked workspace is still refused here as general corruption —
-        this is the one boot-replay step that already runs for every record
-        early enough to catch it. The control dir gets its OWN symlink guard
-        (a real one is never created there, but a repair must never trust
-        that blindly)."""
-        ws_dir = os.path.join(engagements_root, rec.id)
-        if os.path.islink(ws_dir):
-            await _refuse_brief_resume(
-                rec,
-                "workspace directory is a symlink; refusing FIFO "
-                "verification/repair through it",
-                kind="fifo_recreate_failed",
-            )
-            return False
-        fifo = fifo_path(rec.id)
-        ctl_dir = os.path.dirname(fifo)
-        # Sol r5-1: never run the destructive repair below THROUGH a
-        # symlinked control dir — isdir/lstat would examine (and rmtree
-        # could delete) entries under the symlink's target. Control dirs
-        # are always created as real directories, so a symlink here is
-        # corruption: refuse the resume.
-        if os.path.islink(ctl_dir):
-            await _refuse_brief_resume(
-                rec,
-                "control directory is a symlink; refusing FIFO "
-                "verification/repair through it",
-                kind="fifo_recreate_failed",
-            )
-            return False
-        try:
-            # Task 4: the control dir may not exist yet for an engagement
-            # provisioned before this release (or lost to a prior partial
-            # failure) — repair it here too, idempotently, rather than
-            # silently skipping FIFO creation the way the pre-Task-4 code
-            # skipped it for a missing WORKSPACE (M7 already refused those
-            # earlier in this same boot pass).
-            if not os.path.isdir(ctl_dir):
-                os.makedirs(ctl_dir, mode=0o700, exist_ok=True)
-            st = os.lstat(fifo) if os.path.lexists(fifo) else None
-            if st is not None and not stat.S_ISFIFO(st.st_mode):
-                # Terra r4-1: a NON-fifo at the FIFO path (regular
-                # file, dir, or symlink left by corruption/partial
-                # recovery) reads as instant EOF or fails outright —
-                # the same crash-loop as a missing FIFO. Repair by
-                # replacing it; a repair failure takes the refusal
-                # ladder below.
-                logger.warning(
-                    "boot replay: %s exists but is not a FIFO — "
-                    "replacing it", fifo,
-                )
-                if stat.S_ISDIR(st.st_mode):
-                    shutil.rmtree(fifo)
-                else:
-                    os.remove(fifo)
-                st = None
-            if st is None:
-                os.mkfifo(fifo, 0o600)
-            return True
-        except OSError as exc:
-            await _refuse_brief_resume(
-                rec,
-                f"stdin.fifo recreation failed ({exc}); the run template "
-                "reads this FIFO, so starting would crash-loop",
-                kind="fifo_recreate_failed",
-            )
-            return False
-
-    # §A3(b) boot reconciliation owner — TERMINAL records (Sol r7-3): terminal
-    # records are DISJOINT from ``undergoing`` (they never attach), so schedule
-    # their readiness-gated reconcile HERE, BEFORE the compile lock — the lock's
-    # fast-path return (no undergoing + no orphans) would otherwise skip the tail
-    # of this function and a terminal summary-adoption-failure record with a live
-    # question would never settle. Claimed so the refused-undergoing pass below
-    # never double-settles.
-    _schedule_reconcile = getattr(driver, "schedule_boot_reconcile", None)
-    if _schedule_reconcile is not None:
-        for _trec in registry.terminal_records():
-            _tsnap = reconcile_snapshots.get(_trec.id)
-            if not _tsnap or _trec.id in reconcile_claimed:
-                continue
-            try:
-                _schedule_reconcile(
-                    _trec, _tsnap, telegram_ready, claimed=reconcile_claimed)
-            except Exception as exc:  # noqa: BLE001 — best-effort per record
-                logger.warning(
-                    "boot replay: terminal open-question reconcile for %s "
-                    "failed to schedule: %s", _trec.id[:8], exc,
-                )
-
-    async with s6_rc._compile_lock:
-        # 0. DOWN FIRST — Containment Stage 2 migration (design §6). Before ANY
-        # registry-status filtering, workspace access, or migration, drive EVERY
-        # existing engagement service to a CONFIRMED down. This is scandir-driven
-        # (source dirs + live scandir), NOT record-driven: a record that went
-        # terminal *before* driver.cancel() ran (crash between mark_* and cancel)
-        # leaves a supervised ROOT service that no UNDERGOING loop would touch —
-        # so it is enumerated from the filesystem directly and killed here. Every
-        # PRE-Stage-2 run script exec'd ``claude`` as root; downing them all now,
-        # before the re-render below plants the uid-dropped form, is what
-        # migrates in-flight engagements off root without ever leaving two
-        # generations (old root + new dropped) supervised at once. A service that
-        # cannot be confirmed down blocks its own engagement (kept durably down +
-        # mark_error), never left running as root and never re-started below.
-        # S1 r5 (secondary): map each engagement id → its allocated uid so the
-        # down-first sweep can best-effort kill escaped non-root descendants
-        # (hygiene; the durable high-water is the real guarantee).
-        _svc_uid_by_id: dict[str, int] = {}
-        for _r in (list(registry.active_and_idle())
-                   + list(registry.terminal_records())):
-            _u = getattr(_r, "allocated_uid", UNALLOCATED_UID)
-            if _u >= UID_BASE:
-                _svc_uid_by_id[_r.id] = _u
-
-        for _svc_eid in s6_rc.iter_engagement_service_ids(
-            svc_root=s6_rc.ENGAGEMENT_SOURCES_ROOT,
-            scandir_root=s6_rc.SERVICE_SCANDIR_ROOT,
-        ):
-            try:
-                _pre_down = await s6_rc.ensure_service_down(
-                    engagement_id=_svc_eid)
-            except Exception as exc:  # noqa: BLE001 — teardown is best-effort
-                _pre_down = False
-                logger.warning(
-                    "boot replay: pre-migration ensure_service_down raised for "
-                    "%s: %s", _svc_eid[:8], exc,
-                )
-            # Best-effort: after the service is downed, SIGKILL any escaped
-            # non-root descendant still holding this engagement's uid (S1 r5
-            # secondary). Never blocks, never raises; only runs when the uid is
-            # known and real. Not the guarantee — the durable high-water is.
-            _esc_uid = _svc_uid_by_id.get(_svc_eid)
-            if _esc_uid is not None:
-                _best_effort_kill_uid(_esc_uid)
-            if _pre_down is False:
-                # Cannot confirm this service down → refuse to migrate/start it.
-                # It is NOT added to any start loop (refused_ids) and is marked
-                # error best-effort (a pure scandir orphan with no record just
-                # no-ops the mark). Its still-supervised state is a durable-down
-                # attempt already made by ensure_service_down's ladder.
-                logger.error(
-                    "boot replay: engagement service %s could not be confirmed "
-                    "down before migration — refusing resume (never re-started "
-                    "as root)", _svc_eid[:8],
-                )
-                refused_ids.add(_svc_eid)
-                try:
-                    await registry.mark_error(
-                        _svc_eid,
-                        kind="refuse_pre_migration_down_failed",
-                        message=(
-                            "engagement service could not be confirmed down "
-                            "before the Stage 2 uid migration"
-                        ),
-                    )
-                except Exception as exc:  # noqa: BLE001 — best-effort mark
-                    logger.warning(
-                        "boot replay: mark_error(refuse_pre_migration_down_"
-                        "failed) for %s failed: %s", _svc_eid[:8], exc,
-                    )
-
-        # 0a. Private-state mode repair — GHSA-569r-7crq-xr43. Placed HERE, and
-        # not earlier in boot, because ordering is the whole point: step 0 above
-        # has just driven every existing engagement service to a CONFIRMED down,
-        # so at this instant no uid-dropped process exists and the repair cannot
-        # race a reader. (Running it before replay would leave a real interval —
-        # a casa-main-only respawn leaves the previous generation's engagement
-        # longrun wanted-up and running until step 0 downs it.) It is also before
-        # the compile lock's fast-path return below, so it runs on EVERY boot,
-        # including one with zero records.
-        #
-        # This pass, not the write sites, is what repairs an already-deployed
-        # install: every affected file already exists at 0644 and atomic_io
-        # preserves an existing file's mode, so a file whose next write is days
-        # away would otherwise stay exposed.
-        _ps_report = private_state.enforce()
-        if _ps_report.changed:
-            logger.info(
-                "private-state: repaired %d path mode(s) on this boot",
-                len(_ps_report.changed),
-            )
-
-        # 0c. Credential-exposure gate — the same shape as 0b below. A
-        # credential-class repair that FAILED means Casa cannot honour the
-        # guarantee the uid drop exists for, so no uid-dropped engagement runs
-        # this boot; the services are already down from step 0, so this keeps
-        # them down rather than starting something that can read a Supervisor
-        # bearer token. Deliberately NOT boot-fatal (both design reviewers):
-        # Telegram, the resident agents and specialist engagements stay up, so a
-        # read-only /run or a restored backup degrades rather than bricking.
-        # Re-stated from the filesystem rather than from _ps_report, so this
-        # decides on what is true now.
-        _cred_offenders = private_state.credential_modes_ok()
-        if undergoing and _cred_offenders:
-            logger.critical(
-                "boot replay: %d credential path(s) are still readable beyond "
-                "root (%s) — refusing ALL %d claude_code engagement resume(s) "
-                "this boot (kept down by the pre-migration sweep). Fix the file "
-                "modes and restart to resume.",
-                len(_cred_offenders), ", ".join(_cred_offenders),
-                len(undergoing),
-            )
-            for rec in undergoing:
-                if rec.id in refused_ids:
-                    continue
-                refused_ids.add(rec.id)
-                try:
-                    await registry.mark_error(
-                        rec.id,
-                        kind="refuse_private_state_exposed",
-                        message=(
-                            "private runtime state is readable beyond root "
-                            f"({', '.join(_cred_offenders)}); refusing to start "
-                            "a uid-dropped engagement"
-                        ),
-                    )
-                except Exception as exc:  # noqa: BLE001 — best-effort mark
-                    logger.warning(
-                        "boot replay: mark_error(refuse_private_state_exposed) "
-                        "for %s failed: %s", rec.id[:8], exc,
-                    )
-
-        # 0b. setpriv presence gate — Containment Stage 2 (design §5, §6(g)
-        # acceptance criterion: "setpriv removed from image ⇒ engagement
-        # REFUSED, not crash-looping, not root"). A single BOOT-level check (not
-        # per render): every re-rendered run script ends in ``exec setpriv …``
-        # under ``set -e``, so if setpriv is absent from the image the started
-        # service would fail that exec and s6 would crash-loop it. Refuse EVERY
-        # claude_code resume this boot instead — the services are already downed
-        # by step 0, so this keeps them down (never started, never root, never
-        # crash-looping) and lands an operator-visible terminal mark. Placed
-        # after the down-first sweep so the refusal builds on already-down
-        # services.
-        # #1248: resolved as the run script resolves it, without the plugin
-        # tools dir.
-        if undergoing and shutil.which(
-                "setpriv", path=s6_rc.trusted_path()) is None:
-            logger.critical(
-                "boot replay: setpriv not found on PATH — refusing ALL %d "
-                "claude_code engagement resume(s) this boot (kept down by the "
-                "pre-migration sweep, never started as a crash-looping or root "
-                "service). Restore setpriv in the image to resume.",
-                len(undergoing),
-            )
-            for rec in undergoing:
-                if rec.id in refused_ids:
-                    continue
-                refused_ids.add(rec.id)
-                try:
-                    await registry.mark_error(
-                        rec.id, kind="refuse_uid_drop_failed",
-                        message=(
-                            "setpriv missing from image — the run script's "
-                            "privilege drop cannot execute; resume refused "
-                            "rather than started as a crash-looping service"
-                        ),
-                    )
-                except Exception as exc:  # noqa: BLE001 — best-effort mark
-                    logger.warning(
-                        "boot replay: mark_error(refuse_uid_drop_failed) for "
-                        "%s failed: %s", rec.id[:8], exc,
-                    )
-
-        # 0c. Re-fold live /proc uids into the uid high-water NOW that the
-        # down-first sweep has confirmed every engagement service down (S1
-        # code-gate r3 — TOCTOU). The boot-time uid reconstruct() ran BEFORE
-        # this sweep, so a legacy engagement could have setsid/double-forked a
-        # non-root survivor under a not-yet-issued uid AFTER that scan but
-        # BEFORE its service was killed here — the boot scan would have missed
-        # it. With every legacy service now confirmed down (step 0), no service
-        # can spawn a NEW survivor past this point, and this re-scan captures
-        # any that escaped earlier, so the high-water folds it in and no
-        # backfill below can reissue a uid a live process still holds.
-        # Fail-CLOSED: an unscannable /proc (or a never-reconstructed allocator)
-        # sets ``_refold_failed``, which refuses every resume NEEDING a fresh
-        # uid allocation (a legacy record's backfill) rather than allocating
-        # against a stale/unknown high-water. (A legacy ROOT survivor that
-        # escapes the sweep and STAYS root is a separate pre-existing class — a
-        # root process reads siblings regardless of uid — closed by Stage 3
-        # mount/AppArmor, not this uid-isolation fix.) A missing allocator (unit
-        # fakes) skips the refold; production always wires one.
-        # #599: discharge every OUTSTANDING uid-quiesce obligation before any
-        # resume. A casa death between a terminal commit and its ladder leaves
-        # the obligation durable on the record (``quiesce_pending``, exempt from
-        # terminal expiry precisely so it survives to be found here); this is
-        # where it is honoured. Runs after the down-first sweep, so each service
-        # is already confirmed down and the ladder kills leftovers rather than
-        # racing a live supervisor. Bounded and reporting: unlike the
-        # best-effort uid kill above, an extinction that cannot be observed is
-        # logged as an ERROR and the obligation STAYS on the record for the next
-        # boot rather than being silently dropped.
-        for _owing in list(registry.records_owing_quiesce()):
-            try:
-                _q = await engagement_quiesce.quiesce_engagement(
-                    engagement_id=_owing.id,
-                    uid=getattr(_owing, "allocated_uid", UNALLOCATED_UID),
-                    latch_down=s6_rc.latch_down,
-                    wanted_down=s6_rc.wanted_down,
-                )
-            except Exception as exc:  # noqa: BLE001 — never abort boot replay
-                logger.warning(
-                    "boot replay: uid quiesce for %s raised: %s",
-                    _owing.id[:8], exc)
-                continue
-            if _q.extinct:
-                try:
-                    await registry.clear_quiesce_pending(_owing.id)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "boot replay: clearing the quiesce obligation for %s "
-                        "failed: %s", _owing.id[:8], exc)
-
-        _refold_failed = False
-        if _uid_allocator is not None:
-            try:
-                _uid_allocator.refold_live_uids()
-            except UidStateError as exc:
-                _refold_failed = True
-                logger.critical(
-                    "boot replay: live /proc uid refold failed (%s) — every "
-                    "resume needing a fresh uid allocation will be REFUSED this "
-                    "boot (fail-closed) rather than risk reissuing a uid held "
-                    "by a live survivor process", exc,
-                )
-
-        # 1. Orphan sweep — dirs for non-UNDERGOING engagements, remove them.
-        removed_orphans = s6_rc.sweep_orphan_service_dirs(
-            svc_root=s6_rc.ENGAGEMENT_SOURCES_ROOT,
-            keep_engagement_ids=keep_ids,
-        )
-        # Also reap stale /tmp/s6-casa-db-* dirs left by the previous
-        # container run (L12 leak guard) — /run is fresh tmpfs after a
-        # restart, so any prior compiled db still in /tmp is orphaned.
-        s6_rc.sweep_orphan_compiled_dbs()
-
-        # Fast path: no UNDERGOING engagements and no orphans were swept →
-        # the engagement sources dir is empty and unchanged. Running
-        # s6-rc-compile against an empty source dir prints
-        # "source /data/casa-s6-services is empty" to stderr at every boot,
-        # plus burns one compile + one s6-rc-update for nothing. Skip it.
-        if not undergoing and not removed_orphans:
-            return
-
-        # 2. Heal missing/incomplete service pairs for UNDERGOING
-        # engagements. v0.64.0: 'main dir present' no longer means 'unit
-        # present' — the predicate is pair-completeness, so torn halves AND
-        # legacy (≤v0.63.x, nested-log/) dirs are re-planted, migrating
-        # in-flight engagements to the working log pipeline. Each record
-        # heals independently: one failure must not abort the others'
-        # compile/start below.
-        # Containment Stage 2 (Task 10): uid-uniqueness gate across the WHOLE
-        # registry (Sol+Terra review r1). ``_migrated_uids`` alone only catches
-        # a collision between two records BOTH resumed this boot; a uid shared
-        # with a TERMINAL/retained (or otherwise non-undergoing) record would
-        # slip through — and that record's retained workspace is chowned to the
-        # very uid we would hand this resume, so starting here would let this
-        # CLI read a sibling's files. The monotonic allocator prevents NEW
-        # collisions, but a pre-existing corrupt duplicate on disk
-        # (hand-edited / torn tombstone) must still be refused. Snapshot every
-        # record's real uid → owning id(s) so a resumed record whose uid is
-        # owned by a DIFFERENT engagement is refused, not migrated.
-        _all_records = (list(registry.active_and_idle())
-                        + list(registry.terminal_records()))
-        # Sol r2: also snapshot uid → owning workspace-id basenames on disk, so a
-        # uid owning a sibling workspace whose RECORD was pruned/lost is caught
-        # too (the record-only map cannot see it). Together these close the whole
-        # uid-uniqueness class: records ∪ on-disk workspace owners.
-        _ws_owner_ids = _workspace_owner_ids(engagements_root)
-        _migrated_uids: set[int] = set()
-        for rec in undergoing:
-            # Step 0 refused this record (its pre-migration service could not be
-            # confirmed down) — never migrate/start it. Skip before any workspace
-            # write or uid allocation.
-            if rec.id in refused_ids:
-                continue
-            try:
-                # #314: the M7 (missing workspace) and §3.8 (missing recorded
-                # artifact) validations must gate EVERY resume — they used to
-                # sit below the service_pair_complete fast path, so an intact
-                # pair skipped both: replay started a service whose run script
-                # does `set -e; cd <workspace>` (instant exit, s6 respawn
-                # loop) or resumed a CLI with a missing --plugin-dir target.
-                # Placed FIRST in the loop (Terra r1): the brief CLAUDE.md
-                # refresh below would otherwise fail on the missing workspace
-                # and take the checked-teardown refusal — possibly terminal-
-                # marking a record M7 deliberately retains — and the #335
-                # credential refresh must not cycle a record we refuse.
-                #
-                # M7: missing workspace ⇒ REFUSED (was warn-and-skip, which
-                # the start loop ignored — it filters on refused_ids alone,
-                # so the service started regardless, #314(3)). The record
-                # stays UNDERGOING (no terminal mark): /data is the workspace
-                # home, so this state is unrecoverable-but-diagnosable and
-                # re-warns each boot rather than silently retiring.
-                _ws_dir = os.path.join(engagements_root, rec.id)
-                if not os.path.isdir(_ws_dir):
-                    logger.warning(
-                        "boot replay: workspace dir %s missing for "
-                        "engagement %s — refusing resume (M7, #314)",
-                        _ws_dir, rec.id[:8],
-                    )
-                    refused_ids.add(rec.id)
-                    continue
-
-                # §3.8: replay renders --plugin-dir flags from the RECORDED
-                # artifacts, never a re-resolution of current assignments. A
-                # missing recorded artifact refuses resume (fail-closed) —
-                # start/background loops skip it via refused_ids.
-                missing = [pa for pa in rec.plugin_artifacts
-                           if not os.path.isdir(pa.get("path", ""))]
-                if missing:
-                    names = ", ".join(pa.get("name", "?") for pa in missing)
-                    logger.warning(
-                        "boot replay: engagement %s refuses resume — plugin "
-                        "artifact(s) missing: %s", rec.id[:8], names)
-                    if rec.topic_id is not None:
-                        try:
-                            await driver._send_to_topic(
-                                rec.topic_id,
-                                "⚠️ This engagement can't resume: its pinned "
-                                f"plugin artifact(s) are missing ({names}). "
-                                "Start a new engagement.")
-                        except Exception:  # noqa: BLE001 — best-effort notice
-                            pass
-                    refused_ids.add(rec.id)
-                    continue
-
-                # Task 6 (#360): resolve the executor definition for EVERY
-                # resumed claude_code record via definition_any — NOT gated
-                # on origin["brief"] (Sol/Terra r2, casa_core.py:507): the
-                # settings.json floor-regeneration below is a containment
-                # requirement, not a brief feature, so a task-only record
-                # (no brief) must be covered exactly like a brief-bearing
-                # one — it used to skip this whole block and never got its
-                # floor re-verified after a post-load hooks.yaml edit.
-                # Resolves DISABLED specialists too (r10-B5: a specialist
-                # disabled after launch still resumes); registry absent OR
-                # unresolved -> fail-closed refuse (checked teardown).
-                defn_any = (
-                    executor_registry.definition_any(rec.role_or_type)
-                    if executor_registry is not None else None
-                )
-                if defn_any is None:
-                    await _refuse_brief_resume(
-                        rec,
-                        "no executor_registry passed"
-                        if executor_registry is None
-                        else f"executor type {rec.role_or_type!r} "
-                             "not resolvable (definition_any → None)",
-                    )
-                    continue
-
-                # #369: a crash between a clearance clamp and its context
-                # rebuild leaves context_rebuild_pending set — the recorded
-                # session and the cached executor-memory archive were built
-                # ABOVE the record's clamped floor. Blank the archive cache
-                # and drop the control-dir session pointer BEFORE any refresh
-                # or service start: the run template then spawns a FRESH
-                # session, the CLAUDE.md refresh below renders from the
-                # (clamp-withheld) record, and the replayed engagement comes
-                # up at the floor — which IS the rebuild, so clear the flag.
-                if getattr(rec, "context_rebuild_pending", False):
-                    from drivers.workspace import (
-                        executor_memory_path, session_id_path,
-                    )
-                    try:
-                        _mem = Path(executor_memory_path(rec.id))
-                        if _mem.is_file():
-                            _mem.write_text("", encoding="utf-8")
-                        Path(session_id_path(rec.id)).unlink(missing_ok=True)
-                    except OSError as exc:
-                        logger.warning(
-                            "boot replay: engagement %s context reset failed "
-                            "(%s) — refusing resume (flag stays set)",
-                            rec.id[:8], exc)
-                        refused_ids.add(rec.id)
-                        continue
-                    # Force the CLAUDE.md re-render here: the clamp popped
-                    # origin["brief"], so the brief-gated refresh below will
-                    # NOT run for this record, yet the workspace still holds
-                    # the pre-clamp task text.
-                    try:
-                        refresh_claude_md(
-                            os.path.join(engagements_root, rec.id),
-                            defn=defn_any, rec=rec)
-                    except Exception as exc:  # noqa: BLE001 — fail-closed
-                        logger.warning(
-                            "boot replay: engagement %s floor CLAUDE.md "
-                            "re-render failed (%s) — refusing resume",
-                            rec.id[:8], exc)
-                        refused_ids.add(rec.id)
-                        continue
-                    # Sol diff-gate r2: the flag clears only once THIS
-                    # record's service has actually started (below) — a
-                    # durable clear here, followed by any later refusal,
-                    # would leave a live unflagged record whose next turn
-                    # skips the rebuild it still needs.
-                    pending_rebuild_started_ids.add(rec.id)
-                    logger.info(
-                        "boot replay: engagement %s context reset at the "
-                        "clamped floor (fresh session, archive cleared); "
-                        "flag clears after service start", rec.id[:8])
-
-                # A memory wipe deletes every transcript and keeps the record,
-                # the workspace and its session pointer. A resume of a session
-                # whose transcript is gone cannot start, so the engagement
-                # continues in a fresh session: the same pointer removal as the
-                # reset above.
-                from drivers.workspace import drop_session_without_transcript
-                try:
-                    if drop_session_without_transcript(
-                            os.path.join(engagements_root, rec.id), rec.id):
-                        logger.info(
-                            "boot replay: engagement %s has no transcript for "
-                            "its session; continuing in a fresh session",
-                            rec.id[:8])
-                except OSError as exc:
-                    logger.warning(
-                        "boot replay: engagement %s session check failed "
-                        "(%s) — refusing resume", rec.id[:8], exc)
-                    refused_ids.add(rec.id)
-                    continue
-
-                # W3 (r8-B5/r9-B5): re-render the workspace CLAUDE.md from the
-                # VERBATIM origin["brief"] for EVERY resumed brief-bearing
-                # engagement — placed BEFORE the service_pair_complete fast
-                # path (but after the #314 refusal guards, so its failure
-                # path never fires for a record M7 already refused).
-                # /data/casa-s6-services persists across restarts, so an
-                # ordinary restart takes the early `continue`; a refresh after
-                # the pair-rewrite would never run.
-                brief_defn = None
-                has_brief = bool(rec.origin.get("brief"))
-                if has_brief:
-                    brief_defn = defn_any
-                    ws_dir = os.path.join(engagements_root, rec.id)
-                    try:
-                        refresh_claude_md(ws_dir, defn=brief_defn, rec=rec)
-                    except Exception as exc:  # noqa: BLE001 — fail-closed
-                        await _refuse_brief_resume(
-                            rec, f"CLAUDE.md refresh failed: {exc}",
-                        )
-                        continue
-
-                # #335 + Task 6 (#360): refresh the workspace credential from
-                # the RECORD's auth token AND regenerate .claude/settings.json
-                # from defn_any.hooks_document — for EVERY resumed claude_code
-                # record. Placed, like the CLAUDE.md refresh above, BEFORE the
-                # service_pair_complete fast-path continue (Sol/Terra r2,
-                # casa_core.py:649: the fast path used to resume WITHOUT
-                # regeneration) — an ordinary restart takes that continue, so
-                # a refresh after it would never run — but AFTER the refusal
-                # checks, so a record we are about to tear down is not cycled
-                # first. This is what keeps a pre-upgrade workspace resumable:
-                # load() backfilled a token onto its record, and the CLI reads
-                # the refreshed credential from disk when it respawns; a
-                # hollowed or stale settings.json is likewise repaired from
-                # the load-time-validated snapshot.
-                #
-                # Only rewrite when something actually CHANGED, and then force
-                # the engagement's CLI to respawn (Terra + Sol, review r1;
-                # extended to settings by Task 6): engagement services are
-                # supervised independently of casa-main, so one can already be
-                # running — with the OLD ``.mcp.json``/``settings.json``
-                # cached at its spawn — while this boot mints a fresh
-                # credential or a regenerated floor for it. A rewrite alone is
-                # inert against a CLI that already cached settings at spawn.
-                # ``start_service`` below is idempotent and would NOT respawn
-                # it. Bring it down here, once every changed file is durable,
-                # so that start brings it back up reading the current state.
-                # Both triggers share ONE cycle decision (level-triggered,
-                # like the token+URL merge below) rather than cycling the
-                # service twice in the same boot. The fully-unchanged case
-                # (every ordinary restart) writes nothing and cycles nothing.
-                #
-                # v0.164.0 (Terra, plan r1): the baked casa-framework URL is
-                # part of the same identity — a workspace whose .mcp.json
-                # points anywhere but the served endpoint (e.g. a pre-v0.14.0
-                # 8099 URL, whose public fallback routes are gone) would keep
-                # a matching token and never be repaired by the token check
-                # alone. Level-triggered: compare both, rewrite on either.
-                _ws_dir = os.path.join(engagements_root, rec.id)
-                _current_mcp_url = getattr(
-                    driver, "_casa_framework_mcp_url",
-                    "http://127.0.0.1:8100/mcp/casa-framework",
-                )
-                # Task 5: owner_uid is the record's REAL allocated uid (once
-                # Task 8 chowns the workspace), else None for a
-                # not-yet-allocated/legacy workspace — never 0.
-                _owner_uid = owner_uid_or_none(rec.allocated_uid)
-                _credential_changed = bool(
-                    os.path.isdir(_ws_dir)
-                    and (workspace_mcp_token(_ws_dir, owner_uid=_owner_uid)
-                         != rec.auth_token
-                         or workspace_mcp_url(_ws_dir, owner_uid=_owner_uid)
-                         != _current_mcp_url)
-                )
-
-                # Task 6: regenerate settings.json from the load-time
-                # snapshot. Fail closed — a snapshot that cannot yield a
-                # settings document, or that yields one missing the
-                # containment floor, refuses the resume rather than shipping
-                # a partial/hollow rewrite.
-                try:
-                    _new_settings = _regenerate_cc_settings(defn_any)
-                except Exception as exc:  # noqa: BLE001 — fail-closed
-                    await _refuse_brief_resume(
-                        rec,
-                        f"settings.json regeneration failed: {exc}",
-                        kind="refuse_settings_regenerate_failed",
-                    )
-                    continue
-                if _cc_settings_missing_floor(_new_settings):
-                    await _refuse_brief_resume(
-                        rec,
-                        "regenerated settings.json snapshot does not carry "
-                        "the containment floor",
-                        kind="refuse_settings_floor_missing",
-                    )
-                    continue
-                _settings_path = os.path.join(
-                    _ws_dir, ".claude", "settings.json")
-                _on_disk_settings = None
-                if os.path.isdir(_ws_dir):
-                    # Task 5: compare-read via safe_fs — a symlinked
-                    # .claude/settings.json (e.g. planted pointing at a
-                    # sibling engagement's workspace) is refused rather than
-                    # followed. Fail-safe: refusal (like any other read
-                    # failure) leaves _on_disk_settings None, which never
-                    # equals _new_settings, so the floor is (re)written.
-                    try:
-                        _on_disk_settings = json.loads(read_text_beneath(
-                            _ws_dir, os.path.join(".claude", "settings.json"),
-                            owner_uid=_owner_uid,
-                        ))
-                    except SymlinkRefused as exc:
-                        logger.warning(
-                            "boot replay: engagement %s settings.json "
-                            "compare-read refused (symlink) — treating as "
-                            "changed: %s", rec.id[:8], exc,
-                        )
-                        _on_disk_settings = None
-                    except (OSError, ValueError):
-                        _on_disk_settings = None
-                _settings_changed = _on_disk_settings != _new_settings
-
-                if _credential_changed:
-                    try:
-                        write_workspace_mcp_json(
-                            _ws_dir,
-                            engagement_id=rec.id,
-                            engagement_auth_token=rec.auth_token,
-                            casa_framework_mcp_url=_current_mcp_url,
-                            owner_uid=_owner_uid,
-                        )
-                    except Exception as exc:  # noqa: BLE001 — fail-closed
-                        await _refuse_brief_resume(
-                            rec, f".mcp.json refresh failed: {exc}",
-                            kind="refuse_credential_refresh_failed",
-                        )
-                        continue
-
-                if _settings_changed and os.path.isdir(_ws_dir):
-                    # Containment Stage 2 (S1 code-gate fix): the settings
-                    # regeneration is a root WRITE into the (on replay,
-                    # uid-owned) workspace, so it must be symlink-safe. The
-                    # prior ``makedirs`` + open-``.tmp`` + ``os.replace`` chain
-                    # created the temp BY PATHNAME under ``.claude``, so an
-                    # A-planted ``.claude`` symlink into a sibling's dir let
-                    # root clobber the sibling's settings.json. Route the write
-                    # through ``safe_fs.atomic_write_beneath`` (no-follow,
-                    # workspace-confined, renameat): a symlinked ``.claude`` OR
-                    # a symlinked settings.json is REFUSED (SymlinkRefused, an
-                    # OSError subclass) and the resume is refused, never
-                    # written through. The ``makedirs`` is retained only to
-                    # create a genuinely-absent ``.claude`` (exist_ok=True
-                    # short-circuits on a symlink, so the safe write still
-                    # catches it).
-                    try:
-                        os.makedirs(
-                            os.path.join(_ws_dir, ".claude"), exist_ok=True)
-                        atomic_write_beneath(
-                            _ws_dir,
-                            os.path.join(".claude", "settings.json"),
-                            json.dumps(
-                                _new_settings, indent=2, sort_keys=True) + "\n",
-                            owner_uid=_owner_uid, mode=0o644,
-                        )
-                    except OSError as exc:
-                        await _refuse_brief_resume(
-                            rec, f"settings.json rewrite failed: {exc}",
-                            kind="refuse_settings_rewrite_failed",
-                        )
-                        continue
-
-                if _credential_changed or _settings_changed:
-                    logger.info(
-                        "boot replay: engagement %s workspace state "
-                        "refreshed (%s) — cycling its service so the CLI "
-                        "reloads", rec.id[:8],
-                        "+".join(n for n, c in (
-                            ("credential", _credential_changed),
-                            ("settings", _settings_changed),
-                        ) if c),
-                    )
-                    # An unconfirmed stop is FATAL to the resume, not a
-                    # warning (Sol, review r2): the new state is already on
-                    # disk, so a surviving CLI holds a credential that no
-                    # longer authenticates or hooks it never re-read — and
-                    # the NEXT boot would see the on-disk state matching the
-                    # record and never retry the cycle, leaving a permanently
-                    # mute (or under-contained) engagement that still looks
-                    # live. Refuse it instead: the shared helper runs the
-                    # checked teardown ladder, lands a terminal mark, and
-                    # adds it to ``refused_ids`` so the start and
-                    # background-task loops skip it.
-                    try:
-                        _down = await s6_rc.ensure_service_down(
-                            engagement_id=rec.id)
-                    except Exception as exc:  # noqa: BLE001
-                        _down = False
-                        logger.warning(
-                            "boot replay: service cycle after workspace "
-                            "state refresh raised for %s: %s",
-                            rec.id[:8], exc,
-                        )
-                    if _down is False:
-                        # Mark TERMINAL unconditionally, not via the helper's
-                        # own teardown outcome (Terra, review r3): the helper
-                        # only marks when ITS stop also fails, so a
-                        # fail-then-succeed pair would leave the record
-                        # active/idle with its service dir removed — dormant
-                        # this boot, silently resurrected the next one. The
-                        # decision was already made here, so record it here;
-                        # the helper's own mark then no-ops against the #326
-                        # terminal guard while still running the checked
-                        # teardown and adding the id to ``refused_ids``.
-                        # STRICT: the mark must reach DISK before we move on
-                        # (Terra, review r4). ``mark_error`` persists
-                        # best-effort, so a swallowed tombstone-write failure
-                        # would leave the next boot reloading the record as
-                        # active/idle — and it would then see the on-disk
-                        # state matching, skip the cycle, and resume the very
-                        # engagement this refusal exists to retire.
-                        try:
-                            await registry.try_transition_terminal(
-                                rec.id, "error", strict=True,
-                                error_kind="refuse_workspace_cycle_failed",
-                                error_message=(
-                                    "engagement could not be confirmed down "
-                                    "after a workspace state refresh"
-                                ),
-                            )
-                        except Exception:  # noqa: BLE001 — teardown still runs
-                            logger.warning(
-                                "boot replay: durable terminal mark after a "
-                                "workspace-cycle failure did not persist for "
-                                "%s — the engagement may be reloaded as live "
-                                "on the next boot", rec.id[:8], exc_info=True,
-                            )
-                        await _refuse_brief_resume(
-                            rec,
-                            "engagement could not be confirmed down after a "
-                            "workspace state refresh, so a surviving CLI "
-                            "would run with a stale credential or hooks",
-                            kind="refuse_workspace_cycle_failed",
-                        )
-                        continue
-
-                # Containment Stage 2 (Task 10): establish the record's OS uid.
-                # Placed AFTER the credential/settings compare above and BEFORE
-                # the chown/render below (design §6): the compare-reads use
-                # ``owner_uid_or_none(rec.allocated_uid)``, so a LEGACY record
-                # (still UNALLOCATED_UID here) compares with owner_uid=None —
-                # correct, because its workspace is still ROOT-owned until the
-                # chown lands just below; only after this backfill + chown does a
-                # subsequent boot compare against the now-uid-owned files. A
-                # legacy uid is backfilled via the allocator (allocate +
-                # strict-persist under the registry lock); a record that already
-                # carries a real uid (Stage-2 steady state) is returned
-                # unchanged. Fail-CLOSED: an allocation failure (no allocator, or
-                # the boot reconstruct failed so allocate() raises) refuses the
-                # resume rather than launch a root/unallocated CLI.
-                if rec.allocated_uid == UNALLOCATED_UID:
-                    # S1 r3: if the post-sweep live-uid refold could not run,
-                    # the high-water is not confirmed against live survivors —
-                    # refuse THIS resume (it needs a fresh allocation) rather
-                    # than backfill a uid that a setsid survivor may still hold.
-                    if _refold_failed:
-                        await _refuse_brief_resume(
-                            rec,
-                            "live /proc uid refold failed earlier this boot — "
-                            "refusing to allocate a uid against an unconfirmed "
-                            "high-water",
-                            kind="refuse_uid_alloc_failed",
-                        )
-                        continue
-                    try:
-                        await registry.backfill_allocated_uid(rec.id)
-                    except Exception as exc:  # noqa: BLE001 — fail-closed
-                        await _refuse_brief_resume(
-                            rec, f"uid backfill failed: {exc}",
-                            kind="refuse_uid_alloc_failed",
-                        )
-                        continue
-                _rec_uid = rec.allocated_uid
-                if _rec_uid < UID_BASE:
-                    # Defensive: backfill returned but the uid is still invalid
-                    # (should be unreachable — allocate() returns >= UID_BASE).
-                    await _refuse_brief_resume(
-                        rec,
-                        f"allocated_uid {_rec_uid} below UID_BASE after backfill",
-                        kind="refuse_uid_alloc_failed",
-                    )
-                    continue
-                # Uniqueness across the WHOLE registry AND on-disk workspaces,
-                # not just this boot's resumes (Sol+Terra r1/r2): refuse if this
-                # uid is already owned by ANY other record (terminal/retained/
-                # refused included), by another engagement resumed earlier in
-                # this loop, OR by a workspace directory whose id is not this
-                # record's (a pruned/lost-record sibling the record map misses).
-                _uid_conflict = (
-                    _rec_uid in _migrated_uids
-                    or any(
-                        other.id != rec.id and other.allocated_uid == _rec_uid
-                        for other in _all_records)
-                    or any(
-                        _bn != rec.id
-                        for _bn in _ws_owner_ids.get(_rec_uid, ()))
-                )
-                if _uid_conflict:
-                    await _refuse_brief_resume(
-                        rec,
-                        f"allocated_uid {_rec_uid} is already owned by another "
-                        "engagement (duplicate uid) — refusing to chown/start a "
-                        "second engagement onto one uid",
-                        kind="refuse_uid_duplicate",
-                    )
-                    continue
-                _migrated_uids.add(_rec_uid)
-
-                # §7: regenerate the uid's NSS identity — container /etc is
-                # ephemeral, so an UNDERGOING record resumed after a container
-                # restart has no passwd/group entry and ``getpwuid`` (git, node,
-                # the CLI) would fail. Idempotent. Routed through the injected
-                # allocator so tests bind it to a tmp passwd/group; a missing
-                # allocator (unit fakes) skips it — production always wires one.
-                if _uid_allocator is not None:
-                    try:
-                        _uid_allocator.ensure_identity(
-                            _rec_uid, os.path.join(_ws_dir, ".home"))
-                    except OSError as exc:
-                        await _refuse_brief_resume(
-                            rec,
-                            f"NSS identity regeneration failed: {exc}",
-                            kind="refuse_uid_identity_failed",
-                        )
-                        continue
-
-                # Containment Stage 2 (Task 8/§3): re-chown the workspace to the
-                # record's uid as the LAST filesystem write before the service is
-                # (re-)started — after every root-side write above (CLAUDE.md
-                # refresh, .mcp.json/settings rewrite). The service is already
-                # down (step 0 confirmed it), so nothing runs against a
-                # mid-chown tree. Idempotent: an already-uid-owned workspace
-                # (ordinary restart of a Stage-2 engagement) is re-chowned
-                # cheaply; a legacy root-owned workspace is handed to its uid
-                # here for the first time. A chown failure refuses the resume —
-                # a still-root-owned workspace would make the dropped CLI EACCES
-                # its own files (or the preflight/render invariant break).
-                try:
-                    chown_workspace(_ws_dir, _rec_uid, _rec_uid)
-                    os.chmod(_ws_dir, 0o700)
-                    # Task 11 (containment stage 2): a legacy record migrating
-                    # to the uid drop for the first time has never had a
-                    # private outbox dir — provision it here, alongside the
-                    # chown, before the (re-)rendered run script below can
-                    # start a producer plugin that expects it to exist.
-                    # Idempotent for an ordinary restart of an
-                    # already-migrated engagement.
-                    import plugin_outbox
-                    plugin_outbox.provision_engagement_outbox(_rec_uid)
-                except OSError as exc:
-                    await _refuse_brief_resume(
-                        rec,
-                        f"workspace chown to uid {_rec_uid} failed: {exc}",
-                        kind="refuse_uid_chown_failed",
-                    )
-                    continue
-
-                if s6_rc.service_pair_complete(
-                    svc_root=s6_rc.ENGAGEMENT_SOURCES_ROOT,
-                    engagement_id=rec.id,
-                ):
-                    # B1 (Sol r1): a COMPLETE pre-v0.75 pair still carries an
-                    # old run script that emits neither the stream-json output
-                    # nor the ``casa_control`` spawn NDJSON frame, so the new
-                    # _InboundSpool never arms and every resumed operator turn
-                    # queues forever. Detect the stale script and DROP the pair
-                    # so the heal path below re-renders it from the current
-                    # template (reusing the existing incomplete-pair heal — no
-                    # duplication). A current pair keeps the fast-path continue.
-                    if not s6_rc.run_script_is_stale(
-                        svc_root=s6_rc.ENGAGEMENT_SOURCES_ROOT,
-                        engagement_id=rec.id,
-                        model_flags=cli_model_flags(defn_any.model),
-                    ):
-                        # Sol r3-2 (#342): the fast path must not trust
-                        # pair-completeness as FIFO-existence — recreate
-                        # (or refuse) before the start loop can run this
-                        # record. Refusal populates refused_ids itself.
-                        await _ensure_stdin_fifo(rec)
-                        continue
-                    logger.info(
-                        "boot replay: migrating a stale run script (pre-v0.75 "
-                        "contract, or another model) for engagement %s (%s) — "
-                        "re-rendering pair",
-                        rec.id[:8], rec.role_or_type,
-                    )
-                    s6_rc.remove_service_dir(
-                        svc_root=s6_rc.ENGAGEMENT_SOURCES_ROOT,
-                        engagement_id=rec.id,
-                    )
-                    # B2 (Sol r2): remove_service_dir SWALLOWS rmtree failures,
-                    # so a surviving old main (full or partial removal) would
-                    # collide with write_service_dir's exist_ok=False re-plant
-                    # and leave a stale, unlogged main whose spawn frames never
-                    # reach the relay. VERIFY the pair is actually gone; if not,
-                    # fail CLOSED (checked teardown + terminal mark) rather than
-                    # compiling/starting a stale pair.
-                    if not s6_rc.service_dirs_absent(
-                        svc_root=s6_rc.ENGAGEMENT_SOURCES_ROOT,
-                        engagement_id=rec.id,
-                    ):
-                        await _refuse_brief_resume(
-                            rec,
-                            "stale pre-v0.75 pair removal did not complete "
-                            "(service dir survivor)",
-                            kind="refuse_migration_failed",
-                        )
-                        continue
-
-                # M7 already validated above (#314) — the workspace exists
-                # from here on.
-                ws_dir = os.path.join(engagements_root, rec.id)
-
-                # Task 6 (#360): ``executor_registry is None`` now refuses
-                # every claude_code record much earlier (the unconditional
-                # definition_any resolution above) — this branch is
-                # unreachable from here on and has been removed.
-
-                # r11-B2: for brief-bearing records reuse the already-resolved
-                # definition_any result (which resolves DISABLED specialists),
-                # so a disabled-definition engagement with an INCOMPLETE pair
-                # heals instead of silently not healing. Brief-LESS records keep
-                # today's get() behaviour EXACTLY (None for disabled → refuse).
-                defn = brief_defn if has_brief else executor_registry.get(
-                    rec.role_or_type)
-                if defn is None:
-                    logger.warning(
-                        "boot replay: cannot heal engagement %s — executor "
-                        "type %r not registered; leaving UNDERGOING",
-                        rec.id[:8], rec.role_or_type,
-                    )
-                    continue
-
-                # §3.8 (missing recorded artifacts) already validated above
-                # (#314) — every recorded --plugin-dir target exists.
-
-                # Containment Stage 2 (Task 7 parity): the fresh-launch path
-                # gates on _preflight_uid_drop, which verifies each pinned
-                # --plugin-dir is readable+traversable by the allocated uid
-                # BEFORE the CLI (dropped to that uid) tries to open it. In
-                # practice ``plugin_boot.heal_and_freeze_store`` re-freezes
-                # artifacts o+rx before replay runs, so this should already
-                # hold — but replay must CHECK rather than assume, the same
-                # way the fresh path does, so a miss refuses this record's
-                # resume instead of rendering/starting a run script that
-                # crash-loops the moment the dropped-uid CLI can't read its
-                # own --plugin-dir. Reuses the SAME check _preflight_uid_drop
-                # uses (shared helper) rather than a divergent copy.
-                try:
-                    _check_plugin_dirs_readable(_rec_uid, rec.plugin_artifacts)
-                except UidDropRefused as exc:
-                    await _refuse_brief_resume(
-                        rec,
-                        f"plugin dir not readable by uid {_rec_uid}: {exc}",
-                        kind="refuse_plugin_dir_unreadable",
-                    )
-                    continue
-
-                # Clear stale/legacy/torn dirs first — write_service_dir
-                # mkdirs with exist_ok=False (a surviving -log sibling would
-                # otherwise collide).
-                s6_rc.remove_service_dir(
-                    svc_root=s6_rc.ENGAGEMENT_SOURCES_ROOT,
-                    engagement_id=rec.id,
-                )
-
-                # Re-render run + log scripts. Task 6/Stage 2: render WITH the
-                # record's uid so the migrated run script drops privilege via
-                # setpriv (render refuses the UNALLOCATED_UID sentinel — the uid
-                # was established/backfilled above, so this fails closed for an
-                # unallocated record rather than emitting a root CLI).
-                run_script = render_run_script(
-                    engagement_id=rec.id,
-                    permission_mode=defn.permission_mode or "acceptEdits",
-                    extra_dirs=list(defn.extra_dirs or []),
-                    plugin_dirs=[pa["path"] for pa in rec.plugin_artifacts],
-                    uid=_rec_uid, gid=_rec_uid,
-                    model=defn.model,
-                )
-                log_script = render_log_run_script(engagement_id=rec.id)
-                s6_rc.write_service_dir(
-                    svc_root=s6_rc.ENGAGEMENT_SOURCES_ROOT,
-                    engagement_id=rec.id,
-                    run_script=run_script,
-                    depends_on=["init-setup-configs"],
-                    log_run_script=log_script,
-                )
-                # Ensure FIFO exists — it might have been wiped alongside the
-                # svc dir.
-                # #342/Sol r2-1/Sol r3-2: a failed recreation refuses the
-                # resume through the checked-teardown ladder (down +
-                # pair removal + terminal mark when containment is
-                # unconfirmed) — never "continue" into a doomed start.
-                if not await _ensure_stdin_fifo(rec):
-                    continue
-                logger.info(
-                    "boot replay: healed engagement %s (%s)",
-                    rec.id[:8], rec.role_or_type,
-                )
-            except Exception as exc:  # noqa: BLE001 — per-record isolation
-                # Containment Stage 2 (Task 10, design §6d): a heal that failed
-                # part-way (e.g. render/chown/write raised after step 0 downed
-                # the service) must NEVER be started below — a not-yet-migrated
-                # engagement stays DOWN, never resurrected as root. Refuse it so
-                # the start + background loops skip it (the service is already
-                # down from step 0; the compile-path prune keeps sources sane).
-                refused_ids.add(rec.id)
-                logger.warning(
-                    "boot replay: heal failed for engagement %s: %s — refusing "
-                    "resume (kept down, not started)",
-                    rec.id[:8], exc,
-                )
-
-        # 3. Single compile + update pass.
-        await s6_rc._compile_and_update_locked()
-
-        # 4. v0.79.0 (§5/F7): adopt the pinned summary BEFORE starting each
-        # service, then start. §5 forbids a running engagement without a
-        # summary, so an adoption failure ABORTS that engagement (mark error +
-        # skip start) rather than starting it summary-less — fail-closed, not
-        # the old fail-open "log and continue after start". A fresh v0.79 record
-        # (summary already persisted) or a topic-less one adopts as a no-op.
-        adopt = getattr(driver, "adopt_summary_if_missing", None)
-        for rec in undergoing:
-            if rec.id in refused_ids:        # Sol F5: no service was written
-                continue
-            if adopt is not None:
-                try:
-                    await adopt(rec)
-                except Exception as exc:  # noqa: BLE001 — §5 abort rule
-                    logger.warning(
-                        "boot replay: summary adopt-on-attach failed for %s: "
-                        "%s — aborting resume (not starting summary-less)",
-                        rec.id[:8], exc,
-                    )
-                    refused_ids.add(rec.id)
-                    try:
-                        await registry.mark_error(
-                            rec.id, kind="summary_adopt_failed",
-                            message=(
-                                "resume aborted: pinned-summary adoption failed "
-                                f"({exc})"
-                            ),
-                        )
-                    except Exception:  # noqa: BLE001 — best-effort terminal mark
-                        logger.warning(
-                            "boot replay: mark_error(summary_adopt_failed) "
-                            "failed for %s", rec.id[:8], exc_info=True,
-                        )
-                    try:
-                        await s6_rc.ensure_service_down(engagement_id=rec.id)
-                    except Exception:  # noqa: BLE001 — best-effort teardown
-                        logger.warning(
-                            "boot replay: ensure_service_down after adopt "
-                            "failure for %s failed", rec.id[:8], exc_info=True,
-                        )
-                    continue
-            try:
-                await s6_rc.start_service(engagement_id=rec.id)
-                # #369 (Sol diff-gate r2): the rebuild is complete only now —
-                # fresh session, floor workspace, running service. Best-effort
-                # here: a failed strict clear leaves the flag set, and the
-                # first turn's rebuild branch (idempotent) clears it then.
-                if rec.id in pending_rebuild_started_ids:
-                    try:
-                        await registry.clear_context_rebuild_pending(rec.id)
-                    except Exception:  # noqa: BLE001 — turn-path clears later
-                        logger.warning(
-                            "boot replay: rebuild-flag clear failed for %s "
-                            "(first turn will rebuild again)", rec.id[:8],
-                            exc_info=True)
-            except Exception as exc:  # noqa: BLE001
-                # #342: refuse — the background loop below must not build
-                # spool/relay/summary machinery for an engagement whose
-                # service never started (operator messages would be
-                # accepted into an engagement with no CLI consumer).
-                logger.warning(
-                    "boot replay: start_service(%s) failed: %s — refusing "
-                    "resume (no background attach)", rec.id[:8], exc,
-                )
-                refused_ids.add(rec.id)
-                try:
-                    await registry.mark_error(
-                        rec.id, kind="start_service_failed",
-                        message=f"resume aborted: s6 start failed ({exc})",
-                    )
-                except Exception:  # noqa: BLE001 — best-effort mark
-                    logger.warning(
-                        "boot replay: mark_error(start_service_failed) "
-                        "failed for %s", rec.id[:8], exc_info=True,
-                    )
-                try:
-                    await s6_rc.ensure_service_down(engagement_id=rec.id)
-                except Exception:  # noqa: BLE001 — best-effort teardown
-                    logger.warning(
-                        "boot replay: ensure_service_down after start "
-                        "failure for %s failed", rec.id[:8], exc_info=True,
-                    )
-
-    # 5. Background tasks OUTSIDE the lock (long-lived).
-    for rec in undergoing:
-        if rec.id in refused_ids:            # Sol F5: refused resume / F7 abort
-            continue
-        # v0.79.0 (§5, F7): the pinned-summary adopt-on-attach now runs in the
-        # start loop ABOVE (BEFORE service start, aborting the resume on failure)
-        # — a summary-less running engagement is no longer possible. Background
-        # tasks build the controller that adopts the (now-guaranteed) summary id.
-        try:
-            # §A3(b): thread the PRE-SERVICE snapshot + shared claimed-set + the
-            # Telegram-readiness event so the attached record's reconcile CLAIMS
-            # itself (one reconciler/boot) and runs only after channel readiness.
-            driver._spawn_background_tasks(
-                rec,
-                reconcile_snapshot=reconcile_snapshots.get(rec.id),
-                reconcile_claimed=reconcile_claimed,
-                telegram_ready=telegram_ready,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "boot replay: background tasks for %s failed: %s",
-                rec.id[:8], exc,
-            )
-
-    # §A3(b) boot reconciliation owner — REFUSED-undergoing records (Sol r7-3):
-    # an undergoing record that REFUSED attachment (missing workspace/artifacts,
-    # refused brief resume, summary-adoption failure that mark_error'd it) never
-    # got the attached ``_spawn_background_tasks`` reconcile pass and would stay
-    # visibly live forever. casa_core owns whatever remains UNCLAIMED (terminal
-    # records were already claimed pre-lock; attached records claimed themselves).
-    if _schedule_reconcile is not None:
-        for _eid, _snap in reconcile_snapshots.items():
-            if _eid in reconcile_claimed:
-                continue
-            _rec = registry.get(_eid)
-            if _rec is None:
-                continue
-            try:
-                _schedule_reconcile(
-                    _rec, _snap, telegram_ready, claimed=reconcile_claimed)
-            except Exception as exc:  # noqa: BLE001 — best-effort per record
-                logger.warning(
-                    "boot replay: casa_core-owned open-question reconcile for "
-                    "%s failed to schedule: %s", _eid[:8], exc,
-                )
-
-
-async def reconcile_terminal_spools(*, registry, driver) -> None:
-    """v0.79.0 (§3): terminal boot-reconciliation owner.
-
-    Alongside the active-engagement replay scan, drain the inbound spools of
-    TERMINAL engagements that still hold pending receipts/notices — a drain
-    that crashed after the terminal commit, or a Telegram send that failed
-    before finalize. Each drains to the topic if it still exists, else
-    WARN-drops (the topic is gone; nothing to notify into). Pending entries
-    therefore retry across restarts until sent or their topic disappears.
-    """
-    reconcile = getattr(driver, "reconcile_terminal_spool", None)
-    if reconcile is None:
+    try:
+        report = private_state.enforce()
+    except Exception as exc:  # noqa: BLE001 — a repair failure must not stop boot
+        logger.error("private-state: the boot repair pass failed: %s", exc)
         return
-    for rec in registry.terminal_records():
-        if rec.driver != "claude_code":
-            continue
-        try:
-            await reconcile(rec)
-        except Exception as exc:  # noqa: BLE001 — best-effort per record
-            logger.warning(
-                "terminal spool reconcile failed for %s: %s",
-                rec.id[:8], exc,
-            )
-
-
-# ------------------------------------------------------------------
-# /hooks/resolve — CC hook_proxy.sh loopback endpoint
-# ------------------------------------------------------------------
-
-
-def _build_cc_hook_policies(hook_policies: dict) -> dict:
-    """Build {policy_name: (matcher_regex, async_callback)} from HOOK_POLICIES.
-
-    Plan 4a.1: policies are now two-tier {matcher, factory}; we invoke each
-    factory with no kwargs (the HTTP path does not accept per-call params —
-    parameterization lives in the executor's hooks.yaml, which the SDK path
-    also consumes verbatim). Unknown-param executor hooks.yaml entries still
-    surface through the SDK-path's resolve_hooks validation at executor load
-    time; the HTTP path inherits whatever configuration the factory
-    with-defaults produces.
-
-    These are the DEFAULT-configured callbacks and serve as the fallback for
-    the HTTP path. H3 (v0.53.0): per-executor ``hooks.yaml`` parameters (e.g.
-    plugin-developer's ``path_scope`` writable/readable prefixes) are wired in
-    separately by :func:`_build_executor_cc_hook_policies` and preferred at
-    request time by the /internal/hooks/resolve handler when the engagement
-    resolves from the payload cwd; this dict is only the fallback when no
-    executor-specific callback applies.
-    """
-    cc_policies: dict = {}
-    for name, entry in hook_policies.items():
-        matcher = entry["matcher"]
-        callback = entry["factory"]()  # default-configured HookCallback
-        cc_policies[name] = (matcher, callback)
-    return cc_policies
-
-
-def _build_executor_cc_hook_policies(executor_registry) -> dict:
-    """H3 (v0.53.0): ``{executor_type: {policy_name: (matcher, callback)}}``.
-
-    For every ``claude_code`` executor with a ``hooks.yaml``, parse the file
-    and build parameterised ``(matcher, callback)`` entries so the HTTP hook
-    path (hook_proxy.sh -> /hooks/resolve) enforces the executor's declared
-    ``path_scope`` prefixes / ``commit_size_guard`` limit instead of the
-    deny-all factory defaults.
-
-    Built at boot AND rebuilt in place by ``reload.reload_executors`` (#340 —
-    the resolve handlers capture the dict instance stashed on
-    ``runtime.executor_cc_policies``, so reload mutates that same object).
-    #442: a per-executor parse failure is NOT skipped — skipping fell that
-    executor back to the default callbacks, which enforce less than any
-    declaration it could have made. It gets a marked deny-all map instead.
-    An executor that legitimately declares no parameters is recorded
-    positively, so the resolver can tell it apart from one that never loaded
-    (see the resolver's missing-entry refusal in ``internal_handlers``).
-
-    #315: iterates ``list_types_any()``/``definition_any()`` — boot replay
-    resumes existing brief-bearing engagements of DISABLED executors, and
-    those must resolve their declared hook parameters too, not the deny-all
-    defaults (default ``path_scope`` has empty prefix lists, denying every
-    workspace Read/Write/Edit).
-    """
-    from hooks import UsesDefaultPolicies, build_policy_callbacks_from_hooks_yaml
-
-    out: dict = {}
-    for t in executor_registry.list_types_any():
-        defn = executor_registry.definition_any(t)
-        if defn is None or defn.driver != "claude_code" or not defn.hooks_path:
-            # #442 r3: say "known, and declares nothing" POSITIVELY. The
-            # resolver refuses an executor its map does not represent, and an
-            # absence is what every failure mode looks like too — so a
-            # legitimate no-parameters executor has to be distinguishable
-            # from one that never loaded.
-            out[t] = UsesDefaultPolicies()
-            continue
-        try:
-            # Task 3 (#360): build from the load-time-validated snapshot
-            # (ExecutorDefinition.hooks_document), never by re-reading
-            # hooks_path — a fresh read here would let a post-load edit
-            # (e.g. a config-editable hooks_file: repoint) reach the HTTP
-            # enforcement path without going through reload's
-            # re-validate-and-re-snapshot.
-            data = defn.hooks_document
-            out[t] = build_policy_callbacks_from_hooks_yaml(data)
-        except Exception as exc:  # noqa: BLE001
-            # #442 r2 (Sol/Terra P1): omitting the executor is NOT neutral —
-            # the resolver then answers from the default-configured map, per
-            # POLICY, and casa_config_guard's default forbids no write path at
-            # all. A document that fails to build would therefore enforce LESS
-            # than the operator declared, which is the same fail-open shape
-            # #442 exists to close. Deny everything for this executor instead
-            # until the file is fixed. (Reload keeps the pre-reload callbacks
-            # instead — there a KNOWN-GOOD set exists; at boot there is none.)
-            logger.error(
-                "executor %r hooks.yaml param build failed: %s — denying every "
-                "guarded call for it (defaults would enforce less)", t, exc,
-            )
-            out[t] = _deny_all_cc_policies(t, exc)
-    return out
-
-
-def _deny_all_cc_policies(executor_type: str, exc: object) -> dict:
-    """A ``{policy: (matcher, callback)}`` map whose every callback denies.
-
-    Covers exactly the HOOK_POLICIES names, so the separately-wired
-    ``engagement_permission_relay`` / ``engagement_buttons_reminder`` still
-    fall through to their live defaults — the executor can still surface a
-    permission request, it just cannot pass a guard.
-    """
-    from hooks import DenyAllPolicyMap, HOOK_POLICIES, make_always_deny_hook
-
-    reason = (
-        f"executor {executor_type!r} declares a hooks.yaml that could not be "
-        f"built ({exc}); every guarded tool call is denied until it is fixed."
-    )
-    return DenyAllPolicyMap(
-        (name, (entry["matcher"], make_always_deny_hook(reason)))
-        for name, entry in HOOK_POLICIES.items()
-    )
+    if report.changed:
+        logger.info(
+            "private-state: repaired %d path mode(s) on this boot",
+            len(report.changed),
+        )
 
 
 def _bus_loop_targets(agents: dict) -> list[str]:
@@ -1989,62 +284,6 @@ def _bus_loop_targets(agents: dict) -> list[str]:
     order (guards a hypothetical user resident literally named "observer").
     """
     return list(dict.fromkeys(list(agents.keys()) + ["telegram", "observer"]))
-
-
-def _wire_engagement_permission_relay(
-    cc_hook_policies: dict,
-    *,
-    engagement_registry,
-    telegram_channel,
-) -> dict:
-    """Inject engagement_permission_relay into a built cc_hook_policies dict.
-
-    v0.37.2 (C-1): the relay needs live ``engagement_registry`` +
-    ``telegram_channel``, so it can't be wired via the parameter-free
-    factory pattern used by HOOK_POLICIES. Inject it directly into the
-    built ``(matcher, callback)`` dict instead.
-
-    Mutates and returns ``cc_hook_policies`` for caller convenience.
-    """
-    from hooks import make_engagement_permission_relay
-
-    cc_hook_policies["engagement_permission_relay"] = (
-        r".*",
-        make_engagement_permission_relay(
-            engagement_registry=engagement_registry,
-            telegram_channel=telegram_channel,
-        ),
-    )
-    return cc_hook_policies
-
-
-def _wire_engagement_buttons_reminder(
-    cc_hook_policies: dict,
-    *,
-    engagement_registry,
-) -> dict:
-    """Inject engagement_buttons_reminder into a built cc_hook_policies dict.
-
-    R4 (v0.89.0, buttons-always): a PreToolUse(Skill) salience backstop that
-    needs the live ``engagement_registry`` (to resolve an ACTIVE engagement
-    from the CC payload's cwd), so — like ``engagement_permission_relay`` — it
-    can't be built via the parameter-free HOOK_POLICIES factory pattern. The
-    matcher is ``Skill`` so only Skill loads reach the callback (the executor's
-    generated .claude/settings.json registers the same Skill matcher, and
-    ``build_policy_callbacks_from_hooks_yaml`` skips this policy — no factory —
-    so the HTTP resolver falls back to this wired default).
-
-    Mutates and returns ``cc_hook_policies`` for caller convenience.
-    """
-    from hooks import make_engagement_buttons_reminder
-
-    cc_hook_policies["engagement_buttons_reminder"] = (
-        r"Skill",
-        make_engagement_buttons_reminder(
-            engagement_registry=engagement_registry,
-        ),
-    )
-    return cc_hook_policies
 
 
 async def _drain_broker_before_channel_shutdown(channel_manager: Any) -> None:
@@ -3500,7 +1739,7 @@ _topic_permission_notified = False
 
 
 async def _sweep_engagement_topics(channel_manager: Any) -> None:
-    """Periodic topics pass — runs right after the workspace sweep [AR-8].
+    """Periodic topics pass — the ``workspace_sweep`` job [AR-8].
 
     Deletes due terminal-engagement topics recorded in the topic ledger
     through the telegram channel. When telegram is unconfigured (no
@@ -3715,10 +1954,8 @@ async def _notify_recovered_engagement_outcomes(
 ) -> None:
     """#766: announce every engagement outcome that still owes its engager one.
 
-    Before this there was NO boot replay of an engagement outcome at all — the
-    only boot walk over ``terminal_records()`` is ``reconcile_terminal_spools``,
-    which drains an inbound spool into the engagement's Telegram topic and
-    enqueues nothing on the bus. So a completed or cancelled engagement could be
+    Before this there was NO boot replay of an engagement outcome at all. So a
+    completed or cancelled engagement could be
     durably terminal on disk while the party that asked for the work was never
     told, permanently, across restarts, with no log line on the commonest arm
     (``MessageBus.send_checked`` returns ``"no_target"`` for an unregistered
@@ -4016,10 +2253,6 @@ _PASSWORD_ENV_VARS = (
     "CLAUDE_CODE_OAUTH_TOKEN",
     "TELEGRAM_BOT_TOKEN",
     "WEBHOOK_SECRET",
-    # #277: context7_api_key is password-typed too — exported by svc-casa/run;
-    # without this entry an op:// value reached the context7 MCP server as the
-    # literal reference.
-    "CONTEXT7_API_KEY",
 )
 
 
@@ -4365,12 +2598,6 @@ async def main() -> None:
     await asyncio.to_thread(specialist_registry.load, roles_dir=str(roles_overlay))
 
     from engagement_registry import EngagementRegistry
-    # Containment Stage 2 (Task 10): the persistent, monotonic, never-reused
-    # per-engagement uid allocator. Constructed here and injected into the
-    # registry so create() can allocate a uid under the registry lock; then
-    # RECONSTRUCTED from every uid source below (after load(), which populates
-    # the records the reconstruct scan reads).
-    uid_allocator = UidAllocator(os.path.join(DATA_DIR, "engagement-uids.json"))
     # #283: the agent-spawn occupancy limiter, constructed BEFORE the
     # registry so load() can restore one token per live marked record
     # (design r3, Sol: registry load used to precede limiter construction —
@@ -4381,45 +2608,9 @@ async def main() -> None:
     engagement_registry = EngagementRegistry(
         tombstone_path=os.path.join(DATA_DIR, "engagements.json"),
         bus=bus,
-        uid_allocator=uid_allocator,
         agent_spawn_limiter=agent_spawn_limiter,
     )
     await engagement_registry.load()
-
-    # Reconstruct the uid high-water from the max of every source that could
-    # have handed out a uid the allocator must never reissue (design §2):
-    #   - the persisted counter file (read inside reconstruct),
-    #   - the ``allocated_uid`` of EVERY record incl. terminal/retained (NOT
-    #     just live ones — a pruned-but-lingering process still holds its uid),
-    #   - the owner uid of every on-disk /data/engagements/*,
-    #     /data/engagement-ctl/* AND /data/plugin-outbox-eng/* directory (a
-    #     workspace/control/outbox dir chowned to a uid the counter never
-    #     recorded — S1 r7 completed the outbox class, the last per-engagement
-    #     /data artifact that was unscanned). The EXISTENCE of any such
-    #     per-engagement artifact root is also a prior-existence signal, so a
-    #     both-durable-copies-lost boot with a leftover artifact fails closed
-    #     rather than resetting to base (see UidAllocator.reconstruct).
-    # A UidStateError (missing/malformed/inconsistent counter) is FAIL-CLOSED:
-    # log CRITICAL and leave the allocator un-reconstructed, so allocate()
-    # raises for every create()/backfill this boot — new engagements and
-    # legacy-uid migrations are refused rather than risk reissuing a live uid.
-    # Boot itself continues (matching the surrounding best-effort boot-error
-    # convention): existing already-uid'd engagements still replay.
-    try:
-        _known_uids, _dir_owner_uids = _gather_reconstruct_evidence(
-            engagement_registry, data_dir=DATA_DIR)
-        uid_allocator.reconstruct(
-            known_uids=_known_uids, dir_owner_uids=_dir_owner_uids)
-    except UidStateError:
-        logger.critical(
-            "Engagement uid allocator could NOT reconstruct its high-water "
-            "mark — the counter file is missing/malformed/inconsistent. New "
-            "engagements and legacy-uid migrations will be REFUSED this boot "
-            "(fail-closed) rather than risk reissuing a live uid. Repair "
-            "%s to restore allocation.",
-            os.path.join(DATA_DIR, "engagement-uids.json"),
-            exc_info=True,
-        )
 
     from executor_registry import ExecutorRegistry
     executor_registry = ExecutorRegistry(
@@ -4549,7 +2740,6 @@ async def main() -> None:
         channel_manager=channel_manager,
         bus=bus,
         engagement_driver=None,               # set after step 10 InCasaDriver build
-        claude_code_driver=None,              # set after step 10b ClaudeCodeDriver build
         policy_lib=policy_lib,
         config_dir=CONFIG_DIR,
         agents_dir=agents_dir,
@@ -4859,87 +3049,10 @@ async def main() -> None:
         record_lookup=engagement_registry.get,
         # #690: the in_casa half of INV-ENG-009. The registry's SYNCHRONOUS
         # admission decision, called inside the driver's per-turn lock
-        # immediately before the client hand-off. Same seam claude_code has
-        # used since #588; injected so the driver stays importable without a
-        # registry.
+        # immediately before the client hand-off. Injected so the driver stays
+        # importable without a registry.
         begin_turn_delivery=engagement_registry.begin_turn_delivery,
     )
-
-    # claude_code driver: send_to_topic doubles as the live TopicStreamRelay's
-    # send_message primitive (W1), so it must RETURN the posted message_id (the
-    # relay edits the rolling message by id). Notice/warning callers ignore it.
-    async def _send_to_topic(
-        thread_id: int, text: str, reply_to_message_id: int | None = None,
-    ) -> int | None:
-        if telegram_channel is not None:
-            # R2a (v0.89.0): route narration/notice topic sends through the RICH
-            # primitive so markdown renders as MessageEntity spans (plain text
-            # sends as ``plain_text`` — render() returns entities=None; #1330).
-            if reply_to_message_id is not None:
-                # v0.79.0 (§3): reply-quote the operator's message (Sol-verified
-                # PTB 22.7 spelling).
-                from telegram import ReplyParameters
-                return await telegram_channel.send_to_topic_rich(
-                    thread_id, text,
-                    reply_parameters=ReplyParameters(
-                        message_id=reply_to_message_id,
-                        allow_sending_without_reply=True,
-                    ),
-                )
-            return await telegram_channel.send_to_topic_rich(thread_id, text)
-        return None
-
-    async def _send_to_topic_paged(
-        thread_id: int, text: str,
-    ) -> int | None:
-        # v0.109.0 (G5): paged rich send for ONE-SHOT terminal posts (the
-        # completion notice) — a summary over the 4096/100-entity caps ships as
-        # several rendered pages instead of raw markdown. Returns the LAST
-        # page's message_id (bottom-most — correct high-water anchor).
-        if telegram_channel is not None:
-            return await telegram_channel.send_response_to_topic(
-                thread_id, text)
-        return None
-
-    async def _edit_topic_message(
-        thread_id: int, message_id: int, text: str, *, clear_keyboard: bool = False,
-    ) -> bool:
-        if telegram_channel is not None:
-            # R2a (v0.89.0): route narration edits through the RICH primitive so
-            # EVERY edit re-renders markdown (plain text edits verbatim).
-            return await telegram_channel.edit_topic_message_rich(
-                thread_id, message_id, text, clear_keyboard=clear_keyboard)
-        return False
-
-    async def _delete_topic_message(thread_id: int, message_id: int) -> bool:
-        if telegram_channel is not None:
-            return await telegram_channel.delete_topic_message(
-                thread_id, message_id)
-        return False
-
-    async def _send_topic_message_markup(
-        thread_id: int, text: str, markup, reply_to: int | None = None,
-    ) -> int | None:
-        # A9 (v0.83.0): markup-capable discrete send (OutputSequencer.post_discrete).
-        if telegram_channel is not None:
-            return await telegram_channel.send_topic_message_markup(
-                thread_id, text, markup, reply_to=reply_to)
-        return None
-
-    async def _edit_topic_message_markup(
-        thread_id: int, message_id: int, text, markup,
-    ) -> bool:
-        # A9 (v0.83.0): markup-capable discrete edit (OutputSequencer.edit_discrete).
-        if telegram_channel is not None:
-            return await telegram_channel.edit_topic_message_markup(
-                thread_id, message_id, text, markup)
-        return False
-
-    async def _pin_topic_message(thread_id: int, message_id: int) -> bool:
-        # v0.79.0 (§5): best-effort pin of the live summary message.
-        if telegram_channel is not None:
-            return await telegram_channel.pin_topic_message(thread_id, message_id)
-        return False
 
     # Expose on the agent module so tools.emit_completion / cancel_engagement
     # can find it without circular imports.
@@ -4954,93 +3067,21 @@ async def main() -> None:
     agent_mod.active_executor_registry = executor_registry
     runtime.engagement_driver = engagement_driver
 
-    # Plan 4a: claude_code driver. Shares send_to_topic with in_casa.
-    from drivers.claude_code_driver import ClaudeCodeDriver
-
-    # Plan 4b/3.6: workspaces reach the casa-framework MCP via svc-casa-mcp
-    # on port 8100.
-    _casa_framework_mcp_url = os.environ.get(
-        "CASA_FRAMEWORK_MCP_URL",
-        "http://127.0.0.1:8100/mcp/casa-framework",
-    )
-
-    claude_code_driver = ClaudeCodeDriver(
-        engagements_root="/data/engagements",
-        send_to_topic=_send_to_topic,
-        casa_framework_mcp_url=_casa_framework_mcp_url,
-        # W1: relay edit/delete primitives + registry (advance_interaction_state
-        # seam for Task 7's inbound one-turn queue).
-        edit_topic_message=_edit_topic_message,
-        delete_topic_message=_delete_topic_message,
-        # A9 (v0.83.0): markup-capable discrete send/edit for post_discrete /
-        # edit_discrete (keyboard-bearing writes through the single writer).
-        send_topic_message_markup=_send_topic_message_markup,
-        edit_topic_message_markup=_edit_topic_message_markup,
-        # v0.109.0 (G5): paged rich sender for terminal completion posts.
-        # Explicitly None without a Telegram channel so the sequencer keeps
-        # its ordinary _post_notice_locked path (Sol r2: a non-None sender is
-        # authoritative — never inject a wrapper that can only return None).
-        send_to_topic_paged=(
-            _send_to_topic_paged if telegram_channel is not None else None),
-        # v0.79.0 (§5): best-effort pin primitive for the live summary.
-        pin_topic_message=_pin_topic_message,
-        registry=engagement_registry,
-        # O-5 (v0.37.9): capture-and-persist SDK session_id so a Casa
-        # restart mid-engagement preserves conversation continuity.
-        # The driver writes <workspace>/.session_id from its log-tail
-        # capture; this hook keeps EngagementRecord.sdk_session_id in
-        # lockstep with the on-disk file the run script reads on resume.
-        persist_session_id=engagement_registry.persist_session_id,
-        # #369: rebuild_fresh_context re-renders CLAUDE.md after a clearance
-        # downgrade — resolve the defn the same way boot replay does.
-        executor_defn_lookup=executor_registry.definition_any,
-    )
-
-    # Wire bus sink so subprocess_respawn events reach the observer.
-    async def _publish_driver_bus_event(event: dict) -> None:
-        await bus.notify(BusMessage(
-            type=MessageType.NOTIFICATION,
-            source="claude_code_driver",
-            target="observer",
-            content=event,
-            context={"engagement_id": event.get("engagement_id", "-")},
-        ))
-    claude_code_driver._publish_bus_event = _publish_driver_bus_event
-    agent_mod.active_claude_code_driver = claude_code_driver
-    # #599: the registry schedules the uid-quiesce ladder the instant a terminal
-    # transition wins — including the direct ``mark_*`` mutators, which have no
-    # finalize funnel behind them. Wired HERE because the owner is the driver
-    # and the driver only exists at this point in boot.
-    engagement_registry.set_quiesce_owner(claude_code_driver.quiesce)
-    runtime.claude_code_driver = claude_code_driver
     # Stash runtime on agent module so reload handlers and tools find it.
     agent_mod.active_runtime = runtime
 
-    # Plan 4a: boot replay for claude_code engagements.
-    # v0.83.0 (§A3(b), Sol r9-2/r10-3): the open-question reconcilers are
-    # scheduled here (pre-service snapshot) but their EXECUTION is gated on the
-    # Telegram channel's readiness event — replay runs long before the channel
-    # starts (start_all() below), and an ungated attach-time reconcile would fire
-    # its confirmed settle edits against a None bot and fail closed. The channel
-    # sets this at its first successful _rebuild; a None channel yields no event
-    # (reconciles then run ungated, matching the no-Telegram deploy).
+    # INV-STATE-005: the private-state mode repair, once per boot, before any
+    # channel or agent starts.
+    _repair_private_state()
+
+    # The Telegram channel's readiness event: set at its first successful
+    # _rebuild, long after this point (start_all() below); a None channel yields
+    # no event.
     _telegram_ready = (
         telegram_channel.ready_event if telegram_channel is not None else None)
-    try:
-        await replay_undergoing_engagements(
-            registry=engagement_registry,
-            driver=claude_code_driver,
-            executor_registry=executor_registry,
-            telegram_ready=_telegram_ready,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.error(
-            "Plan 4a boot-replay failed — claude_code engagements may be "
-            "in an inconsistent state: %s", exc,
-        )
 
-    # #573: reconcile durable scheduled-ask records. Gated on the same Telegram
-    # readiness event as the replay above — every disposition either edits a
+    # #573: reconcile durable scheduled-ask records. Gated on the Telegram
+    # readiness event — every disposition either edits a
     # keyboard or restores one, and both need a live bot. A restored record's
     # keyboard stays honest across the restart; an expired, orphaned or
     # operator-changed one is settled and its scheduled session told.
@@ -5059,15 +3100,6 @@ async def main() -> None:
         # is garbage-collectable mid-flight).
         _SCHEDULED_ASK_TASKS.add(_sa_task)
         _sa_task.add_done_callback(_SCHEDULED_ASK_TASKS.discard)
-
-    # v0.79.0 (§3): terminal boot-reconciliation — drain terminal engagements
-    # whose inbound spool still holds pending receipts/notices.
-    try:
-        await reconcile_terminal_spools(
-            registry=engagement_registry, driver=claude_code_driver,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("terminal spool reconciliation failed: %s", exc)
 
     from observer import Observer
     observer = Observer(
@@ -5092,15 +3124,11 @@ async def main() -> None:
             # §A3 (Sol r10-2): PROPAGATE the enqueue disposition so
             # _deliver_turn_bg can promote (accepted) vs roll back (rejected)
             # the answered reservation.
-            if rec.driver == "claude_code":
-                return await claude_code_driver.send_user_turn(
-                    rec, text, tg_message_id=tg_message_id)
-            # in_casa driver has no durable spool / reply-threading (§7
+            # The in_casa driver has no durable spool / reply-threading (§7
             # follow-up) — the id only keys the message's memory capture; no
             # reservation disposition. #649: thread the seam-admitted ticket
             # so the driver adopts it. #1033: and the job batch number a batch
-            # turn carries (jobs are always in_casa, so the claude_code branch
-            # above never sees one).
+            # turn carries.
             await engagement_driver.send_user_turn(
                 rec, text, tg_message_id=tg_message_id,
                 inbound_token=inbound_token, batch=batch)
@@ -5108,21 +3136,18 @@ async def main() -> None:
         telegram_channel._driver_send_user_turn = _driver_send_user_turn
 
         # #649: in_casa admission-ticket seam trio. SYNCHRONOUS, taken by the
-        # Telegram entry points before their first await; claude_code keeps
-        # its own spool + ingress-reservation accounting (admit returns None).
+        # Telegram entry points before their first await.
         def _driver_admit_inbound(rec, text):
-            if rec.driver == "claude_code":
-                return None
             return engagement_driver.admit_inbound(rec.id, text)
         telegram_channel._driver_admit_inbound = _driver_admit_inbound
 
         def _driver_discharge_inbound(rec, token):
-            if rec.driver != "claude_code" and token is not None:
+            if token is not None:
                 engagement_driver.discharge_inbound(rec.id, token)
         telegram_channel._driver_discharge_inbound = _driver_discharge_inbound
 
         def _driver_inbound_held(rec, token):
-            if rec.driver != "claude_code" and token is not None:
+            if token is not None:
                 return engagement_driver.inbound_token_held(rec.id, token)
             return False
         telegram_channel._driver_inbound_held = _driver_inbound_held
@@ -5132,7 +3157,7 @@ async def main() -> None:
         # accessor is deliberately NOT on DriverProtocol, so a driver without
         # it reads as "nothing to report" rather than raising AttributeError
         # into a delivery task that would surface a failure for a healthy
-        # turn. claude_code has its own failure ownership and returns "".
+        # turn.
         telegram_channel._driver_turn_incomplete = (
             lambda rec, token: read_followup_incomplete(
                 engagement_driver, rec, token))
@@ -5152,112 +3177,39 @@ async def main() -> None:
         )
 
         async def _driver_invalidate_session(rec):
-            if rec.driver == "claude_code":
-                await claude_code_driver.invalidate_session(rec)
-            else:
-                await engagement_driver.invalidate_session(rec)
+            await engagement_driver.invalidate_session(rec)
 
         async def _engagement_context_rebuilder(rec) -> str:
-            # Sol diff-gate r1: both branches RE-VERIFY teardown before
-            # opening anything fresh (invalidate is idempotent) — the flag is
-            # cleared by the caller only after this returns, so a rebuild can
-            # never bless a session whose predecessor was not confirmed gone.
-            if rec.driver == "claude_code":
-                await claude_code_driver.rebuild_fresh_context(rec)
-            else:
-                await engagement_driver.invalidate_session(rec)
-                await engagement_driver.open_fresh(rec)
+            # Sol diff-gate r1: RE-VERIFY teardown before opening anything
+            # fresh (invalidate is idempotent) — the flag is cleared by the
+            # caller only after this returns, so a rebuild can never bless a
+            # session whose predecessor was not confirmed gone.
+            await engagement_driver.invalidate_session(rec)
+            await engagement_driver.open_fresh(rec)
             return _REBUILD_NOTE
         telegram_channel._driver_invalidate_session = _driver_invalidate_session
         telegram_channel._engagement_context_rebuilder = (
             _engagement_context_rebuilder)
-
-        # v0.83.0 (§A3, Sol r7-1): the answered-RESERVATION seam. reserve is
-        # SYNCHRONOUS (set in the handler's same section as the high-water
-        # advance); rollback is a CAS. Only claude_code engagements have the
-        # spool/anchor machinery — in_casa is a no-op.
-        def _driver_reserve_answer(rec):
-            if rec.driver == "claude_code":
-                return claude_code_driver.reserve_answer(rec.id)
-            return None
-        telegram_channel._driver_reserve_answer = _driver_reserve_answer
-
-        # G4 D2 (v0.96.0): SYNCHRONOUS inbound-ingress reservation — taken at
-        # trusted handler entry (under the topic lock, before the background
-        # delivery task exists) and released after the spool enqueue resolves.
-        # Terminalization refuses while reservations > 0, closing the
-        # accepted-but-not-yet-spooled completion race.
-        # #691: ``text``/``message_id`` carry WHICH message this reservation is
-        # for, so a terminal can quote it rather than only counting it. Passed
-        # through unchanged; the driver decides what to record (a recognized
-        # command records nothing) and the return shape is untouched.
-        def _driver_reserve_inbound(rec, *, command=False, text=None,
-                                    message_id=None):
-            if rec.driver == "claude_code":
-                claude_code_driver.reserve_inbound(
-                    rec.id, command=command, text=text, message_id=message_id)
-                return True
-            return False
-        telegram_channel._driver_reserve_inbound = _driver_reserve_inbound
-
-        def _driver_release_inbound(rec, *, command=False, message_id=None):
-            if rec.driver == "claude_code":
-                claude_code_driver.release_inbound_reservation(
-                    rec.id, command=command, message_id=message_id)
-        telegram_channel._driver_release_inbound = _driver_release_inbound
-
-        async def _driver_rollback_answer_reservation(
-                rec, token, *, suppress_reanchor=False):
-            if rec.driver == "claude_code" and token is not None:
-                return await claude_code_driver.rollback_answer_reservation(
-                    rec.id, token, suppress_reanchor=suppress_reanchor)
-            return False
-        telegram_channel._driver_rollback_answer_reservation = (
-            _driver_rollback_answer_reservation)
-
-        # v0.79.0 (§3): seal open narration at inbound-handler entry for
-        # claude_code engagements (the T1 high-water seam).
-        async def _driver_advance_high_water(rec, msg_id):
-            if rec.driver == "claude_code":
-                await claude_code_driver.advance_topic_high_water_for_inbound(
-                    rec.id, msg_id)
-        telegram_channel._driver_advance_high_water = _driver_advance_high_water
-
-        # v0.79.0 (§3, F2): route platform-origin topic notices (command
-        # replies, resume errors) through the engagement's OUTPUT SEQUENCER so
-        # they seal narration + advance the high-water under the single writer.
-        # Non-claude_code engagements have no sequencer — post directly.
-        async def _driver_post_notice(rec, text):
-            if rec.driver == "claude_code":
-                await claude_code_driver.post_topic_notice(rec, text)
-            else:
-                # v0.109.0 (G3): notices carry markdown — render rich.
-                await telegram_channel.send_to_topic_rich(rec.topic_id, text)
-        telegram_channel._driver_post_notice = _driver_post_notice
 
         async def _finalize_cancel(rec, reason="user"):
             # F2 (whole-branch r2): PROPAGATE _finalize_engagement's bool so the
             # terminal command path can gate the answered-reservation re-anchor
             # suppression on a successful strict terminal transition.
             from tools import _finalize_engagement
-            driver = (claude_code_driver if rec.driver == "claude_code"
-                      else engagement_driver)
             return await _finalize_engagement(
                 rec, outcome="cancelled", text=f"Cancelled by {reason}.",
                 artifacts=[], next_steps=[],
-                driver=driver,
+                driver=engagement_driver,
             )
         telegram_channel._finalize_cancel = _finalize_cancel
 
         async def _finalize_complete_user(rec):
             # F2 (whole-branch r2): PROPAGATE the finalize bool (see above).
             from tools import _finalize_engagement
-            driver = (claude_code_driver if rec.driver == "claude_code"
-                      else engagement_driver)
             return await _finalize_engagement(
                 rec, outcome="completed", text="User-marked complete.",
                 artifacts=[], next_steps=[],
-                driver=driver,
+                driver=engagement_driver,
             )
         telegram_channel._finalize_complete_user = _finalize_complete_user
 
@@ -5443,15 +3395,6 @@ async def main() -> None:
     ))
     app.router.add_post("/invoke/{agent}", invoke_handler)
     app.router.add_post("/telegram/update", telegram_update_handler)
-    # H3 (v0.53.0): per-executor hooks.yaml params for the hook resolve path.
-    _executor_cc_policies = _build_executor_cc_hook_policies(executor_registry)
-    # #340: stash the SAME instance the internal resolve handler captures on
-    # the runtime, so reload_executors can refresh it in place (clear+update) —
-    # without this, the map stays frozen at boot: a reloaded-in executor
-    # falls back to deny-all defaults and a tightened policy keeps enforcing
-    # the old broader callbacks until restart.
-    runtime.executor_cc_policies = _executor_cc_policies
-
     # 13b. Per-agent trigger registration. Registry + scheduler were
     # constructed earlier (needed by init_tools for get_schedule).
     # Register before runner.setup() so webhook routes land in *app*
@@ -5687,45 +3630,17 @@ async def main() -> None:
     await runner.setup()
     # H1 (defense-in-depth): bind the backend to loopback only. The sole
     # remote consumer is nginx in the SAME container (proxy_pass
-    # http://127.0.0.1:8099) and in-container workspace subprocesses reach
-    # it via 127.0.0.1; nothing legitimately connects to 8099 over the
+    # http://127.0.0.1:8099); nothing legitimately connects to 8099 over the
     # hassio bridge, so 0.0.0.0 needlessly exposed it to peer containers.
     site = web.TCPSite(runner, "127.0.0.1", 8099)
     await site.start()
     logger.info("HTTP server listening on 127.0.0.1:8099")
 
-    # Plan 4b/3.6: second AppRunner for the Unix-socket internal API
-    # consumed by svc-casa-mcp.
-    from hooks import HOOK_POLICIES as _HOOK_POLICIES_FOR_INTERNAL
-    _internal_hook_policies = _build_cc_hook_policies(_HOOK_POLICIES_FOR_INTERNAL)
-    # v0.37.2 (C-1): engagement_permission_relay needs live deps that the
-    # parameter-free factory pattern can't supply; inject via the helper.
-    _wire_engagement_permission_relay(
-        _internal_hook_policies,
-        engagement_registry=engagement_registry,
-        telegram_channel=telegram_channel,
-    )
-    # R4 (v0.89.0): buttons-always PreToolUse(Skill) salience backstop.
-    _wire_engagement_buttons_reminder(
-        _internal_hook_policies,
-        engagement_registry=engagement_registry,
-    )
-    from tools import CASA_TOOLS as _CASA_TOOLS_FOR_INTERNAL
-    _internal_tool_dispatch = {
-        t.name: t.handler for t in _CASA_TOOLS_FOR_INTERNAL
-    }
-    # E-12 (v0.37.0): pass the live TelegramChannel built at line ~1162 so
-    # start_internal_unix_runner can register the /internal/channel/* family.
-    # `telegram_channel` is the local variable; None when no TELEGRAM_TOKEN is
-    # set (test/fallback boots), in which case the channel routes are skipped.
+    # Plan 4b/3.6: second AppRunner for the Unix-socket internal API (the
+    # result broker's routes and the root-gated /admin/* family).
     internal_runner = await start_internal_unix_runner(
         socket_path="/run/casa/internal.sock",
-        tool_dispatch=_internal_tool_dispatch,
-        engagement_registry=engagement_registry,
-        hook_policies=_internal_hook_policies,
-        executor_hook_policies=_executor_cc_policies,
         runtime=runtime,
-        telegram_channel=telegram_channel,
     )
     # Track for shutdown.
     runners: list[web.AppRunner] = [runner, internal_runner]
@@ -5841,8 +3756,7 @@ async def main() -> None:
     # a record past the reap TTL is cancelled outright and must not receive
     # a pointless idle reminder in the same daily run.
     async def _engagement_daily_sweep() -> None:
-        # reap resolves the per-record driver itself (claude_code executors
-        # need the claude_code driver — v0.69.6); no driver arg here.
+        # reap resolves the per-record driver itself; no driver arg here.
         from tools import reap_stale_engagements
         try:
             reaped = await reap_stale_engagements()
@@ -5886,19 +3800,9 @@ async def main() -> None:
         max_instances=1,
         misfire_grace_time=60,
     )
-    # Plan 4a.1 §8: workspace sweeper — every 6 hours, removes terminal
-    # engagement workspaces past retention. v0.65.0 [AR-8]: the same job
-    # then sweeps due terminal-engagement topics off the Telegram sidebar
-    # (topic_ledger) — topics and workspaces expire together.
-    from drivers.workspace import _sweep_workspaces as _sweep_ws
-
+    # v0.65.0 [AR-8]: every 6 hours, sweep due terminal-engagement topics off
+    # the Telegram sidebar (topic_ledger). The job id is historical.
     async def _sweep_workspaces_and_topics() -> None:
-        # Per-side-effect isolation: a workspace-sweep failure must not
-        # starve the topics pass (the topics helper itself never raises).
-        try:
-            await _sweep_ws(engagements_root="/data/engagements")
-        except Exception:  # noqa: BLE001
-            logger.warning("workspace sweep failed", exc_info=True)
         await _sweep_engagement_topics(channel_manager)
 
     scheduler.add_job(
@@ -6195,8 +4099,7 @@ async def _shutdown_cleanup(
     repository — ``job_registry.begin_shutdown()``'s call site has been unpinned
     since #671 — so every claim any invariant made about "a graceful stop"
     rested on a sequence nothing ran. It is now a production coroutine a red
-    case can drive end to end, which is what lets INV-ENG-015 say "a launch
-    that Casa's graceful-stop cleanup finds registered" and mean it.
+    case can drive end to end.
 
     The statement ORDER is unchanged from the block it replaces, with exactly
     one addition: the engagement-launch step, at the top, beside the job
@@ -6209,7 +4112,7 @@ async def _shutdown_cleanup(
     # their death reports. Here, at the top, because everything a dying launch
     # needs is still up: Telegram, the bus, the drivers and the registry. Left
     # to `asyncio.run`'s final sweep instead, the launch is cancelled with no
-    # cause (its workspace destroyed) and its reporter is killed mid-notice.
+    # cause and its reporter is killed mid-notice.
     # #882: declare the graceful stop to the turn path BEFORE anything can
     # await — synchronously, so no turn can be admitted in the window between
     # entering this coroutine and the declaration. From here a turn the pool
@@ -6314,34 +4217,11 @@ async def _shutdown_cleanup(
     await _drain_broker_before_channel_shutdown(channel_manager)
 
     # HTTP ingress teardown: close BOTH AppRunners (public 8099 + the internal
-    # unix socket) BEFORE draining the force cleanups below. runner.cleanup()
-    # drains in-flight requests then closes the listener, so once it returns no
-    # webhook/voice/internal inbound can reach an agent. Moved AHEAD of the
-    # force-cleanup drain to make the drain point
-    # INGRESS-QUIESCENT — see the F1 rationale below.
+    # unix socket). runner.cleanup() drains in-flight requests then closes the
+    # listener, so once it returns no webhook/voice/internal inbound can reach
+    # an agent.
     for _r in runners:
         await _r.cleanup()
-
-    # F1 (v0.83.0 whole-branch gate, wave 2): bounded LOOP-drain of the
-    # claude_code driver's force-suspend OWNERS (`_force_tasks`) + CANCEL-EXEMPT
-    # post-SIGTERM cleanups (`_force_cleanups` — extinction poll + SIGKILL
-    # escalation) so a SIGTERM-resistant engagement subprocess is verified
-    # extinct rather than orphaned by a premature process exit.
-    #
-    # Placed AFTER every ingress surface is quiesced — the agent loops are
-    # cancelled (above), the channels stopped, and now the HTTP/socket listeners
-    # closed — so nothing can spawn a fresh force-suspend or fire an operator-
-    # away clear that hands a new cleanup off after the loop-drain settles. The
-    # drain itself re-snapshots both surfaces each iteration to catch a handoff
-    # that lands mid-drain. Bounded + truthful — never wedges
-    # shutdown (getattr-guarded so a driver without the seam is a no-op).
-    _cc_driver = getattr(runtime, "claude_code_driver", None)
-    _drain_force = getattr(_cc_driver, "drain_force_cleanups", None)
-    if _drain_force is not None:
-        try:
-            await _drain_force()
-        except Exception:  # noqa: BLE001 — shutdown must complete
-            logger.warning("force-cleanup drain failed", exc_info=True)
 
     # #767 (INV-JOB-011), second of two — the ledger-close boundary: every
     # delegation whose verdict landed DURING the stop (in the bounded aclose

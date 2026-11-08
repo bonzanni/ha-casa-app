@@ -8,9 +8,6 @@ assistant's DMs and engagement topics. Root causes (Sol+Terra design round):
 * G2/G5: engagement completion summaries posted plain for in_casa
   engagements, and raw-fallback (no pagination) over the render caps.
 * G3: engagement notices posted plain on the non-driver fallback paths.
-* G4: keyboard-bearing topic posts (``send_topic_message_markup``, the
-  sequencer's ``post_discrete`` wire + the internal inline-keyboard
-  handler) sent plain while their EDIT sibling rendered (R2c asymmetry).
 * Table detector: separator-less bordered tables stayed proportional.
 """
 
@@ -108,34 +105,6 @@ async def test_edit_dm_message_not_modified_tolerated():
 
 
 # ===========================================================================
-# G4 · send_topic_message_markup renders (symmetry with its R2c edit sibling)
-# ===========================================================================
-
-@pytest.mark.asyncio
-async def test_send_topic_message_markup_renders_entities():
-    ch, bot = _mk_channel_with_fake_bot()
-    kbd = InlineKeyboardMarkup([[]])
-    mid = await ch.send_topic_message_markup(42, "**pick** one", kbd)
-    assert mid == 12345
-    kw = bot.send_message.await_args.kwargs
-    assert kw["text"] == "pick one"
-    assert kw["entities"][0].type == MessageEntity.BOLD
-    assert kw["message_thread_id"] == 42
-
-
-@pytest.mark.asyncio
-async def test_send_topic_message_markup_badrequest_retries_plain():
-    ch, bot = _mk_channel_with_fake_bot()
-    ok = MagicMock(message_id=9)
-    bot.send_message = AsyncMock(side_effect=[BadRequest("bad entity"), ok])
-    mid = await ch.send_topic_message_markup(42, "**b**", None)
-    assert mid == 9
-    second = bot.send_message.await_args_list[1]
-    assert second.kwargs["text"] == "**b**"
-    assert "entities" not in second.kwargs
-
-
-# ===========================================================================
 # G3 · engagement-notice fallback renders
 # ===========================================================================
 
@@ -151,37 +120,56 @@ async def test_post_engagement_notice_fallback_rich():
 
 
 # ===========================================================================
-# G5 · sequencer completion post uses the paged sender when injected
+# G5 · the completion summary uses the paged rich sender when the channel has one
 # ===========================================================================
 
-@pytest.mark.asyncio
-async def test_post_completion_notice_uses_send_paged():
-    from channels.output_sequencer import OutputSequencer
-    send_message = AsyncMock(return_value=1)
-    send_paged = AsyncMock(return_value=33)
-    seq = OutputSequencer(
-        engagement_id="e1", topic_id=42,
-        send_message=send_message, edit_message=AsyncMock(),
-        send_paged=send_paged,
+async def _finalize_with_channel(tmp_path, tch):
+    from engagement_registry import EngagementRegistry
+    from tools import _finalize_engagement, init_tools
+
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    rec = await reg.create(
+        kind="executor", role_or_type="configurator", driver="in_casa",
+        task="t", origin={"role": "assistant", "channel": "telegram"},
+        topic_id=42,
     )
-    mid = await seq.post_completion_notice("**summary**")
-    assert mid == 33
-    send_paged.assert_awaited_once_with(42, "**summary**")
-    send_message.assert_not_awaited()
-    assert seq._high_water == 33
+    cm = MagicMock()
+    cm.get.return_value = tch
+    init_tools(
+        channel_manager=cm, bus=MagicMock(notify=AsyncMock()),
+        specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+        trigger_registry=MagicMock(), engagement_registry=reg,
+    )
+    await _finalize_engagement(
+        rec, outcome="completed", text="**summary**",
+        artifacts=[], next_steps=[], driver=None,
+    )
 
 
 @pytest.mark.asyncio
-async def test_post_completion_notice_without_paged_falls_back():
-    from channels.output_sequencer import OutputSequencer
-    send_message = AsyncMock(return_value=11)
-    seq = OutputSequencer(
-        engagement_id="e1", topic_id=42,
-        send_message=send_message, edit_message=AsyncMock(),
-    )
-    mid = await seq.post_completion_notice("summary")
-    assert mid == 11
-    send_message.assert_awaited_once()
+async def test_completion_summary_uses_paged_rich_sender(tmp_path):
+    tch = MagicMock()
+    tch.send_to_topic = AsyncMock(return_value=1)
+    tch.send_response_to_topic = AsyncMock(return_value=33)
+    tch.close_topic = AsyncMock()
+    await _finalize_with_channel(tmp_path, tch)
+    tch.send_response_to_topic.assert_awaited_once()
+    topic, text = tch.send_response_to_topic.await_args.args
+    assert topic == 42
+    assert "**summary**" in text
+    assert not any("**summary**" in str(c.args)
+                   for c in tch.send_to_topic.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_completion_summary_without_paged_sender_falls_back(tmp_path):
+    tch = MagicMock()
+    del tch.send_response_to_topic   # a channel without the paged rich sender
+    tch.send_to_topic = AsyncMock(return_value=11)
+    tch.close_topic = AsyncMock()
+    await _finalize_with_channel(tmp_path, tch)
+    assert any(c.args[0] == 42 and "**summary**" in c.args[1]
+               for c in tch.send_to_topic.await_args_list)
 
 
 # ===========================================================================

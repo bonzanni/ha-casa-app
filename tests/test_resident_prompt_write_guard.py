@@ -43,11 +43,9 @@ from __future__ import annotations
 import asyncio
 import builtins
 import re
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import yaml
 
 GUARD = "resident_prompt_write_guard"
 # The four file-writing primitives, and ONLY those: the guard's whole contract.
@@ -528,77 +526,6 @@ class TestTheGuardIsCodeMandatoryEverywhereCasaBuildsHooks:
             )
 
         assert asyncio.run(run()) == (1, 1, 1, 0)
-
-    def test_the_claude_code_transport_carries_it_on_both_halves(self):
-        """(settings_proxy_entries, resolved_callbacks, http_denials)
-        == (1, 1, 128).
-
-        Each of the first two counts requires the emitted/resolved matcher to
-        ROUTE every file primitive AND NOT route `Bash` — not merely to exist.
-        128 = 4 file primitives x 32 generated spellings for one resident.
-
-        Both halves are required and neither is sufficient:
-        `translate_hooks_to_settings` emits the settings.json entry that makes
-        Claude Code invoke `hook_proxy.sh <policy>`, and
-        `build_policy_callbacks_from_hooks_yaml` is what resolves that policy
-        NAME to a callback server-side. An entry for a policy the resolver does
-        not know resolves to nothing.
-
-        Why the transport is wired at all, given `path_scope`: `path_scope`'s
-        PRESENCE is load-enforced on a claude_code executor, but its
-        `writable:` prefixes are declared by that executor's own hooks.yaml —
-        an executor whose declaration admits `/config/agents` would be refused
-        by nothing else, and the refusal here names the corrective recipe where
-        a scope denial cannot.
-
-        At this file's parent the tuple is (0, 0, 128): both halves still
-        route `Bash`, so neither counts. At the base it is (0, 0, 0).
-        """
-        from drivers.hook_bridge import translate_hooks_to_settings
-        from hooks import build_policy_callbacks_from_hooks_yaml
-
-        pd_hooks = yaml.safe_load(Path(
-            "casa/rootfs/opt/casa/defaults/agents/executors/plugin-developer"
-            "/hooks.yaml").read_text(encoding="utf-8")) or {}
-
-        def _routes_exactly_the_file_tools(matcher) -> bool:
-            return (all(_routes(matcher, p) for p in PRIMITIVES)
-                    and not _routes(matcher, BASH))
-
-        settings = translate_hooks_to_settings(
-            pd_hooks, proxy_script_path="/proxy")
-        settings_proxy_entries = sum(
-            1
-            for entry in settings["hooks"].get("PreToolUse", [])
-            for hook in entry.get("hooks", [])
-            if hook.get("command") == f"/proxy {GUARD}"
-            and _routes_exactly_the_file_tools(entry.get("matcher"))
-        )
-
-        resolved = build_policy_callbacks_from_hooks_yaml(pd_hooks)
-        resolved_matcher = resolved[GUARD][0] if GUARD in resolved else None
-        resolved_callbacks = (
-            1 if GUARD in resolved
-            and _routes_exactly_the_file_tools(resolved_matcher) else 0
-        )
-
-        async def run() -> int:
-            if GUARD not in resolved:
-                return 0
-            _matcher, cb = resolved[GUARD]
-            denied = 0
-            for payload in _calls_for("assistant"):
-                if not _routes(_matcher, payload["tool_name"]):
-                    continue
-                out = await cb(dict(payload), None, {})
-                if out and _decision(out) == "deny":
-                    denied += 1
-            return denied
-
-        assert (settings_proxy_entries, resolved_callbacks,
-                asyncio.run(run())) == (1, 1, PER_RESIDENT_CALLS)
-        assert PER_RESIDENT_CALLS == 128
-
 
 
 class TestTheFileIsReadButNotServed:

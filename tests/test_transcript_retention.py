@@ -3,8 +3,7 @@
 Once every run in it is confirmed, a transcript is deleted
 ``TRANSCRIPT_RETENTION_DAYS`` (30) after its session can no longer resume —
 never fewer: a resident session past its freshness window, an engagement's
-from its durable terminal record (the claude_code workspace keeps its own
-seven-day ``retention_until``). That holds for a transcript no run
+from its durable terminal record. That holds for a transcript no run
 registered in too. Every deleter asks the run-confirmation gate at the
 delete. Real transcript files, real SQLite, the real deleters.
 """
@@ -19,7 +18,6 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-import tools
 from memory import transcript_runs
 from session_registry import SessionRegistry
 from session_registry import freshness_window
@@ -130,29 +128,6 @@ async def test_an_engagement_transcript_lives_its_retention_after_its_terminal_r
     assert not path.exists() and rows(env) == []
 
 
-async def test_a_claude_code_workspace_keeps_its_seven_day_retention_once_gated(
-        env, tmp_path, monkeypatch):
-    from drivers import workspace
-    from test_workspace_sweeper import _write_meta
-
-    root = tmp_path / "engagements"
-    ws = root / uuid.uuid4().hex
-    (ws / ".home" / ".claude" / "projects").mkdir(parents=True)
-    monkeypatch.setattr(tools, "_ENGAGEMENTS_ROOT", str(root))
-    run = transcript_runs.register(env, kind="summary", role="configurator",
-                                   directory=str(ws))
-    _write_meta(ws, status="COMPLETED", retention_iso="2999-01-01T00:00:00Z")
-    await workspace._sweep_workspaces(engagements_root=str(root))
-    assert ws.is_dir()
-    meta = Path(workspace.casa_meta_path(ws.name))
-    meta.write_text(meta.read_text().replace("2999-01-01", "2020-01-01"))
-    await workspace._sweep_workspaces(engagements_root=str(root))
-    assert ws.is_dir()                                  # gated: kept whole
-    transcript_runs.confirm(env, run)
-    await workspace._sweep_workspaces(engagements_root=str(root))
-    assert not ws.exists() and rows(env) == []
-
-
 async def _terminal_engagement(tmp_path, monkeypatch, *, cwd, days_ago):
     from engagement_registry import EngagementRegistry
     from test_engagement_transcript_reaper import _specialists
@@ -261,47 +236,6 @@ async def test_the_retention_variable_is_read_at_each_use(monkeypatch, raw, days
     monkeypatch.setenv(transcript_runs.RETENTION_ENV, raw)
     assert transcript_runs.retention_days() == days
     assert transcript_runs.retention() == timedelta(days=days)
-
-
-async def test_the_workspace_sweep_never_holds_the_event_loop(env, tmp_path):
-    """The sweep's gate, its deletion and its row removal run off the loop:
-    with the store's write lock held for 1.5 s by another connection, a
-    resident turn running beside the sweep finishes inside a second, and
-    the workspace still goes once the lock is released."""
-    import sqlite3
-    import threading
-    from unittest.mock import patch
-
-    from drivers import workspace
-    from test_agent_process import FakeClient, _make_agent
-    from test_memory_capture import _operator_msg
-    from test_workspace_sweeper import _write_meta
-
-    root = tmp_path / "engagements"
-    ws = root / uuid.uuid4().hex
-    ws.mkdir(parents=True)
-    _write_meta(ws, status="COMPLETED", retention_iso="2020-01-01T00:00:00Z")
-    holder = sqlite3.connect(env.path, isolation_level=None,
-                             check_same_thread=False)
-    holder.execute("BEGIN IMMEDIATE")
-    release = threading.Timer(1.5, lambda: holder.execute("ROLLBACK"))
-    release.start()
-    try:
-        agent = _make_agent(tmp_path)
-        FakeClient.reset()
-        loop = asyncio.get_running_loop()
-        started = loop.time()
-        with patch("sdk_client_pool._default_make_client", FakeClient):
-            sweep = asyncio.create_task(
-                workspace._sweep_workspaces(engagements_root=str(root)))
-            await agent._process(_operator_msg("ping", "777"))
-        took = loop.time() - started
-        await asyncio.wait_for(sweep, 10)
-    finally:
-        release.join()
-        holder.close()
-    assert took < 1.0, took
-    assert not ws.exists()
 
 
 async def test_detached_run_writes_never_take_a_turns_thread(env, tmp_path):

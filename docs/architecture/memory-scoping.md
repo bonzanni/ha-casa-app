@@ -75,9 +75,9 @@ the same answer as an id that does not exist, whether it names an object of anot
 or nothing at all.
 
 **An engagement reads at the clearance of the turn that created it.** This needs stating
-because the mechanism is not the obvious one: an engagement's own tool calls arrive over the
-internal socket, which binds the engagement record but no ambient turn origin — so a
-clearance resolved from the ambient origin alone would find nothing and fall through to the
+because the mechanism is not the obvious one: an engagement's own tool calls run bound to the
+engagement record, and where the ambient turn origin they run under carries no route of its
+own, a clearance resolved from that origin alone would find nothing and fall through to the
 channel default, handing an engagement started by a low-clearance sender the operator's
 private tier. The engagement's recorded origin carries the markers its creating turn was
 stamped with, and that is what its reads resolve against: its own recall, the prior-
@@ -102,11 +102,10 @@ the clamp persist in one write, so a crash between them cannot happen), withhold
 record's own launch materials (task, brief, context, world-state, a fresh job's recorded
 launch context and the text of its pending completion, INV-BGJOB-007 — every later render re-derives from the record, and evicting the session
 while the record still carried them would re-import them), tears the live session down, and drops the resume pointer — recording the evicted session on the record in that same write, so the terminal transcript pass (INV-ENG-027) deletes it once the engagement ends. Every
-resume path — the steering turn itself, a system continuation, boot replay — refuses to
-resume while the rebuild is pending and establishes a fresh session at the clamped floor
-instead; while it is pending, the old process's tool calls are refused at both dispatch
-choke points (the internal socket and the in-process fence), so it cannot read or launch
-children carrying its pre-clamp task. A read already in flight when the clamp lands is
+resume path — the steering turn itself, a system continuation — refuses to resume while the
+rebuild is pending and establishes a fresh session at the clamped floor instead; while it is
+pending, the old session's tool calls are refused at the in-process tool fence, so it cannot
+read or launch children carrying its pre-clamp task. A read already in flight when the clamp lands is
 re-filtered at the new clearance after it returns, and a launch caught mid-start aborts
 rather than deliver a prompt rendered from pre-clamp materials.
 
@@ -204,14 +203,14 @@ which on Telegram is private — so this tightens what a *newly* stamped origin 
 does not retroactively downgrade engagements created before the markers existed. The clamp
 also cannot un-share what was already disclosed before a lower-clearance sender arrived.
 
-**INV-MEM-011**: A clearance downgrade durably invalidates the engagement's session context in the same write that lowers the record — until a fresh session is established at the clamped floor, no path resumes the old session and the record's tool calls are refused at both dispatch choke points.
+**INV-MEM-011**: A clearance downgrade durably invalidates the engagement's session context in the same write that lowers the record — until a fresh session is established at the clamped floor, no path resumes the old session and the record's tool calls are refused at the in-process tool fence.
 
 Enforced by the clamp setting the rebuild flag and withholding the record's launch materials
-under one strict persist; by the resume core and boot replay routing a flagged record to a
-fresh-session rebuild instead of a resume; by the internal-socket handler and the in-process
-tool fence refusing a flagged record; by the `in_casa` turn lock, under which a waiting turn
-re-checks the flag and the live session before it is accepted; and by the post-await re-filter and the drivers'
-last-instant launch gates, which close the calls already in flight when the clamp lands.
+under one strict persist; by the resume core routing a flagged record to a fresh-session
+rebuild instead of a resume; by the in-process tool fence refusing a flagged record; by the
+`in_casa` turn lock, under which a waiting turn re-checks the flag and the live session
+before it is accepted; and by the post-await re-filter and the driver's last-instant launch
+gate, which close the calls already in flight when the clamp lands.
 
 What it does not cover: output of a turn already running at clamp time, content already
 posted to the (group-readable) topic, and a pre-clamp nested child's own record — the
@@ -221,14 +220,10 @@ pending, its output being in-flight-turn residual.
 **INV-MEM-015**: The lessons block injected into an executor's prompt at launch carries only summaries stamped with that launch's own procedural epoch; a summary is stamped at finalize with the epoch persisted on its engagement's record at create, never with the finalize-time definition.
 
 The epoch is a digest over the procedural bytes *as read at launch* — the role-artifact
-checksum, the resolved prompt template's path and just-read bytes, every doctrine file,
-and (for workspace-driven executors) the *source* workspace instruction file,
-pre-interpolation, whichever of the template or plain-copy forms will be consumed.
+checksum, the resolved prompt template's path and just-read bytes, and every doctrine file.
 Launch-specific substitutions are never inputs: rendered bytes embed the task and the
-served memory itself, which would make every epoch unique and the filter circular.
-Workspace provisioning re-reads those sources, so after provisioning the driver recomputes
-the digest and aborts the launch on a mismatch rather than stamp an engagement with an
-epoch it did not run under. The archive is read from the memory store's
+served memory itself, which would make every epoch unique and the filter circular. The
+archive is read from the memory store's
 `engagement_summaries`: the newest summaries of the executor's own type whose stored epoch
 equals the launch's, at a tier the originating turn's clearance can read, within the
 executor's budget. A record with no epoch matches nothing — a lesson that cannot prove it
@@ -237,12 +232,9 @@ injected block subordinates itself to the doctrine files in as many words.
 
 What it does not cover: `query_engager` is deliberately unfiltered (an answer to "what
 happened last time" is not injected procedure); a same-epoch lesson that is merely wrong
-survives, tempered only by the subordination line; epochs never expire lessons — a
+survives, tempered only by the subordination line; and epochs never expire lessons — a
 doctrine rollback to byte-identical state resurrects that epoch's lessons, by
-construction; and the recheck reads the current sources, not the bytes provisioning
-consumed, so an edit that lands *and reverts* inside the provisioning window can still
-mislabel — accepted: it needs two opposing edits within milliseconds, and closing it
-would thread an immutable byte snapshot through the whole provisioning path.
+construction.
 
 ## Failure behavior
 
@@ -266,9 +258,8 @@ by default. Write access is a separate, deliberate addition
 ([`architecture/memory-capture.md`](memory-capture.md)), and the retention list is a third
 ([`architecture/memory-lifecycle.md`](memory-lifecycle.md)).
 
-**One archive read per launch.** A memory-enabled launch reads the archive once — into the
-first turn for an in-process executor, into the workspace instructions for one with a
-workspace, never both, so an executor is never handed two accounts of what happened last
+**One archive read per launch.** A memory-enabled launch reads the archive once, into the
+executor's first turn, so an executor is never handed two accounts of what happened last
 time. Nothing after the launch reads it again ([`engagements.md`](engagements.md)).
 
 ## Source & test map
@@ -293,10 +284,7 @@ time. Nothing after the launch reads it again ([`engagements.md`](engagements.md
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.clear_context_rebuild_pending`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.handle_update`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._resume_and_ready`
-- `casa/rootfs/opt/casa/internal_handlers.py::_make_internal_tools_call_handler.handler`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.start`
-- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.start`
-- `casa/rootfs/opt/casa/casa_core.py::replay_undergoing_engagements`
 
 **Tests**
 - `tests/test_sensitivity.py::test_readable_tiers_is_clearance_and_below`

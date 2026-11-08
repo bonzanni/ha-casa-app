@@ -124,15 +124,13 @@ def transcript_cwd(rec) -> str | None:
     folder is resolved from, and the directory its runs and its finalize
     summary are registered under. The cwd persisted at the engagement's first
     open wins over anything derived from the current configuration, which a
-    reload can change. A claude_code engagement's is its workspace. ``None``
-    for an uninstalled specialist with no persisted cwd."""
+    reload can change. ``None`` for an uninstalled specialist with no
+    persisted cwd."""
     import tools
 
     launched = (getattr(rec, "origin", None) or {}).get(LAUNCH_CWD_KEY)
     if isinstance(launched, str) and launched:
         return launched
-    if getattr(rec, "driver", None) == "claude_code":
-        return os.path.join(tools._ENGAGEMENTS_ROOT, rec.id)
     if rec.kind == "plugin":
         return str(tools.plugin_job_cwd(rec.id))
     if rec.kind == "executor":
@@ -323,7 +321,7 @@ async def reap_engagement_transcripts(registry, *,
         targets = []
         for rec in registry.terminal_records():
             if rec.driver != "in_casa":
-                continue        # claude_code: its workspace holds the transcript
+                continue        # only in_casa sessions leave CLI transcripts here
             try:
                 target = _target_for(rec, counts)
             except Exception:  # noqa: BLE001 — one record never stops the pass

@@ -22,9 +22,8 @@ def test_oneshot_service_files_exist_with_exact_contents():
 
 
 def test_svc_deps_and_bundle_membership():
-    # svc-casa + svc-casa-mcp start AFTER the plugin store; enrolled in bundle.
+    # svc-casa starts AFTER the plugin store; enrolled in bundle.
     assert (_S6 / "svc-casa" / "dependencies.d" / "init-plugin-store").is_file()
-    assert (_S6 / "svc-casa-mcp" / "dependencies.d" / "init-plugin-store").is_file()
     assert (_ROOT / "etc" / "s6-overlay" / "user-bundles.d" / "user"
             / "contents.d" / "init-plugin-store").is_file()
 

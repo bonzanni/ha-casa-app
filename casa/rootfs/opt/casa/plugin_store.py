@@ -262,7 +262,7 @@ def parse_mcp_servers(mcp_json_path: Path) -> tuple[dict, bool]:
 
     Returns ``(valid_servers, malformed)``. Handles BOTH the project-style
     ``{"mcpServers": {...}}`` wrapper AND the top-level form real plugins use
-    (e.g. context7's ``{"context7": {"command": "npx", ...}}`` — no wrapper). A
+    (e.g. ``{"weather": {"command": "npx", ...}}`` — no wrapper). A
     server is VALID only if its config declares a non-empty-string ``command``
     OR ``url`` (the load-bearing launch fields); ``args``/``env``/``type`` alone
     do NOT make a runnable server. ``malformed`` is True when the file is PRESENT
@@ -405,10 +405,8 @@ def normalize_cli_provided_refs(text: str) -> str:
     their bare spelling. SHARED, not duplicated: every place that reasons
     about artifact containment by testing for the exact ``${CLAUDE_PLUGIN_
     ROOT}`` prefix must apply this first, or the defaulted spelling walks
-    past it. Two such places exist — this module's ``mcp_command_verdicts``
-    and the pre-push launch-ref guard in ``hooks._scan_mcp_launch_refs`` —
-    and the second was found only after the first was fixed (r2, Terra), so
-    they read from ONE definition rather than each keeping a copy."""
+    past it. This module's ``mcp_command_verdicts`` is that place today; a
+    second reader takes this one definition rather than keeping a copy."""
     return _CLI_PROVIDED_DEFAULTED_RE.sub(r"${\1}", text)
 
 
@@ -1534,7 +1532,6 @@ _MAX_ENV_DECLARATIONS = 32
 CASA_OWNED_ENV_OPTIONS: dict[str, str] = {
     "OP_SERVICE_ACCOUNT_TOKEN": "onepassword_service_account_token",
     "ONEPASSWORD_DEFAULT_VAULT": "onepassword_default_vault",
-    "CONTEXT7_API_KEY": "context7_api_key",
 }
 
 
@@ -2247,11 +2244,11 @@ def _freeze_artifact_files(root: Path) -> None:
 
 def _ensure_parent_chain_traversable(dest: Path, store_root: Path) -> None:
     """Containment stage 2, Task 11: `_freeze_artifact_files` makes the
-    artifact directory ITSELF world-traversable, but a dropped-uid engagement
-    process reaching a `--plugin-dir` path must also be able to traverse
+    artifact directory ITSELF world-traversable, but a non-root process
+    reaching an artifact path (written for the dropped-uid engagements of the
+    since-removed Claude Code driver) must also be able to traverse
     every directory ABOVE it — the plugin-store root and the plugin-name
-    directory in between — neither of which the preflight's per-artifact
-    mode check (`claude_code_driver._preflight_uid_drop`) inspects. Grants
+    directory in between. Grants
     o+x (traversal only, no listing, no write — `0o001`) on every directory
     from *store_root* down to (but not including) *dest* itself. Scoped
     strictly to the plugin-store tree: a *dest* that does not resolve under

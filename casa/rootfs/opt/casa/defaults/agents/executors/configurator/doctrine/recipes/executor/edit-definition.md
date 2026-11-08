@@ -2,8 +2,7 @@
 
 Use for any structural change to an executor's definition file —
 `permission_mode`, `tools.allowed`, `model`, `mcp_server_names`,
-`idle_reminder_days`, `extra_dirs`, `mirror_chat_to_topic`,
-`description`, etc.
+`idle_reminder_days`, `description`, etc.
 
 ## Steps
 
@@ -21,11 +20,8 @@ Use for any structural change to an executor's definition file —
 - Do not edit `type:` — the executor's identity is its directory
   name AND `type:` field; they must match.
 - Do not flip `schema_version:` — it's pinned at `1`.
-- Do not edit `driver:` from `in_casa` to `claude_code` (or vice
-  versa) without also reviewing the executor's `prompt.md` and
-  `hooks.yaml` (read-only for you — hook-policy changes are an
-  operator/image action) — the two drivers have different MCP / tool
-  surface conventions.
+- Do not edit `driver:` — `in_casa` is the only driver the schema
+  accepts.
 
 ## Per-file isolation (v0.37.1 B-1b)
 

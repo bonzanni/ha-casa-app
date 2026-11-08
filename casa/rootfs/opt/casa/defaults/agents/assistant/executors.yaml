@@ -29,32 +29,11 @@ executors:
       envelope described below — do not hand-construct a bare task string. The
       configurator opens a dedicated Telegram topic, commits changes, and reloads Casa.
       DISTINCTION: to INSTALL an EXISTING repository component (a published specialist, plugin, or
-      persona) → configurator (this card); to CREATE/BUILD a NEW plugin from scratch →
-      plugin-developer (see that card). Do NOT invoke when the user asks a read-only/factual
+      persona) → configurator (this card); Casa does not build a NEW plugin from scratch, so
+      say so rather than engaging anything for it. Do NOT invoke when the user asks a read-only/factual
       question about current config (answer directly). Exception: listing the installed
       personas is a configurator job too — you hold no persona tool and nothing that
       enumerates them — so engage the configurator for that read-only request as well.
-
-      When the user asks for a build/change, use the `brief` envelope on `engage_executor`.
-      Put the user's PROCESS instructions — how to work: 'discuss with me first', 'use the
-      superpowers workflow', 'check before X' — into `brief.process_requirements` VERBATIM;
-      NEVER paraphrase a process instruction into a feature requirement. VERBATIM means quote the user's own words as the list entry — do not
-      reword, shorten, or change person (if the user says 'run the full test suite
-      before every commit', the entry is 'run the full test suite before every
-      commit', not 'ensure adequate testing'). Set
-      `interaction_required: true` whenever the user asks for discussion/convergence/review.
-      Relay the executor's completion, which must account for each acceptance criterion.
-  - executor_type: plugin-developer
-    purpose: "Author new Claude Code plugins in dedicated per-plugin GitHub repos."
-    when: |
-      User asks to "build a plugin" / "create a plugin for X" / "add a
-      capability that requires a plugin." Engage_executor(executor_type=
-      'plugin-developer', ...) using the `brief` envelope described below — do
-      not hand-construct a bare task string. Typical task shape:
-      "Build <plugin-purpose> for <target agents>." Mode is always interactive.
-      The plugin-developer authors + pushes a dedicated GitHub repo and emits
-      completion with artifacts + next_steps; relay to user, then on confirm
-      engage_executor(executor_type='configurator') to install.
 
       When the user asks for a build/change, use the `brief` envelope on `engage_executor`.
       Put the user's PROCESS instructions — how to work: 'discuss with me first', 'use the

@@ -41,15 +41,12 @@ the persona pack and the role artifact's own response block.
 What it does not cover. **Reads by the agent**: it may still open the file, and should, to
 explain why changing it is not the answer — a claim about what the file's bytes reach, not
 about who may look at them. **The shell**: the refusal's Bash half is a backstop rather than
-a boundary, recognising the accidental spelling and not every possible one. **The
-`claude_code` transport**, whose resolver deliberately carries the managed-state and
-prompt-file guards and not this one: this guard's Bash half matches a bare basename anywhere
-in a command, so an executor writing its own `response_shape.yaml` under an engagement
-directory would start being refused. **The specialist tier**, for the same reason on the
-delegated builder, and because the specialist subtree is denied by the managed-state guard
-instead, in its own words.
+a boundary, recognising the accidental spelling and not every possible one. **The specialist
+tier**: this guard's Bash half matches a bare basename anywhere in a command, so on the
+delegated builder it would refuse a legitimate write of a file of that name elsewhere, and
+the specialist subtree is denied by the managed-state guard instead, in its own words.
 
-**INV-PERS-012**: A persona-bound resident's `prompts/system.md` is read only into the composed fallback prompt and is not served when its compiled bundle is active; and an agent's write to a resident's copy through `Write`, `Edit`, `MultiEdit` or `NotebookEdit` is refused on the executor, resident, delegated-resident and claude_code hook paths.
+**INV-PERS-012**: A persona-bound resident's `prompts/system.md` is read only into the composed fallback prompt and is not served when its compiled bundle is active; and an agent's write to a resident's copy through `Write`, `Edit`, `MultiEdit` or `NotebookEdit` is refused on the executor, resident and delegated-resident hook paths.
 
 This is INV-PERS-017 one file over, and the file operators actually reach for.
 `character.yaml` points at it, the loader requires it to exist and opens it on
@@ -73,11 +70,9 @@ the trigger-file and response-shape guards still do, and was measured wrong in
 both directions — it refused reads the invariant promises to allow and missed
 writes — because what a shell command writes to is not decidable from its text.
 So a shell-capable agent can still make the edit. It is inert for a bundle-bound
-resident; no shipped resident holds `Bash` and the configurator has none, so the
-one shipped path is the plugin-developer's shell, and whether that tree gets an
-execution boundary is a separate decision from this guard. Nor the claude_code
-transport's fail-open when the hook resolver is unreachable, which is a property
-of that transport that the managed-state guard shares. Actual specialist
+resident; no shipped resident holds `Bash` and the configurator has none, so no
+shipped agent takes that path, and giving an operator-defined shell agent an
+execution boundary is a separate decision from this guard. Actual specialist
 sessions are not claimed: a specialist's copy is materialized output under
 managed state, which the managed-state guard denies in its own words.
 
@@ -97,7 +92,7 @@ The two guards differ here. The response-shape guard keeps a coarse shell backst
 command that names `response_shape.yaml` and is not provably read-only is refused — it
 recognises the accidental spelling, not every one. The prompt-file guard classifies no shell
 command at all, so a shell-capable agent can still edit `prompts/system.md` — inert for a
-bundle-bound resident, and a separate decision for the plugin-developer's tree.
+bundle-bound resident, and no shipped agent holds a shell.
 
 ## Extension points
 

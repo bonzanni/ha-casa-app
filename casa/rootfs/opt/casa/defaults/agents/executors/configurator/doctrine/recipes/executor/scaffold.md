@@ -10,7 +10,7 @@ break load.
 
 1. Explain the scope — executor types ship from the framework
    (`/opt/casa/defaults/agents/executors/<type>/`). The default set
-   today: configurator (you), plugin-developer (Plan 4b).
+   today: configurator (you).
 2. Check if the user's actual need is a **specialist** (Tier 2,
    role-keyed helper). Usually it is — see
    `recipes/specialist/install.md`.
@@ -29,7 +29,7 @@ type: <executor_type>           # lowercase, [a-z][a-z0-9_-]*
 description: |
   At-least-twenty-character description of what this executor does.
 model: sonnet                   # alias resolved at boot
-driver: in_casa                 # or claude_code (s6-rc supervised CLI)
+driver: in_casa                 # the only driver
 enabled: true
 tools:
   allowed: [Read, Write, Bash, ...]

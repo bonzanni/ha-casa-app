@@ -14,19 +14,18 @@ installs any system requirements, assigns it to targets, and reloads + verifies
    repos follow `casa-plugin-<name>` (repo `casa-plugin-gmail` → plugin
    `gmail`; repo `casa-plugin-todo-list` → plugin `todo-list`),
    and a repo may host the plugin in a `subdir`. Never pass the repo
-   basename as `name`. Sources of truth, in order: the plugin-developer
-   completion handoff (it states the plugin name), or the repo's
-   `plugin.json`. `plugin_add` hard-rejects a wrong name with
+   basename as `name`. The source of truth is the repo's `plugin.json`
+   (or a name the operator states). `plugin_add` hard-rejects a wrong name with
    `name_mismatch` + the canonical `manifest_name` — retry the ADD with
    that exact name, don't guess again. (On `plugin_update` a
    `name_mismatch` means the NEW manifest renamed the plugin — that is
    never a retry: a rename is an explicit migration, `plugin_add` under
    the new name + `plugin_remove` of the old, operator-confirmed.)
 2. **Source repo?** `<owner>/<repo>` (or a `https://github.com/<owner>/<repo>`
-   URL). For a plugin-developer build, take it from that engagement's topic.
-3. **Pin (ref)?** The release tag (`vX.Y.Z`) for a plugin-developer build —
-   take it, plus the `revision` sha, verbatim from that engagement's
-   completion handoff. When the operator asks for the latest version, or
+   URL).
+3. **Pin (ref)?** A release tag (`vX.Y.Z`) the operator names — take it
+   verbatim, plus the commit sha it must point at if they give one. When the
+   operator asks for the latest version, or
    names no version at all, pass `ref="latest"`: `plugin_add` resolves it
    server-side to the newest published release tag (GitHub's latest release,
    else the highest `v<semver>` tag), stores that tag as the entry's ref, and
@@ -46,9 +45,10 @@ installs any system requirements, assigns it to targets, and reloads + verifies
 ## Do it
 
 Call `plugin_add(name, repo, ref, subdir?, targets, expected_revision?)`.
-For a plugin-developer handoff, ALWAYS pass `expected_revision` = the
-producer's freshly-built `revision` — a tag that moved since the build
-aborts hard (`revision_mismatch`) before anything is installed or activated.
+When the operator gives the commit sha a tag must point at (for example for
+a build they just published), ALWAYS pass it as `expected_revision` — a tag
+that moved since aborts hard (`revision_mismatch`) before anything is
+installed or activated.
 There is **no version argument** — the version is derived from the fetched
 `plugin.json` (a caller-supplied version is exactly the stale-code bug this
 architecture removes).
@@ -182,17 +182,17 @@ cannot see the external side, and announcing a fault that does not exist makes
 the operator authorize something that needed no authorizing, which costs the
 same trust as missing a real one. Do not over-read the tool's result either:
 the authoring contract requires idempotent provisioning and does NOT require
-the tool to test what it provisioned (see the plugin-developer `ingress.md`).
+the tool to test what it provisioned.
 
 Do not hunt for a tool name. A plugin whose setup tool is named only in a
-producer handoff or a README — with no `casa.setupTool` in the manifest — has
+message or a README — with no `casa.setupTool` in the manifest — has
 **no supported automatic path** before v1.0. Say plainly in `text` that the
 plugin declares no setup hook, so its provisioning step (if any) is unrun;
 never guess a name and never invent a hand-back to compensate.
 
 Setup tools in this contract are **argument-free and idempotent** (that is the
-plugin-developer authoring doctrine). Wiring is global to the plugin, so Casa
-runs it ONCE, not per target.
+plugin authoring contract). Wiring is global to the plugin, so Casa runs it
+ONCE, not per target.
 
 A plugin registry entry a specialist's install/upgrade OWNS (registry name
 `<slug>.<name>`) can never be managed through this recipe or `remove.md` /

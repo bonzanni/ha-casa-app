@@ -1,7 +1,7 @@
 # Enable an executor
 
-Use when the operator wants to switch a bundled-but-disabled
-executor (e.g. `plugin-developer`) to enabled.
+Use when the operator wants to switch a disabled executor to
+enabled.
 
 ## Steps
 

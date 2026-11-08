@@ -8,8 +8,7 @@ import textwrap
 
 # The shipped executor types pin the full model id in their real role
 # artifact; a definition.yaml for them must resolve to the same id.
-_SHIPPED_EXECUTOR_MODEL = {"configurator": "claude-sonnet-5",
-                           "plugin-developer": "claude-sonnet-5"}
+_SHIPPED_EXECUTOR_MODEL = {"configurator": "claude-sonnet-5"}
 
 
 def _write_exec(base, name, defn_yaml=None, prompt="Hi."):
@@ -41,9 +40,9 @@ def _seed_executor_role_artifact(roles_dir, type_name, allowed=(),
     """Write a minimal schema-valid canonical role artifact for an
     executor type under a test-owned roles_dir (Personality Phase A,
     Task 5 — load_all_executors now requires one, cross-validated on
-    id/kind/slot, per defaults/roles/executor/<type>/). Real shipped
-    types ("configurator", "plugin-developer") already have real
-    artifacts under the production defaults/roles/ tree and don't need
+    id/kind/slot, per defaults/roles/executor/<type>/). The real shipped
+    type ("configurator") already has a real
+    artifact under the production defaults/roles/ tree and don't need
     this; synthetic test-only types (e.g. "myx") do. ``allowed`` seeds
     the role's tools.allowed — the capability CEILING (round-5).
     ``model_block`` seeds the role's model declaration — the model AUTHORITY
@@ -157,7 +156,7 @@ class TestHooksFileValidation:
     safety policy — and a declared-but-absent pointer silently dropped hooks
     entirely."""
 
-    def _seed(self, tmp_path, extra_defn="", hooks=None, driver="claude_code"):
+    def _seed(self, tmp_path, extra_defn="", hooks=None):
         ex_dir = tmp_path / "executors" / "myx"
         ex_dir.mkdir(parents=True)
         (ex_dir / "definition.yaml").write_text(
@@ -165,7 +164,7 @@ class TestHooksFileValidation:
             "type: myx\n"
             "description: A test executor with a minimum of twenty characters.\n"
             "model: sonnet\n"
-            f"driver: {driver}\n" + extra_defn
+            "driver: in_casa\n" + extra_defn
         )
         (ex_dir / "prompt.md").write_text("hi")
         if hooks is not None:
@@ -221,25 +220,20 @@ class TestHooksFileValidation:
         assert out["myx"].hooks_path.endswith("hooks.yaml")
 
     def test_absent_default_hooks_yaml_stays_optional(self, tmp_path):
-        """Terra r1-P1's optionality is about the POINTER's own default, not
-        the containment floor — Task 3 (#360) makes an absent hooks file a
-        LoadError for ``driver: claude_code`` specifically (an executor with
-        no declared floor policies), so this stays in_casa to keep testing
-        the pointer behaviour it names."""
+        """Terra r1-P1: the POINTER's own default — an executor with no
+        hooks.yaml loads, with no hooks path."""
         from agent_loader import load_all_executors
-        roles_dir = self._seed(tmp_path, driver="in_casa")
+        roles_dir = self._seed(tmp_path)
         out, failed = load_all_executors(str(tmp_path), roles_dir=roles_dir)
         assert failed == []
         assert out["myx"].hooks_path is None
 
     def test_explicit_default_hooks_file_absent_stays_optional(self, tmp_path):
         """Terra r1-P1: ``hooks_file: hooks.yaml`` spelled out is the default,
-        not a stricter declaration — absence stays optional. Task 3 (#360):
-        in_casa here for the same reason as the sibling test above — the
-        containment floor is a claude_code-only requirement."""
+        not a stricter declaration — absence stays optional."""
         from agent_loader import load_all_executors
         roles_dir = self._seed(
-            tmp_path, extra_defn="hooks_file: hooks.yaml\n", driver="in_casa",
+            tmp_path, extra_defn="hooks_file: hooks.yaml\n",
         )
         out, failed = load_all_executors(str(tmp_path), roles_dir=roles_dir)
         assert failed == []
@@ -273,8 +267,6 @@ class TestHooksFileValidation:
         import tools as tools_mod
         from agent_loader import load_all_executors
         monkeypatch.setenv("CASA_TEST_MAX_FILES", "5")
-        # Task 3 (#360): in_casa — the containment floor is claude_code-only,
-        # and this test's own docstring names the in_casa options builder.
         roles_dir = self._seed(
             tmp_path,
             hooks=(
@@ -283,7 +275,6 @@ class TestHooksFileValidation:
                 "  - policy: commit_size_guard\n"
                 "    max_files: ${CASA_TEST_MAX_FILES}\n"
             ),
-            driver="in_casa",
         )
         out, failed = load_all_executors(str(tmp_path), roles_dir=roles_dir)
         assert failed == []
@@ -299,8 +290,6 @@ class TestHooksFileValidation:
         entry after validation had passed."""
         from agent_loader import load_all_executors, read_hooks_document
         monkeypatch.setenv("CASA_TEST_MAX_FILES", "5")
-        # Task 3 (#360): in_casa — the containment floor is claude_code-only
-        # and does not bear on this test's env-substitution concern.
         roles_dir = self._seed(
             tmp_path,
             hooks=(
@@ -309,7 +298,6 @@ class TestHooksFileValidation:
                 "  - policy: commit_size_guard\n"
                 "    max_files: ${CASA_TEST_MAX_FILES}\n"
             ),
-            driver="in_casa",
         )
         out, failed = load_all_executors(str(tmp_path), roles_dir=roles_dir)
         assert failed == []
@@ -317,74 +305,15 @@ class TestHooksFileValidation:
         assert data["pre_tool_use"][0]["max_files"] == 5
 
 
-class TestContainmentFloorSnapshot:
+class TestHooksDocumentSnapshot:
     """Task 3 (#360): ExecutorDefinition.hooks_document snapshots the
-    load-time-validated parsed hooks doc for EVERY executor, and a
-    ``driver: claude_code`` executor must DECLARE the containment floor
-    (block_dangerous_bash + path_scope) itself or fail to load."""
-
-    def _seed_claude_code(self, tmp_path, hooks=None):
-        ex_dir = tmp_path / "executors" / "myx"
-        ex_dir.mkdir(parents=True)
-        (ex_dir / "definition.yaml").write_text(
-            "schema_version: 1\n"
-            "type: myx\n"
-            "description: A test executor with a minimum of twenty characters.\n"
-            "model: sonnet\n"
-            "driver: claude_code\n"
-        )
-        (ex_dir / "prompt.md").write_text("hi")
-        if hooks is not None:
-            (ex_dir / "hooks.yaml").write_text(hooks)
-        roles_dir = tmp_path / "roles"
-        _seed_executor_role_artifact(str(roles_dir), "myx")
-        return str(roles_dir)
-
-    def test_claude_code_empty_pre_tool_use_fails_closed_naming_missing_policy(
-        self, tmp_path,
-    ):
-        from agent_loader import load_all_executors
-        roles_dir = self._seed_claude_code(
-            tmp_path, hooks="schema_version: 1\npre_tool_use: []\n",
-        )
-        out, failed = load_all_executors(str(tmp_path), roles_dir=roles_dir)
-        assert out == {}
-        assert len(failed) == 1 and failed[0][0] == "myx"
-        message = failed[0][1]
-        assert "block_dangerous_bash" in message
-        assert "path_scope" in message
-
-    def test_claude_code_no_hooks_file_fails_closed(self, tmp_path):
-        from agent_loader import load_all_executors
-        roles_dir = self._seed_claude_code(tmp_path, hooks=None)
-        out, failed = load_all_executors(str(tmp_path), roles_dir=roles_dir)
-        assert out == {}
-        assert len(failed) == 1 and failed[0][0] == "myx"
-
-    def test_claude_code_full_floor_loads_with_snapshot(self, tmp_path):
-        from agent_loader import load_all_executors
-        hooks_yaml = (
-            "schema_version: 1\n"
-            "pre_tool_use:\n"
-            "  - policy: block_dangerous_bash\n"
-            "  - policy: path_scope\n"
-            "    writable: [/data/engagements/]\n"
-            "    readable: [/data/engagements/]\n"
-        )
-        roles_dir = self._seed_claude_code(tmp_path, hooks=hooks_yaml)
-        out, failed = load_all_executors(str(tmp_path), roles_dir=roles_dir)
-        assert failed == []
-        assert "myx" in out
-        import yaml
-        expected = yaml.safe_load(hooks_yaml)
-        assert out["myx"].hooks_document["pre_tool_use"] == expected["pre_tool_use"]
+    load-time-validated parsed hooks doc for every executor."""
 
     def test_in_casa_configurator_snapshot_is_declared_not_empty(self, tmp_path):
         """REVISION 3b (Sol r3 plan:171/179): an in_casa executor's snapshot
         must be its REAL declared document, never {} — {} would let
         resolve_hooks({}) resynthesize the wider default /config-wide
-        path_scope downstream, reopening the in_casa hole. Floor rejection
-        must NOT apply to in_casa."""
+        path_scope downstream, reopening the in_casa hole."""
         from pathlib import Path
         import yaml
         from agent_loader import load_all_executors
@@ -427,7 +356,7 @@ class TestGateHooksPointerParity:
             "type: myx\n"
             "description: A test executor with a minimum of twenty characters.\n"
             "model: sonnet\n"
-            "driver: claude_code\n" + extra_defn
+            "driver: in_casa\n" + extra_defn
         )
         (exec_dir / "prompt.md").write_text("hi")
         if custom is not None:
@@ -515,8 +444,9 @@ class TestGateHooksPointerParity:
         assert not any("hooks" in e for e in errors)
 
 
-class TestExecutorDefinitionPlan4aFields:
-    def test_populates_plan4a_fields_with_defaults(self, tmp_path):
+class TestExecutorDefinitionDefaults:
+    def test_a_minimal_definition_loads_with_its_role_artifact(self, tmp_path):
+        """A minimal definition.yaml loads with the role artifact attached."""
         from agent_loader import load_all_executors
 
         ex_dir = tmp_path / "executors" / "myx"
@@ -526,9 +456,6 @@ class TestExecutorDefinitionPlan4aFields:
             "type: myx\n"
             "description: A test executor with a minimum of twenty characters.\n"
             "model: sonnet\n"
-            # Task 3 (#360): in_casa — these fields are driver-independent
-            # and no hooks.yaml is seeded here, which the claude_code
-            # containment floor would now reject.
             "driver: in_casa\n"
         )
         (ex_dir / "prompt.md").write_text("hi")
@@ -538,60 +465,11 @@ class TestExecutorDefinitionPlan4aFields:
         result, _failed = load_all_executors(str(tmp_path), roles_dir=str(roles_dir))
         defn = result["myx"]
 
-        assert defn.extra_dirs == []
-        assert defn.mirror_chat_to_topic is True
-        assert defn.plugins_dir == ""
+        assert defn.driver == "in_casa"
+        assert defn.hooks_path is None
+        assert defn.hooks_document == {}
         assert defn.role_artifact is not None
         assert defn.role_artifact.role["id"] == "executor:myx"
-
-    def test_reads_plan4a_fields_from_yaml(self, tmp_path):
-        from agent_loader import load_all_executors
-
-        ex_dir = tmp_path / "executors" / "myx"
-        ex_dir.mkdir(parents=True)
-        (ex_dir / "definition.yaml").write_text(
-            "schema_version: 1\n"
-            "type: myx\n"
-            "description: A test executor with a minimum of twenty characters.\n"
-            "model: sonnet\n"
-            "driver: in_casa\n"  # Task 3 (#360): no hooks.yaml seeded here
-            "extra_dirs:\n"
-            "  - /data/casa-plugins-repo\n"
-            "mirror_chat_to_topic: false\n"
-        )
-        (ex_dir / "prompt.md").write_text("hi")
-        roles_dir = tmp_path / "roles"
-        _seed_executor_role_artifact(str(roles_dir), "myx")
-
-        loaded, _failed = load_all_executors(str(tmp_path), roles_dir=str(roles_dir))
-        defn = loaded["myx"]
-
-        assert defn.extra_dirs == ["/data/casa-plugins-repo"]
-        assert defn.mirror_chat_to_topic is False
-
-    def test_plugins_dir_resolves_when_plugins_subdir_exists(self, tmp_path):
-        from agent_loader import load_all_executors
-
-        ex_dir = tmp_path / "executors" / "myx"
-        ex_dir.mkdir(parents=True)
-        (ex_dir / "definition.yaml").write_text(
-            "schema_version: 1\n"
-            "type: myx\n"
-            "description: A test executor with a minimum of twenty characters.\n"
-            "model: sonnet\n"
-            "driver: in_casa\n"  # Task 3 (#360): no hooks.yaml seeded here
-        )
-        (ex_dir / "prompt.md").write_text("hi")
-        (ex_dir / "plugins").mkdir()        # the positive-path trigger
-        roles_dir = tmp_path / "roles"
-        _seed_executor_role_artifact(str(roles_dir), "myx")
-
-        loaded, _failed = load_all_executors(str(tmp_path), roles_dir=str(roles_dir))
-        defn = loaded["myx"]
-
-        # plugins_dir resolves to the absolute plugins/ path inside the executor dir.
-        expected = str(ex_dir / "plugins")
-        assert defn.plugins_dir == expected
 
 
 class TestExecutorRoleArtifact:
@@ -757,8 +635,7 @@ class TestRoleCeilingClamp:
     def test_built_options_do_not_contain_escalated_tool(self, tmp_path):
         """(a, end-to-end) the clamped list is what reaches
         ClaudeAgentOptions.allowed_tools via tools._build_executor_options
-        (the in_casa builder; the claude_code path consumes the same
-        defn.tools_allowed via drivers.workspace._build_cc_permissions)."""
+        (the executor options builder)."""
         import tools as tools_mod
         from agent_loader import load_all_executors
         base = tmp_path / "executors"
@@ -793,8 +670,8 @@ class TestRoleCeilingClamp:
 
     def test_shipped_files_clamp_is_noop(self, caplog):
         """(d) shipped parity: the real definition.yaml and role.yaml lists
-        are equal for both executors, so the clamp changes nothing and logs
-        no drop."""
+        are equal for the shipped executor, so the clamp changes nothing and
+        logs no drop."""
         import logging
         from pathlib import Path
         import yaml
@@ -807,16 +684,13 @@ class TestRoleCeilingClamp:
         with caplog.at_level(logging.ERROR):
             out, failed = load_all_executors(str(agents_base))
         assert failed == []
-        for t in ("configurator", "plugin-developer"):
+        for t in ("configurator",):
             declared = yaml.safe_load(
                 (agents_base / "executors" / t / "definition.yaml")
                 .read_text(encoding="utf-8"))["tools"]["allowed"]
             assert out[t].tools_allowed == list(declared), t
-        # Round-6 P0-2: shipped modes are within their role ceilings
-        # (plugin-developer legitimately ships "auto" — declared in BOTH
-        # its definition.yaml and its image-owned role.yaml).
+        # Round-6 P0-2: shipped modes are within their role ceilings.
         assert out["configurator"].permission_mode == "acceptEdits"
-        assert out["plugin-developer"].permission_mode == "auto"
         assert not any(
             "beyond its role ceiling" in r.getMessage()
             or "permission_mode" in r.getMessage()
@@ -951,7 +825,7 @@ class TestExecutorDisallowedMerge:
         assert {"Agent", "Task", "Bash"} <= set(opts.disallowed_tools)
 
     def test_bash_not_denied_when_legitimately_allowed(self, tmp_path):
-        """plugin-developer-shaped executor (Bash within the role ceiling):
+        """An executor with Bash within its role ceiling:
         Agent/Task still denied, Bash NOT (it is a legitimate grant)."""
         import tools as tools_mod
         defn = self._load_myx(tmp_path, "[Read, Bash]", ["Read", "Bash"])
@@ -960,18 +834,6 @@ class TestExecutorDisallowedMerge:
         assert {"Agent", "Task"} <= set(opts.disallowed_tools)
         assert "Bash" not in opts.disallowed_tools
         assert "Bash" in opts.allowed_tools
-
-    def test_cc_permissions_deny_parity(self, tmp_path):
-        """claude_code-driver parity: _build_cc_permissions emits the same
-        code-mandatory deny set into settings.json permissions."""
-        from drivers.workspace import _build_cc_permissions
-        defn = self._load_myx(tmp_path, "[Read]", ["Read"])
-        perms = _build_cc_permissions(defn)
-        assert {"Agent", "Task", "Bash"} <= set(perms["deny"])
-        defn_bash = self._load_myx(tmp_path / "b", "[Read, Bash]", ["Read", "Bash"])
-        perms_bash = _build_cc_permissions(defn_bash)
-        assert {"Agent", "Task"} <= set(perms_bash["deny"])
-        assert "Bash" not in perms_bash["deny"]
 
 
 def test_shipped_configurator_does_not_recall_its_archive_at_launch():

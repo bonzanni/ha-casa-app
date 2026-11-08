@@ -185,8 +185,7 @@ hand-off, not the driver's admission: the admission is taken inside the engageme
 lock, which is held for a whole turn, and waiting for it would park this tap callback behind
 an unbounded model turn — measured, not supposed, and the reason the seam reports what it
 does. So an ungated terminal writer (a cancellation, the operator's own complete command, the
-stale-engagement reap, a forced workspace delete, a failed or cancelled completion outcome, a
-direct error mark) can still terminalize between the hand-off and the admission, after this DM
+stale-engagement reap, a failed or cancelled completion outcome, a direct error mark) can still terminalize between the hand-off and the admission, after this DM
 has said a continuation was requested. **Do not read a positive report as a guarantee that a
 turn ran.** The engagement's own terminal path discloses the un-taken message, and the recorded
 approval makes a re-run safe — but this DM is not where that is learned.

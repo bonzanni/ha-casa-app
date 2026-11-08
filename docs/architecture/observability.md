@@ -104,8 +104,8 @@ keys — an unregistered, pattern-less secret under a benign key still passes.
 What it does not cover: a line from work that outlives its turn — a tool call the CLI
 abandoned, still finishing after the next turn started — carries whichever turn is running
 then; lines a delivery owner logs after the driver returns (a failed batch's finalize, the
-next batch's start) carry the owner's own context; claude_code engagement turns and
-specialist desk turns bind no cid of their own.
+next batch's start) carry the owner's own context; specialist desk turns bind no cid of their
+own.
 
 **INV-OBS-003**: The health endpoint returns a fixed success response without consulting any subsystem.
 

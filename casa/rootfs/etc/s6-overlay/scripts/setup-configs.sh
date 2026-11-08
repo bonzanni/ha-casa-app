@@ -24,7 +24,6 @@ mkdir -p "$CONFIG_DIR/agents" \
          "$CONFIG_DIR/specialists/.roles-overlay" \
          "$CONFIG_DIR/schema" \
          "$DATA_DIR/sdk-sessions" \
-         "$DATA_DIR/casa-s6-services" \
          "$DATA_DIR/engagements"
 
 # Plugin media outbox (v0.73.0): a shared /data drop-box for producer plugins;
@@ -189,7 +188,8 @@ if [ "$USER_SECRET" = "null" ]; then
     USER_SECRET=""
 fi
 # GHSA-569r-7crq-xr43: both branches below wrote this file at the 0022 umask
-# default (0644), so every per-engagement uid could read the global HMAC secret
+# default (0644), so every non-root uid (then: each Claude Code engagement's)
+# could read the global HMAC secret
 # and forge signed /invoke/* requests. umask 077 covers the CREATE; the chmod
 # after the block repairs a file that already exists from an earlier version
 # (a redirection into an existing path does not change its mode). Casa's own
@@ -220,21 +220,21 @@ fi
 umask 022
 if [ -e "$SECRET_FILE" ]; then
     chmod 0600 "$SECRET_FILE" \
-        || bashio::log.error "failed to tighten $SECRET_FILE — engagements will refuse to start"
+        || bashio::log.error "failed to tighten $SECRET_FILE"
 fi
 
 # GHSA-569r-7crq-xr43: s6-overlay materialises the add-on's environment into
 # /run/s6/container_environment/<NAME> at 0644, and SUPERVISOR_TOKEN/HASSIO_TOKEN
 # are Supervisor API bearers — the Supervisor API returns every add-on's stored
 # options, so a readable token transitively exposes the Claude OAuth token, the
-# GitHub PAT and the 1Password service-account token. The engagement run template
-# `unset`s both from the environment; that is theatre while the backing files are
+# GitHub PAT and the 1Password service-account token. Unsetting both from a
+# process's environment is theatre while the backing files are
 # world-readable. The GITHUB_TOKEN / CLAUDE_CODE_OAUTH_TOKEN blocks below already
 # write theirs under `umask 077`; these two are not ours to write, only to tighten.
 for _tokfile in SUPERVISOR_TOKEN HASSIO_TOKEN; do
     if [ -f "/run/s6/container_environment/$_tokfile" ]; then
         chmod 0600 "/run/s6/container_environment/$_tokfile" \
-            || bashio::log.error "failed to tighten $_tokfile — engagements will refuse to start"
+            || bashio::log.error "failed to tighten $_tokfile"
     fi
 done
 unset _tokfile
@@ -266,7 +266,7 @@ mkdir -p "$HOME/.claude"
 
 # === github-token: begin ========================================
 # v0.14.9: resolve op://VAULT/GitHub/credential at boot, export to s6
-# container env so every supervised service + engagement subprocess
+# container env so every supervised service and its subprocesses
 # inherits $GITHUB_TOKEN automatically. The token is consumed by
 # /opt/casa/scripts/git-credential-casa.sh (wired in /etc/gitconfig)
 # at git auth time — never written to disk.
@@ -298,20 +298,13 @@ unset OP_TOK VAULT GH_TOKEN
 # === github-token: end ==========================================
 
 # === claude-oauth-token: begin ==================================
-# K-1 (v0.34.1): propagate Claude Code OAuth token to engagement
-# subprocesses launched by claude_code_driver. Mirror of the
-# GITHUB_TOKEN block above. Pre-fix the token was only exported into
-# svc-casa's process env (svc-casa/run:13), which feeds casa_core
-# itself but NOT s6-rc child services launched via `with-contenv`
-# (which read /run/s6/container_environment/). Result: every
-# claude_code_driver subprocess (plugin-developer) got
-# "Not logged in · Please run /login" and produced no useful output.
-# Latently broken since v0.13.0 (Plan 4a) — ~8 days.
-#
-# bug-review-2026-05-01-exploration4.md::K-1 has the full evidence
-# chain. Fix shape: same op:// resolution path as GITHUB_TOKEN above,
-# write the (possibly-resolved) token to container_environment with
-# mode 0600.
+# K-1 (v0.34.1): propagate the Claude Code OAuth token to every s6
+# child process via /run/s6/container_environment/. Mirror of the
+# GITHUB_TOKEN block above. svc-casa exports the token into its own
+# process env (svc-casa/run), which feeds casa_core itself but NOT a
+# process launched via `with-contenv`, which reads container_environment
+# instead. Same op:// resolution path as GITHUB_TOKEN above; the
+# (possibly-resolved) token is written with mode 0600.
 CC_OAUTH="$(bashio::config 'claude_oauth_token')"
 if [ -n "$CC_OAUTH" ] && [ "$CC_OAUTH" != "null" ]; then
     case "$CC_OAUTH" in
@@ -331,10 +324,10 @@ if [ -n "$CC_OAUTH" ] && [ "$CC_OAUTH" != "null" ]; then
     umask 077
     printf "%s" "$CC_OAUTH" > /run/s6/container_environment/CLAUDE_CODE_OAUTH_TOKEN
     umask 022
-    bashio::log.info "Claude OAuth: token propagated to engagement subprocesses"
+    bashio::log.info "Claude OAuth: token propagated to s6 child processes"
 else
     rm -f /run/s6/container_environment/CLAUDE_CODE_OAUTH_TOKEN
-    bashio::log.warning "Claude OAuth not configured — claude_code_driver engagements will fail (K-1)"
+    bashio::log.warning "Claude OAuth not configured — s6 child processes get no token (K-1)"
 fi
 unset CC_OAUTH
 # === claude-oauth-token: end ====================================
@@ -342,24 +335,23 @@ unset CC_OAUTH
 # === claude-home-propagation: begin =============================
 # H-1 (v0.37.8): propagate HOME=cc-home to every s6-supervised service +
 # child subprocess. A shell-level `export HOME=...` only governs this
-# script's own process; casa-main and svc-casa-mcp boot with HOME=/root
-# unless we write to /run/s6/container_environment/. cc-home is still the
-# CC CLI's home for residents/specialists (SDK plugin loading via
-# --plugin-dir, agent-home settings) and engagement subprocesses.
+# script's own process; casa-main boots with HOME=/root unless we write
+# to /run/s6/container_environment/. cc-home is the CC CLI's home for
+# every agent's SDK session (plugin loading, agent-home settings).
 printf '%s' "/config/cc-home" \
     > /run/s6/container_environment/HOME
 bashio::log.info "HOME propagated to s6 services: /config/cc-home"
 # === claude-home-propagation: end ===============================
 
-# Plugin materialization (bundled-artifact import → content-addressed store,
-# registry seed) moved to the init-plugin-store s6
+# Plugin materialization (bundled-artifact import, when an image carries a
+# bundle → content-addressed store, registry seed) moved to the init-plugin-store s6
 # oneshot (plugin_boot.py) under the unified plugin architecture (§3.6). The
 # old /opt/claude-seed → cc-home seed-copy + `claude plugin enable` loop is
 # deleted with the marketplace.
 
 # --- Plan 4b: plugin-runtime tool dir + PATH propagation (P-9) -------------
 # Ensure the persistent tools bin dir exists, and add it to PATH for every
-# s6-supervised service (casa-main, svc-casa-mcp, engagements). Writing to
+# s6-supervised service (casa-main, the terminal). Writing to
 # /run/s6/container_environment/PATH is how s6-overlay propagates env to
 # children; /etc/profile.d/* is NOT sourced by non-interactive services.
 TOOLS_ROOT=/config/tools
@@ -368,13 +360,12 @@ mkdir -p "$TOOLS_BIN"
 
 # Merge TOOLS_BIN into s6 container env PATH. NOTE: it is prepended ahead of
 # the ENTIRE image PATH including /opt/casa/venv/bin — intentional for
-# engagement tool overrides; core services must therefore exec the venv
+# plugin tool overrides; core services must therefore exec the venv
 # interpreter by absolute path (/opt/casa/venv/bin/python3), never bare python3.
-# The s6 driver (drivers/s6_rc.py) runs its s6 programs under a PATH with this
-# directory removed (#987, its PLUGIN_TOOLS_BIN names it), and so do the core
-# s6 scripts, this one included: their interpreter, core-bashio.sh, removes it
-# before bashio runs (#1268) and keeps the PATH it was given in _casa_cli_path,
-# which svc-casa, svc-casa-mcp and the terminal hand back. The merge below
+# The core s6 scripts, this one included, run with this directory removed
+# (#987, trusted_path.py's PLUGIN_TOOLS_BIN names it): their interpreter,
+# core-bashio.sh, removes it before bashio runs (#1268) and keeps the PATH it
+# was given in _casa_cli_path, which svc-casa and the terminal hand back. The merge below
 # reads that saved PATH, so what it publishes does not depend on the filter.
 CURRENT_PATH="${_casa_cli_path}"
 if ! printf "%s" "$CURRENT_PATH" | grep -q "^\(.*:\)\?${TOOLS_BIN}\(:\|$\)"; then

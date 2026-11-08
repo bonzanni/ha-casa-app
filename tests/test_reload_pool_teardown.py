@@ -35,7 +35,6 @@ def _make_runtime():
         mcp_registry=MagicMock(),
         session_registry=MagicMock(), channel_manager=MagicMock(),
         bus=MagicMock(), engagement_driver=MagicMock(),
-        claude_code_driver=MagicMock(),
         policy_lib=MagicMock(),
         config_dir="/x", agents_dir="/x/agents",
         home_root="/x/home", defaults_root="/opt/casa",

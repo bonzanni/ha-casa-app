@@ -14,35 +14,18 @@ Two halves:
      ``short_option_labels`` specifically (name/signature PINNED — resident
      ``ask_user`` depends on it via ``post_dm_keyboard(short_labels=True)``).
 
-  2. HANDLER-LEVEL dict-options tests (REAL ``VerdictBroker`` + REAL
-     ``EngagementRegistry`` + REAL ``_make_channel_handlers``, injected clocks)
-     asserting the body carries FULL labels verbatim, the buttons carry
-     ``n · <short>``, a tap resolves to the FULL label in the response AND the
-     settle ✅ line, and malformed dict SHAPES (wrong type, missing/blank
-     label, duplicate full labels) still refuse ``invalid_args``. These
-     exercise ``channel_handlers._validate_ask_args``, which Task A2 (round 4,
-     spec D1) changed: the invented length caps are gone and ``short`` is now
-     advisory-only — a missing/blank/duplicate/over-budget/non-string
-     ``short`` is ACCEPTED and flows through to the D2 resolver (which floors
-     the whole button set) instead of rejecting the ask. A fake channel only
-     RECORDS the ``options``/``shorts`` it's called with, so these don't
-     exercise ``resolve_button_labels`` itself and are unaffected by the
-     round-4 resolver change.
+  2. PURE-FUNCTION tests of ``render_ask_body`` / ``_canonical_question`` —
+     the single canonical ask body and its verbatim question.
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
-
-import pytest
-from broker_helpers import deliver
-from aiohttp import web
-
-import agent as agent_mod
-import verdict_broker
-from verdict_broker import VerdictBroker
-from channels.telegram import _ASK_BUTTON_CAPTION_CAP, short_option_labels
+from channels.telegram import (
+    _ASK_BUTTON_CAPTION_CAP,
+    _canonical_question,
+    render_ask_body,
+    short_option_labels,
+)
 
 
 # ===========================================================================
@@ -138,285 +121,103 @@ class TestCaptionCapBoundary:
 
 
 # ===========================================================================
-# Handler-level: dict options end-to-end
+# Pure-function: render_ask_body — the single canonical ask body (moved from
+# tests/test_engagement_ask_readable_buttons.py and
+# tests/test_option_normalization.py with the renderer)
 # ===========================================================================
 
 
-class _FakeChannel:
-    """Records keyboard posts (incl. the ``shorts`` kwarg) and settle edits."""
+class TestRenderAskBody:
+    def test_numbered_verbatim_options_below_question(self) -> None:
+        body = render_ask_body(
+            3, "Which account?", ["Personal Gmail", "Work Outlook"])
+        assert body == (
+            "Q3: Which account?\n\n1. Personal Gmail\n2. Work Outlook")
 
-    def __init__(self) -> None:
-        self.keyboards: list[dict] = []
-        self.edits: list[dict] = []
-        self._next = 8000
-
-    async def post_options_keyboard(
-        self, *, engagement_id, request_id, question, options, shorts=None,
-    ) -> int:
-        self.keyboards.append(
-            {"question": question, "options": list(options),
-             "shorts": list(shorts) if shorts is not None else None})
-        mid = self._next
-        self._next += 1
-        return mid
-
-    async def edit_topic_message(
-        self, topic_id, message_id, text, *, clear_keyboard=False,
-    ) -> bool:
-        self.edits.append({"text": text, "clear_keyboard": clear_keyboard})
-        return True
-
-    async def edit_topic_message_rich(
-        self, topic_id, message_id, text, *, clear_keyboard=False,
-    ) -> bool:
-        return await self.edit_topic_message(
-            topic_id, message_id, text, clear_keyboard=clear_keyboard)
-
-
-class _FakeRequest:
-    def __init__(self, payload: dict) -> None:
-        self._payload = payload
-
-    async def json(self) -> dict:
-        return self._payload
-
-
-@pytest.fixture
-def fresh_broker(monkeypatch):
-    fresh = VerdictBroker()
-    monkeypatch.setattr(verdict_broker, "BROKER", fresh)
-    return fresh
-
-
-@pytest.fixture
-async def wired(tmp_path, fresh_broker, monkeypatch):
-    from engagement_registry import EngagementRegistry
-    from channels.channel_handlers import _make_channel_handlers
-
-    # driver=None ⇒ eager fallback (no relay), the simplest deterministic post.
-    monkeypatch.setattr(agent_mod, "active_claude_code_driver", None)
-    reg = EngagementRegistry(
-        tombstone_path=str(tmp_path / "e.json"), bus=None)
-    rec = await reg.create(
-        "executor", "configurator", "claude_code", "t",
-        {"user_id": 555}, topic_id=42)
-    ch = _FakeChannel()
-    handlers = _make_channel_handlers(
-        telegram_channel=ch, engagement_registry=reg)
-    return {
-        "reg": reg, "rec": rec, "ch": ch, "broker": fresh_broker,
-        "ask": handlers["/internal/channel/ask"],
-    }
-
-
-def _body(resp: web.Response) -> dict:
-    return json.loads(resp.text)
-
-
-async def _await_registered(broker, key, *, timeout_s: float = 5.0) -> None:
-    """Yield the event loop until the ask task has REGISTERED its waiter.
-
-    Replaces a fixed ``asyncio.sleep(0.02)``. The tap below can only be
-    ``delivered`` once the ask task has registered with the broker; taps
-    arriving before that resolve ``stale``. How many event-loop turns the ask
-    needs is machine-dependent, so on a slow CI runner the fixed sleep expired
-    early and the assertion failed with ``'stale' == 'delivered'``. Waiting on
-    the actual precondition is correct at any speed. (Same flake class as the
-    v0.124.1 engagement ask-gate deflake.)
-    """
-    deadline = asyncio.get_running_loop().time() + timeout_s
-    while asyncio.get_running_loop().time() < deadline:
-        if key in broker._live:
-            return
-        await asyncio.sleep(0.001)
-    raise AssertionError(f"ask never registered {key!r} with the broker")
-
-
-async def _drive_answer(wired, payload, option_index):
-    """Post an ask, tap ``option_index``, return the tool response dict."""
-    task = asyncio.ensure_future(wired["ask"](_FakeRequest(payload)))
-    await _await_registered(
-        wired["broker"],
-        ("engagement_ask", wired["rec"].id, payload["request_id"]),
-    )
-    assert deliver(wired["broker"], 
-        namespace="engagement_ask", scope=wired["rec"].id,
-        request_id=payload["request_id"], option_index=option_index,
-        actor_id=555) == "delivered"
-    resp = await asyncio.wait_for(task, timeout=1.0)
-    await wired["broker"].drain_hooks()
-    return _body(resp)
-
-
-class TestDictOptionsEndToEnd:
-    async def test_body_full_buttons_short_tap_resolves_full(self, wired):
+    def test_every_full_option_appears_verbatim(self) -> None:
         options = [
-            {"label": "Single account with aliases", "short": "Aliased"},
-            {"label": "Separate Google accounts", "short": "Separate"},
+            "Set up a brand new dedicated work account",
+            "Reuse the existing personal address for now",
+            "Ask the finance team which alias to use",
         ]
-        payload = {
-            "engagement_id": wired["rec"].id, "request_id": "d1",
-            "engagement_token": wired["rec"].auth_token,
-            "question": "Which account?", "options": options, "timeout_s": 60,
-        }
-        body = await _drive_answer(wired, payload, option_index=0)
+        body = render_ask_body(2, "How should I proceed?", options)
+        # Header carries the canonical durable number.
+        assert body.startswith("Q2: How should I proceed?\n\n")
+        # EVERY option is present verbatim, 1-based numbered, in order.
+        for i, opt in enumerate(options):
+            assert f"{i + 1}. {opt}" in body
+        assert body.splitlines()[2:] == [
+            "1. " + options[0], "2. " + options[1], "3. " + options[2]]
 
-        # Tap resolves to the FULL label (not the short) in the response.
-        assert body["ok"] is True
-        assert body["outcome"] == "answered"
-        assert body["option"] == "Single account with aliases"
-        assert body["option_index"] == 0
+    def test_prepends_qnumber_verbatim(self) -> None:
+        # v0.85.0 (round 4, D4): the agent-authored "Q7:" prefix is preserved
+        # VERBATIM; Casa only PREPENDS the allocated durable number (parity
+        # with _canonical_question).
+        body = render_ask_body(1, "Q7: Which DB?", ["A", "B"])
+        assert body == "Q1: Q7: Which DB?\n\n1. A\n2. B"
 
-        kb = wired["ch"].keyboards[-1]
-        # The MESSAGE body carries the FULL labels VERBATIM + numbered.
-        assert "1. Single account with aliases" in kb["question"]
-        assert "2. Separate Google accounts" in kb["question"]
-        # The keyboard is driven by full labels + a parallel shorts list.
-        assert kb["options"] == [
-            "Single account with aliases", "Separate Google accounts"]
-        assert kb["shorts"] == ["Aliased", "Separate"]
+    def test_anchor_no_option_list(self) -> None:
+        # Free-text anchor (options == []) renders the numbered question ALONE.
+        assert render_ask_body(4, "What's the DB name?", []) == (
+            "Q4: What's the DB name?")
 
-        # Settle ✅ line is the BOUNDED positional copy (v0.84.0 D1 bullet 3),
-        # never the full label or short.
-        settle = wired["ch"].edits[-1]["text"]
-        assert "✅ Option 1" in settle
-        assert wired["ch"].edits[-1]["clear_keyboard"] is True
+    def test_no_number_uses_bare_question(self) -> None:
+        assert render_ask_body(None, "Proceed?", ["A", "B"]) == (
+            "Proceed?\n\n1. A\n2. B")
 
-    async def test_mixed_str_and_dict_allowed(self, wired):
-        options = [
-            "Personal Gmail",
-            {"label": "Configure the enterprise SSO integration",
-             "short": "SSO"},
-        ]
-        payload = {
-            "engagement_id": wired["rec"].id, "request_id": "d2",
-            "engagement_token": wired["rec"].auth_token,
-            "question": "Which?", "options": options, "timeout_s": 60,
-        }
-        body = await _drive_answer(wired, payload, option_index=1)
-        assert body["option"] == "Configure the enterprise SSO integration"
-        kb = wired["ch"].keyboards[-1]
-        assert kb["options"] == [
-            "Personal Gmail", "Configure the enterprise SSO integration"]
-        # str option → None short (heuristic); dict option → its short.
-        assert kb["shorts"] == [None, "SSO"]
+    def test_own_word_buttons_leave_out_the_list(self) -> None:
+        # #1392: buttons that read "Delete" / "Keep" already carry every
+        # option in full — the body is the question alone.
+        assert render_ask_body(
+            None, "Delete both?", ["Delete", "Keep"], ["Delete", "Keep"],
+        ) == "Delete both?"
+        assert render_ask_body(
+            2, "Tea or coffee?", ["Tea", "Coffee"], ["Tea", "Coffee"],
+        ) == "Q2: Tea or coffee?"
 
-    async def test_str_only_ask_omits_shorts_kwarg(self, wired):
-        # No agent short anywhere → the keyboard is posted WITHOUT ``shorts``
-        # (backward-compatible call shape); the fake records None.
-        payload = {
-            "engagement_id": wired["rec"].id, "request_id": "d3",
-            "engagement_token": wired["rec"].auth_token,
-            "question": "Which?", "options": ["A", "B"], "timeout_s": 60,
-        }
-        await _drive_answer(wired, payload, option_index=0)
-        assert wired["ch"].keyboards[-1]["shorts"] is None
+    def test_list_stays_when_a_button_does_not_show_the_words(self) -> None:
+        # #1392: the "Option n" floor and "n · <short>" captions both need the
+        # numbered full options under the question.
+        options = ["Delete", "Keep"]
+        listed = "Delete both?\n\n1. Delete\n2. Keep"
+        for captions in (["Option 1", "Option 2"], ["1 · Del", "2 · Keep"],
+                         None):
+            assert render_ask_body(
+                None, "Delete both?", options, captions) == listed
 
+    def test_resolved_captions_decide_the_list(self) -> None:
+        # The SAME resolver the keyboards use decides the body: words that fit
+        # drop the list; one option over the button fit floors every button
+        # and brings the list back.
+        from channels.telegram import _ASK_BUTTON_WORDS_FIT, short_option_labels
+        short = ["Delete", "Keep"]
+        assert render_ask_body(
+            None, "Q?", short, short_option_labels(short)) == "Q?"
+        long_ = ["Delete", "K" * (_ASK_BUTTON_WORDS_FIT + 1)]
+        assert render_ask_body(
+            None, "Q?", long_, short_option_labels(long_)
+        ) == f"Q?\n\n1. Delete\n2. {long_[1]}"
 
-class TestInvalidDictShapes:
-    """Malformed dict SHAPES still refuse ``invalid_args`` at validation (no
-    post); ``short`` length/blank/duplicate is no longer one of them (D1,
-    round 4) — see ``TestShortIsAdvisoryNeverRejects`` below."""
-
-    def _invalid(self, options):
-        from channels.channel_handlers import _validate_ask_args
-        return _validate_ask_args(
-            {"question": "q?", "options": options, "timeout_s": 60}) is None
-
-    def test_missing_label_key(self):
-        assert self._invalid([{"short": "x"}, "B"])
-
-    def test_label_whitespace_only(self):
-        assert self._invalid([{"label": "   ", "short": "ok"}, "B"])
-
-    def test_duplicate_full_labels_refused(self):
-        assert self._invalid([
-            {"label": "Same", "short": "a"},
-            {"label": "Same", "short": "b"},
-        ])
-
-    def test_option_wrong_type_refused(self):
-        assert self._invalid([123, "B"])
-
-    def test_valid_dict_short_at_25_accepted(self):
-        from channels.channel_handlers import _validate_ask_args
-        out = _validate_ask_args({
-            "question": "q?", "timeout_s": 60,
-            "options": [
-                {"label": "First full label", "short": "y" * 25},
-                {"label": "Second full label", "short": "z"},
-            ]})
-        assert out is not None
-        _q, labels, _t, shorts = out
-        assert labels == ["First full label", "Second full label"]
-        assert shorts == ["y" * 25, "z"]
-
-    def test_valid_str_only_shorts_all_none(self):
-        from channels.channel_handlers import _validate_ask_args
-        out = _validate_ask_args({
-            "question": "q?", "options": ["A", "B"], "timeout_s": 60})
-        assert out is not None
-        _q, labels, _t, shorts = out
-        assert labels == ["A", "B"]
-        assert shorts == [None, None]
+    def test_body_stays_well_under_telegram_limit_at_caps(self) -> None:
+        # Worst case at _validate_ask_args caps (question 1024, 8 options × 48)
+        # is far below Telegram's 4096 — no truncation path needed (Sol r1-5).
+        body = render_ask_body(999, "q" * 1024, ["o" * 48 for _ in range(8)])
+        assert len(body) < 4096
 
 
-class TestShortIsAdvisoryNeverRejects:
-    """D1 (round 4): a missing/blank/duplicate/over-budget/non-string
-    ``short`` is NEVER a rejection cause — it flows through to the D2
-    resolver (which floors the whole button set) instead. Full LABEL
-    structural checks (type, non-blank, uniqueness) are unaffected."""
+class TestCanonicalQuestionVerbatim:
+    def test_agent_q_prefix_preserved_verbatim(self):
+        # Task B1 brief: "Q7: which flavor?" is preserved verbatim and
+        # rendered "Q<n>: Q7: which flavor?" — Casa prepends its own prefix,
+        # the agent's text is untouched.
+        assert _canonical_question("Q7: which flavor?", 3) == "Q3: Q7: which flavor?"
 
-    def _validated(self, options):
-        from channels.channel_handlers import _validate_ask_args
-        return _validate_ask_args(
-            {"question": "q?", "options": options, "timeout_s": 60})
+    def test_lowercase_q_prefix_preserved_verbatim(self):
+        assert _canonical_question("q2: another one?", 5) == "Q5: q2: another one?"
 
-    def test_missing_short_key_accepted_as_absent(self):
-        out = self._validated([{"label": "Full label"}, "B"])
-        assert out is not None
-        _q, labels, _t, shorts = out
-        assert labels == ["Full label", "B"]
-        assert shorts == [None, None]
+    def test_plain_question_unaffected(self):
+        assert _canonical_question("What database name?", 1) == "Q1: What database name?"
 
-    def test_short_over_25_chars_accepted_advisory(self):
-        out = self._validated([{"label": "Full", "short": "x" * 26}, "B"])
-        assert out is not None
-        _q, labels, _t, shorts = out
-        assert labels == ["Full", "B"]
-        assert shorts == ["x" * 26, None]
-
-    def test_short_whitespace_only_accepted_advisory(self):
-        # v0.85.0 (round 4, D4): shorts flow through VERBATIM — no
-        # enumerator-strip's incidental ``.strip()`` collapsing this to "".
-        out = self._validated([{"label": "Full", "short": "   "}, "B"])
-        assert out is not None
-        _q, labels, _t, shorts = out
-        assert labels == ["Full", "B"]
-        assert shorts == ["   ", None]
-
-    def test_short_non_string_treated_as_absent(self):
-        out = self._validated([{"label": "Full", "short": 7}, "B"])
-        assert out is not None
-        _q, labels, _t, shorts = out
-        assert labels == ["Full", "B"]
-        assert shorts == [None, None]
-
-    def test_duplicate_shorts_accepted_advisory(self):
-        out = self._validated([
-            {"label": "First full label", "short": "dup"},
-            {"label": "Second full label", "short": "dup"},
-        ])
-        assert out is not None
-        _q, labels, _t, shorts = out
-        assert labels == ["First full label", "Second full label"]
-        assert shorts == ["dup", "dup"]
-
-    def test_label_over_48_chars_accepted(self):
-        # D1: the invented FULL-label length cap is gone too (the live Q2
-        # failure — a 139-char label was refused pre-round-4).
-        out = self._validated([{"label": "x" * 49, "short": "ok"}, "B"])
-        assert out is not None
-        _q, labels, _t, shorts = out
-        assert labels == ["x" * 49, "B"]
-        assert shorts == ["ok", None]
+    def test_render_ask_body_uses_verbatim_question(self):
+        rendered = render_ask_body(3, "Q7: which flavor?", ["A", "B"])
+        assert rendered.startswith("Q3: Q7: which flavor?")

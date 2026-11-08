@@ -129,34 +129,6 @@ Enabling memory on a specialist: set `memory.token_budget > 0` in
 its ledger, with the brief. Disabling: set `token_budget: 0` (back to
 stateless; its output is then kept out of memory too).
 
-## MCP service topology (v0.14.0)
-
-The `casa-framework` MCP server runs as its own s6-supervised service
-called `svc-casa-mcp`, NOT inside casa-main. It listens on
-`127.0.0.1:8100` and forwards every tool call and hook decision to
-casa-main over a Unix socket at `/run/casa/internal.sock`.
-
-This means:
-- An engagement subprocess's MCP TCP connection stays open across a
-  casa-main-only respawn — NOT across an addon update, which replaces the
-  container holding both s6 services and so takes the MCP service with it.
-  Across the respawn, mid-restart tool calls return JSON-RPC `-32000
-  casa_temporarily_unavailable` (a recoverable error the model handles)
-  rather than a connection drop.
-- Read "survives" precisely: the value is that the WINDOW is clean, not that
-  one CLI process spans it. The new casa-main's boot replay drives every
-  discovered engagement service to a confirmed down and restarts only the
-  ongoing engagements it resumes, so the process making post-restart calls
-  is a respawned CLI, not the one that made the pre-restart calls.
-- Engagement workspaces have `.mcp.json` pointing at port 8100; boot
-  replay rewrites the file (and cycles the engagement service) whenever
-  the baked credential or URL differs from the record.
-
-You (Configurator) do NOT need to touch any of this — workspace
-provisioning + hook proxying are framework concerns. If a user asks why the
-restart window was clean, this is the reason; do not tell them their
-engagement process survived it.
-
 ## Plugin infrastructure — unified plugin architecture (v0.71.0)
 
 ONE mechanism for ALL agent tiers. The marketplace, the version-keyed cache,
@@ -169,10 +141,11 @@ immutable content-addressed artifact and lists its targets
 (`resident:`/`specialist:`/`executor:`). It is the ONLY place plugin
 assignments live — there is no `enabledPlugins`, no per-agent `plugins.yaml`.
 
-**Workers take only what Casa ships, for now.** An `executor:` target belongs
-to the bundled set Casa seeds; an operator-installed plugin cannot be given one
-(`plugin_add` and `plugin_assign` refuse it, `plugin_update` refuses to repoint
-a bundled plugin that serves a worker). A worker target already stored on an
+**Workers take no operator-installed plugin, for now.** An `executor:` target
+belongs only to a `bundled` entry an older Casa seeded (Casa seeds none
+today); an operator-installed plugin cannot be given one (`plugin_add` and
+`plugin_assign` refuse it, `plugin_update` refuses to repoint a bundled plugin
+that serves a worker). A worker target already stored on an
 operator-installed entry stays in the file but is IGNORED: `plugin_list` shows
 it under `ignored_targets`, and the health report says so. `plugin_unassign`
 clears it.
@@ -184,20 +157,20 @@ clears it.
   NEW artifact + a registry pointer change; old artifacts are retained.
 - Resolver: `plugin_registry.resolve_for(target)` turns the registry into one
   `ResolutionResult` that feeds EVERYTHING — the SDK `plugins=[…]` list
-  (residents/specialists), the executor `--plugin-dir` flags, tool grants,
-  secrets, system requirements, and verification. No split brain.
-- Bundled defaults (superpowers, plugin-dev, skill-creator, mcp-server-dev,
-  context7) are materialized into the store at image build and imported by the
-  `init-plugin-store` boot oneshot.
+  (residents/specialists), the executors' plugin list, tool grants, secrets,
+  system requirements, and verification. No split brain.
+- Casa ships no bundled plugins. The `init-plugin-store` boot oneshot still
+  imports a bundled catalog when an image carries one, and a `bundled`
+  registry entry an older Casa seeded keeps working.
 
 ### How each tier loads
 
 - Residents/specialists: `agent.py` passes `plugins=[{"type":"local","path":
   rp.path}]` from the resolver; server-level grants
   (`mcp__plugin_<name>_<server>`) are auto-derived (P-5).
-- Executors: launched with repeated `--plugin-dir <path>` flags rendered from
-  the engagement's RECORDED artifacts (pinned at launch, never re-resolved);
-  they keep their explicit `tools.allowed` allow-list + permission relay.
+- Executors: the same SDK `plugins=[…]` list, built from the engagement's
+  RECORDED artifacts (pinned at launch, never re-resolved); they keep their
+  explicit `tools.allowed` allow-list.
 
 ### Plugin environment variables
 

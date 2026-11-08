@@ -264,7 +264,6 @@ async def test_the_real_shutdown_cuts_every_pooled_client_it_removed(tmp_path):
             held.append(entry)
         runtime = SimpleNamespace(
             agents={"assistant": first, "butler": second},
-            claude_code_driver=None,
         )
         await _shutdown(runtime)
         assert (CountingClient.constructed, CountingClient.connects,
@@ -311,7 +310,6 @@ async def test_the_real_shutdown_closes_the_agents_concurrently(tmp_path):
             agent.aclose = counted
         runtime = SimpleNamespace(
             agents={"assistant": first, "butler": second},
-            claude_code_driver=None,
         )
         await _shutdown(runtime)
         assert (len(entered), at_first_cancellation[:1]) == (2, [2])
@@ -337,8 +335,7 @@ async def test_a_turn_arriving_after_the_stop_is_refused(tmp_path):
     agent = _make_agent(tmp_path, role="assistant")
     try:
         assert await _warm_pooled_turn(agent) == "pong"
-        runtime = SimpleNamespace(agents={"assistant": agent},
-                                  claude_code_driver=None)
+        runtime = SimpleNamespace(agents={"assistant": agent})
         await _shutdown(runtime)                 # declares the stop, closes it
         before = (CountingClient.constructed, CountingClient.queries)
         with patch("sdk_client_pool._default_make_client", CountingClient):
@@ -361,8 +358,7 @@ async def test_the_stop_is_a_process_fact_not_an_instance_one(tmp_path):
     later = None
     try:
         assert await _warm_pooled_turn(first) == "pong"
-        runtime = SimpleNamespace(agents={"assistant": first},
-                                  claude_code_driver=None)
+        runtime = SimpleNamespace(agents={"assistant": first})
         await _shutdown(runtime)
         later = _make_agent(tmp_path, role="butler")     # built AFTER the stop
         assert await _warm_pooled_turn(later, chat_id="chat-2") == "pong"
@@ -413,8 +409,7 @@ async def test_the_unconditional_bypass_is_still_served_during_a_stop(
     agent = _make_agent(tmp_path, role="assistant")
     try:
         assert await _warm_pooled_turn(agent) == "pong"
-        runtime = SimpleNamespace(agents={"assistant": agent},
-                                  claude_code_driver=None)
+        runtime = SimpleNamespace(agents={"assistant": agent})
         await _shutdown(runtime)
         before = CountingClient.constructed
         with patch("sdk_client_pool._default_make_client", CountingClient):
@@ -436,8 +431,7 @@ async def test_a_transient_pool_refusal_is_still_served_during_a_stop(tmp_path):
     agent = _make_agent(tmp_path, role="assistant")
     try:
         assert await _warm_pooled_turn(agent) == "pong"
-        runtime = SimpleNamespace(agents={"assistant": agent},
-                                  claude_code_driver=None)
+        runtime = SimpleNamespace(agents={"assistant": agent})
         await _shutdown(runtime)
         before = CountingClient.constructed
 
@@ -591,7 +585,7 @@ async def test_the_completion_record_counts_the_turns_the_stop_leaves_running():
 
         with _completion_watch() as watch:
             await _shutdown(
-                SimpleNamespace(agents={}, claude_code_driver=None),
+                SimpleNamespace(agents={}),
                 bus=bus,
                 job_registry_close=_close_and_let_one_finish)
 
@@ -636,7 +630,7 @@ async def test_the_completion_record_says_zero_when_no_turn_was_dispatched():
 
     bus = MessageBus()
     with _completion_watch() as watch:
-        await _shutdown(SimpleNamespace(agents={}, claude_code_driver=None),
+        await _shutdown(SimpleNamespace(agents={}),
                         bus=bus)
     assert len(watch.records) == 1, watch.records
     assert watch.enriched == watch.records, watch.enriched
@@ -709,7 +703,7 @@ async def test_nothing_runs_between_the_snapshot_and_the_completion_record():
 
         bus.live_dispatch_tasks = _observed
         with _completion_watch(probe=lambda: len(marker)) as watch:
-            await _shutdown(SimpleNamespace(agents={}, claude_code_driver=None),
+            await _shutdown(SimpleNamespace(agents={}),
                             bus=bus)
         assert watch.probed == [0], watch.probed
         await asyncio.sleep(0)
@@ -749,7 +743,7 @@ async def test_a_facade_opened_at_boot_does_not_end_the_stop_early():
     await facade.start()
     bus = MessageBus()
     with _completion_watch() as watch:
-        await _shutdown(SimpleNamespace(agents={}, claude_code_driver=None),
+        await _shutdown(SimpleNamespace(agents={}),
                         bus=bus, bound=5, ha_facade=facade)
     assert len(watch.records) == 1, watch.records
     assert factory.exited == 1

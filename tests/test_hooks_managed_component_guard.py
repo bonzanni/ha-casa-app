@@ -15,8 +15,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
@@ -284,23 +282,9 @@ async def test_factory_rejects_params():
 
 
 # ------------------------------------------------------------------
-# Shipped hooks.yaml wiring — the policy must be active through the
-# resolved stacks of BOTH executors (pattern:
-# tests/test_hooks_resolve_executor_params.py)
+# Shipped hooks.yaml wiring — the policy must be declared in, and built
+# from, the shipped executor hooks.yaml
 # ------------------------------------------------------------------
-
-
-ENG_ID = "a" * 32
-
-
-class _Rec:
-    status = "active"
-    role_or_type = "configurator"
-
-
-class _Registry:
-    def get(self, eng_id):
-        return _Rec() if eng_id == ENG_ID else None
 
 
 def _shipped_hooks_yaml(executor: str) -> dict:
@@ -308,56 +292,12 @@ def _shipped_hooks_yaml(executor: str) -> dict:
         (_EXECUTORS_DIR / executor / "hooks.yaml").read_text(encoding="utf-8"))
 
 
-def _configurator_handler():
-    from casa_core import _build_cc_hook_policies
-    from hooks import HOOK_POLICIES, build_policy_callbacks_from_hooks_yaml
-    from internal_handlers import _make_internal_hooks_resolve_handler
-    return _make_internal_hooks_resolve_handler(
-        hook_policies=_build_cc_hook_policies(HOOK_POLICIES),
-        executor_hook_policies={
-            "configurator": build_policy_callbacks_from_hooks_yaml(
-                _shipped_hooks_yaml("configurator")
-            )},
-        engagement_registry=_Registry(),
-    )
-
-
-async def test_shipped_configurator_stack_denies_specialist_write():
-    app = web.Application()
-    app.router.add_post("/hooks/resolve", _configurator_handler())
-    async with TestServer(app) as srv, TestClient(srv) as client:
-        resp = await client.post("/hooks/resolve", json={
-            "policy": "managed_component_guard",
-            "payload": {"tool_name": "Write",
-                        "cwd": f"/data/engagements/{ENG_ID}",
-                        "tool_input": {
-                            "file_path":
-                                "/config/agents/specialists/x/runtime.yaml"}}})
-        body = await resp.json()
-        assert body["hookSpecificOutput"]["permissionDecision"] == "deny"
-        assert "specialist_install_inspect" in (
-            body["hookSpecificOutput"]["permissionDecisionReason"])
-
-
-async def test_shipped_configurator_stack_allows_resident_write():
-    app = web.Application()
-    app.router.add_post("/hooks/resolve", _configurator_handler())
-    async with TestServer(app) as srv, TestClient(srv) as client:
-        resp = await client.post("/hooks/resolve", json={
-            "policy": "managed_component_guard",
-            "payload": {"tool_name": "Write",
-                        "cwd": f"/data/engagements/{ENG_ID}",
-                        "tool_input": {
-                            "file_path":
-                                "/config/agents/assistant/delegates.yaml"}}})
-        assert await resp.json() == {}
-
-
 async def test_shipped_yaml_declares_policy_for_both_executors():
-    """Both shipped executor hooks.yaml files carry the policy, and
-    build_policy_callbacks_from_hooks_yaml materializes it (HTTP hook path)."""
+    """The shipped executor hooks.yaml carries the policy, and
+    build_policy_callbacks_from_hooks_yaml (the agent loader's load-time
+    constructibility check) materializes it under its canonical matcher."""
     from hooks import build_policy_callbacks_from_hooks_yaml
-    for executor in ("configurator", "plugin-developer"):
+    for executor in ("configurator",):
         data = _shipped_hooks_yaml(executor)
         declared = [e.get("policy") for e in data["pre_tool_use"]]
         assert "managed_component_guard" in declared, executor
@@ -720,10 +660,9 @@ async def test_managed_source_read_shapes_pass(cmd):
 # Round-4 (Terra P0): managed_component_guard is CODE-MANDATORY for
 # executor sessions. definition.yaml's `hooks_file:` is a config-editable
 # pointer (executor/edit-definition is a legitimate recipe); repointing it
-# at a hollow yaml must not shed the guard on the next session. Covered on
-# BOTH drivers: in_casa (tools._build_executor_options) and claude_code
-# (drivers.hook_bridge.translate_hooks_to_settings +
-# hooks.build_policy_callbacks_from_hooks_yaml).
+# at a hollow yaml must not shed the guard on the next session. The
+# executor options builder (tools._build_executor_options) is where Casa
+# appends it.
 # ------------------------------------------------------------------
 
 
@@ -871,53 +810,15 @@ class TestGuardIsCodeMandatoryInCasa:
         assert await _stack_denies_managed(opts)
 
 
-class TestGuardIsCodeMandatoryClaudeCode:
-    async def test_hollow_yaml_settings_carry_guard_entry(self):
-        """(c) CC settings emission: a hollow hooks.yaml still emits the
-        hook_proxy.sh managed_component_guard PreToolUse entry."""
-        from drivers.hook_bridge import translate_hooks_to_settings
-        settings = translate_hooks_to_settings(
-            {}, proxy_script_path="/opt/casa/scripts/hook_proxy.sh")
-        pre = settings["hooks"]["PreToolUse"]
-        cmds = [h["command"] for e in pre for h in e["hooks"]]
-        assert "/opt/casa/scripts/hook_proxy.sh managed_component_guard" in cmds
-
-    async def test_shipped_yaml_settings_not_double_emitted(self):
-        """(3) Shipped plugin-developer yaml declares the policy (bare ->
-        matcher '.*' covers) — exactly one guard entry emitted."""
-        import yaml as yaml_mod
-        from drivers.hook_bridge import translate_hooks_to_settings
-        for executor in ("configurator", "plugin-developer"):
-            raw = yaml_mod.safe_load(
-                (_EXECUTORS_DIR / executor / "hooks.yaml")
-                .read_text(encoding="utf-8"))
-            settings = translate_hooks_to_settings(
-                raw, proxy_script_path="/opt/casa/scripts/hook_proxy.sh")
-            cmds = [h["command"]
-                    for e in settings["hooks"]["PreToolUse"]
-                    for h in e["hooks"]]
-            guard = [c for c in cmds if c.endswith("managed_component_guard")]
-            assert len(guard) == 1, (executor, cmds)
-
-    async def test_narrowed_matcher_declaration_does_not_satisfy_mandate(self):
-        """A yaml-declared guard with a NARROW matcher (matchers are
-        attacker-editable on the CC path) does not suppress the canonical
-        appended entry."""
-        from drivers.hook_bridge import translate_hooks_to_settings
-        settings = translate_hooks_to_settings(
-            {"pre_tool_use": [
-                {"policy": "managed_component_guard", "matcher": "Read"}]},
-            proxy_script_path="/opt/casa/scripts/hook_proxy.sh")
-        pre = settings["hooks"]["PreToolUse"]
-        canonical = [e for e in pre if e["matcher"] == "Write|Edit|Bash"]
-        assert len(canonical) == 1
-
-    async def test_resolved_policy_set_always_carries_guard(self):
-        """(2) Server side: build_policy_callbacks_from_hooks_yaml injects
-        the guard into the resolved set regardless of yaml contents, and
-        the callback denies a specialist hand-write."""
+class TestTheLoadTimeBuildOfTheGuard:
+    async def test_a_declared_guard_builds_under_its_canonical_matcher(self):
+        """build_policy_callbacks_from_hooks_yaml (the agent loader's
+        load-time constructibility check) builds a declared guard under the
+        HOOK_POLICIES matcher, never the config-editable declared one, and
+        the built callback denies a specialist hand-write."""
         from hooks import build_policy_callbacks_from_hooks_yaml
-        built = build_policy_callbacks_from_hooks_yaml({})
+        built = build_policy_callbacks_from_hooks_yaml({"pre_tool_use": [
+            {"policy": "managed_component_guard", "matcher": "Read"}]})
         assert "managed_component_guard" in built
         matcher, cb = built["managed_component_guard"]
         assert matcher == "Write|Edit|Bash"
@@ -1011,7 +912,7 @@ async def test_bindings_route_names_all_lifecycle_tools():
     # /config or the executors dir) with the mutation hidden in the patch
     # CONTENT is the opaque-content residual (same class as script files /
     # stdin) — closed for the configurator at the capability layer (no
-    # shell), tracked for plugin-developer under #216.
+    # shell).
     "git -C /config/specialists am /tmp/series.mbox",
     "git -C /config/plugins stash pop",
     "git -C /config/bindings mv a.yaml b.yaml",

@@ -81,7 +81,7 @@ at once. On 2026-09-15 that was measured as a three-minute hold on the assistant
 Neither edge reaches the owner: no reload scope holds a reference to the engagement driver,
 the engagement's client belongs to no pool, and the driver's own closers are the only ones.
 What can cut the turn now is the graceful stop, which cancels every enrolled owner with a
-recorded cause (INV-ENG-015), and the engagement's own transport ending — an agent-process
+recorded cause ([`engagement-failure-and-restart.md`](engagement-failure-and-restart.md)), and the engagement's own transport ending — an agent-process
 exit or an EOF the SDK's iterator reports as a drained stream with no result frame. Before
 attributing an ended turn to a reload at all, eliminate the benign case first: the finalize tail
 closes the engagement's own client, so a healthy self-emitted completion ends its turn with

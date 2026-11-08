@@ -98,9 +98,8 @@ their budgets from it and refuse when too little remains; the transport's own co
 timeout is what ultimately ends a turn that ignores it. Long work belongs in something that
 outlives the turn, not in stretching the turn.
 
-**Read your messages before declaring success.** Where the driver exposes inbound state —
-today both engagement drivers — a successful completion is refused while inbound messages
-are unread, and that refusal is correct: it means someone said something you have not
+**Read your messages before declaring success.** The engagement driver exposes inbound
+state: a successful completion is refused while inbound messages are unread, and that refusal is correct: it means someone said something you have not
 accounted for. Do not lean on the gate from the other side, though; it fails open on
 accessor errors and does not exist on every path, so reading your messages is your job
 either way. See `architecture/engagement-completion-gate.md`.

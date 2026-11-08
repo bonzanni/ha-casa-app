@@ -57,8 +57,8 @@ DEFAULT_ROLES_DIR = os.path.join(os.path.dirname(__file__), "defaults", "roles")
 
 # Round-6 P0-2 (Sol): executor permission modes ranked by permissiveness.
 # The image-owned role artifact's tools.permission_mode is the CEILING a
-# definition.yaml may not exceed (shipped: configurator=acceptEdits,
-# plugin-developer=auto). "bypassPermissions" is deliberately ABSENT — it
+# definition.yaml may not exceed (shipped: configurator=acceptEdits).
+# "bypassPermissions" is deliberately ABSENT — it
 # would reduce allowed_tools to mere auto-approval and is NEVER honored for
 # executors, whatever the role says; see load_all_executors for the clamp.
 _EXECUTOR_PERMISSION_MODE_RANK: dict[str, int] = {
@@ -122,26 +122,14 @@ def _is_editor_backup(name: str) -> bool:
 
 _DELEGATE_MCP_TOOL = "mcp__casa-framework__delegate_to_agent"
 
-# Containment Stage 2 config-validate guard (belt-and-suspenders — see
-# doctrine "Scope fence" in the stage-2 design). Stage 2's per-uid
-# filesystem isolation stops a dropped engagement uid from `open()`-ing a
-# sibling's workspace, but it does NOT stop an executor from asking
-# casa-core (root) to do that read/act FOR it via a bridge tool that
-# accepts a caller-controlled ``engagement_id`` —
-# ``peek_engagement_workspace``, ``list_engagement_workspaces``,
-# ``delete_engagement_workspace`` — or via the whole-server
-# ``mcp__casa-framework`` grant, which the v0.166 bridge grant-gate
-# (``engagement_casa_grant_names``, tools.py) treats as "any casa tool".
-# No shipped executor grants any of these today; this set exists purely so
-# a future definition.yaml edit can't silently reopen the confused-deputy
-# path. Bare server-level grant plus the three admin/workspace tools —
-# exact tokens, no prefix matching (a real per-tool grant like
+# Config-validate guard: no executor may hold the whole-server
+# ``mcp__casa-framework`` grant, which grants every casa tool at once. No
+# shipped executor grants it; this set exists so a future definition.yaml
+# edit cannot silently widen an executor to all of Casa's tools. Exact
+# tokens, no prefix matching (a real per-tool grant like
 # ``mcp__casa-framework__query_engager`` must never trip this).
 _FORBIDDEN_EXECUTOR_GRANTS: frozenset[str] = frozenset({
     "mcp__casa-framework",
-    "mcp__casa-framework__peek_engagement_workspace",
-    "mcp__casa-framework__list_engagement_workspaces",
-    "mcp__casa-framework__delete_engagement_workspace",
 })
 
 
@@ -434,14 +422,8 @@ def validate_config_repo(
                     errors.append(
                         f"executor {entry!r}: definition.yaml tools.allowed "
                         f"grants {forbidden_hits} — the server-level "
-                        f"mcp__casa-framework grant and the "
-                        f"*_engagement_workspace bridge tools accept a "
-                        f"caller-controlled engagement_id and let "
-                        f"casa-core (root) read/act on ANY engagement's "
-                        f"workspace; Stage 2's per-uid filesystem isolation "
-                        f"does not close this confused-deputy path "
-                        f"(containment stage 2 design, 'Scope fence'), so "
-                        f"no executor may hold them"
+                        f"mcp__casa-framework grant hands an executor every "
+                        f"casa tool at once, so no executor may hold it"
                     )
 
             # A dir WITHOUT definition.yaml fails to load as an executor at
@@ -1821,10 +1803,8 @@ def load_all_specialists(
 def read_hooks_document(path: str) -> dict[str, Any]:
     """THE reader for executor hooks documents (#312 / Sol r1-2).
 
-    Env-substituting (``_read_yaml``), shared by load-time validation, the
-    HTTP policy-map builder (``casa_core._build_executor_cc_hook_policies``)
-    and the workspace settings bridge (``drivers.workspace``). Pre-fix those
-    consumers re-read the file with a raw ``yaml.safe_load`` while validation
+    Env-substituting (``_read_yaml``), shared by load-time validation and
+    every enforcement-time consumer. Pre-fix those consumers re-read the file with a raw ``yaml.safe_load`` while validation
     substituted ``${VAR}`` references — a document could validate yet break
     (or silently change) at enforcement time. One reader, one document.
     """
@@ -1981,34 +1961,6 @@ def load_all_executors(
             hooks_abs, hooks_doc = _resolve_executor_hooks(
                 exec_dir, entry, defn, present)
 
-            # Task 3 (#360): a claude_code executor must DECLARE the
-            # containment floor itself (block_dangerous_bash + path_scope,
-            # each with its own params) — we never synthesize path_scope
-            # with guessed prefixes, so an absent/incomplete declaration is
-            # a load-time LoadError, not a silent narrower default. Gated on
-            # `driver` read straight from the definition dict (the schema
-            # constrains it to in_casa|claude_code; no default invented
-            # here) — the floor does not apply to in_casa executors, whose
-            # enforcement-time reread is Task 4.
-            if defn["driver"] == "claude_code":
-                from hooks import missing_required_cc_policies
-                declared_policy_names = {
-                    p.get("policy")
-                    for p in (hooks_doc.get("pre_tool_use") or [])
-                    if isinstance(p, dict)
-                }
-                missing_floor = missing_required_cc_policies(
-                    declared_policy_names)
-                if missing_floor:
-                    raise LoadError(
-                        f"executor {entry!r}: driver claude_code requires "
-                        f"declaring the containment floor "
-                        f"{sorted(missing_floor)} in "
-                        f"{hooks_abs or 'a hooks file (none present)'} — "
-                        f"each floor policy must be declared with its own "
-                        f"params, never synthesized"
-                    )
-
             observer_name = defn.get("observer_policy_file", "observer.yaml")
             observer_abs = (os.path.join(exec_dir, observer_name)
                             if observer_name in present else None)
@@ -2110,8 +2062,7 @@ def load_all_executors(
             # turn the clamped allowlist into mere auto-approval and
             # resurrect everything the allowlist excludes. The role
             # artifact's required tools.permission_mode (role.v1.json — a
-            # free string; shipped: configurator=acceptEdits,
-            # plugin-developer=auto) is the CEILING: the definition may
+            # free string; shipped: configurator=acceptEdits) is the CEILING: the definition may
             # declare an equally- or less-permissive mode, never a more
             # permissive one, and "bypassPermissions" is NEVER honored for
             # an executor regardless of the role (it has no rank).
@@ -2164,12 +2115,6 @@ def load_all_executors(
                 role_checksum=executor_role_slot.checksum,
                 resolved_model=executor_role_slot.resolved_model.effective,
                 effective_config_digest=executor_identity.effective_config_digest,
-                # Plan 4a additions
-                extra_dirs=list(defn.get("extra_dirs", [])),
-                mirror_chat_to_topic=bool(defn.get("mirror_chat_to_topic", True)),
-                plugins_dir=(os.path.join(exec_dir, "plugins")
-                            if os.path.isdir(os.path.join(exec_dir, "plugins"))
-                            else ""),
                 # M4 addition (engagement memory)
                 memory=_build_executor_memory(memory_block),
             )

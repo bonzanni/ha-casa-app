@@ -31,10 +31,8 @@ deleting an entry from the file changes nothing until that reload runs. Every wr
 one lock across its read-modify-write, so overlapping edits cannot lose one another; an
 Erase everything uninstall deletes the removed plugin's lines itself and runs the reload
 ([`plugin-erasure.md`](plugin-erasure.md), INV-PLUG-040). **Plugin media
-flows through an outbox** — the shared directory (operator-relocatable by environment
-variable) for an ordinary engagement, or a private per-uid directory for a uid-dropped
-one, since that producer can no longer write the shared, non-group-writable tree — with
-atomic claim semantics, size and type gates, and periodic orphan reaping; consumption is
+flows through an outbox** — one shared directory, operator-relocatable by environment
+variable — with atomic claim semantics, size and type gates, and periodic orphan reaping; consumption is
 destructive by design.
 
 ## Contracts & invariants
@@ -61,7 +59,7 @@ delegation against the current environment. Every successful reload — plugin-e
 the secrets, or any agent-reconstructing scope — kicks the episode worker.
 
 What it does not cover: the executor path, whose options builder hands out plugin paths
-without this gate (the same asymmetry as INV-PLUG-006 — a configurator or plugin-developer
+without this gate (the same asymmetry as INV-PLUG-006 — a configurator
 executor must be able to work on a plugin whose secrets are not wired yet). Since #923 the
 paths handed out there are Casa's own: an executor resolves the bundled population only,
 so this ungated hand-out no longer reaches an operator-installed plugin at all. A *malformed*
@@ -157,12 +155,7 @@ creation over.
 
 It covers every path that attaches a plugin: the three in-process options builders
 (resident/specialist Agent, delegated specialist, executor — including its by-path resume
-branch) and the engagement run script, which hands recorded artifacts to a *supervised*
-CLI via `--plugin-dir` and so sits outside the option builders entirely. The run script's
-overlay is derived inside the renderer from the plugin directories being attached rather
-than assembled by each caller — the driver's start path and boot reconciliation both
-render that same service pair, and a per-caller contract is how one of them gets
-forgotten.
+branch).
 
 What it does not cover: the exemption is not phase-scoped. An exempt plugin loads in
 *ordinary* sessions too, on empty credentials, not only in the session that runs its

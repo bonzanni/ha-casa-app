@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 pytestmark = [pytest.mark.unit]
 
 from drivers.brief import (  # noqa: E402
     COMPLETION_ACCOUNTING_LINE,
-    FIRST_CONTACT_PARAGRAPH,
-    brief_task_for,
     normalize_brief,
     render_brief_task,
     validate_brief,
@@ -102,62 +98,35 @@ class TestRenderBriefTask:
         return normalize_brief(base)
 
     def test_objective_only_clean(self):
-        out = render_brief_task(self._n(), two_phase=False)
+        out = render_brief_task(self._n())
         assert "## Objective\nDo X" in out
         assert "## Acceptance criteria" not in out
         assert "## Process requirements" not in out
         assert "## Context" not in out
         assert COMPLETION_ACCOUNTING_LINE in out
-        assert FIRST_CONTACT_PARAGRAPH not in out
 
     def test_verbatim_process_strings_present(self):
         out = render_brief_task(
             self._n(process_requirements=["Run `make test`", "NEVER force-push"]),
-            two_phase=False,
         )
         assert "Run `make test`" in out
         assert "NEVER force-push" in out
         assert "VERBATIM" in out
 
     def test_completion_line_unconditional_both_interaction_values(self):
-        for ir in (True, False):
-            out = render_brief_task(
-                self._n(interaction_required=ir), two_phase=False,
-            )
-            assert COMPLETION_ACCOUNTING_LINE in out
-
-    def test_two_phase_paragraph_only_when_two_phase(self):
-        assert FIRST_CONTACT_PARAGRAPH in render_brief_task(
-            self._n(interaction_required=True), two_phase=True,
-        )
-        assert FIRST_CONTACT_PARAGRAPH not in render_brief_task(
-            self._n(interaction_required=True), two_phase=False,
-        )
+        # interaction_required is accepted and ignored: the render is the same
+        # either way, and the completion line is always there.
+        outs = [render_brief_task(self._n(interaction_required=ir))
+                for ir in (True, False)]
+        assert outs[0] == outs[1]
+        assert COMPLETION_ACCOUNTING_LINE in outs[0]
 
 
-class TestBriefTaskFor:
-    def _rec(self, origin, task="canon task"):
-        return SimpleNamespace(origin=origin, task=task)
-
-    def test_no_brief_falls_back_to_task(self):
-        rec = self._rec({})
-        defn = SimpleNamespace(driver="claude_code")
-        assert brief_task_for(rec, defn) == "canon task"
-
+class TestRenderRawBrief:
     def test_brief_renders_envelope(self):
-        rec = self._rec({"brief": {"objective": "O", "process_requirements": ["P1"]}})
-        defn = SimpleNamespace(driver="claude_code")
-        out = brief_task_for(rec, defn)
+        # A raw brief as engage_executor receives it: normalize, then render.
+        raw = {"objective": "O", "process_requirements": ["P1"]}
+        out = render_brief_task(normalize_brief(raw))
         assert "## Objective\nO" in out
         assert "P1" in out
         assert COMPLETION_ACCOUNTING_LINE in out
-
-    def test_two_phase_gated_to_claude_code(self):
-        brief = {"objective": "O", "interaction_required": True}
-        rec = self._rec({"brief": brief})
-        cc = brief_task_for(rec, SimpleNamespace(driver="claude_code"))
-        in_casa = brief_task_for(rec, SimpleNamespace(driver="in_casa"))
-        assert FIRST_CONTACT_PARAGRAPH in cc
-        assert FIRST_CONTACT_PARAGRAPH not in in_casa
-        # completion line reaches both.
-        assert COMPLETION_ACCOUNTING_LINE in in_casa

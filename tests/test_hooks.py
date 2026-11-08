@@ -34,7 +34,7 @@ async def test_allow_safe_command():
 
 async def test_block_bash_write_to_plugins_registry():
     """Sol #5: block_dangerous_bash also denies a Bash write into /config/plugins
-    (path_scope ignores Bash) — closes the claude_code executor HTTP-hook path."""
+    (path_scope ignores Bash)."""
     data = {"tool_name": "Bash",
             "tool_input": {"command": "echo x > /config/plugins/registry.json"}}
     result = await block_dangerous_commands(data, "tid-plugins", CTX)
@@ -42,7 +42,7 @@ async def test_block_bash_write_to_plugins_registry():
 
 
 async def test_allow_bash_read_of_plugins_store():
-    """Reading the store (the plugin-developer's --plugin-dir'd content) is fine."""
+    """Reading the store (loaded plugin content) is fine."""
     data = {"tool_name": "Bash",
             "tool_input": {"command": "cat /config/plugins/store/x/y/plugin.json"}}
     result = await block_dangerous_commands(data, "tid-plug-read", CTX)
@@ -585,74 +585,6 @@ class TestNormalizePathSlashCollapse:
 
 
 # ------------------------------------------------------------------
-# v0.37.2 (C-1): engagement_permission_relay wired into casa_core
-# ------------------------------------------------------------------
-
-
-class TestEngagementPermissionRelayWired:
-    """v0.37.2 (C-1): the relay policy is wired into casa_core's built
-    cc_hook_policies dict via ``_wire_engagement_permission_relay``.
-
-    The wiring helper is invoked from ``casa_core.main()`` on the
-    internal-socket path. The smoke verifies the helper produces a dict
-    entry shaped correctly: name + ``.*`` matcher + an awaitable callback.
-    """
-
-    def test_policy_registered_under_correct_name_and_matcher(self):
-        from unittest.mock import MagicMock
-        from casa_core import _wire_engagement_permission_relay
-
-        policies: dict = {}
-        _wire_engagement_permission_relay(
-            policies,
-            engagement_registry=MagicMock(),
-            telegram_channel=MagicMock(),
-        )
-
-        assert "engagement_permission_relay" in policies
-        matcher, cb = policies["engagement_permission_relay"]
-        assert matcher == r".*"
-        assert callable(cb)
-
-    def test_deprecated_permission_queue_surface_gone(self):
-        """#469 rode along on the v0.75.0 deprecation note: the queue dict
-        and the relay's accepted-and-ignored ``queues=`` kwarg are deleted —
-        the operator verdict flows only through ``verdict_broker.BROKER``."""
-        import inspect
-        from channels import channel_handlers
-        from hooks import make_engagement_permission_relay
-
-        assert not hasattr(channel_handlers, "PERMISSION_QUEUES")
-        assert not hasattr(channel_handlers, "_PERMISSION_QUEUES")
-        params = inspect.signature(make_engagement_permission_relay).parameters
-        assert "queues" not in params
-
-
-class TestEngagementButtonsReminderWired:
-    """R4 (v0.89.0, buttons-always): the engagement_buttons_reminder policy is
-    wired into casa_core's built cc_hook_policies dict via
-    ``_wire_engagement_buttons_reminder`` at the same site as the
-    permission relay (the internal-socket path)."""
-
-    async def test_policy_registered_under_skill_matcher(self):
-        # async to satisfy the module-level asyncio pytestmark (the assertion
-        # body is synchronous) — avoids the "marked asyncio but not async"
-        # PytestWarning while keeping output pristine.
-        from unittest.mock import MagicMock
-        from casa_core import _wire_engagement_buttons_reminder
-
-        policies: dict = {}
-        _wire_engagement_buttons_reminder(
-            policies, engagement_registry=MagicMock(),
-        )
-
-        assert "engagement_buttons_reminder" in policies
-        matcher, cb = policies["engagement_buttons_reminder"]
-        assert matcher == r"Skill"
-        assert callable(cb)
-
-
-# ------------------------------------------------------------------
 # I-2 (v0.69.8): agent-home settings.json self-grant guard
 # ------------------------------------------------------------------
 
@@ -864,8 +796,8 @@ class TestTriggerFileWriteGuard:
             "file_path": "/config/agents/specialists/finance/triggers.yaml"}) == {}
 
     async def test_denies_a_bash_write_form(self):
-        """Residents and the plugin-developer executor carry broad Bash, and
-        path_scope does not match Bash at all."""
+        """An agent granted Bash carries it broadly, and path_scope does not
+        match Bash at all."""
         out = await self._run("Bash", {
             "command": "printf 'x' > /config/agents/butler/triggers.yaml"})
         assert _decision(out) == "deny"
@@ -1031,7 +963,7 @@ class TestTriggerFileWriteGuardBypasses:
                     "cat /config/agents/butler/triggers.yaml 2>/dev/null",
                     "head -20 agents/butler/triggers.yaml | grep name",
                     "ls -la /config/agents/butler/",
-                    # r3, Terra — plugin-developer's ordinary git workflow on an
+                    # r3, Terra — an ordinary read-only git workflow on an
                     # unrelated triggers.yaml. A file tool cannot produce a
                     # diff, so refusing this had no equivalent.
                     "git diff -- triggers.yaml",
@@ -1078,16 +1010,3 @@ class TestTriggerFileWriteGuardBypasses:
             "Bash", {"command": "printf x > /data/engagements/e1/triggers.yaml"},
             cwd="/data/engagements/e1")
         assert _decision(out) == "deny"
-
-
-def test_required_floor_and_canonical_matchers():
-    """Test the claude_code containment floor and canonical matcher accessor."""
-    from hooks import (REQUIRED_CLAUDE_CODE_POLICIES,
-                       missing_required_cc_policies, canonical_matcher_for)
-    assert REQUIRED_CLAUDE_CODE_POLICIES == frozenset(
-        {"block_dangerous_bash", "path_scope"})
-    assert missing_required_cc_policies([]) == REQUIRED_CLAUDE_CODE_POLICIES
-    assert missing_required_cc_policies(
-        ["block_dangerous_bash", "path_scope"]) == frozenset()
-    assert canonical_matcher_for("block_dangerous_bash") == "Bash"
-    assert canonical_matcher_for("path_scope") == "Read|Write|Edit"

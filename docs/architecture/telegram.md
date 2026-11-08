@@ -9,7 +9,7 @@ last_reviewed: 2026-10-06
 ## Scope
 
 How Telegram messages become turns and how answers come back: transport selection,
-authentication, the per-topic causal log, and interactive keyboards. How an answer is
+authentication, and interactive keyboards. How an answer is
 rendered and paginated for the platform — the markdown grammar, the message budgets,
 link-destination fallbacks and the UTF-16 measurement — is
 [`architecture/telegram-rendering.md`](telegram-rendering.md). It does not cover the Bot API
@@ -72,51 +72,10 @@ can in principle swap; and a message dispatched *before* the `/new` is not order
 lock at all — an already-in-flight turn races the reset and is handled by the session
 registry's session-id checks instead: the reset removes only the session it snapshotted.
 
-**Ordering in a topic is a property of the sequencer, not of Telegram sends.** An engagement
-topic is a causal log: a single serialized writer keeps narration, discrete posts and edits
-in an order that matches what actually happened. That guarantee belongs to the sequencer
-seam, and **only claude-code engagement topics have one** — platform notices for other
-engagements post directly to the topic, so an in-casa specialist topic sits outside the
-ordering guarantee entirely. **A direct send bypasses it, and nothing mechanically prevents
-one** — fallback paths exist for when no driver seam is present, and they are outside the
-ordering guarantee.
-
-**Narration seals on what landed, not on what was attempted.** Posting anything below the
-open narration message seals it — nothing edits it again — so the seal follows a
-*confirmed* send. A discrete send that fails outright leaves the narration open and
-editable, because no message went below it. Platform and completion notices follow the same
-rule: a notice whose send definitely failed posts nothing, changes no state, and leaves the
-narration open. A send that merely times out is treated as ambiguous and seals
-anyway: the platform may have accepted the message before the response was lost, and a later
-edit landing above a message that does exist is the worse outcome. The same rule governs the
-relay-mediated path, where a discrete post runs through a caller-supplied poster: it seals
-when that poster confirms a message id, when the poster reports a compensated physical send,
-or when it is cancelled mid-flight (ambiguous, like a timeout) — but not when it fails.
-
-**A reply that landed is the answer; the text right after it is not posted.** The agent's CLI
-does not let a turn end without visible text, so after answering with a `reply` the agent
-writes closing text, which repeats the answer or fills the slot. The relay therefore drops
-the agent's text after a `reply` that landed — the intent that reply block matched resolved
-ok, at the block or earlier out of band — until the agent's next tool call. A reply that
-failed, was refused, or had not yet posted when the relay reached its block leaves the
-following text posting, since that text may be all the operator gets. The relay's cursor
-records which reply blocks landed, so a replay after a restart rebuilds the narration from
-the same frames that were posted. A crash between a reply landing and that record being saved
-re-reads the reply as unlanded, so its closing text may post once — the relay's ordinary
-at-least-once contract. The same rule applies after an `ask`, made as the only tool call of
-its step, whose result tells the agent to end its turn silently — it expired, or was refused
-because the operator is away, a question is already open or an operator message is waiting
-unread: the relay reads that result from the agent's tool-result frame, drops the text that
-follows until the next tool call, and records it the same way. Any other ask outcome, an
-answer or another refusal, leaves the following text posting.
-
-**The turn's first output threads to the message that triggered it.** The inbound envelope
-records a reply target that whichever output posts first this turn consumes — narration, a
-deferred reply, or an ask keyboard. It is one-shot, so later output in the same turn is not a
-reply. Consumption is tied to success: a send that fails or is cancelled restores the target
-so the next successful output still threads, and restoring never overwrites a newer target
-set by a later envelope. A target the operator has deleted meanwhile does not fail the send:
-the output posts without the reply link.
+**No single writer orders a topic's output.** An engagement topic's posts — a turn's
+stream, an executor's step log, platform and completion notices — are each sent directly, so
+their relative order is the order in which their sends complete. Nothing mechanically orders
+one direct send against another; the per-topic handler lock orders the *inbound* side only.
 
 **Text leaves for the Bot API through one request seam, and a character the platform cannot
 carry is replaced there.** The client library sends every request as UTF-8 form data, so a
@@ -194,14 +153,6 @@ validates the claim token, and finishing removes it and resolves its waiter.
 
 What it does not cover: it does not make the keyboard edit succeed. Settlement hooks run
 asynchronously, and their failures are logged rather than reversing the resolution.
-
-**INV-TG-004**: Writer operations on a sequenced topic are serialized under one lock.
-
-Enforced by the sequencer for narration, discrete posts and edits, notices, and inbound
-high-water advances.
-
-What it does not cover, and it is the thing to check before assuming ordering: direct sends
-that bypass the sequencer, including the fallback used when no driver seam is present.
 
 **INV-TG-006**: A one-shot operator notice is released for re-offer if and only if no part of it reached the operator.
 
@@ -325,8 +276,6 @@ route's authentication, and the channel rebuild.
 and authorization metadata, the broker registration, and the settlement hook — six places,
 none of which will tell you the others were missed.
 
-**A new topic output** should go through the sequencer seam if causal order matters. A direct
-send is available and is not prevented.
 
 ## Source & test map
 
@@ -338,7 +287,6 @@ send is available and is not prevented.
 - `casa/rootfs/opt/casa/channels/telegram.py::_SurrogateSafeRequest`
 - `casa/rootfs/opt/casa/channels/telegram.py::_parse_callback_data`
 - `casa/rootfs/opt/casa/casa_core.py::_make_telegram_update_handler`
-- `casa/rootfs/opt/casa/channels/output_sequencer.py::OutputSequencer`
 - `casa/rootfs/opt/casa/verdict_broker.py::VerdictBroker`
 - `casa/rootfs/opt/casa/channels/telegram.py::_InboundReservation`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.engagement_inbound_reservation`

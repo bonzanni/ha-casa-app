@@ -164,8 +164,8 @@ def test_executors_yaml_rejected_on_specialist(tmp_path):
 
 
 def test_assistant_delegates_yaml_has_no_executor_entries():
-    """The seed assistant/delegates.yaml must not contain configurator,
-    plugin-developer, or engagement — those moved to executors.yaml."""
+    """The seed assistant/delegates.yaml must not contain configurator or
+    engagement — executors live in executors.yaml."""
     from agent_loader import _read_yaml
     path = (
         "casa/rootfs/opt/casa/defaults/agents/assistant/delegates.yaml"
@@ -173,7 +173,6 @@ def test_assistant_delegates_yaml_has_no_executor_entries():
     data = _read_yaml(path)
     agents = {entry["agent"] for entry in (data.get("delegates") or [])}
     assert "configurator" not in agents
-    assert "plugin-developer" not in agents
     assert "engagement" not in agents
 
 
@@ -196,7 +195,7 @@ def test_assistant_executors_yaml_seed_loads():
     # The remaining seed list must match the real executor registry shape;
     # see test_assistant_prompts.test_executors_yaml_lists_only_real_registered_executor_types
     # for the cross-check against agents/executors/.
-    assert {"configurator", "plugin-developer"}.issubset(types)
+    assert {"configurator"}.issubset(types)
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +253,7 @@ def _write_minimal_executor(base, name, body_override=None):
     os.makedirs(os.path.join(d, "doctrine"), exist_ok=True)
     # The shipped types pin the full model id in their real role artifact.
     model = ("claude-sonnet-5"
-             if name in ("configurator", "plugin-developer") else "sonnet")
+             if name == "configurator" else "sonnet")
     body = body_override or textwrap.dedent(f"""\
         schema_version: 1
         type: {name}
@@ -277,24 +276,24 @@ class TestLoadAllExecutorsIsolation:
         from agent_loader import load_all_executors
         # Valid configurator
         _write_minimal_executor(str(tmp_path), "configurator")
-        # Broken plugin-developer (typo permission_mode)
+        # Broken second executor (typo permission_mode)
         broken_body = textwrap.dedent("""\
             schema_version: 1
-            type: plugin-developer
+            type: broken-exec
             description: A reasonably long description that meets minLength 20.
             model: sonnet
-            driver: claude_code
+            driver: in_casa
             enabled: true
             tools:
               allowed: [Read]
               permission_mode: acceptedits
         """)
-        _write_minimal_executor(str(tmp_path), "plugin-developer",
+        _write_minimal_executor(str(tmp_path), "broken-exec",
                                  body_override=broken_body)
         loaded, failed = load_all_executors(str(tmp_path))
         assert list(loaded.keys()) == ["configurator"]
         assert len(failed) == 1
-        assert failed[0][0] == "plugin-developer"
+        assert failed[0][0] == "broken-exec"
         assert "permission_mode" in failed[0][1]
 
     def test_all_broken_returns_empty_loaded(self, tmp_path):
@@ -329,9 +328,7 @@ class TestLoadAllExecutorsIsolation:
         an empty loaded + failed.
         """
         import os
-        from agent_loader import load_all_executors, LoadError
-        # Pre-create executors as a FILE (not directory).
-        executors_path = os.path.join(str(tmp_path), "executors")
+        from agent_loader import load_all_executors
         # Need executors path to exist as a file. But the function
         # uses os.path.isdir — a file at that path means isdir=False
         # and the function returns ({}, []) per the early-return.
@@ -364,8 +361,8 @@ class TestLoadAllExecutorsBroadIsolation:
         from agent_loader import load_all_executors
         # configurator: valid
         _write_minimal_executor(str(tmp_path), "configurator")
-        # plugin-developer: definition.yaml is not parseable YAML
-        d = os.path.join(str(tmp_path), "executors", "plugin-developer")
+        # broken-exec: definition.yaml is not parseable YAML
+        d = os.path.join(str(tmp_path), "executors", "broken-exec")
         os.makedirs(os.path.join(d, "doctrine"), exist_ok=True)
         with open(os.path.join(d, "definition.yaml"), "w", encoding="utf-8") as fh:
             fh.write("schema_version: 1\ntype: : : : invalid yaml: [\n")
@@ -374,7 +371,7 @@ class TestLoadAllExecutorsBroadIsolation:
         loaded, failed = load_all_executors(str(tmp_path))
         assert list(loaded.keys()) == ["configurator"]
         assert len(failed) == 1
-        assert failed[0][0] == "plugin-developer"
+        assert failed[0][0] == "broken-exec"
 
 
 class TestDoctrineDirOptOut:

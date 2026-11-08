@@ -4,9 +4,9 @@
 turn on client-map liveness alone (``is_alive`` is ``engagement.id in
 self._clients``), with no registry status fence, so a turn dispatched to a
 background delivery task reaches ``await client.query(prompt)`` on an
-engagement a racing terminal writer already finalized. INV-ENG-009's fence
-exists only for ``claude_code`` (``claude_code_driver.py``'s
-``begin_turn_delivery`` call is its single caller tree-wide).
+engagement a racing terminal writer already finalized. At the time,
+INV-ENG-009's fence existed only for the Claude Code driver, since removed (its
+``begin_turn_delivery`` call was the single caller tree-wide).
 
 **#663 — the PRE-admission window.** A broker-driven system continuation's
 admission ticket is born only inside ``deliver_system_turn``, and the in_casa
@@ -782,11 +782,12 @@ class TestACompletionRacingTheContinuationIsRefused:
             agent_mod.active_engagement_driver = None
 
     async def test_a_reservation_born_during_finalize_is_vetoed_by_the_hook(
-            self, tmp_path, fake_telegram_bot):
-        """The window itself. ``_finalize_engagement`` drains the inbound
-        spool BEFORE ``try_transition_terminal`` runs its terminal hook, so a
-        tap committing there is admitted AFTER ``emit_completion``'s pre-check
-        read zero — the exact interleaving the dossier reproduced. The refusal
+            self, tmp_path, fake_telegram_bot, monkeypatch):
+        """The window itself. ``_finalize_engagement`` awaits the summary
+        run's registration BEFORE ``try_transition_terminal`` runs its
+        terminal hook, so a tap committing there is admitted AFTER
+        ``emit_completion``'s pre-check read zero — the exact interleaving the
+        dossier reproduced. The refusal
         must carry the TERMINAL HOOK's copy, not the pre-check's, proving the
         veto fired inside the transition's critical section.
 
@@ -807,11 +808,15 @@ class TestACompletionRacingTheContinuationIsRefused:
                 acks=_Acks(events), reconcile_cb=None,
                 inbound_reservation=_lease(ch, rec.id, events))
 
-            async def _drain(engagement):
+            import tools
+            real_register = tools._register_summary_run
+
+            async def _register(engagement, **kw):
                 # The operator's tap lands HERE — after the handler pre-check
                 # read (0, 0, 0), before the terminal hook re-reads.
                 coord.on_commit_sync(0, {})
-            drv.drain_inbound_spool = _drain
+                return await real_register(engagement, **kw)
+            monkeypatch.setattr(tools, "_register_summary_run", _register)
 
             payload = await _emit_ok(rec)
             facts = (payload.get("status"), payload.get("kind"),
@@ -1043,10 +1048,9 @@ class TestTheFenceCoversTheDecisionNotTheDelivery:
     That limit is not closable here and must not be closed by widening the
     fence: excluding terminal transitions until the SDK write completed would
     hold a termination out across an unbounded client call, which is exactly
-    what the terminal-hook family must never do. It is the same limit the
-    claude_code half has always carried — ``begin_turn_delivery``'s own
-    docstring says it fences the first byte only and that stopping an in-flight
-    turn is ``driver.cancel``'s job. Pinned here so the documented boundary is
+    what the terminal-hook family must never do. ``begin_turn_delivery``'s own
+    docstring states the same limit: it fences the decision to deliver only,
+    and stopping an in-flight turn is ``driver.cancel``'s job. Pinned here so the documented boundary is
     a tested statement rather than prose, and so a future widening is a visible
     test change rather than a silent one.
     """

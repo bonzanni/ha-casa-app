@@ -78,7 +78,6 @@ REQUIRED_FRAMEWORK_TOOLS: dict[str, set[str]] = {
         "emit_completion", "config_git_commit",
         "cleanup_engagement_topics",       # v0.65.0 topic retention: doctrine tells it to
     },
-    "plugin-developer": {"emit_completion"},
 }
 
 
@@ -95,7 +94,7 @@ def _agent_configs() -> list[tuple[str, Path, dict]]:
 
 def test_configs_discovered() -> None:
     roles = {r for r, _, _ in _agent_configs()}
-    assert {"assistant", "butler", "configurator", "plugin-developer"} <= roles
+    assert {"assistant", "butler", "configurator"} <= roles
 
 
 def test_voice_job_broker_tools_exist_on_framework_surface() -> None:
@@ -139,7 +138,7 @@ def test_every_allowed_tool_resolves() -> None:
     assert not violations, "dangling tool grants:\n  " + "\n  ".join(violations)
 
 
-def test_configurator_has_no_bash_but_plugin_developer_keeps_it() -> None:
+def test_configurator_has_no_bash() -> None:
     """Round-2 W1 (Sol+Terra ratified, v0.101.0): the configurator's Bash was
     removed at the capability layer — argv inspection (managed_component_guard)
     can never close the script-writer/unmodeled-binary bypass class, and a
@@ -147,13 +146,11 @@ def test_configurator_has_no_bash_but_plugin_developer_keeps_it() -> None:
     BOTH the runtime allowlist source (definition.yaml — feeds
     ClaudeAgentOptions.allowed_tools via agent_loader.load_all_executors ->
     tools._build_executor_options) and the canonical role artifact
-    (role.yaml). The plugin-developer KEEPS Bash (it builds plugins)."""
+    (role.yaml)."""
     by_role = {r: d for r, _, d in _agent_configs()}
     cfg_allowed = (by_role["configurator"].get("tools") or {}).get("allowed") or []
     assert "Bash" not in cfg_allowed, (
         "configurator definition.yaml must NOT allow Bash (round-2 W1)")
-    pd_allowed = (by_role["plugin-developer"].get("tools") or {}).get("allowed") or []
-    assert "Bash" in pd_allowed, "plugin-developer must keep Bash"
     role_yaml = yaml.safe_load(
         (CASA / "defaults" / "roles" / "executor" / "configurator" /
          "role.yaml").read_text(encoding="utf-8"))
@@ -321,8 +318,8 @@ def _grant_carrier_paths() -> dict[str, list[Path]]:
 def test_no_shipped_agent_artifact_selects_wipe_memory():
     by_kind = _grant_carrier_paths()
     assert len(by_kind["runtime"]) == 3
-    assert len(by_kind["definition"]) == 2
-    assert len(by_kind["role"]) == 5
+    assert len(by_kind["definition"]) == 1
+    assert len(by_kind["role"]) == 4
 
     carriers: list[tuple[Path, frozenset[str]]] = []
     for paths in by_kind.values():
@@ -332,7 +329,7 @@ def test_no_shipped_agent_artifact_selects_wipe_memory():
             if isinstance(allowed, str):
                 allowed = allowed.split()
             carriers.append((path, frozenset(str(x) for x in allowed)))
-    assert len(carriers) == 10
+    assert len(carriers) == 8
 
     selected_wipes = [
         (path, tool.name)
@@ -345,6 +342,6 @@ def test_no_shipped_agent_artifact_selects_wipe_memory():
     # The predicate itself is exercised, so a selector that stopped selecting
     # anything cannot make the assertion above pass for the wrong reason.
     assert sum(len(tools.select_casa_tools(allowed)) > 0
-               for _path, allowed in carriers) == 10
+               for _path, allowed in carriers) == 8
     assert len(tools.select_casa_tools(
         frozenset({"mcp__casa-framework__wipe_memory"}))) == 1

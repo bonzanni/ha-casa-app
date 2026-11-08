@@ -4,11 +4,9 @@ session must be inert — no reads, no work-launching, no media — and an
 in-flight read that straddles the clamp must come out filtered at the new
 floor.
 
-Three gates pinned here:
-  1. the in-process tool fence (in_casa engagements dispatch tools in-process,
-     so the internal-socket choke point alone cannot cover them);
-  2. the internal-socket choke point (claude_code executors);
-  3. the re-read in the memory tools (a clamp landing while a read runs
+Two gates pinned here:
+  1. the in-process tool fence (engagements dispatch tools in-process);
+  2. the re-read in the memory tools (a clamp landing while a read runs
      reads THIS result again at the new floor, not just the next one);
 plus the in_casa driver's last-instant launch gate (a clamp landing during
 client open aborts the pre-clamp prompt instead of delivering it).
@@ -16,7 +14,6 @@ client open aborts the pre-clamp prompt instead of delivering it).
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -54,7 +51,6 @@ class TestInProcessToolFence:
     async def test_pending_record_refuses_the_tool(
         self, tmp_path, monkeypatch, tool_name, args,
     ):
-        import agent as agent_mod
         import tools
         reg, rec = await _pending_record(tmp_path)
         token = tools.engagement_var.set(rec)
@@ -81,69 +77,6 @@ class TestInProcessToolFence:
         finally:
             tools.engagement_var.reset(token)
         assert json.loads(_text(res))["status"] == "ok"
-
-
-class TestChokePointFence:
-    async def test_internal_tools_call_refuses_pending_engagement(
-        self, tmp_path,
-    ):
-        from aiohttp.test_utils import make_mocked_request  # noqa: F401
-        import json as _json
-
-        from internal_handlers import _make_internal_tools_call_handler
-
-        reg, rec = await _pending_record(tmp_path)
-        called = {}
-
-        async def fake_tool(arguments):
-            called["yes"] = True
-            return {"content": [{"type": "text", "text": "{}"}]}
-
-        handler = _make_internal_tools_call_handler(
-            tool_dispatch={"search_memory": fake_tool},
-            engagement_registry=reg,
-        )
-
-        class _Req:
-            async def json(self):
-                return {"name": "search_memory", "arguments": {},
-                        "engagement_id": rec.id,
-                        "engagement_token": rec.auth_token}
-
-        resp = await handler(_Req())
-        body = _json.loads(resp.body.decode())
-        assert "engagement_context_rebuilding" in body["error"]["message"]
-        assert not called
-
-    async def test_emit_completion_stays_reachable_while_pending(
-        self, tmp_path,
-    ):
-        import json as _json
-
-        from internal_handlers import _make_internal_tools_call_handler
-
-        reg, rec = await _pending_record(tmp_path)
-        called = {}
-
-        async def fake_tool(arguments):
-            called["yes"] = True
-            return {"content": [{"type": "text", "text": "{}"}]}
-
-        handler = _make_internal_tools_call_handler(
-            tool_dispatch={"emit_completion": fake_tool},
-            engagement_registry=reg,
-        )
-
-        class _Req:
-            async def json(self):
-                return {"name": "emit_completion", "arguments": {},
-                        "engagement_id": rec.id,
-                        "engagement_token": rec.auth_token}
-
-        resp = await handler(_Req())
-        body = _json.loads(resp.body.decode())
-        assert "error" not in body
-        assert called
 
 
 class TestInFlightReFilter:
@@ -219,104 +152,6 @@ class TestVerifiedTeardown:
         assert driver.is_alive(rec)
         with pytest.raises(RuntimeError, match="did not exit"):
             await driver.invalidate_session(rec)  # retry still refuses
-
-    async def test_claude_code_invalidate_refuses_unconfirmed_down(
-        self, monkeypatch, tmp_path,
-    ):
-        import drivers.claude_code_driver as ccd
-
-        async def _never_down(*, engagement_id, attempts=3):
-            return False
-        monkeypatch.setattr(ccd.s6_rc, "ensure_service_down", _never_down)
-        driver = ccd.ClaudeCodeDriver(
-            engagements_root=str(tmp_path),
-            send_to_topic=AsyncMock(),
-            casa_framework_mcp_url="http://x",
-        )
-        rec = SimpleNamespace(id="e-cc", allocated_uid=0)
-        with pytest.raises(RuntimeError, match="did not confirm down"):
-            await driver.invalidate_session(rec)
-
-
-class TestClaudeCodeStaleLaunch:
-    """Sol+Terra diff-gate r6: the stale gate must run BEFORE the launch
-    installs its background task/spool set — a stale launch spawning them
-    would overwrite the rebuilt engagement's tracked machinery, orphaning
-    the live tasks."""
-
-    def _harness(self, monkeypatch, tmp_path, order):
-        from drivers import s6_rc
-        from drivers.claude_code_driver import ClaudeCodeDriver
-        from test_claude_code_driver import _patch_uid_drop_ok
-
-        _patch_uid_drop_ok(monkeypatch)
-
-        async def fake_cau():
-            return None
-
-        async def fake_start_kw(*, engagement_id):
-            order.append("start_service")
-
-        async def fake_down(*, engagement_id, attempts=3):
-            order.append("ensure_down")
-            return True
-
-        monkeypatch.setattr(s6_rc, "_compile_and_update_locked", fake_cau)
-        monkeypatch.setattr(s6_rc, "start_service", fake_start_kw)
-        monkeypatch.setattr(s6_rc, "ensure_service_down", fake_down)
-        monkeypatch.setattr(
-            s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(tmp_path / "svc-root"))
-        (tmp_path / "svc-root").mkdir()
-        monkeypatch.setattr(
-            ClaudeCodeDriver, "_spawn_background_tasks",
-            lambda self, engagement: order.append("spawn_bg"))
-
-        async def _noop_write(self, engagement, text):
-            order.append("fifo_write")
-        monkeypatch.setattr(ClaudeCodeDriver, "_write_to_fifo", _noop_write)
-
-    async def test_completed_rebuild_interleaving_aborts_before_spawn(
-        self, monkeypatch, tmp_path,
-    ):
-        from drivers.claude_code_driver import ClaudeCodeDriver
-        from drivers.driver_protocol import StaleLaunchError
-        from test_claude_code_driver import _make_defn, _make_record
-
-        order: list[str] = []
-        self._harness(monkeypatch, tmp_path, order)
-
-        rec = _make_record(allocated_uid=200005)
-        # The registry's live record: a clamp→rebuild cycle COMPLETED while
-        # this launch was suspended — flag cleared, generation moved.
-        latest = SimpleNamespace(
-            context_rebuild_pending=False, context_generation=1)
-
-        class FakeReg:
-            def get(self, eid):
-                return latest
-
-        async def send(topic_id, text, **kw):
-            return 4242
-        drv = ClaudeCodeDriver(
-            engagements_root=str(tmp_path / "engagements"),
-            send_to_topic=send,
-            casa_framework_mcp_url="http://x",
-            registry=FakeReg(),
-        )
-        (tmp_path / "engagements").mkdir()
-
-        with pytest.raises(StaleLaunchError) as exc_info:
-            await drv.start(
-                rec, prompt="pre-clamp prompt",
-                options=_make_defn(tmp_path), expected_generation=0)
-
-        assert exc_info.value.record_live is True
-        # The stale launch installed NO machinery over the rebuilt
-        # engagement's, delivered nothing, and left its service alone.
-        assert "spawn_bg" not in order
-        assert "fifo_write" not in order
-        assert "ensure_down" not in order
-
 
 class TestInCasaLaunchGate:
     async def test_clamp_during_client_open_aborts_the_stale_prompt(self):

@@ -12,9 +12,8 @@
 #   Token is never written to any config file.
 #
 # This config is /etc/gitconfig (system-level), so it applies to every
-# git operation regardless of which user or HOME the process runs under
-# — relevant for engagement subprocesses that get a fresh HOME per
-# engagement and would otherwise miss user-scoped git config.
+# git operation regardless of which user or HOME the process runs under,
+# so a process with a HOME of its own still gets it.
 
 [url "https://github.com/"]
     insteadOf = git@github.com:

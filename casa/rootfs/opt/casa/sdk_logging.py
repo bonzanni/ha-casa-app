@@ -9,9 +9,7 @@ log shape is identical and tested in one place.
 Loggers:
 - "sdk"            : per-message dispatch (assistant_message, tool_use,
                      tool_result, turn_done, system_init).
-- "subprocess_cli" : stderr-callback messages (Bug 4) + claude_code
-                     log-line relay (G5 — emitted from
-                     drivers/claude_code_driver.py at DEBUG).
+- "subprocess_cli" : stderr-callback messages (Bug 4).
 
 Per-record `engagement_id` is passed via ``extra={"engagement_id": short}``
 so it flows through ``log_cid.JsonFormatter`` and ``HumanFormatter``

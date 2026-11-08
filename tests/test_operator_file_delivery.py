@@ -241,34 +241,6 @@ async def test_a_file_with_no_plugin_caption_is_still_labelled(recorder, names, 
     assert recorder.deliveries[0][4] == LABEL
 
 
-@pytest.mark.asyncio
-async def test_an_engagements_file_is_claimed_from_its_private_outbox(recorder, names, tmp_path, monkeypatch):
-    """A uid-dropped engagement's producer writes a private outbox; the
-    claim is derived from the authenticated record, exactly as send_media's."""
-    from engagement_uids import UID_BASE
-    private = PluginOutbox(str(tmp_path / "private"))
-    shared = PluginOutbox(str(tmp_path / "shared"))
-    monkeypatch.setattr(plugin_outbox, "_OUTBOX", shared)
-    monkeypatch.setattr(plugin_outbox, "get_engagement_outbox",
-                        lambda uid, **kw: private if uid == UID_BASE + 3 else None)
-    rec = SimpleNamespace(id="eng-1", status="active", allocated_uid=UID_BASE + 3,
-                          origin={"chat_id": 42})
-    path = _put(private, "report.csv")
-    store, _ = _store()
-    hook = rb.make_result_hook(_map(), client_id="c1", store=store)
-    _open(store, identity=_identity(engagement_id="eng-1"))
-    ref, _ = store.deposit(client_id="c1", slot=SLOT, value=path, kind="text")
-    tok = tools_mod.engagement_var.set(rec)
-    try:
-        out = await hook(_post(json.dumps({SLOT: ref})), "call-1", {})
-    finally:
-        tools_mod.engagement_var.reset(tok)
-        private.close()
-        shared.close()
-    assert json.loads(_replacement(out))["casa_delivery"]["status"] == "delivered"
-    assert recorder.deliveries[0][1] == DATA
-
-
 # --- not proven ⇒ withheld, dropped, file consumed ----------------------------
 
 @pytest.mark.asyncio
@@ -416,7 +388,6 @@ async def test_a_claim_that_lands_after_the_bound_is_still_removed(recorder, nam
     after the hook has already withheld. Cancelling a thread does not stop
     it, so claim, capture and removal are one synchronous unit with its own
     cleanup — the file is consumed on this outcome too."""
-    import threading
     import time
     monkeypatch.setattr(rb, "FILE_DELIVERY_TIMEOUT_S", 0.05)
     path = _put(outbox, "report.csv")

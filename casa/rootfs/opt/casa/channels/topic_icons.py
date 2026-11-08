@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 ROLE_CUSTOM_EMOJI_ID: dict[str, str] = {
     # Executors
     "configurator":     "5357315181649076022",  # 📁 folder
-    "plugin-developer": "5350554349074391003",  # 💻 laptop
     # Specialists
     "finance":          "5350452584119279096",  # 💰 money bag
 }

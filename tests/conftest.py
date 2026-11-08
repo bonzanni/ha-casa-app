@@ -428,25 +428,15 @@ async def engagement_fixture(tmp_path):
     return _Fx()
 
 
-# ---------------------------------------------------------------------------
-# Ask validation-gate isolation (v0.84.0 round 4, Task A5).
-# ---------------------------------------------------------------------------
-# ``channels.channel_handlers`` keeps process-global ``ASK_GATES`` +
-# ``_ASK_VALIDATION_OWNERS`` maps. In PRODUCTION request_ids are unique, so a
-# resolved gate lingering for its reattach window never collides. Tests, by
-# contrast, reuse fixed request_ids ("r1", "fu", ...) across files, so a
-# resolved gate left by one test would be read by an unrelated same-id test in
-# another file. Clear both maps around every test (production-inert — nothing
-# imports this fixture; it only resets in-memory test state).
 @pytest.fixture(autouse=True)
 def _agent_active_singletons_restored():
     """#818, generalised for #911 (defect B): snapshot EVERY ``active_*`` name
     on the ``agent`` module at each test's setup and restore THE SNAPSHOT at its
     teardown — restoring names the test deleted and removing names it added.
 
-    ``agent.py`` declares five of them ("written by ``casa_core.main`` so tool
+    ``agent.py`` declares four of them ("written by ``casa_core.main`` so tool
     handlers can reach them without circular imports": ``active_engagement_driver``,
-    ``active_executor_registry``, ``active_claude_code_driver``, ``active_runtime``,
+    ``active_executor_registry``, ``active_runtime``,
     ``active_session_registry``) and ``casa_core.main`` writes a sixth, ``active_observer``, that ``agent.py`` does not declare at
     all. Every consumer resolves them at CALL time with
     ``getattr(agent_mod, "<name>", None)`` and gates each use on ``hasattr`` — a
@@ -523,95 +513,6 @@ def _agent_active_singletons_restored():
         for name in [n for n in vars(_agent) if n.startswith("active_")]:
             if name not in snapshot:
                 delattr(_agent, name)
-
-
-@pytest.fixture(autouse=True)
-def _isolate_engagement_control_root(tmp_path_factory, monkeypatch):
-    """Containment stage 2, Task 4: ``drivers.workspace.CONTROL_ROOT``
-    defaults to the real ``/data/engagement-ctl`` in production. Without
-    this, any test that provisions a workspace (or exercises the
-    session-id/spool/stream-cursor/stderr-ring/casa-meta control-dir paths)
-    would try to mkdir/write under that real path — unwritable in CI,
-    cross-test-polluting locally, and liable to silently create a real
-    ``/data`` tree on a dev machine that happens to be running as root.
-    Redirected to a per-test tmp dir; a test that specifically needs to
-    assert the real production default (e.g. the control_dir() shape test)
-    restores it via its own ``monkeypatch.setattr`` — the fixture instance is
-    shared within one test, so that composes cleanly.
-
-    Deliberately a SIBLING of (not nested inside) the test's own ``tmp_path``:
-    several existing tests point ``engagements_root``/``_ENGAGEMENTS_ROOT`` at
-    ``tmp_path`` itself and then ``os.scandir`` its direct children as "every
-    workspace" — nesting the control root inside ``tmp_path`` would show up
-    as a spurious extra entry in exactly those scans."""
-    try:
-        import drivers.workspace as _ws
-    except Exception:  # pragma: no cover — module import is universal in tests
-        yield
-        return
-    ctl_root = tmp_path_factory.mktemp("engagement-ctl")
-    monkeypatch.setattr(_ws, "CONTROL_ROOT", str(ctl_root))
-    yield
-
-
-@pytest.fixture(autouse=True)
-def _isolate_engagement_outbox_root(tmp_path_factory, monkeypatch):
-    """Containment stage 2, Task 11: ``plugin_outbox.ENGAGEMENT_OUTBOX_ROOT``
-    defaults to the real ``/data/plugin-outbox-eng`` in production. Without
-    this, any test that provisions a workspace (or renders a run script) for
-    a real uid would try to mkdir under that real path — unwritable in CI,
-    same rationale as ``_isolate_engagement_control_root`` above. Also clears
-    the process-global per-uid ``PluginOutbox`` cache both before and after
-    the test so a leaked cached instance (and its open dir-FDs) from one test
-    can never leak into another."""
-    try:
-        import plugin_outbox as _pob
-    except Exception:  # pragma: no cover — module import is universal in tests
-        yield
-        return
-    for _ob in _pob._engagement_outboxes.values():
-        try:
-            _ob.close()
-        except Exception:  # noqa: BLE001 — best-effort pre-test cleanup
-            pass
-    _pob._engagement_outboxes.clear()
-    out_root = tmp_path_factory.mktemp("plugin-outbox-eng")
-    monkeypatch.setattr(_pob, "ENGAGEMENT_OUTBOX_ROOT", str(out_root))
-    yield
-    for _ob in _pob._engagement_outboxes.values():
-        try:
-            _ob.close()
-        except Exception:  # noqa: BLE001 — best-effort post-test cleanup
-            pass
-    _pob._engagement_outboxes.clear()
-
-
-@pytest.fixture(autouse=True)
-def _isolate_compiled_db_sweep(tmp_path_factory, monkeypatch):
-    """Point ``drivers.s6_rc.sweep_orphan_compiled_dbs``'s default root at a
-    per-test directory instead of the real ``/tmp``.
-
-    Boot replay (``casa_core.replay_undergoing_engagements``) calls the sweep
-    with no arguments, and in production that is right: after a restart every
-    ``/tmp/s6-casa-db-*`` is the previous run's. Under ``-n auto`` it is not:
-    a boot-replay test on one worker deleted the compiled db another worker's
-    ``test_s6_rc.py::TestCompileCancellation`` had just made (gate.sh on
-    v0.344.34: "the swapped (now live) db must survive the cancellation").
-    Measured: running ``tests/test_anchor_reanchor.py`` alone deletes a planted
-    ``/tmp/s6-casa-db-*`` directory. An explicit ``tmp_root=`` still wins,
-    so the sweep's own tests are unaffected. Pinned by
-    ``tests/test_compiled_db_sweep_isolation.py``."""
-    try:
-        import functools as _functools
-
-        from drivers import s6_rc as _s6
-    except Exception:  # pragma: no cover — import is universal in tests
-        yield
-        return
-    root = tmp_path_factory.mktemp("s6-sweep-tmp")
-    monkeypatch.setattr(_s6, "sweep_orphan_compiled_dbs",
-                        _functools.partial(_s6.sweep_orphan_compiled_dbs, tmp_root=str(root)))
-    yield
 
 
 @pytest.fixture(autouse=True)
@@ -844,20 +745,6 @@ def _isolate_verdict_broker_and_challenges():
         yield
     finally:
         _reset()
-
-
-@pytest.fixture(autouse=True)
-def _reset_ask_validation_gates():
-    try:
-        from channels import channel_handlers as _ch
-    except Exception:  # pragma: no cover — module import is universal in tests
-        yield
-        return
-    _ch.ASK_GATES.clear()
-    _ch._ASK_VALIDATION_OWNERS.clear()
-    yield
-    _ch.ASK_GATES.clear()
-    _ch._ASK_VALIDATION_OWNERS.clear()
 
 
 # ---------------------------------------------------------------------------

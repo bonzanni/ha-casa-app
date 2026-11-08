@@ -1807,9 +1807,9 @@ _DECLARED_OWNERSHIP = [
       "EngagementRegistry.clear_context_rebuild_pending"]),
     ("casa/rootfs/opt/casa/channels/telegram.py", "architecture/memory-scoping.md",
      ["TelegramChannel.handle_update", "TelegramChannel._resume_and_ready"]),
-    ("casa/rootfs/opt/casa/internal_handlers.py", "architecture/memory-scoping.md",
-     ["_make_internal_tools_call_handler.handler"]),
 ]
+# (The internal_handlers.py row — the /internal/tools/call handler — went with
+# that route when the claude_code driver was removed.)
 
 
 
@@ -1868,9 +1868,9 @@ def test_an_owning_document_claims_exactly_its_enforcement_points(source, doc, s
 #
 # The sites `architecture/memory-scoping.md` names in its INV-MEM-011 prose
 # (`docs/architecture/memory-scoping.md:106-112` at this change's base) and that no
-# document claimed: "the drivers' last-instant launch gates" — the `#369` gate inside
-# `InCasaDriver.start` and the one inside `ClaudeCodeDriver.start` — and "the resume
-# core and boot replay", whose boot-replay half is `replay_undergoing_engagements`.
+# document claimed: "the driver's last-instant launch gate" — the `#369` gate inside
+# `InCasaDriver.start`. (A claude_code driver gate and boot replay were once listed
+# here too; both were removed with that driver.)
 #
 # An earlier attempt of this cluster EXCLUDED them and pinned the exclusion
 # negatively, on the ground that impact is file-grained (`_claimants` matches
@@ -1889,10 +1889,6 @@ def test_an_owning_document_claims_exactly_its_enforcement_points(source, doc, s
 _INV_MEM_011_ENFORCEMENT_OWNERSHIP = [
     ("casa/rootfs/opt/casa/drivers/in_casa_driver.py",
      "architecture/memory-scoping.md", "InCasaDriver.start"),
-    ("casa/rootfs/opt/casa/drivers/claude_code_driver.py",
-     "architecture/memory-scoping.md", "ClaudeCodeDriver.start"),
-    ("casa/rootfs/opt/casa/casa_core.py",
-     "architecture/memory-scoping.md", "replay_undergoing_engagements"),
 ]
 
 _ENFORCEMENT_IDS = [s.rsplit("/", 1)[-1] for s, _, _ in _INV_MEM_011_ENFORCEMENT_OWNERSHIP]

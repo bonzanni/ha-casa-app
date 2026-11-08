@@ -9,7 +9,7 @@
     "type": {"type": "string", "minLength": 1, "pattern": "^[a-z][a-z0-9_-]*$"},
     "description": {"type": "string", "minLength": 20},
     "model": {"type": "string", "minLength": 1},
-    "driver": {"enum": ["in_casa", "claude_code"]},
+    "driver": {"enum": ["in_casa"]},
     "enabled": {"type": "boolean", "default": true},
     "tools": {
       "type": "object",
@@ -26,12 +26,6 @@
     "hooks_file": {"type": "string", "default": "hooks.yaml"},
     "observer_policy_file": {"type": "string", "default": "observer.yaml"},
     "doctrine_dir": {"type": "string", "default": "doctrine"},
-    "extra_dirs": {
-      "type": "array",
-      "items": {"type": "string"},
-      "default": []
-    },
-    "mirror_chat_to_topic": {"type": "boolean", "default": true},
     "memory": {
       "type": "object",
       "additionalProperties": false,

@@ -90,9 +90,6 @@ product has not shipped for months — measured, and it cost two harness runs.
 | `e2e/test_scheduling.sh` | 2 | scheduled-task primitives |
 | `e2e/test_engagement_E.sh` | 2 | E-0..E-10 — Tier-2 specialist + Configurator engagements (mock TG forum supergroup) |
 | `e2e/test_concurrency.sh` | 3 | parallel `/invoke` with simulated SDK latency |
-| `e2e/test_mcp_restart_survival.sh` | 2 + 3 | engagement TCP keep-alive across `svc-casa-mcp` restart (needs `CASA_USE_MOCK_CLAUDE=1`). The only enabled harness that performs a real `ClaudeCodeDriver.start`, so since #937 CI runs it in `tier2-functional` (the push gate) as well as in `tier3-hardening` (the scheduled copy `nightly-alarm` covers). |
-| `e2e/test_engagement_D.sh` | 3 | D-1..D-12 — claude_code driver lifecycle on mock-CLI overlay (needs `CASA_USE_MOCK_CLAUDE=1`; CI step currently commented out, see "Deferred CI steps" below) |
-| `e2e/test_engagement_P.sh` | 2 | P-1..P-9 — plugin-developer + Configurator install flow (needs `CASA_USE_MOCK_CLAUDE=1` + `CASA_PLAN_4B=1`; CI step currently commented out) |
 
 `e2e/common.sh` provides shared helpers (`build_image`, `wait_healthy`,
 `stop_container`, `assert_log_contains`, `start_mock_telegram_server`,
@@ -110,70 +107,16 @@ clauses. Same wallclock as the slowest tier — no `needs:` chaining.
 | Nightly cron (04:00 UTC) | yes | no (already verified on master push) | yes |
 | Manual `workflow_dispatch` | yes | yes | yes |
 
-Two properties of that table are load-bearing and are pinned by
-`tests/test_qa_mcp_restart_launch.py` rather than left to this prose:
-
-- `tier2-functional` runs the MCP restart-survival harness, so every push and
-  every PR performs one real `claude_code` launch. Until #937 the only enabled
-  harness that launches one sat in `tier3-hardening`, which no push or PR runs
-  — and a base-image drift that broke every launch on every released image
-  (#925) was green in every push-time tier for three weeks.
-- `tier3-hardening` keeps its own copy of that step. The step is COPIED, not
-  moved: `nightly-alarm` is `needs: [tier1-smoke, tier3-hardening]`, so a move
-  would take the harness out of the scheduled run and out of the alarm.
-
-The harness exits 0 with a `SKIP:` line when `CASA_USE_MOCK_CLAUDE` is unset,
-so the tier2 step greps its own log for the harness's terminal pass marker: a
-dropped `env:` block, or any other early `exit 0`, turns the step red instead of
-green-and-empty. The two e2e image builds also print the built image's
+The two e2e image builds also print the built image's
 `io.hass.version` label, because `test-local/Dockerfile.test` now mirrors
 `casa/Dockerfile`'s floating base rather than pinning a digest — the base a run
 actually used is in that run's log, not in the tree.
-
-What that check does NOT establish: it detects a broken launch, it does not
-gate publication. `qa.yml` and `deploy.yml` both start on the same push to
-`main` and neither waits for the other, so the harness reports alongside a
-release that may already be published, not before it (#958 — an operator
-decision). And it runs on `ubuntu-latest`, so the real launch it performs
-covers `amd64` only, while `casa/config.yaml` publishes `aarch64` as well
-(#957). Both limits are pre-existing and this change narrows neither; what
-changed is that a broken launch now shows up on the push that causes it instead
-of in a scheduled run weeks later.
-
-What IS checked per architecture, because `deploy.yml` (through `deploy-app.yml`) builds each one natively
-and a failed build publishes nothing: `casa/Dockerfile` launches each program
-`drivers/s6_rc.py` runs (`s6-rc-compile`, `s6-rc-update`, `s6-rc`, `s6-svc`,
-`s6-svstat`) with the driver's own `subprocess.run`, and compiles the launch
-database from the merged service tree. What is still NOT checked on `aarch64`:
-that a launched program then works, that an engagement actually starts (a
-native `aarch64` lane, #985), the base image's own boot programs, and the other
-programs on the launch path (`with-contenv`, `bashio`, `setpriv`, `claude`).
-And what no image check can establish: that a runtime launch resolves those bare
-names to the programs the image installed. `setup-configs.sh` prepends
-`/config/tools/bin` — which an installed plugin publishes binaries into — ahead
-of the entire image PATH for every s6-supervised service (#987), so the probe
-covers the image it builds and says nothing about the PATH a running system
-assembles.
 
 Trigger tier 3 manually from any branch:
 
 ```bash
 gh workflow run qa.yml --ref master
 ```
-
-### Deferred CI steps
-
-Two engagement steps are commented out in `qa.yml` pending the
-v0.14.10 D/P-block sweep follow-up:
-
-- `tier2-functional` → `Engagement P-block` (`test_engagement_P.sh`)
-- `tier3-hardening` → `Engagement D-block` (`test_engagement_D.sh`)
-
-The split scripts exist and parse cleanly. To re-enable, drop the
-leading `# ` markers on the YAML block — the `env:` block + step body
-are already in place. Both run locally today; the comment-out is a
-CI-side decision deferred until the harness regressions tracked since
-v0.14.8 are swept.
 
 ## Adding new tests
 

@@ -4,7 +4,7 @@ effort decided for it.
 The decision, per call path under the shipped option defaults: the assistant
 on Opus 5.5 at medium; the butler, the concierge, the tier classifier, the
 observer and query_engager's synthesis on Haiku 5.5 at low; the finance
-specialist on Sonnet 5.5 at medium; the configurator and the plugin-developer on
+specialist on Sonnet 5.5 at medium; the configurator on
 Sonnet 5 at high; the Casa Browser action check on Opus 5.5 at high, fixed; the memory writer on Opus 5.5 at medium. The CLI's own defaults (model and effort) move with every
 CLI release, so a call that leaves either out silently changes behaviour on
 the next bump — which is what these tests pin.
@@ -139,7 +139,7 @@ def test_observer_is_wired_to_the_full_haiku_id():
     assert ast.unparse(kw["model_name"]) == "resolve_model('haiku')"
 
 
-@pytest.mark.parametrize("executor", ["configurator", "plugin-developer"])
+@pytest.mark.parametrize("executor", ["configurator"])
 def test_shipped_executors_stay_on_sonnet_5(executor):
     from role_artifact import load_role_artifact
     from role_slot import _ha_model_options, materialize_role
@@ -167,50 +167,6 @@ def test_residents_resolve_their_default_option(resident, option, expected):
         options=_ha_model_options({}))
     assert role.resolved_model.option == option
     assert role.resolved_model.sdk_model == expected
-
-
-def test_claude_code_run_script_passes_model_and_effort():
-    from drivers.workspace import render_run_script
-
-    out = render_run_script(
-        engagement_id="abc12345def67890", permission_mode="acceptEdits",
-        extra_dirs=[], uid=200005, gid=200005, model="claude-sonnet-5")
-    assert re.search(
-        r"(?m)^[ \t]+--model claude-sonnet-5 --effort high \\$", out)
-    with pytest.raises(ValueError):
-        render_run_script(
-            engagement_id="abc12345def67890", permission_mode="acceptEdits",
-            extra_dirs=[], uid=200005, gid=200005, model="x; rm -rf /")
-
-
-def _plant(tmp_path, eid, text):
-    from drivers import s6_rc
-
-    d = tmp_path / s6_rc._main_service_name(eid)
-    d.mkdir(parents=True)
-    (d / "run").write_text(text)
-
-
-def test_boot_replay_reads_a_script_without_the_current_model_as_stale(tmp_path):
-    """A plugin-developer engagement planted before #1353 has no ``--model``
-    line; boot replay's fast path must re-render it rather than start it on
-    the CLI's default model. A script rendered for another model is stale too."""
-    from drivers.s6_rc import run_script_is_stale
-    from drivers.workspace import cli_model_flags, render_run_script
-
-    current = render_run_script(
-        engagement_id="abc12345def67890", permission_mode="acceptEdits",
-        extra_dirs=[], uid=200005, gid=200005, model="claude-sonnet-5")
-    flags = cli_model_flags("claude-sonnet-5")
-    _plant(tmp_path, "cur", current)
-    assert not run_script_is_stale(
-        svc_root=str(tmp_path), engagement_id="cur", model_flags=flags)
-    _plant(tmp_path, "old", re.sub(r"(?m)^[ \t]+--model .*\n", "", current))
-    assert run_script_is_stale(
-        svc_root=str(tmp_path), engagement_id="old", model_flags=flags)
-    assert run_script_is_stale(
-        svc_root=str(tmp_path), engagement_id="cur",
-        model_flags=cli_model_flags("claude-sonnet-5-5"))
 
 
 @pytest.mark.parametrize("recorded,expected", [

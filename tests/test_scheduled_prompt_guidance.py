@@ -408,11 +408,6 @@ WRITES_TO_A_CHAT_ELSEWHERE = {
     "tools.py::wipe_memory":
         "posts a confirmation keyboard to the operator's DM and is refused "
         "unless the turn is a direct DM or button turn; it has no scheduled arm",
-    "channels/casa_engagement_channel.py::reply":
-        "the engagement channel's tool: a specialist inside an engagement posts "
-        "to that engagement's topic, never a resident's trigger turn",
-    "channels/casa_engagement_channel.py::ask":
-        "same server and reason as reply: a question posted to an engagement's topic",
     "tools.py::emit_completion":
         "posts an engagement's completion summary to that engagement's topic; "
         "its caller is the engaged executor or specialist, not a scheduled turn",
@@ -499,16 +494,13 @@ NOT_A_DELIVERY = {
     "tools.py::continue_voice_job",
     "tools.py::correct_memory",
     "tools.py::delegate_to_agent",
-    "tools.py::delete_engagement_workspace",
     "tools.py::engage_executor",
     "tools.py::event_ack_revoke",
     "tools.py::get_item_fields",
     "tools.py::get_schedule",
-    "tools.py::list_engagement_workspaces",
     "tools.py::list_inbound_files",
     "tools.py::list_vault_items",
     "tools.py::open_memory",
-    "tools.py::peek_engagement_workspace",
     "tools.py::persona_ack_revoke",
     "tools.py::persona_apply",
     "tools.py::persona_install_commit",

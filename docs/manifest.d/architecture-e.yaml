@@ -2,105 +2,44 @@
 # docs/manifest.yaml by scripts/verify_docs.py; same entry format.
 
 - doc: architecture/engagement-completion-gate.md
-  summary: The completion gate — what a successful completion is refused over, how unread and in-flight differ, and what each driver counts.
-  when_changing: the completion gate, or a driver's inbound count accessors — its unread depth, its in-flight blocking answer, its reservation count
+  summary: The completion gate — what a successful completion is refused over, why a message in flight is disclosed but never vetoed, and what the driver counts.
+  when_changing: the completion gate, or a driver's inbound count accessors — its unread depth, its reservation count
   covers:
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.try_transition_terminal
     - casa/rootfs/opt/casa/engagement_registry.py::TerminalPreconditionFailed
     - casa/rootfs/opt/casa/tools.py::_finalize_engagement
     - casa/rootfs/opt/casa/tools.py::emit_completion
-    - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_unread_depth
-    - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_in_flight_blocking
-    - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_reservations
-    - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.record_completion_refusal
-    - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.force_completion_turn_boundary
     - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_unread_depth
     - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.reserve_inbound
     - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.release_inbound_reservation
     - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_reservations
   tests:
     - tests/test_emit_completion_tool.py
-    - tests/test_claude_code_driver.py
     - tests/test_answer_reservation.py
     - tests/test_in_casa_inbound_admission.py
     - tests/test_c1_continuation_admission.py
-    - tests/test_evicted_inbound_disclosure.py
-    - tests/test_evicted_inbound_regressions.py
   related: [architecture/engagement-inbound-disclosure.md, architecture/engagement-finalization.md, architecture/engagements.md, architecture/engagement-turn-admission.md, architecture/telegram.md, architecture/tools-interface.md]
-  defines_invariants: [INV-ENG-003, INV-ENG-016]
+  defines_invariants: [INV-ENG-003]
   invariant_tests:
-    INV-ENG-003: [tests/test_emit_completion_tool.py::test_unread_queued_message_refuses_completion, tests/test_emit_completion_tool.py::test_pending_ingress_reservation_refuses_completion, tests/test_emit_completion_tool.py::test_inbound_racing_past_precheck_is_vetoed_by_terminal_hook, tests/test_emit_completion_tool.py::TestCompletionGateSeesTurnsInThePipe::test_in_flight_message_refuses_completion, tests/test_emit_completion_tool.py::TestCompletionGateSeesTurnsInThePipe::test_in_flight_arriving_after_the_precheck_is_still_vetoed, tests/test_emit_completion_tool.py::TestCompletionGateSeesTurnsInThePipe::test_expired_in_flight_completes_but_is_disclosed, tests/test_emit_completion_tool.py::TestCompletionGateSeesTurnsInThePipe::test_cancel_discloses_an_in_flight_message, tests/test_claude_code_driver.py::TestInFlightIsADifferentQuestion::test_delivered_is_in_flight_and_not_unread, tests/test_claude_code_driver.py::TestInFlightIsADifferentQuestion::test_envelope_being_written_is_already_unread, tests/test_answer_reservation.py::TestInCasaCompletionInboundGate::test_queued_in_casa_turn_vetoes_completion_before_client_handoff, tests/test_answer_reservation.py::TestInCasaCompletionInboundGate::test_in_casa_turn_admitted_during_finalize_is_vetoed_by_terminal_hook, tests/test_emit_completion_tool.py::TestCompletionInboundGate::test_error_terminal_discloses_a_pending_reservation_count, tests/test_emit_completion_tool.py::TestReservationDisclosure::test_a_command_reservation_is_not_disclosed_by_a_racing_terminal, tests/test_emit_completion_tool.py::TestReservationDisclosure::test_command_reservations_still_veto_completion, tests/test_emit_completion_tool.py::TestReservationDisclosure::test_a_raising_accessor_cannot_disable_the_gate, tests/test_c1_continuation_admission.py::TestACompletionRacingTheContinuationIsRefused::test_the_handler_pre_check_refuses_over_a_held_reservation, tests/test_c1_continuation_admission.py::TestACompletionRacingTheContinuationIsRefused::test_a_reservation_born_during_finalize_is_vetoed_by_the_hook, tests/test_c1_continuation_admission.py::TestReservationIsBornAtTheTapCommit::test_specialist_approve_reserves_after_the_ack, tests/test_c1_continuation_admission.py::TestReservationIsBornAtTheTapCommit::test_persona_approve_reserves_after_the_ack, tests/test_c1_continuation_admission.py::TestReservationIsBornAtTheTapCommit::test_an_approve_continuation_hands_its_reservation_to_the_ticket, tests/test_c1_continuation_admission.py::TestTheHandOffOutcomeAndTheTransfer::test_the_seam_admits_the_ticket_then_releases_the_reservation, tests/test_c1_continuation_admission.py::TestTheHandOffOutcomeAndTheTransfer::test_a_finish_hook_that_never_reaches_the_seam_still_releases, tests/test_authz_grants.py::TestC1EngagementContinuationReservation::test_the_tap_reserves_before_the_finish_hook_can_run, tests/test_emit_completion_tool.py::TestOneFailingAccessorCostsOnlyItsOwnInput::test_a_missing_or_raising_unread_text_read_never_erases_a_readable_veto, tests/test_emit_completion_tool.py::TestOneFailingAccessorCostsOnlyItsOwnInput::test_a_raising_in_flight_text_read_never_erases_the_blocking_veto, tests/test_emit_completion_tool.py::TestOneFailingAccessorCostsOnlyItsOwnInput::test_no_single_accessor_failure_lets_a_gated_completion_through, tests/test_emit_completion_tool.py::TestOneFailingAccessorCostsOnlyItsOwnInput::test_the_unread_text_warning_no_longer_claims_the_gate_was_skipped]
+    INV-ENG-003: [tests/test_emit_completion_tool.py::test_unread_queued_message_refuses_completion, tests/test_emit_completion_tool.py::test_pending_ingress_reservation_refuses_completion, tests/test_emit_completion_tool.py::test_inbound_racing_past_precheck_is_vetoed_by_terminal_hook, tests/test_answer_reservation.py::TestInCasaCompletionInboundGate::test_queued_in_casa_turn_vetoes_completion_before_client_handoff, tests/test_answer_reservation.py::TestInCasaCompletionInboundGate::test_in_casa_turn_admitted_during_finalize_is_vetoed_by_terminal_hook, tests/test_emit_completion_tool.py::TestCompletionInboundGate::test_error_terminal_discloses_a_pending_reservation_count, tests/test_emit_completion_tool.py::TestReservationDisclosure::test_a_command_reservation_is_not_disclosed_by_a_racing_terminal, tests/test_emit_completion_tool.py::TestReservationDisclosure::test_command_reservations_still_veto_completion, tests/test_emit_completion_tool.py::TestReservationDisclosure::test_a_raising_accessor_cannot_disable_the_gate, tests/test_c1_continuation_admission.py::TestACompletionRacingTheContinuationIsRefused::test_the_handler_pre_check_refuses_over_a_held_reservation, tests/test_c1_continuation_admission.py::TestACompletionRacingTheContinuationIsRefused::test_a_reservation_born_during_finalize_is_vetoed_by_the_hook, tests/test_c1_continuation_admission.py::TestReservationIsBornAtTheTapCommit::test_specialist_approve_reserves_after_the_ack, tests/test_c1_continuation_admission.py::TestReservationIsBornAtTheTapCommit::test_persona_approve_reserves_after_the_ack, tests/test_c1_continuation_admission.py::TestReservationIsBornAtTheTapCommit::test_an_approve_continuation_hands_its_reservation_to_the_ticket, tests/test_c1_continuation_admission.py::TestTheHandOffOutcomeAndTheTransfer::test_the_seam_admits_the_ticket_then_releases_the_reservation, tests/test_c1_continuation_admission.py::TestTheHandOffOutcomeAndTheTransfer::test_a_finish_hook_that_never_reaches_the_seam_still_releases, tests/test_authz_grants.py::TestC1EngagementContinuationReservation::test_the_tap_reserves_before_the_finish_hook_can_run, tests/test_emit_completion_tool.py::TestOneFailingAccessorCostsOnlyItsOwnInput::test_a_missing_or_raising_unread_text_read_never_erases_a_readable_veto, tests/test_emit_completion_tool.py::TestOneFailingAccessorCostsOnlyItsOwnInput::test_no_single_accessor_failure_lets_a_gated_completion_through, tests/test_emit_completion_tool.py::TestOneFailingAccessorCostsOnlyItsOwnInput::test_the_unread_text_warning_no_longer_claims_the_gate_was_skipped]
 
-    INV-ENG-016: [tests/test_claude_code_driver.py::TestInboundLedgerOutlivesTheIncarnation::test_invalidation_detaches_the_runtime_and_keeps_the_ledger, tests/test_claude_code_driver.py::TestInboundLedgerOutlivesTheIncarnation::test_reattach_keeps_the_same_ledger_object, tests/test_claude_code_driver.py::TestDetachedInboundView::test_file_only_population_discloses_and_never_vetoes, tests/test_claude_code_driver.py::TestDetachedInboundView::test_no_attached_spool_and_no_file_answers_empty, tests/test_claude_code_driver.py::TestDetachedInboundView::test_malformed_middle_row_drops_only_that_row, tests/test_claude_code_driver.py::TestDetachedInboundView::test_a_non_os_read_failure_reads_as_empty_not_as_a_raise, tests/test_emit_completion_tool.py::TestC4DisclosureWithoutVeto::test_file_only_population_is_disclosed_without_refusing, tests/test_evicted_inbound_disclosure.py::TestAnEvictedMessageWhoseNoticeNeverSendsIsQuotedAtTheTerminal::test_the_finalization_funnel_quotes_it_on_cancel, tests/test_evicted_inbound_disclosure.py::TestAnEvictedMessageWhoseNoticeNeverSendsIsQuotedAtTheTerminal::test_the_launch_death_reporter_quotes_it, tests/test_evicted_inbound_disclosure.py::TestAnEvictedMessageWhoseNoticeNeverSendsIsQuotedAtTheTerminal::test_a_gated_completion_is_not_vetoed_and_still_quotes_it, tests/test_evicted_inbound_regressions.py::TestTheDetachedFileTier::test_a_file_only_evicted_row_discloses_and_vetoes_nothing, tests/test_evicted_inbound_regressions.py::TestItNeverVetoes::test_the_completion_tool_precheck_and_hook_admit_the_completion, tests/test_evicted_inbound_regressions.py::TestThePopulationsBoundaries::test_a_queued_row_whose_notice_already_sent_is_not_evicted_pending, tests/test_evicted_inbound_regressions.py::TestThePopulationsBoundaries::test_a_capacity_drop_notice_row_contributes_nothing, tests/test_evicted_inbound_regressions.py::TestAccessorFailureIsolation::test_an_older_accessor_raising_keeps_the_evicted_bullet_in_the_funnel, tests/test_emit_completion_tool.py::TestOneFailingAccessorCostsOnlyItsOwnInput::test_an_unread_text_failure_preserves_every_other_population, tests/test_emit_completion_tool.py::TestOneFailingAccessorCostsOnlyItsOwnInput::test_a_blocking_failure_preserves_the_in_flight_text, tests/test_emit_completion_tool.py::TestOneFailingAccessorCostsOnlyItsOwnInput::test_a_single_accessor_failure_costs_only_its_own_bullet]
 - doc: architecture/engagement-inbound-disclosure.md
-  summary: What a terminal outcome discloses about inbound messages that died with the engagement — the spool populations it quotes, the evicted message whose notice never sent, and the reservation that carries its message's text.
-  when_changing: what a terminal outcome discloses about inbound messages, a driver's inbound text accessors, the evicted-message population, or a reservation's disclosed text and the count over it
+  summary: What a terminal outcome discloses about inbound messages that died with the engagement — the unread and in-flight texts it quotes, and the reservations it counts without quoting.
+  when_changing: what a terminal outcome discloses about inbound messages, a driver's inbound text accessors, or the count over reservations
   covers:
     - casa/rootfs/opt/casa/tools.py::_finalize_engagement
-    - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_unread_texts
-    - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_in_flight_texts
-    - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_message_reservations
-    - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_reservation_texts
-    - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver._disclosed_spool_message_ids
-    - casa/rootfs/opt/casa/drivers/claude_code_driver.py::_InboundSpool.disclosed_message_ids
-    - casa/rootfs/opt/casa/drivers/claude_code_driver.py::_InboundSpool.evicted_pending_texts
-    - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_evicted_pending_texts
     - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_unread_texts
     - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_in_flight_texts
     - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_message_reservations
     - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_reservation_texts
   tests:
     - tests/test_emit_completion_tool.py
-    - tests/test_claude_code_driver.py
     - tests/test_launch_death_reporter.py
-    - tests/test_evicted_inbound_disclosure.py
-    - tests/test_evicted_inbound_regressions.py
   related: [architecture/engagement-completion-gate.md, architecture/engagement-finalization.md, architecture/engagement-terminal-telling.md, architecture/telegram.md]
-  defines_invariants: [INV-ENG-017]
-  invariant_tests:
-    INV-ENG-017: [tests/test_claude_code_driver.py::TestReservationCarriesItsText::test_text_is_message_keyed_and_survives_invalidation, tests/test_claude_code_driver.py::TestReservationCarriesItsText::test_a_command_reservation_records_no_text, tests/test_claude_code_driver.py::TestReservationCarriesItsText::test_texts_are_clamped_to_the_disclosure_count, tests/test_claude_code_driver.py::TestReservationReadTimeExclusion::test_durable_enqueue_retains_the_occurrence_and_excludes_it_at_read_time, tests/test_claude_code_driver.py::TestReservationReadTimeExclusion::test_a_failed_persist_keeps_the_occurrence, tests/test_claude_code_driver.py::TestReservationReadTimeExclusion::test_redelivery_consumption_leaves_the_other_occurrence_disclosable, tests/test_claude_code_driver.py::TestReservationReadTimeExclusion::test_release_removes_exactly_one_matching_occurrence, tests/test_claude_code_driver.py::TestReservationReadTimeExclusion::test_two_held_occurrences_of_one_message_id_disclose_one_text, tests/test_claude_code_driver.py::TestReservationReadTimeExclusion::test_queued_envelope_suppresses_the_matching_reservation_text, tests/test_claude_code_driver.py::TestReservationReadTimeExclusion::test_delivered_envelope_suppresses_the_matching_reservation_text, tests/test_claude_code_driver.py::TestReservationReadTimeExclusion::test_detached_file_envelope_suppresses_the_matching_reservation, tests/test_claude_code_driver.py::TestReservationReadTimeExclusion::test_evicted_envelope_is_quoted_itself_and_suppresses_the_held_reservation, tests/test_evicted_inbound_regressions.py::TestTheExclusionJoin::test_a_held_reservation_for_the_evicted_message_is_quoted_once, tests/test_claude_code_driver.py::TestReservationReadTimeExclusion::test_absent_spool_excludes_nothing, tests/test_claude_code_driver.py::TestReservationReadTimeExclusion::test_failed_exclusion_read_excludes_nothing, tests/test_claude_code_driver.py::TestReservationReadTimeExclusion::test_disclosure_clamps_before_excluding_live_ids, tests/test_claude_code_driver.py::TestReservationReadTimeExclusion::test_no_write_time_text_remover_exists, tests/test_emit_completion_tool.py::TestReservationReadTimeExclusion::test_redelivered_message_is_quoted_once_after_its_envelope_is_consumed, tests/test_launch_death_reporter.py::TestLaunchDeathReadTimeExclusion::test_a_detached_file_envelope_suppresses_its_alias_reservation, tests/test_answer_reservation.py::TestIngressReservationTaskOwnership::test_cancel_before_first_coroutine_step_retains_the_disclosure, tests/test_emit_completion_tool.py::TestC4DisclosureWithoutVeto::test_reservation_texts_are_quoted_without_moving_the_count, tests/test_launch_death_reporter.py::TestC4LaunchDeathQuotesAReservation::test_a_known_reservation_text_is_quoted_at_the_same_count, tests/test_emit_completion_tool.py::TestOneFailingAccessorCostsOnlyItsOwnInput::test_an_unread_text_failure_discloses_and_never_raises_without_a_depth_accessor, tests/test_emit_completion_tool.py::TestAFailedCountReadStillDisclosesTheTextsItRead::test_finalize_names_no_count_over_the_four_bullets_it_quotes, tests/test_emit_completion_tool.py::TestAFailedCountReadStillDisclosesTheTextsItRead::test_finalize_quotes_a_reservation_text_that_was_all_it_could_read, tests/test_emit_completion_tool.py::TestAFailedCountReadStillDisclosesTheTextsItRead::test_launch_death_names_no_count_over_the_four_bullets_it_quotes, tests/test_emit_completion_tool.py::TestAFailedCountReadStillDisclosesTheTextsItRead::test_launch_death_quotes_a_reservation_text_that_was_all_it_could_read, tests/test_emit_completion_tool.py::TestAFailedCountReadStillDisclosesTheTextsItRead::test_an_alias_beside_its_envelope_is_quoted_twice_under_no_count]
-- doc: architecture/engagement-containment.md
-  summary: The OS boundary around a claude_code engagement — its never-reused uid, workspace ownership, the privilege drop, and the confirmed-down sweep before replay.
-  when_changing: the engagement uid allocator, workspace ownership, the privilege drop, whether an engagement's process is actually stopped, or boot replay's down-first sweep
-  covers:
-    - casa/rootfs/opt/casa/engagement_uids.py::UidAllocator
-    - casa/rootfs/opt/casa/engagement_uids.py::UidAllocator.reconstruct
-    - casa/rootfs/opt/casa/engagement_quiesce.py::quiesce_engagement
-    - casa/rootfs/opt/casa/engagement_quiesce.py::kill_uid_until_empty
-    - casa/rootfs/opt/casa/engagement_quiesce.py::live_pids_for_uid
-    - casa/rootfs/opt/casa/drivers/s6_rc.py::latch_down
-    - casa/rootfs/opt/casa/drivers/s6_rc.py::wanted_down
-    - casa/rootfs/opt/casa/drivers/s6_rc.py::_run
-    - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.quiesce
-    - casa/rootfs/opt/casa/drivers/workspace.py::render_run_script
-    - casa/rootfs/opt/casa/drivers/workspace.py::chown_workspace
-    - casa/rootfs/opt/casa/drivers/claude_code_driver.py::_preflight_uid_drop
-    - casa/rootfs/opt/casa/casa_core.py::replay_undergoing_engagements
-    - casa/rootfs/opt/casa/scripts/engagement_run_template.sh
-  tests:
-    - tests/test_engagement_uids.py
-    - tests/test_boot_replay.py
-    - tests/test_claude_code_driver.py
-    - tests/test_engagement_quiesce.py
-    - tests/test_quiesce_obligation.py
-    - tests/test_quiesce_fence.py
-    - tests/test_quiesce_funnel_order.py
-    - tests/test_s6_quiesce_seams.py
-    - tests/test_s6_rc_overlay_sources.py
-    - tests/test_s6_rc_trusted_path.py
-    - tests/test_apparmor_profile.py
-    - test-local/e2e/test_engagement_quiesce.sh
-  related: [architecture/engagements.md, architecture/engagement-workspace-access.md, architecture/engagement-finalization.md, architecture/engagement-completion-gate.md, architecture/hook-resolution.md, architecture/persistent-state.md]
-  defines_invariants: [INV-CONT-001, INV-CONT-004, INV-CONT-005, INV-CONT-006]
-  invariant_tests:
-    INV-CONT-001: [tests/test_engagement_uids.py::test_allocate_is_monotonic_and_never_reused, tests/test_engagement_uids.py::test_reconstruct_evidence_raises_above_valid_durable, tests/test_engagement_uids.py::test_marker_present_both_copies_lost_refuses_reissue, tests/test_engagement_uids.py::test_first_stage2_upgrade_root_owned_dirs_initialises_not_refuses, tests/test_engagement_uids.py::test_invalid_durable_file_present_no_valid_copy_refuses]
-    INV-CONT-004: [tests/test_claude_code_driver.py::TestPreflightUidDrop::test_refuses_when_setpriv_missing, tests/test_claude_code_driver.py::TestPreflightUidDrop::test_refuses_uid_sentinel, tests/test_claude_code_driver.py::TestPreflightUidDrop::test_refuses_workspace_owner_mismatch, tests/test_claude_code_driver.py::TestPreflightUidDrop::test_refuses_missing_passwd_entry, tests/test_claude_code_driver.py::TestPreflightUidDrop::test_refuses_unreadable_plugin_dir, tests/test_claude_code_driver.py::TestPreflightUidDrop::test_happy_path_all_checks_pass]
-    INV-CONT-005: [tests/test_boot_replay.py::test_scandir_down_covers_service_without_undergoing_record, tests/test_boot_replay.py::test_scandir_unconfirmed_down_refuses_and_never_starts, tests/test_boot_replay.py::test_missing_setpriv_refuses_all_resumes_not_crashloop]
-    INV-CONT-006: [tests/test_engagement_quiesce.py::test_kill_loop_reports_extinct_only_after_observing_empty, tests/test_engagement_quiesce.py::test_a_child_that_appears_only_in_the_second_pass_is_killed, tests/test_engagement_quiesce.py::test_a_survivor_is_reported_not_claimed, tests/test_engagement_quiesce.py::test_an_unverified_latch_is_never_extinct_even_when_empty, tests/test_engagement_quiesce.py::test_missing_pidfd_primitives_signal_nothing, tests/test_engagement_quiesce.py::test_a_zombie_counts_as_extinct, tests/test_quiesce_obligation.py::test_a_terminal_claude_code_record_owes_a_quiesce, tests/test_quiesce_obligation.py::test_mark_error_owes_and_schedules_in_process, tests/test_quiesce_obligation.py::test_a_rolled_back_transition_owes_nothing, tests/test_quiesce_obligation.py::test_an_owing_record_is_exempt_from_terminal_expiry, tests/test_quiesce_obligation.py::test_the_obligation_survives_a_reload, tests/test_quiesce_fence.py::test_a_start_that_resumes_after_the_terminal_commit_is_refused, tests/test_quiesce_fence.py::test_the_ladder_and_a_start_are_serialised_by_the_fence, tests/test_quiesce_fence.py::test_the_ladder_never_needs_the_compile_lock, tests/test_quiesce_funnel_order.py::test_the_kill_precedes_every_operator_visible_effect, tests/test_quiesce_funnel_order.py::test_the_funnel_finishes_when_the_ladder_overruns, tests/test_quiesce_funnel_order.py::test_the_funnel_finishes_when_driver_cancel_hangs, tests/test_s6_quiesce_seams.py::test_a_cancelled_start_drains_its_worker_before_unwinding, tests/test_s6_quiesce_seams.py::test_wanted_down_is_false_while_s6_still_wants_it_up, tests/test_apparmor_profile.py::test_the_profile_lets_casa_signal_an_engagement_uid]
-
+  defines_invariants: []
 - doc: architecture/engagement-finalization.md
-  summary: How a durable engagement ends — the single-winner terminal transition, strict creation and terminal persistence, the finalization side effects behind the flip, and topic output ordering.
-  when_changing: who may mark a job or an engagement terminal, terminal transitions, engagement creation strictness, finalization side effects, or engagement output ordering
+  summary: How a durable engagement ends — the single-winner terminal transition, strict creation and terminal persistence, and the finalization side effects behind the flip.
+  when_changing: who may mark a job or an engagement terminal, terminal transitions, engagement creation strictness, or finalization side effects
   covers:
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.create
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.try_transition_terminal
@@ -109,20 +48,15 @@
     - casa/rootfs/opt/casa/tools.py::_finalize_engagement_tail
     - casa/rootfs/opt/casa/tools.py::FinalizeResult
     - casa/rootfs/opt/casa/tools.py::cancel_engagement
-    - casa/rootfs/opt/casa/channels/output_sequencer.py::OutputSequencer
-    - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver
   tests:
     - tests/test_emit_completion_tool.py
     - tests/test_cancel_engagement_tool.py
     - tests/test_engagement_registry.py
-    - tests/test_output_sequencer.py
-    - tests/test_anchor_narration_buffer.py
-  related: [architecture/engagements.md, architecture/engagement-turn-admission.md, architecture/engagement-completion-gate.md, architecture/engagement-inbound-disclosure.md, architecture/engagement-terminal-telling.md, architecture/engagement-transcript-reaping.md, architecture/engagement-containment.md, architecture/tools-interface.md, architecture/overview.md, architecture/jobs-and-delivery.md]
-  defines_invariants: [INV-ENG-001, INV-ENG-002, INV-ENG-005, INV-ENG-010]
+  related: [architecture/engagements.md, architecture/engagement-turn-admission.md, architecture/engagement-completion-gate.md, architecture/engagement-inbound-disclosure.md, architecture/engagement-terminal-telling.md, architecture/engagement-transcript-reaping.md, architecture/tools-interface.md, architecture/overview.md, architecture/jobs-and-delivery.md]
+  defines_invariants: [INV-ENG-001, INV-ENG-002, INV-ENG-010]
   invariant_tests:
     INV-ENG-001: [tests/test_engagement_registry.py::test_mark_idle_never_overwrites_terminal, tests/test_engagement_registry.py::test_mark_error_loses_to_terminal_winner, tests/test_engagement_registry.py::test_sweep_does_not_resurrect_concurrently_finalized]
     INV-ENG-002: [tests/test_engagement_registry.py::test_strict_transition_rolls_back_full_field_on_persist_failure, tests/test_engagement_registry.py::test_create_persist_failure_raises_and_rolls_back]
-    INV-ENG-005: [tests/test_anchor_narration_buffer.py::test_terminal_latch_discards_via_sequencer_writers, tests/test_output_sequencer.py::test_post_intent_locked_discards_under_terminal_latch]
     INV-ENG-010: [tests/test_emit_completion_tool.py::TestEmitCompletionCancellation::test_in_casa_teardown_cannot_cancel_finalize_tail]
 
 - doc: architecture/engagements.md
@@ -131,7 +65,6 @@
   covers:
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRecord
     - casa/rootfs/opt/casa/drivers/driver_protocol.py::DriverProtocol
-    - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver
     - casa/rootfs/opt/casa/tools.py::engage_executor
     - casa/rootfs/opt/casa/tools.py::_post_topic_opening
     - casa/rootfs/opt/casa/tools.py::engagement_launch_prompt
@@ -145,31 +78,24 @@
     - tests/test_engage_executor_tool.py::TestEngageHandoffLines
     - tests/test_delegate_to_agent.py
     - tests/test_delegate_to_agent_interactive.py
-    - tests/test_claude_code_driver.py
     - tests/test_engagement_registry.py
     - tests/test_observer.py
-    - tests/test_boot_replay.py
     - tests/test_in_casa_inbound_admission.py
-  related: [architecture/overview.md, architecture/turn-loop.md, architecture/sdk-client-pool.md, architecture/delegation.md, architecture/engagement-containment.md, architecture/engagement-finalization.md, architecture/engagement-completion-gate.md, architecture/engagement-turn-admission.md, architecture/engagement-turn-outcomes.md]
-  defines_invariants: [INV-ENG-014, INV-ENG-015]
-  invariant_tests:
-    INV-ENG-014: [tests/test_claude_code_driver.py::TestRollbackCancellationCompleteness::test_runtime_failure_cancelled_inside_rollback_compile_runs_sync_tail, tests/test_claude_code_driver.py::TestRollbackCancellationCompleteness::test_second_cancel_inside_rollback_compile_runs_sync_tail, tests/test_claude_code_driver.py::TestRollbackCancellationCompleteness::test_rollback_compile_without_cancellation_preserves_the_failure, tests/test_claude_code_driver.py::TestRollbackCancellationCompleteness::test_uid_drop_refusal_cancelled_inside_ensure_down_runs_sync_tail, tests/test_claude_code_driver.py::TestRollbackCancellationCompleteness::test_uid_drop_refusal_cancelled_inside_mark_error_runs_sync_tail, tests/test_claude_code_driver.py::TestRollbackCancellationCompleteness::test_compile_lock_is_not_released_before_the_sync_tail_finishes, tests/test_claude_code_driver.py::TestRollbackCancellationCompleteness::test_ordinary_failure_at_a_rollback_await_still_runs_every_removal, tests/test_claude_code_driver.py::TestRollbackCancellationCompleteness::test_a_failed_synchronous_removal_does_not_skip_its_successors]
-    INV-ENG-015: [tests/test_graceful_shutdown_engagement_launch.py::test_a_graceful_stop_retains_a_claude_code_launch_and_says_why, tests/test_graceful_shutdown_engagement_launch.py::test_the_stop_records_its_cause_before_it_cancels_and_metas_after_it_commits, tests/test_graceful_shutdown_engagement_launch.py::test_a_failed_retention_write_is_not_announced_as_retention, tests/test_graceful_shutdown_engagement_launch.py::test_the_stop_covers_every_in_flight_launch_not_only_the_first, tests/test_graceful_shutdown_engagement_launch.py::test_main_awaits_the_shutdown_cleanup_unconditionally_after_the_stop_wait]
+  related: [architecture/overview.md, architecture/turn-loop.md, architecture/sdk-client-pool.md, architecture/delegation.md, architecture/engagement-finalization.md, architecture/engagement-completion-gate.md, architecture/engagement-turn-admission.md, architecture/engagement-turn-outcomes.md]
+  defines_invariants: []
 - doc: architecture/engagement-turn-admission.md
-  summary: How a turn is admitted to a live engagement — the registry decision taken immediately before the hand-off, where each driver places it, and what it does not fence.
+  summary: How a turn is admitted to a live engagement — the registry decision taken immediately before the hand-off, where the driver places it, and what it does not fence.
   when_changing: turn admission — how a turn is handed to a live engagement, or what a terminal record is never handed
   covers:
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.begin_turn_delivery
-    - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver._write_to_fifo
     - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver
   tests:
-    - tests/test_claude_code_driver.py
     - tests/test_engagement_registry.py
     - tests/test_c1_continuation_admission.py
   related: [architecture/engagements.md, architecture/engagement-completion-gate.md, architecture/engagement-finalization.md]
   defines_invariants: [INV-ENG-009]
   invariant_tests:
-    INV-ENG-009: [tests/test_claude_code_driver.py::TestTurnDeliveryAdmission::test_admission_precedes_the_first_byte, tests/test_claude_code_driver.py::TestTurnDeliveryAdmission::test_no_reader_never_admits, tests/test_claude_code_driver.py::TestTurnDeliveryAdmission::test_terminal_record_is_never_handed_a_turn, tests/test_claude_code_driver.py::TestTurnDeliveryAdmission::test_redelivery_after_restart_reactivates_the_record, tests/test_engagement_registry.py::TestBeginTurnDelivery::test_seam_is_not_a_coroutine_function, tests/test_engagement_registry.py::TestBeginTurnDelivery::test_terminal_record_is_refused_and_never_resurrected, tests/test_claude_code_driver.py::TestLargeTurnIsWrittenWhole::test_payload_larger_than_the_default_buffer_writes_in_full, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_a_follow_up_to_a_terminal_record_never_reaches_the_client, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_an_idle_record_is_active_at_the_client_hand_off, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_a_direct_caller_with_no_seam_ticket_is_fenced_too, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_the_launch_prompt_is_not_fenced]
+    INV-ENG-009: [tests/test_engagement_registry.py::TestBeginTurnDelivery::test_seam_is_not_a_coroutine_function, tests/test_engagement_registry.py::TestBeginTurnDelivery::test_terminal_record_is_refused_and_never_resurrected, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_a_follow_up_to_a_terminal_record_never_reaches_the_client, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_an_idle_record_is_active_at_the_client_hand_off, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_a_direct_caller_with_no_seam_ticket_is_fenced_too, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_the_launch_prompt_is_not_fenced]
 - doc: architecture/eval-framework.md
   summary: The evaluation scaffolding — and the fact that its registry ships empty.
   when_changing: adding an evaluator, or before assuming behaviour is evaluated somewhere
@@ -183,3 +109,6 @@
   invariant_tests:
     INV-EVAL-001: [tests/test_pin_g5_invariants.py::test_pin_inv_eval_001_shipped_registry_is_empty]
     INV-EVAL-002: [tests/test_pin_g5_invariants.py::test_pin_inv_eval_002_sweep_forwards_caller_selected_value]
+- doc: architecture/engagement-containment.md
+  summary: "Retired: the OS boundary around a claude_code engagement, removed in v0.349.0 with the driver."
+  when_changing: nothing; this retired document is deleted in a docs-only change

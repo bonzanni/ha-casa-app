@@ -11,8 +11,7 @@ last_reviewed: 2026-08-25
 The two HTTP applications the main Casa process runs, what each exposes, and how a request
 from outside is authenticated before it can reach an agent. It does not cover what an agent
 does once reached, nor the voice transport's own protocol beyond the point where a request
-becomes a turn. The container also ships a third, separately supervised loopback HTTP
-service — the MCP bridge — which belongs to `architecture/mcp-bridge.md`, not here.
+becomes a turn.
 
 ## Mental model
 
@@ -22,20 +21,18 @@ decides who can call it.
 The **public app** carries the externally-reachable routes: a dashboard, a health endpoint,
 agent invocation, the Telegram update sink, conditionally-registered voice routes, and
 inbound webhooks — which are a *single wildcard route* backed by a dynamically-maintained
-trigger allowlist, not per-trigger route registrations. (MCP and hook resolution are not
-on this app: they are served by the standalone loopback bridge `svc-casa-mcp`, which
-belongs to `architecture/mcp-bridge.md`.) This document does not enumerate the routes; the registration block is the
-authority and it changes.
+trigger allowlist, not per-trigger route registrations. This document does not enumerate the
+routes; the registration block is the authority and it changes.
 
 The **internal app** carries routes intended for other processes in the container to call —
-admin reload, personality and specialist endpoints, and a family of internal channel routes.
+admin reload, the memory wipe, export and restore doors, personality and specialist
+endpoints, and the result broker's `/internal/broker/*` routes a plugin's MCP server calls.
 Its listener configuration, not its route table, is what makes it internal; check the runner
 setup before assuming reachability either way. The `/admin/*` family carries a second gate on
 top of the socket's filesystem permissions: a middleware reads the connecting peer's uid via
 `SO_PEERCRED` and refuses anyone who is not root, so a same-container non-root identity that
-reached the socket still cannot drive a reload — the channel-forwarding `/internal/*` routes
-are deliberately *not* gated this way, because their forwarder is not root and they are
-authorized per-engagement one layer up (INV-HTTP-007).
+reached the socket still cannot drive a reload — the `/internal/*` routes are deliberately
+*not* gated this way (INV-HTTP-007).
 
 **nginx runs two listeners with different security postures, and conflating them is the
 easiest way to be badly wrong here.** The Home Assistant ingress listener carries a
@@ -57,13 +54,10 @@ Authentication is **per route**, not ambient. There is no boundary that authenti
 everything arriving on the public app, so the question for any route is which check *it*
 performs — and several routes perform none.
 
-**The routes with no application-layer check are the ones to understand first.** The MCP
-and hook-resolution endpoints live on the loopback-only `svc-casa-mcp` bridge, not on this
-app — an engagement-identity *claim* on them is credential-verified (INV-MCP-004,
-INV-MCP-006), but the routes themselves demand nothing to be called and are contained by
-the container wall alone. The external nginx listener still 404s the `/mcp/` and `/hooks/`
-prefixes as defense in depth. A new route performing no check inherits no protection from
-any of this; it inherits only its own absence of a check.
+**The routes with no application-layer check are the ones to understand first.** A new route
+performing no check inherits no protection from anything around it; it inherits only its own
+absence of a check. The external nginx listener 404s the `/mcp/` and `/hooks/` prefixes as
+defense in depth; no backend route serves either.
 
 ## Contracts & invariants
 
@@ -181,20 +175,17 @@ documents rather than migrating them.
 **INV-HTTP-007**: On the internal socket, `/admin/*` requests are refused unless the connecting peer is uid 0; an unreadable peer identity is refused, not admitted.
 
 The gate exists because the socket's own filesystem permissions answer "who outside the
-container" but not "which identity *inside* it": the container drops per-engagement work to a
-non-root uid, and an in-container non-root process that reached the socket would otherwise
-inherit the full admin surface. `SO_PEERCRED` reports the kernel-recorded credentials of the
+container" but not "which identity *inside* it": an in-container non-root process that
+reached the socket would otherwise inherit the full admin surface. `SO_PEERCRED` reports the kernel-recorded credentials of the
 peer at connect time on an `AF_UNIX` stream — an unprivileged client cannot forge it — and the
 middleware fails **closed**: no transport, no socket, or a `getsockopt` error is treated as
 non-root, because an identity that cannot be read is not proof of root. The gate is scoped to
-the `/admin/*` prefix; the `/internal/*` forwarding routes pass through it untouched, since the
-legitimate forwarder runs non-root and those routes carry their own per-engagement
-authorization. `casactl`, the only legitimate `/admin/*` caller, runs as root and passes.
+the `/admin/*` prefix; the `/internal/*` broker routes pass through it untouched. `casactl`, the only legitimate `/admin/*` caller, runs as root and passes.
 
 The related exposure worth holding next to this: the optional web terminal (`svc-ttyd`) is an
 unauthenticated, writable **root** shell. It is bound to a root-restricted UNIX socket, not TCP
-loopback, precisely so a dropped-uid engagement cannot reach it by connecting past nginx — see
-"Failure behavior" and `architecture/overview.md` for the terminal's own boundary.
+loopback, so a non-root process in the container cannot reach it by connecting past nginx —
+see `architecture/overview.md` for the terminal's own boundary.
 
 ## Failure behavior
 

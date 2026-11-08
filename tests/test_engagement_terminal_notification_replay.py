@@ -37,9 +37,6 @@ class _RecordingBus:
 def _driver_double():
     d = MagicMock()
     d.cancel = AsyncMock()
-    for hook in ("finalize_completion_post", "finalize_summary",
-                 "settle_all_open_questions", "drain_inbound_spool"):
-        delattr(d, hook)
     return d
 
 
@@ -1091,7 +1088,6 @@ _RETENTION_CASES = [
     ("inf", lambda old: float("inf"), {}, True),
     ("neg-inf", lambda old: float("-inf"), {}, True),
     ("oversized-int", lambda old: 10**400, {}, True),
-    ("old-owes-quiesce", lambda old: old, {"quiesce_pending": True}, True),
     ("old-owes-telling", lambda old: old,
      {"terminal_notification_pending": True}, True),
     ("string-owes-telling", lambda old: "yesterday",

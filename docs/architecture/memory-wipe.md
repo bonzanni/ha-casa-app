@@ -23,8 +23,8 @@ intent and asks the Supervisor to restart the app; the wipe itself runs in
 `init-memory-maintenance`, an s6-rc oneshot that starts before every service that can read
 or write memory. `casa-main` never runs it. It erases every row of the registry: `memory.db`
 whole, the capture spool, the search index, local exports, every SDK
-transcript of every role and engagement, the session pointers, the explanation records and
-each engagement's executor-memory block. Reminders, triggers, files, settings and prompts,
+transcript of every role and engagement, the session pointers and the explanation records.
+Reminders, triggers, files, settings and prompts,
 pending tasks, plugin data and logs stay; a kept item can still mention something erased.
 
 **Three doors, one consent posture.** The terminal door (`casactl memory-wipe --yes` →
@@ -73,24 +73,16 @@ stays for the next container start.
 
 **The container-start step** (`memory.maintenance.run`, `python -m memory.maintenance` from
 `scripts/memory-maintenance.sh`). `init-memory-maintenance` depends on `base`, and
-`init-setup-configs` depends on it. Every longrun reaches `init-setup-configs`, and every
-engagement service is written with that single dependency, so all of them start after the
-step. With no intent it only removes a staged restore source that has no intent. With one,
+`init-setup-configs` depends on it. Every longrun reaches `init-setup-configs`, so all of
+them start after the step. With no intent it only removes a staged restore source that has no intent. With one,
 before its first deletion it appends this container start's attempt — a hash of the host's
 boot id and PID 1's start time — and writes the intent, so an attempt that is cut off is
 still seen as one. (A test install can make it sleep at this point, before its first
 deletion, through `CASA_TEST_MAINTENANCE_SLEEP_S`, to measure a long step against the
-stage-2 limits.) Then the wipe loop:
-
-- **A. Retention.** A workspace whose recorded status is not `UNDERGOING` and whose
-  `retention_until` has passed is deleted whole, with its control directory and its uid's
-  outbox, by the workspace sweep's own rule.
-- **B. Locate.** Every remaining workspace `CLAUDE.md` is classified. If any
-  executor-memory section cannot be located, the step stops before deleting anything.
-- **C. The registry.** Each row's wipe rule is applied in turn: files and directories
-  deleted whole, every transcript root emptied, the session pointers reset to `{}`, each
-  producer's declared staging files deleted, every executor-memory section blanked and
-  every cache emptied. A row whose rule the loop does not know fails the attempt.
+stage-2 limits.) Then the wipe loop applies each registry row's wipe rule in turn: files and
+directories deleted whole, every transcript root emptied, the session pointers reset to `{}`
+and each producer's declared staging files deleted. A row whose rule the loop does not know
+fails the attempt.
 
 A fresh, empty store is then created with `meta` recording the outcome, and the intent is
 removed last. A restore intent runs in this same step, in
@@ -102,33 +94,8 @@ container from starting. Once the channels are up, `casa-main` sends "Done. I've
 everything. Your reminders, triggers, files and settings are still here." once, claimed in
 the same transaction that marks it sent.
 
-**The executor-memory section keeps every other byte.** `provision_workspace` writes the
-cache before any `CLAUDE.md`, writes `CLAUDE.md` atomically, and both it and
-`refresh_claude_md` wrap the block between two fixed markers with every marker string
-removed from the block first, so memory text cannot forge one. The template is filled in
-one pass with the task, context and other values — a value is never scanned for
-placeholders again — with a unique sentinel in the slot; the whole joined text then has
-every marker string neutralised (its `<` written as `&lt;`), and only then does the
-sentinel become the marked block. However a marker might be assembled from template text
-and values, the one pair in the file comes only from the slot. The workspace's root
-`CLAUDE.md` is written only by `drivers.workspace.write_claude_md`, which renders it this
-way: a template's plain `CLAUDE.md` (with no `.tmpl`) is rendered and neutralised like any
-template rather than copied, and a scan fails on any other code that writes the file. A
-template with no slot caches nothing. The step classifies each file:
-
-1. **One marker pair**, in order: the content between them is emptied.
-2. **No marker pair**: the file holds no executor memory and is left as it is.
-3. **Anything else** — more than one pair, or markers out of order — is not locatable: the
-   attempt fails and names the engagement.
-
-A cache is emptied only after its file is blank. Every cache is also enumerated on its
-own: one with no `CLAUDE.md` beside it is an orphan, left by a sweep or a provisioning cut
-off between its two writes, and is emptied at once. Rewrites never follow a symlink and
-keep the file's owner and mode; nothing below an engagement's directory is followed.
-
 **A pending intent at `casa-main` boot.** Right after option and secret resolution — before
-plugin environment, memory construction, boot replay, the writer, the scheduler, the
-channels, the internal socket and the public app — `casa_core.main()` reads the intent:
+plugin environment, memory construction, the writer, the scheduler, the channels, the internal socket and the public app — `casa_core.main()` reads the intent:
 
 - **No attempt recorded**: no step has reached a deletion, so memory is untouched. Casa
   boots normally and, once its channels are up, asks for the restart again.
@@ -150,12 +117,9 @@ so a real directory stays where it is for the next step to delete. No other ones
 any program one runs, touches a registry path's content.
 
 **After the restart.** Session pointers are empty, so every conversation starts fresh.
-An open engagement keeps its record and workspace and continues in a fresh session. For a
-claude_code engagement, boot replay finds that its session has no transcript left and drops
-the control-directory session pointer, so its run script starts a fresh session
-(`drivers.workspace.drop_session_without_transcript`). For an in_casa engagement, whose
-session the CLI could no longer resume, the step itself sets `context_rebuild_pending` on
-every active or idle in_casa record, with or without a session id yet: its next turn opens a
+An open engagement keeps its record and continues in a fresh session. Its session could no
+longer be resumed by the CLI, so the step itself sets `context_rebuild_pending` on every
+active or idle record, with or without a session id yet: its next turn opens a
 fresh session with the context-reset note instead of failing to resume. The step reads
 `/data/engagements.json` strictly and never repairs it — a file it cannot read or parse, or
 one holding a malformed row, is left byte for byte as it is and nothing is marked — and it
@@ -164,11 +128,11 @@ record or field is lost.
 
 ## Contracts & invariants
 
-**INV-MEM-035**: The wipe loop runs only in the container-start step, which every longrun and every engagement service starts after; a later oneshot's content operation on a registry path sits behind the `maintenance.json` check.
+**INV-MEM-035**: The wipe loop runs only in the container-start step, which every longrun starts after; a later oneshot's content operation on a registry path sits behind the `maintenance.json` check.
 
 Pinned by a scan of every caller of the loop and of the step, by the real s6-rc graph (the
-step is a oneshot in the `user` bundle, `init-setup-configs` depends on it, every longrun
-and the engagement services `s6_rc.write_service_dir` writes reach it), and by a scan of
+step is a oneshot in the `user` bundle, `init-setup-configs` depends on it, and every
+longrun reaches it), and by a scan of
 every oneshot script and the programs it runs, in which the projects migration's copy,
 removal and link are the only content operations on a registry path and all three sit
 inside the guard. Creating an empty directory and the `{}` of a missing `sessions.json`
@@ -182,25 +146,17 @@ facts the order rests on — a Supervisor app restart ends every process of the 
 `/run` starts empty, and a respawn or a runtime `s6-rc-update` does not re-run the step —
 are measured on a test install, not here.
 
-**INV-MEM-038**: The wipe executes only on consent at one of its doors, and erases exactly the registry: every row's path and declared staging pattern ends empty or reset, and every byte of a workspace `CLAUDE.md` outside its executor-memory section is kept.
+**INV-MEM-038**: The wipe executes only on consent at one of its doors, and erases exactly the registry: every row's path and declared staging pattern ends empty or reset.
 
 Pinned by canaries in every row — the store's tables, the spool and its drain snapshot, an
-in-progress export, a transcript of
-every role and of an engagement, the session pointers, an explanation record, the
-executor-memory block of an open and of a retained completed engagement, and a staging
-file each producer's atomic helper leaves when a real process is killed before its rename —
+in-progress export, a transcript of every role, the session pointers, an explanation record,
+and a staging file each producer's atomic helper leaves when a real process is killed before its rename —
 plus one captured after consent, all at 0 bytes after the step, with kept items
 byte-identical. What it does not cover: a kept item may still mention something erased, and
 copies outside Casa (a Home Assistant backup, a downloaded export) are untouched. A
 transcript root an engagement replaced with a symlink is not followed.
 
 ## Failure behavior
-
-**A section cannot be located.** The step stops before any deletion (or, if a file changed
-since the locate pass, at that file), records "executor memory of engagement <id> could not
-be located", and keeps the intent; Casa starts in notification-only mode and names the
-engagement. Deleting that workspace, or restarting once its retention has passed, lets the
-next attempt succeed.
 
 **The step is cut off.** A kill anywhere leaves the intent with this container's attempt
 and no error; Casa reports the interrupted line, and the next container start runs the
@@ -232,19 +188,14 @@ content does so inside the `maintenance.json` guard, or the scan fails.
 
 **Source**
 - `casa/rootfs/opt/casa/memory/maintenance.py`
-- `casa/rootfs/opt/casa/memory/executor_block.py`
 - `casa/rootfs/opt/casa/supervisor_restart.py`
 - `casa/rootfs/opt/casa/tools.py::wipe_memory`
 - `casa/rootfs/opt/casa/internal_handlers.py::build_admin_memory_wipe_handler`
-- `casa/rootfs/opt/casa/drivers/workspace.py::drop_session_without_transcript`
-- `casa/rootfs/opt/casa/drivers/workspace.py::write_claude_md`
 - `casa/rootfs/etc/s6-overlay/scripts/memory-maintenance.sh`
 
 **Tests**
 - `tests/test_memory_wipe.py`
 - `tests/test_memory_wipe_crash.py`
-- `tests/test_executor_memory_blank.py`
-- `tests/test_claude_md_one_writer.py`
 - `tests/test_memory_pending_intent.py`
 - `tests/test_memory_maintenance_only_in_oneshot.py`
 - `tests/test_s6_memory_maintenance_graph.py`
@@ -258,5 +209,4 @@ content does so inside the `maintenance.json` guard, or the scan fails.
 - [`architecture/memory-lifecycle.md`](../architecture/memory-lifecycle.md)
 - [`architecture/memory.md`](../architecture/memory.md)
 - [`architecture/persistent-state.md`](../architecture/persistent-state.md)
-- [`architecture/engagement-workspace-access.md`](../architecture/engagement-workspace-access.md)
 <!-- END SOURCEMAP -->

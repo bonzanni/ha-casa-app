@@ -1,7 +1,7 @@
 #!/command/with-contenv /opt/casa/scripts/core-bashio.sh
 # init-memory-maintenance: carry out a pending memory wipe before any service
-# that can read or write memory starts (every longrun, and every engagement
-# service, depends on init-setup-configs, which depends on this oneshot).
+# that can read or write memory starts (every longrun depends on
+# init-setup-configs, which depends on this oneshot).
 #
 # It always exits 0, so a failure never stops the container from starting.
 # The failure is recorded in /data/memory/maintenance.json, and casa-main then

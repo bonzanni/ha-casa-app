@@ -10,14 +10,13 @@
   related: [architecture/telegram.md, architecture/http-surface.md]
 
 - doc: architecture/telegram.md
-  summary: How Telegram messages become turns — transports, authentication, the per-topic causal log, and keyboards.
-  when_changing: Telegram transport, callback namespaces, topic output ordering, or the outbound request boundary
+  summary: How Telegram messages become turns — transports, authentication, and keyboards.
+  when_changing: Telegram transport, callback namespaces, or the outbound request boundary
   covers:
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel
     - casa/rootfs/opt/casa/channels/telegram.py::_SurrogateSafeRequest
     - casa/rootfs/opt/casa/channels/telegram.py::_parse_callback_data
     - casa/rootfs/opt/casa/casa_core.py::_make_telegram_update_handler
-    - casa/rootfs/opt/casa/channels/output_sequencer.py::OutputSequencer
     - casa/rootfs/opt/casa/verdict_broker.py::VerdictBroker
     - casa/rootfs/opt/casa/channels/telegram.py::_InboundReservation
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.engagement_inbound_reservation
@@ -33,12 +32,11 @@
     - tests/test_telegram_reconnect.py
     - tests/test_telegram_surrogate_boundary.py
   related: [architecture/overview.md, architecture/telegram-rendering.md, architecture/engagements.md, architecture/engagement-completion-gate.md, architecture/http-surface.md]
-  defines_invariants: [INV-TG-001, INV-TG-002, INV-TG-003, INV-TG-004, INV-TG-006, INV-TG-007, INV-TG-009]
+  defines_invariants: [INV-TG-001, INV-TG-002, INV-TG-003, INV-TG-006, INV-TG-007, INV-TG-009]
   invariant_tests:
     INV-TG-001: [tests/test_telegram_update_handler.py::test_no_secret_configured_rejects, tests/test_telegram_update_handler.py::test_wrong_token_403_and_not_processed, tests/test_telegram_update_handler.py::test_correct_token_200]
-    INV-TG-002: [tests/test_telegram_inline_callback.py::test_wrong_user_refused_without_claiming, tests/test_verdict_broker.py::test_claim_forbidden_on_actor_mismatch, tests/test_channel_internal_handlers.py::test_permission_verdict_route_gone]
+    INV-TG-002: [tests/test_telegram_inline_callback.py::test_wrong_user_refused_without_claiming, tests/test_verdict_broker.py::test_claim_forbidden_on_actor_mismatch]
     INV-TG-003: [tests/test_verdict_broker.py::test_claim_does_not_resolve_until_commit_and_stale_after_retire]
-    INV-TG-004: [tests/test_output_sequencer.py::test_serialized_still_mutually_exclusive_across_tasks]
     INV-TG-006: [tests/test_agent_process.py::TestHealthNoticeDeliveryConfirmation::test_notice_survives_a_delivery_that_sent_nothing, tests/test_agent_process.py::TestHealthNoticeDeliveryConfirmation::test_head_delivered_then_raise_does_not_repeat_the_notice, tests/test_telegram_delivery_outcome.py::TestSend::test_send_without_app_reports_not_delivered, tests/test_telegram_topic_stream.py::TestTopicStreamDeliveryOutcome::test_persistent_forbidden_is_not_delivered, tests/test_telegram_topic_stream.py::TestTopicStreamDeliveryOutcome::test_landed_emit_latches_through_final_edit_refusal, tests/test_telegram_topic_stream.py::TestTopicStreamDeliveryOutcome::test_no_emit_multi_page_refusal_is_unknown, tests/test_telegram_topic_stream.py::TestAmbiguousEmitWeakensTheClaim::test_timed_out_emit_then_refused_finalize_is_unknown, tests/test_telegram_topic_stream.py::TestAmbiguousEmitWeakensTheClaim::test_a_refused_emit_does_not_weaken_the_claim, tests/test_telegram_topic_stream.py::TestPreSendFailuresEstablishAbsence::test_connect_timeouts_establish_not_delivered, tests/test_telegram_topic_stream.py::TestPreSendFailuresEstablishAbsence::test_read_timeout_keeps_the_ambiguity]
     INV-TG-007: [tests/test_telegram_dm_settle.py::test_pin_inv_tg_007_plain_settle_clears_the_keyboard, tests/test_telegram_dm_settle.py::test_pin_inv_tg_007_rich_settle_clears_the_keyboard, tests/test_telegram_dm_settle.py::test_pin_inv_tg_007_entity_fallback_retry_clears_the_keyboard, tests/test_telegram_dm_settle.py::test_pin_inv_tg_007_empty_markup_survives_to_the_wire, tests/test_telegram_dm_settle.py::test_pin_inv_tg_007_a_settle_that_names_its_buttons_keeps_exactly_those, tests/test_run_admission.py::test_his_start_leaves_the_card_with_exactly_its_stop, tests/test_run_admission.py::test_not_now_settles_the_card_with_no_buttons]
     INV-TG-009: [tests/test_telegram_surrogate_boundary.py::test_pin_inv_tg_009_no_request_leaves_with_a_surrogate_code_point, tests/test_telegram_reconnect.py::TestRequestBoundaryWiring::test_every_built_application_installs_the_request_boundary_once]
@@ -87,8 +85,6 @@
     - casa/rootfs/opt/casa/tools.py::_result
     - casa/rootfs/opt/casa/tools.py::select_casa_tools
     - casa/rootfs/opt/casa/tools.py::emit_completion
-    - casa/rootfs/opt/casa/internal_handlers.py::_make_internal_tools_call_handler
-    - casa/rootfs/opt/casa/mcp_envelope.py::_tool_schema
     - casa/rootfs/opt/casa/tools.py::config_git_commit
     - casa/rootfs/opt/casa/tools.py::_run_reload
     - casa/rootfs/opt/casa/reload.py::commit_reload_scopes
@@ -101,12 +97,11 @@
     - tests/test_configurator_doctrine_commit_reloads.py
     - tests/test_1095_change_load_timing.py
   related: [architecture/mcp-and-tools.md, architecture/engagements.md, architecture/plugin-mutation-tools.md, architecture/tool-questions.md, architecture/configuration.md]
-  defines_invariants: [INV-TOOL-001, INV-TOOL-002, INV-TOOL-006, INV-TOOL-014]
+  defines_invariants: [INV-TOOL-001, INV-TOOL-006, INV-TOOL-014]
   invariant_tests:
     INV-TOOL-014: [tests/test_config_git_commit_reload.py::test_commit_reload_table, tests/test_config_git_commit_reload.py::test_trigger_edit_reloads_the_roles_triggers, tests/test_config_git_commit_reload.py::test_character_edit_rebuilds_that_resident, tests/test_config_git_commit_reload.py::test_two_commits_reload_twice, tests/test_config_git_commit_reload.py::test_policies_edit_reloads_policies, tests/test_config_git_commit_reload.py::test_fleet_scopes_run_through_the_entry_point_fence, tests/test_config_git_commit_reload.py::test_mixed_commit_reloads_full_once, tests/test_config_git_commit_reload.py::test_plugins_only_commit_reloads_nothing, tests/test_config_git_commit_reload.py::test_executor_prompt_edit_reloads_nothing, tests/test_config_git_commit_reload.py::test_unreadable_paths_reload_full, tests/test_config_git_commit_reload.py::test_a_failed_reload_is_reported_and_the_commit_stands, tests/test_config_git_commit_reload.py::test_a_reported_subordinate_failure_is_surfaced, tests/test_config_git_commit_reload.py::test_inside_an_engagement_it_reloads_the_same_way]
     INV-TOOL-001: [tests/test_internal_handlers.py::test_pin_inv_tool_001_result_marks_errors_only_for_error_status]
     INV-TOOL-006: [tests/test_delegate_to_agent.py::TestClusterSRedAbortFanOut::test_red_nonvoice_abort_reaches_both_consumers, tests/test_delegate_to_agent.py::TestClusterSRedAbortFanOut::test_red_abort_write_failure_reconciles_original_failure_only, tests/test_delegate_to_agent.py::TestClusterSAbortMatrix::test_nonvoice_abort_matrix, tests/test_delegate_to_agent.py::TestClusterSAbortMatrix::test_empty_text_completed_run_is_still_successful, tests/test_delegate_to_agent.py::TestClusterSAbortMatrix::test_abort_write_failure_retries_the_original_failure]
-    INV-TOOL-002: [tests/test_internal_handlers.py::test_tools_call_inactive_engagement_is_rejected_fail_closed, tests/test_internal_handlers.py::test_tools_call_terminal_engagement_binds_for_emit_completion]
 
 - doc: architecture/trigger-secrets.md
   summary: The secrets that authenticate webhook triggers — who mints one and when, the mint receipt and provenance, the per-slot reload report, and what is not retired.

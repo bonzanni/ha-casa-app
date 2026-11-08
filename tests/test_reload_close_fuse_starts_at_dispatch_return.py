@@ -221,7 +221,7 @@ async def _install(h, monkeypatch, tmp_path, *, replacements, live=None):
         agent_registry=MagicMock(), trigger_registry=MagicMock(),
         mcp_registry=MagicMock(), session_registry=MagicMock(),
         channel_manager=MagicMock(), bus=MagicMock(),
-        engagement_driver=MagicMock(), claude_code_driver=MagicMock(),
+        engagement_driver=MagicMock(),
         policy_lib=MagicMock(), config_dir=str(tmp_path),
         agents_dir=str(agents_dir), home_root="/x/home",
         defaults_root="/opt/casa",

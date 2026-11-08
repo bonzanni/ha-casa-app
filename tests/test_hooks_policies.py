@@ -138,7 +138,7 @@ class TestResolveHooks:
         """REVISION 3 (Terra plan-review r3, #360): resolve_hooks is the SDK
         path used by the in-casa _build_executor_options. A snapshot
         carrying the transport-only ``matcher``/``timeout`` keys on a floor
-        policy (e.g. because hook_bridge's canonical-matcher force wrote a
+        policy (e.g. because the since-removed hook bridge's canonical-matcher force wrote a
         matcher back onto every registry entry, or the yaml itself declared
         one) loads/reloads fine but previously blew up every in-casa
         executor's START with UnknownPolicyError, since the factories reject
@@ -307,24 +307,6 @@ class TestHookNoopReturnsEmptyDict:
         hook = make_commit_size_guard_hook(max_files=1)
         result = await hook(
             {"tool_name": "Read", "tool_input": {"file_path": "/x"}},
-            None, {},
-        )
-        assert result == {}, f"expected empty dict, got {result!r}"
-
-    async def test_self_containment_guard_non_bash(self):
-        from hooks import make_self_containment_guard
-        hook = make_self_containment_guard()
-        result = await hook(
-            {"tool_name": "Read", "tool_input": {"file_path": "/x"}},
-            None, {},
-        )
-        assert result == {}, f"expected empty dict, got {result!r}"
-
-    async def test_self_containment_guard_non_git_push(self):
-        from hooks import make_self_containment_guard
-        hook = make_self_containment_guard()
-        result = await hook(
-            {"tool_name": "Bash", "tool_input": {"command": "ls -la"}},
             None, {},
         )
         assert result == {}, f"expected empty dict, got {result!r}"

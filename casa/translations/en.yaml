@@ -42,12 +42,6 @@ configuration:
       Optional manual override for the webhook secret. Leave empty to use the
       auto-generated one. Used as HMAC key for Casa webhooks and as Telegram's
       secret_token for webhook mode.
-  context7_api_key:
-    name: Context7 API Key
-    description: >-
-      API key for the bundled Context7 documentation plugin (part of the
-      plugin-developer toolbox). Leave empty to run without it; Context7
-      lookups will be unavailable until set.
   primary_agent_model:
     name: Primary Agent Model
     description: >-

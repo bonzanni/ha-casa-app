@@ -1,337 +1,36 @@
 ---
-last_reviewed: 2026-08-15
+last_reviewed: 2026-11-08
 ---
 
-# Engagement containment
+# Engagement containment (retired)
 
 > Code is the source of truth. This file is a map; when it and the code disagree, the code wins.
 
 ## Scope
 
-The OS-level boundary around a `claude_code` executor engagement: the uid it is given and
-never shares, the workspace that uid owns, the preflight that
-refuses a launch whose privilege drop could not succeed, and the confirmed-down sweep boot
-replay runs before it migrates or resumes a service. How root reaches into that workspace
-without being redirected out of it, and where the run-state root alone touches lives, are
-[`architecture/engagement-workspace-access.md`](engagement-workspace-access.md).
-
-The engagement *record* and its creation are
-[`architecture/engagements.md`](engagements.md); how a turn is admitted to a live engagement
-is [`architecture/engagement-turn-admission.md`](engagement-turn-admission.md); what a
-restart rewrites, and what a launch abort rolls back, are
-[`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md); the
-terminal transition, its side effects
-and the finalize path's driver teardown, the one stop path that is not
-a boot path, are [`architecture/engagement-finalization.md`](engagement-finalization.md), and
-the completion gate is
-[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md). Two neighbouring boundaries live
-elsewhere: the hook floor bounding what the CLI may *do* once running is in
-[`architecture/hook-resolution.md`](hook-resolution.md), and the file modes that keep
-credentials out of a dropped uid's reach are INV-STATE-005 in
-[`architecture/persistent-state.md`](persistent-state.md) — both the allocator and the
-preflight refuse while those modes are wrong, and that refusal is declared there.
-
-Specialist and legacy engagements are out of scope throughout: their records carry
-`UNALLOCATED_UID`, their workspaces are never chowned, and they never drop privilege.
+The OS boundary around a `claude_code` engagement was removed in v0.349.0 together with the
+`claude_code` driver. The pieces that survive, the kill-by-uid ladder (`uid_kill.py`) and the
+trusted PATH rule (`trusted_path.py`), are described in
+[`architecture/overview.md`](overview.md).
 
 ## Mental model
 
-**A `claude_code` engagement gets its own OS identity, not just its own record.** A
-never-reused uid, backed by a durable dual-copy counter, is allocated per engagement, its
-workspace chowned to it and reachable by root only through a no-follow accessor, and the run
-script's final `exec` drops privilege via `setpriv` — see the invariants below for the rest.
-
-**Every step of that is fail-closed, because the wrong uid is worse than no uid.** Handing
-out a uid some live process already holds lets one engagement act as another's identity;
-dropping into a uid that can still read a Supervisor token hands an engagement every app's
-stored secrets. So each step refuses rather than degrades: the allocator poisons itself on
-any failure it cannot bound and refuses every later allocation, the run-script render refuses
-to substitute a sentinel or a below-base uid, the preflight refuses to plant a service whose
-drop it cannot prove, and boot replay keeps services down rather than starting one that would
-run as root or crash-loop under its supervisor.
-
-**The boundary is enforced at start and at boot; it is not re-established by a process
-ending.** A launch is gated by the preflight. A boot sweeps every engagement service before
-it migrates or resumes anything, each through a bounded ladder whose last rungs attempt a
-group `SIGKILL`, and kills escaped descendants still holding the engagement's uid
-best-effort as it goes; a service that will not confirm down is refused rather than started,
-and blocks only its own engagement. Between those two points the guarantee is the uid
-itself: whatever runs under it can reach only what that uid can reach. Stopping a *running*
-engagement is the finalize path's driver teardown, which belongs to the record's lifecycle
-rather than to this boundary — INV-CONT-001's scope clause below states what that leaves
-uncontained.
+Nothing remains to describe; the document stays only until a docs-only change deletes it.
 
 ## Contracts & invariants
 
-**INV-CONT-001**: A `claude_code` engagement's uid comes from two independently-written durable high-water copies and is never handed out twice, even if either file is lost.
-
-Reconstruction takes the max of every still-valid durable copy, raised (never lowered) by
-records, dir owners, `casa-eng-*` passwd, and `/proc` ids. With both copies lost, a
-never-removed `initialized` marker present — OR absent but a real uid (`>= UID_BASE`) evidenced —
-poisons (a uid was allocated); marker absent with no real uid inits at base. A copy that is
-present but unreadable poisons when no valid sibling copy remains.
-
-What it does not cover: specialist and legacy `EngagementRecord`s carry `UNALLOCATED_UID` and
-are never chowned or uid-dropped — this applies only to `claude_code` executors. And a uid is
-not a container: a process that is root, or that kept `CAP_DAC_OVERRIDE`, is root-equivalent
-whatever uid it carries, so the boundary bounds only what an ordinary dropped process can
-reach. One survivor class follows from that and is mitigated rather than closed: a legacy root
-process from before the drop existed, killed best-effort by the boot sweep below. A process
-still running under the engagement's own uid after its record has gone terminal is no longer
-in that company — INV-CONT-006 kills it and says whether it worked.
-
-**INV-CONT-004**: A `claude_code` run script is never rendered or planted while its uid drop cannot be established — no `setpriv`, an unallocated uid, a workspace not owned by that uid, no passwd entry for it, or a pinned plugin directory neither owned by that uid nor world-readable and traversable — and the service is refused rather than started as root or left to crash-loop under its supervisor.
-
-Checked immediately before the render, so a chain that would otherwise fail at
-`setpriv`-exec time — or worse, silently exec without dropping — is caught earlier, named.
-The two paths reach the checks differently: a fresh launch calls the driver's preflight,
-while boot replay states its own gates in order — one `setpriv` gate covering every resume
-that boot, then per-record passwd regeneration and the workspace chown, then the shared
-plugin-directory check — each refusing that record rather than starting it.
-
-What it does not cover: the checks establish the *conditions* a drop requires; they do not
-verify the exec'd `claude` process ended up with the expected `Uid`/`CapBnd`, a live property
-confirmed operationally. Nor is the plugin-directory check reached on every restart: a record
-whose service pair is intact and current is resumed from the pair already on disk, without
-the re-render that check guards, so a pinned directory whose mode changed since that render
-surfaces as the dropped CLI failing to read it rather than as a refusal.
-
-**INV-CONT-005**: Boot replay migrates a legacy root run-script to the uid-dropped form, or resumes an existing one, only after confirming the corresponding s6 service is fully down; an unconfirmed-down service refuses the resume.
-
-The confirmation scans the supervised service tree itself rather than trusting the durable
-record, so a service still up — including one with no matching "undergoing" record — is
-never migrated or restarted out from under itself. Only once that sweep has run does replay
-re-fold live `/proc` uids into the high-water, before any uid backfill or `setpriv` render.
-
-What it does not cover: the sweep is per-service, so one engagement's unconfirmed service
-refuses that engagement's resume and leaves the rest of the boot to proceed. And "confirming
-down" is not a passive observation — the ladder re-issues the stop, latches the service down
-so its supervisor cannot revive it, then attempts a bounded group `SIGKILL` through the
-supervisor and, if that leaves the service up, a direct kill of the leader's process group —
-or of the leader alone, where it is not its group's leader. No rung is trusted to have
-worked: a rung that lands is followed by the strict probe, and a kill that cannot even be
-delivered ends the ladder in refusal without one. A service the ladder does not confirm down
-either way is refused rather than started.
-
-**INV-CONT-006**: Winning a terminal transition for a `claude_code` engagement schedules a bounded kill of every process under its uid, fenced against any concurrent start, and the record durably owes that work until an enumeration observes that uid set empty; an extinction that cannot be observed is reported, never claimed.
-
-The kill is scheduled by the registry the instant a transition wins — including the direct
-status mutators, which have no finalize funnel behind them — and the funnel waits for it,
-bounded, before its own operator-visible effects. Ordering was the whole defect: the record
-committed, and the CLI then stayed alive through the broker drain, the summary finalize and
-four Telegram round-trips, its casa tools refused by INV-MCP-001 while nothing at all stopped
-its native `Bash`/`Write`/`Edit`.
-
-The uid is the key rather than the process group, because the supervised leader is not
-guaranteed to be its own group leader and a `setsid` child leaves the group entirely, while a
-never-reused uid (INV-CONT-001) names exactly this engagement's processes forever. The ladder
-latches the service down and *verifies* `wantedup` before it claims anything, then `SIGKILL`s
-every member through the pidfd path and re-enumerates until the set is empty. Emptiness is a
-measurement, not an inference: a member may fork after a snapshot and before its signal lands,
-and that child is enumerated and killed on the next pass, because a killed process cannot fork
-again. Zombies count as extinct — a `Z` member cannot execute or write. Signalling another
-uid is a privilege: Casa and the supervisor run as root but the members do not, so the app's
-AppArmor profile has to grant `capability kill`. Without it the kernel refuses every signal,
-the s6 stop as much as the ladder's `SIGKILL`, and a member mid-turn keeps running after the
-ladder gives up; the ladder then reports the uid NOT verified extinct, which is how the missing grant
-showed (#1382).
-
-**What a failed launch leaves of the boundary.** Every artifact this document names — the
-workspace tree, its control directory, the uid's passwd/group identity and that uid's private
-outbox — is one of the removals INV-ENG-014 covers, and that invariant, its scope and its
-mechanism are in [`architecture/engagements.md`](engagements.md). What belongs here is the
-containment consequence, which is why a skipped attempt is permanent rather than untidy:
-because the uid is never reused (INV-CONT-001), no later launch inherits it and cleans up
-behind it, and the sweeper does not either — the meta already reads `UNDERGOING` by the time
-the rollback runs, and `_sweep_one_workspace` returns on `UNDERGOING` before it reads a
-retention deadline. Nothing revisits the residue, so an abandoned boundary is abandoned for
-the life of the install. An attempt that ran and FAILED is a different and pre-existing
-condition, best-effort in both documents' sense.
-
-**A boundary that is kept on purpose, and how it is reaped.** A launch that Casa's own
-graceful stop cancelled keeps its whole boundary — the workspace tree, the control directory,
-the uid's identity and the private outbox — instead of having it removed (INV-ENG-015, stated
-in [`architecture/engagements.md`](engagements.md)). Only the s6 service source is removed, and
-the live database recompiled, because a service source is not the executor's work. That
-retention is a deliberate exception to the paragraph above and it is the only one.
-
-Retention is bounded by the same sweeper that would otherwise never look. `.casa-meta.json` in
-the control directory is the sweeper's only source of truth about a workspace: it returns on
-`status == "UNDERGOING"` before it reads any deadline, and warn-skips a terminal status whose
-`retention_until` is not an ISO string. So a workspace kept without a terminal rewrite is
-kept *forever*, which is a leak wearing retention's clothes. The launch-death reporter
-therefore rewrites that file with a terminal status and a `retention_until` seven days out,
-after — never before — the record's own strict terminal transition has durably committed. One
-post-deadline sweep then reaps the whole boundary in a single decision: the workspace tree, its
-log directory, the control directory, the uid's passwd/group identity and its private outbox.
-That is the same reaping path an ordinary terminal engagement takes, and the uid is retired by
-it exactly once, which is what keeps INV-CONT-001 true of a retained boundary as well.
-
-The rewrite is best-effort and the failure direction is chosen: if it does not happen, the
-workspace stays `UNDERGOING` — never reaped, but also never deleted under a record that may
-still be live. An operator finds the tree still on disk under `/data/engagements` with its
-control directory beside it, and the reporter's `error` log naming the engagement is the record
-that it will not expire on its own.
-
-What it does not cover: there is no SIGTERM grace, so a narration tail the CLI had buffered is
-lost (the completion text is unaffected — it arrived through the tool call, and the frames the
-completion post drains are read from the s6 log segments on disk). An unverified down-latch
-makes the outcome `NOT_VERIFIED` even when the set empties, because s6 may put a fresh CLI
-back. Where the pidfd primitives are unavailable the ladder signals nothing and reports, rather
-than signalling a bare numeric pid a reused pid could redirect. And a casa death between the
-commit and the ladder leaves the durable obligation to the next boot — bounded by a restart,
-not by seconds.
-
-Two clear scans are two observations, not a proof. They close the fork-race a single scan
-misses — a child created after a snapshot is in the next one — but a process that contrives to
-be invisible at both moments would be missed, and `/proc` offers no atomic membership test to
-close that. A kernel-owned boundary would: a per-engagement cgroup with `cgroup.kill` and
-`populated == 0`. This app declares no privileged or cgroup access today, so the observation is
-what is claimed, and it is claimed as an observation.
+None.
 
 ## Failure behavior
 
-**The allocator cannot prove its high-water.** Any failure it cannot bound — a durable copy
-present but unparseable with no valid sibling, an unscannable `/proc`, both durable writes
-failing, or the marker-and-evidence rules meeting a state in which a uid was allocated whose
-maximum is unprovable — poisons the allocator and raises `UidStateError`. A poisoned allocator
-refuses *every* later allocation, so no `claude_code` engagement is created and no legacy
-record is backfilled until a successful reconstruction clears it. Only reconstruction clears it: the
-live-`/proc` refold refuses outright while poisoned, so it is a way in, never a way out. The
-repair is restoring a durable copy — there is no reset, because resetting the counter is how
-a live uid gets reissued.
-
-**The preflight refuses a launch.** `UidDropRefused` is raised, the s6 service is neither
-planted nor started, and there is no root fallback. The engagement does not start and the
-refusal names its condition, rather than surfacing later as an exec failure or a silently
-undropped process.
-
-**`setpriv` is missing from the image at boot.** Boot replay refuses every `claude_code`
-resume that boot rather than a subset, and the services stay down from the pre-migration
-sweep — never started as a root service, never left crash-looping under their supervisor.
-
-**The base image's s6-overlay sources are not where the compile looks.** Every `claude_code`
-launch, its rollback, a cancel and a boot replay with a live engagement recompile the s6-rc
-database from the base image's own s6-overlay sources together with Casa's and the
-engagements'. The overlay version inside the release image is whatever the base named by
-`casa/Dockerfile` ships, and a base bump changes it; Casa therefore compiles through the
-version-less `/package/admin/s6-overlay` link the base ships, never a versioned directory,
-and the image build refuses to complete when that link's sources directory is absent. A base
-that drops the link fails the build, not the first launch on an operator's install; the
-compile itself still fails closed (exit 111) and the launch rolls back. The same holds for
-the bundles that decide what starts at boot: since s6-overlay 3.2.3.2 the base keeps the
-`user` and `user2` bundles in `/etc/s6-overlay/user-bundles.d`, Casa adds its services to
-`user` there, and the runtime compile reads that directory beside Casa's service
-definitions in `/etc/s6-overlay/s6-rc.d` — the set the container's own boot compiles, plus
-the engagements. The image build compiles the same set, so a base that moves the bundles
-again, or a `user` bundle left among the service definitions, fails the build rather than
-every launch.
-
-**A plugin publishes a file named like an s6 program.** The driver runs every s6 program
-under a PATH without the plugin tools directory, so that file never runs in its place.
-
-**A plugin publishes a file named like a program an engagement runs as root.** Until the
-final `setpriv` exec, the run script, its log script and the stderr ring run as root; their
-interpreters are named by absolute path. Before any other program, both scripts rebuild PATH
-from the inherited one, keeping only absolute entries that are not the plugin tools
-directory, and refuse to start if none is left. The CLI gets the inherited PATH back, tools
-directory first, only after `setpriv` has dropped. Both `setpriv` preflights look it up on
-the same filtered PATH. A run script without that filter reads stale, so boot replay
-re-plants its pair once the service is confirmed down (INV-CONT-005).
-
-**The executor's model moves.** The run script passes the executor's resolved model and the
-effort Casa decides for it (`cli_model_flags`) on a line of its own; left out, the CLI would
-pick its own default model, which moves between CLI releases. Boot replay reads a script whose
-line differs from the executor's current flags as stale and re-plants its pair the same way,
-so an engagement planted before a model change resumes on the new model.
-
-**A service will not confirm down.** By then the ladder has re-issued the stop, latched the
-service down and attempted its kill rungs, and it is still not confirmed down — either the
-strict probe will not call it down, or the last kill could not be delivered at all — its pid
-unreadable, refused by the kernel, or already gone. Replay refuses to
-migrate or resume that engagement, marks its record errored best-effort, and never adds it
-to the start loop this boot. Every other engagement proceeds; the refusal is scoped to the
-one service.
-
-**The uid will not go extinct at a terminal transition.** The ladder reports `NOT_VERIFIED`
-naming the surviving pids at ERROR, the record KEEPS its durable obligation, and the finalize
-funnel continues — the operator still gets the completion, the notification and the summary
-captures,
-because a containment failure must not become a termination wedge. The next boot finds the
-obligation and runs the same ladder before any resume; the record is exempt from terminal
-expiry until it clears, so neither the obligation nor the uid it names can age out.
-
-**A start is in flight when the transition commits.** The start path re-reads the record's
-status under the lifecycle fence, immediately before the s6 up-transition, and refuses a
-terminal record — a fresh launch surfaces the refusal as a stale launch, a context rebuild
-simply leaves the service down. The fence also serialises the ladder against that start, so
-the two can never interleave.
+None.
 
 ## Extension points
 
-**A new evidence source for the high-water** is folded into the reconstruction, where it may
-only raise the mark. A source that cannot be read has to poison rather than be skipped — a
-skipped source is indistinguishable from one that found nothing, and that difference is the
-whole non-reissue guarantee.
-
-**A new precondition for the uid drop** has to be added on every path that renders a run
-script, and it is worth checking which those are before assuming two. The driver's preflight
-covers a fresh launch; boot replay does not call that preflight but states its own gates, and
-one of its paths — an intact, current service pair — resumes without re-rendering at all, so
-a precondition placed only in the render is not evaluated there. A condition added to one
-path is a hole the others walk straight through.
-
-**A new path that brings an engagement's service up** goes through the fenced starter, which
-re-checks terminal status under the lifecycle fence. There are three start sites today and the
-inventory is the point: a fourth that starts the service directly would be able to resurrect an
-engagement whose uid the ladder has just emptied. The fence must also never be held across an
-acquisition of the compile lock, which the launch path already holds around its whole body —
-that ordering is the difference between a fence and a deadlock.
-
-**A new flag or export in the run script** is added to the template, which every render
-substitutes and whose final line is the `setpriv` exec. Anything appended after that exec
-never runs, and anything that replaces it drops the privilege drop with it.
+None.
 
 ## Source & test map
 
 <!-- BEGIN SOURCEMAP -->
 <!-- generated by scripts/verify_docs.py --write-nav; do not hand-edit -->
-
-**Source**
-- `casa/rootfs/opt/casa/engagement_uids.py::UidAllocator`
-- `casa/rootfs/opt/casa/engagement_uids.py::UidAllocator.reconstruct`
-- `casa/rootfs/opt/casa/engagement_quiesce.py::quiesce_engagement`
-- `casa/rootfs/opt/casa/engagement_quiesce.py::kill_uid_until_empty`
-- `casa/rootfs/opt/casa/engagement_quiesce.py::live_pids_for_uid`
-- `casa/rootfs/opt/casa/drivers/s6_rc.py::latch_down`
-- `casa/rootfs/opt/casa/drivers/s6_rc.py::wanted_down`
-- `casa/rootfs/opt/casa/drivers/s6_rc.py::_run`
-- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.quiesce`
-- `casa/rootfs/opt/casa/drivers/workspace.py::render_run_script`
-- `casa/rootfs/opt/casa/drivers/workspace.py::chown_workspace`
-- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::_preflight_uid_drop`
-- `casa/rootfs/opt/casa/casa_core.py::replay_undergoing_engagements`
-- `casa/rootfs/opt/casa/scripts/engagement_run_template.sh`
-
-**Tests**
-- `tests/test_engagement_uids.py`
-- `tests/test_boot_replay.py`
-- `tests/test_claude_code_driver.py`
-- `tests/test_engagement_quiesce.py`
-- `tests/test_quiesce_obligation.py`
-- `tests/test_quiesce_fence.py`
-- `tests/test_quiesce_funnel_order.py`
-- `tests/test_s6_quiesce_seams.py`
-- `tests/test_s6_rc_overlay_sources.py`
-- `tests/test_s6_rc_trusted_path.py`
-- `tests/test_apparmor_profile.py`
-- `test-local/e2e/test_engagement_quiesce.sh`
-
-**Related**
-- [`architecture/engagements.md`](../architecture/engagements.md)
-- [`architecture/engagement-workspace-access.md`](../architecture/engagement-workspace-access.md)
-- [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
-- [`architecture/engagement-completion-gate.md`](../architecture/engagement-completion-gate.md)
-- [`architecture/hook-resolution.md`](../architecture/hook-resolution.md)
-- [`architecture/persistent-state.md`](../architecture/persistent-state.md)
 <!-- END SOURCEMAP -->

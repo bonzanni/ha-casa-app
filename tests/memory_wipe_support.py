@@ -8,7 +8,6 @@ child signalling itself."""
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import secrets
 import signal
@@ -21,9 +20,6 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 CODE_ROOT = REPO / "casa" / "rootfs" / "opt" / "casa"
 
-EID_OPEN = "0a" * 16          # an open, release-provisioned engagement
-EID_DONE = "0b" * 16          # completed, still retained
-EID_EXPIRED = "0c" * 16       # completed, its retention passed
 SID = "11111111-2222-4333-8444-555555555555"
 
 
@@ -97,60 +93,6 @@ def kept_changes(tree: Tree) -> list[str]:
                   if not p.exists() or p.read_bytes() != data)
 
 
-def _defn(tmp: Path, template: str):
-    import types
-    prompt = write(tmp / "prompt.md", template)
-    return types.SimpleNamespace(
-        type="x", prompt_template_path=str(prompt), hooks_path=None,
-        hooks_document={}, tools_allowed=[], permission_mode="acceptEdits",
-        doctrine_dir="", model="", memory=types.SimpleNamespace(enabled=False))
-
-
-TEMPLATE = ("# Task\n{task}\n\n## Context\n{context}\n\n{executor_memory}\n\n"
-            "## Rules\nKeep going.\n")
-
-
-def memory_block(canary: str) -> str:
-    """An executor-memory block holding *canary*."""
-    return (f"## Prior engagements (lessons learned)\n- remembered {canary}\n")
-
-
-async def provision(root: Path, eid: str, *, memory: str, monkeypatch,
-                    task: str = "Tidy the garden notes",
-                    template: str = TEMPLATE, context: str = "ctx") -> Path:
-    """This release's ``provision_workspace`` on the stand-in root."""
-    from drivers import workspace
-    monkeypatch.setattr(workspace, "CONTROL_ROOT",
-                        str(under(root, "/data/engagement-ctl")))
-    defn = _defn(root / "defs" / eid, template)
-    path = await workspace.provision_workspace(
-        engagements_root=str(under(root, "/data/engagements")),
-        engagement_id=eid, engagement_auth_token="tok-" + eid[:6],
-        defn=defn, task=task, context=context, executor_memory=memory,
-        casa_framework_mcp_url="http://127.0.0.1:8100/mcp/casa-framework")
-    return Path(path)
-
-
-def marked_workspace(root: Path, eid: str, block: str, *,
-                     status: str = "COMPLETED",
-                     retention_until: str = "2999-01-01T00:00:00Z",
-                     text: str | None = None) -> Path:
-    """A workspace as this release's writer leaves it: ``CLAUDE.md`` with the
-    block between its markers (or *text* as given), the cache beside it, and
-    the sweep's facts in the control directory."""
-    from memory import executor_block
-    ws = under(root, f"/data/engagements/{eid}")
-    write(ws / "CLAUDE.md", text if text is not None else executor_block.render(
-        TEMPLATE, {"{task}": "Old task", "{context}": "(none)"}, block))
-    ctl = under(root, f"/data/engagement-ctl/{eid}")
-    write(ctl / ".executor_memory", block)
-    write(ctl / ".casa-meta.json", json.dumps({
-        "engagement_id": eid, "status": status,
-        "retention_until": retention_until if status != "UNDERGOING" else None,
-    }))
-    return ws
-
-
 # --- a real process, killable at a chosen point -------------------------------
 
 KILL_PRELUDE = """
@@ -199,52 +141,3 @@ def run_oneshot(root: Path, proc: Path, *, kill_at: str | None = None,
 
 def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
-
-
-# --- provisioning in a child process ----------------------------------------
-
-def provision_in_child(root: Path, eid: str, *, memory: str, hook: str = ""
-                       ) -> subprocess.CompletedProcess:
-    """``provision_workspace`` in its own process on the stand-in root.
-    *hook* runs first and may arrange a kill."""
-    load = "from drivers import workspace as ws"
-    defs = root / "defs" / eid
-    body = "\n".join([
-        "import asyncio, types, pathlib",
-        load,
-        f"ws.CONTROL_ROOT = {str(under(root, '/data/engagement-ctl'))!r}",
-        f"pathlib.Path({str(defs)!r}).mkdir(parents=True, exist_ok=True)",
-        f"p = pathlib.Path({str(defs / 'prompt.md')!r}); p.write_text({TEMPLATE!r})",
-        "defn = types.SimpleNamespace(type='x', prompt_template_path=str(p),"
-        " hooks_path=None, hooks_document={}, tools_allowed=[],"
-        " permission_mode='acceptEdits', doctrine_dir='', model='',"
-        " memory=types.SimpleNamespace(enabled=False))",
-        hook,
-        "asyncio.run(ws.provision_workspace(",
-        f"    engagements_root={str(under(root, '/data/engagements'))!r},",
-        f"    engagement_id={eid!r}, engagement_auth_token='tok',",
-        f"    defn=defn, task='Old task', context='(none)', executor_memory={memory!r},",
-        "    casa_framework_mcp_url='http://127.0.0.1:8100/mcp/casa-framework'))",
-        "print('completed')",
-    ])
-    (under(root, "/data/engagements")).mkdir(parents=True, exist_ok=True)
-    return run_child(body)
-
-
-def kill_at_write(k: int) -> str:
-    """Die just before the *k*-th file write or rename the process issues."""
-    return f"""
-import sys as _sys
-_n = {{"n": 0}}
-def _audit(event, args):
-    if event == 'open' and len(args) > 2 and isinstance(args[2], int) and args[2] & 3:
-        hit = True
-    elif event in ('os.rename', 'os.replace'):
-        hit = True
-    else:
-        return
-    _n['n'] += 1
-    if _n['n'] == {k}:
-        _die()
-_sys.addaudithook(_audit)
-"""

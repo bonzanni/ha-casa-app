@@ -178,7 +178,6 @@ def test_a_setup_provided_value_is_the_configurators_to_wire():
     assert "once the plugin's setup run reports its value, wiring it IS a configurator's job" in install
 
 
-_DEVDOC = (_DEFAULTS / "agents/executors/plugin-developer/doctrine/casa-conventions.md")
 _USER_DOCS = _ROOT / "casa/DOCS.md"
 
 
@@ -192,23 +191,6 @@ def test_the_user_docs_describe_the_secret_wiring_rule():
     assert "A vault name is never mapped to a vault item." in text
     assert "never about an item that merely matched by title" in text
     assert "the setup run reports what to wire and the configurator wires it" in text
-
-
-def test_the_plugin_developer_doctrine_describes_the_secret_wiring_rule():
-    """#1020 (diff round 3, Terra S1): the plugin author's own shipped guidance
-    is a third surface that described every required variable as a 1Password
-    reference the user is asked for. #1077 replaced its credential/plain-
-    setting split with the single exception (pinned above)."""
-    text = _read(_DEVDOC)
-    assert "the configurator asks the user for a 1P reference" not in text
-    assert "A vault name is never mapped to a vault item" in text
-    assert ("a variable whose name or documentation mentions a vault or 1Password "
-            "counts as one unless your documentation says otherwise") in text
-    assert ("So document each variable: whether it is a secret, and the default of "
-            "each one that is not.") in text
-    # #1021 on the same surface: a setup-provided value has a writer.
-    assert "nothing fills it in by itself" in text
-    assert "the configurator wires it" in text
 
 
 _SETUP_REPORT_RULE = ("When a setup tool's result names values for the configurator to "
@@ -259,7 +241,6 @@ _SPLIT_SURFACES = {
     "secrets": _SECRETS,
     "add": _ADD,
     "specialist-install": _SPEC_INSTALL,
-    "developer-conventions": _DEVDOC,
     "user-docs": _USER_DOCS,
     "corpus": _CORPUS_EXPLORATION,
 }
@@ -285,13 +266,6 @@ _OLD_SPLIT_SENTENCES = [
      "search only for a credential; a variable the plugin documents as a plain setting (a "
      "vault name, a host) is set from its documentation, never mapped to an item, and when "
      "its documentation gives no value, ask the operator for it by what it means."),
-    ("developer-conventions", "What it does with one depends on what the variable holds: a "
-     "CREDENTIAL is searched for in the default 1Password vault and wired as a reference, "
-     "and the user is asked only which item or field it is when the search cannot settle "
-     "it — never for the value."),
-    ("developer-conventions", "A PLAIN SETTING (a vault name, a host, a region) is set from "
-     "your plugin's documentation, or the user is asked for it by what it means; it is "
-     "never mapped to a vault item, so document each such variable and its default."),
     ("user-docs", "A **credential** is searched for in your default vault and wired as a "
      "1Password reference (`op://…`); you are asked only which item or field it is when "
      "the search cannot settle it, never for the value itself."),
@@ -372,7 +346,7 @@ def test_corpus_defines_candidate_fields(sentence):
     assert sentence in _read(_CORPUS_EXPLORATION), sentence
 
 
-@pytest.mark.parametrize("surface", ["developer-conventions", "user-docs"])
+@pytest.mark.parametrize("surface", ["user-docs"])
 def test_human_surfaces_qualify_value_requests(surface):
     assert _NON_SECRET_FALLBACK in _read(_SPLIT_SURFACES[surface]), surface
 

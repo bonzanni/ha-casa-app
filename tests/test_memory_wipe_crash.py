@@ -1,5 +1,5 @@
 """§14 test 9d: the container-start step killed (a real SIGKILL of the
-process the test spawned) after each deletion, after each rewrite, and after
+process the test spawned) after each deletion and after
 the fresh store exists but before the intent goes. The next run completes:
 0 canary bytes, every kept item intact, and the done line claimed once."""
 from __future__ import annotations
@@ -32,9 +32,6 @@ def _tree(root) -> w.Tree:
             tree.canary())
     w.write(u("/data/sessions.json"), json.dumps({"k": tree.canary()}))
     w.write(u("/data/explanations/abcd1234.json"), tree.canary())
-    for eid in (w.EID_OPEN, w.EID_DONE):
-        block = w.memory_block(tree.canary())
-        w.marked_workspace(root, eid, block)
     tree.keep(u("/data/reminders.json"), '[{"id": "r1"}]')
     tree.keep(u("/data/agent-inbox/letter.txt"), "kept")
     return tree
@@ -67,8 +64,7 @@ def _crash_then_complete(tmp_path, kill_at: str, k: int) -> bool:
     return True
 
 
-@pytest.mark.parametrize("kill_at", ["_remove", "_rewrite_beneath",
-                                     "_empty_cache", "_fresh_store"])
+@pytest.mark.parametrize("kill_at", ["_remove", "_fresh_store"])
 def test_every_crash_point_reruns_to_the_same_result(tmp_path, kill_at):
     kills = 0
     for k in range(1, 80):
@@ -77,6 +73,5 @@ def test_every_crash_point_reruns_to_the_same_result(tmp_path, kill_at):
         kills += 1
     else:
         pytest.fail("the step never completed without a kill")
-    minimum = {"_remove": 8, "_rewrite_beneath": 2, "_empty_cache": 2,
-               "_fresh_store": 1}[kill_at]
+    minimum = {"_remove": 4, "_fresh_store": 1}[kill_at]
     assert kills >= minimum, kills

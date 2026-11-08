@@ -1,5 +1,5 @@
 """v0.84.0 (round 4, spec D2 items 1 & 4) — ``resolve_button_labels``, the ONE
-pure whole-set button-label resolver, plus its content-free floor telemetry.
+pure whole-set button-label resolver.
 
 Round 3's per-option ELISION LADDER (``_elide_one`` / ``_resolve_label_collisions``
 / ``_short_option_label``) is gone entirely (D2: "Drop the ``_short_option_label``
@@ -18,17 +18,12 @@ is ``f"{i+1} · {short}"`` for a single-select ask, or ``f"☑ {i+1} · {short}"
 for a multi ask (the toggle-many keyboard prepends the checkbox glyph to the
 stored caption) — so the SAME short can pass for single-select and fail for
 multi at the exact same length (Sol r3-5's decoration-budget-is-an-input point).
-
-``floored_ask_telemetry`` is the CONTENT-FREE log line (Sol r2-7): option count,
-floor reason (``blank|dup|too_long``), a short-presence bitmap, and a
-bounded hash of the option set — NEVER the option/question text itself.
 """
 
 from __future__ import annotations
 
 from channels.telegram import (
     _ASK_BUTTON_CAPTION_CAP,
-    floored_ask_telemetry,
     resolve_button_labels,
 )
 
@@ -165,7 +160,6 @@ def test_non_string_short_treated_as_absent_uses_own_label() -> None:
     assert resolve_button_labels(wide, multi=False) == [
         "Option 1", "Option 2", "Option 3",
     ]
-    assert "reason=too_long" in floored_ask_telemetry(wide)
 
 
 def test_bare_str_option_has_no_short_uses_own_label() -> None:
@@ -177,7 +171,6 @@ def test_bare_str_option_has_no_short_uses_own_label() -> None:
     ]
     assert resolve_button_labels(options, multi=False) == [
         "1 · Python MCP server", "2 · Py-venv"]
-    assert "reason=none" in floored_ask_telemetry(options)
 
 
 # ---------------------------------------------------------------------------
@@ -226,61 +219,6 @@ def test_same_short_passes_single_but_floors_multi() -> None:
 
 
 # ---------------------------------------------------------------------------
-# (f) telemetry: content-free — count/reason/bitmap/hash, NEVER option text
-# ---------------------------------------------------------------------------
-
-
-def test_telemetry_line_has_dimensions_but_no_option_text() -> None:
-    options = [
-        {"label": "Secret project codename Falcon, phase one", "short": "Falcon"},
-        {"label": "Secret project codename Osprey, phase two", "short": None},
-    ]
-    telemetry = floored_ask_telemetry(options)
-
-    assert "count=2" in telemetry
-    assert "reason=too_long" in telemetry
-    assert "shorts=" in telemetry
-    assert "hash=" in telemetry
-
-    # NEVER the option/question text — not the label, not the short.
-    assert "Falcon" not in telemetry
-    assert "Osprey" not in telemetry
-    assert "codename" not in telemetry
-    assert "Secret" not in telemetry
-
-
-def test_telemetry_bitmap_reflects_short_presence_per_option() -> None:
-    options = [
-        {"label": "A", "short": "a"},
-        {"label": "B", "short": None},
-        "C",  # bare str — no short
-    ]
-    telemetry = floored_ask_telemetry(options)
-    assert "shorts=100" in telemetry
-
-
-def test_telemetry_hash_is_bounded_and_deterministic() -> None:
-    options = [{"label": "A", "short": "a"}, {"label": "B", "short": "b"}]
-    t1 = floored_ask_telemetry(options)
-    t2 = floored_ask_telemetry(options)
-    assert t1 == t2  # pure, deterministic
-    h1 = t1.split("hash=", 1)[1].split()[0]
-    assert len(h1) == 12
-    assert all(c in "0123456789abcdef" for c in h1)
-
-
-def test_telemetry_multi_uses_multi_decoration_budget() -> None:
-    # A short that floors under multi decoration but would PASS single-select
-    # (verbatim, no floor) must report reason ``too_long`` when telemetry is
-    # asked about the multi ask specifically, and no floor reason at all for
-    # the single-select ask (it never floored).
-    short = "s" * 60
-    options = [{"label": "full label text, far too wide for one button", "short": short}]
-    assert "reason=too_long" in floored_ask_telemetry(options, multi=True)
-    assert "reason=none" in floored_ask_telemetry(options, multi=False)
-
-
-# ---------------------------------------------------------------------------
 # (g) Sol's live case — no shorts anywhere → floor, never a garbled elision
 # ---------------------------------------------------------------------------
 
@@ -306,14 +244,12 @@ def test_sol_live_case_no_shorts_floors_never_elides() -> None:
 
 def test_never_raises_on_empty_options() -> None:
     assert resolve_button_labels([], multi=False) == []
-    assert "count=0" in floored_ask_telemetry([])
 
 
 def test_pure_no_mutation_of_input() -> None:
     options = [{"label": "A", "short": "a"}, {"label": "B", "short": "b"}]
     snapshot = [dict(o) for o in options]
     resolve_button_labels(options, multi=False)
-    floored_ask_telemetry(options)
     assert options == snapshot
 
 
@@ -338,7 +274,6 @@ def test_1386_own_words_fit_is_a_width_boundary() -> None:
     assert resolve_button_labels([fits, "Keep"], multi=False) == [fits, "Keep"]
     assert resolve_button_labels([wide, "Keep"], multi=False) == [
         "Option 1", "Option 2"]
-    assert "reason=too_long" in floored_ask_telemetry([wide, "Keep"])
 
 
 def test_1386_a_missing_short_borrows_the_options_own_label() -> None:
@@ -358,7 +293,6 @@ def test_1386_failed_shorts_fall_back_to_fitting_labels() -> None:
         {"label": "Evening", "short": "setup"},
     ]
     assert resolve_button_labels(options, multi=False) == ["Morning", "Evening"]
-    assert "reason=none" in floored_ask_telemetry(options)
 
 
 def test_1386_multi_own_words_stay_undecorated_in_storage() -> None:

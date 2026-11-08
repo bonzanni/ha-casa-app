@@ -514,8 +514,7 @@ class InCasaDriver(DriverProtocol):
         # (``EngagementRegistry.begin_turn_delivery``), injected rather than
         # imported for the same reason ``record_lookup`` is — the driver stays
         # pure and testable. ``None`` means NO FENCE, i.e. the pre-#690
-        # behaviour, matching the ``getattr(..., None)`` guard the claude_code
-        # driver already uses around the same seam.
+        # behaviour.
         self._begin_turn_delivery = begin_turn_delivery
         self._clients: dict[str, ClaudeSDKClient] = {}
         self._ctx_stack: dict[str, Any] = {}
@@ -546,9 +545,8 @@ class InCasaDriver(DriverProtocol):
         #              spool; a ticket alive at process death dies with it.
         self._inbound_unread: dict[str, dict[object, str]] = {}
         self._inbound_accepted: dict[str, dict[object, str]] = {}
-        # #663 INGRESS RESERVATION counters — the claude_code driver's
-        # ``_inbound_reservations`` / ``_inbound_command_reservations`` pair,
-        # for this driver's broker-driven system continuations. A reservation
+        # #663 INGRESS RESERVATION counters, for this driver's broker-driven
+        # system continuations. A reservation
         # is taken at the SYNCHRONOUS tap-commit, before the finish-hook task
         # has even been scheduled, and released the instant the text-bearing
         # ticket exists.
@@ -701,7 +699,7 @@ class InCasaDriver(DriverProtocol):
         try:
             await self._run_turn(engagement, prompt)
         except BaseException:
-            # M14: Bug-13-style rollback (claude_code got this in v0.14.6).
+            # M14: Bug-13-style rollback.
             # engage_executor marks the record error, but error records are
             # excluded from active_and_idle() so no sweeper ever tears this
             # client down, and the topic stops routing — the opened claude
@@ -866,21 +864,17 @@ class InCasaDriver(DriverProtocol):
         same event-loop step that admits the text-bearing ticket, so the
         completion gate never observes both populations empty.
 
-        ``command`` mirrors the claude_code signature so the three gate sites
-        read ONE contract. No production caller passes it on this driver —
-        every in_casa reservation is a system continuation, never a recognized
-        command the handler consumes itself — but the counter is maintained so
+        No production caller passes ``command`` — every in_casa reservation
+        is a system continuation, never a recognized command the handler
+        consumes itself — but the counter is maintained so
         :meth:`inbound_message_reservations` cannot become a fabricated
         disclosure the day one appears.
 
-        #691: ``text`` and ``message_id`` mirror the claude_code signature for
-        the same reason ``command`` does, and are IGNORED here — deliberately,
-        not by omission. This driver's reservation is taken for a system
+        #691: ``text`` and ``message_id`` are IGNORED — deliberately, not by
+        omission. This driver's reservation is taken for a system
         continuation whose text does not exist anywhere yet (the sentence at
         the top of this docstring is the whole reason), so there is nothing to
-        record and :meth:`inbound_reservation_texts` is permanently empty. The
-        claude_code case is the achievable one because its handler is holding
-        the operator's exact text when it reserves.
+        record and :meth:`inbound_reservation_texts` is permanently empty.
         """
         self._inbound_reservations[engagement_id] = (
             self._inbound_reservations.get(engagement_id, 0) + 1)
@@ -946,8 +940,8 @@ class InCasaDriver(DriverProtocol):
         (or ``""``) when the launch turn stopped at its turn limit. Read exactly once, by the launch owner, immediately after
         :meth:`start` returns; popping means a re-read cannot report the same
         death twice. Not part of ``DriverProtocol`` — the launch owners reach
-        it through ``getattr`` inside their in_casa branches only, so a
-        claude_code or legacy driver reads as "nothing to report" instead of
+        it through ``getattr`` inside their in_casa branches only, so any
+        other driver reads as "nothing to report" instead of
         raising ``AttributeError`` into a generic handler that would mark a
         HEALTHY engagement errored.
         """
@@ -971,7 +965,7 @@ class InCasaDriver(DriverProtocol):
 
         Not part of ``DriverProtocol``, for the same reason
         :meth:`launch_turn_incomplete` is not: the owner reaches it through
-        ``getattr`` inside its in_casa branch only, so a ``claude_code``
+        ``getattr`` inside its in_casa branch only, so any other driver's
         engagement reads as "nothing to report" instead of raising
         ``AttributeError`` into a handler that would surface a failure for a
         perfectly healthy turn.
@@ -1479,18 +1473,15 @@ class InCasaDriver(DriverProtocol):
                 # window this closes.
                 #
                 # The guarantee is stated at its true strength, because a
-                # reviewer reproduced the difference. For claude_code the
-                # admission precedes the first BYTE, since the byte leaves in
-                # a synchronous ``os.write``. Here the hand-off is
+                # reviewer reproduced the difference. The hand-off is
                 # ``await client.query(prompt)``, and whether that reaches its
                 # transport write before its first internal suspension is the
                 # SDK's business: a terminal transition CAN commit while the
                 # call is in progress and the prompt still arrives. So this
-                # fences the DECISION TO DELIVER, not the delivery — the same
-                # limit the claude_code half has always carried and states
-                # (``engagement_registry.begin_turn_delivery``: "it fences the
-                # FIRST byte only … stopping an in-flight turn is
-                # ``driver.cancel``'s job"). Widening it would mean holding a
+                # fences the DECISION TO DELIVER, not the delivery
+                # (``engagement_registry.begin_turn_delivery`` states the same
+                # limit: stopping an in-flight turn is ``driver.cancel``'s
+                # job). Widening it would mean holding a
                 # terminal transition out across an unbounded SDK call, which
                 # is the one thing the terminal hook family must never do.
                 #
@@ -1582,7 +1573,7 @@ class InCasaDriver(DriverProtocol):
                                     if (progress is not None and getattr(
                                             sdk_msg, "parent_tool_use_id",
                                             None) is None):
-                                        from drivers.summary_controller import (
+                                        from drivers.turn_progress import (
                                             activity_for_tool,
                                         )
                                         progress.step(activity_for_tool(

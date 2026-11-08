@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 def _system_md_path() -> Path:
@@ -160,11 +161,12 @@ def test_ellen_brief_doctrine_present(system_md_text):
             f"{anchor!r}"
         )
 
-    # Both executor cards must carry the doctrine — not just one card with
-    # the other silently exempted from the process-fidelity requirement.
-    assert executors_text.count(doctrine_anchors[0]) == 2, (
-        "the brief-envelope doctrine must appear on BOTH executor cards "
-        "(configurator + plugin-developer) in executors.yaml, found "
+    # Every executor card must carry the doctrine — one per card, so a card
+    # added later cannot be silently exempted from process fidelity.
+    cards = yaml.safe_load(executors_text_raw)["executors"]
+    assert executors_text.count(doctrine_anchors[0]) == len(cards), (
+        "the brief-envelope doctrine must appear on EVERY executor card "
+        f"in executors.yaml ({len(cards)}), found "
         f"{executors_text.count(doctrine_anchors[0])} occurrence(s)"
     )
 
@@ -448,8 +450,8 @@ def test_configurator_card_routes_repo_installs_with_correct_lifecycles():
 
 def test_create_vs_install_distinction_pinned(system_md_text):
     """The create-vs-install distinction must stay explicit in BOTH the
-    configurator card and the system prompt: build a NEW plugin from scratch
-    -> plugin-developer; install an EXISTING repository component (specialist/
+    configurator card and the system prompt: a NEW plugin from scratch is not
+    something Casa builds; install an EXISTING repository component (specialist/
     plugin/persona) -> configurator. Over-broadening (dropping the create
     side) would mis-route brand-new plugin builds; over-narrowing (dropping
     the install side) reintroduces the 'not yet supported' decline."""
@@ -467,18 +469,20 @@ def test_create_vs_install_distinction_pinned(system_md_text):
         r"install[^.;]*existing[^.;]*(component|repositor)[^.;]*configurator", card_low
     ), "configurator card must route installing an EXISTING component to the configurator"
     assert re.search(
-        r"(create|build)[^.;]*new[^.;]*plugin[^.;]*plugin-developer", card_low
-    ), "configurator card must route CREATING a NEW plugin to plugin-developer"
+        r"does not build[^.;]*new[^.;]*plugin", card_low
+    ), "configurator card must say Casa does not build a NEW plugin"
+    assert "plugin-developer" not in card_low
 
     # system.md: the install section's routing sentence must bind the
     # existing-component install to the literal "configurator job" (not merely
-    # any later 'configurator' mention), AND explicitly exclude plugin-developer.
+    # any later 'configurator' mention); building a new plugin is declined.
     assert re.search(
         r"already-published component[^.]*configurator job", system_low
     ), "system.md install section must bind existing-component installs to a 'configurator job'"
     assert re.search(
-        r"configurator job[^.]*not plugin-developer", system_low
-    ), "system.md install section must explicitly exclude plugin-developer for installs"
+        r"(create|build)[^.;]*new plugin[^.;]*not something casa does", system_low
+    ), "system.md must say building a NEW plugin is not something Casa does"
+    assert "plugin-developer" not in system_low
 
     # system.md must not reintroduce the decline wording.
     assert "not yet supported" not in system_low, (

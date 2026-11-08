@@ -81,7 +81,7 @@ None of them declares anything or changes the call's own validation or delivery.
 tracking, and not a defence against a producer that lies in its own declaration — a `safe`
 tool that returns a credential, or a `capability` tool that copies the value into a field
 it did not declare, is the plugin-author trust boundary the protected-tool ruling already
-accepts. Executor sessions of either driver are outside it (#923): they carry no approval
+accepts. Executor sessions are outside it (#923): they carry no approval
 seam, so they have no grant identity to bind a capability to. A resident-hosted
 background-job worker is inside it: it loads exactly its declaring plugin, and its calls
 derive an identity bound to the host resident and that pinned artifact
@@ -122,7 +122,7 @@ callback that runs, in order, contract admission, then the authorization decisio
 protected tool, then arming — because the SDK dispatches same-event matchers concurrently
 and arming must follow the authorization decision, never race it.
 
-What it does not cover: executor sessions of either driver, and a plugin's setup
+What it does not cover: executor sessions, and a plugin's setup
 tool declared absent or `safe`, which passes both hooks unchanged whoever calls it, save
 while its plugin is being erased (INV-PLUG-042) — the
 manual re-run of a setup tool is a documented flow. A setup tool the plugin declares as a
@@ -131,10 +131,11 @@ hooks (INV-PLUG-025), which is what lets a sign-in link produced at setup reach 
 operator the same way a link produced by any other tool does.
 
 The executor exclusion is not a gap in the contract's reach, and the reason changed with
-#923. Everything an executor loads is Casa's own: an operator cannot give a worker a
-plugin, so a worker's set is the bundled set Casa ships. A contract whose purpose is to
-hold third-party code to a shape has nothing third-party to hold there — any bundled
-plugin that returns a capability is Casa's to make conformant before it ships. If workers
+#923. Nothing an executor loads is the operator's choice: an operator cannot give a worker
+a plugin, so a worker's set is at most the bundled entries an earlier Casa seeded (Casa
+seeds none today). A contract whose purpose is to hold third-party code to a shape has
+nothing third-party to hold there — any bundled plugin that returns a capability was
+Casa's to make conformant before it shipped. If workers
 are opened to operator-installed plugins later, this exclusion is the first thing that
 has to be revisited.
 
@@ -224,8 +225,7 @@ per-client id in the CLI environment it builds — the hooks and the plugin's se
 agree on it by construction, not by lookup.
 
 **Executor sessions** are the open question (#923): they need an approval identity before
-they can carry the contract, and holding them to it today would refuse the bundled
-documentation-lookup plugin the plugin-developer relies on.
+they can carry the contract.
 
 ## Source & test map
 

@@ -98,34 +98,38 @@ def test_op_resolves_github_credential(mock_run) -> None:
 
 def test_every_password_typed_option_is_in_the_boot_resolution_list() -> None:
     """#277: casa_core's boot pass resolves op:// for "password-typed addon
-    options" — the list must cover ALL of them. context7_api_key (password? in
-    config.yaml, exported as CONTEXT7_API_KEY by svc-casa/run) was missing, so
-    an op:// value reached the context7 MCP server as the literal reference."""
+    options" — the list must cover ALL of them (a missing one once let an op://
+    value reach its consumer as the literal reference)."""
     import casa_core
 
     assert set(casa_core._PASSWORD_ENV_VARS) == {
-        "CLAUDE_CODE_OAUTH_TOKEN", "TELEGRAM_BOT_TOKEN",
-        "WEBHOOK_SECRET", "CONTEXT7_API_KEY"}
+        "CLAUDE_CODE_OAUTH_TOKEN", "TELEGRAM_BOT_TOKEN", "WEBHOOK_SECRET"}
 
 
 def test_a_plugin_facing_option_is_unset_when_its_reference_fails(
         monkeypatch) -> None:
-    """#580: `CONTEXT7_API_KEY` is in `CASA_OWNED_ENV_OPTIONS` — the map of env
-    names a PLUGIN may reference and Casa supplies — so its consumer is an MCP
-    server, and the CLI hands whatever the variable holds straight to it. An
+    """#580: a password option in `CASA_OWNED_ENV_OPTIONS` — the map of env
+    names a PLUGIN may reference and Casa supplies — has an MCP server as its
+    consumer, and the CLI hands whatever the variable holds straight to it. An
     unresolvable reference must therefore leave the variable ABSENT: a bare
     `${VAR}` reference then withholds the plugin, and a `${VAR:-default}` one
-    takes its default instead of expanding to the literal."""
+    takes its default instead of expanding to the literal. No shipped password
+    option is plugin-facing today, so the rule is exercised on a stand-in."""
     import casa_core
+    import plugin_store
 
     def _boom(value):
         raise RuntimeError("op read failed")
 
     monkeypatch.setattr("secrets_resolver.resolve", _boom)
-    env = {"CONTEXT7_API_KEY": "op://v/i/f"}
+    monkeypatch.setattr(casa_core, "_PASSWORD_ENV_VARS",
+                        casa_core._PASSWORD_ENV_VARS + ("PLUGIN_FACING_KEY",))
+    monkeypatch.setitem(plugin_store.CASA_OWNED_ENV_OPTIONS,
+                        "PLUGIN_FACING_KEY", "plugin_facing_key")
+    env = {"PLUGIN_FACING_KEY": "op://v/i/f"}
     failed = casa_core._resolve_password_options(env)
-    assert failed == ["CONTEXT7_API_KEY"]
-    assert "CONTEXT7_API_KEY" not in env
+    assert failed == ["PLUGIN_FACING_KEY"]
+    assert "PLUGIN_FACING_KEY" not in env
 
 
 def test_a_casa_consumed_option_keeps_the_literal_when_its_reference_fails(
@@ -153,7 +157,7 @@ def test_a_resolved_password_option_is_replaced_with_its_value(
 
     monkeypatch.setattr("secrets_resolver.resolve",
                         lambda v: "plaintext" if v.startswith("op://") else v)
-    env = {"CONTEXT7_API_KEY": "op://v/i/f", "WEBHOOK_SECRET": "literal"}
+    env = {"TELEGRAM_BOT_TOKEN": "op://v/i/f", "WEBHOOK_SECRET": "literal"}
     assert casa_core._resolve_password_options(env) == []
-    assert env["CONTEXT7_API_KEY"] == "plaintext"
+    assert env["TELEGRAM_BOT_TOKEN"] == "plaintext"
     assert env["WEBHOOK_SECRET"] == "literal"

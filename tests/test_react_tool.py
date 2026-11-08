@@ -1,8 +1,8 @@
 """R5 (v0.89.0): the `react` framework tool — a stateless, order-safe,
 active-record-gated emoji ack on the LATEST operator message.
 
-Tested THROUGH the real internal /tools/call handler (so engagement_var is
-bound exactly as production binds it — active records only), a REAL
+Tested by calling the tool in-process with ``engagement_var`` bound to the
+record, as the in_casa driver binds it for a turn, against a REAL
 EngagementRegistry, a REAL TelegramChannel, and a fake bot at the wire.
 """
 
@@ -11,13 +11,10 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-import pathlib
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
-from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
 
 import tools
 from channels import ChannelManager
@@ -68,17 +65,14 @@ async def _drain(ch) -> None:
 
 @pytest_asyncio.fixture
 async def wired(tmp_path):
-    """Real registry + real channel + real internal handler, fake bot."""
+    """Real registry + real channel + the real react tool, fake bot."""
     from engagement_registry import EngagementRegistry
-    from internal_handlers import _make_internal_tools_call_handler
 
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
     rec = await reg.create(
         kind="executor", role_or_type="plugin-developer", driver="in_casa",
         task="t", origin={"role": "assistant", "channel": "telegram"},
         topic_id=TOPIC,
-        # v0.166.0: react is a bridge tool, so the engagement must grant it for
-        # the gate to dispatch — as the real plugin-developer definition does.
         tools_allowed=("mcp__casa-framework__react",),
     )
 
@@ -95,36 +89,21 @@ async def wired(tmp_path):
         engagement_registry=reg,
     )
 
-    app = web.Application()
-    app.router.add_post(
-        "/internal/tools/call",
-        _make_internal_tools_call_handler(
-            tool_dispatch={"react": tools.react.handler}, engagement_registry=reg,
-        ),
-    )
-
     class _Fx:
         def __init__(self):
             self.reg = reg
             self.rec = rec
             self.bot = bot
             self.ch = ch
-            self.app = app
 
         async def react(self, eng_id, emoji="👍"):
-            async with TestClient(TestServer(self.app)) as client:
-                resp = await client.post(
-                    "/internal/tools/call",
-                    json={"name": "react", "arguments": {"emoji": emoji},
-                          "engagement_id": eng_id,
-                          "engagement_token": rec.auth_token},
-                )
-                body = await resp.json()
-                # A grant-gate/auth rejection has no content block — hand the
-                # raw body back so the caller can assert on the error.
-                if "content" not in body:
-                    return body
-                return json.loads(body["content"][0]["text"])
+            # Bind the record the way the in_casa driver binds it for a turn.
+            token = tools.engagement_var.set(self.reg.get(eng_id))
+            try:
+                result = await tools.react.handler({"emoji": emoji})
+            finally:
+                tools.engagement_var.reset(token)
+            return json.loads(result["content"][0]["text"])
 
     yield _Fx()
 
@@ -172,11 +151,8 @@ async def test_react_no_inbound_yields_no_current_inbound(wired):
 @pytest.mark.asyncio
 async def test_react_terminated_engagement_no_reaction(wired):
     """A STALE target present in the map, but the engagement is terminated:
-    the internal handler binds no active record, so the call is rejected
-    before react runs — NO reaction can ever fire on a finished engagement.
-    (The react tool's own no_current_inbound guard remains as defense in
-    depth; the bridge stops the call one step earlier.) #587: the refusal
-    names the record's liveness rather than the grant."""
+    the tool reacts only for an ACTIVE bound record, so NO reaction can ever
+    fire on a finished engagement."""
     await wired.ch.handle_update(_mk_update(message_id=101))
     await _drain(wired.ch)
     # stale target is present
@@ -185,8 +161,7 @@ async def test_react_terminated_engagement_no_reaction(wired):
     await wired.reg.mark_cancelled(wired.rec.id)
 
     payload = await wired.react(wired.rec.id, "👍")
-    assert payload["error"]["code"] == -32006, payload
-    assert "engagement_not_live" in payload["error"]["message"]
+    assert payload["status"] == "no_current_inbound", payload
     assert wired.bot.reactions == []               # non-live rejection = guarantee
 
 
@@ -213,20 +188,6 @@ async def test_react_invalid_arguments(wired):
     assert wired.bot.reactions == []
 
 
-def test_react_doctrine_marks_non_decisional():
-    """Doctrine states reactions are non-decisional and never an approval
-    shortcut for the verdict broker / ask."""
-    doctrine = pathlib.Path(
-        "casa/rootfs/opt/casa/defaults/agents/executors/"
-        "plugin-developer/doctrine/engagement-conduct.md"
-    ).read_text(encoding="utf-8")
-    low = doctrine.lower()
-    assert "react" in low
-    assert "non-decisional" in low or "not a decision" in low
-    # explicitly forbids using a reaction as an ask/approval shortcut
-    assert "approval" in low and "ask" in low
-
-
 def test_react_never_touches_ask_answer_seam():
     """Structural guarantee: react cannot consume/settle an open ask — it never
     references the answer-reservation / broker / ask-gate machinery."""
@@ -240,18 +201,10 @@ def test_react_never_touches_ask_answer_seam():
 def test_react_granted_by_definition_not_by_a_blanket_resume_grant():
     """react is a per-definition grant, not a launch/resume-mandatory one.
 
-    v0.166.0: the bridge grant-gate admits react only when the engagement's
-    record carries it, and the record is pinned from the definition. So react
-    must come from the plugin-developer DEFINITION — the resume builder must NOT
-    add it unconditionally, or a resumed configurator (whose definition lacks
-    react) would be offered a tool the gate rejects."""
-    import yaml
-    defn = yaml.safe_load(pathlib.Path(
-        "casa/rootfs/opt/casa/defaults/agents/executors/"
-        "plugin-developer/definition.yaml"
-    ).read_text(encoding="utf-8"))
-    assert "mcp__casa-framework__react" in defn["tools"]["allowed"]
-
+    The engagement's record carries the grants pinned from its definition, so
+    react must come from an executor's DEFINITION — the resume builder must
+    NOT add it unconditionally, or a resumed configurator (whose definition
+    lacks react) would be offered it."""
     # The mandatory grant sets never carry react.
     assert "mcp__casa-framework__react" not in tools.SPECIALIST_CASA_GRANTS
     assert "mcp__casa-framework__react" not in tools.MANDATORY_BRIDGE_CASA_GRANTS

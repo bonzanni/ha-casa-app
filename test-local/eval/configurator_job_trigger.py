@@ -137,7 +137,7 @@ def _system_prompt(casa_root: str, cfg: str) -> str:
     with open(path, encoding="utf-8") as fh:
         tpl = fh.read()
     world = ("Enabled specialists:  finance\nResidents:            assistant, butler\n"
-             "Enabled executors:    configurator, plugin-developer\n"
+             "Enabled executors:    configurator\n"
              "Addon version:        0.344.91\nDefault vault:        Casa")
     out = (tpl.replace("{task}", TASK).replace("{context}", "(none)")
            .replace("{world_state_summary}", world).replace("{executor_memory}", ""))

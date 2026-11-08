@@ -1,6 +1,6 @@
 """H-1 (v0.37.8): the claude-home-propagation block in setup-configs.sh.
 
-casa-main and svc-casa-mcp boot with HOME=/root unless setup-configs.sh
+casa-main boots with HOME=/root unless setup-configs.sh
 writes HOME=/config/cc-home to
 /run/s6/container_environment/HOME. Without this, the runtime claude
 binary (called by install_casa_plugin / uninstall_casa_plugin / the

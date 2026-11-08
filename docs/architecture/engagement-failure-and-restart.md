@@ -9,17 +9,14 @@ last_reviewed: 2026-10-06
 ## Scope
 
 What happens when a launch does not become a live engagement, and what a restart does with
-the records left behind: which gate refused a delegation, what a `claude_code` launch abort
-rolls back and how far it gets, which failure arms answer the calling turn rather than the
-operator's topic, and what replay resumes or refuses. The record itself, how a launch is
-admitted and the driver protocol are in
-[`architecture/engagements.md`](engagements.md), which also states the invariants this
-behaviour is measured against; how a turn is admitted to a live engagement is
+the records left behind: which gate refused a delegation, which failure arms answer the
+calling turn rather than the operator's topic, what a graceful stop records against a launch
+it cancels, and what a restart does with a record. The record itself, how a launch is
+admitted and the driver protocol are in [`architecture/engagements.md`](engagements.md); how a
+turn is admitted to a live engagement is
 [`architecture/engagement-turn-admission.md`](engagement-turn-admission.md). How an
 engagement *ends* once it is live is
-[`architecture/engagement-finalization.md`](engagement-finalization.md); the OS boundary its
-workspace and uid live inside is
-[`architecture/engagement-containment.md`](engagement-containment.md).
+[`architecture/engagement-finalization.md`](engagement-finalization.md).
 
 ## Mental model
 
@@ -31,8 +28,8 @@ finds records whose launch succeeded and whose process did not survive.
 Two questions separate the arms below. *Who is owed the answer* — a named fault goes back to
 the calling turn, which still owns the launch and is the one answering for it, while an
 absence goes to the operator's topic, because a topic that says nothing is what needs
-explaining. And *what caused the end* — a provisioning failure and a graceful stop are
-different events, and only one of them is a reason to destroy what the executor produced.
+explaining. And *what caused the end* — a launch failure and a graceful stop are different
+events, and the record says which one it was.
 
 ## Contracts & invariants
 
@@ -43,22 +40,15 @@ A LOST race means another writer already committed a terminal, and that writer o
 terminal side effect (INV-ENG-001) — so painting `failed` here contradicts the durable record
 and closes a topic its owner is about to close for its own reason. A ROLLED-BACK persist means
 the record is still live and disk agrees: an open topic over a live record is recoverable, a
-closed one is not, and the boot replay that would resume that record would find its topic
-gone. All seventeen named arms route through one owner that asks the transition exactly one
+closed one is not, and the next turn that resumes that record would find its topic gone. All seventeen named arms route through one owner that asks the transition exactly one
 question and lets its three outcomes decide; that owner is anchored and shielded, so a
 cancellation arriving after the durable commit cannot leave a terminal record behind a
 permanently open topic. The caller is told its own named fault on all three outcomes, because
 that fault is true of this launch whoever won the record.
 
-The behaviour here is also measured against three invariants: INV-ENG-011, stated in
+The behaviour here is also measured against INV-ENG-011, stated in
 [`architecture/engagement-turn-outcomes.md`](engagement-turn-outcomes.md), which keeps a launch that ended
-without a terminal artifact on the launch-death path; and two stated in
-[`architecture/engagements.md`](engagements.md): INV-ENG-014, which says a rollback that
-has been entered attempts every removal it was entered to run; and INV-ENG-015, which says
-which removals a stop-caused abort is entered to run, and what it records instead of a
-cancelled tool call. The containment consequence of a removal that does not happen — and of
-one deliberately not attempted — is in
-[`architecture/engagement-containment.md`](engagement-containment.md).
+without a terminal artifact on the launch-death path.
 
 ## Failure behavior
 
@@ -68,35 +58,6 @@ and plugin-withholding refusals, and what each payload discloses, are described 
 
 **A driver fails to start after the record exists.** The engagement is marked errored, topic
 cleanup is attempted, and the caller is told the start failed.
-
-**A launch that aborts rolls back what it provisioned, and finishes doing so.** The
-`claude_code` launch removes, in order, the s6 service directory (recompiling after it), the
-workspace tree, the control directory that holds `.casa-meta.json`, the uid's passwd/group
-identity and its private outbox. That the sequence runs to its end even when a cancellation lands inside it is
-INV-ENG-014. Each attempt keeps the best-effort floor it already had, so that one
-rollback failure cannot mask the launch failure underneath it — but the floor is not uniform,
-and the difference is operationally visible. Removing the service directory, pruning the
-identity and tearing down the outbox each catch their failure and log it. The workspace tree
-and the control directory do not: both run under `shutil.rmtree(..., ignore_errors=True)`,
-which discards the error inside `rmtree` so the enclosing handler never sees one, and a
-permission or I/O failure there leaves the tree in place with **no diagnostic at all**. What
-cannot happen is that an attempt is skipped; a `rmtree` that fails still fails, silently for
-those two. A cancellation arriving inside the rollback, at one of its own awaits,
-is recorded rather than propagated, no further rollback await is attempted after
-it, and it is re-raised once the removals have run, carrying the launch failure it interrupted
-as its context so a reader downstream holds both facts rather than one. The removals being
-synchronous is what makes that cheap: after the last await there is no suspension point at
-which a second cancellation could land, so no drain, shield or detached task is involved and
-the launcher's compile lock is neither released early nor held across a new await. Until this
-release those guards were `except Exception`, and `CancelledError` — a `BaseException` —
-escaped the handler outright, leaving a workspace whose meta already read `UNDERGOING`; the
-sweeper returns past `UNDERGOING` before it reads a retention deadline, and uids are never
-reused (INV-CONT-001), so every such abort leaked a workspace tree, a control directory, an
-identity and an outbox permanently. *Which* removals a rollback is entered to run now depends
-on the cause, and only one cause changes it — see below. The *reporting* of a compound failure
-is still not combined: a launch that failed and was then cancelled during its rollback reaches
-the caller's cancellation arm and is announced as a cancellation, the failure surviving only as
-that exception's context and reaching no operator.
 
 These launch-failure arms — a missing driver, a clearance change during launch, a superseded
 plugin, a missing prompt template, and a client that would not open — deliberately do NOT
@@ -127,69 +88,28 @@ that is now settled the other way by INV-ENG-019 above: the exemption buys these
 silence, never the authority to close a topic on a transition they did not win or did not
 persist.
 
-**A graceful stop cancels a launch.** This is a different event from a launch that failed, and
-it is recorded as one (INV-ENG-015). Casa's graceful-stop cleanup writes `casa_shutdown`
-against each launch it finds registered *before* it cancels that launch, so the cause is
-carried on the row rather than inferred at the cancellation site from the shape of the
-cancellation — the discriminator INV-JOB-009 settled for the job ledger, applied here rather
-than folded into it. Three readers use it and no other carrier exists: the rollback, to decide
-its removal set; the cancellation arm, to record a reason that says Casa was stopping instead
-of blaming a tool call nothing cancelled; and the launch-death reporter, to decide whether the
-retained workspace may be given terminal metadata.
+**A graceful stop cancels a launch.** This is a different event from a launch that failed,
+and it is recorded as one. Casa's graceful-stop cleanup (`tools.stop_engagement_launches`)
+records `casa_shutdown` against each launch it finds registered *before* it cancels that
+launch, so the cause is carried on the row rather than inferred at the cancellation site from
+the shape of the cancellation — the discriminator INV-JOB-009 settled for the job ledger,
+applied here rather than folded into it. A terminal write that observes the cause carries
+`origin.shutdown_reason = "casa_shutdown"` beside its outcome, never in place of it, and the
+cancellation arm records a reason that says Casa was stopping instead of blaming a tool call
+nothing cancelled. The cleanup then waits for those launches and their death reports while
+Telegram, the bus and the registry are still up, so a dying launch's notice has a live
+transport.
 
-What the rollback then does is *fewer* removals, not abandoned ones. The s6 service source is
-still removed and the live database still recompiled — a service source is not the executor's
-work, and leaving one planted with no workspace under it is its own defect. The workspace tree,
-the control directory, the uid's identity and its private outbox are retained: an engagement's
-workspace is the executor's only copy of what it produced, uids are never reused
-(INV-CONT-001), and a stop Casa itself initiated is not a reason to destroy any of it.
-
-Retention that does not end is not retention. A workspace kept with untouched metadata reads
-`UNDERGOING`, and the sweeper returns on `UNDERGOING` before it reads any deadline, so it would
-leak forever. The launch-death reporter therefore rewrites `.casa-meta.json` with a terminal
-status and a retention deadline — but only once its own strict terminal transition has
-committed, which is what makes the metadata safe: metadata saying *terminal, reap after seven
-days* written while the record is still live would have boot replay resume the engagement into
-that workspace, and one post-deadline sweep then delete it underneath the resumed CLI. Written
-after the durable flip, "the metadata is terminal" implies "the record is terminal", and replay
-never selects it. The operator's notice names the retention window if and only if that write
-actually happened; when it did not, the notice says the launch was stopped and claims nothing
-about expiry, because a promised window the sweep will not honour is a durable false statement
-about state the operator will go looking for.
-
-**What it does not cover**, and each exclusion is a place the change deliberately claims
-nothing. A launch that becomes durable but is not yet enrolled when the stop latches carries
-no cause: it is still enrolled, tagged and cancelled when it does enrol, but the cleanup has
-already looked, so its death report is best-effort — which is what every death report is
-today, so the window is a case this does not improve rather than one it makes worse. The
-notice is *attempted*, never guaranteed: a wedged or failing transport still loses it,
-bounded and logged. The stamp is *ordered*, not complete — a terminal write that commits
-before the stop records the cause carries only the failure it was made for, which is the
-primary fact and is not made false by the missing modifier. And the metadata clause is a
-safety claim, not a liveness one: it says such metadata never precedes its durable record and
-never authorizes a reap under a live one, not that every retained workspace is eventually
-reaped. Three paths leave one `UNDERGOING` and therefore unreaped — the reporter loses the
-terminal race to a `mark_error` inside the rollback, its strict transition fails to persist,
-or it is destroyed after committing and before the write. All three are fail-safe, all three
-are logged at `error`, and all three are strictly better than deleting the work outright. An
-ordinary abort and a creator or barge-in cancellation are outside this entirely: both keep
-the full five-removal set, unchanged.
+What it does not cover: a launch that becomes durable but is not yet enrolled when the stop
+latches carries no cause — it is still enrolled, tagged and cancelled when it does enrol, but
+the cleanup has already looked, so its death report is best-effort, as every death report is.
+The notice is *attempted*, never guaranteed: a wedged or failing transport still loses it,
+bounded and logged.
 
 **A restart interrupts an engagement.** Persisted records load with `active` rewritten to
-`idle`. Replay is attempted only for the driver kind that supports it. A record whose
-workspace or recorded plugin artifact is missing is *refused* with a warning — validated
-before the intact-service fast path, so an ordinary restart cannot start a service whose run
-script would exit-and-respawn forever — and a missing definition is skipped with a warning.
-A failed stdin-FIFO recreation and a failed service start are refusals of the same kind:
-the record is marked errored and no background spool/relay machinery attaches, rather than
-accepting operator messages into an engagement with no consumer (or starting one that would
-crash-loop under its supervisor). A record still owing a clearance-downgrade context
-rebuild (INV-MEM-011) is never *resumed*: replay drops its session pointer and archive
-cache and re-renders the workspace at the clamped floor first, refusing the same way if
-that fails. Every one of those decisions sits downstream of preconditions this document does
-not own: INV-CONT-004 and INV-CONT-005. An `in_casa` record is not replayed; a live one
-that runs a background job is continued once channels and residents are up, as
-[`architecture/background-jobs.md`](background-jobs.md) describes.
+`idle`, because no live driver survived to make `active` true. No engagement is resumed at
+boot; a live one that runs a background job is continued once channels and residents are up,
+as [`architecture/background-jobs.md`](background-jobs.md) describes.
 
 **A restart replays an outcome nobody was told.** A terminal record is not only state to be
 tidied: if the finalization funnel committed it, somebody is still owed the news (INV-ENG-018,
@@ -209,8 +129,7 @@ path has. There is no completion text, no artifacts and no next steps on the rec
 fields exist — so the replay reports the FACT of the outcome and says plainly that the notice
 does not carry the report. It does not say the report is GONE, which would be a claim about
 storage this path cannot make: a finished engagement's structured summary may well have been
-captured into memory. It never reconstructs an answer from the task or from a stale
-summary message id. It does say that it is a replay: the notice tells the resident this is an
+captured into memory. It never reconstructs an answer from the task. It does say that it is a replay: the notice tells the resident this is an
 earlier outcome reached before the restart, whose announcement was never confirmed, and gives
 the time the record went terminal, or says that time is unknown (INV-ENG-018).
 
@@ -223,14 +142,6 @@ not terminalize a job. Launch cancellation remains governed by the launch owner.
 **A new launch-failure arm** decides one thing first: does it carry a named fault the calling
 turn can act on, or only an absence? The first returns a kind string and aborts the topic
 silently; the second belongs on the launch-death path, with its bounded notice.
-
-**A new rollback removal** joins the synchronous tail and inherits both of that tail's
-properties — it is attempted even when a cancellation has already been recorded, and it must
-not await. It also owes an answer to the per-cause question: whether a stop-caused abort is
-entered to run it, or whether it is one of the removals retention withholds.
-
-**A new replay refusal** marks the record errored and attaches no background machinery, rather
-than admitting operator messages into an engagement with no consumer.
 
 **A new terminal writer** decides whether it is the one telling the engager. If it announces
 the outcome, it arms the durable obligation in the same transition that commits the terminal
@@ -248,18 +159,17 @@ decide it.
 <!-- generated by scripts/verify_docs.py --write-nav; do not hand-edit -->
 
 **Source**
-- `casa/rootfs/opt/casa/casa_core.py::replay_undergoing_engagements`
 - `casa/rootfs/opt/casa/tools.py::_abort_engagement_topic`
+- `casa/rootfs/opt/casa/tools.py::stop_engagement_launches`
+- `casa/rootfs/opt/casa/casa_core.py::_notify_recovered_engagement_outcomes`
 
 **Tests**
-- `tests/test_claude_code_driver.py`
-- `tests/test_boot_replay.py`
 - `tests/test_engage_executor_tool.py`
 - `tests/test_launch_failure_terminal_authority.py`
+- `tests/test_graceful_shutdown_engagement_launch.py`
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)
-- [`architecture/engagement-containment.md`](../architecture/engagement-containment.md)
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
 - [`architecture/delegation.md`](../architecture/delegation.md)
 <!-- END SOURCEMAP -->

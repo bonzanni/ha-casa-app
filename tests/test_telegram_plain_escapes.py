@@ -99,35 +99,9 @@ async def test_a_plain_dm_edit_shows_no_backslash():
     assert bot.edit_message_text.await_args.kwargs["text"] == SHOWN
 
 
-async def test_a_plain_topic_post_with_markup_shows_no_backslash():
-    ch, bot = _mk_channel_with_fake_bot()
-    await ch.send_topic_message_markup(42, ESCAPED, None)
-    assert bot.send_message.await_args.kwargs["text"] == SHOWN
-
-
-async def test_a_plain_topic_edit_with_markup_shows_no_backslash():
-    from channels.output_sequencer import MARKUP_EMPTY
-    ch, bot = _mk_channel_with_fake_bot()
-    assert await ch.edit_topic_message_markup(42, 7, ESCAPED, MARKUP_EMPTY) is True
-    assert bot.edit_message_text.await_args.kwargs["text"] == SHOWN
-
-
-async def test_a_plain_narration_edit_shows_no_backslash():
-    ch, bot = _mk_channel_with_fake_bot()
-    assert await ch.edit_topic_message_rich(42, 7, ESCAPED) is True
-    assert bot.edit_message_text.await_args.kwargs["text"] == SHOWN
-
-
 async def test_a_plain_narration_post_shows_no_backslash():
     ch, bot = _mk_channel_with_fake_bot()
     await ch.send_to_topic_rich(42, ESCAPED)
-    assert bot.send_message.await_args.kwargs["text"] == SHOWN
-
-
-async def test_a_plain_ask_body_shows_no_backslash():
-    ch, bot = _mk_channel_with_fake_bot()
-    await ch.post_ask_body_rich(42, ESCAPED)
-    assert bot.send_message.await_count == 1
     assert bot.send_message.await_args.kwargs["text"] == SHOWN
 
 

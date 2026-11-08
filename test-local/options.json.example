@@ -9,6 +9,5 @@
   "webhook_secret": "",
   "primary_agent_model": "opus",
   "voice_agent_model": "haiku",
-  "enable_terminal": false,
-  "context7_api_key": ""
+  "enable_terminal": false
 }

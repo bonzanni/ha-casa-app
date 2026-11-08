@@ -90,8 +90,8 @@ freshness window plus the retention have passed, so a session is never removed w
 resume, and keeps the pointer of a transcript the gate holds so a later sweep deletes it; it
 checks, evicts and deletes each entry under that session's write gate, the one its turns
 hold, so no run of the session starts in between; a pointer whose activity time is unusable is kept when it names a transcript. A
-blocked transcript is kept when its pointer goes. The engagement transcripts and the
-`claude_code` workspace are INV-ENG-027's, in
+blocked transcript is kept when its pointer goes. The engagement transcripts are
+INV-ENG-027's, in
 [`architecture/engagement-transcript-reaping.md`](engagement-transcript-reaping.md); the
 delegated sessions are INV-ENG-028's, in the same document.
 Rows a deleter never reaches (a resident session a later one replaced) are dropped by the
@@ -116,12 +116,7 @@ synthesis, run admission's reading, the browsing step check's `_ask_check` and t
 file could carry the key. `cleanupPeriodDays` is never put in the shared
 settings flag: there it would enable the cleanup for every launch.
 
-What it does not cover: the `claude_code` executor driver, which is not an
-SDK launch. Its run script (`engagement_run_template.sh`) starts the CLI
-under the engagement's own `HOME` (`/data/engagements/<id>/.home`), not
-Casa's, and passes neither `--setting-sources` nor `--settings`, so the
-CLI's default sources, the user source of that home included, apply there;
-this rule says nothing about that CLI's cleanup. Nor does it cover a
+What it does not cover: a
 `cleanupPeriodDays` written into a project settings file a project-sourced
 launch loads (Casa writes none), a
 managed-policy settings source, and a CLI version whose gate differs. It

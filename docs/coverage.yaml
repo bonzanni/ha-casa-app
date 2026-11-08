@@ -47,12 +47,6 @@
   doc: architecture/observability.md
 - item: casa/rootfs/opt/casa/casa_eval/base.py
   doc: architecture/eval-framework.md
-- item: casa/rootfs/opt/casa/channels/casa_engagement_channel.py
-  doc: architecture/engagements.md
-- item: casa/rootfs/opt/casa/channels/channel_handlers.py
-  doc: architecture/http-surface.md
-- item: casa/rootfs/opt/casa/channels/output_sequencer.py
-  doc: architecture/engagement-finalization.md
 - item: casa/rootfs/opt/casa/channels/state_emoji.py
   doc: architecture/telegram.md
 - item: casa/rootfs/opt/casa/channels/telegram.py
@@ -95,30 +89,18 @@
   doc: architecture/plugin-stop.md
 - item: casa/rootfs/opt/casa/drivers/brief.py
   doc: architecture/engagements.md
-- item: casa/rootfs/opt/casa/drivers/claude_code_driver.py
-  doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/drivers/in_casa_driver.py
   doc: architecture/engagement-completion-gate.md
-- item: casa/rootfs/opt/casa/drivers/s6_rc.py
-  doc: architecture/engagement-containment.md
-- item: casa/rootfs/opt/casa/drivers/summary_controller.py
-  doc: architecture/engagements.md
-- item: casa/rootfs/opt/casa/drivers/topic_stream.py
-  doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/drivers/turn_progress.py
   doc: architecture/engagements.md
-- item: casa/rootfs/opt/casa/drivers/workspace.py
-  doc: architecture/engagement-containment.md
 - item: casa/rootfs/opt/casa/engagement_registry.py
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/engagement_transcript_reaper.py
   doc: architecture/engagement-transcript-reaping.md
-- item: casa/rootfs/opt/casa/engagement_quiesce.py
-  doc: architecture/engagement-containment.md
-- item: casa/rootfs/opt/casa/engagement_uids.py
-  doc: architecture/engagement-containment.md
-- item: casa/rootfs/opt/casa/safe_fs.py
-  doc: architecture/engagement-workspace-access.md
+- item: casa/rootfs/opt/casa/uid_kill.py
+  doc: architecture/overview.md
+- item: casa/rootfs/opt/casa/trusted_path.py
+  doc: architecture/overview.md
 - item: casa/rootfs/opt/casa/event_acks.py
   doc: architecture/plugin-events.md
 - item: casa/rootfs/opt/casa/event_attempts.py
@@ -144,15 +126,13 @@
 - item: casa/rootfs/opt/casa/ingress_identity.py
   doc: architecture/http-surface.md
 - item: casa/rootfs/opt/casa/internal_handlers.py
-  doc: architecture/mcp-and-tools.md
+  doc: architecture/http-surface.md
 - item: casa/rootfs/opt/casa/job_registry.py
   doc: architecture/jobs-and-delivery.md
 - item: casa/rootfs/opt/casa/log_cid.py
   doc: architecture/observability.md
 - item: casa/rootfs/opt/casa/log_redact.py
   doc: architecture/observability.md
-- item: casa/rootfs/opt/casa/mcp_envelope.py
-  doc: architecture/tools-interface.md
 - item: casa/rootfs/opt/casa/memory/__init__.py
   doc: architecture/memory-store.md
 - item: casa/rootfs/opt/casa/memory/browse.py
@@ -165,8 +145,6 @@
   doc: architecture/memory-writer.md
 - item: casa/rootfs/opt/casa/memory/eligibility.py
   doc: architecture/memory-capture.md
-- item: casa/rootfs/opt/casa/memory/executor_block.py
-  doc: architecture/memory-wipe.md
 - item: casa/rootfs/opt/casa/memory/export.py
   doc: architecture/memory-export-restore.md
 - item: casa/rootfs/opt/casa/memory/ledgers.py
@@ -221,8 +199,6 @@
   doc: architecture/plugins.md
 - item: casa/rootfs/opt/casa/plugin_callbacks.py
   doc: architecture/callbacks.md
-- item: casa/rootfs/opt/casa/plugin_completion_guard.py
-  doc: architecture/plugins.md
 - item: casa/rootfs/opt/casa/plugin_dispatch.py
   doc: architecture/plugin-events.md
 - item: casa/rootfs/opt/casa/plugin_env_conf.py
@@ -319,8 +295,6 @@
   doc: architecture/memory-wipe.md
 - item: casa/rootfs/opt/casa/result_broker.py
   doc: architecture/plugin-result-contract.md
-- item: casa/rootfs/opt/casa/svc_casa_mcp.py
-  doc: architecture/mcp-bridge.md
 - item: casa/rootfs/opt/casa/system_requirements/orchestrator.py
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/system_requirements/tarball.py
@@ -356,8 +330,6 @@
 - item: option:casa_tz
   doc: reference/operator-options.md
 - item: option:claude_oauth_token
-  doc: reference/operator-options.md
-- item: option:context7_api_key
   doc: reference/operator-options.md
 - item: option:enable_terminal
   doc: reference/operator-options.md
@@ -402,8 +374,6 @@
 - item: s6:init-validate-config
   doc: architecture/overview.md
 - item: s6:svc-casa
-  doc: architecture/overview.md
-- item: s6:svc-casa-mcp
   doc: architecture/overview.md
 - item: s6:svc-nginx
   doc: architecture/overview.md
@@ -451,8 +421,6 @@
   doc: architecture/tools-interface.md
 - item: tool:hand_off
   doc: architecture/specialist-handoff.md
-- item: tool:delete_engagement_workspace
-  doc: architecture/tools-interface.md
 - item: tool:emit_completion
   doc: architecture/tools-interface.md
 - item: tool:engage_executor
@@ -471,14 +439,10 @@
   doc: architecture/tools-interface.md
 - item: tool:cancel_reminder
   doc: architecture/tools-interface.md
-- item: tool:list_engagement_workspaces
-  doc: architecture/tools-interface.md
 - item: tool:list_vault_items
   doc: architecture/plugin-secret-exploration.md
 - item: tool:open_memory
   doc: architecture/memory-tools.md
-- item: tool:peek_engagement_workspace
-  doc: architecture/tools-interface.md
 - item: tool:persona_ack_revoke
   doc: architecture/tools-interface.md
 - item: tool:persona_apply
@@ -559,8 +523,6 @@
   doc: architecture/callbacks.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:GET:/healthz
   doc: architecture/observability.md
-- item: route:casa/rootfs/opt/casa/casa_core.py:GET:path
-  doc: architecture/mcp-and-tools.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/admin/memory/export
   doc: architecture/memory-export-restore.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/admin/memory/restore
@@ -585,18 +547,12 @@
   doc: architecture/plugin-operator-calls.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/broker/action-judgement
   doc: architecture/plugin-operator-calls.md
-- item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/hooks/resolve
-  doc: architecture/mcp-and-tools.md
-- item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/tools/call
-  doc: architecture/mcp-and-tools.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/invoke/{agent}
   doc: architecture/http-surface.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/telegram/update
   doc: architecture/telegram.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/webhook/{name}
   doc: architecture/triggers.md
-- item: route:casa/rootfs/opt/casa/casa_core.py:POST:path
-  doc: architecture/mcp-and-tools.md
 - item: route:casa/rootfs/opt/casa/channels/voice/channel.py:GET:VOICE_AGENT_CATALOG_PATH
   doc: architecture/voice.md
 - item: route:casa/rootfs/opt/casa/channels/voice/channel.py:GET:self._ws_path
@@ -613,14 +569,6 @@
   doc: architecture/personality.md
 - item: route:casa/rootfs/opt/casa/personality_admin_handlers.py:POST:/admin/specialist/status
   doc: architecture/personality.md
-- item: route:casa/rootfs/opt/casa/svc_casa_mcp.py:GET:/mcp/casa-framework
-  doc: architecture/mcp-bridge.md
-- item: route:casa/rootfs/opt/casa/svc_casa_mcp.py:POST:/hooks/resolve
-  doc: architecture/mcp-bridge.md
-- item: route:casa/rootfs/opt/casa/svc_casa_mcp.py:POST:/mcp/casa-framework
-  doc: architecture/mcp-bridge.md
-- item: "route:casa/rootfs/opt/casa/svc_casa_mcp.py:POST:f'/internal/channel/{tail}'"
-  doc: architecture/mcp-bridge.md
 - item: casa/Dockerfile
   doc: architecture/overview.md
 - item: casa/rootfs/opt/casa/agent_home.py
@@ -657,8 +605,6 @@
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/drivers/driver_protocol.py
   doc: architecture/engagements.md
-- item: casa/rootfs/opt/casa/drivers/hook_bridge.py
-  doc: architecture/hook-resolution.md
 - item: casa/rootfs/opt/casa/error_kinds.py
   doc: architecture/turn-loop.md
 - item: casa/rootfs/opt/casa/markdown_sections.py
@@ -673,14 +619,10 @@
   doc: architecture/personality.md
 - item: casa/rootfs/opt/casa/plugin_env_extractor.py
   doc: architecture/plugins.md
-- item: casa/rootfs/opt/casa/scripts/build_plugin_bundle.py
-  doc: architecture/plugins.md
 - item: casa/rootfs/opt/casa/scripts/reconcile_system_requirements.py
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/secrets_resolver.py
   doc: architecture/configuration.md
-- item: casa/rootfs/opt/casa/settle_gate.py
-  doc: architecture/turn-loop.md
 - item: casa/rootfs/opt/casa/specialist_lifecycle.py
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/system_requirements/__init__.py
@@ -725,20 +667,14 @@
   doc: architecture/overview.md
 - item: env:CASA_DISCOVERY_AUTH_ENABLED
   doc: architecture/home-assistant-control.md
-- item: env:CASA_ENGAGEMENT_TOKEN
-  doc: architecture/mcp-and-tools.md
 - item: env:CASA_EVENT_ACKS_PATH
   doc: architecture/plugin-events.md
 - item: env:CASA_EVENT_SPOOL_ROOT
   doc: architecture/plugin-events.md
-- item: env:CASA_FRAMEWORK_MCP_URL
-  doc: architecture/mcp-bridge.md
 - item: env:CASA_HA_MCP_URL
   doc: architecture/home-assistant-control.md
 - item: env:CASA_IMAGE_VERSION
   doc: architecture/overview.md
-- item: env:CASA_INTERNAL_SOCKET
-  doc: architecture/mcp-bridge.md
 - item: env:CASA_PLUGIN_OUTBOX_DIR
   doc: architecture/plugins.md
 - item: env:CASA_HANDOFF_DIR
@@ -874,7 +810,7 @@
 - item: env:WEBHOOK_SESSION_TTL_DAYS
   doc: architecture/persistent-state.md
 - item: env:N8N_API_KEY
-  doc: architecture/mcp-bridge.md
+  doc: architecture/mcp-and-tools.md
 - item: env:N8N_URL
-  doc: architecture/mcp-bridge.md
+  doc: architecture/mcp-and-tools.md
 

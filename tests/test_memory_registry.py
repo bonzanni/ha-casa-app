@@ -34,7 +34,6 @@ import os
 import re
 import secrets
 import sqlite3
-import stat
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -48,11 +47,6 @@ from memory.store import MemoryStore
 REPO = Path(__file__).resolve().parents[1]
 ROOTFS = REPO / "casa" / "rootfs"
 CODE_ROOT = ROOTFS / "opt" / "casa"
-
-#: A sample engagement id: placeholders in launchers and ``*`` in row
-#: patterns both stand for one of these.
-EID = "0123456789abcdef0123456789abcdef"
-
 
 # ---------------------------------------------------------------------------
 # Matching a production path against the rows
@@ -229,7 +223,6 @@ def test_store_pin_red_cases(tmp_path: Path) -> None:
 _PERSIST_NAMES = {
     "atomic_write_text": "atomic_io",
     "atomic_write_json": "atomic_io",
-    "atomic_write_beneath": "safe_fs",
 }
 _PERSIST_METHODS = {"write_text", "write_bytes", "write", "writelines"}
 
@@ -240,8 +233,6 @@ CARRIES: dict[str, tuple[str, ...]] = {
     "memory/view.py:serve": ("view",),
     "session_registry.py:SessionRegistry._write": ("data",),
     "explanation_store.py:ExplanationStore.record": ("record",),
-    "drivers/workspace.py:provision_workspace": ("executor_memory",),
-    "drivers/workspace.py:refresh_claude_md": ("executor_memory",),
     # The index copies each event's text from the store's rows.
     "memory/search.py:catch_up": ("rows",),
 }
@@ -253,7 +244,7 @@ class Site:
     module: str        # code-root-relative path
     function: str      # qualname of the function holding the call
     target: str        # the persisted path, as written in the source
-    helper: str        # atomic_io | safe_fs | hand_rolled | direct
+    helper: str        # atomic_io | hand_rolled | direct
     line: int
     end_line: int
 
@@ -317,8 +308,6 @@ def _target_of(call: ast.Call) -> str:
     func = call.func
     if isinstance(func, ast.Attribute) and func.attr in _PERSIST_METHODS:
         return ast.unparse(func.value)
-    if isinstance(func, ast.Name) and func.id == "atomic_write_beneath":
-        return ", ".join(ast.unparse(a) for a in call.args[:2])
     return ast.unparse(call.args[0]) if call.args else "?"
 
 
@@ -383,26 +372,6 @@ def _callee(call: ast.Call, caller: str, funcs) -> str | None:
 def _all_producer_sites(code_root: Path, entries=REGISTRY) -> list[Site]:
     return [s for e in entries for ref in e.producer
             for s in producer_sites(code_root, ref)]
-
-
-# --- production roots, read from the runtime's own code ---------------------
-
-def _module_constant(code_root: Path, module: str, name: str) -> str:
-    for node in _parse(code_root, module).body:
-        if (isinstance(node, ast.Assign) and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)
-                and node.targets[0].id == name
-                and isinstance(node.value, ast.Constant)):
-            return node.value.value
-    raise AssertionError(f"{module} has no constant {name}")
-
-
-def _workspace_dir(engagement_id: str = EID) -> str:
-    """The engagement workspace, from the launch template that ``cd``s there."""
-    template = (CODE_ROOT / "scripts" / "engagement_run_template.sh").read_text()
-    found = re.findall(r'^cd "([^"]+)"$', template, re.M)
-    assert len(found) == 1, found
-    return found[0].replace("{ID}", engagement_id)
 
 
 # --- constructor call sites, evaluated statically -----------------------------
@@ -521,7 +490,7 @@ def _is_shell_script(path: Path) -> bool:
 def _expand(value: str, defs: dict[str, str]) -> str:
     value = re.sub(r"\$\{?([A-Z_][A-Z0-9_]*)\}?",
                    lambda m: defs.get(m.group(1), m.group(0)), value)
-    return value.replace("{ID}", EID)
+    return value
 
 
 def shell_transcript_roots(name: str, text: str) -> list[tuple[str, str]]:
@@ -592,9 +561,8 @@ def launcher_transcript_roots() -> list[tuple[str, str]]:
 # --- running the producers and recording every write they make --------------
 #
 # Each producer is run in a sandbox that stands in for the filesystem root,
-# with the configuration the code gives it (the construction sites above, the
-# launch template, the module's own constants) and every memory-bearing input
-# filled, so conditional writes happen. An audit hook (``sys.addaudithook``)
+# with the configuration the code gives it (the construction sites above) and
+# every memory-bearing input filled, so conditional writes happen. An audit hook (``sys.addaudithook``)
 # records each write as it is issued — an ``open`` for writing or creating, a
 # rename's destination, a directory, a link, a truncation, a SQLite database —
 # with its full resolved path and the producer frame (file and line) that
@@ -603,28 +571,13 @@ def launcher_transcript_roots() -> list[tuple[str, str]]:
 
 #: The modules that hold the named producers.
 PRODUCER_MODULES = ("session_registry.py", "explanation_store.py",
-                    "drivers/workspace.py", "memory/view.py",
-                    "memory/search.py")
+                    "memory/view.py", "memory/search.py")
 
-#: Writes a producer makes that carry no memory: everything else the
-#: workspace provisioner creates beside the executor-memory block. A write
-#: from a memory-bearing call site is never judged against this list. The pin
-#: judges where a write lands, not what it holds, so memory placed inside one
-#: of these files through some other route is code review's to catch.
+#: Writes a producer makes that carry no memory, by row. A write from a
+#: memory-bearing call site is never judged against this list. The pin judges
+#: where a write lands, not what it holds, so memory placed inside one of these
+#: files through some other route is code review's to catch.
 NON_MEMORY = {
-    "executor memory": (
-        f"{registry.ENGAGEMENTS_ROOT}",
-        f"{registry.ENGAGEMENTS_ROOT}/*",
-        f"{registry.ENGAGEMENTS_ROOT}/*/.claude",
-        f"{registry.ENGAGEMENTS_ROOT}/*/.claude/settings.json",
-        f"{registry.ENGAGEMENTS_ROOT}/*/.home",
-        f"{registry.ENGAGEMENTS_ROOT}/*/.home/.claude",
-        f"{registry.ENGAGEMENTS_ROOT}/*/.home/.claude/plugins",
-        f"{registry.ENGAGEMENTS_ROOT}/*/.mcp.json",
-        f"{registry.ENGAGEMENTS_ROOT}/*/..mcp.json.casa-tmp.*",
-        f"{registry.ENGAGEMENT_CONTROL_ROOT}",
-        f"{registry.ENGAGEMENT_CONTROL_ROOT}/*",
-    ),
     # The indexer opens the store it indexes (to read it); the audit event
     # of a SQLite open does not say read or write.
     "search index": (registry.MEMORY_DB,),
@@ -866,84 +819,6 @@ async def _run_explanation_store(sandbox, mods, mp, code_root):
                 denials=("d",), system_prompt=MEMORY, memory_text=MEMORY))
 
 
-def _executor(tmp: Path, name: str, *, template: bool):
-    from config import ExecutorDefinition
-    try:
-        from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
-    except ImportError:
-        from role_artifact_stub import STUB_ROLE_ARTIFACT
-    exec_dir = tmp / name
-    exec_dir.mkdir(parents=True)
-    body = ("TASK:{task}\nCTX:{context}\nWORLD:{world_state_summary}\n"
-            "MEM:{executor_memory}\n")
-    (exec_dir / "prompt.md").write_text(body)
-    if template:
-        (exec_dir / "workspace-template").mkdir()
-        (exec_dir / "workspace-template" / "CLAUDE.md.tmpl").write_text(body)
-    return ExecutorDefinition(
-        role_artifact=STUB_ROLE_ARTIFACT, type=name,
-        description="a sample executor for the producer pin",
-        model="sonnet", driver="claude_code",
-        prompt_template_path=str(exec_dir / "prompt.md"),
-        mcp_server_names=["casa-framework"],
-    )
-
-
-#: The optional inputs the runs fill, so a write behind a condition on one of
-#: them happens. A write behind any other condition is code review's to find.
-_INPUTS = {"task": "a sample task", "context": "a sample context",
-           "world_state_summary": "a sample world"}
-
-
-def _record(engagement_id: str, executor_type: str):
-    from engagement_registry import EngagementRecord
-    return EngagementRecord(
-        id=engagement_id, kind="executor", role_or_type=executor_type,
-        driver="claude_code", status="active", topic_id=1, started_at=0.0,
-        last_user_turn_ts=0.0, last_idle_reminder_ts=0.0, completed_at=None,
-        sdk_session_id=None, task=_INPUTS["task"],
-        origin={"context": _INPUTS["context"],
-                "world_state_summary": _INPUTS["world_state_summary"]},
-    )
-
-
-async def _provision(sandbox, mods, mp, *, template: bool):
-    """One workspace, legacy or template branch, at the workspace path the
-    launch template uses and with the module's own control root."""
-    module = mods["drivers/workspace.py"]
-    control = _module_constant(CODE_ROOT, "drivers/workspace.py",
-                               "CONTROL_ROOT")
-    mp.setattr(module, "CONTROL_ROOT", str(_sandboxed(sandbox, control + "/x")
-                                           .parent))
-    eid = secrets.token_hex(16)
-    ws = Path(registry.under(str(sandbox), _workspace_dir(eid)))
-    ws.parent.mkdir(parents=True, exist_ok=True)
-    defn = _executor(sandbox.parent / f"defs-{eid}", "sample-executor",
-                     template=template)
-    path = await module.provision_workspace(
-        engagements_root=str(ws.parent), engagement_id=eid,
-        engagement_auth_token="token-sample", defn=defn,
-        casa_framework_mcp_url="http://127.0.0.1:1/mcp",
-        workspace_template_root=(Path(defn.prompt_template_path).parent
-                                 / "workspace-template") if template else None,
-        executor_memory=MEMORY, **_INPUTS,
-    )
-    return Path(path), defn
-
-
-async def _run_provision(sandbox, mods, mp, code_root):
-    for template in (False, True):
-        await _provision(sandbox, mods, mp, template=template)
-
-
-async def _run_refresh(sandbox, mods, mp, code_root):
-    module = mods["drivers/workspace.py"]
-    for template in (False, True):
-        ws, defn = await _provision(sandbox, mods, mp, template=template)
-        module.refresh_claude_md(str(ws), defn=defn,
-                                 rec=_record(ws.name, defn.type))
-
-
 async def _run_view_serve(sandbox, mods, mp, code_root):
     """A session served its view of a ledger holding one entry: a new
     session, its view bound to its SDK session, then that session resumed."""
@@ -993,8 +868,6 @@ EXERCISERS = {
     "memory/view.py:serve": _run_view_serve,
     "session_registry.py:SessionRegistry._write": _run_session_registry,
     "explanation_store.py:ExplanationStore.record": _run_explanation_store,
-    "drivers/workspace.py:provision_workspace": _run_provision,
-    "drivers/workspace.py:refresh_claude_md": _run_refresh,
 }
 
 
@@ -1102,7 +975,6 @@ async def test_producer_pin_every_persisting_call_site_has_a_row(
     # The scan must see the launchers it exists for, or it pins nothing.
     seen = {root for _, root in roots}
     assert "/config/cc-home/.claude/projects" in seen, roots
-    assert f"/data/engagements/{EID}/.home/.claude/projects" in seen, roots
     assert "/root/.claude/projects" in seen, roots
     observations = await observe_producers(CODE_ROOT, tmp_path)
     assert {ref for _, ref, _ in observations} == set(EXERCISERS)
@@ -1118,8 +990,6 @@ async def test_every_producer_declares_its_staging_pattern(
     assert staged == {
         "session_registry.py:SessionRegistry._write",
         "explanation_store.py:ExplanationStore.record",
-        "drivers/workspace.py:provision_workspace",
-        "drivers/workspace.py:refresh_claude_md",
     }, observations
     assert staging_violations(CODE_ROOT, observations) == []
 
@@ -1147,11 +1017,13 @@ async def _violations(tmp_path: Path, module: str, old: str, new: str,
     return producer_pin_violations(root, observations, [])
 
 
-_PROVISION_ANCHOR = "    provision_control_dir(engagement_id)\n"
+_RECORD_ANCHOR = "        path = self._path(record.correlation_id)\n"
 _OUTSIDE = re.compile(
-    r"drivers/workspace\.py:\d+ writes /data/engagements/[0-9a-f]{32}/"
-    r"(?P<name>\S+) \(open\): memory text from provision_workspace "
-    r".*, outside row 'executor memory'")
+    r"explanation_store\.py:\d+ writes /data/(?P<name>\S+) \(open\): memory "
+    r"text from ExplanationStore\.record .*, outside row 'explanations'")
+#: The memory text the record carries, and the directory beside its row.
+_TEXT = "record.memory_text"
+_BESIDE = "(self._root.parent / {name!r})"
 
 
 def _outside_names(problems: list[str]) -> set[str]:
@@ -1161,32 +1033,32 @@ def _outside_names(problems: list[str]) -> set[str]:
 async def test_producer_pin_red_cases(tmp_path: Path) -> None:
     # 1. A producer persisting its text to a path no row covers.
     problems = await _violations(
-        tmp_path / "1", "drivers/workspace.py", _PROVISION_ANCHOR,
-        _PROVISION_ANCHOR
-        + "    (ws / 'MEMORY.md').write_text(executor_memory)\n")
+        tmp_path / "1", "explanation_store.py", _RECORD_ANCHOR,
+        _RECORD_ANCHOR
+        + f"        {_BESIDE.format(name='MEMORY.md')}.write_text({_TEXT})\n")
     assert _outside_names(problems) == {"MEMORY.md"}, problems
 
     # 2. The same, behind a condition on another input.
     problems = await _violations(
-        tmp_path / "2", "drivers/workspace.py", _PROVISION_ANCHOR,
-        _PROVISION_ANCHOR
-        + "    if context: (ws / 'MEMORY.md').write_text(executor_memory)\n")
+        tmp_path / "2", "explanation_store.py", _RECORD_ANCHOR,
+        _RECORD_ANCHOR + "        if record.tool_calls: "
+        f"{_BESIDE.format(name='MEMORY.md')}.write_text({_TEXT})\n")
     assert _outside_names(problems) == {"MEMORY.md"}, problems
 
     # 3. An encoded copy: the content says nothing, the write does.
     problems = await _violations(
-        tmp_path / "3", "drivers/workspace.py", _PROVISION_ANCHOR,
-        _PROVISION_ANCHOR + "    (ws / 'MEMORY.hex').write_text("
-        "executor_memory.encode().hex())\n")
+        tmp_path / "3", "explanation_store.py", _RECORD_ANCHOR,
+        _RECORD_ANCHOR + f"        {_BESIDE.format(name='MEMORY.hex')}"
+        f".write_text({_TEXT}.encode().hex())\n")
     assert _outside_names(problems) == {"MEMORY.hex"}, problems
 
     # 4. Written, then deleted in normal flow: a crash between the two
     #    leaves it behind.
     problems = await _violations(
-        tmp_path / "4", "drivers/workspace.py", _PROVISION_ANCHOR,
-        _PROVISION_ANCHOR
-        + "    (ws / 'MEMORY.md').write_text(executor_memory)\n"
-        "    (ws / 'MEMORY.md').unlink()\n")
+        tmp_path / "4", "explanation_store.py", _RECORD_ANCHOR,
+        _RECORD_ANCHOR
+        + f"        {_BESIDE.format(name='MEMORY.md')}.write_text({_TEXT})\n"
+        f"        {_BESIDE.format(name='MEMORY.md')}.unlink()\n")
     assert _outside_names(problems) == {"MEMORY.md"}, problems
 
     # 5. The same constructor, but the record written beside its directory.
@@ -1201,29 +1073,36 @@ async def test_producer_pin_red_cases(tmp_path: Path) -> None:
 
     # 6. A persisting site no run makes write.
     problems = await _violations(
-        tmp_path / "6", "drivers/workspace.py", _PROVISION_ANCHOR,
-        _PROVISION_ANCHOR + "    if task == 'never-run':\n"
-        "        (ws / 'NEVER.md').write_text(executor_memory)\n")
-    assert any("persists memory text to \"ws / 'NEVER.md'\", and no run of "
-               "drivers/workspace.py:provision_workspace made it write" in p
-               for p in problems), problems
+        tmp_path / "6", "explanation_store.py", _RECORD_ANCHOR,
+        _RECORD_ANCHOR + "        if record.kind == 'never-run':\n"
+        f"            {_BESIDE.format(name='NEVER.md')}.write_text({_TEXT})\n")
+    assert any("persists memory text to \"self._root.parent / 'NEVER.md'\", "
+               "and no run of explanation_store.py:ExplanationStore.record "
+               "made it write" in p for p in problems), problems
 
     # 7. A write that carries no memory but was never declared.
     problems = await _violations(
-        tmp_path / "7", "drivers/workspace.py", _PROVISION_ANCHOR,
-        _PROVISION_ANCHOR + "    (ws / 'NOTES.txt').write_text('x')\n")
+        tmp_path / "7", "explanation_store.py", _RECORD_ANCHOR,
+        _RECORD_ANCHOR
+        + f"        {_BESIDE.format(name='NOTES.txt')}.write_text('x')\n")
     assert any(re.fullmatch(
-        r"drivers/workspace\.py:\d+ writes /data/engagements/[0-9a-f]{32}/"
-        r"NOTES\.txt \(open\): a file it was never declared to write, "
-        r"outside row 'executor memory'", p) for p in problems), problems
+        r"explanation_store\.py:\d+ writes /data/NOTES\.txt \(open\): a file "
+        r"it was never declared to write, outside row 'explanations'", p)
+        for p in problems), problems
 
     # 8. Memory text written into a file the producer may write for other
-    #    reasons: a memory-bearing site is judged against its row alone.
+    #    reasons (the indexer's own opening of memory.db): a memory-bearing
+    #    site is judged against its row alone.
+    anchor = ('            conn.execute("UPDATE indexed SET through = ? '
+              'WHERE id = 1",\n')
     problems = await _violations(
-        tmp_path / "8", "drivers/workspace.py", _PROVISION_ANCHOR,
-        _PROVISION_ANCHOR + "    (ws / '.claude' / 'settings.json')"
-        ".write_text(executor_memory)\n")
-    assert _outside_names(problems) == {".claude/settings.json"}, problems
+        tmp_path / "8", "memory/search.py", anchor,
+        "            open(os.path.join(store.directory, 'memory.db'), 'a')"
+        ".write(''.join(map(str, rows)))\n" + anchor)
+    assert any(re.fullmatch(
+        r"memory/search\.py:\d+ writes /data/memory/memory\.db \(open\): "
+        r"memory text from catch_up .*, outside row 'search index'", p)
+        for p in problems), problems
 
     # 9. The served-view renderer persisting the view outside its row.
     problems = await _violations(

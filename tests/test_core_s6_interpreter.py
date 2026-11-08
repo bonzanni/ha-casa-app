@@ -10,12 +10,12 @@ the launcher's `readlink`/`dirname`, the library's `jq`/`curl` and the bodies'
 bare programs were all looked up with that directory first, as root.
 
 They now name one Casa wrapper, `/opt/casa/scripts/core-bashio.sh`, which
-filters PATH by `drivers.workspace._root_path_fragment()` (the rule #1248's
+filters PATH by `trusted_path._root_path_fragment()` (the rule #1248's
 engagement scripts use) before it runs `/bin/bash /usr/bin/bashio`.
 
 The chain test runs each REAL file's interpreter word the way with-contenv's
 `exec $@` does — a real `/bin/sh` execvp — against executables in a stand-in
-tools directory (injected through `s6_rc.PLUGIN_TOOLS_BIN`) and a stand-in image
+tools directory (injected through `trusted_path.PLUGIN_TOOLS_BIN`) and a stand-in image
 PATH. Every stub records one line, so a wrong lookup shows up as a COUNT. The
 real bashio exists only in the image; a fake launcher reproduces its mechanics
 (`#!/usr/bin/env bash`, bare `readlink`/`dirname`, a sourced library that calls
@@ -32,8 +32,8 @@ from pathlib import Path
 
 import pytest
 
-from drivers import s6_rc
-from drivers.workspace import _root_path_fragment
+import trusted_path
+from trusted_path import _root_path_fragment
 
 REPO = Path(__file__).resolve().parents[1]
 OVERLAY = REPO / "casa" / "rootfs" / "etc" / "s6-overlay"
@@ -45,8 +45,6 @@ BASHIO_PATHS = ("/usr/bin/bashio", "/usr/lib/bashio/bashio")
 CORE_SCRIPTS = (
     "s6-rc.d/svc-casa/run",
     "s6-rc.d/svc-casa/finish",
-    "s6-rc.d/svc-casa-mcp/run",
-    "s6-rc.d/svc-casa-mcp/finish",
     "s6-rc.d/svc-nginx/run",
     "s6-rc.d/svc-nginx/finish",
     "s6-rc.d/svc-ttyd/run",
@@ -164,7 +162,7 @@ class Chain:
 @pytest.fixture
 def chain(tmp_path, monkeypatch):
     c = Chain(tmp_path)
-    monkeypatch.setattr(s6_rc, "PLUGIN_TOOLS_BIN", str(c.tools))
+    monkeypatch.setattr(trusted_path, "PLUGIN_TOOLS_BIN", str(c.tools))
     return c
 
 
@@ -203,7 +201,7 @@ def test_core_interpreter_chain(chain, rel):
 # --- K4: every core shebang names exactly the wrapper ------------------------
 
 def test_core_shebang_inventory():
-    assert len(CORE_SCRIPTS) == len(set(CORE_SCRIPTS)) == 13
+    assert len(CORE_SCRIPTS) == len(set(CORE_SCRIPTS)) == 11
     found = {str(p.relative_to(OVERLAY)) for p in OVERLAY.rglob("*")
              if p.is_file() and _first_line(p).startswith("#!/command/with-contenv")}
     assert found == set(CORE_SCRIPTS)

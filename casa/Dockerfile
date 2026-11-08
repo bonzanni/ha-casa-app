@@ -7,18 +7,6 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/base-debian:bookworm
 FROM ${BUILD_FROM}
 
-# #925: Casa recompiles the s6-rc database at every claude_code launch from
-# the base image's own s6-overlay sources, resolved through the version-less
-# /package/admin/s6-overlay link the base ships (-> s6-overlay-<version>).
-# BUILD_FROM floats on a tag, so the overlay version inside the image is
-# whatever the base carries at build time; this check runs against the image
-# actually released. A base that stops shipping the link fails the build here,
-# not the first engagement launch on an install. The compile smoke after
-# `COPY rootfs /` below covers this too; this one stays because it fails before
-# the long install layers and names #925's exact diagnosis.
-RUN test -d /package/admin/s6-overlay/etc/s6-rc/sources \
-    || { echo "s6-overlay sources not found at /package/admin/s6-overlay/etc/s6-rc/sources (base image layout changed; see drivers/s6_rc.py S6_OVERLAY_SOURCES)" >&2; exit 1; }
-
 # #1268: every core s6 script runs through /opt/casa/scripts/core-bashio.sh,
 # which execs `/bin/bash /usr/bin/bashio` by absolute path, and the bashio
 # launcher finds its library through the link's target. A base that moves
@@ -59,7 +47,7 @@ RUN case "${TARGETARCH}" in \
        -o /usr/bin/ttyd \
     && chmod +x /usr/bin/ttyd
 
-# gh CLI for plugin-developer's GitHub repo creation + push (§6.1 / §6.3 / §8.5)
+# gh CLI: plugin_store resolves plugin refs and releases with `gh api`
 ARG GH_CLI_VERSION=2.45.0
 RUN set -eux; \
     case "$(dpkg --print-architecture)" in \
@@ -102,54 +90,10 @@ ENV PATH="/opt/casa/venv/bin:${PATH}"
 RUN /opt/casa/venv/bin/python3 -c 'import sqlite3; c = sqlite3.connect(":memory:"); c.execute("CREATE VIRTUAL TABLE t USING fts5(body)"); c.execute("INSERT INTO t (body) VALUES (?)", ("probe",)); n = c.execute("SELECT count(*) FROM t WHERE t MATCH ?", ("probe",)).fetchone()[0]; assert n == 1, n; print("SQLite", sqlite3.sqlite_version, "has FTS5")' \
     || { echo "this image's SQLite cannot create an FTS5 table; the memory store needs it" >&2; exit 1; }
 
-# #957: the released image must be able to execute every program an engagement
-# launch runs, on the architecture it is published for. deploy.yml builds each
-# architecture natively, so an image in which one of them cannot be launched
-# fails that architecture's build here and nothing publishes.
-# The probe is the runtime's own call: drivers/s6_rc.py launches each program by
-# bare name with subprocess.run, from this venv's python3, on this PATH. With no
-# arguments each program only prints its usage, and any exit status passes; the
-# build fails only when a launch RAISES (not found, not executable, or a file
-# the kernel cannot execute). A mode test would pass a foreign-architecture
-# binary, and a shell probe runs an empty or shebang-less file as a script.
-# What it does not show: that a program works once launched; and not that a
-# runtime launch resolves these same bare names to the programs this image
-# installed. setup-configs.sh prepends /config/tools/bin — a directory an
-# installed plugin publishes binaries into — ahead of the entire image PATH
-# for every s6-supervised service, so a file placed there under one of these
-# names is found first at runtime (#987). That is a property of the running
-# system, not of this image: this probe neither covers it nor is weakened by
-# it.
-# tests/test_launch_path_guard.py keeps this list equal to the driver's.
-RUN python3 -c 'import subprocess, sys; [subprocess.run([p], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for p in sys.argv[1:]]' \
-        s6-rc-compile s6-rc-update s6-rc s6-svc s6-svstat \
-    || { echo "a program an engagement launch runs cannot be launched in this image (the traceback above names it; see drivers/s6_rc.py)" >&2; exit 1; }
-
 COPY requirements.txt /tmp/
 RUN /opt/casa/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt
 
-# --- Bundled plugin artifacts (unified plugin architecture, spec 3.6) --------
-# Network-bound layer kept BEFORE `COPY rootfs /` so routine code changes do
-# not re-fetch. Inputs are narrow-COPY'd; pins are exact commits checked into
-# defaults/plugin-registry.json — the build NEVER resolves a tag/branch.
-#
-# Build-time SSH→HTTPS rewrite + auth flow through /etc/gitconfig + the
-# credential helper; ship them via narrow COPYs so the fetch does not depend
-# on the broad `COPY rootfs /` below (re-copied identically later, harmless).
-COPY rootfs/etc/gitconfig /etc/gitconfig
-COPY rootfs/opt/casa/scripts/git-credential-casa.sh /opt/casa/scripts/git-credential-casa.sh
-COPY rootfs/opt/casa/plugin_registry.py rootfs/opt/casa/plugin_store.py rootfs/opt/casa/plugin_triggers.py rootfs/opt/casa/plugin_callbacks.py rootfs/opt/casa/plugin_events.py rootfs/opt/casa/callback_attempts.py rootfs/opt/casa/atomic_io.py rootfs/opt/casa/text_util.py /opt/casa/
-COPY rootfs/opt/casa/scripts/build_plugin_bundle.py /opt/casa/scripts/build_plugin_bundle.py
-COPY rootfs/opt/casa/defaults/plugin-registry.json /opt/casa/defaults/plugin-registry.json
-RUN python3 /opt/casa/scripts/build_plugin_bundle.py \
-      --registry /opt/casa/defaults/plugin-registry.json \
-      --out /opt/casa/plugin-bundle \
- && rm -rf /opt/casa/.bundle-staging \
- && chmod -R a-w /opt/casa/plugin-bundle \
- && chmod -R a+rX /opt/casa/plugin-bundle
-
-# Copy application (frequently-changing layer; kept AFTER the bundle build so a
-# code edit does not bust the seed-install layer cache — L31).
+# Copy application (frequently-changing layer, kept last).
 COPY rootfs /
 
 # Set permissions for s6-rc services and scripts
@@ -158,23 +102,6 @@ RUN chmod +x /etc/s6-overlay/scripts/*.sh \
     | xargs chmod +x \
     && chmod +x /opt/casa/scripts/*.sh \
     && chmod +x /usr/local/bin/casactl
-
-# #957: the launch database compiles in this image, as drivers/s6_rc.py compiles
-# it at every claude_code launch: the base's overlay sources, Casa's service
-# definitions in /etc/s6-overlay/s6-rc.d, and the MERGED
-# /etc/s6-overlay/user-bundles.d. Since s6-overlay 3.2.3.2 (#1357) the base
-# ships the `user` and `user2` bundles in user-bundles.d and Casa only adds
-# members to `user`, so Casa's half does not compile alone and this must follow
-# `COPY rootfs /` and the permissions above. A `user` directory left in s6-rc.d
-# fails here too (a duplicate bundle, or one with no type). The runtime passes a
-# fourth source, the engagement services under /data, which does not exist at
-# build time and is left out. The database is thrown away inside this layer.
-# tests/test_s6_rc_overlay_sources.py keeps the three paths equal to the driver's.
-RUN scratch="$(mktemp -d)" \
-    && s6-rc-compile "${scratch}/db" /package/admin/s6-overlay/etc/s6-rc/sources /etc/s6-overlay/s6-rc.d /etc/s6-overlay/user-bundles.d \
-    && rm -rf "${scratch}" \
-    || { echo "the s6-rc launch database does not compile in this image (see drivers/s6_rc.py)" >&2; exit 1; }
-
 
 # io.hass.* labels are injected by the deploy workflow (build-image action).
 LABEL org.opencontainers.image.title="Casa" \

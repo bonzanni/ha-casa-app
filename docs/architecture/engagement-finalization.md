@@ -11,7 +11,7 @@ last_reviewed: 2026-09-26
 How a durable engagement ends: the single-winner terminal transition, the strictness that
 keeps the persisted and in-memory records agreeing — at creation as well as at the
 terminal flip, including the compensation a cancelled creator owes — the finalization side
-effects behind the flip, and the ordering of what an engagement posts to its topic. Where a
+effects behind the flip. Where a
 finished `in_casa` engagement's CLI transcripts are deleted is
 [`architecture/engagement-transcript-reaping.md`](engagement-transcript-reaping.md). What a
 *successful* completion is refused over, and what each driver counts to answer that, are in
@@ -22,10 +22,7 @@ disclosure and the durable obligation to notify — is in
 itself, how one is launched and the driver protocol are in
 [`architecture/engagements.md`](engagements.md); how a turn is admitted to it is in
 [`architecture/engagement-turn-admission.md`](engagement-turn-admission.md); what a restart rewrites is in
-[`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md). The OS boundary a
-`claude_code` engagement runs inside, and what its teardown does and does not establish
-about the OS process, are in
-[`architecture/engagement-containment.md`](engagement-containment.md).
+[`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md).
 
 ## Mental model
 
@@ -48,14 +45,12 @@ retry.
 
 **Completion is gated on unread input, and that gate is its own contract.** A *successful*
 completion requested through the completion tool is refused while inbound messages are
-unread, in flight or reserved; failure, cancellation and the operator's own complete command
+unread or reserved; failure, cancellation and the operator's own complete command
 deliberately bypass it, and every terminal outcome discloses what it committed past. What
-each driver counts and why "unread" and "in flight" are
-different questions are in
+the driver counts is in
 [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) (INV-ENG-003); how
 a message that dies with the engagement is disclosed is in
-[`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md)
-(INV-ENG-017).
+[`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md).
 
 ## Contracts & invariants
 
@@ -63,11 +58,7 @@ a message that dies with the engagement is disclosed is in
 
 Enforced by the registry's terminal transition, which refuses a missing or already-terminal
 record and returns failure; the finalize path performs topic closure, driver teardown and
-notification only on success. The winning transition also schedules the engagement's uid
-quiesce, and the funnel waits for it — bounded — before any of those effects, so an
-engagement's own processes stop before the operator is told it ended (INV-CONT-006, in
-[`architecture/engagement-containment.md`](engagement-containment.md)). The same point —
-and only it, so a strict transition that rolled back tells nobody — hands the record to one
+notification only on success. The winning transition — and only it, so a strict transition that rolled back tells nobody — hands the record to one
 optional observer, which may only schedule work: the tools layer uses it to run the
 plugin-health pass an ended install owes (INV-PLUG-032, in
 [`architecture/plugin-health.md`](plugin-health.md)) and to withdraw the engagement's
@@ -80,10 +71,8 @@ concurrently-cancelled engagement back to resumable, and a failed resume that lo
 race to a cancel neither overwrites the status nor runs its duplicate topic cleanup (the
 error mutator reports whether it won, and only a winner cleans up).
 
-What it does not cover: exclusivity covers the *post-transition* side effects only: the pre-close
-inbound spool drain runs before the win/lose transition, so a caller that goes on to lose the
-race may already have flushed pending receipts and eviction notices externally; the drain is
-idempotent, which is why running it ahead of the gate is tolerated.
+What it does not cover: exclusivity covers the *post-transition* side effects only; what a
+caller does before it attempts the transition is its own.
 
 **INV-ENG-010**: Once the terminal transition is won, the funnel's post-topic tail — driver teardown, the completion notification, the summary captures and the deferred restart — survives cancellation of the task that ran the funnel, and its payloads carry the record values frozen at the flip.
 
@@ -125,8 +114,7 @@ around it, since a cancellation lands at whichever await is pending and ordinary
 `except Exception` handlers never see it. Before the record exists, a cancellation closes the
 already-opened topic; after it exists but before the driver is confirmed live, the
 compensation also marks the record errored and runs the driver's own terminal teardown —
-necessary because a driver can be *partly* live (the claude-code driver starts its supervised
-service before its final awaits). The compensation is scheduled, not awaited (a cancelled
+necessary because a driver can be *partly* live before its final awaits. The compensation is scheduled, not awaited (a cancelled
 task cannot await network round-trips); its steps run in order in that background task.
 
 What it does not cover: the other non-strict registry mutations (status touches, channel
@@ -136,19 +124,10 @@ itself best-effort on the disk side — if the compensating write fails, the on-
 remains until the boot reconcile and reap TTL retire it.
 
 **The completion gate is INV-ENG-003, and it lives in its own document.** A successful
-completion requested through the completion tool is refused over unread, in-flight or
-reserved inbound input when the driver exposes its inbound state; the operator's own
+completion requested through the completion tool is refused over unread or reserved inbound
+input when the driver exposes its inbound state; the operator's own
 complete command is not gated and finalizes disclosing what it committed past — see
 [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md).
-
-**INV-ENG-005**: Once the output sequencer is terminalized, ordinary narration and unresolved sends cannot post below the completion.
-
-Enforced by the sequencer's terminalization and its writer checks, with a dedicated path
-reserved for the completion notice itself.
-
-What it does not cover: ordering depends on a bounded drain. If the drain times out, the
-completion is posted anyway with a warning, and if no live sequencer exists the finalize path
-falls back to a direct send that bypasses sequencing entirely.
 
 **One terminal path deliberately stays outside this funnel.** A launch turn that ends
 without leaving any artifact (INV-ENG-011, [`architecture/engagements.md`](engagements.md))
@@ -223,10 +202,8 @@ This settles the proposed ledger-wide precondition and nothing else. It certifie
 terminal writer as correct, and the fourth instance has now been fixed where it stood like the
 other three: the graceful stop records `casa_shutdown` against each launch it is about to
 cancel, and the cancellation arm reads that cause and records a reason saying Casa was stopping
-rather than one blaming a tool call nothing cancelled. The site records what it knew. What the
-stop then does differently — a smaller removal set, a retained workspace, a terminal
-`.casa-meta.json` written only after the durable terminal flip — is INV-ENG-015, stated in
-[`architecture/engagements.md`](engagements.md) and described in
+rather than one blaming a tool call nothing cancelled. The site records what it knew; the
+stop's launch step is described in
 [`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md).
 
 ## Failure behavior
@@ -248,7 +225,7 @@ retryable outcome from the precondition failure matters where it is surfaced: on
 **Two callers race.** The loser is absorbed as already-terminal. No duplicate topic closure
 and no duplicate notification.
 
-**Topic sends, driver teardown and retention fail after the transition.** All are caught and
+**Topic sends and driver teardown fail after the transition.** All are caught and
 logged. **The terminal state stays committed** — so an engagement can be genuinely finished
 while no completion message ever reached its topic. Those are best-effort effects *after* the
 authoritative state change, by design.
@@ -266,19 +243,11 @@ as proof: the mark and the close are independent best-effort operations, so a co
 summary whose mark failed looks the same, and the returned message id — not the topic's
 appearance — is the delivery fact.
 
-**The driver teardown overruns.** It is bounded as a whole — the compile lock, both s6 stops
-and the recompile — and a timeout is logged and stepped over, so the notification and the
-summary captures behind it still run. The engagement's processes are already dead by then: the kill
-happened at the transition, not here.
-
 ## Extension points
 
 **A new terminal path** should go through the shared finalize funnel to inherit the
-single-winner transition, teardown, notification and retention. Setting a terminal status
-directly gets none of that.
-
-**A new topic output** should go through the per-engagement sequencer if its ordering
-relative to narration matters. Direct sends exist as a fallback and bypass ordering.
+single-winner transition, teardown and notification. Setting a terminal status directly
+gets none of that.
 
 ## Source & test map
 
@@ -293,15 +262,11 @@ relative to narration matters. Direct sends exist as a fallback and bypass order
 - `casa/rootfs/opt/casa/tools.py::_finalize_engagement_tail`
 - `casa/rootfs/opt/casa/tools.py::FinalizeResult`
 - `casa/rootfs/opt/casa/tools.py::cancel_engagement`
-- `casa/rootfs/opt/casa/channels/output_sequencer.py::OutputSequencer`
-- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver`
 
 **Tests**
 - `tests/test_emit_completion_tool.py`
 - `tests/test_cancel_engagement_tool.py`
 - `tests/test_engagement_registry.py`
-- `tests/test_output_sequencer.py`
-- `tests/test_anchor_narration_buffer.py`
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)
@@ -310,7 +275,6 @@ relative to narration matters. Direct sends exist as a fallback and bypass order
 - [`architecture/engagement-inbound-disclosure.md`](../architecture/engagement-inbound-disclosure.md)
 - [`architecture/engagement-terminal-telling.md`](../architecture/engagement-terminal-telling.md)
 - [`architecture/engagement-transcript-reaping.md`](../architecture/engagement-transcript-reaping.md)
-- [`architecture/engagement-containment.md`](../architecture/engagement-containment.md)
 - [`architecture/tools-interface.md`](../architecture/tools-interface.md)
 - [`architecture/overview.md`](../architecture/overview.md)
 - [`architecture/jobs-and-delivery.md`](../architecture/jobs-and-delivery.md)

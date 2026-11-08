@@ -14,12 +14,9 @@ import logging
 import os
 import re
 import shlex
-import subprocess
-import uuid
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import Any, Awaitable, Callable
 
-from cc_tool_pattern import matches_any
 
 _logger = logging.getLogger(__name__)
 
@@ -462,17 +459,6 @@ HookCallback = Callable[
 # decision purposes) but type-compliant.
 
 
-def _active_claude_code_driver() -> Any:
-    """Resolve the live ``claude_code`` driver for the §2 F1(a) permission-
-    keyboard discrete-send seam. Returns ``None`` (⇒ eager fallback) when no
-    driver is attached (unit tests / degraded boot)."""
-    try:
-        import agent as _agent_mod
-        return getattr(_agent_mod, "active_claude_code_driver", None)
-    except Exception:  # noqa: BLE001
-        return None
-
-
 def _deny(reason: str) -> dict[str, Any]:
     """Return a PreToolUse payload that denies the tool call.
 
@@ -539,11 +525,10 @@ async def block_dangerous_commands(
     if reason is not None:
         return _deny(f"Blocked by safety hook: {reason}")
     # Sol #5: also deny a Bash write into /config/plugins (registry/store).
-    # path_scope ignores Bash, so a claude_code executor (plugin-developer,
-    # configurator) could otherwise `echo > /config/plugins/registry.json`,
-    # bypassing plugin_add validation + §3.9 sequencing. Both executors carry
-    # block_dangerous_bash, so this closes the HTTP-hook path too — the same
-    # regex the resident/specialist settings guard uses.
+    # path_scope ignores Bash, so an executor (configurator) could otherwise
+    # `echo > /config/plugins/registry.json`, bypassing plugin_add validation
+    # + §3.9 sequencing — the same regex the resident/specialist settings
+    # guard uses.
     if _PLUGINS_WRITE_RE.search(command):
         return _deny(_PLUGINS_DENY_MSG)
     return {}
@@ -556,45 +541,6 @@ async def block_dangerous_commands(
 
 class UnknownPolicyError(Exception):
     """Raised when a hooks.yaml policy or parameter is not recognised."""
-
-
-class UsesDefaultPolicies(dict):
-    """Marker: this executor is known, and declares no hook parameters.
-
-    #442 r3: the resolver refuses an authenticated request naming an executor
-    its map does not represent, so "no parameters" must be said out loud
-    rather than expressed as an absence — an absence is exactly what every
-    failure mode also looks like.
-    """
-
-
-class DenyAllPolicyMap(dict):
-    """A ``{policy: (matcher, callback)}`` map whose every callback denies.
-
-    #442 r2: a marker type, so a consumer can tell "this executor's declared
-    policies could not be built or loaded" apart from an ordinary built map.
-    ``reload`` needs that distinction — a KNOWN-GOOD pre-reload set beats
-    deny-all, while deny-all beats falling back to the broader defaults.
-    """
-
-
-def make_always_deny_hook(reason: str) -> HookCallback:
-    """Return a PreToolUse hook that denies every call it matches.
-
-    #442 r2: used where a policy set could not be BUILT. Omitting the
-    executor's entry there is not neutral — the HTTP resolver falls back to
-    the default-configured policies, which for ``casa_config_guard`` forbid
-    no write path at all, so a refused declaration would enforce LESS than
-    the operator wrote.
-    """
-    async def _hook(
-        input_data: dict[str, Any],
-        tool_use_id: str | None,
-        context: dict[str, Any],
-    ) -> dict[str, Any]:
-        return _deny(reason)
-
-    return _hook
 
 
 def _require_prefix_list(
@@ -1002,7 +948,7 @@ _PLUGINS_WRITE_RE = re.compile(
 )
 # Language-runtime write to the path (python/node/perl `open(...,'w')`, etc.).
 # Targeted at WRITE modes so a plain READ of /config/plugins/store (the
-# plugin-developer's legitimate access) is not denied. Best-effort — a
+# agent's legitimate access) is not denied. Best-effort — a
 # determined obfuscated command still needs the filesystem/privilege boundary
 # (spec integrity = content-addressing + checksum DETECTION; tracked backlog).
 _PLUGINS_CODE_WRITE_RE = re.compile(
@@ -1122,13 +1068,12 @@ def profile_guard_matcher(plan):
 # inspection, not a sandbox — obfuscated writes (source'd scripts, busybox
 # applets, git-apply, interpreters reading code from files/stdin, and
 # variable-built destinations like `d=/config; printf x > "$d/plugins/…"`)
-# need the outer boundary; filesystem-level containment for the
-# plugin-developer's shell is tracked as #216. Round-2 W1 (ratified): for
+# need the outer boundary. Round-2 W1 (ratified): for
 # the CONFIGURATOR that Bash
 # vector is now closed at the capability layer — Bash was removed from its
 # toolset (role.yaml + definition.yaml). The Bash branch below stays fully
-# intact: the plugin-developer keeps Bash, and an operator who deliberately
-# re-adds Bash to an executor still gets this guard as the inner layer.
+# intact: an operator who deliberately re-adds Bash to an executor still
+# gets this guard as the inner layer.
 #
 # Round-2 hardening (Sol+Terra adversarial review):
 #   F1  Bash commands also enforce the hooks.yaml policy-file rule.
@@ -1961,7 +1906,7 @@ def _provably_read_only(command: str) -> bool:
             # already decided, audited and tested next door: the managed
             # guard's `_MANAGED_GIT_READONLY_SUBCMDS` allowlist plus its
             # option handling. Without it `git diff -- triggers.yaml` — a normal
-            # plugin-developer action on an unrelated file — is refused with no
+            # read-only action on an unrelated file — is refused with no
             # equivalent (Terra r3-3), since a file tool cannot produce a diff.
             if _argv_managed_write(argv):
                 return False
@@ -2375,9 +2320,9 @@ def make_resident_prompt_write_guard() -> HookCallback:
     command text, and a `Bash` payload that reaches it (it cannot, in
     production) falls through to allow. The residual is exactly that: a
     shell-capable agent can still make the edit, which is inert for a
-    bundle-bound resident. No shipped resident holds `Bash` and the
-    configurator has none; the plugin-developer's shell is the shipped path,
-    and an execution boundary over that tree is a separate decision.
+    bundle-bound resident. No shipped agent holds `Bash` (the configurator
+    has none), and an execution boundary over that tree is a separate
+    decision.
     """
     async def _hook(
         input_data: dict[str, Any],
@@ -2529,627 +2474,11 @@ def make_commit_size_guard_hook(*, max_files: int) -> HookCallback:
 # HOOK_POLICIES — two-tier registry (Plan 4a.1).
 #
 # Each entry is {"matcher": regex, "factory": fn(**kwargs) -> HookCallback}.
-# The "matcher" regex names the CC tool names the policy applies to; it's
-# used identically by both consumers:
-#   - SDK path (resolve_hooks below) passes it to HookMatcher(matcher=...).
-#   - HTTP path (_build_cc_hook_policies in casa_core.py) gates the
-#     HookCallback invocation on the CC tool name before dispatching.
+# The "matcher" regex names the CC tool names the policy applies to;
+# resolve_hooks (below) passes it to HookMatcher(matcher=...).
 # The "factory" returns a raw async HookCallback — the same coroutine shape
-# produced by make_*_hook_* helpers above. Both consumers call it directly.
+# produced by make_*_hook_* helpers above.
 # ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# self_containment_guard - Plan 4b §6.6 / P-6
-# (pre-push grep for §2.0 self-containment anti-patterns)
-# ---------------------------------------------------------------------------
-
-_PLEASE_INSTALL_RE = re.compile(
-    r"(please\s+install|manually\s+install|fork\s+the\s+dockerfile)",
-    re.IGNORECASE,
-)
-_APT_CMD_RE = re.compile(r"\b(apt|apt-get|yum|dnf|pacman)\s+install\b")
-_NONBASELINE_BIN_RE = re.compile(
-    r"/usr/(local/)?bin/(terraform|kubectl|aws|ffmpeg|helm|docker|packer|ansible)\b"
-)
-
-# M28: anti-patterns live in small text files; cap the per-file read so a
-# multi-hundred-MB asset (or the read of a file that matches no check) can't
-# blow up memory or the scan time.
-_MAX_SCAN_BYTES = 262_144  # 256 KiB
-
-
-def _scan_tree_for_anti_patterns(cwd: Path) -> list[str]:
-    """Synchronous §2.0 anti-pattern tree scan — run via asyncio.to_thread.
-
-    Filters by filename BEFORE opening a file, so files that can match no
-    check (e.g. binaries, images) are never read. Reads are capped at
-    ``_MAX_SCAN_BYTES``; a pattern placed beyond that offset is not flagged
-    (an accepted tradeoff — anti-patterns live near the top of small files).
-    """
-    findings: list[str] = []
-    for root, dirs, files in os.walk(cwd):
-        # Skip VCS + deps.
-        dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "__pycache__")]
-        for f in files:
-            check_readme = f.lower() == "readme.md"
-            check_apt = f.endswith((".sh", ".bash"))
-            check_bin = f.endswith((".py", ".js", ".ts", ".sh"))
-            if not (check_readme or check_apt or check_bin):
-                continue  # filename can match no check — do not read it
-            p = Path(root) / f
-            try:
-                with open(p, "r", encoding="utf-8", errors="ignore") as fh:
-                    content = fh.read(_MAX_SCAN_BYTES)
-            except OSError:
-                continue
-            if check_readme and _PLEASE_INSTALL_RE.search(content):
-                findings.append(f"{p.relative_to(cwd)}: 'please install X manually'")
-            if check_apt and _APT_CMD_RE.search(content):
-                findings.append(f"{p.relative_to(cwd)}: apt/yum install")
-            if check_bin and _NONBASELINE_BIN_RE.search(content):
-                findings.append(f"{p.relative_to(cwd)}: hardcoded non-baseline binary path")
-    return findings
-
-
-_PLUGIN_ROOT_VAR = "${CLAUDE_PLUGIN_ROOT}"
-
-# #431 r2: imported, never re-derived — see the docstring on the shared
-# helper for why the two containment sites must agree by construction.
-from plugin_store import (  # noqa: E402
-    normalize_cli_provided_refs as _normalize_cli_provided_refs,
-)
-
-
-def _git_lines(cwd: Path, *args: str) -> list[str] | None:
-    """Run git in ``cwd``; stdout lines on success, None on any failure."""
-    try:
-        r = subprocess.run(["git", "-C", str(cwd), *args],
-                           capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if r.returncode != 0:
-        return None
-    return r.stdout.splitlines()
-
-
-def _scan_mcp_launch_refs(cwd: Path) -> list[str]:
-    """P2 (2026-07-18 plan, Sol r4 hardened): every
-    ``${CLAUDE_PLUGIN_ROOT}/<rel>`` reference in an ``.mcp.json``
-    ``command``/``args``/``env`` (incl. ``--opt=`` and ``:``-joined values —
-    the vendored PYTHONPATH pattern) must exist in the **HEAD tree** — the
-    commit being pushed. Both the ``.mcp.json`` files themselves AND their
-    referenced paths are read from HEAD (Sol r5-2: a worktree edit or
-    deletion must neither hide a broken committed file nor flag an
-    uncommitted one). ``git ls-tree HEAD`` is the oracle (Sol r4-4: the
-    index would bless a staged-but-uncommitted file into a broken pushed
-    commit); a working-tree existence test is doubly insufficient (the
-    gmail-v0.2.0 ``server/.venv`` existed locally, gitignored). Rejects
-    ``..``-escapes and absolute-after-interpolation. Outside a git worktree
-    the scan is skipped (a real push would fail there anyway); INSIDE a
-    worktree a git failure on the trackedness probe fails CLOSED as a
-    finding."""
-    from plugin_store import parse_mcp_servers_text
-
-    top = _git_lines(cwd, "rev-parse", "--show-toplevel")
-    if not top:
-        return []
-    root = Path(top[0])
-    findings: list[str] = []
-
-    def _candidates(ref: str) -> list[str]:
-        return [chunk for chunk in re.split(r"[=:]", ref)
-                if chunk.startswith(_PLUGIN_ROOT_VAR + "/")]
-
-    # Sol r5-2: enumerate AND read every .mcp.json from the HEAD tree — the
-    # commit being pushed. A worktree edit/deletion must neither hide a
-    # broken committed file nor flag an uncommitted one.
-    all_head = _git_lines(root, "ls-tree", "-r", "--name-only", "HEAD")
-    if all_head is None:
-        return ["cannot enumerate the pushed commit (git error) — "
-                "failing closed"]
-    for rel_mcp in [f for f in all_head
-                    if PurePosixPath(f).name == ".mcp.json"]:
-        content = _git_lines(root, "show", f"HEAD:{rel_mcp}")
-        if content is None:
-            findings.append(f"{rel_mcp}: cannot read from the pushed commit "
-                            "(git error) — failing closed")
-            continue
-        servers, _malformed = parse_mcp_servers_text(
-            "\n".join(content), source=f"HEAD:{rel_mcp}")
-        mcp_dir = str(PurePosixPath(rel_mcp).parent)
-        for server, cfg in servers.items():
-            args = cfg.get("args")
-            env = cfg.get("env")
-            # G6 corrected: self-declaring a CLI-reserved env var shadows the
-            # CLI's native per-plugin value with a literal (the gmail-v0.4.0
-            # bug) — block at push time, same as verify's mcp_reserved_env.
-            from plugin_store import RESERVED_PLUGIN_ENV_KEYS
-            for key in (env.keys() if isinstance(env, dict) else ()):
-                if key in RESERVED_PLUGIN_ENV_KEYS:
-                    findings.append(
-                        f"{rel_mcp} [{server}]: env self-declares "
-                        f"CLI-reserved {key} — remove it; the CLI provides "
-                        "it natively (declaring it yields a literal "
-                        "placeholder at runtime)")
-            refs = ([cfg.get("command")]
-                    + list(args if isinstance(args, list) else [])
-                    + [v for v in (env.values() if isinstance(env, dict)
-                                   else ()) if isinstance(v, str)])
-            for ref in refs:
-                # #431 r2 (Terra): fold the defaulted spelling of a
-                # CLI-provided variable onto the bare one FIRST. The CLI
-                # always sets these, so `${CLAUDE_PLUGIN_ROOT:-.}/../outside`
-                # resolves outside the artifact at runtime while sliding past
-                # an exact-prefix test. ONE shared normalizer with
-                # plugin_store, which had the same gap.
-                if isinstance(ref, str):
-                    ref = _normalize_cli_provided_refs(ref)
-                if not isinstance(ref, str) or _PLUGIN_ROOT_VAR not in ref:
-                    continue
-                cands = _candidates(ref)
-                if not cands:
-                    findings.append(
-                        f"{rel_mcp} [{server}]: non-prefix "
-                        f"${{CLAUDE_PLUGIN_ROOT}} use in {ref!r}")
-                    continue
-                for cand in cands:
-                    remainder = cand[len(_PLUGIN_ROOT_VAR) + 1:]
-                    norm = os.path.normpath(remainder)
-                    if os.path.isabs(norm) or norm == ".." or \
-                            norm.startswith(".." + os.sep):
-                        findings.append(
-                            f"{rel_mcp} [{server}]: {ref!r} escapes the "
-                            "plugin root (absolute or ..-traversal)")
-                        continue
-                    head_path = (norm if mcp_dir == "."
-                                 else f"{mcp_dir}/{norm}")
-                    in_head = _git_lines(root, "ls-tree",
-                                         "--name-only", "HEAD", "--",
-                                         head_path)
-                    if in_head is None:
-                        findings.append(
-                            f"{rel_mcp} [{server}]: cannot establish that "
-                            f"{ref!r} is in the pushed commit (git error) — "
-                            "failing closed")
-                    elif not in_head:
-                        findings.append(
-                            f"{rel_mcp} [{server}]: {ref!r} is not in the "
-                            "pushed commit (untracked, .gitignored — e.g. a "
-                            "dev-only venv — or staged but not committed); "
-                            "the installed artifact will not contain it")
-    return findings
-
-
-# A word carrying a redirection operator anywhere (`2>f`, `&>f`, `{fd}>f`,
-# `<<-`, `>|`) — never the `cd` target itself, so it does not propagate into
-# the feasible-base set (it still contributes a scan candidate).
-_REDIR_SHAPED = re.compile(r"[<>]")
-
-
-def _command_segment(text: str) -> str:
-    """The leading COMMAND segment of *text* — up to the first separator
-    (`;`, newline, `)`, `&`, `|`).
-
-    Quote- and escape-AWARE (Sol r8): a separator inside `'…'`/`"…"` or
-    behind a backslash is DATA, part of a path word (`cd '/tmp/bad;repo'`),
-    and must not truncate the segment. An `&`/`|` adjacent to a `<`/`>`
-    belongs to a redirection operator (`&>f`, `2>&1`, `2>| f`, `{fd}>&-`),
-    not to a separator, so it does not end the segment either."""
-    quote = ""
-    i = 0
-    while i < len(text):
-        ch = text[i]
-        if quote:
-            if ch == "\\" and quote == '"':
-                i += 2
-                continue
-            if ch == quote:
-                quote = ""
-            i += 1
-            continue
-        if ch == "\\":
-            i += 2  # escaped char is data, whatever it is
-            continue
-        if ch in "'\"":
-            quote = ch
-            i += 1
-            continue
-        if ch in ";\n\r)":
-            return text[:i]
-        if ch in "&|":
-            prev = text[i - 1] if i else ""
-            nxt = text[i + 1] if i + 1 < len(text) else ""
-            if prev not in "<>" and nxt not in "<>":
-                return text[:i]
-        i += 1
-    return text
-
-
-def _shell_words(segment: str) -> list[str]:
-    """Split one command segment into shell WORDS, honoring quotes and
-    backslash escapes (`>"log file"` is one word, not two). Falls back to a
-    whitespace split when the segment is not lexable (an unbalanced quote
-    from our own separator split) — over-splitting only adds candidates."""
-    import shlex
-    try:
-        return [w for w in shlex.split(segment, posix=True) if w]
-    except ValueError:
-        return [w for w in segment.split() if w]
-
-
-# A `git … push` invocation: only options may sit between `git` and `push`
-# (so `git stash push` never arms). Group 1 is the option run, which carries
-# any `-C <dir>` retargeting.
-_GIT_PUSH_RE = r"\bgit((\s+-\S+(\s+(\"[^\"]*\"|'[^']*'|[^-\s]\S*))?)*)\s+push\b"
-
-# Tokens made only of these characters are COMMAND SEPARATORS (`;`, `;;`,
-# `&`, `&&`, `|`, `||`, `(`, `)`) — a redirection operator (`>`, `>&`, `<<`)
-# is not, so it never ends a command.
-_SEPARATOR_CHARS = frozenset(";&|()")
-
-
-def _logical_and_physical(path: Path) -> list[Path]:
-    """*path* under BOTH `..` resolutions (Terra r15).
-
-    `cd` is LOGICAL by default (`-L`): `cd /a/link; cd ../b` lands in `/a/b`
-    even when `link` points elsewhere, because bash collapses `..` against
-    the path it printed, not against the symlink's physical parent. Handing
-    the un-collapsed path to the filesystem gives the PHYSICAL answer
-    instead (what `cd -P` would do). Both are plausible, so both are
-    scanned."""
-    logical = Path(os.path.normpath(str(path)))
-    return [path] if logical == path else [path, logical]
-
-
-def _cd_operand_words(words: list[str]) -> list[str]:
-    """The real OPERANDS among a `cd` command's words — options, redirection
-    operators, the words those operators consume, and the fd prefixes that
-    introduce them are all removed.
-
-    Terra r13: this replaced a "first word that doesn't look like an option"
-    heuristic which picked the redirection TARGET (`cd 2> /dev/null /repo`
-    → `/dev/null`) and therefore seeded a following relative `cd` from the
-    wrong base. The token stream makes the redirections explicit, so the
-    operands can be computed rather than guessed. Everything after `--` is
-    an operand, however it is spelled."""
-    consumed: set[int] = set()
-    for i, w in enumerate(words):
-        if not w or not all(ch in "<>&|" for ch in w):
-            continue
-        if "<" not in w and ">" not in w:
-            continue  # not a redirection operator
-        consumed.add(i)
-        if i + 1 < len(words):
-            consumed.add(i + 1)          # the redirection target word
-        if i and (words[i - 1].isdigit()
-                  or (words[i - 1].startswith("{")
-                      and words[i - 1].endswith("}"))):
-            consumed.add(i - 1)          # its fd prefix (`2>`, `{fd}>`)
-    operands: list[str] = []
-    seen_ddash = False
-    for i, w in enumerate(words):
-        if i in consumed:
-            continue
-        if not seen_ddash and w == "--":
-            seen_ddash = True
-            continue
-        if not seen_ddash and w.startswith("-"):
-            continue                     # an option word
-        operands.append(w)
-    return operands
-
-
-def _cd_command_words(text: str) -> list[list[str]]:
-    """Every `cd` invocation in *text*, as its list of argument WORDS.
-
-    Terra/Sol r7-r10: this replaced a regex + quote-stripped shadow that kept
-    losing to one more spelling per review round (`2>& 1`, `{fd}>&-`,
-    `>"log file"`, `"cd"`, `c''d`, `c\\d`, `c\\<newline>d`,
-    `c''d '/tmp/bad;repo'`). Tokenizing ONCE the way the shell does resolves
-    the whole family structurally: quote/escape removal is the lexer's job,
-    so a quoted command word (`c''d`) collapses to `cd` while a quoted
-    separator inside a PATH (`'/tmp/bad;repo'`) stays one word.
-
-    Line continuations are removed first (bash's own first pass). EVERY `cd`
-    token counts, wherever it sits: r11 showed that deciding whether a `cd`
-    is in "command position" is the same losing enumeration as the earlier
-    two (a wrapper's own options — `command -p cd` — and leading
-    redirections — `2>/dev/null cd /tmp` — both precede the command word).
-    A `cd` token that is really an ARGUMENT to something else
-    (`echo cd /tmp`) only ADDS candidate words, which is fail-closed and
-    costs one is_dir() each. All words up to the next separator are
-    returned: the caller scans every one, so no "which word is the target"
-    decision remains either.
-    """
-    import shlex
-    # ONE quote-aware pre-pass (Sol r14): remove bash LINE CONTINUATIONS —
-    # which bash honors outside quotes and inside double quotes, but NOT
-    # inside single quotes, where `\<newline>` is literal path data — and
-    # turn the remaining unquoted newlines into explicit `;` separators
-    # (shlex would otherwise treat them as plain whitespace and let one
-    # command's words run into the next).
-    out_chars: list[str] = []
-    quote = ""
-    i = 0
-    while i < len(text):
-        ch = text[i]
-        if quote == "'":
-            if ch == "'":
-                quote = ""
-            out_chars.append(ch)
-            i += 1
-            continue
-        if ch == "\\" and i + 1 < len(text):
-            if text[i + 1] == "\n":
-                i += 2          # line continuation — drop both characters
-                continue
-            out_chars.append(text[i:i + 2])
-            i += 2
-            continue
-        if quote == '"':
-            if ch == '"':
-                quote = ""
-            out_chars.append(ch)
-            i += 1
-            continue
-        if ch in "'\"":
-            quote = ch
-        elif ch in "\n\r":
-            out_chars.append(" ; ")
-            i += 1
-            continue
-        out_chars.append(ch)
-        i += 1
-    text = "".join(out_chars)
-    lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
-    # Terra r14: bash treats `#` as a comment only at the START of a word —
-    # `cd /tmp/dir#name` is a literal path. shlex's default commenters="#"
-    # would truncate it.
-    lexer.commenters = ""
-    lexer.whitespace_split = True
-    try:
-        tokens = list(lexer)
-    except ValueError:
-        # Unbalanced quote (a truncated command) — degrade to a whitespace
-        # split; over-splitting only ADDS candidate words.
-        tokens = text.split()
-
-    out: list[list[str]] = []
-    collecting: list[str] | None = None
-    for tok in tokens:
-        if tok and all(ch in _SEPARATOR_CHARS for ch in tok):
-            if collecting is not None:
-                out.append(collecting)
-                collecting = None
-            continue
-        if tok == "cd":
-            if collecting is not None:
-                # Sol r13: a directory can be NAMED `cd` (`cd cd`) — the
-                # token is both a possible operand of the cd being collected
-                # AND the start of another one. Record it as both.
-                collecting.append(tok)
-                out.append(collecting)
-            collecting = []
-            continue
-        if collecting is not None:
-            collecting.append(tok)
-    if collecting is not None:
-        out.append(collecting)
-    return out
-
-
-def make_self_containment_guard() -> HookCallback:
-    """Pre-push grep for §2.0 self-containment anti-patterns.
-
-    ── SCOPE NOTE — READ BEFORE "HARDENING" THE cd RECOGNIZER (v0.145.0) ──
-    This guard is DEFENSE IN DEPTH, not a security boundary. It advises an
-    already-trusted operator/agent channel inside the container, it carries
-    a deliberate logged escape hatch (``CASA_ALLOW_ANTI_PATTERN=1``), and
-    the authoritative check on the real push path is ``scripts/gate.sh``,
-    which evaluates HEAD on a clean tree and runs a pinned secret scanner.
-
-    Deciding which directory a shell command ends up in is UNDECIDABLE from
-    the command text, and approximating it is a KNOWN FINDING GENERATOR: the
-    v0.145.0 adversarial review spent ELEVEN consecutive rounds here, each
-    surfacing one further bash spelling (``2>& 1``, ``{fd}>&-``, quoted and
-    backslash-escaped command words, a directory named ``cd``, one named
-    ``-weird``, ``#`` inside a path, a single-quoted ``\\<newline>``, logical
-    vs physical ``..``). Every one was fixed and every one was individually
-    real; the marginal value nevertheless reached zero long before the
-    rounds did. The design settled on removing JUDGMENT rather than adding
-    rules — every ``cd`` token counts, every word of its command is scanned,
-    quoting is the lexer's job, operands are computed from the token stream,
-    and the base set is capped with a fail-closed deny.
-
-    ACCEPTED RESIDUAL, deliberately not fixed: targets that are not
-    statically resolvable (parameter/command substitution, ``eval``,
-    aliases) and adversarially-constructed paths named after shell syntax.
-    An actor able to craft those already runs arbitrary commands in this
-    container, so the guard was never what stood between them and a push.
-
-    Do NOT reopen this to chase another spelling on the strength of a code
-    scan or review sweep alone. Change it when a REAL incident shows a
-    plausible operator command slipping through, and record that incident
-    in the commit. Over-scanning (extra candidate directories) is BY DESIGN
-    and is not a defect.
-    """
-
-    async def hook(
-        input_data: dict[str, Any],
-        tool_use_id: str | None,
-        context: dict[str, Any],
-    ) -> dict[str, Any]:
-        if input_data.get("tool_name") != "Bash":
-            return {}
-        cmd = input_data.get("tool_input", {}).get("command", "")
-        # Sol r4-3: arm on a `git push` ANYWHERE in the command — env-var
-        # prefixes (`FOO=1 git push`), `env`/`command` wrappers, global git
-        # options (`git -C . push`), and compound commands (`cd x && git
-        # push`) must all scan; only options may sit between `git` and
-        # `push` so `git stash push` does not arm. The override is an
-        # EXPLICIT `CASA_ALLOW_ANTI_PATTERN=1` assignment (quotes allowed)
-        # — auditable: the guard still scans and logs what it waved
-        # through. (The previously-advertised `--allow-anti-pattern` git
-        # flag was never implemented and would make git itself error.)
-        # Option arguments may be quoted and contain spaces (Sol r6-1:
-        # `git -C "path with spaces" push`).
-        # Sol r15: arm against a continuation-flattened copy — a line
-        # continuation may sit between `git` and `push` (`git \<newline>
-        # push`), which bash removes before the words are formed. Flattening
-        # can only make the guard arm MORE often (fail-closed); the cd
-        # collector does its own quote-aware continuation handling on the
-        # raw command.
-        cmd_flat = cmd.replace("\\\n", "")
-        m_push = re.search(_GIT_PUSH_RE, cmd_flat)
-        if not m_push:
-            return {}
-        override = bool(
-            re.search(r"\bCASA_ALLOW_ANTI_PATTERN=([\"']?)1\1(\s|$)", cmd))
-
-        cwd = Path(input_data.get("cwd") or os.getcwd())
-        # Sol r5-3: scan the repo the COMMAND targets — `cd <path> && git
-        # push` re-bases, `git -C <path> push` retargets. #348: bash
-        # separates commands on newlines, `|`, `&` and `||` just as on
-        # `&&`/`;` — the class below covers them all (the final char of
-        # `&&`/`||` is itself in the class).
-        #
-        # Terra/Sol r1 (#348): the guard cannot know which cds actually
-        # EXECUTE (`true || cd X` skips X; a `cd` in a pipeline runs in a
-        # subshell; a failed `cd nonexistent` leaves the shell where it
-        # was). Fail CLOSED: scan the UNION of every candidate repo — the
-        # hook cwd plus every textual cd rebase and the -C target — so a
-        # conditional or failing cd can never redirect the scan away from
-        # the repository the push actually operates on, and a nonexistent
-        # target never turns into an allow.
-        # Terra r2: each cd may or may not have EXECUTED (conditionals), so a
-        # relative cd must be resolved from EVERY feasible prior base, not one
-        # linear chain — `false && cd decoy; cd ../bad` rebases from the hook
-        # cwd, not from decoy. The feasible-base set only ever GROWS (base
-        # without the cd stays feasible); growth is bounded (commands carry a
-        # handful of cds at most; hard cap as a backstop).
-        # Sol r2: `cd -P -- dir` — skip option words and an optional `--` so
-        # the flag is never mistaken for the target.
-        # Sol r3 / Terra+Sol r4: enumerating what may precede an executable
-        # `cd` (separators, `then`, subshell parens, case-pattern `)`, `!`,
-        # `command`, …) is a losing game — every round found another form.
-        # Structural resolution: EVERY standalone `cd` word before the push
-        # contributes a candidate, whatever precedes it. Over-approximation
-        # is fail-closed by construction — a `cd` that would not really
-        # execute (or is mere argument text) only ADDS scan targets, never
-        # removes one, and the hook cwd always stays in the set.
-        bases: set = {cwd}
-        candidates: list = [cwd]
-        cd_overflow = False
-        # Terra/Sol r5-r7: pinpointing WHICH word after `cd` is the target is
-        # the same losing game as the pre-context was — six rounds produced
-        # `2> f`, `&>f`, `2>& 1`, `2>| f`, `<<< x`, `<<- EOF`, `{fd}>f`,
-        # `>"log file"`, `>log\ file`, … Structural resolution: stop deciding.
-        # EVERY word between `cd` and the next separator becomes a scan
-        # candidate, so whichever word bash actually resolves to is always in
-        # the set. Redirect operands and option words simply add candidates
-        # that are usually not directories and cost one is_dir() each.
-        # Only the PRIMARY word (first that is neither an option nor
-        # redirect-shaped) propagates into ``bases``, so a relative cd chain
-        # still grows the feasible-base set at the same bounded rate.
-        # Sol r8: bash needs no whitespace after `cd` before an operator or
-        # a quote (`cd</dev/null /bad`, `cd'/bad'`) — accept those positions
-        # too, never just `cd\s`.
-        # Sol r12: scan the WHOLE command, not just the text before the first
-        # `git push` match — that match may be another command's ARGUMENT
-        # (`echo git push; cd /bad; git push`), which would truncate the scan
-        # before the real cd. Collecting cds from the entire string is the
-        # same fail-closed over-approximation used everywhere else here.
-        for words in _cd_command_words(cmd):
-            # EVERY word is scanned (fail-closed over-approximation); the
-            # computed OPERANDS additionally propagate into ``bases`` so a
-            # following RELATIVE cd resolves from the right place.
-            operands = _cd_operand_words(words)
-            new_bases = set()
-            for b in bases:
-                for w in words:
-                    candidates.extend(_logical_and_physical(
-                        Path(w) if os.path.isabs(w) else b / w))
-                for w in operands:
-                    new_bases.update(_logical_and_physical(
-                        Path(w) if os.path.isabs(w) else b / w))
-            bases |= new_bases
-            if len(bases) > 64:
-                # Terra/Sol r3: stopping silently would leave every LATER cd
-                # unexamined — fail CLOSED instead (the finding below denies
-                # the push; the logged CASA_ALLOW_ANTI_PATTERN override
-                # remains the escape hatch for a legitimate pathological
-                # command).
-                cd_overflow = True
-                break
-        # Sol r2: git applies EVERY -C sequentially (a relative -C resolves
-        # against the previous one) — fold the whole chain over each base.
-        # Sol r12: do this for EVERY `git … push` occurrence, since the first
-        # textual match may not be the real one.
-        for m_g in re.finditer(_GIT_PUSH_RE, cmd_flat):
-            c_targets = [m.group(1).strip("'\"") for m in re.finditer(
-                r"-C\s+(\"[^\"]+\"|'[^']+'|\S+)", m_g.group(1))]
-            if not c_targets:
-                continue
-            for b in bases:
-                cur = b
-                for t in c_targets:
-                    cur = Path(t) if os.path.isabs(t) else cur / t
-                candidates.append(cur)
-
-        findings: list[str] = []
-        if cd_overflow:
-            findings.append(
-                "cd chain too complex to model (feasible-cwd set exceeded "
-                "64) — cannot establish which repository is being pushed; "
-                "simplify the push command")
-        seen_roots: set[str] = set()
-        for cand in candidates:
-            if not cand.is_dir():
-                continue
-            # Sol r4-7: anchor the tree scan at the REPO ROOT when
-            # resolvable — a push from a subdirectory must still see a root
-            # README anti-pattern. Fall back to the candidate itself.
-            top = await asyncio.to_thread(
-                _git_lines, cand, "rev-parse", "--show-toplevel")
-            scan_root = Path(top[0]) if top else cand
-            if str(scan_root) in seen_roots:
-                continue
-            seen_roots.add(str(scan_root))
-            # M28: the walk+read blocks the shared event loop — off-loop.
-            findings += await asyncio.to_thread(
-                _scan_tree_for_anti_patterns, scan_root)
-            findings += await asyncio.to_thread(_scan_mcp_launch_refs, cand)
-        # De-duplicate while preserving order (overlapping candidates can
-        # surface the same finding via tree + cwd scans).
-        findings = list(dict.fromkeys(findings))
-
-        if findings:
-            if override:
-                _logger.warning(
-                    "self_containment_guard override "
-                    "(CASA_ALLOW_ANTI_PATTERN=1): allowing push despite: %s",
-                    "; ".join(findings))
-                return {}
-            return _deny(
-                "Blocked by self_containment_guard (§2.0 axiom):\n"
-                + "\n".join(f"- {fi}" for fi in findings)
-                + "\nDeclare via casa.systemRequirements or use ${CLAUDE_PLUGIN_ROOT}. "
-                "If (and only if) this is a false positive, re-run as "
-                "`CASA_ALLOW_ANTI_PATTERN=1 git push ...` — the override is "
-                "logged."
-            )
-        return {}
-
-    return hook
-
-
-def _self_containment_guard_factory(**kwargs: Any) -> HookCallback:
-    if kwargs:
-        raise UnknownPolicyError(
-            f"self_containment_guard takes no parameters; got {list(kwargs)}"
-        )
-    return make_self_containment_guard()
 
 
 def _block_dangerous_bash_factory(**kwargs: Any) -> HookCallback:
@@ -3245,57 +2574,7 @@ HOOK_POLICIES: dict[str, dict[str, Any]] = {
         "matcher": "Write|Edit|MultiEdit|NotebookEdit",
         "factory": _resident_prompt_write_guard_factory,
     },
-    "self_containment_guard": {
-        "matcher": "Bash",
-        "factory": _self_containment_guard_factory,
-    },
 }
-
-
-# claude_code containment floor: the policies every claude_code executor must
-# declare to meet the baseline security requirements. Task 2: Single source of
-# truth for the floor + canonical matchers so policy matchers cannot be
-# override-routed by YAML edits.
-REQUIRED_CLAUDE_CODE_POLICIES: frozenset[str] = frozenset({
-    "block_dangerous_bash",
-    "path_scope",
-})
-
-
-def missing_required_cc_policies(declared_policy_names) -> frozenset:
-    """Return the set of required policies missing from the declared set.
-
-    Args:
-        declared_policy_names: An iterable of declared policy names.
-
-    Returns:
-        A frozenset of required policies not in declared_policy_names.
-        Empty frozenset means the floor is satisfied.
-    """
-    return REQUIRED_CLAUDE_CODE_POLICIES - frozenset(declared_policy_names)
-
-
-def canonical_matcher_for(policy_name: str) -> str:
-    """Return the canonical matcher for a registry-backed policy.
-
-    This is the single source of truth for policy matchers, ensuring that
-    YAML-editable matcher declarations cannot override registry matchers.
-
-    Args:
-        policy_name: The name of a policy in HOOK_POLICIES.
-
-    Returns:
-        The matcher string from HOOK_POLICIES[policy_name].
-
-    Raises:
-        UnknownPolicyError: If policy_name is not in HOOK_POLICIES.
-    """
-    if policy_name not in HOOK_POLICIES:
-        raise UnknownPolicyError(
-            f"unknown hook policy {policy_name!r}; "
-            f"available: {sorted(HOOK_POLICIES)}"
-        )
-    return HOOK_POLICIES[policy_name]["matcher"]
 
 
 def resolve_hooks(
@@ -3343,8 +2622,7 @@ def resolve_hooks(
         # REVISION 3 (Terra plan-review r3, #360): strip the transport-only
         # ``matcher``/``timeout`` keys before the factory call, exactly like
         # build_policy_callbacks_from_hooks_yaml already does above. Without
-        # this, a snapshot carrying a stray ``matcher`` (e.g. because
-        # hook_bridge's canonical-matcher force wrote it back, or an
+        # this, a snapshot carrying a stray ``matcher`` (e.g. because an
         # executor's yaml declared one) made every factory call raise
         # TypeError on an unexpected kwarg — turning a config-editable
         # cosmetic key into a START-time UnknownPolicyError for every
@@ -3389,19 +2667,13 @@ def build_policy_callbacks_from_hooks_yaml(
 ) -> dict[str, tuple[str, "HookCallback"]]:
     """Build ``{policy_name: (matcher, callback)}`` from an executor hooks.yaml.
 
-    H3 (v0.53.0): the claude_code HTTP hook path (hook_proxy.sh -> the
-    /hooks/resolve endpoint) previously ran only the default-configured
-    factories, dropping every per-executor ``hooks.yaml`` parameter (e.g.
-    plugin-developer's ``path_scope`` writable/readable prefixes), so the
-    default empty-prefix ``path_scope`` denied ALL Read/Write/Edit. This turns
-    an executor's parsed ``hooks.yaml`` into the same ``(matcher, callback)``
-    shape ``_build_cc_hook_policies`` produces, but with the declared params
-    applied.
+    The agent loader calls this at load for every executor as a
+    constructibility check (#312): a declaration whose factory raises fails
+    the executor at load rather than at enforcement time.
 
-    Policies with no HOOK_POLICIES factory (e.g. ``engagement_permission_relay``
-    — injected separately in casa_core with live deps) are skipped here. The
-    per-entry ``matcher``/``timeout`` keys are consumed by other paths and are
-    not factory parameters, so they are stripped before the factory call.
+    Policies with no HOOK_POLICIES factory are skipped here. The per-entry
+    ``matcher``/``timeout`` keys are not factory parameters, so they are
+    stripped before the factory call.
     """
     grouped: dict[str, tuple[str, list["HookCallback"]]] = {}
     declared_matchers: dict[str, Any] = {}
@@ -3409,15 +2681,14 @@ def build_policy_callbacks_from_hooks_yaml(
         name = entry.get("policy")
         policy = HOOK_POLICIES.get(name)
         if policy is None:
-            continue  # e.g. engagement_permission_relay — wired separately
+            continue
         # Sol r2-1: duplicate declarations of one policy must agree on their
-        # declared ``matcher`` (including all leaving it absent). The server
-        # cannot tell declarations apart on the wire (the request names only
-        # the POLICY), and the SDK path deliberately ignores declared
-        # matchers (they are config-editable; HOOK_POLICIES matchers are the
-        # trust anchor) — so per-declaration matcher scoping of duplicates
-        # is unenforceable and the composite would surprise (intersection
-        # under the canonical matcher). Refuse the config loudly instead:
+        # declared ``matcher`` (including all leaving it absent). The SDK
+        # path deliberately ignores declared matchers (they are
+        # config-editable; HOOK_POLICIES matchers are the trust anchor) — so
+        # per-declaration matcher scoping of duplicates is unenforceable and
+        # the composite would surprise (intersection under the canonical
+        # matcher). Refuse the config loudly instead:
         # with #312's load-time constructibility check this fail-closes the
         # executor at load/commit, not silently at enforcement time.
         if name in declared_matchers:
@@ -3439,10 +2710,9 @@ def build_policy_callbacks_from_hooks_yaml(
         callbacks.append(policy["factory"](**params))
     # #313: a policy declared MORE THAN ONCE must enforce every declaration.
     # The SDK path registers one HookMatcher per declaration and runs all of
-    # them (any deny blocks); this dict is keyed by policy name, so the old
-    # ``out[name] = ...`` was last-writer-wins — a write refused by an earlier
-    # declaration but permitted by the last one passed the HTTP path.
-    # Duplicates now compose into ONE callback that runs each declaration in
+    # them (any deny blocks); this dict is keyed by policy name, so a plain
+    # ``out[name] = ...`` would be last-writer-wins.
+    # Duplicates compose into ONE callback that runs each declaration in
     # order and returns the first non-allow result (deny/ask), restoring the
     # SDK's intersection semantics.
     out: dict[str, tuple[str, "HookCallback"]] = {
@@ -3453,449 +2723,4 @@ def build_policy_callbacks_from_hooks_yaml(
         )
         for name, (matcher, callbacks) in grouped.items()
     }
-    # Round-4 (Terra P0): managed_component_guard is CODE-MANDATORY for
-    # executor sessions — the resolved set always carries it regardless of
-    # what the (config-editable, pointer-redirectable) hooks.yaml declares.
-    # Dict-key dedupe: a yaml declaration simply pre-fills the same entry.
-    # See managed_component_guard_matcher (SDK path) and
-    # drivers.hook_bridge.translate_hooks_to_settings (CC settings path).
-    if "managed_component_guard" not in out:
-        policy = HOOK_POLICIES["managed_component_guard"]
-        out["managed_component_guard"] = (
-            policy["matcher"], policy["factory"]())
-    # #631: so is resident_prompt_write_guard, and this half is only one of
-    # the two the claude_code transport needs — drivers.hook_bridge
-    # .translate_hooks_to_settings emits the settings.json entry that makes CC
-    # invoke the proxy, and this resolves that policy NAME to a callback. An
-    # entry for a policy the resolver does not know resolves to nothing.
-    #
-    # It is here, and its two neighbours are not, deliberately. `path_scope`'s
-    # PRESENCE is load-enforced on a claude_code executor, but its `writable:`
-    # prefixes are whatever that executor's own hooks.yaml declares (the
-    # bridge defaults them to empty; the shipped configurator declares
-    # `/config/agents`), so an executor whose declaration admits the resident
-    # tree would be refused by nothing else — and this guard's refusal names
-    # the corrective recipe where a scope denial cannot. On the shipped
-    # plugin-developer (`/data/engagements/` only) it is defence-in-depth. The
-    # trigger-file and response-shape guards are NOT added here because their
-    # Bash halves match a bare basename anywhere in a command, which would
-    # start refusing an executor writing its own `triggers.yaml`/
-    # `response_shape.yaml` inside /data/engagements (measured: 2 of 2
-    # denied). Symmetry for its own sake would ship a regression.
-    if "resident_prompt_write_guard" not in out:
-        policy = HOOK_POLICIES["resident_prompt_write_guard"]
-        out["resident_prompt_write_guard"] = (
-            policy["matcher"], policy["factory"]())
     return out
-
-
-# ---------------------------------------------------------------------------
-# v0.37.2 (C-1): engagement_permission_relay
-#
-# Spec: docs/superpowers/specs/2026-05-13-c1-permission-relay-fix.md §4.2, §4.3
-#
-# A PreToolUse hook that resolves the engagement from cwd, checks the
-# engagement's frozen ``tools_allowed`` snapshot, and either passes through
-# (return ``{}``) or relays the request to the operator via a Telegram
-# inline keyboard, awaiting their verdict on a per-engagement asyncio.Queue.
-# ---------------------------------------------------------------------------
-
-
-# Telegram callback_data is capped at 64 bytes; the keyboard prefix is
-# "perm:allow:" or "perm:deny:" (11 bytes), so the request_id must be
-# <= 53 bytes. We cap at 32 to leave headroom and align with hex UUIDs.
-_RID_MAX_LEN = 32
-
-
-_ENG_CWD_RE = re.compile(
-    r"^/data/engagements/([0-9a-f]{32})(?:/.*)?$"
-)
-
-
-def _engagement_id_from_cwd(cwd: str) -> str | None:
-    """Extract the 32-hex engagement id from a cwd path.
-
-    Returns None when cwd is not under ``/data/engagements/<id>/...`` — or
-    when the value is not a string at all (Terra r1: a caller-supplied
-    non-string must degrade to "no claim", never raise past a deny wrapper).
-    """
-    if not isinstance(cwd, str):
-        return None
-    m = _ENG_CWD_RE.match(cwd or "")
-    return m.group(1) if m else None
-
-
-def _perm_keyboard_finish(
-    telegram_channel: Any, topic_id: int | None, message_id: int,
-) -> Callable[[dict], "Awaitable[None]"]:
-    """Broker finish-hook (r3-B3): keyboard-edit owner for the permission
-    namespace. Fires exactly once on outcome (delivered by the broker even if
-    the creating hook task was cancelled) and edits the posted keyboard
-    message to reflect the outcome. The callback path NEVER edits the
-    keyboard — this is the only writer.
-    """
-
-    async def _finish(outcome: dict) -> None:
-        try:
-            await telegram_channel.edit_perm_keyboard_outcome(
-                topic_id=topic_id, message_id=message_id, outcome=outcome,
-            )
-        except Exception:  # noqa: BLE001 — finish hooks must never raise
-            _logger.warning(
-                "permission keyboard finish-hook edit failed "
-                "(topic=%s message_id=%s)", topic_id, message_id, exc_info=True,
-            )
-
-    return _finish
-
-
-# ---------------------------------------------------------------------------
-# R4 (v0.89.0, buttons-always): engagement_buttons_reminder
-#
-# A PreToolUse(Skill) salience backstop on the WORKSPACE hook path
-# (hook_proxy.sh -> /internal/hooks/resolve). The plugin-developer engaged
-# executor runs the STANDALONE Claude CLI, so an in-casa SDK ``can_use_tool``
-# PreToolUse hook never fires for it — this HTTP-path policy is the only seam.
-#
-# When a ``Skill`` is about to load (e.g. ``superpowers:brainstorming``, whose
-# own "present options conversationally / one question per message" HARD-GATE
-# out-competes doctrine read earlier in the turn) AND the cwd resolves to an
-# ACTIVE engagement, inject a PreToolUse ``additionalContext`` reminder that the
-# engagement channel's choice questions ALWAYS use ``ask``/``options``. This is
-# context injection, not a block/ask decision, and NOT a user-facing
-# ``systemMessage``. Trigger is tool IDENTITY (Skill) + engagement-from-cwd —
-# NEVER message content.
-# ---------------------------------------------------------------------------
-
-_BUTTONS_REMINDER_TEXT = (
-    "You are in an engagement channel — any question offering choices MUST "
-    "use the `ask` tool with `options` (tappable buttons), never prose, even "
-    "if this skill tells you to ask conversationally."
-)
-
-
-def make_engagement_buttons_reminder(
-    *,
-    engagement_registry: Any,
-) -> HookCallback:
-    """Build the PreToolUse(Skill) hook that injects the buttons-always
-    reminder when a Skill loads inside an ACTIVE engagement.
-
-    Args:
-        engagement_registry: registry exposing ``.get(engagement_id) -> record | None``.
-
-    Returns ``{"hookSpecificOutput": {"hookEventName": "PreToolUse",
-    "additionalContext": <reminder>}}`` (SDK-declared
-    ``PreToolUseHookSpecificOutput.additionalContext``) for a Skill call under
-    an active engagement; ``{}`` (allow, no context) otherwise. Never blocks.
-    """
-
-    async def _hook(
-        input_data: dict[str, Any],
-        tool_use_id: str | None,
-        context: dict[str, Any],
-    ) -> dict[str, Any]:
-        # Tool-identity gate (defense-in-depth; the wired matcher is "Skill"
-        # too). NEVER inspect message/tool content.
-        if input_data.get("tool_name") != "Skill":
-            return {}
-        # #366: identity from the authenticated context only (cwd is
-        # caller-supplied text). Unauthenticated ⇒ no reminder — this hook
-        # only ever ADDS context, so absence of identity is a silent no-op.
-        eng_id = (
-            context.get("casa_engagement_id")
-            if isinstance(context, dict) else None
-        )
-        if not eng_id:
-            return {}
-        rec = engagement_registry.get(eng_id)
-        if rec is None or getattr(rec, "status", None) != "active":
-            return {}
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "additionalContext": _BUTTONS_REMINDER_TEXT,
-            }
-        }
-
-    return _hook
-
-
-def make_engagement_permission_relay(
-    *,
-    engagement_registry: Any,
-    telegram_channel: Any,
-    timeout_s: float = 600.0,
-) -> HookCallback:
-    """Build the PreToolUse hook that relays non-allow-listed tool calls
-    through the engagement's Telegram inline-keyboard, via the
-    Casa-owned ``verdict_broker`` (W5/Sol B3,B4).
-
-    #374/#469: the keyboard's answerer is the CONFIGURED OPERATOR
-    (``telegram_channel.operator_user_id()``), not the engagement creator —
-    approving a non-allow-listed tool is authorization, and only the
-    operator holds that authority (#368 doctrine). No configured operator
-    (accept-all mode, or a group id) ⇒ immediate deterministic deny, no
-    keyboard: posting a button nobody may tap would only hold the
-    engagement until timeout.
-
-    Args:
-        engagement_registry: registry exposing ``.get(engagement_id) -> record | None``.
-        telegram_channel: object with ``operator_user_id() -> int | None``, async
-            ``update_topic_state(*, engagement_id, new_state)``,
-            ``post_perm_keyboard(*, engagement_id, request_id, tool_name, tool_input) -> int | None``,
-            and ``edit_perm_keyboard_outcome(*, topic_id, message_id, outcome)``.
-        timeout_s: how long to wait for the operator before treating as deny.
-    """
-    # #324: per-engagement tally of relay requests currently holding the
-    # topic 'awaiting'. Two gated tools can await verdicts concurrently;
-    # the first exit's r7-B3 restore must not repaint 'active' while the
-    # sibling's keyboard is still live. Entries are deleted at zero.
-    _pending_relays: dict[str, int] = {}
-    # Sol diff-r1/r2 (#324): unserialized state edits lose to wire ordering —
-    # whichever edit LANDS last wins, regardless of which tally state it was
-    # painted for (r1: a stale 'active' after a new relay's 'awaiting'; r2:
-    # the one-shot corrective 'awaiting' after the last exit's 'active').
-    # Cut the mechanism instead of sharpening it: every paint SERIALIZES on a
-    # per-engagement lock and reads the CURRENT tally under it, so the
-    # last-serialized paint always reflects the final tally and no
-    # corrective repaints exist. Locks are retained for the process lifetime
-    # (mirrors telegram's per-topic handler locks; popping one while a
-    # waiter holds it would fork the serialization domain).
-    _state_paint_locks: dict[str, asyncio.Lock] = {}
-    # Strong refs to in-flight shielded paints (broker _setup_tasks pattern):
-    # a caller-cancelled paint continues in the background and must not be
-    # garbage-collected mid-flight.
-    _paint_tasks: set = set()
-
-    async def _do_paint(eng_id: str) -> None:
-        lock = _state_paint_locks.setdefault(eng_id, asyncio.Lock())
-        async with lock:
-            state = (
-                "awaiting" if _pending_relays.get(eng_id, 0) > 0 else "active"
-            )
-            # Terra r3 (#347): FRESH status read — an engagement that
-            # terminalized mid-hook must not be repainted; that edit could
-            # land after the terminal-state edit and leave a closed topic
-            # showing green (or amber).
-            rec_now = engagement_registry.get(eng_id)
-            if getattr(rec_now, "status", None) != "active":
-                return
-            await telegram_channel.update_topic_state(
-                engagement_id=eng_id, new_state=state,
-            )
-
-    async def _paint_topic_state(eng_id: str, *, shielded: bool) -> None:
-        # Sol diff-r3 (#324): serialization orders paints but does not
-        # guarantee completion — a cancellation aborting the FINAL exit
-        # paint mid-await would strand the topic 'awaiting'. The EXIT paint
-        # therefore runs as a SHIELDED task (never cancelled itself; the
-        # caller's cancellation propagates while the paint completes in the
-        # background). The ENTRY paint stays cancellable ON PURPOSE: it is
-        # always healed by the shielded exit paint, and shielding it would
-        # let one wedged wire edit hold the serialization lock uncancellably
-        # and wedge every later paint for the engagement.
-        if not shielded:
-            await _do_paint(eng_id)
-            return
-        task = asyncio.ensure_future(_do_paint(eng_id))
-        _paint_tasks.add(task)
-        task.add_done_callback(_paint_tasks.discard)
-        await asyncio.shield(task)
-
-    async def _hook(
-        input_data: dict[str, Any],
-        tool_use_id: str | None,
-        context: dict[str, Any],
-    ) -> dict[str, Any]:
-        # #366: identity comes ONLY from the authenticated-identity context
-        # threaded by the /internal/hooks/resolve handler (which verified the
-        # engagement token). The payload's cwd is caller-supplied text and is
-        # no longer an identity source. No authenticated identity ⇒ deny —
-        # this hook exists to gate an engagement's tool use, so a request
-        # that cannot prove WHICH engagement it is gets nothing.
-        eng_id = (
-            context.get("casa_engagement_id")
-            if isinstance(context, dict) else None
-        )
-        if not eng_id:
-            return _deny("engagement identity not authenticated")
-        rec = engagement_registry.get(eng_id)
-        if rec is None or getattr(rec, "status", None) != "active":
-            return _deny(
-                f"unknown or inactive engagement: {eng_id[:8]}"
-            )
-        # G-1 v0.37.7: short-circuit on autonomous permission modes. The
-        # executor's ``permission_mode`` in definition.yaml encodes operator
-        # intent; when ``auto`` or ``bypassPermissions`` the CC CLI is meant
-        # to proceed without operator approval — surfacing a Telegram
-        # keyboard would defeat the purpose (and hang the engagement when no
-        # operator is at the keyboard). ``acceptEdits`` and ``default`` still
-        # fall through to the allow-list + relay path.
-        mode = getattr(rec, "permission_mode", "acceptEdits") or "acceptEdits"
-        if mode in ("auto", "bypassPermissions"):
-            return {}
-        # Allow-list snapshot from engagement creation (spec §3.5).
-        allowed = tuple(getattr(rec, "tools_allowed", ()) or ())
-        if matches_any(
-            allowed,
-            input_data.get("tool_name", ""),
-            input_data.get("tool_input") or {},
-        ):
-            return {}  # pass-through: CC's allow-rule approves
-
-        # Not allow-listed — post inline keyboard and await operator verdict
-        # via the broker.
-        # #374: the approver is the configured operator. None (accept-all
-        # mode, group id, or a channel that cannot say) ⇒ deny NOW: under the
-        # broker's fail-closed claim contract no tap could ever win, so a
-        # keyboard would only hold the engagement until timeout.
-        operator_id = telegram_channel.operator_user_id()
-        if operator_id is None:
-            return _deny(
-                "no configured operator to approve this tool "
-                "(set telegram_chat_id)"
-            )
-        cc_tool_use_id = input_data.get("tool_use_id") or ""
-        rid = cc_tool_use_id[:_RID_MAX_LEN] or uuid.uuid4().hex
-        tool_name = input_data.get("tool_name", "")
-        tool_input = input_data.get("tool_input") or {}
-
-        from verdict_broker import BROKER
-
-        # #324: count this request BEFORE any await, and open the guarded
-        # block BEFORE the 'awaiting' paint — a cancel landing inside that
-        # edit previously ran no cleanup and stranded the topic 'awaiting'
-        # forever. Every request paints via the serialized painter (an
-        # idempotent edit; a 0->1-only paint would skip the paint when an
-        # earlier sibling is cancelled before its own edit lands); the
-        # painter itself decides awaiting/active from the CURRENT tally.
-        _pending_relays[eng_id] = _pending_relays.get(eng_id, 0) + 1
-        outcome: dict[str, Any] = {}
-        try:  # r7-B3 + #324: whole lifecycle guarded, awaiting paint included
-            await _paint_topic_state(eng_id, shielded=False)
-            # STATIC meta seeded ATOMICALLY at registration (F1 Sol r3 pattern —
-            # whichever party wins a same-request_id create race installs the
-            # complete metadata; register() only seeds meta on creation).
-            # message_id + finish_hook are set by the broker-owned setup task
-            # (r8-B3).
-            req, _created = BROKER.register(
-                namespace="permission", scope=eng_id, request_id=rid,
-                timeout_s=timeout_s,
-                meta={
-                    "options": ["allow", "deny"],
-                    "topic_id": rec.topic_id,
-                    "operator_id": operator_id,
-                },
-            )
-
-            # The keyboard post — a broker-owned SHIELDED setup task (r8-B3):
-            # cancelling THIS hook never interrupts an in-flight Telegram post
-            # (which may already be accepted server-side), so a same-id retry
-            # never produces a second keyboard. Post FAILURE inside the task
-            # unregisters (waiters get delivery_failed).
-            async def _post_keyboard() -> int | None:
-                await BROKER.ensure_posted(
-                    req,
-                    lambda: telegram_channel.post_perm_keyboard(
-                        engagement_id=eng_id, request_id=rid,
-                        tool_name=tool_name, tool_input=tool_input),
-                    lambda mid: _perm_keyboard_finish(
-                        telegram_channel, rec.topic_id, mid),
-                )
-                return req.meta.get("message_id")
-
-            try:
-                # v0.79.0 (§2 F1(a)): the permission keyboard is a DISCRETE send
-                # and MUST go through the single writer — never eager-post around
-                # the sequencer. Register+arm a send INTENT fenced on the GATED
-                # tool's own frame (hash = identity over the raw tool_input), and
-                # the relay posts the keyboard at that block (sealing preceding
-                # narration first); a late intent posts out-of-band through the
-                # sequencer's watcher. Only the CREATED (first-attempt) intent
-                # installs the poster + arms; a retry rides the first attempt's
-                # post and just awaits the same broker verdict below. No live
-                # sequencer / degraded boot ⇒ eager fallback (pre-v0.79 post).
-                _relay_posted = False
-                _drv = _active_claude_code_driver()
-                if _drv is not None:
-                    from channels.output_sequencer import (
-                        projection_hash as _perm_projection_hash,
-                    )
-                    _phash = _perm_projection_hash(tool_name, tool_input)
-                    _res = _drv.register_send_intent(
-                        engagement_id=eng_id, request_id=rid,
-                        tool_name=tool_name, projection_hash=_phash,
-                        poster=_post_keyboard,
-                    )
-                    # Sol r2 (#347): terminalization landing between the
-                    # active check above and this registration returns the
-                    # TERMINAL_REGISTRATION sentinel — not None, not a
-                    # tuple. Unpacking it raised TypeError and stranded the
-                    # broker request until timeout. Deny deterministically
-                    # and clear the request (no waiters yet — this call IS
-                    # the waiter and returns before awaiting).
-                    from channels.output_sequencer import (
-                        TERMINAL_REGISTRATION as _TERMINAL_REG,
-                    )
-                    if _res is _TERMINAL_REG:
-                        BROKER.unregister(
-                            namespace="permission", scope=eng_id,
-                            request_id=rid,
-                        )
-                        return _deny(
-                            f"engagement is terminal: {eng_id[:8]}"
-                        )
-                    if _res is not None:
-                        _intent, _created_intent = _res
-                        if _created_intent:
-                            # First attempt: install the real poster + ARM — the
-                            # relay posts the keyboard at the gated tool's frame.
-                            _drv.set_send_intent_poster(eng_id, rid, _post_keyboard)
-                            _drv.arm_send_intent(eng_id, rid)
-                        # F1 (Sol r2): whether we just CREATED the intent or
-                        # REATTACHED to an existing one (a permission/transport
-                        # RETRY, created=False), the relay owns the post — NEVER
-                        # eager-post around the sequencer. A retry rides the first
-                        # attempt's keyboard and awaits the same broker verdict
-                        # below. Eager fallback ONLY when there is no live
-                        # sequencer (register returned None).
-                        _relay_posted = True
-                if not _relay_posted:
-                    await _post_keyboard()
-                outcome = await BROKER.await_result(req)
-                if outcome.get("outcome") == "delivery_failed":
-                    return _deny("keyboard post failed")
-            except asyncio.CancelledError:
-                # r4-B3: single in-process awaiter, no reattach —
-                # cancellation IS logical cancel (during post OR await). The
-                # setup task completes in the background; BROKER.cancel
-                # resolves the request, and the finish-hook (installed by
-                # setup even after completion — r4-B1) edits the keyboard to
-                # "expired". NOT engagement-terminal.
-                BROKER.cancel(
-                    namespace="permission", scope=eng_id, request_id=rid,
-                    reason="tool_invocation_cancelled",
-                )
-                raise
-        finally:
-            # r7-B3: restore topic state on EVERY exit — post failure,
-            # cancellation during post or await, or normal completion.
-            # #324: drop this request from the tally, then paint through the
-            # serialized painter — it reads the post-decrement tally under
-            # the lock, so a sibling keyboard still awaiting its verdict
-            # keeps the topic 'awaiting' and the last exit paints 'active'.
-            _remaining = _pending_relays.get(eng_id, 1) - 1
-            if _remaining <= 0:
-                _pending_relays.pop(eng_id, None)
-            else:
-                _pending_relays[eng_id] = _remaining
-            await _paint_topic_state(eng_id, shielded=True)
-        o = outcome.get("outcome")
-        if o == "answered" and outcome.get("option_index") == 0:
-            return {}
-        if o == "no_answer":
-            return _deny("operator did not respond within the window")
-        return _deny("Operator denied via Telegram")
-
-    return _hook

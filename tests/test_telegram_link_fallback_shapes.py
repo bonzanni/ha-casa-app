@@ -243,11 +243,3 @@ async def test_single_page_fallback_still_resends_the_authored_text():
 
     assert [c.kwargs["text"] for c in bot.send_message.await_args_list] == [
         "label", authored]
-
-
-async def test_post_ask_body_rich_still_makes_one_send_and_no_retry():
-    ch, bot = _mk_channel_with_fake_bot()
-    bot.send_message.side_effect = BadRequest("bad entity")
-    with pytest.raises(BadRequest):
-        await ch.post_ask_body_rich(42, f"[label]({URL})")
-    assert bot.send_message.await_count == 1

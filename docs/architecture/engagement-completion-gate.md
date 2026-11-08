@@ -9,13 +9,13 @@ last_reviewed: 2026-10-02
 ## Scope
 
 The admission side of ending an engagement: what a *successful* completion is refused over,
-how "unread" and "in flight" differ and why the gate needs both, and what each driver counts.
+why a message in flight is disclosed but never vetoed, and what the driver counts.
 Completion owes no reload: each configuration commit reloads what it changed (INV-TOOL-014, in
 [`architecture/tools-interface.md`](tools-interface.md)).
 What a terminal outcome then discloses about the messages that died with the engagement is in
 [`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md). The terminal
 transition itself, the strictness that keeps the persisted and in-memory records agreeing, the
-finalization side effects behind the flip and topic output ordering are in
+finalization side effects behind the flip are in
 [`architecture/engagement-finalization.md`](engagement-finalization.md). The record and how one
 is launched are in [`architecture/engagements.md`](engagements.md); how a turn is admitted to
 it is in [`architecture/engagement-turn-admission.md`](engagement-turn-admission.md).
@@ -27,73 +27,34 @@ messages are unread or reserved — an agent cannot declare victory over a quest
 read. Failure and cancellation deliberately bypass that gate, because something going wrong
 must always be able to end.
 
-**"Unread" and "in flight" are different questions, and the gate needs both.** A message that
-has left the queue but not yet reached a turn — written into the engagement's stdin FIFO,
-with no turn-start evidence back — is invisible to the unread accounting, deliberately: that
-accounting also answers the ask gate's question, *is the operator still waiting to be
-answered?*, and a delivered message may well have been read. The terminal question is a
-different one, *is there operator input in flight that will only be taken up after I commit?*,
-and the same exclusion is wrong for it. So the driver answers both separately rather than
-changing what "unread" means. The completion gate refuses on either, and the annotation
-described in [`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md)
-discloses both. There is no third state to track for a message being written
-right now: it is still queued throughout its own write, so the unread accounting already
-holds it.
+**"In flight" is disclosed, never vetoed.** The in-casa driver counts admission tickets: a
+turn is unread from its synchronous admission at the Telegram entry seam until the embedded
+client takes the prompt, then in flight — disclosure-only — until the first model-evidence
+frame. A blocking count of the in-flight population could only veto the carrying turn's own
+completion, so the driver deliberately implements none; the annotation described in
+[`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md) still
+quotes what was in flight when a terminal committed.
 
 ## Contracts & invariants
 
-**INV-ENG-003**: A successful completion requested through the completion tool is refused while unread inbound messages, inbound messages in flight to the engagement's CLI, or inbound reservations exist, when the driver exposes its inbound state.
+**INV-ENG-003**: A successful completion requested through the completion tool is refused while unread inbound messages or inbound reservations exist, when the driver exposes its inbound state.
 
 Enforced both as a pre-check and again as a hook inside the transition itself, so the
 condition is re-evaluated at the moment the state changes rather than only before it. The
 hook is where the invariant actually lives: delivery can happen during the finalize path's
-own awaits, long after the pre-check found the spool clean.
-
-The in-flight half of the refusal is bounded in time, and that asymmetry is deliberate. A
-delivered message normally reaches a turn within a second; one that has not after far longer
-is evidence that no turn is coming, and a veto on a state nothing will clear would make a
-successful completion impossible for the rest of the engagement's life — the opposite of this
-hook's fail-open contract. Past the bound the completion proceeds and the message is still
-disclosed. Each expiry is logged, so the bound is answerable to production rather than
-permanently a guess.
+own awaits, long after the pre-check found the inbox clean.
 
 What it does not cover: failed and cancelled outcomes intentionally skip the gate, and so
 does the operator's own complete command — only the completion *tool* arms the gate, so an
 operator marking an engagement complete finalizes past unread input deliberately. The gate
-exists where the driver implements the inbound accessors — today that is both drivers. The
-claude-code driver counts its durable spool, its in-flight envelopes and its ingress
-reservations. The in-casa driver counts admission tickets: a turn is unread from its
-synchronous admission at the Telegram entry seam until the embedded client takes the prompt,
-then disclosure-only until the first model-evidence frame; the ticket ledger is in-memory
-and dies with the process, and it has no in-flight veto and no
-forced-boundary valve — the refusal ending the turn releases the per-turn lock, which is
-what delivers the queued turn, and a ticket whose delivery fails is discharged only after
+exists where the driver implements the inbound accessors, which the in-casa driver does. Its
+ticket ledger is in-memory and dies with the process, and it has no forced-boundary valve —
+the refusal ending the turn releases the per-turn lock, which is what delivers the queued
+turn, and a ticket whose delivery fails is discharged only after
 one bounded failure notice, never retried into a permanent veto. Accessor failures fail
 open with a warning rather than wedging termination.
 
-**A driver that cannot see its inbound state must not answer as if there were none.** The
-claude-code driver's inbound knowledge and its delivery machinery have different lifetimes,
-and conflating them is how a terminal came to report nothing about messages that were still
-on disk. The durable envelopes, the sequence counter and the operator-message generation
-belong to the *engagement*; the FIFO writer, the notice sender and the epoch and turn probes
-belong to *one CLI process*. A session teardown ends the process, so it retires the delivery
-runtime and keeps the ledger — the accessors keep answering across a respawn, and a message
-queued before the teardown still refuses a completion after it. Where this process never
-attached an incarnation at all — a replay that refused, an attach that failed, a rebuild that
-did not finish — the *text* accessors answer from the durable spool file instead, so a
-terminal path still has something to disclose. That file-sourced answer never refuses
-anything: the refusal would depend on machinery whose absence created the state, so nothing
-could clear it, and a completion that can never happen also never reaches the disclosure it
-was refused for. An engagement nothing was ever enqueued for answers empty, because the spool
-file does not exist until the first message is written to it. The claude-code-only
-escalation that forces a turn boundary after repeated refusals stays scoped to the queued
-population: a queued message cannot move until a respawn re-arms delivery, which is what the
-escalation forces, while an in-flight one is already past that boundary and killing its epoch
-could destroy a message a turn had just consumed.
-
-**INV-ENG-016**: A `claude_code` engagement's inbound ledger — its durable envelopes and its message generation — outlives the CLI incarnation that serves it: a session teardown retires the delivery runtime and keeps the ledger, so unread and in-flight state stays visible to the completion gate and to every terminal disclosure across a respawn, and so do the evicted envelopes still awaiting their eviction notice, which every terminal disclosure quotes and no veto counts. Where no incarnation of this process ever attached, a terminal disclosure hook still answers from the durable spool file it can read, and that file-sourced answer discloses without ever refusing a completion. An engagement for which nothing was ever enqueued answers empty.
-
-**The in-casa driver reserves too, and the reason is a message that does not exist yet.** Its
+**The in-casa driver also reserves, and the reason is a message that does not exist yet.** Its
 other counts are all backed by a text: a ticket carries the exact prompt from the moment it is
 admitted. A broker-driven *system continuation* — the resume turn dispatched after an operator
 answers an install consent, the uninstall erase-data question or an engagement-origin tool
@@ -129,13 +90,8 @@ that path already admits a text-bearing ticket at handler entry, so reserving th
 count one message twice in the veto and inflate the lost-message disclosure. And its counters
 have no attach step and no detach step — nothing tears them down and nothing but a release
 removes an entry — so an absent key means *nothing is held*, never *the answer is unavailable*.
-That distinction was for a while the whole of a defect on the other driver, where a session
-respawn dropped an in-memory spool and its *spool-backed* accessors then reported zero for
-messages still durably queued — never its reservation counters, which had no teardown to
-zero them, which is exactly why they were the only arm still working. That driver's ledger now
-survives the respawn too (above), so the defect is closed; the rule this paragraph states is
-not, and adding a lifecycle teardown to a reservation counter would reintroduce the shape by
-construction.
+Adding a lifecycle teardown to a reservation counter would break that: a teardown would read
+as "nothing held" for a reservation still owed.
 
 **The delivery seam reports its hand-off, and only that.** The seam a continuation goes through
 now returns whether it handed the turn to a delivery task — false when the resume gate refused
@@ -149,18 +105,13 @@ admission, after the operator has been told a continuation was requested. Reques
 message says.
 
 **One decision, asked at two different instants, and the difference is the guarantee's actual
-strength.** The registry answers it synchronously and identically for both drivers — terminal
-refuses, `idle` delivers and becomes `active` without re-stamping the last-turn time, `active`
-delivers, and an unknown record delivers rather than refusing. What differs is where the answer
-can be placed.
+strength.** The registry answers it synchronously — terminal refuses, `idle` delivers and
+becomes `active` without re-stamping the last-turn time, `active` delivers, and an unknown
+record delivers rather than refusing. What matters is where the answer can be placed.
 
-For `claude_code` the placement is exact: the FIFO opens only once the agent process is
-reading, and that process observes nothing until a synchronous first write, so there is one
-instant at which "a turn is about to be delivered" and "the engagement has seen nothing of it"
-are both true.
-
-For `in_casa` there is no such instant, because the first thing the engagement sees is an
-awaited call into the SDK client. The admission is therefore taken inside that engagement's own
+For `in_casa` there is no instant at which "a turn is about to be delivered" and "the
+engagement has seen nothing of it" are both true, because the first thing the engagement sees
+is an awaited call into the SDK client. The admission is therefore taken inside that engagement's own
 per-turn lock, immediately before that call, with only synchronous statements between:
 acquiring the lock awaits, but once it is held no other coroutine on Casa's loop — no inbound
 tool call, no terminal transition — runs between the decision and the call. Placing it earlier,
@@ -171,12 +122,11 @@ reset runs under the same lock (INV-BGJOB-005, [`background-job-fresh-sessions.m
 the admission is asked again, synchronously, once the reset is confirmed, and that second
 answer is the one immediately before the call.
 
-**That is a weaker claim than the `claude_code` one, and the difference is worth stating
-exactly rather than blurring.** The client call is awaited, and whether it reaches its
-transport write before its first internal suspension is the SDK's business, not Casa's. So a
-terminal transition CAN commit while the hand-off is in progress and the prompt still arrives —
-measured, not supposed. That is the same class of limit the `claude_code` half has always
-carried and states: the admission fences the decision to deliver, not the delivery, and a
+**That claim is bounded, and the bound is worth stating exactly rather than blurring.** The
+client call is awaited, and whether it reaches its transport write before its first internal
+suspension is the SDK's business, not Casa's. So a terminal transition CAN commit while the
+hand-off is in progress and the prompt still arrives — measured, not supposed. The admission
+fences the decision to deliver, not the delivery, and a
 terminal landing once a turn has begun cannot revoke it because there is nothing to revoke it
 with. Stopping an in-flight turn is the driver teardown's job on the finalize path, which is
 why that teardown exists. What the admission buys is that a turn is never *begun* against a
@@ -203,8 +153,7 @@ INV-BGJOB-007); the reply is the same.
 than wedging termination: a driver that cannot answer one question does not get to make an
 engagement unendable — and does not get to answer for the other reads either. Each of the
 terminal hook's reads is guarded on its own and contributes only its own value, so a completion
-is still refused over the unread depth, in-flight work or reservations the gate could still
-read, and every terminal still discloses the populations that did read — including reservation
+is still refused over the unread depth or reservations the gate could still read, and every terminal still discloses the populations that did read — including reservation
 texts read beside a count that raised, which are posted under a sentence naming no number. That
 arm needs the observed failure as well as a text: a raising count read with nothing else read
 posts no paragraph, and a count that answered zero, is absent or answers a non-integer beside a
@@ -213,13 +162,13 @@ this document does not cover.
 
 **An inbound accessor is absent.** The same contribution, without the warning: an optional
 accessor a driver never implements answers empty because nothing failed, so there is nothing to
-report. Absence is the ordinary case — `InCasaDriver` implements six of the eight.
+report. `InCasaDriver` implements every accessor the gate reads, so absence arises only for a
+driver that does not.
 
 **A disclosure population fails to read.** Those populations are read by the same terminal
 hook and under the same per-accessor rule as the reads above; what a terminal then quotes,
 counts or declines to number is in
-[`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md)
-(INV-ENG-017).
+[`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md).
 
 ## Extension points
 
@@ -237,11 +186,6 @@ scoped to what a driver can evidence, which is why the accessors are the seam.
 - `casa/rootfs/opt/casa/engagement_registry.py::TerminalPreconditionFailed`
 - `casa/rootfs/opt/casa/tools.py::_finalize_engagement`
 - `casa/rootfs/opt/casa/tools.py::emit_completion`
-- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_unread_depth`
-- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_in_flight_blocking`
-- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_reservations`
-- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.record_completion_refusal`
-- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.force_completion_turn_boundary`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_unread_depth`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.reserve_inbound`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.release_inbound_reservation`
@@ -249,12 +193,9 @@ scoped to what a driver can evidence, which is why the accessors are the seam.
 
 **Tests**
 - `tests/test_emit_completion_tool.py`
-- `tests/test_claude_code_driver.py`
 - `tests/test_answer_reservation.py`
 - `tests/test_in_casa_inbound_admission.py`
 - `tests/test_c1_continuation_admission.py`
-- `tests/test_evicted_inbound_disclosure.py`
-- `tests/test_evicted_inbound_regressions.py`
 
 **Related**
 - [`architecture/engagement-inbound-disclosure.md`](../architecture/engagement-inbound-disclosure.md)

@@ -12,8 +12,8 @@ pid /tmp/nginx.pid;
 
 # #514: pin the worker identity explicitly. The master runs as root and binds
 # the listen ports; workers drop to www-data. This is the identity that must be
-# able to reach the ttyd UNIX socket (owned www-data:www-data) while the
-# dropped-uid engagement cannot — so it must not be left to nginx's compiled
+# able to reach the ttyd UNIX socket (owned www-data:www-data) while any other
+# non-root uid cannot — so it must not be left to nginx's compiled
 # default.
 user www-data;
 
@@ -126,10 +126,10 @@ cat >> /etc/nginx/nginx.conf <<'NGINX'
         }
 
         # v0.97.0 SECURITY, retained as defense in depth: the MCP + hooks
-        # endpoints (/mcp/casa-framework, /hooks/resolve) are UNAUTHENTICATED
-        # and exist for in-container workspace subprocesses only (served by
-        # svc-casa-mcp on loopback 8100 since v0.164.0 — no longer registered
-        # on the 8099 app at all). When they were proxied publicly, an
+        # endpoints (/mcp/casa-framework, /hooks/resolve) were UNAUTHENTICATED
+        # and existed for in-container engagement processes only (moved off
+        # the 8099 app in v0.164.0, and since removed with the Claude Code
+        # driver). When they were proxied publicly, an
         # attacker could POST a JSON-RPC tools/call for search_memory
         # (returns PRIVATE memory) or plugin_add (arbitrary plugin install),
         # bypassing webhook auth + origin containment entirely. Keep these

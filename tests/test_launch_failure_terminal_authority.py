@@ -160,7 +160,7 @@ def _cancel_on_create(registry):
 
 
 # --------------------------------------------------------------------------
-# executor arms — nine of the thirteen
+# executor arms — six of the ten
 # --------------------------------------------------------------------------
 
 def _executor_def(tmp_path, *, driver="in_casa", prompt_exists=True):
@@ -199,10 +199,8 @@ def _build_executor(tmp_path, monkeypatch, effects, *, arm):
     channel = _channel(effects, 42)
     _ledger_spy(monkeypatch, effects)
 
-    driver_kind = "claude_code" if arm.startswith("cc_") else "in_casa"
     defn = _executor_def(
-        tmp_path, driver=driver_kind,
-        prompt_exists=(arm != "prompt_template_missing"))
+        tmp_path, prompt_exists=(arm != "prompt_template_missing"))
 
     exec_reg = MagicMock()
     exec_reg.get = MagicMock(return_value=defn)
@@ -215,14 +213,9 @@ def _build_executor(tmp_path, monkeypatch, effects, *, arm):
     driver.start = AsyncMock(side_effect=_start_effect(arm))
     driver.cancel = AsyncMock()
 
-    attr = ("active_claude_code_driver" if driver_kind == "claude_code"
-            else "active_engagement_driver")
-    other = ("active_engagement_driver" if driver_kind == "claude_code"
-             else "active_claude_code_driver")
-    monkeypatch.setattr(agent_mod, other, MagicMock(), raising=False)
     monkeypatch.setattr(
-        agent_mod, attr, None if arm.endswith("no_driver") else driver,
-        raising=False)
+        agent_mod, "active_engagement_driver",
+        None if arm.endswith("no_driver") else driver, raising=False)
 
     if arm == "plugin_superseded":
         import tools as tools_mod
@@ -317,7 +310,7 @@ def _build_delegate(tmp_path, monkeypatch, effects, *, arm):
 
 
 # --------------------------------------------------------------------------
-# the thirteen arms
+# the ten arms
 # --------------------------------------------------------------------------
 
 #: (case id, handler family, arm key, the kind the caller MUST still be told)
@@ -334,12 +327,6 @@ ARMS = [
      "plugin_superseded"),
     ("executor_prompt_missing",      "executor", "prompt_template_missing",
      "prompt_template_missing"),
-    ("executor_cc_no_driver",        "executor", "cc_no_driver",
-     "no_driver"),
-    ("executor_cc_stale",            "executor", "cc_clearance_changed_during_launch",
-     "clearance_changed_during_launch"),
-    ("executor_cc_start_failed",     "executor", "cc_start_failed",
-     "driver_start_failed"),
     ("executor_incasa_no_driver",    "executor", "no_driver",
      "no_driver"),
     ("executor_incasa_stale",        "executor", "clearance_changed_during_launch",
@@ -446,7 +433,7 @@ class TestOnlyADurableWinMayCloseTheTopic:
     async def test_a_durable_win_still_paints_closes_and_appends_once(
         self, case, family, arm, kind, tmp_path, monkeypatch,
     ):
-        """The regression control for all thirteen arms.
+        """The regression control for all ten arms.
 
         Without this, "never abort" passes the two cases above. Exactly one
         paint, one close and one ledger append, and still no notice — the

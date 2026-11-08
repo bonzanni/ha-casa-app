@@ -38,8 +38,6 @@ MEMORY_DB = f"{MEMORY_DIR}/{MEMORY_DB_NAME}"
 EXPORTS_DIR = f"{MEMORY_DIR}/exports"
 #: The staged export a pending restore reads, and the store it builds there.
 RESTORE_SOURCE = f"{MEMORY_DIR}/restore-source"
-ENGAGEMENTS_ROOT = "/data/engagements"
-ENGAGEMENT_CONTROL_ROOT = "/data/engagement-ctl"
 RESIDENT_HOME = "/config/cc-home"
 
 #: The files SQLite keeps beside a database while it is open or recovering.
@@ -90,8 +88,6 @@ class Wipe(str, enum.Enum):
     RESET = "reset"
     #: Kept while a restore intent owns it; deleted otherwise.
     KEEP_WHILE_INTENT = "keep_while_intent"
-    #: Every block emptied and its workspace section blanked; staging deleted.
-    EMPTY_BLOCK = "empty_block"
     #: The intent itself, removed when the operation completes.
     REMOVE_LAST = "remove_last"
 
@@ -159,8 +155,7 @@ REGISTRY: tuple[Entry, ...] = (
           staging_patterns=(f"{MEMORY_DIR}/.maintenance.json.*.tmp",)),
     # --- memory outside /data/memory -----------------------------------------
     Entry("transcripts", Kind.TRANSCRIPTS,
-          (f"{RESIDENT_HOME}/.claude/projects",
-           f"{ENGAGEMENTS_ROOT}/*/.home/.claude/projects"),
+          (f"{RESIDENT_HOME}/.claude/projects",),
           Export.NO, Restore.NONE, Wipe.DELETE),
     # setup-configs.sh moves a real directory here into the resident home and
     # leaves a symlink; only a real directory holds transcripts of its own.
@@ -174,13 +169,6 @@ REGISTRY: tuple[Entry, ...] = (
           Export.NO, Restore.NONE, Wipe.DELETE,
           producer=("explanation_store.py:ExplanationStore.record",),
           staging_patterns=("/data/explanations/*.tmp",)),
-    Entry("executor memory", Kind.SERVED_COPY,
-          (f"{ENGAGEMENT_CONTROL_ROOT}/*/.executor_memory",
-           f"{ENGAGEMENTS_ROOT}/*/CLAUDE.md"),
-          Export.NO, Restore.NONE, Wipe.EMPTY_BLOCK,
-          producer=("drivers/workspace.py:provision_workspace",
-                    "drivers/workspace.py:refresh_claude_md"),
-          staging_patterns=(f"{ENGAGEMENTS_ROOT}/*/.CLAUDE.md.casa-tmp.*",)),
 )
 
 

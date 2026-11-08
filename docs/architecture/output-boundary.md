@@ -133,8 +133,7 @@ consent body, and each caller is recorded and classified in
 public channel coroutine with a text parameter. A new site fails those tests until someone
 records it and, in doing so, answers who authored the words.
 
-What it does not cover: the engagement-topic methods, which the output sequencer owns and
-which carry no scope; the arrival replies and a plugin's delivered posts — the link
+What it does not cover: the engagement-topic methods, which carry no scope; the arrival replies and a plugin's delivered posts — the link
 message, a message and a file, each Casa-composed from plugin-authored bytes — which the
 recorded lists class as notices (a desk's notice too; its reply is admitted,
 [`specialist-desk.md`](specialist-desk.md)); and the voice channel, which has not adopted the contract. The recorded lists

@@ -14,7 +14,7 @@ Three long-lived **residents** ship with Casa:
 | Butler | Tina | Voice-first house control (lights, climate, locks, media, sensors), in short spoken answers. |
 | Concierge | Gary | A medium-trust voice agent for anyone in the room: general questions and delegated lookups, no house control and no private data. |
 
-Two more tiers extend the fleet without changing the residents. **Specialists** are ephemeral agents a resident delegates focused work to — finances, a mailbox, a hobby domain — installed from git repositories. **Executors** are task-bounded agents that work in a dedicated Telegram topic: the *configurator* changes Casa's own configuration for you, and the *plugin-developer* builds new plugins. Specialists, plugins and personas all install the same way, by asking in chat.
+Two more tiers extend the fleet without changing the residents. **Specialists** are ephemeral agents a resident delegates focused work to — finances, a mailbox, a hobby domain — installed from git repositories. **Executors** are task-bounded agents that work in a dedicated Telegram topic: the *configurator* changes Casa's own configuration for you. Specialists, plugins and personas all install the same way, by asking in chat.
 
 A fresh install ships with no specialists installed; see [Installing a specialist from a repository](#installing-a-specialist-from-a-repository).
 
@@ -91,9 +91,7 @@ Conversation transcripts on disk are kept for a while after their
 conversation ends: an assistant or butler conversation's for 30 days after it
 can no longer be resumed, a delegation's for 30 days after its run ended, and
 an in-Casa specialist or executor engagement's for 30 days after the
-engagement ends. A Claude Code executor engagement's
-workspace, its transcript included, is kept for 7 days after the engagement
-ends and then deleted whole. Either way, a transcript is deleted only once
+engagement ends. A transcript is deleted only once
 every run recorded in its folder is confirmed — that is, once everything Casa
 captured from those runs is durably stored — so it can be kept longer, never
 shorter.
@@ -104,11 +102,9 @@ request and restarts itself; the wipe runs as Casa starts, before anything else,
 and erases everything Casa remembers: saved conversations, its notes, the
 search index, the memory exports kept under `/data/memory/exports/`,
 conversation transcripts and conversation pointers, so every conversation
-starts fresh. It also deletes, whole, every finished Claude Code executor
-workspace already past its 7-day keep period — its work files and its outbox
-with it — as the regular cleanup would have soon after. **Your reminders,
+starts fresh. **Your reminders,
 triggers, settings and prompts, pending tasks, plugin data and logs stay, and
-so do your files** other than those expired workspaces — though a kept item can
+so do your files** — though a kept item can
 still mention something that was forgotten. Anything said between the request and the
 restart is erased too. Copies outside Casa (a Home Assistant backup, an export
 you copied elsewhere) are not touched. When Casa is back it tells you on
@@ -149,7 +145,6 @@ just its name inside `/data/memory/exports/`.
 |--------|-------------|
 | `enable_terminal` | Enable a web terminal accessible via the ingress panel. Default: `false`. |
 | `webhook_secret` | Optional manual override for the HMAC secret that authenticates webhook, invoke and voice requests. Leave empty and Casa generates one in `/data/webhook_secret`, retrievable through the web terminal. Authentication is always on. |
-| `context7_api_key` | API key for the bundled Context7 documentation plugin (plugin-developer toolbox). Optional; an entry in the plugin env store overrides it. |
 | `engagement_reap_days` | Auto-close engagements after this many days without activity (daily sweep cancels them and closes their Telegram topic; the engaging agent is notified). Set `0` to disable. Default: `7`. |
 | `log_level` | Log verbosity: `debug`, `info`, `warning`, or `error`. Default: `info`. Flip to `debug` for verbose troubleshooting without rebuilding the image. |
 | `specialist_max_concurrency` | Max specialist delegations in flight fleet-wide at once (see [Delegation limits](#delegation-limits)). Range 1-20. Default: `2`. |
@@ -825,8 +820,8 @@ the supergroup only — they do NOT appear in your 1:1 DM with Ellen.
 #### 6. Automatic topic cleanup (works out of the box)
 
 Since v0.65.0 Casa deletes a finished engagement's topic automatically
-**7 days after the engagement ends** — the same retention window as its
-workspace — so the sidebar doesn't fill up with dead topics.
+**7 days after the engagement ends**, so the sidebar doesn't fill up with
+dead topics.
 
 **No extra admin right is needed** (v0.65.1 correction): Telegram lets a
 topic's *creator* delete it with the "Manage topics" right the bot
@@ -841,7 +836,7 @@ Notes:
 - **Deletion is irreversible.** Deleting a topic removes the topic and
   **all its messages for every member**. Casa's durable record of each
   engagement is its memory summary plus Ellen's completion message in
-  your 1:1 chat (and the workspace artifacts during the 7-day window).
+  your 1:1 chat.
 - **On-demand cleanup:** ask Ellen to *"clean up the engagement group"*
   and she deletes the finished topics already past the 7-day window. Ask
   her in Telegram to *"remove all the closed topics"* and she removes
@@ -1050,8 +1045,8 @@ immutable copy that every tier loads the same way.
   a new commit produces a new artifact, never an in-place overwrite.
 
 Residents and specialists load their assigned plugins directly through the
-Claude Agent SDK. Executor engagements (e.g. plugin-developer) pin their exact
-artifacts at launch and load them via `--plugin-dir`, so a plugin update never
+Claude Agent SDK. Executor engagements do too, but pin their exact
+artifacts at launch and load those, so a plugin update never
 changes the code a running engagement is already executing.
 
 ### Managing plugins (via the Configurator)
@@ -1064,8 +1059,7 @@ these tools:
   assign it to targets, then reload and verify.
 - `plugin_update(name, new_ref, expected_revision?)` — re-pin to a new release
   and re-verify. Plugin releases are identified by a `vX.Y.Z` tag, annotated
-  or lightweight (v0.74.0), though the plugin-developer's own releases must be
-  annotated; passing `expected_revision` (the commit the release was built at)
+  or lightweight (v0.74.0); passing `expected_revision` (the commit the release was built at)
   makes a tag that moved afterwards abort before anything changes. The version
   is always read from the plugin's own manifest — you never supply it, so the
   stale-version class of bug is gone. Both tools report phase-aware outcomes
@@ -1074,8 +1068,7 @@ these tools:
 - `plugin_assign(name, target)` / `plugin_unassign(name, target)` — change which
   agents load a plugin. Targets look like `resident:ellen` or
   `specialist:finance`. **For now you cannot give a plugin of your own to a
-  worker** (`executor:plugin-developer` and the like): workers come with the set
-  of plugins Casa ships with them, and adding, assigning or re-pinning one is
+  worker** (an `executor:<type>` target): adding, assigning or re-pinning one is
   refused with the reason stated, before anything is installed. A worker target
   that is already stored on a plugin you installed stays in the registry file
   but is ignored — `plugin_list` shows it under `ignored_targets`, the plugin
@@ -1479,7 +1472,7 @@ Anything *not* declared and *not* defaulted still blocks the plugin as
 before.
 
 If a plugin reports a Casa-owned variable missing — `OP_SERVICE_ACCOUNT_TOKEN`,
-`ONEPASSWORD_DEFAULT_VAULT`, `CONTEXT7_API_KEY` — the fix is the matching
+`ONEPASSWORD_DEFAULT_VAULT` — the fix is the matching
 **app option**, not `plugin-env.conf`; the message names the option.
 
 ### Who runs the setup tool (v0.161.0)
@@ -1627,19 +1620,14 @@ artifact directory is named by a hash of its source, and its bytes are checksum-
 verified whenever the plugin snapshot is (re)loaded — a mismatch is reported
 (`corrupt_artifact`) so a tampered or damaged artifact is never silently loaded. The write guards on
 `/config/plugins` and the read-only freeze of published files clear every write
-bit on the artifact tree. For a `claude_code` executor, that is now a real
-filesystem/privilege boundary rather than only defense-in-depth: its subprocess
-runs under its own dropped, capability-stripped OS user (see [Executor
-isolation](#executor-isolation-v01700)), which can neither write those files
-nor `chmod` them back writable. It remains best-effort for any caller class
-outside that isolation.
+bit on the artifact tree. They are best-effort defense-in-depth, not a
+filesystem privilege boundary.
 
 ### Fresh install & rollback
 
-The registry (`/config/plugins/registry.json`) is the single source of truth. On
-a fresh install Casa seeds it with the bundled default plugins; a newer release
-adds any newly-introduced defaults on the next boot, and a default you remove is
-never re-added. Rollback is safe — the registry format is stable across
+The registry (`/config/plugins/registry.json`) is the single source of truth. A
+fresh install starts with an empty registry: the app image ships no default
+plugins. Rollback is safe — the registry format is stable across
 releases, so a downgraded app image reads the same registry as before —
 with one boundary: a plugin version whose manifest uses the object form of
 `casa.protectedTools` (with a `summary`, introduced in 0.78.0) is rejected
@@ -1828,204 +1816,13 @@ approve a restart and were not told what it costs, ask before you agree.**
 Treat it as a real possibility rather than a certainty either way: what a
 restart activates is settled at start-up, not when you ask for the change.
 
-## Claude Code driver (v0.13.1)
-
-Plan 4a infrastructure — does not change user-facing behavior by itself.
-Enables Tier 3 executors (plugin-developer, ha-developer) to run inside
-real Claude Code CLI sessions, driven through their Telegram engagement
-topics.
-
-### Architecture
-
-Each `driver: claude_code` engagement becomes its own s6-rc-supervised
-service inside the app container. s6 owns supervision; Casa orchestrates
-lifecycle via `s6-rc-compile` + `s6-rc-update`. Engagement subprocesses
-outlive Casa-main restarts (service dependencies are ordering-only, not
-lifetime-coupled).
-
-- **Workspace:** `/data/engagements/<id>/` — CLAUDE.md, `.mcp.json`,
-  isolated `$HOME`, named FIFO for Casa → CLI turn delivery. Assigned plugins
-  are pinned at launch and loaded from the immutable store via repeated
-  `--plugin-dir` flags (see [Plugins](#plugins-v0710)), not symlinks.
-- **Service dirs:** `/data/casa-s6-services/engagement-<id>/` — `run` script
-  + `type: longrun` + ordering dependency on `init-setup-configs` — plus a
-  sibling logger service `engagement-<id>-log/` wired to it via
-  `producer-for`/`consumer-for` (an s6-rc pipeline). Both are created and
-  removed together; don't delete one without the other.
-- **Logs:** the CLI's stdout+stderr land in `/var/log/casa-engagement-<id>/`
-  (`s6-log`, 1 MB × 20 rotation), survive per-turn respawns, and are removed
-  with the workspace when retention expires.
-- **Auth:** `CLAUDE_CODE_OAUTH_TOKEN` flows via s6-overlay's `/command/with-contenv`.
-  No `ANTHROPIC_API_KEY` path.
-
-### Executor isolation (v0.170.0)
-
-Each `claude_code` engagement is allocated its own dedicated, never-reused OS
-user (a monotonic uid counter, never reset or reused across restarts). Its
-workspace is `chown`ed to that user before anything is planted in it, and the
-run script's final `exec` drops privilege via `setpriv` — clearing the
-supplementary groups, emptying the capability bounding set, and setting
-`no_new_privs` — before handing off to the real `claude` CLI, which therefore
-never runs as root and can never regain a capability. An engagement is refused
-outright (never started as root, never left to crash-loop under its
-supervisor) if any part of that chain — `setpriv` itself, a valid allocated
-uid, correct workspace ownership, a matching system-user entry, or a
-readable plugin directory — cannot be established. One consequence: a
-same-container engagement can no longer read another engagement's workspace
-or credential file directly, closing that off at the filesystem level rather
-than relying only on the token check below.
-
-### Security caveat
-
-The `block_token_exfiltration` and `block_credential_file_reads` hook
-policies are speedbumps against casual prompt injection, not
-defense-in-depth. They do not stop determined malicious prompts (indirect
-env reads via `/proc/self/environ`, Write-then-exec, variable obfuscation,
-HTTP exfil via any allowed tool). The real perimeter is **trust in the
-executor's prompt scope and minimal `tools.allowed` list**. Do not engage
-a `claude_code` executor with a prompt from an untrusted source.
-
-### MCP HTTP bridge (v0.13.1)
-
-Real `claude` CLI subprocesses reach Casa's MCP tools via
-`POST /mcp/casa-framework` — stateless JSON-RPC 2.0 over HTTP, no SSE.
-Engagement identity propagates through the `X-Casa-Engagement-Id` header
-plus the per-engagement secret `X-Casa-Engagement-Token` (both written
-into `.mcp.json` by `provision_workspace`); the id claim is honored only
-when the token matches the engagement record's credential, and then the
-bridge binds `tools.engagement_var` for the tool call's duration. A known
-id with a missing/wrong token is rejected outright
-(`engagement_auth_failed`) — the id alone is endpoint-visible and must
-never confer authority. Missing / unknown header → bound to `None` and
-engagement-gated tools return `not_in_engagement`. GET returns 405. The
-same `CASA_TOOLS` tuple backs both the SDK path and the HTTP path, so
-every in-process tool is automatically reachable from real CLI
-engagements.
-
-### Hook enforcement (v0.13.1, credential-bound since v0.139.0)
-
-`/hooks/resolve` is the CC-side counterpart to the in-process hook layer.
-`hook_proxy.sh` POSTs the CC hook payload (policy name + payload) to the
-resolver, presenting the engagement credential pair from its own
-workspace `.mcp.json` as the same `X-Casa-Engagement-Id` /
-`X-Casa-Engagement-Token` headers the MCP bridge uses. The resolver
-authenticates any identity claim against the engagement record before
-selecting per-executor hook parameters (from the executor's `hooks.yaml`)
-or invoking an identity-consuming policy such as the engagement
-permission relay; the payload's `cwd` is only cross-checked, never
-trusted as identity. An unauthenticated request falls back to the
-default-configured policy callbacks. Callback exceptions deny (not
-fail-open). Unknown policy denies. Matcher mismatch returns an empty
-`{}` (CC allow).
-
-### Workspace lifecycle (v0.13.1)
-
-- **Provisioning:** `/data/engagements/<id>/.casa-meta.json` is written
-  with `status: "UNDERGOING"` on engagement start.
-- **Termination:** `_finalize_engagement` updates status to
-  `COMPLETED` / `CANCELLED` / `ERROR` and writes `retention_until =
-  now + 7 days`.
-- **Sweeper:** APScheduler job (id `workspace_sweep`) runs every 6 hours,
-  deletes terminal workspaces past `retention_until`. Missing `.casa-meta.json`
-  or missing `retention_until` → leave alone (operator prunes explicitly
-  via the MCP tool). The production box has > 30 GB free so disk-pressure aggressive
-  mode is not implemented. Exception: a resident-hosted plugin job's
-  `/data/engagements/<id>` carries no meta; the engagement transcript pass
-  removes it once the job's terminal status is on disk.
-
-### Workspace inspection MCP tools (v0.13.1)
-
-All three are exposed on both the SDK and HTTP paths:
-
-- `list_engagement_workspaces(status?)` — enumerate `/data/engagements/`
-  entries with status, size, created/finished/retention timestamps.
-  Truncates at 100. Optional status filter.
-- `delete_engagement_workspace(engagement_id, force=false)` — delete a
-  workspace. Refuses UNDERGOING without `force=true`; with `force=true`
-  cancels + finalizes first, then rmtrees.
-- `peek_engagement_workspace(engagement_id, path?, max_bytes?)` —
-  read-only. Empty path returns a 3-deep tree listing; otherwise reads
-  file contents up to `max_bytes` (default 64 KB, hard cap 512 KB).
-  Path-traversal guarded via resolved-path containment check.
-
-### Boot-replay heal (v0.13.1)
-
-When a UNDERGOING engagement's s6 service dir is missing but the workspace
-still exists AND the executor type is in `executor_registry`, boot replay
-re-renders the run + log/run scripts and re-plants the service dir. Missing
-workspace still warns and skips — operator must cancel manually or let the
-sweeper collect after retention. Missing executor in registry also warns
-and skips.
-
-### Known limitations
-
-- Per-executor hook parameters (e.g. `casa_config_guard.forbid_write_paths`)
-  on the HTTP path use factory defaults rather than the executor's
-  `hooks.yaml` values. The Configurator's defaults happen to match what
-  it wants; wiring YAML params into the HTTP path is tracked as a later
-  item.
-
-### Boot replay
-
-On Casa boot, `replay_undergoing_engagements` reconstructs the s6
-supervision tree: sweeps orphan service dirs (engagements not UNDERGOING),
-compiles + updates once, starts each remaining service, and spawns
-URL-capture + respawn-poller tasks. Self-healing: a finalize that died
-mid-teardown leaves an orphan that the next boot removes.
-
-### Idle + resume
-
-Engagement subprocesses idle via s6-supervision (no idle timeout in the
-driver). On HA host reboot, `/data/` persists; boot replay re-launches
-every UNDERGOING engagement's service, and the `run` script reads the
-persisted `.session_id` to resume the CLI conversation exactly where it
-left off.
-
-## svc-casa-mcp service (v0.14.0)
-
-Casa runs the `casa-framework` MCP server as a separate s6-supervised
-service called `svc-casa-mcp`, listening on `127.0.0.1:8100` inside the
-app container. Engagement subprocesses connect to it via the URL
-written into their `.mcp.json` at provisioning time.
-
-**Why it exists.** Engagement subprocesses survive casa-main restarts
-(app updates, container respawns, HA reboots) because they run under
-their own s6 services. Before v0.14.0, the MCP server lived inside
-casa-main, so a casa-main restart dropped every live MCP connection
-and any mid-turn tool call would fail with a connection error. With
-the extracted service, the engagement's MCP TCP connection stays open
-across casa-main restarts; mid-restart tool calls return JSON-RPC
-`-32000 casa_temporarily_unavailable` (a clean recoverable error the
-model can handle), not a connection drop.
-
-**On-disk artifacts.**
-- `/run/casa/internal.sock` (mode 0600) — Unix socket created by
-  casa-main; svc-casa-mcp connects to it for every forwarded tool call.
-- New engagement workspaces' `.mcp.json` points at
-  `http://127.0.0.1:8100/mcp/casa-framework` and includes the
-  `X-Casa-Engagement-Id` + `X-Casa-Engagement-Token` header binding
-  (the token authenticates the id claim; boot replay refreshes the file
-  from the engagement record before the CLI respawns).
-- New engagement workspaces' hook proxy script POSTs to
-  `http://127.0.0.1:8100/hooks/resolve`.
-
-**Operational env-var overrides.**
-- `CASA_FRAMEWORK_MCP_URL` — overrides the default URL that gets baked
-  into newly-provisioned workspaces' `.mcp.json`. Leave unset for the
-  shipped default.
-- `CASA_HOOK_RESOLVE_URL` — overrides where `hook_proxy.sh` POSTs hook
-  decisions.
-
 ## Plugin consumer infrastructure (v0.71.0)
 
 Plugins are managed through the unified registry + immutable store — see
 [Plugins](#plugins-v0710) for the full model. There is no marketplace and no
 `enabledPlugins`: the registry (`/config/plugins/registry.json`) is the single
 assignment authority, and each pinned plugin resolves to an immutable artifact
-under `/config/plugins/store/<name>/<artifact-id>/`. The five defaults
-(superpowers, plugin-dev, skill-creator, mcp-server-dev, context7) are seeded
-from the app image and assigned to the plugin-developer executor — that
-assignment is Casa's, and for now it is the only way a plugin reaches a worker.
+under `/config/plugins/store/<name>/<artifact-id>/`.
 
 ## 1Password integration (v0.14.1)
 
@@ -2033,25 +1830,8 @@ Set `onepassword_service_account_token` (from https://developer.1password.com/do
 as a plaintext app option — it's the single root of trust and cannot
 self-reference. Set `onepassword_default_vault` to the vault name (default
 "Casa"). Every other password-typed option (`claude_oauth_token`,
-`telegram_bot_token`, `webhook_secret`, `context7_api_key`) accepts either
+`telegram_bot_token`, `webhook_secret`) accepts either
 plaintext OR an `op://` reference.
 
 Plugin env vars resolved via `plugin-env.conf` (`/config/plugin-env.conf`),
 managed by Configurator.
-
-## Plugin-developer (v0.14.1)
-
-Ask the primary assistant to build a plugin. It engages plugin-developer in
-a dedicated Telegram topic. Plugin-developer asks public/private, authors
-the plugin in its own GitHub repo, pushes, and emits completion. Assistant
-relays; on your confirm, Configurator adds it to the registry (`plugin_add`)
-and assigns it to the target agents + asks for secrets via 1P Q&A.
-
-Prerequisites:
-
-- `onepassword_service_account_token` set (plaintext).
-- 1P item titled exactly `GitHub` in the vault named by
-  `onepassword_default_vault` (default `Casa`), with a field labeled
-  `credential` holding a GitHub PAT with `repo` scope. Plugin-developer
-  resolves `op://${onepassword_default_vault}/GitHub/credential` at
-  engagement spawn — no separate app option.

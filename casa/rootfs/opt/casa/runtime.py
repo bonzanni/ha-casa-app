@@ -73,7 +73,6 @@ class CasaRuntime:
     channel_manager: "ChannelManager"
     bus: "MessageBus"
     engagement_driver: Any  # InCasaDriver — avoid import cycle
-    claude_code_driver: Any  # ClaudeCodeDriver — avoid import cycle
 
     # Policy (boot-fixed)
     policy_lib: "PolicyLibrary"
@@ -111,15 +110,6 @@ class CasaRuntime:
     # MUST stay the final field (dataclass-ordering rule).
     explanation_store: "ExplanationStore | None" = None
 
-    # #340: the per-executor HTTP hook-policy map
-    # (``{executor_type: {policy_name: (matcher, callback)}}``) built by
-    # ``casa_core._build_executor_cc_hook_policies`` and captured by the
-    # /hooks/resolve handlers at boot. ``reload.reload_executors`` MUTATES it
-    # in place (clear+update) so the captured references see fresh policies —
-    # never rebind this attr. Defaulted (None) so narrow test stand-ins keep
-    # compiling; a None map means "no boot map to refresh" and reload skips
-    # the rebuild. New defaulted fields are APPENDED after this one.
-    executor_cc_policies: dict | None = None
 
     # #609: whether the ONE global webhook secret is usable. `hmac_body`
     # triggers verify against it, and it is blank when the option holds an

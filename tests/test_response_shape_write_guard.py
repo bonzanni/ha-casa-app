@@ -562,11 +562,11 @@ async def _stack_denies_as_this_guard(opts):
 class TestTheWriteClauseHoldsOnEveryPathItNames:
     """INV-PERS-017's second clause names three hook paths; this counts them.
 
-    A statement that named every path Casa builds would be false — the
-    `claude_code` transport's resolver deliberately omits this guard, because
-    its Bash half matches a bare basename anywhere in a command and would
-    refuse an executor writing its own `response_shape.yaml` under
-    `/data/engagements`. That exclusion is a not-covered clause in the prose,
+    A statement that named every path Casa builds would once have been false —
+    the since-removed Claude Code driver's resolver deliberately omitted this
+    guard, because its Bash half matches a bare basename anywhere in a command
+    and would refuse an executor writing its own `response_shape.yaml` under
+    `/data/engagements`. Such an exclusion is a not-covered clause in the prose,
     not a count here: pinning a gap makes its eventual closure arrive as a
     broken invariant.
     """

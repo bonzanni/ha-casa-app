@@ -16,8 +16,11 @@ signal at all.
 """
 from __future__ import annotations
 
+import ast
+import inspect
 import os
 import stat
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -150,18 +153,6 @@ def test_enforce_covers_the_quarantine_alias_shape(tmp_path: Path) -> None:
     assert _mode(casabak) == 0o600
 
 
-def test_enforce_covers_every_engagement_log_dir(tmp_path: Path) -> None:
-    """Sibling engagement stdout was the worst finding in the advisory: ~21 MB
-    per engagement, readable by every other engagement uid."""
-    a = _mkdir(tmp_path, "/var/log/casa-engagement-aaa", 0o755)
-    b = _mkdir(tmp_path, "/var/log/casa-engagement-bbb", 0o755)
-    unrelated = _mkdir(tmp_path, "/var/log/nginx", 0o755)
-    private_state.enforce(root=str(tmp_path))
-    assert _mode(a) == 0o700
-    assert _mode(b) == 0o700
-    assert _mode(unrelated) == 0o755
-
-
 def test_enforce_is_idempotent_and_quiet_on_a_clean_boot(tmp_path: Path) -> None:
     _touch(tmp_path, "/data/webhook_secret", 0o644)
     private_state.enforce(root=str(tmp_path))
@@ -240,8 +231,8 @@ def test_enforce_does_not_treat_a_private_failure_as_a_credential_one(
 def test_config_sync_report_stays_group_and_world_readable(tmp_path: Path) -> None:
     """/data/config-sync-report.json must NOT be tightened.
 
-    The `configurator` executor is a dropped-uid claude_code engagement whose
-    path_scope hook deliberately allow-lists this one /data file
+    The `configurator` executor's path_scope hook deliberately allow-lists
+    this one /data file
     (defaults/agents/executors/configurator/hooks.yaml) because its
     reconcile-defaults recipe reads it. 0600 makes that Read return EACCES and
     the recipe fails with no runtime signal — the exact over-closure class that
@@ -256,9 +247,8 @@ def test_config_sync_report_stays_group_and_world_readable(tmp_path: Path) -> No
 
 
 def test_plugin_store_artifacts_stay_world_readable(tmp_path: Path) -> None:
-    """The dropped process loads its assigned plugin artifacts directly; the
-    uid-drop preflight already refuses to start an engagement whose
-    --plugin-dir is not world-readable (INV-CONT-004)."""
+    """Plugin artifacts are loaded by whichever process runs the plugin, so
+    the repair never tightens the store or the registry."""
     artifact = _touch(tmp_path, "/config/plugins/store/x/abc/manifest.json", 0o644)
     registry = _touch(tmp_path, "/config/plugins/registry.json", 0o644)
     private_state.enforce(root=str(tmp_path))
@@ -301,3 +291,65 @@ def test_credential_modes_ok_ignores_group_only_readability_of_private_files(
     world-readable is an ERROR in the log, not a refusal to run."""
     _touch(tmp_path, "/data/topic-ledger.json", 0o644)
     assert private_state.credential_modes_ok(root=str(tmp_path)) == []
+
+
+# ---------------------------------------------------------------------------
+# The boot call site — once per boot, from main().
+# ---------------------------------------------------------------------------
+
+
+def _called_name(node) -> str:
+    fn = getattr(node, "func", None)
+    if isinstance(fn, ast.Name):
+        return fn.id
+    if isinstance(fn, ast.Attribute):
+        return fn.attr
+    return ""
+
+
+def _function_body(func) -> list:
+    return ast.parse(textwrap.dedent(inspect.getsource(func))).body[0].body
+
+
+def test_main_repairs_private_state_on_every_boot_before_any_channel_starts(
+) -> None:
+    """INV-STATE-005 promises the repair on EVERY boot, before anything that
+    could start a privilege-dropped process. Pinned structurally, as the other
+    boot-order pins in this suite are: a TOP-LEVEL, unguarded call statement in
+    ``main``'s own body (not inside an ``if``/``try``/``with``/loop, which a
+    mutation could make dead), placed before the statement that starts the
+    channels."""
+    import casa_core
+
+    body = _function_body(casa_core.main)
+    repair = [
+        i for i, stmt in enumerate(body)
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+        and _called_name(stmt.value) == "_repair_private_state"
+    ]
+    assert len(repair) == 1, "main() must call _repair_private_state() once"
+    start = [
+        i for i, stmt in enumerate(body)
+        if any(_called_name(n) == "start_all" for n in ast.walk(stmt))
+    ]
+    assert start and repair[0] < start[0]
+
+
+def test_the_boot_repair_runs_enforce_and_never_raises(monkeypatch) -> None:
+    import casa_core
+
+    calls: list[int] = []
+
+    def fake_enforce(**_kw):
+        calls.append(1)
+        return private_state.Report()
+
+    monkeypatch.setattr(private_state, "enforce", fake_enforce)
+    casa_core._repair_private_state()
+    assert calls == [1]
+
+    def boom(**_kw):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(private_state, "enforce", boom)
+    casa_core._repair_private_state()          # logged, not raised

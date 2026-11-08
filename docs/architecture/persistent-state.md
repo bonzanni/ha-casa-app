@@ -17,7 +17,7 @@ authority. What is stable, and what this document is for, is the *pattern*.
 
 **Two roots with different meanings.** One is mapped and operator-visible, holding
 configuration and installed content. The other is application-private runtime state:
-registries, ledgers, secrets, workspaces, queues and reports.
+registries, ledgers, secrets, working folders, queues and reports.
 
 **Operator-visible does not mean version-controlled.** Only a whitelist of the mapped root is
 tracked — agents, policies, bindings, schema, and the plugin registry. Personas,
@@ -45,8 +45,9 @@ helpers are atomic; writers that do not are not, and several ordinary paths do a
 write. Some repair paths — including one that rewrites a corrupt file — are themselves
 non-atomic.
 
-**Some state is produced by things this application does not control.** Engagement workspaces
-and plugin outbox directories receive content from child processes and plugins. There is no
+**Some state is produced by things this application does not control.** Plugin outbox
+directories and a plugin job's working folder receive content from child processes and
+plugins. There is no
 closed inventory of what appears there.
 
 **One tree holds content the operator sent, and it is kept by promise, not by space.**
@@ -69,8 +70,7 @@ publication instead. Its contract is [`plugin-handoff.md`](plugin-handoff.md).
 WAL mode reached only through one connection owner, one transaction per connection. Boot
 checks and migrates it; a failure leaves the file untouched and memory unavailable, never
 an empty store reported as healthy. Memory that lives outside the directory — SDK
-transcripts, `sessions.json`, explanation records, an engagement's executor-memory block —
-is listed with the directory's own contents in one registry, together with the staging-file
+transcripts, `sessions.json`, explanation records — is listed with the directory's own contents in one registry, together with the staging-file
 names their atomic writers leave on a crash. For that reason `sessions.json`'s writer names
 its staging file after its target, while the shared writer's default name stays generic.
 Its contract is [`memory-store.md`](memory-store.md) (INV-MEM-025). A memory wipe is
@@ -123,27 +123,26 @@ legacy direct status mutators write their tombstone non-strictly — a failed wr
 swallowed with a warning, leaving memory terminal while disk is not. Where disk-leads
 matters, check which of the three shapes the path you are on actually has.
 
-**INV-STATE-005**: Private runtime state has one declared inventory of paths and modes, is repaired to it on every boot before any privilege-dropped engagement can start, and a bearer-credential path that cannot be made root-only refuses such an engagement rather than running one that could read it.
+**INV-STATE-005**: Private runtime state has one declared inventory of paths and modes, and is repaired to it once on every boot, from `casa_core.main()` before any channel starts.
 
 The inventory is the only thing that decides which paths are private; it names each path, its
 mode, and what is exposed if the entry regresses. Individual files are tightened under the
 private root, which itself stays traversable; directories are tightened at the top only,
 because without execute permission for others nothing beneath is reachable by name, so the
-pass never recurses. Repair runs after boot replay has confirmed every existing engagement
-service down, so nothing privilege-dropped is alive while modes move, and before that
-function's fast-path return, so a boot with no records still repairs. Repair, not the write
-sites, is what fixes an already-deployed install — its files already exist world-readable, and
-an atomic write with no explicit mode preserves an existing file's mode, so a store whose next
-write is days away would otherwise stay exposed. The credential subset is re-read from the
-filesystem at each point that can start such an engagement, rather than latched once at boot.
+pass never recurses. Repair runs once on every boot, from `_repair_private_state()` in the
+application's start-up, before any channel or agent starts. Repair, not the write sites, is
+what fixes an already-deployed install — its files already exist world-readable, and an atomic
+write with no explicit mode preserves an existing file's mode, so a store whose next write is
+days away would otherwise stay exposed.
 
-What it does not cover: the two roots themselves stay traversable, because a dropped uid
-reaches its own workspace and its assigned artifacts through them — this is a per-path mode
-boundary, not a filesystem namespace boundary. Non-credential repair failures are logged and
-stop nothing, an already-open file descriptor is unaffected by a mode change, and one report
-file is deliberately left world-readable because a shipped executor recipe reads it. The
-default mode of the shared atomic writer stays world-readable on purpose: the same helper
-writes the artifacts a dropped engagement must load, so private call sites opt in explicitly.
+What it does not cover: the two roots themselves (`/data` and `/config`) stay traversable —
+this is a per-path mode boundary, not a filesystem namespace boundary. Repair failures are
+logged and stop nothing: the credential subset can be re-read from the filesystem at a point
+of use (`credential_modes_ok`), but nothing consumes that check today, so a bearer-credential
+path that cannot be made root-only refuses nothing. An already-open file descriptor is
+unaffected by a mode change, and one report file is deliberately left world-readable because
+a shipped executor recipe reads it. The default mode of the shared atomic writer stays
+world-readable on purpose, so private call sites opt in explicitly.
 
 ## Failure behavior
 
@@ -233,6 +232,7 @@ the code writes.
 - `casa/rootfs/opt/casa/config_git.py::init_repo`
 - `casa/rootfs/opt/casa/private_state.py::enforce`
 - `casa/rootfs/opt/casa/private_state.py::credential_modes_ok`
+- `casa/rootfs/opt/casa/casa_core.py::_repair_private_state`
 
 **Tests**
 - `tests/test_atomic_io.py`
@@ -242,7 +242,6 @@ the code writes.
 - `tests/test_private_state_refusal.py`
 - `tests/test_private_state_write_sites.py`
 - `tests/test_private_state_dropped_uid.py`
-- `tests/test_boot_replay.py`
 
 **Related**
 - [`architecture/configuration.md`](../architecture/configuration.md)

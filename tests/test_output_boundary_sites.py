@@ -13,8 +13,8 @@ the boundary asks: who authored the words?
   consent body;
 * every raw Bot API text call (``bot.send_message`` / ``edit_message_text`` /
   media) by enclosing function — the function takes an ``Admitted``, is a
-  derived edit, is a Casa notice, streams what ``_emit`` admitted, or is a
-  sequencer-owned topic method.
+  derived edit, is a Casa notice, streams what ``_emit`` admitted, or is an
+  engagement-topic method.
 
 These catch an accidental bypass. They are not a sandbox against Casa
 deliberately fabricating admission (design §4.3).
@@ -129,18 +129,14 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "send_reply_line"): "notice",           # the Stop: its one outcome line, Casa-composed
     ("channels/telegram.py", "notify_operator"): "notice",           # the memory wipe's restart and done lines
     ("channels/telegram.py", "_send_plain_line"): "notice",          # the memory wipe's courtesy line
-    # topic — sequencer-owned engagement-topic methods (out of this boundary)
+    # topic — engagement-topic methods (out of this boundary)
     ("channels/telegram.py", "edit_topic_message"): "topic",
-    ("channels/telegram.py", "edit_topic_message_markup"): "topic",
-    ("channels/telegram.py", "edit_topic_message_rich"): "topic",
     ("channels/telegram.py", "emit"): "topic",                      # TopicStreamHandle
     ("channels/telegram.py", "finalize"): "topic",                  # TopicStreamHandle
     ("channels/telegram.py", "_send_page"): "topic",                # TopicStreamHandle: one page of finalize
-    ("channels/telegram.py", "post_ask_body_rich"): "topic",
     ("channels/telegram.py", "send_response_to_topic"): "topic",
     ("channels/telegram.py", "send_to_topic"): "topic",
     ("channels/telegram.py", "send_to_topic_rich"): "topic",
-    ("channels/telegram.py", "send_topic_message_markup"): "topic",
 }
 
 
@@ -227,10 +223,7 @@ ADMITTED_METHODS = {"send", "send_response", "finalize_stream", "finalize_respon
                     "post_dm_keyboard", "send_media"}
 DERIVED_METHODS = {"edit_dm_message"}
 TOPIC_METHODS = {"send_to_topic", "send_to_topic_rich", "send_to_topic_paged",
-                 "send_response_to_topic", "edit_topic_message", "edit_topic_message_rich",
-                 "edit_topic_message_markup", "send_topic_message_markup",
-                 "post_ask_body_rich", "post_options_keyboard", "post_perm_keyboard",
-                 "post_topic_message"}
+                 "send_response_to_topic", "edit_topic_message", "post_topic_message"}
 NOTICE_METHODS = {"deliver_operator_link", "deliver_operator_message", "deliver_operator_page",
                   "deliver_operator_file", "deliver_desk_notice", "send_handoff_line", "reply",
                   "deliver_operator_proposal", "replace_operator_proposal",

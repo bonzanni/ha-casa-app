@@ -49,8 +49,7 @@ unavailable ([`memory-store.md`](memory-store.md), INV-MEM-033).
 
 **A restore replaces memory; it never merges.** It runs the whole wipe and then installs a
 store built from the export, so no copy of memory that the export does not carry survives:
-not a transcript, an explanation record, an executor-memory block, a staging file or a
-local export. The only door is the terminal: `casactl memory-restore <export> [--yes]`
+not a transcript, an explanation record, a staging file or a local export. The only door is the terminal: `casactl memory-restore <export> [--yes]`
 (`POST /admin/memory/restore`), where `<export>` is a directory or the name of one in
 `exports/`.
 
@@ -163,7 +162,6 @@ decides there whether that export should drain first.
 - `tests/test_memory_export_restore.py`
 - `tests/test_memory_restore_crash.py`
 - `tests/test_admin_memory_export_restore_routes.py`
-- `tests/test_executor_memory_blank.py`
 
 **Related**
 - [`architecture/memory-store.md`](../architecture/memory-store.md)

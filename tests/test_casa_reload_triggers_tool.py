@@ -31,7 +31,6 @@ def _runtime_with(tmp_path, *, trigger_registry=None):
         mcp_registry=MagicMock(),
         session_registry=MagicMock(), channel_manager=MagicMock(),
         bus=MagicMock(), engagement_driver=MagicMock(),
-        claude_code_driver=MagicMock(),
         policy_lib=MagicMock(),
         config_dir=str(tmp_path),
         agents_dir=str(tmp_path / "agents"),

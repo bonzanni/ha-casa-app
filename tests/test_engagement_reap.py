@@ -6,11 +6,9 @@ stale engagement found 2026-07-10; restart-orphan reaped manually
 sweep, BEFORE the idle-reminder pass, so a to-be-reaped record doesn't get a
 pointless reminder in the same run.
 
-v0.69.6 (codex review of D-4): the reap resolves the driver PER RECORD
-(claude_code executors are torn down only by the claude_code driver — the
-in-casa driver leaks their s6 subprocess), and the staleness predicate is
-part of the locked terminal transition so a just-revived engagement is not
-reaped.
+v0.69.6 (codex review of D-4): the staleness predicate is part of the
+locked terminal transition so a just-revived engagement is not reaped. The
+cancel goes through the in-casa engagement driver.
 """
 
 from __future__ import annotations
@@ -24,48 +22,25 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
 
 def _driver_double():
-    """A driver double shaped like the REAL engagement drivers.
-
-    A bare ``MagicMock()`` fabricates EVERY attribute, so the funnel's
-    ``hasattr`` probes find ``finalize_completion_post``, ``finalize_summary``,
-    ``settle_all_open_questions`` and ``drain_inbound_spool`` — none of which
-    ``InCasaDriver`` has — and awaiting their non-awaitable returns raises
-    ``TypeError`` into the guards around each one.
-
-    Before #678 that was invisible: the completion post's failure was swallowed
-    and the funnel painted and closed regardless, so these tests asserted a
-    close that only happened because the double was broken. Now a fabricated
-    ``finalize_completion_post`` tells the funnel a sequencer post was
-    ATTEMPTED and failed part-way, and it correctly declines to replay the
-    summary. The double was always wrong; what changed is that it is no longer
-    silent.
-    """
+    """A driver double whose ``cancel`` is awaitable, like ``InCasaDriver``'s."""
     d = MagicMock()
     d.cancel = AsyncMock()
-    for hook in ("finalize_completion_post", "finalize_summary",
-                 "settle_all_open_questions", "drain_inbound_spool"):
-        delattr(d, hook)
     return d
-
 
 
 @pytest.fixture(autouse=True)
 def _restore_agent_drivers():
-    """The reap resolves drivers off the `agent` module globals; save/restore
-    them so tests don't leak driver mocks into each other."""
+    """The reap resolves the driver off the `agent` module global; save/restore
+    it so tests don't leak driver mocks into each other."""
     import agent as agent_mod
-    saved = (
-        getattr(agent_mod, "active_claude_code_driver", None),
-        getattr(agent_mod, "active_engagement_driver", None),
-    )
+    saved = getattr(agent_mod, "active_engagement_driver", None)
     yield
-    agent_mod.active_claude_code_driver, agent_mod.active_engagement_driver = saved
+    agent_mod.active_engagement_driver = saved
 
 
 def _wire(tmp_path):
     """Registry + mocks + init_tools; returns (rec, registry, telegram, bus,
-    driver). Also installs `driver` as BOTH agent-module driver globals so the
-    per-record resolution finds it regardless of rec.driver."""
+    driver). Installs `driver` as the agent-module engagement driver."""
     import agent as agent_mod
     from engagement_registry import EngagementRegistry
     from tools import init_tools
@@ -92,13 +67,12 @@ def _wire(tmp_path):
         trigger_registry=MagicMock(), engagement_registry=reg,
     )
     driver = _driver_double()
-    agent_mod.active_claude_code_driver = driver
     agent_mod.active_engagement_driver = driver
     return reg, telegram, bus, driver
 
 
 async def _stale_record(reg, *, days: float, topic_id: int = 42,
-                        status: str = "active", driver: str = "claude_code"):
+                        status: str = "active", driver: str = "in_casa"):
     rec = await reg.create(
         "executor", "configurator", driver, "install plugin X",
         {"role": "assistant", "channel": "telegram", "chat_id": "123"}, topic_id,
@@ -129,40 +103,18 @@ class TestReapStaleEngagements:
         await reap_stale_engagements(ttl_days=7)
         assert rec.status == "cancelled"
 
-    async def test_reap_uses_claude_code_driver_for_claude_code_records(self, tmp_path):
-        """Finding 1 (blocker): a claude_code executor engagement's s6
-        subprocess is stopped ONLY by the claude_code driver. Reaping with the
-        in-casa driver closes the topic but leaks the process."""
-        import agent as agent_mod
-        from tools import reap_stale_engagements
-
-        reg, telegram, bus, _ = _wire(tmp_path)
-        cc_driver = _driver_double()
-        in_casa = MagicMock(); in_casa.cancel = AsyncMock()
-        agent_mod.active_claude_code_driver = cc_driver
-        agent_mod.active_engagement_driver = in_casa
-        rec = await _stale_record(reg, days=8, driver="claude_code")
-
-        await reap_stale_engagements(ttl_days=7)
-
-        cc_driver.cancel.assert_awaited_once_with(rec)
-        in_casa.cancel.assert_not_awaited()
-
     async def test_reap_uses_in_casa_driver_for_in_casa_records(self, tmp_path):
         import agent as agent_mod
         from tools import reap_stale_engagements
 
         reg, telegram, bus, _ = _wire(tmp_path)
-        cc_driver = _driver_double()
-        in_casa = MagicMock(); in_casa.cancel = AsyncMock()
-        agent_mod.active_claude_code_driver = cc_driver
+        in_casa = _driver_double()
         agent_mod.active_engagement_driver = in_casa
         rec = await _stale_record(reg, days=8, driver="in_casa")
 
         await reap_stale_engagements(ttl_days=7)
 
         in_casa.cancel.assert_awaited_once_with(rec)
-        cc_driver.cancel.assert_not_awaited()
 
     async def test_revived_record_is_not_reaped(self, tmp_path):
         """Finding 2 (major): the staleness predicate must be part of the

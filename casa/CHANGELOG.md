@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.349.0] - 2026-11-08
+
+### Removed
+
+- **Casa no longer builds plugins itself.** The plugin developer, the executor that wrote new plugins inside Casa, is gone, along with the separate Claude Code engine it ran on, its five bundled plugins and the `context7_api_key` option. It shipped disabled. Installing and updating published plugins and specialists works as before, through the configurator. The image is smaller, and Casa runs one service fewer.
+
+### Upgrade notes
+
+- **Not backward compatible, and there is no automatic migration.** An install that ever enabled or edited the plugin developer keeps its folder under `/config/agents/executors/plugin-developer/`, which this version cannot load, and the configurator's commits are refused until it is removed: delete that folder and commit the removal in `/config` before or right after updating. An engagement still open on the removed engine will not resume.
+- Remove `context7_api_key` from the app's options if you had set it; until then Home Assistant warns that the option no longer exists. Casa ignores it.
+- Casa may tell you once that context7 could not be loaded: ask Ellen to remove the five plugins Casa used to install for the plugin developer (context7, superpowers, plugin-dev, skill-creator, mcp-server-dev); nothing else uses them.
+
 ## [0.348.0] - 2026-11-08
 
 ### Changed

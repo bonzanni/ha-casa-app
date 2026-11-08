@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import collections
-import hashlib
 import logging
 import os
 import time
@@ -61,19 +60,6 @@ from ingress_identity import (
 )
 from channels import Channel, DeliveryOutcome, UnconfirmedDelivery
 from output_boundary import Admitted, UnadmittedText
-# v0.79.0 (§2 Primitive A): the per-topic OUTPUT SEQUENCER + relay-mediated
-# discrete-posting intent registry. Implemented in the sibling module and
-# RE-EXPORTED here so ``channels.telegram.OutputSequencer`` resolves per the
-# design's "File: channels/telegram.py" reference; the class is deliberately
-# PTB-free (injected send/edit primitives) so it stays unit-testable in
-# isolation. The live per-engagement instances are owned by the claude_code
-# driver (which holds the topic send/edit primitives + the relay); the discrete
-# ingresses reach them through that driver's intent-registration API.
-from channels.output_sequencer import (  # noqa: F401 — re-export
-    IntentRegistry,
-    OutputSequencer,
-    projection_hash as discrete_projection_hash,
-)
 from media_policies import MEDIA_POLICIES
 from text_util import replace_lone_surrogates, utf16_len, utf16_prefix_end
 from channels.telegram_supervisor import ReconnectSupervisor
@@ -288,13 +274,12 @@ def _escape_mdv2_pre(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# v0.75.0 (W5/Sol B3,B4): inline-callback data — v1 broker format + legacy
-# perm:<verdict>:<rid> back-compat.
+# v0.75.0 (W5/Sol B3,B4): inline-callback data — v1 broker format.
 # ---------------------------------------------------------------------------
 
 # Telegram hard-caps callback_data at 64 bytes.
 _CALLBACK_DATA_MAX_BYTES = 64
-_CALLBACK_NAMESPACES = ("permission", "engagement_ask", "resident_ask",
+_CALLBACK_NAMESPACES = ("resident_ask",
                         "proposal",       # S5: a stored-call keyboard (DM-scoped)
                         "run_stop")       # the Stop on a browsing request's card (DM-scoped)
 
@@ -321,15 +306,8 @@ def _parse_callback_data(
 
     Accepted shapes:
     - v1 (current): ``v1|<ns>|<request_id>|<option_index>``, ``ns`` one of
-      the broker's three namespaces, ``option_index`` an int. ``kind`` is
-      ``None`` (a single-select / permission tap).
-    - A5 · F-MULTI: ``v1|ask_multi|<request_id>|<idx>`` (a checkbox TOGGLE,
-      ``kind="toggle"``) and ``v1|ask_multi|<request_id>|s`` (SUBMIT,
-      ``kind="submit"``, ``option_index`` is ``None``). The ``ask_multi``
-      namespace maps to the ``engagement_ask`` broker namespace — only the
-      callback grammar is new.
-    - legacy (back-compat): ``perm:<allow|deny>:<request_id>`` — pre-v0.75.0
-      keyboards still in flight across an upgrade must keep routing.
+      ``_CALLBACK_NAMESPACES``, ``option_index`` an int. ``kind`` is
+      always ``None`` (a single-select tap).
 
     Oversized payloads (> 64 bytes, Telegram's own cap) are rejected
     defensively even though nothing this process composes should ever
@@ -344,15 +322,6 @@ def _parse_callback_data(
         _, ns, request_id, idx_s = parts
         if not request_id:
             return None, None, None, None
-        if ns == "ask_multi":
-            # A5 · F-MULTI: routes onto the engagement_ask broker namespace.
-            if idx_s == "s":
-                return "engagement_ask", request_id, None, "submit"
-            try:
-                idx = int(idx_s)
-            except ValueError:
-                return None, None, None, None
-            return "engagement_ask", request_id, idx, "toggle"
         if ns not in _CALLBACK_NAMESPACES:
             return None, None, None, None
         try:
@@ -360,17 +329,13 @@ def _parse_callback_data(
         except ValueError:
             return None, None, None, None
         return ns, request_id, idx, None
-    parts = data.split(":", 2)
-    if (len(parts) == 3 and parts[0] == "perm"
-            and parts[1] in ("allow", "deny") and parts[2]):
-        return "permission", parts[2], (0 if parts[1] == "allow" else 1), None
     return None, None, None, None
 
 
 # v0.81.0 (W-R3, Sol r1-5): button labels are DERIVED channel-side from the
 # full option so they stay readable — Telegram truncates long labels to a few
 # words, which made most choices unpickable. The full option text lives VERBATIM
-# in the message body (``channel_handlers.render_ask_body``); the button carries
+# in the message body (``render_ask_body`` below); the button carries
 # only a short summary. The button's IDENTITY stays the option INDEX in
 # ``callback_data`` — the label is display-only, so nothing is lost by shortening.
 #
@@ -381,8 +346,6 @@ def _parse_callback_data(
 # own label, so a set of short options ("Delete" / "Keep") renders its own
 # words; the WHOLE set floors to ``Option 1``, ``Option 2``, … only when the
 # words do not fit, collide or are blank — never mutated, never a rejection.
-# ``floored_ask_telemetry`` is the CONTENT-FREE log line for that floor (never
-# the option/question text).
 _ASK_BUTTON_CAPTION_CAP = 64
 # #1386: an option's OWN label becomes its button when it is at most this many
 # characters — about what a full-width button shows on a phone without cutting.
@@ -398,8 +361,6 @@ _PROPOSAL_SETTLED_PER_CHAT = 256
 # A5 · F-MULTI checkbox glyphs (also the multi decoration prefix the resolver
 # validates against — see ``_classify_button_labels``).
 _MULTI_BOX_ON = "☑"
-_MULTI_BOX_OFF = "☐"
-_MULTI_SUBMIT_TEXT = "✅ Submit"
 
 
 def _button_short(item: "str | dict") -> str | None:
@@ -454,8 +415,8 @@ def _fit_captions(
 def _classify_button_labels(
     options: list, multi: bool,
 ) -> "tuple[str | None, list[str]]":
-    """Whole-set classification shared by ``resolve_button_labels`` and
-    ``floored_ask_telemetry`` (Sol r2-3/r2-7).
+    """Whole-set classification behind ``resolve_button_labels``
+    (Sol r2-3/r2-7).
 
     #1386: each option offers its agent-supplied ``short`` when it has one (a
     ``str``), otherwise its OWN label. When no option has a short, the buttons
@@ -501,48 +462,6 @@ def resolve_button_labels(options: list, multi: bool) -> list[str]:
     return captions
 
 
-def floored_ask_telemetry(options: list, *, multi: bool = False) -> str:
-    """CONTENT-FREE log line for a floored ask (spec D2 item 4, Sol r2-7).
-
-    Records only safe dimensions — option count, floor reason
-    (``blank|dup|too_long``, or ``none`` when it didn't floor), a
-    short-presence bitmap (``1`` iff the option carries a ``str`` short,
-    regardless of blank/dup/length validity — a diagnostic aid for *which*
-    option(s) are missing one), and a bounded (12 hex char) hash of the
-    option set — NEVER the option/question text (agent-authored,
-    operator-decision content that could be large, sensitive, or
-    log-injecting once the invented length caps are gone, D1).
-    """
-    reason, _captions = _classify_button_labels(options, multi)
-    bitmap = "".join(
-        "1" if _button_short(o) is not None else "0" for o in options)
-    labels = [_button_label_text(o) for o in options]
-    joined = "\x1f".join(labels)
-    digest = hashlib.sha256(joined.encode("utf-8")).hexdigest()[:12]
-    return (
-        f"floored_ask_telemetry count={len(options)} "
-        f"reason={reason if reason is not None else 'none'} "
-        f"shorts={bitmap} hash={digest}"
-    )
-
-
-def floored_ask_telemetry_line(options: list, *, multi: bool = False) -> "str | None":
-    """Return the CONTENT-FREE floor telemetry line IFF the whole-set resolver
-    FLOORS this button ask (wb3-4, D2 item 4); ``None`` when every option
-    resolved to a verbatim short (no floor happened — nothing to log).
-
-    The wb3-4 wiring gap this closes: :func:`floored_ask_telemetry` existed but
-    was never called in production, so the accepted telemetry-gated-Haiku
-    decision had no data source. The ask handler logs this line ONCE, at the
-    owner's registration path, exactly when a real floor occurs. Pure; never
-    raises; empty ``options`` (a free-text anchor) classifies as ``no floor`` →
-    ``None``, so anchors never emit."""
-    reason, _captions = _classify_button_labels(options, multi)
-    if reason is None:
-        return None
-    return floored_ask_telemetry(options, multi=multi)
-
-
 def short_option_labels(
     labels: list, shorts: "list | None" = None,
 ) -> list[str]:
@@ -570,63 +489,66 @@ def short_option_labels(
     return resolve_button_labels(options, multi=False)
 
 
-def _captions_from_shorts(
-    options: list, shorts: "list | None", multi: bool,
-) -> list[str]:
-    """Resolve the whole-set captions from ``options`` + parallel ``shorts``
-    (the ``resolve_button_labels`` input shape). Used ONLY as the fallback
-    when no persisted ``button_labels`` meta exists yet (eager fallback /
-    direct-call unit tests) — the live path always consumes the persisted
-    captions seeded at registration (D2 item 3, Task A5)."""
-    combined = [
-        {
-            "label": str(opt),
-            "short": shorts[i] if shorts is not None and i < len(shorts) else None,
-        }
-        for i, opt in enumerate(options)
-    ]
-    return resolve_button_labels(combined, multi)
+def _canonical_question(question: str, number: int) -> str:
+    """v0.79.0 §4 — the DISPLAYED question prefix is ALWAYS the allocated
+    durable number: ``Q<number>: `` is PREPENDED to the question. v0.85.0
+    (round 4, D4): the old leading ``Q<digits>:`` strip is REMOVED — the
+    agent's question text is preserved VERBATIM (an agent-authored
+    ``"Q7: which flavor?"`` renders ``"Q<n>: Q7: which flavor?"``); doctrine,
+    not a regex, tells the agent not to self-number."""
+    return f"Q{number}: {question}"
 
 
-def _multi_button_caption(i: int, captions: list[str], selected: set) -> str:
-    """A5 · F-MULTI: one toggle-row caption ``☐/☑ <stored caption>``. The
-    checkbox glyph reflects membership in ``selected``; ``captions[i]`` is
-    already the whole-set-resolved ``n · <short>`` or floored ``Option n``."""
-    box = _MULTI_BOX_ON if i in selected else _MULTI_BOX_OFF
-    return f"{box} {captions[i]}"
+def buttons_show_options(options: list, captions: "list | None") -> bool:
+    """#1392: True when the buttons are the options' own words verbatim
+    (``captions`` is what the keyboard shows; ``None`` means no keyboard is
+    known). Then the numbered list under the question only repeats them."""
+    return bool(options) and captions is not None and (
+        [str(c) for c in captions] == [str(o) for o in options])
 
 
-def _build_multi_keyboard(
-    request_id: str, options: list, captions: "list[str]", selected,
-):
-    """A5 · F-MULTI: the toggle-many keyboard — one ``☐/☑ n · <label>`` row per
-    option (callback ``v1|ask_multi|<rid>|<idx>``) plus a final ``✅ Submit`` row
-    (``v1|ask_multi|<rid>|s``). Shared by the initial post and every redraw so
-    the two can never disagree.
+def render_ask_body(
+    number: "int | None", question: str, options: list,
+    captions: "list | None" = None,
+) -> str:
+    """v0.81.0 (W-R3, Sol r1-5) — the SINGLE canonical rendered ask body.
 
-    v0.84.0 (D2 items 2-3, Task A5 wiring): ``captions`` are the PERSISTED
-    whole-set button labels (``resolve_button_labels`` output, seeded into
-    broker meta as ``button_labels`` at registration). The builder NEVER
-    re-resolves from ``shorts`` — the redraw prepends only the mutable ☐/☑
-    glyph to the STORED caption, so every toggle re-renders byte-identically
-    (the checkbox glyph stays separate mutable state, never part of the
-    persisted caption). This closes the resolution-drift bug where the redraw
-    re-derived captions from ``shorts`` independently of the initial post."""
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    Used IDENTICALLY by the DM ask posters (``ask_user``, ``wipe_memory``)
+    for the posted body and the finish-hook settlement base, so the two can
+    never disagree.
 
-    sel = set(selected or ())
-    rows = [
-        [InlineKeyboardButton(
-            text=_multi_button_caption(i, captions, sel),
-            callback_data=f"v1|ask_multi|{request_id}|{i}",
-        )]
-        for i in range(len(options))
-    ]
-    rows.append([InlineKeyboardButton(
-        text=_MULTI_SUBMIT_TEXT,
-        callback_data=f"v1|ask_multi|{request_id}|s",
-    )])
-    return InlineKeyboardMarkup(rows)
+    Format::
+
+        Q<n>: <question>
+
+        1. <opt0>
+        2. <opt1>
+        …
+
+    EVERY option is rendered VERBATIM (no truncation, no ellipsis), 1-based
+    numbered. A free-text anchor (``options == []``) renders the numbered
+    question ALONE — no option list. ``number`` may be ``None`` (no durable
+    number allocated / degraded boot), in which case the bare question is used
+    without the ``Q<n>:`` prefix.
+
+    v0.84.0 (round 4, D1): the LENGTH caps this docstring used to lean on for a
+    "no overflow path" claim are gone (``_validate_ask_args`` no longer bounds
+    question/label length; only option COUNT stays capped at
+    ``_ASK_MAX_OPTIONS``). The real Telegram 4096-char body limit is now
+    enforced by a dedicated per-ask render-and-measure lifecycle validator
+    (Task A3, spec §D1 bullet 2) rather than by an invented length heuristic
+    here — this function never truncates.
+
+    #1392: when ``captions`` (the button captions the keyboard shows) are the
+    options' own words verbatim, the list is left out — the buttons already
+    carry every option in full. The list stays whenever a button shows a
+    ``short`` or the ``Option n`` floor, and when no captions are passed.
+    """
+    base = _canonical_question(question, number) if number else question
+    if not options or buttons_show_options(options, captions):
+        return base
+    numbered = "\n".join(f"{i + 1}. {opt}" for i, opt in enumerate(options))
+    return f"{base}\n\n{numbered}"
 
 
 # Reconnect supervisor backoff schedule (spec 5.2 §4.2): 1s, 2s, 4s, 8s,
@@ -1039,7 +961,7 @@ class TelegramChannel(Channel):
         # open-question reconcilers await. SET at the first successful ``_rebuild``
         # (``self._app`` becomes usable) — NOT at ``start_all()`` return, since
         # Telegram deliberately survives a transient bring-up failure and lets its
-        # supervisor retry. Boot replay snapshots pre-service but its confirmed
+        # supervisor retry. A boot reconciler snapshots pre-service but its confirmed
         # settle edits must not fire against a ``None`` bot (they would fail closed
         # and the ledger would never settle). Loop-agnostic since Py3.10.
         self._ready_event: asyncio.Event = asyncio.Event()
@@ -1096,19 +1018,6 @@ class TelegramChannel(Channel):
         self._engagement_registry = None
         self._observer = None
         self._driver_send_user_turn = None
-        # v0.79.0 (§3): seal open narration on inbound (claude_code engagements);
-        # wired by casa_core, None-safe for tests.
-        self._driver_advance_high_water = None
-        # v0.83.0 (§A3, Sol r7-1/r8-1): the answered-RESERVATION seam. SYNCHRONOUS
-        # ``reserve_answer(rec) -> token|None`` set in the SAME section as the
-        # high-water advance (no await between); ``rollback_answer_reservation(
-        # rec, token) -> bool`` (CAS) fires on every non-delivery path (command
-        # classification, handler cancellation, spool enqueue rejection). Wired by
-        # casa_core, None-safe for tests.
-        self._driver_reserve_answer = None
-        # G4 D2 (v0.96.0): inbound-ingress reservation seam (see casa_core).
-        self._driver_reserve_inbound = None
-        self._driver_release_inbound = None
         # #649: in_casa admission-ticket seams (see casa_core). ``admit`` is
         # SYNCHRONOUS and taken before the handler's first risky await;
         # ``discharge`` is idempotent by exact token; ``held`` is the failure
@@ -1121,24 +1030,16 @@ class TelegramChannel(Channel):
         # discharged before one bounded visible-outcome attempt).
         self._stopping = False
         self._inbound_cleanup_tasks: set[asyncio.Task] = set()
-        self._driver_rollback_answer_reservation = None
-        # v0.79.0 (§3, F2): route a platform-origin topic notice (command
-        # replies, resume errors) through the engagement's OUTPUT SEQUENCER so
-        # it seals open narration + advances the high-water under the single
-        # writer — a notice can never land BELOW live narration. Wired by
-        # casa_core; None-safe (falls back to a direct send).
-        self._driver_post_notice = None
         # #692: SYNCHRONOUS read of the in_casa driver's follow-up-turn
         # observation for one exact admission ticket, wired by casa_core;
-        # None-safe, and "" for a claude_code record. The driver OBSERVES that
+        # None-safe. The driver OBSERVES that
         # a ticketed turn ended with no ResultMessage; this channel's delivery
         # task ADJUDICATES, because only it can tell that cutoff from a
         # healthy in_casa self-emit completion.
         self._driver_turn_incomplete = None
         # #369: clearance-downgrade context revocation seams, wired by
         # casa_core per driver; None-safe for tests. ``invalidate_session``
-        # tears the live session down (in_casa: close the client; claude_code:
-        # stop the service + drop the control-dir session pointer);
+        # tears the live session down (in_casa: close the client);
         # ``context_rebuilder(rec) -> str`` establishes a FRESH session at the
         # record's (clamped) markers and returns the preamble to prepend to
         # the next delivered turn.
@@ -1176,8 +1077,8 @@ class TelegramChannel(Channel):
         self._ack_bursts: dict[tuple[str, str | None], _AckBurst] = {}
         self._ack_locks: dict[str, asyncio.Lock] = {}
         # #347: per-engagement topic-STATE edit serialization (see
-        # update_topic_state) — orders the relay's awaiting/active round-trip
-        # against terminal-transition edits so a closed topic can never be
+        # update_topic_state) — orders every state repaint against
+        # terminal-transition edits so a closed topic can never be
         # repainted active.
         self._topic_state_locks: dict[str, asyncio.Lock] = {}
         # R5 (v0.89.0): NON-PERSISTENT current-inbound target for the `react`
@@ -2722,21 +2623,15 @@ class TelegramChannel(Channel):
         await self._handle(update, None)
 
     async def _post_engagement_notice(self, rec, text: str) -> None:
-        """v0.79.0 (§3, F2): post a platform-origin notice into an engagement
-        topic THROUGH the output sequencer (seals open narration + advances the
-        high-water under the single writer) so it can never land BELOW live
-        narration. Falls back to a direct send when the sequencer seam is not
-        wired (tests) or the engagement's driver has no sequencer (in_casa).
-        A record with no topic (a quiet scheduled run, #1301) posts nothing."""
+        """Post a platform-origin notice (command replies, resume errors) into
+        an engagement topic. A record with no topic (a quiet scheduled run,
+        #1301) posts nothing."""
         if getattr(rec, "topic_id", None) is None:
             logger.debug("engagement %s has no topic; notice not posted",
                          str(getattr(rec, "id", ""))[:8])
             return
-        if self._driver_post_notice is not None:
-            await self._driver_post_notice(rec, text)
-        else:
-            # v0.109.0 (G3): notices carry agent/platform markdown — render.
-            await self.send_to_topic_rich(rec.topic_id, text)
+        # v0.109.0 (G3): notices carry agent/platform markdown — render.
+        await self.send_to_topic_rich(rec.topic_id, text)
 
     async def handle_update(
         self, update, _context: ContextTypes.DEFAULT_TYPE | None = None
@@ -2790,10 +2685,8 @@ class TelegramChannel(Channel):
                 # others. Commands are EXEMPT (mirroring /new-before-limiter
                 # in the DM route): a /cancel must never be refused by
                 # throttling, or a runaway engagement could not be stopped.
-                # Checked before ANY side effect (clearance clamp, inbound
-                # reservation, high-water advance) so a dropped message
-                # leaves no state behind; the ordering cost is only cosmetic
-                # (later narration may land below the dropped message).
+                # Checked before ANY side effect (clearance clamp, admission
+                # ticket) so a dropped message leaves no state behind.
                 if (self._rate_limiter is not None
                         and self._rate_limiter.enabled
                         and not text.startswith("/")):
@@ -2841,36 +2734,6 @@ class TelegramChannel(Channel):
                     except Exception:  # noqa: BLE001
                         logger.debug("admit_inbound failed", exc_info=True)
 
-                # G4 D2 (v0.96.0, Sol code-r2-1): SYNCHRONOUS ingress
-                # reservation at TRUE handler entry — before ANY suspension.
-                # #649 moved it up past the clearance/invalidation awaits so
-                # that contract is finally literal (unchanged semantics
-                # otherwise: taken for every text, commands included, and
-                # released in the finally for every path that does not hand
-                # off delivery, or by _deliver_turn_bg once the spool
-                # enqueue resolves).
-                inbound_reserved = False
-                if self._driver_reserve_inbound is not None:
-                    try:
-                        # #664: classified at birth — a recognized command's
-                        # reservation still vetoes a racing completion but is
-                        # excluded from every lost-inbound disclosure (the
-                        # command is consumed here, never delivered).
-                        # #691: hand the driver the message this reservation
-                        # is FOR. Until the background task's spool enqueue
-                        # resolves, this local `text` is the only copy of what
-                        # the operator said — recording it here is what lets a
-                        # terminal QUOTE the message instead of reporting
-                        # "up to N" about it. A recognized command's text is
-                        # not recorded (the driver drops it at birth).
-                        inbound_reserved = bool(
-                            self._driver_reserve_inbound(
-                                rec, command=recognized is not None,
-                                text=text,
-                                message_id=getattr(msg, "message_id", None)))
-                    except Exception:  # noqa: BLE001
-                        logger.debug("reserve_inbound failed", exc_info=True)
-                answer_token = None
                 handed_off = False
                 try:
                     # #336 (Terra, review r4): an engagement reads at the
@@ -2916,39 +2779,6 @@ class TelegramChannel(Channel):
                             await self._engagement_registry.clear_session_id(
                                 rec.id)
 
-                    # v0.79.0 (§3, F2/F5): an inbound operator message is a causal
-                    # event, visible on Telegram the instant it arrives. SEAL open
-                    # narration + advance the topic high-water at TRUE handler entry
-                    # — BEFORE command handling and BEFORE update_user_turn()'s
-                    # await. This must precede any command reply (/silent, a rejected
-                    # /cancel|/complete) AND any suspension, else a reply or mid-turn
-                    # narration could append BELOW the operator's message.
-                    if self._driver_advance_high_water is not None:
-                        try:
-                            await self._driver_advance_high_water(
-                                rec, getattr(msg, "message_id", None))
-                        except Exception as exc:  # noqa: BLE001 — advisory sealing
-                            logger.debug(
-                                "advance_high_water failed for %s: %s",
-                                rec.id[:8], exc,
-                            )
-
-                    # v0.83.0 (§A3, Sol r7-1): set the answered RESERVATION in the
-                    # SAME synchronous section as the high-water advance — NO await
-                    # between the advance above and this reserve — so a concurrent
-                    # result-finalize that observed the answer's high-water also
-                    # observes the reservation. ``reserve_answer`` is SYNCHRONOUS.
-                    # The reservation counts the oldest unanswered anchor as ANSWERED
-                    # (gates/summary/re-anchor) until the message either PROMOTES it
-                    # (durable enqueue) or ROLLS it back (every non-delivery path
-                    # below: command classification, resume failure, handler
-                    # cancellation, spool enqueue rejection). ``handed_off`` transfers
-                    # ownership to ``_deliver_turn_bg`` on the delivery path.
-                    if self._driver_reserve_answer is not None:
-                        try:
-                            answer_token = self._driver_reserve_answer(rec)
-                        except Exception:  # noqa: BLE001 — reservation is advisory
-                            answer_token = None
                     if recognized is not None:
                         # M10 (v0.52.0): group command menus send "/cancel@botname"
                         # — the mention-strip lives in the ONE classification
@@ -2961,10 +2791,8 @@ class TelegramChannel(Channel):
                         # Pre-fix any user in the supergroup could terminate any
                         # engagement; user_id wasn't even checked. /silent stays
                         # open since it's local to the engagement (anyone reading
-                        # along can quiet the observer in their topic). §A3: a
-                        # command NEVER becomes a delivered user turn — CAS-roll
-                        # back the reservation (Sol r8-1). Ordered AFTER the notice
-                        # so the Task-9 seam's re-anchor lands below it (Sol r12-1).
+                        # along can quiet the observer in their topic). A
+                        # command NEVER becomes a delivered user turn.
                         if command in ("/cancel", "/complete"):
                             owner_id = rec.origin.get("user_id")
                             if (
@@ -2972,30 +2800,12 @@ class TelegramChannel(Channel):
                                 and user_id is not None
                                 and int(owner_id) != int(user_id)
                             ):
-                                # F2: route through the sequencer so this reply
-                                # cannot land below open narration.
                                 await self._post_engagement_notice(
                                     rec,
                                     f"Only the engagement originator can {command}. "
                                     "Ask them, or start your own engagement.",
                                 )
-                                await self._rollback_answer(rec, answer_token)
                                 return
-                            # F2 (whole-branch r2): TERMINAL path — run the
-                            # finalizer FIRST, then gate the re-anchor SUPPRESSION
-                            # on finalize SUCCESS. On success, finalize's
-                            # settle_all_open_questions already owns + settles
-                            # every open anchor (it never reads the reservation,
-                            # so a still-held reservation during finalize is
-                            # inert), and the suppressed rollback just clears the
-                            # reservation — no redundant re-anchor copy. On a
-                            # FAILED strict terminal transition (finalize returns
-                            # False → engagement stays live, nothing settled), the
-                            # rollback runs WITHOUT suppression so the fourth-
-                            # consumer re-anchor moves the stranded live anchor
-                            # below the command instead of orphaning it above.
-                            # The originator-rejected + /silent rollbacks above are
-                            # NON-terminal and keep re-anchoring unconditionally.
                             if command == "/cancel":
                                 finalized = await self._finalize_cancel(
                                     rec, reason="user")
@@ -3007,9 +2817,7 @@ class TelegramChannel(Channel):
                             # command would otherwise be silently ignored
                             # and a later agent completion could proceed.
                             # (Already-terminal records re-read as terminal
-                            # and stay silent, as before.) Posted BEFORE the
-                            # rollback so a re-anchored question still lands
-                            # below it (Sol r12-1 wire ordering).
+                            # and stay silent, as before.)
                             if not finalized:
                                 latest = (
                                     self._engagement_registry.get(rec.id)
@@ -3026,25 +2834,19 @@ class TelegramChannel(Channel):
                                         logger.debug(
                                             "command retry notice failed",
                                             exc_info=True)
-                            await self._rollback_answer(
-                                rec, answer_token,
-                                suppress_reanchor=bool(finalized))
                             return
                         if command == "/silent":
                             if self._observer is not None:
                                 self._observer.silence(rec.id)
-                            # F2: route through the sequencer (single writer).
                             await self._post_engagement_notice(
                                 rec, "Observer quieted for this engagement.",
                             )
-                            await self._rollback_answer(rec, answer_token)
                             return
                         if command == "/help":
                             # #1412: answered by Casa — the engaged CLI has
                             # no /help of its own here.
                             await self._post_engagement_notice(
                                 rec, self._engagement_help_text())
-                            await self._rollback_answer(rec, answer_token)
                             return
 
                     # Resume-if-suspended + lifecycle gate + idle→active turn
@@ -3053,13 +2855,10 @@ class TelegramChannel(Channel):
                     # record went terminal, resume was exhausted (2-strike), or
                     # it is an unresumable orphan (each already surfaced +
                     # cleaned up inside the helper); do NOT deliver — the finally
-                    # rolls the answered/inbound reservations back. The status
+                    # discharges the admission ticket. The status
                     # re-check inside still runs under the lock, preserving the
                     # Bug-10 guarantee (a cancel that already finalised the
                     # driver blanks the turn here before any task is spawned).
-                    # v0.79.0 (§3, F2/F5): the high-water advance + narration
-                    # seal happened at TRUE handler entry above (before command
-                    # handling and any suspension).
                     # #1166: a pending rebuild over a running in_casa turn is
                     # not run here — it would wait for the turn under this
                     # lock (and a /cancel with it). The delivery task drains
@@ -3093,21 +2892,17 @@ class TelegramChannel(Channel):
                             except Exception:  # noqa: BLE001
                                 logger.debug(
                                     "late admit_inbound failed", exc_info=True)
-                        # §A3: the message becomes a delivered user turn — TRANSFER
-                        # reservation ownership to the background task, which
-                        # promotes (accepted) or CAS-rolls-back (rejected) per the
-                        # enqueue disposition. ``handed_off`` stops the finally
-                        # below from clobbering the in-flight reservation.
-                        # #649 (Terra seam r3): set ONLY after the task exists
-                        # and both callbacks are attached — a create_task
-                        # raise otherwise skipped every rollback with no
+                        # The message becomes a delivered user turn — the
+                        # background task owns the admission ticket from here.
+                        # ``handed_off`` stops the finally below from
+                        # discharging it. #649 (Terra seam r3): set ONLY after
+                        # the task exists and both callbacks are attached — a
+                        # create_task raise otherwise left the ticket with no
                         # owner in existence.
                         task = asyncio.create_task(
                             self._deliver_turn_bg(
                                 rec, text,
                                 tg_message_id=getattr(msg, "message_id", None),
-                                answer_token=answer_token,
-                                inbound_reserved=inbound_reserved,
                                 inbound_token=inbound_token,
                                 await_rebuild=await_rebuild))
                         self._turn_tasks.add(task)
@@ -3138,30 +2933,7 @@ class TelegramChannel(Channel):
                         await self._settle_lost_inbound(rec, inbound_token)
                     raise
                 finally:
-                    # §A3 (Sol r8-1): every path that did NOT hand the reservation
-                    # to the delivery task — command classification, resume
-                    # failure/orphan, handler CANCELLATION — CAS-rolls it back.
-                    # The CAS no-ops if a command branch already rolled it back,
-                    # if promotion consumed it, or if a later message re-reserved.
                     if not handed_off:
-                        await self._rollback_answer(rec, answer_token)
-                        # G4 D2: a path that never handed off the delivery
-                        # task must release the ingress reservation too —
-                        # a leak here would refuse completion forever.
-                        if inbound_reserved and (
-                                self._driver_release_inbound is not None):
-                            try:
-                                # #664: release with the kind it was born
-                                # with, so the command sub-counter pairs.
-                                # #691: and with the id it was born with, so it
-                                # drops exactly this message's recorded text.
-                                self._driver_release_inbound(
-                                    rec, command=recognized is not None,
-                                    message_id=getattr(
-                                        msg, "message_id", None))
-                            except Exception:  # noqa: BLE001
-                                logger.debug(
-                                    "release_inbound failed", exc_info=True)
                         # #649: expected-non-delivery paths (a losing
                         # _resume_and_ready, the stop gate) discharge the
                         # ticket directly; exception paths already made
@@ -3190,27 +2962,6 @@ class TelegramChannel(Channel):
             )
             return
         return await self._route_to_assistant(update)
-
-    async def _rollback_answer(
-        self, rec, token, *, suppress_reanchor: bool = False,
-    ) -> None:
-        """§A3: best-effort CAS rollback of an answered reservation (a no-op when
-        unwired, the token is None, or the CAS loses ownership). Swallows its own
-        errors so no non-delivery path is aborted by a rollback failure.
-
-        F2 (whole-branch gate): TERMINAL command paths (``/cancel``/``/complete``)
-        pass ``suppress_reanchor=True`` because engagement finalize follows and
-        its ``settle_all_open_questions`` owns the open anchors — re-anchoring
-        here would post a redundant copy that terminal settlement instantly
-        settles."""
-        if token is None or self._driver_rollback_answer_reservation is None:
-            return
-        try:
-            await self._driver_rollback_answer_reservation(
-                rec, token, suppress_reanchor=suppress_reanchor)
-        except Exception:  # noqa: BLE001 — rollback is advisory
-            logger.debug("rollback_answer_reservation failed for %s",
-                         rec.id[:8], exc_info=True)
 
     def _classify_engagement_command(self, text: str) -> str | None:
         """#649: THE one mention-aware recognized-command classification,
@@ -3305,8 +3056,8 @@ class TelegramChannel(Channel):
            terminal writer that wins the flip after the read above can paint
            and close first and this notice lands below the paint, or fails
            against a closed topic. Installing that ordering needs the
-           in_casa turn-admission fence that does not exist (INV-ENG-009 is
-           claude_code-only) and is deliberately out of scope here. The
+           in_casa turn-admission fence that does not exist and is
+           deliberately out of scope here. The
            invariant is written as an attempt for that reason.
         4. **R2: terminal STATUS is not the suppression predicate — a
            CONFIRMED terminal telling is.** A seam reviewer reproduced the
@@ -3461,8 +3212,6 @@ class TelegramChannel(Channel):
 
     async def _deliver_turn_bg(
         self, rec, text: str, *, tg_message_id: int | None = None,
-        answer_token: str | None = None,
-        inbound_reserved: bool = False,
         inbound_token: object | None = None,
         system_turn: bool = False,
         await_rebuild: bool = False,
@@ -3505,37 +3254,13 @@ class TelegramChannel(Channel):
         to the driver with the text, so a turn re-sent into the fresh session
         is still that batch. ``system_turn`` is not batch identity: an authz or
         configurator continuation is a system turn too.
-
-        v0.83.0 (§A3, Sol r9-1/r10-2): this task OWNS the answered reservation
-        after hand-off. The enqueue DISPOSITION drives its fate — an ACCEPTED
-        enqueue (``queued``/``evicted_other``) already PROMOTED (consumed) the
-        reservation inside ``enqueue``; a REJECTED enqueue (``dropped_full`` /
-        ``error``) or a raised/cancelled delivery CAS-rolls it back so the
-        question stops being treated as answered.
         """
         import background_jobs
         background_jobs.turn_owner_started(rec.id)
 
-        def _release_inbound():
-            # G4 D2: the reservation ends when the enqueue RESOLVED either
-            # way — an accepted enqueue transfers "unread" accounting to the
-            # spool (state=queued); a rejected/raised one is gone.
-            nonlocal inbound_reserved
-            if inbound_reserved and self._driver_release_inbound is not None:
-                inbound_reserved = False
-                try:
-                    # #691: the same message id the reservation was born with
-                    # (this task's own parameter), so the release drops exactly
-                    # this message's recorded text and no other's.
-                    self._driver_release_inbound(
-                        rec, message_id=tg_message_id)
-                except Exception:  # noqa: BLE001
-                    logger.debug("release_inbound failed", exc_info=True)
-
         async def _ready() -> bool:
             try:
-                return await self._ready_after_drain(
-                    rec, inbound_token, answer_token, _release_inbound)
+                return await self._ready_after_drain(rec, inbound_token)
             except BaseException:
                 background_jobs.turn_owner_finished(rec.id)
                 raise
@@ -3556,14 +3281,12 @@ class TelegramChannel(Channel):
                 logger.debug("courtesy line failed for %s", rec.id[:8],
                              exc_info=True)
             finally:
-                _release_inbound()
                 if (inbound_token is not None
                         and self._driver_discharge_inbound is not None):
                     try:
                         self._driver_discharge_inbound(rec, inbound_token)
                     except Exception:  # noqa: BLE001
                         logger.debug("inbound discharge failed", exc_info=True)
-                await self._rollback_answer(rec, answer_token)
                 background_jobs.turn_owner_finished(rec.id)
             return
 
@@ -3584,22 +3307,18 @@ class TelegramChannel(Channel):
         from drivers.in_casa_driver import SessionInvalidatedError
         try:
             try:
-                disposition = await _send()
+                await _send()
             except SessionInvalidatedError:
-                if not await self._ready_after_drain(
-                        rec, inbound_token, answer_token, _release_inbound):
+                if not await self._ready_after_drain(rec, inbound_token):
                     return
                 try:
-                    disposition = await _send()
+                    await _send()
                 except SessionInvalidatedError as exc:
                     logger.warning(
                         "turn for %s refused twice by an invalidated session: "
                         "%s", rec.id[:8], exc)
-                    _release_inbound()
                     await self._settle_lost_inbound(rec, inbound_token)
-                    await self._rollback_answer(rec, answer_token)
                     return
-            _release_inbound()
             # #649: on the success path the driver already discharged the
             # ticket at its evidence frame — this is the idempotent safety.
             if (inbound_token is not None
@@ -3613,18 +3332,12 @@ class TelegramChannel(Channel):
             turn_cut_off = await self._report_incomplete_turn(
                 rec, inbound_token, system_turn=system_turn)
         except asyncio.CancelledError:
-            _release_inbound()
-            # Cancelled before a durable enqueue could promote — roll back.
             # #649 visibility law: one bounded notice attempt while the
             # ticket is still held, then discharge (guarded — a shutdown
             # cancellation's notice may fail; that is the bounded attempt).
             await self._settle_lost_inbound(rec, inbound_token)
-            await self._rollback_answer(rec, answer_token)
             raise
         except Exception as exc:  # noqa: BLE001
-            _release_inbound()
-            # The enqueue raised (never durably spooled) — the reservation must
-            # roll back so the answer-lifecycle isn't left falsely promoted.
             latest = (
                 self._engagement_registry.get(rec.id)
                 if self._engagement_registry is not None else None
@@ -3632,7 +3345,6 @@ class TelegramChannel(Channel):
             if latest is not None and latest.status in (
                 "completed", "cancelled", "error",
             ):
-                await self._rollback_answer(rec, answer_token)
                 logger.info(
                     "turn delivery ended by finalize for %s: %s",
                     rec.id[:8], exc,
@@ -3646,21 +3358,10 @@ class TelegramChannel(Channel):
                 return
             logger.warning("turn delivery failed for %s: %s", rec.id[:8], exc)
             try:
-                # F2 sweep (Sol r3): route through the sequencer (single writer)
-                # so this failure notice can't land below open narration.
                 await self._post_engagement_notice(rec, f"Turn failed: {exc}")
             except Exception:  # noqa: BLE001 — best-effort user notice
                 pass
             finally:
-                # M4 (§A3 wave 2): a CancelledError while AWAITING the notice
-                # bypasses ``except Exception`` — without a finally the rollback
-                # below never runs and the answered reservation LEAKS (the anchor
-                # stays invisibly 'answered'). Guarantee the rollback here so it
-                # runs on both the normal and the cancelled paths; a CancelledError
-                # still propagates after. Sol r12-1 ordering preserved: rollback
-                # runs AFTER the notice attempt, so a rollback consumer's re-posted
-                # question lands BELOW the notice.
-                await self._rollback_answer(rec, answer_token)
                 # #649: the "Turn failed" notice above WAS this delivery's
                 # one visible-outcome attempt — discharge follows it.
                 if (inbound_token is not None
@@ -3678,11 +3379,6 @@ class TelegramChannel(Channel):
                     text=f"a batch failed: {kind}",
                     artifacts=[], next_steps=[], driver=self._engagement_driver)
             return
-        else:
-            # §A3: a durable-enqueue REJECTION (capacity drop / spool-write error)
-            # rolls the reservation back; an accepted enqueue already promoted it.
-            if disposition in ("dropped_full", "error"):
-                await self._rollback_answer(rec, answer_token)
         finally:
             background_jobs.turn_owner_finished(rec.id)
         if rec.origin.get("job"):
@@ -3693,9 +3389,7 @@ class TelegramChannel(Channel):
 
     def _turn_running_in(self, rec) -> bool:
         """#1166: is an in_casa turn running in this engagement's session?
-        claude_code (and an unwired or mock driver) reads False."""
-        if getattr(rec, "driver", None) == "claude_code":
-            return False
+        An unwired or mock driver reads False."""
         probe = getattr(self._engagement_driver, "turn_in_progress", None)
         return probe is not None and probe(rec.id) is True
 
@@ -3709,9 +3403,7 @@ class TelegramChannel(Channel):
         latest = (reg.get(rec.id) if reg is not None else None) or rec
         return bool(getattr(latest, "context_rebuild_pending", False))
 
-    async def _ready_after_drain(
-        self, rec, inbound_token, answer_token, release_inbound,
-    ) -> bool:
+    async def _ready_after_drain(self, rec, inbound_token) -> bool:
         """#1166: the readiness step a delivery task runs itself when the
         session its turn is for was invalidated under a running turn — wait
         for that turn to end, then run ``_resume_and_ready`` under the topic
@@ -3731,21 +3423,15 @@ class TelegramChannel(Channel):
             async with lock:
                 ready = await self._resume_and_ready(rec)
         except asyncio.CancelledError:
-            release_inbound()
             await self._settle_lost_inbound(rec, inbound_token)
-            await self._rollback_answer(rec, answer_token)
             raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("engagement %s could not be readied after a "
                            "clearance downgrade: %s", rec.id[:8], exc)
-            release_inbound()
             await self._settle_lost_inbound(rec, inbound_token)
-            await self._rollback_answer(rec, answer_token)
             return False
         if ready:
             return True
-        release_inbound()
-        await self._rollback_answer(rec, answer_token)
         if (inbound_token is not None
                 and self._driver_discharge_inbound is not None):
             try:
@@ -3767,8 +3453,8 @@ class TelegramChannel(Channel):
         Keeping ONE copy under ONE lock is what stops a manual nudge and a
         system resume from both observing a suspended in_casa driver and
         double-opening its ``ClaudeSDKClient`` / lock. Operator-message-specific
-        bookkeeping (answered/inbound reservations, reply-threading, the finally
-        rollback) stays in ``handle_update`` AROUND this call; only the
+        bookkeeping (admission tickets, reply-threading) stays in
+        ``handle_update`` AROUND this call; only the
         resume/lifecycle core lives here."""
         # Re-resolve under the lock: a driver-side result-finalize can flip the
         # record terminal between handler entry and here. Only active/idle
@@ -3798,7 +3484,7 @@ class TelegramChannel(Channel):
             # that was running at clamp time (and was waited for, not cut)
             # can have re-persisted it or reported one first seen after the
             # clamp; the registry retires the pointer it drops.
-            if reg is not None and rec.driver != "claude_code":
+            if reg is not None:
                 await reg.clear_session_id(rec.id)
             try:
                 preamble = await self._engagement_context_rebuilder(rec)
@@ -3818,10 +3504,8 @@ class TelegramChannel(Channel):
             else:
                 rec.context_rebuild_pending = False
 
-        # Resume suspended client if needed (in_casa driver only — the
-        # claude_code driver has s6 keeping the subprocess alive across Casa
-        # restarts, and its engagements never have sdk_session_id).
-        if rec.driver != "claude_code" and self._engagement_driver is not None:
+        # Resume suspended client if needed.
+        if self._engagement_driver is not None:
             drv = self._engagement_driver
             # #1301: a quiet run (no topic) always takes the job arms — the
             # direct-mark_error arms below tell only in the topic, which would
@@ -3923,13 +3607,6 @@ class TelegramChannel(Channel):
         SYNCHRONOUS instant inside the window (a challenge's
         ``on_commit_sync``, which runs with no await after ``BROKER.commit``)
         and handing it over to the ticket at the seam.
-
-        Deliberately NOT the ``_driver_reserve_inbound`` seam
-        (``casa_core``): that one is consumed by the OPERATOR message path,
-        which already admits a text-bearing ticket three lines earlier, so
-        enabling it for ``in_casa`` would make one operator message hold both a
-        reservation and a ticket — double-counting it in the completion veto
-        and inflating the #664 lost-inbound disclosure.
         """
         return _InboundReservation(self, engagement_id)
 
@@ -4024,8 +3701,7 @@ class TelegramChannel(Channel):
         # #663: hand the tap-commit reservation over to the ticket that now
         # exists, in the SAME event-loop step and with no await between, so the
         # completion gate never observes both populations empty. Only once a
-        # ticket was actually admitted: an unwired channel (or a claude_code
-        # record, which keeps its own spool accounting) admits nothing, and
+        # ticket was actually admitted: an unwired channel admits nothing, and
         # releasing there would leave the gate with nothing at all — so the
         # lease stays held and its owner's ``finally`` disposes of it.
         #
@@ -4480,20 +4156,13 @@ class TelegramChannel(Channel):
     async def _on_inline_callback(
         self, update: Any, context: Any = None,
     ) -> None:
-        """Dispatch inline-keyboard callbacks (permission / ask verdicts, …).
+        """Dispatch inline-keyboard callbacks (DM asks, proposals, run stops).
 
         v0.75.0 [D:§W5 callback, Sol B4/B5/r2-B3/r3-B5/r7-B2/B6]: EXACTLY ONE
         ``await cq.answer(toast)`` per path (via :func:`_safe_answer`, which
-        swallows a transport failure so it never crashes the handler). Order:
-        parse ``v1|ns|rid|idx`` (or the legacy ``perm:<allow|deny>:<rid>``
-        shape) FIRST; ``cq.from_user is None`` fails closed; resolve the
-        engagement from the topic; reject a TERMINAL record BEFORE claiming
-        (r7-B6 — closes the window where ``try_transition_terminal`` has
-        flipped status but is still awaiting tombstone I/O); look up the
-        broker request's static meta; reject wrong-topic / out-of-range
-        option / wrong-actor WITHOUT claiming; only then claim + (for
-        ``engagement_ask``) persist the state advance BEFORE committing, so
-        the awaiting handler never resumes un-authorized.
+        swallows a transport failure so it never crashes the handler). Every
+        namespace is DM-scoped and owned by its own branch; anything else
+        answers ``expired``.
 
         This handler NEVER edits the keyboard — that is owned exclusively by
         the broker finish-hook set at post time (r3-B3), which fires once on
@@ -4501,7 +4170,7 @@ class TelegramChannel(Channel):
         """
         cq = update.callback_query
         data = cq.data or ""
-        ns, request_id, idx, kind = _parse_callback_data(data)
+        ns, request_id, idx, _kind = _parse_callback_data(data)
         if ns is None:
             await _safe_answer(cq, "expired")
             return
@@ -4522,236 +4191,7 @@ class TelegramChannel(Channel):
         if ns == "run_stop":
             await self._on_run_stop_callback(cq, request_id)
             return
-
-        if cq.from_user is None:
-            # r3-B5: fail closed — an anonymous/missing actor can never
-            # authorize a verdict.
-            await _safe_answer(cq, "expired")
-            return
-
-        thread_id = getattr(cq.message, "message_thread_id", None)
-        if thread_id is None or self._engagement_registry is None:
-            await _safe_answer(cq, "expired")
-            return
-        rec = self._engagement_registry.by_topic_id(thread_id)
-        if rec is None:
-            await _safe_answer(cq, "expired")
-            return
-        # r7-B6: reject a TERMINAL record BEFORE claiming — closes the
-        # window where try_transition_terminal has flipped rec.status but is
-        # still awaiting tombstone I/O before _finalize_engagement reaches
-        # cancel_scope.
-        if getattr(rec, "status", None) not in ("active", "idle"):
-            await _safe_answer(cq, "expired")
-            return
-
-        from verdict_broker import BROKER
-
-        meta = BROKER.get_meta(namespace=ns, scope=rec.id, request_id=request_id)
-        if meta is None:
-            await _safe_answer(cq, "expired")
-            return
-        if meta.get("topic_id") != thread_id:
-            await _safe_answer(cq, "expired")
-            return
-        options = meta.get("options") or []
-        # A5 · F-MULTI: a SUBMIT tap carries no option index (``idx is None``);
-        # the range check applies only to single-select + toggle taps.
-        if kind != "submit" and idx not in range(len(options)):
-            await _safe_answer(cq, "invalid")
-            return
-
-        # Fail closed on actor (r3-B5/r7-B2): no operator_id on record, or a
-        # tap from someone other than the bound operator, is refused WITHOUT
-        # claiming — a late/wrong tap must never consume the live request.
-        expected = meta.get("operator_id")
-        if expected is None or cq.from_user.id != expected:
-            await _safe_answer(cq, "not for you")
-            return
-
-        # A5 · F-MULTI TOGGLE: broker-owned atomic flip on a LIVE, UNCLAIMED
-        # request, then a revalidated markup-only keyboard redraw through the
-        # sequencer's ``edit_discrete`` (§A9). This handler NEVER resolves the
-        # request — only the finish hook (submit / timeout / supersede) settles.
-        if kind == "toggle":
-            selected = BROKER.toggle_selection(
-                namespace=ns, scope=rec.id, request_id=request_id, idx=idx)
-            if selected is None:
-                await _safe_answer(cq, "expired")
-                return
-            await self._redraw_multi_keyboard(
-                rec.id, request_id, meta, options, selected)
-            await _safe_answer(
-                cq, "added" if idx in selected else "removed")
-            return
-
-        # A5 · F-MULTI SUBMIT: require ≥1 selection, then claim carrying the full
-        # selection (``option_index`` = the FIRST selected index for compat).
-        option_indices: "list[int] | None" = None
-        claim_index = idx
-        if kind == "submit":
-            selected = sorted(set(meta.get("selected") or ()))
-            if not selected:
-                await _safe_answer(cq, "pick at least one")
-                return
-            option_indices = selected
-            claim_index = selected[0]
-
-        claim = BROKER.claim(
-            namespace=ns, scope=rec.id, request_id=request_id,
-            option_index=claim_index, actor_id=cq.from_user.id,
-            option_indices=option_indices,
-        )
-        if isinstance(claim, str):
-            # Non-winning: a late tap on an already-retired keyboard never
-            # authorizes anything (no state change).
-            await _safe_answer(
-                cq, {"duplicate": "already answered", "stale": "expired",
-                     "forbidden": "not for you"}[claim],
-            )
-            return
-
-        committed = False
-        advanced = False
-        try:
-            if ns == "engagement_ask":
-                # r2-B7/r3-B4: persist `authorized` under the registry lock
-                # BEFORE the awaiting handler resumes. r7-B1 (strict):
-                # advance_interaction_state doesn't exist until Task 7 — a
-                # registry lacking it takes the no-op skip-to-commit path
-                # (Task 7 activates the guard automatically once it lands).
-                advance = getattr(
-                    self._engagement_registry, "advance_interaction_state", None,
-                )
-                if advance is not None:
-                    try:
-                        await advance(rec.id, "operator_answered")
-                        advanced = True
-                    except asyncio.CancelledError:
-                        # B4 (Sol diff r2): advance SHIELDS its mutate+persist,
-                        # so by the time it re-raises CancelledError the durable
-                        # write has RESOLVED. If it authorized durably (state
-                        # now "authorized"), mark `advanced` so the finally
-                        # COMMITS rather than re-arming a request that would
-                        # later expire no_answer DESPITE disk authorization. A
-                        # rolled-back persist failure leaves the state != authorized
-                        # → fall through to abort. Then honor the cancellation.
-                        if getattr(
-                            rec, "interaction_state", "",
-                        ) == "authorized":
-                            advanced = True
-                        raise
-                    except Exception:  # noqa: BLE001
-                        # Could NOT authorize — do not resolve the ask
-                        # unauthorized (frozen W2 contract). Release + re-arm
-                        # the timer; the operator can re-tap.
-                        logger.warning(
-                            "engagement_ask advance_interaction_state failed "
-                            "(engagement=%s rid=%s)",
-                            rec.id[:8], request_id, exc_info=True,
-                        )
-                        BROKER.abort_claim(claim)
-                        await _safe_answer(cq, "couldn't record — please tap again")
-                        return
-            committed = self._commit_ask_with_anchor(claim, ns, rec, meta)
-        finally:
-            # r7-B1: ANY exit without a commit (including CancelledError,
-            # which `except Exception` above would not catch) must resolve the
-            # claim so a claimed live request whose timer was cancelled is never
-            # stranded. B4 (Sol diff r2): an authorized-but-uncommitted ask —
-            # the caller was cancelled in the persist window AFTER the durable
-            # write landed — must COMMIT (commit is identity-checked and safe),
-            # else abort_claim (re-arm the timer for a re-tap). abort_claim is
-            # idempotent + sync.
-            if not committed:
-                if advanced:
-                    committed = self._commit_ask_with_anchor(claim, ns, rec, meta)
-                else:
-                    BROKER.abort_claim(claim)
-        await _safe_answer(cq, "✔" if committed else "expired")
-
-    async def _redraw_multi_keyboard(
-        self, engagement_id: str, request_id: str, meta: dict,
-        options: list, selected: list,
-    ) -> bool:
-        """A5 · F-MULTI: redraw the toggle keyboard after a flip, via the
-        sequencer's markup-only ``edit_discrete`` (§A9).
-
-        The redraw REVALIDATES live-and-unclaimed under the serialized CM
-        immediately before the wire edit (``BROKER.is_live_unclaimed``) — a
-        terminal outcome that resolved in between skips the edit, so a stale
-        redraw can never resurrect a settled keyboard. Degrades to a no-op
-        (returns False) when the driver/sequencer seam is absent (eager
-        fallback / unit fakes). The message id + agent ``shorts`` live in the
-        broker-owned meta seeded at post time."""
-        mid = meta.get("message_id")
-        if not isinstance(mid, int):
-            return False
-        try:
-            import agent as _agent_mod
-            drv = getattr(_agent_mod, "active_claude_code_driver", None)
-        except Exception:  # noqa: BLE001
-            drv = None
-        if drv is None:
-            return False
-        editor = getattr(drv, "edit_ask_keyboard", None)
-        if editor is None:
-            return False
-        from verdict_broker import BROKER
-
-        # D2 item 3 (Task A5): redraw from the PERSISTED whole-set captions
-        # seeded at registration — prepend only the mutable ☐/☑ glyph, never
-        # re-resolve from ``shorts`` (byte-identical re-render, no drift).
-        # Fall back to resolving from ``shorts`` only for a legacy meta that
-        # predates the ``button_labels`` seed.
-        captions = meta.get("button_labels")
-        if not isinstance(captions, list) or len(captions) != len(options):
-            captions = _captions_from_shorts(options, meta.get("shorts"), True)
-        markup = _build_multi_keyboard(
-            request_id, options, captions, selected)
-
-        def _still_live() -> bool:
-            return BROKER.is_live_unclaimed(
-                namespace="engagement_ask", scope=engagement_id,
-                request_id=request_id)
-
-        try:
-            return await editor(
-                engagement_id, mid, markup, revalidate=_still_live)
-        except Exception:  # noqa: BLE001 — a redraw failure never breaks the tap
-            logger.debug("multi keyboard redraw failed", exc_info=True)
-            return False
-
-    def _commit_ask_with_anchor(
-        self, claim: Any, ns: str, rec: Any, meta: dict,
-    ) -> bool:
-        """ONE commit helper for BOTH engagement-ask commit paths (the normal
-        path and the ``finally`` recovery commit) — v0.79.0 §4 causal handoff.
-
-        ``BROKER.commit`` resolves the ask future FIRST; only then, and only for
-        ``engagement_ask``, do we SYNCHRONOUSLY set the sequencer's one-shot
-        reply anchor to the ask message id. PRE-RESUMPTION GUARANTEE: asyncio
-        run-to-completion means no awaiting coroutine RESUMES between the
-        synchronous ``commit()`` and this synchronous set, so the CLI's ask
-        response (which cannot be produced until its waiter resumes) can never
-        be emitted before the anchor is in place — the SAME turn's first output
-        threads to the question. Advisory only: no persistence, no rollback; a
-        crash leaves unthreaded output with nothing pending."""
-        from verdict_broker import BROKER
-
-        committed = BROKER.commit(claim)
-        if committed and ns == "engagement_ask":
-            mid = meta.get("message_id") if isinstance(meta, dict) else None
-            if isinstance(mid, int):
-                try:
-                    import agent as _agent_mod
-                    drv = getattr(_agent_mod, "active_claude_code_driver", None)
-                    setter = getattr(drv, "set_engagement_reply_anchor", None)
-                    if setter is not None:
-                        setter(rec.id, mid)
-                except Exception:  # noqa: BLE001 — advisory, never break commit
-                    logger.debug("reply-anchor set failed", exc_info=True)
-        return committed
+        await _safe_answer(cq, "expired")
 
     async def _on_resident_callback(self, cq: Any, rid: str, idx: int) -> None:
         """resident_ask tap — SINGLE-OWNER commit contract [A:§2, r1-B2/r3-B1].
@@ -4844,552 +4284,38 @@ class TelegramChannel(Channel):
                 raise
 
     # ------------------------------------------------------------------
-    # v0.37.2 (C-1): permission-relay keyboard composer
+    # Plain topic-message edit helper.
     # ------------------------------------------------------------------
-
-    async def post_perm_keyboard(
-        self,
-        *,
-        engagement_id: str,
-        request_id: str,
-        tool_name: str,
-        tool_input: dict,
-    ) -> int | None:
-        """Post the ✅/❌ permission-relay keyboard to an engagement topic.
-
-        Called by ``engagement_permission_relay`` hook (spec §4.4). Resolves
-        the topic_id from ``engagement_registry``. ``send_to_topic`` returns
-        the message_id (or None on failure); we pass it through.
-        """
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-        rec = self._engagement_registry.get(engagement_id)
-        if rec is None or rec.topic_id is None:
-            logger.warning(
-                "post_perm_keyboard: unknown engagement or no topic_id "
-                "(engagement=%s)", engagement_id[:8],
-            )
-            return None
-        # #347: the relay hook's status==active gate goes stale across its
-        # awaits — terminalization can land between that check and this post
-        # (the terminal sweep cancels the broker scope BEFORE this request
-        # registers, so nothing else withdraws it). This fresh-fetch is the
-        # authoritative re-check: a terminal engagement never gets a live
-        # Allow/Deny keyboard; returning None resolves waiters as
-        # delivery_failed (→ deny) instead of a full-timeout wait.
-        if getattr(rec, "status", None) in ("completed", "cancelled", "error"):
-            logger.warning(
-                "post_perm_keyboard: engagement %s is terminal (%s) — "
-                "refusing keyboard", engagement_id[:8], rec.status,
-            )
-            return None
-
-        # M11 (v0.52.0): escape the dynamic text. tool_name goes inside a
-        # *bold* span (general MarkdownV2 escaping); the preview goes inside a
-        # ``` code fence (pre/code escaping — only backtick + backslash). The
-        # static prefix has no reserved chars. Unescaped, MCP tool names
-        # (mcp__x__y — underscore runs) and Bash previews (backticks/
-        # backslashes) trigger a Telegram 400 that the relay hook turns into
-        # an auto-deny.
-        body_lines = [f"Claude wants to use: *{_escape_mdv2(tool_name)}*"]
-        preview = self._build_perm_preview(tool_name, tool_input)
-        if preview:
-            body_lines.append("")
-            body_lines.append(f"```\n{_escape_mdv2_pre(preview)}\n```")
-        body = "\n".join(body_lines)
-
-        # v0.75.0 (W5/Sol B3,B4): v1 broker callback_data — option_index
-        # 0=allow, 1=deny (verdict_broker.py meta["options"]=["allow","deny"]).
-        kbd = InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                text="✅ Allow",
-                callback_data=f"v1|permission|{request_id}|0",
-            ),
-            InlineKeyboardButton(
-                text="❌ Deny",
-                callback_data=f"v1|permission|{request_id}|1",
-            ),
-        ]])
-
-        try:
-            return await self.send_to_topic(
-                rec.topic_id, body,
-                reply_markup=kbd,
-                parse_mode="MarkdownV2",
-            )
-        except TelegramError as exc:
-            # M11 defense-in-depth: any residual MarkdownV2 parse failure
-            # degrades to an unformatted keyboard rather than a hook-level
-            # auto-deny. The operator still sees the request and both buttons.
-            logger.warning(
-                "post_perm_keyboard MarkdownV2 send failed (engagement=%s); "
-                "retrying as plain text: %s", engagement_id[:8], exc,
-            )
-            plain = f"Claude wants to use: {tool_name}"
-            if preview:
-                plain += f"\n\n{preview}"
-            return await self.send_to_topic(
-                rec.topic_id, plain, reply_markup=kbd,
-            )
-
-    @staticmethod
-    def _build_perm_preview(tool_name: str, tool_input: dict) -> str:
-        """Render a short, single-line preview of the tool's identifying field."""
-        if tool_name == "Bash":
-            return str(tool_input.get("command", ""))[:200]
-        if tool_name in ("Edit", "Write", "Read", "Glob", "Grep"):
-            return str(
-                tool_input.get("file_path") or tool_input.get("pattern") or ""
-            )[:200]
-        if tool_name.startswith("mcp__"):
-            return ""  # MCP tool calls — no useful primary field
-        return ""
-
-    async def edit_perm_keyboard_outcome(
-        self, *, topic_id: int | None, message_id: int, outcome: dict,
-    ) -> None:
-        """Broker finish-hook target (r3-B3) — the ONLY writer that mutates a
-        posted permission keyboard after the fact.
-
-        Strips the inline buttons so a resolved / expired / cancelled
-        keyboard can never be tapped again. ``_on_inline_callback`` itself
-        never edits the keyboard — this method (invoked by the broker's
-        finish-hook machinery, ``hooks._perm_keyboard_finish``) is the sole
-        writer, and it fires exactly once per request regardless of which
-        task set it up.
-        """
-        if not self.engagement_supergroup_id:
-            return
-        # v0.79.0 §4 (the real S1): send an EXPLICIT empty keyboard rather than
-        # ``reply_markup=None`` — PTB drops None params, so a None markup would
-        # leave the permission buttons tappable after the verdict settled.
-        from telegram import InlineKeyboardMarkup
-        try:
-            await self.bot.edit_message_reply_markup(
-                chat_id=self.engagement_supergroup_id,
-                message_id=message_id,
-                reply_markup=InlineKeyboardMarkup([]),
-            )
-        except Exception as exc:  # noqa: BLE001 — best-effort, never raise
-            logger.warning(
-                "edit_perm_keyboard_outcome failed (topic=%s message_id=%s "
-                "outcome=%s): %s",
-                topic_id, message_id, outcome.get("outcome"), exc,
-            )
-
-    # ------------------------------------------------------------------
-    # v0.75.0 (W5): engagement_ask keyboard composer + plain topic-message
-    # edit/delete helpers.
-    # ------------------------------------------------------------------
-
-    async def post_options_keyboard(
-        self,
-        *,
-        engagement_id: str,
-        request_id: str,
-        question: str,
-        options: list,
-        shorts: "list | None" = None,
-        multi: bool = False,
-        reply_to: "int | None" = None,
-    ) -> int | None:
-        """Post a rich-text multiple-choice question with one tappable
-        button per option (W5 `ask`).
-
-        ``reply_to`` (#332): the consumed turn reply target — a deferred ask
-        that is the turn's first output threads to the operator's inbound
-        message (v0.79.0 §3), like the narration open and reply posters.
-
-        Mirrors ``post_perm_keyboard``'s engagement/topic resolution but skips
-        MarkdownV2 entirely — the question/options are operator- or agent-authored
-        free text. R2b (v0.89.0): the body renders through ``post_ask_body_rich``
-        (a SINGLE-ATTEMPT rich send, fail-closed on an entity ``BadRequest``) so
-        markdown (``**bold**``, `` `code` ``) renders as ``MessageEntity`` spans
-        instead of leaking literal markers, WITHOUT the double-send that the
-        round-4 single-post cancellation gate forecloses. Plain bodies send
-        ``plain_text`` (``render()`` returns ``entities=None``; #1330: their
-        escapes consumed), so no escaping pass is needed.
-        """
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-        rec = self._engagement_registry.get(engagement_id)
-        if rec is None or rec.topic_id is None:
-            logger.warning(
-                "post_options_keyboard: unknown engagement or no topic_id "
-                "(engagement=%s)", engagement_id[:8],
-            )
-            return None
-
-        # v0.75.0 (W5): v1 broker callback_data, one button (its own row)
-        # per option — option_index is this option's position in `options`.
-        # v0.81.0 (W-R3) / v0.84.0 (round 4, D2): the button LABEL is resolved
-        # over the WHOLE option set by ``resolve_button_labels`` — EVERY option
-        # needs a usable agent-supplied ``short`` or the WHOLE set floors to
-        # numbered placeholders (never a per-option elision/short mix, D2 item
-        # 1). ``question`` is already the canonical body (``render_ask_body``):
-        # the FULL options are numbered VERBATIM in it, and ``callback_data``
-        # still carries the option INDEX as the identity.
-        # A5 · F-MULTI: a multi ask renders the toggle-many keyboard (checkboxes
-        # + ✅ Submit) via the shared builder; single-select keeps one tappable
-        # button per option (``v1|engagement_ask|<rid>|<idx>``).
-        # D2 item 3 (Task A5): the initial render consumes the PERSISTED
-        # whole-set ``button_labels`` seeded into broker meta at registration —
-        # the SAME captions the multi redraw reads — so post and redraw can
-        # never disagree. Falls back to resolving from ``shorts`` only when no
-        # broker meta exists (eager fallback / direct-call unit tests).
-        from verdict_broker import BROKER
-        _meta = BROKER.get_meta(
-            namespace="engagement_ask", scope=engagement_id, request_id=request_id)
-        captions = _meta.get("button_labels") if isinstance(_meta, dict) else None
-        if not isinstance(captions, list) or len(captions) != len(options):
-            captions = _captions_from_shorts(options, shorts, multi)
-
-        _send_kwargs: dict = {}
-        if reply_to is not None:
-            # #1434: a deleted target posts the ask unthreaded (still one send).
-            from telegram import ReplyParameters
-            _send_kwargs["reply_parameters"] = ReplyParameters(
-                message_id=reply_to, allow_sending_without_reply=True)
-
-        if multi:
-            kbd = _build_multi_keyboard(request_id, options, captions, selected=())
-            return await self.post_ask_body_rich(
-                rec.topic_id, question, reply_markup=kbd, **_send_kwargs)
-
-        kbd = InlineKeyboardMarkup([
-            [InlineKeyboardButton(
-                text=captions[i],
-                callback_data=f"v1|engagement_ask|{request_id}|{i}",
-            )]
-            for i in range(len(options))
-        ])
-
-        return await self.post_ask_body_rich(
-            rec.topic_id, question, reply_markup=kbd, **_send_kwargs)
 
     async def edit_topic_message(
         self, topic_id: int | None, message_id: int, text: str,
-        *, clear_keyboard: bool = False,
     ) -> bool:
         """Plain (no parse_mode) text edit of a posted topic message.
 
-        Broker finish-hook target for the ``engagement_ask`` namespace
-        (mirrors ``edit_perm_keyboard_outcome``'s role for ``permission``,
-        see ``channel_handlers._ask_keyboard_finish``). "Message is not
-        modified" (JC4 — an identical re-edit) is tolerated as success, not
-        an error, since it means the desired end state already holds.
-
-        ``clear_keyboard`` (v0.79.0 §4, the real S1 fix): when True, send an
-        EXPLICIT empty ``InlineKeyboardMarkup([])`` alongside the text so the
-        settled question drops its tappable buttons. A bare ``edit_message_text``
-        with no ``reply_markup`` leaves the old keyboard in place (PTB drops the
-        None param, so ``editMessageText`` never touches the markup) — that was
-        the settle-path bug (S1): answered/expired questions stayed tappable.
+        "Message is not modified" (JC4 — an identical re-edit) is tolerated as
+        success, not an error, since it means the desired end state already
+        holds.
         """
         if not self.engagement_supergroup_id:
             return False
-        reply_markup = None
-        if clear_keyboard:
-            from telegram import InlineKeyboardMarkup
-            reply_markup = InlineKeyboardMarkup([])
-        try:
-            if reply_markup is not None:
-                await self.bot.edit_message_text(
-                    chat_id=self.engagement_supergroup_id,
-                    message_id=message_id,
-                    text=text,
-                    reply_markup=reply_markup,
-                )
-            else:
-                await self.bot.edit_message_text(
-                    chat_id=self.engagement_supergroup_id,
-                    message_id=message_id,
-                    text=text,
-                )
-            return True
-        except BadRequest as exc:
-            if "not modified" in str(exc).lower():
-                return True
-            logger.warning(
-                "edit_topic_message failed (topic=%s message_id=%s): %s",
-                topic_id, message_id, exc,
-            )
-            return False
-        except Exception as exc:  # noqa: BLE001 — best-effort, never raise
-            logger.warning(
-                "edit_topic_message failed (topic=%s message_id=%s): %s",
-                topic_id, message_id, exc,
-            )
-            return False
-
-    async def edit_topic_message_rich(
-        self, topic_id: int | None, message_id: int, text: str,
-        *, clear_keyboard: bool = False,
-    ) -> bool:
-        """R2a (v0.89.0): rich-text edit of a posted NARRATION topic message.
-
-        Rich sibling of ``edit_topic_message``: ``render()`` the CURRENT full
-        string into ``MessageEntity`` spans and edit them in, so markdown
-        (``**bold**``, `` `code` ``, fenced-pre) renders instead of leaking
-        literal markers. Plain (no markup / over limits ⇒ ``entities is None``)
-        delegates to the plain ``edit_topic_message`` and edits ``plain_text``
-        (#1330: escapes consumed, a text over the limits as authored). On an entity ``BadRequest`` the ORIGINAL text is edited in
-        plain once (fail-literal); a "not modified" ``BadRequest`` is tolerated
-        as success (JC4, matching ``edit_topic_message``). ``clear_keyboard``
-        drops the tappable buttons via an explicit empty ``InlineKeyboardMarkup``
-        (the S1 fix), exactly as ``edit_topic_message`` does.
-
-        RENDERS ON EVERY EDIT (not only at a terminal edit): a narration message
-        can be SEALED by a tool_use / discrete post / rollover before the turn's
-        ``result``, and a render-at-terminal rule would leave every earlier
-        sealed message permanently plain. ``render()`` recomputes from the whole
-        current string each call.
-
-        Accepted, documented residuals (NOT fixed — YAGNI): a throttled
-        INTERMEDIATE edit can catch a half-open span (``**bold`` before the
-        closing ``**`` has streamed in) and briefly show literal markers; it
-        self-heals on the next edit and is fully correct at every sealing edit.
-        A rollover split can bisect a span across two messages and each half
-        degrades to literal independently — degraded, never corrupt.
-        """
-        display, entities = render(text)
-        if entities is None:
-            return await self.edit_topic_message(
-                topic_id, message_id, _plain(text), clear_keyboard=clear_keyboard)
-        if not self.engagement_supergroup_id:
-            return False
-        markup_kwargs: dict = {}
-        if clear_keyboard:
-            from telegram import InlineKeyboardMarkup
-            markup_kwargs["reply_markup"] = InlineKeyboardMarkup([])
         try:
             await self.bot.edit_message_text(
                 chat_id=self.engagement_supergroup_id,
                 message_id=message_id,
-                text=display,
-                entities=entities,
-                **markup_kwargs,
+                text=text,
             )
             return True
         except BadRequest as exc:
             if "not modified" in str(exc).lower():
                 return True
             logger.warning(
-                "edit_topic_message_rich fell back to plain "
-                "(topic=%s message_id=%s): %s", topic_id, message_id, exc)
-            try:
-                await self.bot.edit_message_text(
-                    chat_id=self.engagement_supergroup_id,
-                    message_id=message_id,
-                    text=text,  # ORIGINAL, verbatim
-                    **markup_kwargs,
-                )
-                return True
-            except BadRequest as exc2:
-                if "not modified" in str(exc2).lower():
-                    return True
-                logger.warning(
-                    "edit_topic_message_rich plain retry failed "
-                    "(topic=%s message_id=%s): %s", topic_id, message_id, exc2)
-                return False
-            except Exception as exc2:  # noqa: BLE001 — best-effort, never raise
-                logger.warning(
-                    "edit_topic_message_rich plain retry failed "
-                    "(topic=%s message_id=%s): %s", topic_id, message_id, exc2)
-                return False
-        except Exception as exc:  # noqa: BLE001 — best-effort, never raise
-            logger.warning(
-                "edit_topic_message_rich failed "
-                "(topic=%s message_id=%s): %s", topic_id, message_id, exc)
-            return False
-
-    async def send_topic_message_markup(
-        self, topic_id: int | None, text: str, markup: Any = None,
-        *, reply_to: int | None = None,
-    ) -> int | None:
-        """A9 (v0.83.0): topic send carrying an inline keyboard, returning the
-        posted ``message_id`` (markup-capable companion to ``send_to_topic``
-        for the OUTPUT SEQUENCER's ``post_discrete``).
-
-        ``markup`` is an ``InlineKeyboardMarkup`` (passed through), the
-        ``output_sequencer.MARKUP_EMPTY`` sentinel (⇒ explicit empty keyboard),
-        or ``None`` (⇒ no keyboard, plain send). ``reply_to`` reply-threads the
-        send. Best-effort: returns ``None`` on failure rather than raising.
-
-        v0.109.0 (G4): the body renders rich, restoring symmetry with the edit
-        sibling (``edit_topic_message_markup`` has rendered since R2c v0.89.0 —
-        a discrete post showed literal ``**`` until its settle-edit re-rendered
-        it). Same contract as R2c: entities on success; no markup / over caps ⇒
-        ``plain_text`` plain (#1330); an entity ``BadRequest`` (which posted
-        NOTHING) retries ONCE plain — this is not the cancellation-gated ask
-        poster, so the retry cannot double-post an ask."""
-        if not self.engagement_supergroup_id:
-            return None
-        kwargs: dict = {}
-        resolved = self._resolve_wire_keyboard(markup)
-        if resolved is not None:
-            kwargs["reply_markup"] = resolved
-        if reply_to is not None:
-            from telegram import ReplyParameters
-            kwargs["reply_parameters"] = ReplyParameters(
-                message_id=reply_to, allow_sending_without_reply=True,
-            )
-        display, entities = render(text)
-        try:
-            if entities is not None:
-                try:
-                    msg = await self.bot.send_message(
-                        chat_id=self.engagement_supergroup_id,
-                        text=display,
-                        message_thread_id=topic_id,
-                        entities=entities,
-                        **kwargs,
-                    )
-                    return msg.message_id
-                except BadRequest as exc:
-                    logger.warning(
-                        "send_topic_message_markup rich send fell back to "
-                        "plain (topic=%s): %s", topic_id, exc,
-                    )
-            msg = await self.bot.send_message(
-                chat_id=self.engagement_supergroup_id,
-                text=text if entities is not None else _plain(text),
-                message_thread_id=topic_id,
-                **kwargs,
-            )
-            return msg.message_id
-        except Exception as exc:  # noqa: BLE001 — best-effort, never raise
-            logger.warning(
-                "send_topic_message_markup failed (topic=%s): %s", topic_id, exc,
-            )
-            return None
-
-    async def edit_topic_message_markup(
-        self, topic_id: int | None, message_id: int, text, markup,
-    ) -> bool:
-        """A9 (v0.83.0): markup-capable edit of a posted topic message (the
-        sequencer's ``edit_discrete`` wire).
-
-        * ``text`` non-None, ``markup is _ABSENT`` → text-only edit; the existing
-          keyboard is left UNTOUCHED (PTB drops the omitted ``reply_markup``).
-        * ``text`` non-None, ``markup`` given → edit text AND keyboard.
-        * ``text is None``, ``markup`` given → markup-only edit via
-          ``bot.edit_message_reply_markup``.
-        * ``text is None`` and ``markup is _ABSENT`` → nothing to do (no-op True).
-
-        ``markup`` values resolve like ``send_topic_message_markup``'s (a real
-        keyboard passes through; ``MARKUP_EMPTY``/``None`` ⇒ explicit empty
-        keyboard to CLEAR). "Message is not modified" is tolerated as success
-        (the desired end-state already holds), matching ``edit_topic_message``.
-
-        R2c (v0.89.0): the two TEXT-present branches render markdown into
-        ``MessageEntity`` spans (the multi-select settle path
-        ``settle_ask_keyboard`` → ``edit_discrete`` → here re-sends the ask body,
-        which carries the raw ``**`` markers). ``render()`` decides: entities
-        present ⇒ edit them in (keeping the resolved ``reply_markup``); on an
-        entity ``BadRequest`` retry ONCE plain with the ORIGINAL raw text — an
-        EDIT is NOT the cancellation-gated POST, so this second edit introduces
-        no double-send race. ``entities is None`` (plain text / the marker
-        literals from the re-anchor/orphan edits) ⇒ edit ``plain_text`` (#1330:
-        escapes consumed; a text with none is unchanged). The ``text is None`` markup-only branch never
-        renders. The F1 no-op cache in ``edit_discrete`` keys on the raw ``text``
-        ABOVE this wire, so rendering below it stays consistent."""
-        from channels.output_sequencer import _ABSENT
-        if not self.engagement_supergroup_id:
-            return False
-        markup_touched = markup is not _ABSENT
-        if text is None and not markup_touched:
-            return True  # nothing to change
-        markup_kwargs: dict = {}
-        if markup_touched:
-            markup_kwargs["reply_markup"] = self._resolve_wire_keyboard(
-                markup, clear=True)
-        try:
-            if text is None:
-                # Markup-only edit — render() is never invoked (no text).
-                await self.bot.edit_message_reply_markup(
-                    chat_id=self.engagement_supergroup_id,
-                    message_id=message_id, **markup_kwargs,
-                )
-                return True
-            display, entities = render(text)
-            if entities is None:
-                await self.bot.edit_message_text(
-                    chat_id=self.engagement_supergroup_id,
-                    message_id=message_id, text=_plain(text), **markup_kwargs,
-                )
-                return True
-            try:
-                await self.bot.edit_message_text(
-                    chat_id=self.engagement_supergroup_id,
-                    message_id=message_id, text=display, entities=entities,
-                    **markup_kwargs,
-                )
-                return True
-            except BadRequest as exc:
-                if "not modified" in str(exc).lower():
-                    return True
-                logger.warning(
-                    "edit_topic_message_markup rich edit fell back to plain "
-                    "(topic=%s message_id=%s): %s", topic_id, message_id, exc)
-                await self.bot.edit_message_text(
-                    chat_id=self.engagement_supergroup_id,
-                    message_id=message_id, text=text,  # ORIGINAL, verbatim
-                    **markup_kwargs,
-                )
-                return True
-        except BadRequest as exc:
-            if "not modified" in str(exc).lower():
-                return True
-            logger.warning(
-                "edit_topic_message_markup failed (topic=%s message_id=%s): %s",
+                "edit_topic_message failed (topic=%s message_id=%s): %s",
                 topic_id, message_id, exc,
             )
             return False
         except Exception as exc:  # noqa: BLE001 — best-effort, never raise
             logger.warning(
-                "edit_topic_message_markup failed (topic=%s message_id=%s): %s",
-                topic_id, message_id, exc,
-            )
-            return False
-
-    @staticmethod
-    def _resolve_wire_keyboard(markup, *, clear: bool = False):
-        """Map a sequencer markup value to a concrete PTB ``reply_markup``.
-
-        A real ``InlineKeyboardMarkup`` passes through unchanged; the
-        ``output_sequencer.MARKUP_EMPTY`` sentinel resolves to an explicit empty
-        keyboard. ``None`` resolves to an explicit empty keyboard when *clear* is
-        set (an EDIT that must drop the old keyboard) or to ``None`` otherwise (a
-        fresh SEND has no keyboard to clear)."""
-        from telegram import InlineKeyboardMarkup
-        from channels.output_sequencer import MARKUP_EMPTY
-        if markup is None:
-            return InlineKeyboardMarkup([]) if clear else None
-        if isinstance(markup, str) and markup == MARKUP_EMPTY:
-            return InlineKeyboardMarkup([])
-        return markup
-
-    async def delete_topic_message(
-        self, topic_id: int | None, message_id: int,
-    ) -> bool:
-        """Delete a single message from a topic (W5 companion to
-        ``edit_topic_message``).
-
-        Best-effort: any failure returns ``False`` rather than raising —
-        unlike whole-topic ``delete_topic``, losing one message is not
-        audit-critical.
-        """
-        if not self.engagement_supergroup_id:
-            return False
-        try:
-            return bool(await self.bot.delete_message(
-                chat_id=self.engagement_supergroup_id,
-                message_id=message_id,
-            ))
-        except Exception as exc:  # noqa: BLE001 — best-effort, never raise
-            logger.warning(
-                "delete_topic_message failed (topic=%s message_id=%s): %s",
+                "edit_topic_message failed (topic=%s message_id=%s): %s",
                 topic_id, message_id, exc,
             )
             return False
@@ -5408,8 +4334,7 @@ class TelegramChannel(Channel):
         """Post a plain-text question to a DM chat with one tappable button
         per option (resident_ask).
 
-        DM analogue of ``post_options_keyboard``: chat-addressed (no topic
-        thread), plain send (operator-/agent-authored free text, no MarkdownV2
+        Chat-addressed (no topic thread), plain send (operator-/agent-authored free text, no MarkdownV2
         escaping pass). ``callback_data`` is ``v1|resident_ask|<request_id>|<i>``
         where ``i`` is the option's position. Returns the Telegram
         ``message_id``, or ``None`` on send failure — the broker's
@@ -5438,8 +4363,7 @@ class TelegramChannel(Channel):
             )]
             for i in range(len(options))
         ])
-        # v0.109.0 (G1): render the BODY rich (DM parity with
-        # ``post_ask_body_rich``) — agent-authored ask bodies are markdown-heavy
+        # v0.109.0 (G1): render the BODY rich — agent-authored ask bodies are markdown-heavy
         # and this was the dominant literal-``**`` DM surface. Buttons and
         # ``callback_data`` are untouched (index-addressed). Single-shot
         # ``render()``: no markup / over caps ⇒ ``plain_text`` sends plain
@@ -5513,8 +4437,8 @@ class TelegramChannel(Channel):
         so the settled question drops its buttons. A bare ``edit_message_text``
         leaves them tappable — PTB drops the omitted ``reply_markup``, so
         ``editMessageText`` never touches the markup. That is the same defect
-        v0.79.0 fixed for the TOPIC path (``edit_topic_message``'s
-        ``clear_keyboard``); the DM path was left behind, and it settles EVERY
+        v0.79.0 fixed for the (since removed) topic-ask path; the DM path was
+        left behind, and it settles EVERY
         DM question Casa asks: ``ask_user``, ``wipe_memory``, the
         protected-action challenge, and callback / event / trigger / persona /
         specialist install consent. Unconditional rather than opt-in because
@@ -5753,24 +4677,6 @@ class TelegramChannel(Channel):
                 await _sleep(delays[attempt])
         return False
 
-    async def _internal_post(self, path: str, payload: dict) -> dict:
-        """Dispatch an internal-handler call from inside casa-main.
-
-        Used by handlers that need to round-trip into the internal-handler
-        family that the per-engagement MCP server also uses. Implemented as
-        an HTTP call over the casa-main Unix socket for symmetry with the
-        engagement-side ``_internal_post`` in ``casa_engagement_channel`` —
-        a future optimization could swap to a direct callable dispatch, but
-        the wire-level path is the simplest correct shape today.
-        """
-        import aiohttp
-        connector = aiohttp.UnixConnector(path="/run/casa/internal.sock")
-        async with aiohttp.ClientSession(connector=connector) as sess:
-            async with sess.post(
-                f"http://localhost{path}", json=payload,
-            ) as resp:
-                return await resp.json()
-
     # ------------------------------------------------------------------
     # Bot accessor (supports test injection via bot= kwarg)
     # ------------------------------------------------------------------
@@ -5814,7 +4720,6 @@ class TelegramChannel(Channel):
         Safe to call when ``engagement_supergroup_id`` is unset — no-op.
         """
         self.engagement_permission_ok = False
-        self.engagement_can_pin = False
         if not self.engagement_supergroup_id:
             return
         # Bot-permissions check
@@ -5839,18 +4744,6 @@ class TelegramChannel(Channel):
                 )
                 return
             self.engagement_permission_ok = True
-            # v0.79.0 (§5): probe can_pin_messages alongside can_manage_topics.
-            # Best-effort — the pinned live summary is nicer-to-have; without
-            # the grant the summary still lives, just unpinned (a WARN at
-            # pin-attempt time, never a hard failure).
-            self.engagement_can_pin = bool(
-                getattr(member, "can_pin_messages", False))
-            if not self.engagement_can_pin:
-                logger.info(
-                    "Engagement supergroup %s: bot lacks can_pin_messages; "
-                    "the live summary will not be pinned",
-                    self.engagement_supergroup_id,
-                )
             # v0.37.1 D-1: boot-time diagnostic for the topic-icon map.
             # Non-fatal — logged only if any of our IDs rotated out of
             # Telegram's curated set.
@@ -5928,13 +4821,11 @@ class TelegramChannel(Channel):
     ) -> int:
         """R2a (v0.89.0): post agent output into a topic WITH rich text.
 
-        The narration relay path (``OutputSequencer.open_narration`` →
-        ``casa_core._send_to_topic``) and the block-mode reply finalize
-        (``send_response_to_topic``) both route through here so markdown
+        Platform notices and the block-mode reply finalize
+        (``send_response_to_topic``) route through here so markdown
         (``**bold**``, `` `code` ``, fenced-pre) renders as ``MessageEntity``
         spans instead of leaking literal markers. ``render()`` recomputes from
-        the COMPLETE current string on every call — see the matching per-edit
-        render in ``edit_topic_message_rich``.
+        the COMPLETE current string on every call.
 
         Plain (no markup / over limits ⇒ ``entities is None``) → send
         ``plain_text`` through the plain ``send_to_topic`` (#1330: escapes
@@ -5969,73 +4860,6 @@ class TelegramChannel(Channel):
             )
         return msg.message_id
 
-    async def post_ask_body_rich(
-        self, thread_id: int, text: str, **kwargs,
-    ) -> int:
-        """R2b (v0.89.0): SINGLE-ATTEMPT rich send for the ask/anchor POST path.
-
-        The round-4 single-post CANCELLATION invariant is BINDING: the ask
-        poster (``post_options_keyboard``) and the free-text-anchor poster
-        (``channel_handlers._post_anchor``) must make EXACTLY ONE physical Bot
-        API send attempt, so a cancel that latches immediately before the send
-        (re-read at the wire) can never be raced by a *second* send. This is
-        why this method must NOT be ``send_to_topic_rich`` / ``send_response_to_topic``
-        — their rich→``BadRequest``→plain fallback is that forbidden second send.
-
-        Behaviour (mirrors the other rich primitives, but with NO fallback):
-        * killswitch off / ``entities is None`` (no markup, or markers stripped
-          e.g. >100 spans) → send ``plain_text`` plain in ONE attempt — the
-          display when there is no span (#1330), otherwise the authored text,
-          never the marker-stripped ``display``;
-        * entities present → send WITH entities in ONE attempt. An entity
-          ``BadRequest`` FAILS CLOSED — it PROPAGATES to the caller (which treats
-          a failed post as ``delivery_failed``); there is NO plain retry and NO
-          second send.
-
-        ``kwargs`` (e.g. ``reply_markup`` for the ask keyboard) forward on both
-        paths. Returns the posted ``message_id``.
-        """
-        display, entities = render(text)
-        if entities is None:
-            return await self.send_to_topic(thread_id, _plain(text), **kwargs)
-        if not self.engagement_supergroup_id:
-            raise RuntimeError("engagement supergroup not configured")
-        # ONE physical send. On BadRequest this raises — fail-closed, never a
-        # second (plain) send (the double-send the cancellation gate forecloses).
-        msg = await self.bot.send_message(
-            chat_id=self.engagement_supergroup_id, text=display,
-            message_thread_id=thread_id, entities=entities, **kwargs,
-        )
-        return msg.message_id
-
-    async def pin_topic_message(
-        self, thread_id: int, message_id: int,
-    ) -> bool:
-        """v0.79.0 (§5): pin the live-summary message within its forum topic.
-
-        Best-effort — returns ``False`` (never raises) when pinning is
-        unavailable (no ``can_pin_messages`` grant, or a Telegram error). A
-        pinned message in a forum-topic thread pins within that topic. Never
-        unpins any other message.
-        """
-        if not self.engagement_supergroup_id:
-            return False
-        if not getattr(self, "engagement_can_pin", False):
-            return False
-        try:
-            await self.bot.pin_chat_message(
-                chat_id=self.engagement_supergroup_id,
-                message_id=message_id,
-                disable_notification=True,
-            )
-            return True
-        except Exception as exc:  # noqa: BLE001 — pin is best-effort
-            logger.info(
-                "pin_topic_message failed (thread=%s message_id=%s): %s",
-                thread_id, message_id, exc,
-            )
-            return False
-
     async def update_topic_state(
         self, *, engagement_id: str, new_state: str,
     ) -> None:
@@ -6065,8 +4889,8 @@ class TelegramChannel(Channel):
         if self._engagement_registry is None:
             return
         # #347 (Sol+Terra r4): ONE per-engagement lock totally orders every
-        # state edit — all writers (the permission relay's awaiting/active
-        # round-trip AND the terminal-transition paths) go through this
+        # state edit — all writers (the active repaints AND the
+        # terminal-transition paths) go through this
         # method, so under the lock the record re-read below is authoritative
         # for the whole check→wire-edit→persist span. A terminal transition
         # marks the registry BEFORE calling here, so any ``active`` repaint
@@ -6996,13 +5820,12 @@ class TelegramChannel(Channel):
     ) -> int:
         """Post an agent response into an engagement topic with rich text.
 
-        Used by the Claude-Code reply handler and by TopicStreamHandle's
-        finalize. v2 (2026-07-19, Sol+Terra D3): THIS is the paginating rich
+        Used by TopicStreamHandle's finalize and the completion post. v2 (2026-07-19, Sol+Terra D3): THIS is the paginating rich
         helper — an oversized response becomes several rendered messages via
         ``render_paged()`` (each ≤4096 UTF-16 units and ≤100 entities), so a
         long reply never ships raw markdown (the RC3 leak) and never 400s on
-        length. ``send_to_topic_rich`` stays the sequencer's ONE-message
-        narration primitive and is only used here for the single-page case.
+        length. ``send_to_topic_rich`` stays the ONE-message primitive and is
+        only used here for the single-page case.
 
         Single page keeps the v0.89.0 contract (no entities → ``plain_text``,
         #1330; BadRequest → raw resend). Multi-page: every page sends its DISPLAY
@@ -7602,11 +6425,7 @@ class _InboundReservation:
     def take(self) -> bool:
         """Reserve, and say whether anything was reserved.
 
-        ``False`` for an unknown record, a channel with no driver, or a
-        ``claude_code`` record — that driver keeps its own durable spool and
-        ingress accounting, and a second reservation from here would
-        double-count one message in the completion veto and inflate the #664
-        lost-inbound disclosure.
+        ``False`` for an unknown record or a channel with no driver.
         """
         if self._held:
             return True
@@ -7616,7 +6435,7 @@ class _InboundReservation:
             return False
         try:
             rec = reg.get(self._engagement_id)
-            if rec is None or getattr(rec, "driver", "") == "claude_code":
+            if rec is None:
                 return False
             drv.reserve_inbound(rec.id)
         except Exception:  # noqa: BLE001 — a tap must never abort on this

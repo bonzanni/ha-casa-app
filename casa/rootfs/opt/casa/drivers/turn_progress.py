@@ -24,12 +24,96 @@ import logging
 import time
 from typing import Awaitable, Callable
 
-from drivers.summary_controller import format_elapsed
-
 logger = logging.getLogger(__name__)
 
 _SPACING_S = 3.0      # at least this long between two writes of the line
 _IO_TIMEOUT_S = 3.0   # bound on each Telegram call and on the close's drain
+
+# Tool-use activity phrases and the elapsed format.
+_MCP_SERVER_CAP = 32      # §5 P1-B: cap the mcp server substring AT SOURCE.
+
+# §5 S5: coarse tool_use → activity mapping.
+_ACTIVITY_READING = frozenset({"Read", "Glob", "Grep"})
+_ACTIVITY_EDITING = frozenset({"Write", "Edit", "NotebookEdit"})
+_ACTIVITY_RESEARCH = frozenset({"WebFetch", "WebSearch"})
+
+
+# #1350: Casa's own tools, in the operator's words — "using casa-framework
+# tools" told a configurator topic nothing about what was happening. Keyed on
+# the tool name after the ``mcp__casa-framework__`` prefix: exact names first,
+# then name prefixes; anything unlisted keeps the generic phrase.
+_CASA_TOOL_PREFIX = "mcp__casa-framework__"
+_CASA_ACTIVITY_EXACT: dict[str, str] = {
+    "config_git_commit": "committing the change",
+    "casa_reload": "reloading Casa",
+    "casa_reload_triggers": "reloading Casa",
+    "casa_restart_supervised": "reloading Casa",
+    "list_vault_items": "wiring secrets",
+    "get_item_fields": "wiring secrets",
+    "set_plugin_env_reference": "wiring secrets",
+    "remove_plugin_env_reference": "wiring secrets",
+    "emit_completion": "wrapping up",
+}
+_CASA_ACTIVITY_PREFIX: tuple[tuple[str, str], ...] = (
+    ("plugin_", "updating plugins"),
+    ("specialist_", "managing specialists"),
+    ("persona_", "managing personas"),
+    ("resident_persona_", "managing personas"),
+    ("config_trigger_", "updating triggers"),
+)
+
+
+def _casa_activity(name: str) -> str | None:
+    if not name.startswith(_CASA_TOOL_PREFIX):
+        return None
+    short = name[len(_CASA_TOOL_PREFIX):]
+    if short in _CASA_ACTIVITY_EXACT:
+        return _CASA_ACTIVITY_EXACT[short]
+    for prefix, phrase in _CASA_ACTIVITY_PREFIX:
+        if short.startswith(prefix):
+            return phrase
+    return None
+
+
+def activity_for_tool(tool_name: str) -> str:
+    """Coarse activity phrase for a ``tool_use`` block (§5 S5).
+
+    Read/Glob/Grep → ``reading files``; Write/Edit/NotebookEdit → ``editing
+    files``; Bash → ``running commands``; Task*/TodoWrite → ``planning``;
+    WebFetch/WebSearch → ``researching``; ``mcp__<server>__…`` → ``using
+    <server> tools``; anything else → ``working``.
+    """
+    name = tool_name or ""
+    if name in _ACTIVITY_READING:
+        return "reading files"
+    if name in _ACTIVITY_EDITING:
+        return "editing files"
+    if name == "Bash":
+        return "running commands"
+    if name.startswith("Task") or name == "TodoWrite":
+        return "planning"
+    if name in _ACTIVITY_RESEARCH:
+        return "researching"
+    casa = _casa_activity(name)
+    if casa is not None:
+        return casa
+    if name.startswith("mcp__"):
+        parts = name.split("__")
+        server = parts[1] if len(parts) > 1 and parts[1] else "mcp"
+        # §5 P1-B: cap the (unbounded) server substring AT SOURCE so the status
+        # line can never blow the 4096 wire bound.
+        return f"using {server[:_MCP_SERVER_CAP]} tools"
+    return "working"
+
+
+def format_elapsed(seconds: float) -> str:
+    """Human-readable elapsed string (``45s`` / ``2m 30s`` / ``1h 05m``)."""
+    total = int(seconds) if seconds and seconds > 0 else 0
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        return f"{total // 60}m {total % 60:02d}s"
+    return f"{total // 3600}h {(total % 3600) // 60:02d}m"
 
 
 # #1350 x1: closes run here, never awaited by the turn — a hung Telegram must

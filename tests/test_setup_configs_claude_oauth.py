@@ -1,12 +1,11 @@
 """K-1 (v0.34.1): the claude-oauth-token block in setup-configs.sh.
 
 Pre-fix the OAuth token was only exported into svc-casa's process env
-(svc-casa/run:13). s6-rc child services launched via `with-contenv`
-(engagement subprocesses, plugin-developer + hello-driver via
-claude_code_driver) read /run/s6/container_environment/, NOT
-svc-casa's process env. Result: every claude_code_driver subprocess
-hit "Not logged in · Please run /login" and produced no useful
-output. Latently broken since v0.13.0 (~8 days).
+(svc-casa/run:13). A process launched via `with-contenv` (at the time,
+each engagement service of the since-removed Claude Code driver) reads
+/run/s6/container_environment/, NOT svc-casa's process env. Result:
+every such engagement hit "Not logged in · Please run /login" and
+produced no useful output. Latently broken since v0.13.0 (~8 days).
 
 This test asserts the new propagation block:
 - writes the token to a target file when configured
@@ -17,7 +16,6 @@ bug-review-2026-05-01-exploration4.md::K-1 has the full evidence.
 """
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 
@@ -179,22 +177,6 @@ class TestClaudeOauthBlock:
         assert rc == 0
         assert not target.exists(), "should not have written; op resolve failed"
         assert "K-1" in out
-
-
-def test_run_template_does_not_unset_claude_oauth_token() -> None:
-    """The engagement run template MUST NOT include CLAUDE_CODE_OAUTH_TOKEN
-    in its `unset` list — otherwise K-1 is reintroduced.
-    """
-    template = Path(
-        "casa/rootfs/opt/casa/scripts/engagement_run_template.sh"
-    ).read_text(encoding="utf-8")
-    # Find the unset line; assert OAuth token is not on it.
-    for line in template.splitlines():
-        if line.strip().startswith("unset "):
-            assert "CLAUDE_CODE_OAUTH_TOKEN" not in line, (
-                "engagement run template must not unset the OAuth token; "
-                "see K-1"
-            )
 
 
 def test_setup_configs_has_oauth_block() -> None:

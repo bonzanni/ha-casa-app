@@ -143,7 +143,6 @@ def process_stopping() -> bool:
 # so tool handlers can reach them without circular imports.
 active_engagement_driver = None   # InCasaDriver | None, set by casa_core.main
 active_executor_registry = None   # ExecutorRegistry | None, set by casa_core.main
-active_claude_code_driver = None  # ClaudeCodeDriver | None, set by casa_core.main
 active_runtime = None             # CasaRuntime | None, set by casa_core.main (Task C.3)
 active_session_registry = None    # SessionRegistry | None, set by casa_core.main (#411)
 
@@ -3462,7 +3461,7 @@ class Agent:
             # credential. Never overrides a wired value (the helper emits
             # only unresolved vars), so this is {} on a fully-wired system.
             env={**sanitized_env_for_resolution(resolution), **_broker_env},
-            # P-5b: in-casa agents have no permission relay — fail closed on
+            # P-5b: an agent has no permission relay — fail closed on
             # ungranted tools instead of hanging on CC's prompt. New closure
             # per build is fine: the pool reuses clients, not options objects.
             can_use_tool=make_fail_closed_can_use_tool(self.config.role),

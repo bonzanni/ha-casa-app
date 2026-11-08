@@ -78,7 +78,7 @@ the appliance a household agent should be.
   your health and training, a hobby; then "ask Ellen when the car insurance renews"
   just works.
 - **Executors for real work** — a configurator that changes Casa's own settings when you
-  ask in chat, and a plugin-developer that builds new plugins for you.
+  ask in chat.
 - **Personas** — swap how an agent sounds and behaves without changing what it's allowed
   to do; any resident can wear one of the [five demo characters](#personas).
 
@@ -139,7 +139,7 @@ the appliance a household agent should be.
 - **Yours to keep or forget** — Casa keeps an export from each of the last seven nights,
   so a Home Assistant backup carries them. Export, restore or wipe from the app's terminal;
   a wipe erases memory and those exports but keeps your reminders, triggers, settings and
-  files (bar finished engagement workspaces already past their 7-day keep period).
+  files.
 
 *Deep dive: [memory and recall](docs/architecture/memory.md)*
 
@@ -148,9 +148,6 @@ the appliance a household agent should be.
 - **Everything installs from git** — specialists, plugins and personas come from
   repositories you name ([a growing set is public today](#the-casa-ecosystem)), pinned by
   checksum, installed only after you consent.
-- **The fleet extends itself** — need a capability that doesn't exist? The
-  plugin-developer agent scaffolds, tests and ships a new plugin from a conversation;
-  personas and specialists can be authored the same way.
 - **Conversational administration** — describe what you want; the configurator makes the
   change and reloads Casa.
 - **Plugins bring tools** — Claude Code plugins add tools, skills and MCP servers to
@@ -221,7 +218,7 @@ actually talk to the fleet.
 
 ### 4. Enable engagements
 
-Longer-running work — the configurator, the plugin-developer, interactive specialist
+Longer-running work — the configurator, interactive specialist
 sessions — happens in dedicated topics inside a Telegram forum supergroup:
 
 1. Create a new Telegram group (separate from your 1:1 chat with the bot) and enable
@@ -300,9 +297,8 @@ Beyond them, two tiers exist so the fleet can grow without the residents growing
   [installed, upgraded, rolled back and uninstalled](docs/architecture/specialist-lifecycle.md)
   from git repositories — [several are public today](#specialists).
 - **Executors** — task-bounded agents that get a dedicated Telegram topic to work in,
-  through [engagements](docs/architecture/engagements.md). Two ship: the
-  **configurator**, which edits Casa's own configuration on your behalf and reloads it,
-  and the **plugin-developer**, which builds new plugins from scratch.
+  through [engagements](docs/architecture/engagements.md). One ships: the
+  **configurator**, which edits Casa's own configuration on your behalf and reloads it.
 
 The full tier model — what each tier may do and what it takes to add an agent — is
 specified in the [agent taxonomy](docs/architecture/agent-taxonomy.md).
@@ -326,8 +322,7 @@ repository you name (`owner/repo@ref`) and each acknowledged before anything is 
   sounds; capability comes from the role and the tool layer, never from prose.
 
 Because the configurator is itself an agent, all of this is conversational: you describe
-what you want, it opens a topic, makes the change, and reloads Casa. Building a *new*
-plugin is the same shape — the plugin-developer executor scaffolds, tests and ships one.
+what you want, it opens a topic, makes the change, and reloads Casa.
 The install and identity mechanics are documented in the
 [architecture corpus](docs/README.md); feature direction is tracked in the open —
 [issues](https://github.com/bonzanni/ha-casa-app/issues) are where it is discussed.

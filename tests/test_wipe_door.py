@@ -316,7 +316,7 @@ async def test_an_engagement_topic_message_gets_the_line_and_no_turn(
 
     channel = TelegramChannel(bot_token="T", chat_id="42",
                               default_agent="assistant", bus=None)
-    notices, turns, rolled = [], [], []
+    notices, turns, discharged = [], [], []
 
     async def notice(rec, text):
         notices.append(text)
@@ -325,22 +325,23 @@ async def test_an_engagement_topic_message_gets_the_line_and_no_turn(
         turns.append(text)
         return "queued"
 
-    async def rollback(rec, token):
-        rolled.append(token)
+    def discharge(rec, token):
+        discharged.append(token)
 
     channel._post_engagement_notice = notice
     channel._driver_send_user_turn = send_turn
-    channel._rollback_answer = rollback
+    channel._driver_discharge_inbound = discharge
     channel._report_incomplete_turn = lambda *a, **k: asyncio.sleep(0, False)
     rec = types.SimpleNamespace(id="e" * 32, origin={})
 
     await channel._deliver_turn_bg(rec, "first")
     assert (turns, notices) == (["first"], [])
     assert await _answered()
-    await channel._deliver_turn_bg(rec, "second", answer_token="tok")
+    await channel._deliver_turn_bg(rec, "second", inbound_token="tok")
     assert turns == ["first"]
     assert notices == [maintenance.COURTESY_LINE]
-    assert rolled == ["tok"]
+    # the message is released as one that was not delivered
+    assert discharged == ["tok"]
     # a system turn into the engagement is not the operator's message
     await channel._deliver_turn_bg(rec, "batch 2", system_turn=True)
     assert turns == ["first", "batch 2"]

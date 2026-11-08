@@ -193,7 +193,7 @@ async def h(tmp_path, monkeypatch):
         agent_registry=AgentRegistry.build(residents={}, specialists=registry.all_configs()),
         trigger_registry=trigger_registry, mcp_registry=MagicMock(),
         session_registry=MagicMock(), channel_manager=MagicMock(),
-        bus=bus, engagement_driver=MagicMock(), claude_code_driver=MagicMock(),
+        bus=bus, engagement_driver=MagicMock(),
         policy_lib=MagicMock(),
         config_dir=str(tmp_path), agents_dir=str(agents_dir),
         home_root=str(tmp_path / "home"), defaults_root="/opt/casa",

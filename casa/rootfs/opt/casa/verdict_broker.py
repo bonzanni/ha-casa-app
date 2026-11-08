@@ -11,12 +11,11 @@ tombstone in `_retired` for `_RETIRE_S` seconds, so a same-id retry within
 that window reattaches to the real outcome instead of creating a duplicate
 ask or racing a lost HTTP response.
 
-Two-phase claim/commit exists because the Telegram callback for
-`engagement_ask` must persist `interaction_state=authorized` BETWEEN
+Two-phase claim/commit lets a callback persist its side effect BETWEEN
 reserving the winning tap and resolving the awaiting handler's future — see
 `claim`/`commit`/`abort_claim` docstrings for the exact ordering guarantees.
 
-Valid namespaces: "permission", "engagement_ask", "resident_ask".
+Valid namespaces: "resident_ask", "proposal".
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ from typing import Any, Callable, Coroutine
 
 logger = logging.getLogger(__name__)
 
-_VALID_NAMESPACES = frozenset({"permission", "engagement_ask", "resident_ask",
+_VALID_NAMESPACES = frozenset({"resident_ask",
                                "proposal"})     # S5: a stored-call keyboard (DM-scoped)
 
 # Tombstone retention window (seconds). Tests monkeypatch this module
@@ -78,20 +77,16 @@ class _RetiredEntry:
 class _Claim:
     """Opaque token returned by `claim()`; passed to `commit()`/`abort_claim()`."""
 
-    __slots__ = ("req", "token", "option_index", "actor_id", "option_indices")
+    __slots__ = ("req", "token", "option_index", "actor_id")
 
     def __init__(
         self, req: PendingRequest, token: object, option_index: int,
-        actor_id: int | None, option_indices: "list[int] | None" = None,
+        actor_id: int | None,
     ):
         self.req = req
         self.token = token
         self.option_index = option_index
         self.actor_id = actor_id
-        # A5 · F-MULTI: the full sorted selection for a multi-select submit;
-        # ``None`` for single-select / permission claims. ``option_index`` still
-        # carries the FIRST selected index for downstream single-field compat.
-        self.option_indices = option_indices
 
 
 class VerdictBroker:
@@ -288,7 +283,6 @@ class VerdictBroker:
     def claim(
         self, *, namespace: str, scope: str, request_id: str,
         option_index: int, actor_id: int | None,
-        option_indices: "list[int] | None" = None,
     ) -> "_Claim | str":
         key: Key = (namespace, scope, request_id)
         req = self._live.get(key)
@@ -305,7 +299,7 @@ class VerdictBroker:
             token = object()
             req._claimed = token
             self._cancel_timer(req)
-            return _Claim(req, token, option_index, actor_id, option_indices)
+            return _Claim(req, token, option_index, actor_id)
 
         retired = self._retired.get(key)
         if retired is not None:
@@ -323,10 +317,6 @@ class VerdictBroker:
             "option_index": claim.option_index,
             "actor_id": claim.actor_id,
         }
-        # A5 · F-MULTI: carry the full selection when this is a multi-select
-        # submit (single-select outcomes stay byte-identical to pre-A5).
-        if claim.option_indices is not None:
-            outcome["option_indices"] = list(claim.option_indices)
         self._finish(key, outcome)
         return True
 
@@ -343,37 +333,10 @@ class VerdictBroker:
             return
         req._timer = loop.call_later(remaining, self._on_timeout, key)
 
-    # -- A5 · F-MULTI multi-select selection --------------------------------
-
-    def toggle_selection(
-        self, *, namespace: str, scope: str, request_id: str, idx: int,
-    ) -> "list[int] | None":
-        """Flip ``idx`` in a LIVE, UNCLAIMED request's ``meta["selected"]``
-        (A5 · F-MULTI, Sol r1-7/r2-7 — broker-owned atomic toggle).
-
-        Synchronous. Returns the NEW sorted selection list on success, or
-        ``None`` when the request is retired / claimed / absent (the caller
-        toasts "expired"). A terminal outcome that resolved before this call
-        yields ``None`` — the finish hook stays the sole TERMINAL writer, and
-        the caller's revalidated redraw is skipped."""
-        req = self._live.get((namespace, scope, request_id))
-        if req is None or req._claimed is not None:
-            return None
-        selected: list[int] = req.meta.setdefault("selected", [])
-        if idx in selected:
-            selected.remove(idx)
-        else:
-            selected.append(idx)
-        selected.sort()
-        return list(selected)
-
     def is_live_unclaimed(
         self, *, namespace: str, scope: str, request_id: str,
     ) -> bool:
-        """True iff the request is still live in the broker AND unclaimed — the
-        A5 toggle-redraw revalidation predicate (run under the sequencer lock
-        immediately before the wire edit; a terminal outcome in between declines
-        the redraw)."""
+        """True iff the request is still live in the broker AND unclaimed."""
         req = self._live.get((namespace, scope, request_id))
         return req is not None and req._claimed is None
 

@@ -1,6 +1,6 @@
 """§14 test 9b (INV-MEM-035): over the real ``s6-rc.d`` and ``user-bundles.d``
-trees, the container-start memory step runs before every longrun and every
-engagement service, and no other oneshot touches the content of a registry
+trees, the container-start memory step runs before every longrun, and no
+other oneshot touches the content of a registry
 path while an intent exists.
 
 The script scan finds every content-carrying operation (read, copy, move,
@@ -45,7 +45,7 @@ def reaches(g: dict[str, set[str]], start: str, target: str) -> bool:
     return False
 
 
-def graph_violations(overlay: Path, *, engagement_deps=()) -> list[str]:
+def graph_violations(overlay: Path) -> list[str]:
     g = graph(overlay)
     out = []
     step = overlay / "s6-rc.d" / STEP
@@ -61,43 +61,22 @@ def graph_violations(overlay: Path, *, engagement_deps=()) -> list[str]:
         if (overlay / "s6-rc.d" / name / "type").read_text().strip() == "longrun":
             if not reaches(g, name, STEP):
                 out.append(f"{name} does not reach {STEP}")
-    for dep in engagement_deps:
-        if not reaches(g, dep, STEP):
-            out.append(f"engagement dependency {dep} does not reach {STEP}")
     return out
 
 
-def _engagement_deps(tmp_path: Path) -> list[str]:
-    """What ``s6_rc.write_service_dir`` writes for an engagement, with the
-    dependency list the claude_code driver passes."""
-    from drivers import s6_rc
-    src = (CODE / "drivers" / "claude_code_driver.py").read_text(
-        encoding="utf-8")
-    found = re.findall(r"depends_on=\[([^\]]*)\]", src)
-    assert len(found) == 1, found
-    deps = [d.strip().strip("\"'") for d in found[0].split(",") if d.strip()]
-    svc = s6_rc.write_service_dir(
-        svc_root=str(tmp_path), engagement_id="e" * 32,
-        run_script="#!/bin/sh\n", depends_on=deps)
-    return sorted(p.name for p in (Path(svc) / "dependencies.d").iterdir())
-
-
-def test_the_step_runs_before_every_longrun_and_engagement(tmp_path):
-    deps = _engagement_deps(tmp_path)
-    assert deps == ["init-setup-configs"]
-    assert graph_violations(OVERLAY, engagement_deps=deps) == []
+def test_the_step_runs_before_every_longrun():
+    assert graph_violations(OVERLAY) == []
     longruns = [n for n in graph(OVERLAY) if (
         OVERLAY / "s6-rc.d" / n / "type").read_text().strip() == "longrun"]
-    assert sorted(longruns) == ["svc-casa", "svc-casa-mcp", "svc-nginx",
-                                "svc-ttyd"]
+    assert sorted(longruns) == ["svc-casa", "svc-nginx", "svc-ttyd"]
 
 
 def test_dropping_the_setup_configs_edge_is_reported(tmp_path):
     copy = tmp_path / "s6-overlay"
     shutil.copytree(OVERLAY, copy)
     (copy / "s6-rc.d/init-setup-configs/dependencies.d" / STEP).unlink()
-    out = graph_violations(copy, engagement_deps=["init-setup-configs"])
-    assert len(out) == 5, out          # four longruns and the engagements
+    out = graph_violations(copy)
+    assert len(out) == 3, out          # the three longruns
 
 
 # --- the script scan --------------------------------------------------------------

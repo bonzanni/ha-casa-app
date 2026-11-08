@@ -21,14 +21,12 @@ import json
 import logging
 import math
 import os
-import secrets
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from atomic_io import atomic_write_json
-from engagement_uids import UID_BASE, UNALLOCATED_UID
 from job_registry import CASA_SHUTDOWN_REASON
 from sensitivity import TIERS
 
@@ -103,8 +101,6 @@ class LaunchCancellation:
     task: Any
 
 
-_STALE_KIND_DEFAULT = "plain"
-
 # #326: the statuses no direct mutator may overwrite. try_transition_terminal
 # is the single authoritative gate INTO this set; mark_idle/mark_error/
 # mark_completed/mark_cancelled re-check membership under the lock so a
@@ -132,37 +128,11 @@ _NON_PERSISTABLE_ORIGIN_KEYS = frozenset({
 })
 
 
-def _valid_token_or_blank(value: Any) -> str:
-    """#335: a persisted ``auth_token`` is usable only as a non-empty ASCII
-    string — anything else (a JSON number, null, a non-ASCII string) becomes
-    ``""`` so ``load()``'s backfill mints a fresh one. Keeping an unusable
-    value would leave the record permanently unbindable."""
-    if isinstance(value, str) and value and value.isascii():
-        return value
-    return ""
-
-
 def _persistable_origin(origin: dict[str, Any]) -> dict[str, Any]:
     """A JSON-safe copy of *origin* for tombstone persistence: drops the known
     live/non-serializable ContextVar-carried keys (see
     ``_NON_PERSISTABLE_ORIGIN_KEYS``)."""
     return {k: v for k, v in origin.items() if k not in _NON_PERSISTABLE_ORIGIN_KEYS}
-
-
-def normalize_stale_mid_entry(entry: Any) -> dict[str, Any]:
-    """v0.84.0 (round-4 §D6): a ``stale_mids`` entry is ``{"mid": int, "kind":
-    str}`` with ``kind ∈ {"reanchored", "plain"}`` — ``reanchored`` renders the
-    marker-only moved copy, ``plain`` keeps today's full-body+suffix rendering.
-    An entry missing ``kind`` (or a corrupt non-dict entry) defaults to
-    ``"plain"`` rather than raising — corruption tolerance, fail-safe to the
-    existing rendering. Both the registry's own mutators (``stage_stale_mid``/
-    ``unstage_stale_mid``) and ``claude_code_driver``'s stale-settle paths
-    (``_settle_ledger_entry`` + boot reconcile) normalize through this one
-    function so every reader agrees on the shape regardless of on-disk
-    vintage. Never mutates ``entry``; always returns a fresh dict."""
-    if isinstance(entry, dict):
-        return {"mid": entry.get("mid"), "kind": entry.get("kind") or _STALE_KIND_DEFAULT}
-    return {"mid": entry, "kind": _STALE_KIND_DEFAULT}
 
 
 def _restore_origin_field(rec: "EngagementRecord", key: str, snapped: Any) -> None:
@@ -174,34 +144,6 @@ def _restore_origin_field(rec: "EngagementRecord", key: str, snapped: Any) -> No
         rec.origin.pop(key, None)
     else:
         rec.origin[key] = snapped
-
-
-# ---------------------------------------------------------------------------
-# W2/Sol B9 (Task 7) — interaction_state pure transition core.
-# ---------------------------------------------------------------------------
-#
-# Transition table (normative — design §W2, Sol r3-B4):
-#   first_contact      : first_contact_required -> awaiting_operator
-#   operator_answered  : {first_contact_required, awaiting_operator} -> authorized
-#   operator_turn      : {first_contact_required, awaiting_operator} -> authorized
-#   anything else (including from "authorized", from "" (not
-#   interaction-required), or an event not valid from the current state)
-#   -> no-op (None). Never backwards.
-
-
-def _pure_interaction_transition(current: str, event: str) -> str | None:
-    """Compute the next ``interaction_state``, or ``None`` for a no-op.
-
-    Pure (no I/O, no locking) so it's trivially unit-testable and reusable
-    by the atomic locked mutator below.
-    """
-    if event == "first_contact":
-        return "awaiting_operator" if current == "first_contact_required" else None
-    if event in ("operator_answered", "operator_turn"):
-        if current in ("first_contact_required", "awaiting_operator"):
-            return "authorized"
-        return None
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -240,28 +182,17 @@ class EngagementRecord:
     sdk_session_id: str | None
     origin: dict[str, Any]
     task: str
-    # #335: per-engagement secret authenticating this engagement's id on the
-    # internal surfaces (MCP tools/call + /internal/channel/*). Generated at
-    # ``create()``, backfilled at ``load()`` for pre-upgrade rows, provisioned
-    # ONLY into this engagement's own workspace ``.mcp.json`` — the id alone
-    # is endpoint-visible and must never confer authority. Persisted so a
-    # restart-resumed engagement's existing workspace credential stays valid.
-    auth_token: str = ""
-    # E-12 (v0.37.0): channel-side state for in-place edits across restarts.
-    pinned_message_id: int | None = None
-    progress_message_id: int | None = None
     current_state_emoji: str | None = None
     # C-1 v0.37.2: snapshot of executor's tools.allowed at engagement
-    # creation. Drives the engagement_permission_relay hook (spec §3.5).
+    # creation.
     tools_allowed: tuple[str, ...] = ()
     # G-1 v0.37.7: snapshot of executor's permission_mode at engagement
-    # creation. When "auto" or "bypassPermissions" the relay hook
-    # short-circuits without surfacing a permission keyboard.
+    # creation.
     permission_mode: str = "acceptEdits"
     # §3.8: immutable snapshot of the resolved plugin artifacts this
-    # engagement launched with — each {"name","artifact_id","path"}. Boot
-    # replay renders --plugin-dir flags from THESE recorded paths, never a
-    # re-resolution of current assignments. Preserved by every rewrite.
+    # engagement launched with — each {"name","artifact_id","path"}. A resume
+    # rebuilds from THESE recorded paths, never a re-resolution of current
+    # assignments. Preserved by every rewrite.
     plugin_artifacts: tuple[dict, ...] = ()
     # #369: set (durably, in the same strict write as the clearance clamp)
     # when a downgrade invalidates this engagement's session context. While
@@ -278,13 +209,6 @@ class EngagementRecord:
     # launcher captures this at prompt-source time and the drivers compare it
     # immediately before the initial enqueue; any change aborts the launch.
     context_generation: int = 0
-    # W2/Sol B9 (Task 7): observational turn-taking state. "" (default) =
-    # not interaction-required (most engagements). Interaction-required
-    # engagements start at "first_contact_required" (set by engage_executor
-    # at create — Task 8) and advance via ``advance_interaction_state``:
-    # first_contact_required -> awaiting_operator -> authorized. Never
-    # backwards; see ``_pure_interaction_transition``.
-    interaction_state: str = ""
     # #215: the procedural-epoch digest computed at LAUNCH from the exact
     # bytes the launch consumed (executor_epoch.compute_procedural_epoch).
     # Persisted so finalize stamps the summary with the epoch its engagement
@@ -315,62 +239,14 @@ class EngagementRecord:
     # not release a token whose marked record remains live). Released
     # exactly once by ``_release_permit`` on every terminal transition.
     agent_spawn_permit: Any = None
-    # v0.79.0 (§4): persisted question numbering. ``next_question_number`` is a
-    # monotonic per-engagement allocator (never rewound, even when a question
-    # closes) so every displayed ``Q<n>`` is durable and unique across restarts.
-    # ``open_questions`` is the set of still-open (unsettled) questions, each a
-    # ``{"n": int, "tg_message_id": int|None}`` dict — boot reconciliation
-    # settles any entry whose broker record did not survive the restart.
-    # v0.83.0 (§A3, Sol r2-7/r3-5/r5-3): entries gain ``answered: bool`` (the
-    # answer-lifecycle decision, split from visual settlement — an answered entry
-    # is INVISIBLE to ``open_question_numbers``/``oldest_open_anchor`` and the A3
-    # gates/summary, yet stays present for raw reconcile/settle iteration) and
-    # ``stale_mids: list[{"mid": int, "kind": str}]`` (re-anchor OLD copies
-    # awaiting a confirmed settle). BOTH ``answered``/``stale_mids`` are
-    # absent-tolerated on load (pre-v0.83 rows have neither key → each accessor
-    # ``.get``-defaults). v0.84.0 (round-4 §D6): each ``stale_mids`` entry also
-    # carries a ``kind`` (``"reanchored"`` renders the marker-only moved copy;
-    # ``"plain"`` keeps the full-body+suffix rendering) — legacy bare-integer
-    # entries (pre-round-4) tolerate on read via ``normalize_stale_mid_entry``,
-    # defaulting to ``"plain"``. Entry-removal invariant: an entry is REMOVED
-    # only when its CURRENT copy's settle edit is confirmed AND ``stale_mids``
-    # is empty.
-    next_question_number: int = 1
-    open_questions: tuple[dict, ...] = ()
-    # v0.79.0 (§5): the pinned live-summary controller state. ``summary_message_id``
-    # is the Telegram id of the first (pinned) topic message, posted at boot
-    # BEFORE the subprocess starts so a resumed engagement adopts it on attach.
-    # ``summary_revision`` is the engagement-wide monotonic revision allocator —
-    # every lifecycle status transition acquires the next revision here (totally
-    # ordered, collision-free), so a newer revision may lower the status rank
-    # while an older/equal one never overrides.
-    summary_message_id: int | None = None
-    summary_revision: int = 0
     # W-R6 (v0.81.0): the persisted SHORT topic title (~40 chars). Set once at
     # engage_executor ingest (engager-supplied ``topic_title`` normalized, or a
     # Casa-derived fallback from the brief/task), then read by BOTH the
-    # topic-name state edit (telegram.update_topic_state) and the live-summary
-    # title (claude_code_driver._summary_goal_line) — a single durable source.
+    # topic-name state edit (telegram.update_topic_state) — a single durable
+    # source.
     # Additive + absent-tolerant on load (legacy rows have no key → "" → each
     # reader falls back to the derived concise_task label, no crash).
     topic_title: str = ""
-    # Containment Stage 2 (Task 3): the OS uid this engagement's subprocess
-    # runs as, once containment lands a per-engagement identity boundary.
-    # Allocated (via ``EngagementRegistry``'s injected ``UidAllocator``) in
-    # ``create()`` for ``driver == "claude_code"`` records only — specialists
-    # and any other driver stay at the ``UNALLOCATED_UID`` sentinel forever.
-    # Persisted so a resumed/restarted engagement keeps the SAME uid (the
-    # allocator's never-reuse invariant is meaningless if a reload could hand
-    # a live engagement a different one); legacy rows predating this field
-    # load with the sentinel via ``load()``'s ``.get``-default.
-    allocated_uid: int = UNALLOCATED_UID
-    # #599: this record went terminal and still OWES a verified kill of every
-    # process under ``allocated_uid``. Set in the same durable write as the
-    # terminal status (so a record can never be terminal and owe nothing), and
-    # cleared ONLY when an enumeration observes that uid set empty. A record
-    # carrying it is exempt from the terminal-retention expiry below: dropping
-    # it would delete both the obligation and the uid mapping recovery needs.
-    quiesce_pending: bool = False
     # #766: this record's terminal outcome was committed by the FINALIZATION
     # FUNNEL, which announces it to the party that asked for the work — and
     # that telling has not yet been acknowledged. Set in the same durable write
@@ -386,9 +262,9 @@ class EngagementRecord:
     # terminal writer — including the three legacy mutators below — arms
     # nothing, by default rather than by remembering a guard.
     #
-    # Exempt from the terminal-retention expiry for the same reason
-    # ``quiesce_pending`` is: ageing the row out would drop the obligation with
-    # it, leaving the party that asked for the work permanently untold.
+    # Exempt from the terminal-retention expiry: ageing the row out would drop
+    # the obligation with it, leaving the party that asked for the work
+    # permanently untold.
     terminal_notification_pending: bool = False
     # This in_casa record's CLI transcripts are all gone: the transcript
     # reaper found none left to delete (or none it could ever find). Until it
@@ -423,20 +299,10 @@ class EngagementRegistry:
         *,
         tombstone_path: str,
         bus: Any | None,
-        uid_allocator: Any | None = None,
         agent_spawn_limiter: Any | None = None,
     ) -> None:
         self._tombstone_path = tombstone_path
         self._bus = bus
-        # Containment Stage 2 (Task 3): injected ``engagement_uids.UidAllocator``,
-        # already ``.reconstruct()``-ed by the caller before this registry is
-        # used. Optional/defaults to None so every existing construction site
-        # (and every pre-Task-10 test) keeps working unchanged — a create()
-        # for a claude_code engagement with no allocator configured simply
-        # leaves ``allocated_uid`` at the sentinel (see create()) rather than
-        # raising, and downstream containment code is expected to fail closed
-        # on the sentinel rather than render a root/unallocated uid.
-        self._uid_allocator = uid_allocator
         # #698: the launch-cancellation ledger. All three are process-local,
         # synchronous and I/O-free — the shape ``JobRegistry.begin_shutdown``
         # already uses on the job ledger, which is the ledger this one is a
@@ -474,19 +340,9 @@ class EngagementRegistry:
         # occupying its plugin for the job guards (``job_occupants``).
         # In-process only: never persisted, empty at boot.
         self._terminal_pending: set[str] = set()
-        # #599: injected owner that discharges a terminal record's uid-quiesce
-        # obligation — ``async def (record) -> bool`` (True == observed
-        # extinct). Optional so every existing construction site and test keeps
-        # working; with none configured a record still records the durable
-        # obligation and boot recovery discharges it.
-        self._quiesce_owner: Any | None = None
         # #1053: told of each record that wins a terminal transition; see
-        # ``_on_terminal_locked``. Optional, like the quiesce owner.
+        # ``_on_terminal_locked``. Optional.
         self._terminal_observer: Any | None = None
-        # Strong refs to in-flight discharge tasks, keyed by engagement, so the
-        # loop cannot drop one mid-kill and so the finalize funnel can await the
-        # one its own transition scheduled.
-        self._quiesce_tasks: dict[str, Any] = {}
         # #1093: the records THIS process loaded owing a telling, each with
         # the status it was loaded with — what the boot replay may claim. Set
         # by ``load()`` only and never persisted; see ``records_owed_at_load``.
@@ -541,30 +397,14 @@ class EngagementRegistry:
                     sdk_session_id=row.get("sdk_session_id"),
                     origin=dict(row.get("origin") or {}),
                     task=row.get("task", ""),
-                    # #335: a corrupt/hand-edited row can carry a non-string
-                    # (or non-ASCII) token; normalize to "" so the backfill
-                    # below re-mints a usable one rather than leaving a value
-                    # every auth check must refuse (Terra, review r1).
-                    auth_token=_valid_token_or_blank(row.get("auth_token")),
-                    pinned_message_id=row.get("pinned_message_id"),
-                    progress_message_id=row.get("progress_message_id"),
                     current_state_emoji=row.get("current_state_emoji"),
                     tools_allowed=tuple(row.get("tools_allowed") or ()),
                     permission_mode=row.get("permission_mode") or "acceptEdits",
                     plugin_artifacts=tuple(row.get("plugin_artifacts") or ()),
-                    interaction_state=row.get("interaction_state") or "",
                     procedural_epoch=row.get("procedural_epoch") or "",
-                    next_question_number=int(row.get("next_question_number", 1) or 1),
-                    open_questions=tuple(
-                        dict(q) for q in (row.get("open_questions") or ())
-                    ),
-                    summary_message_id=row.get("summary_message_id"),
-                    summary_revision=int(row.get("summary_revision", 0) or 0),
                     topic_title=row.get("topic_title", "") or "",
-                    allocated_uid=int(row.get("allocated_uid", UNALLOCATED_UID)),
                     context_rebuild_pending=bool(
                         row.get("context_rebuild_pending", False)),
-                    quiesce_pending=bool(row.get("quiesce_pending", False)),
                     # #766: a row written before this field existed owes
                     # NOTHING. The opposite default would re-announce every
                     # terminal engagement inside the 30-day tombstone window at
@@ -591,16 +431,6 @@ class EngagementRegistry:
                     "boot reconcile: engagement %s active→idle "
                     "(no driver survives a restart)", rec.id[:8],
                 )
-            # #335 boot backfill: a pre-upgrade row has no auth token. Every
-            # in-memory record must carry one (the internal surfaces fail
-            # CLOSED on a token-less record), so mint it here; boot replay
-            # then rewrites the workspace .mcp.json from the record before
-            # the engagement's CLI is respawned, keeping resumed engagements
-            # working. Uniform for terminal tombstones too — cheap, and no
-            # record class is left permanently unbindable.
-            if not rec.auth_token:
-                rec.auth_token = secrets.token_urlsafe(32)
-                reconciled_any = True
             # #283 boot restore: every LIVE record whose origin carries the
             # agent-spawn marker re-occupies one limiter slot, held on the
             # record exactly as a fresh create would. restore() counts
@@ -647,8 +477,7 @@ class EngagementRegistry:
                 if r.status in ("active", "idle") or r.id in self._terminal_pending]
 
     def terminal_records(self) -> list[EngagementRecord]:
-        """v0.79.0 (§3): terminal records, for the boot spool-reconciliation
-        owner (drains inbound spools still holding pending receipts/notices)."""
+        """Terminal records, for the engagement transcript reaper."""
         return [
             r for r in self._records.values()
             if r.status in ("completed", "cancelled", "error")
@@ -779,11 +608,8 @@ class EngagementRegistry:
         the file.
 
         ``strict`` (B3, Sol r1): when True, a persistence failure PROPAGATES
-        instead of being swallowed — used by ``advance_interaction_state``,
-        where returning the new state while the authorization never reached
-        disk lets the telegram callback commit an ask that a restart would
-        then un-authorize, and by ``set_channel_state(strict=True)`` (#529),
-        whose sentinel scheme needs a durable write-ahead barrier. All other
+        instead of being swallowed — used by ``set_channel_state(strict=True)``
+        (#529), whose sentinel scheme needs a durable write-ahead barrier. All other
         callers keep the best-effort warn-and-continue semantics
         (strict=False).
 
@@ -816,11 +642,6 @@ class EngagementRegistry:
                     # as None, NaN and 10**400 always were.
                     and _usable_time(rec.completed_at)
                     and rec.completed_at < cutoff
-                    # #599: a record still owing a uid quiesce is NEVER expired.
-                    # Dropping it would delete the obligation AND the
-                    # ``allocated_uid`` boot recovery needs to discharge it, so
-                    # an unkillable survivor would become invisible at 30 days.
-                    and not rec.quiesce_pending
                     # #766: nor is a record that still owes its engager the
                     # telling of this very outcome. Expiring it would discard
                     # the obligation AND the origin the replay is addressed
@@ -847,23 +668,13 @@ class EngagementRegistry:
                 "sdk_session_id": rec.sdk_session_id,
                 "origin": _persistable_origin(rec.origin),
                 "task": rec.task,
-                "auth_token": rec.auth_token,
-                "pinned_message_id": rec.pinned_message_id,
-                "progress_message_id": rec.progress_message_id,
                 "current_state_emoji": rec.current_state_emoji,
                 "tools_allowed": list(rec.tools_allowed),
                 "permission_mode": rec.permission_mode,
                 "plugin_artifacts": [dict(pa) for pa in rec.plugin_artifacts],
-                "interaction_state": rec.interaction_state,
                 "procedural_epoch": rec.procedural_epoch,
-                "next_question_number": rec.next_question_number,
-                "open_questions": [dict(q) for q in rec.open_questions],
-                "summary_message_id": rec.summary_message_id,
-                "summary_revision": rec.summary_revision,
                 "topic_title": rec.topic_title,
-                "allocated_uid": rec.allocated_uid,
                 "context_rebuild_pending": rec.context_rebuild_pending,
-                "quiesce_pending": rec.quiesce_pending,
                 "terminal_notification_pending":
                     rec.terminal_notification_pending,
                 "transcripts_reaped": rec.transcripts_reaped,
@@ -892,12 +703,9 @@ class EngagementRegistry:
     def _write_tombstone(self, snapshot: list[dict[str, Any]]) -> None:
         # Atomic (temp-file + fsync + os.replace): a crash mid-write must not
         # lose all in-flight engagement state to a truncated tombstone (M15).
-        # #335: 0600 — every row carries that engagement's ``auth_token``, so
-        # this file is secret-bearing and must not stay world-readable. This
-        # is defense in depth, NOT isolation: engagement subprocesses run as
-        # root in this container and can still read it. Passing the mode
-        # explicitly also MIGRATES a pre-#335 0644 file on the first write
-        # after upgrade.
+        # #335: 0600 — every row carries that engagement's origin, so this file
+        # must not be world-readable. Passing the mode explicitly also MIGRATES
+        # a pre-#335 0644 file on the first write after upgrade.
         atomic_write_json(
             self._tombstone_path, snapshot, indent=2, mode=0o600)
 
@@ -914,7 +722,6 @@ class EngagementRegistry:
         tools_allowed: tuple[str, ...] | list[str] = (),
         permission_mode: str = "acceptEdits",
         plugin_artifacts: tuple[dict, ...] | list[dict] = (),
-        interaction_state: str = "",
         topic_title: str = "",
         agent_spawn_permit: Any = None,
     ) -> EngagementRecord:
@@ -947,14 +754,9 @@ class EngagementRegistry:
             sdk_session_id=None,
             origin=dict(origin),
             task=task,
-            # #335: minted here, before first persist, so the workspace
-            # provisioner can bake it into .mcp.json and every internal
-            # surface can verify id claims against it.
-            auth_token=secrets.token_urlsafe(32),
             tools_allowed=tuple(tools_allowed),
             permission_mode=permission_mode or "acceptEdits",
             plugin_artifacts=tuple(dict(pa) for pa in plugin_artifacts),
-            interaction_state=interaction_state,
             topic_title=topic_title,
             # #283 (design r4): ownership transfers HERE, at create — once
             # this call returns successfully, terminal transitions own the
@@ -967,34 +769,6 @@ class EngagementRegistry:
             self._records[engagement_id] = rec
             if topic_id is not None:
                 self._topic_index[topic_id] = engagement_id
-
-            # Containment Stage 2 (Task 3): allocate a durable OS uid for a
-            # claude_code engagement BEFORE the strict tombstone write below —
-            # a uid that never reached disk must never be handed to a live
-            # subprocess. Specialists / any other driver stay UNALLOCATED_UID.
-            # A missing allocator is the fail-CLOSED default: rather than
-            # mint a bogus uid (or raise and break every caller that hasn't
-            # been wired to inject one yet — that's Task 10), the record is
-            # left at the sentinel and containment's own preflight (Task 6/7)
-            # refuses to render/launch a claude_code process at that uid.
-            if driver == "claude_code":
-                if self._uid_allocator is not None:
-                    try:
-                        rec.allocated_uid = self._uid_allocator.allocate()
-                    except Exception:
-                        self._records.pop(engagement_id, None)
-                        self._terminal_telling.pop(engagement_id, None)
-                        if (topic_id is not None
-                                and self._topic_index.get(topic_id) == engagement_id):
-                            del self._topic_index[topic_id]
-                        raise
-                else:
-                    logger.warning(
-                        "engagement %s (claude_code) created with no "
-                        "uid_allocator configured — allocated_uid left at "
-                        "the sentinel; containment preflight must refuse it",
-                        engagement_id[:8],
-                    )
 
             # #326: STRICT persistence — the record's whole point is crash
             # recovery, so reporting success after a swallowed write failure
@@ -1096,13 +870,14 @@ class EngagementRegistry:
 
     def _on_terminal_locked(self, rec: "EngagementRecord") -> None:
         """Everything owed by a record that JUST won a terminal transition in
-        this process: the #599 quiesce discharge, then the #1053 observer.
+        this process: the #1053 observer.
 
-        Called at exactly the points ``_schedule_quiesce_locked`` documents, so
-        a strict transition that rolled back — which leaves the record live —
-        tells nobody. Under ``self._lock`` and MUST NOT await: the observer may
+        The strict path calls this after a DURABLE write, so a strict
+        transition that rolled back — which leaves the record live — tells
+        nobody; the direct mutators call it in a ``finally``, which also covers
+        a non-strict write that failed (that contract leaves the in-memory flip
+        standing). Under ``self._lock`` and MUST NOT await: the observer may
         only schedule, and it can never fail the transition that called it."""
-        self._schedule_quiesce_locked(rec)
         observer = getattr(self, "_terminal_observer", None)
         if observer is None:
             return
@@ -1111,52 +886,6 @@ class EngagementRegistry:
         except Exception:  # noqa: BLE001 — never fail a terminal transition
             logger.warning("engagement terminal observer failed for %s",
                            rec.id, exc_info=True)
-
-    def set_quiesce_owner(self, owner) -> None:
-        """Wire the #599 discharge owner (casa_core, once the driver exists)."""
-        self._quiesce_owner = owner
-
-    def _owes_quiesce(self, rec: "EngagementRecord") -> bool:
-        """Only a ``claude_code`` record with a REAL allocated uid has an OS
-        identity to quiesce. Specialists, in-casa and legacy records carry the
-        sentinel and never had a process of their own."""
-        return rec.driver == "claude_code" and rec.allocated_uid >= UID_BASE
-
-    def _schedule_quiesce_locked(self, rec: "EngagementRecord") -> None:
-        """Start the discharge for a record that JUST won a terminal transition.
-
-        Called under ``self._lock`` and MUST NOT await: the ladder takes the
-        per-engagement lifecycle fence and then reads registry state, so awaiting
-        it here would hold the registry lock across a fence acquisition and
-        invert the documented order (fence -> registry). Scheduling only is what
-        keeps that order intact.
-
-        Called once the record IS terminal for this process, in one of two
-        shapes, and the difference is deliberate (Sol, re-review — the earlier
-        comment claimed only the first):
-
-        * the strict path schedules after a DURABLE write, so a rolled-back
-          transition — which leaves the record live — never schedules a kill of
-          a live engagement's processes;
-        * the direct mutators schedule in a ``finally``, which also covers a
-          non-strict write that FAILED. That is intended: the non-strict
-          contract leaves the in-memory flip standing, so every reader in this
-          process already treats the engagement as over and its tools as
-          refused, and leaving its native tools alive is exactly the defect this
-          change exists to remove.
-        """
-        if self._quiesce_owner is None or not rec.quiesce_pending:
-            return
-        existing = self._quiesce_tasks.get(rec.id)
-        if existing is not None and not existing.done():
-            return                      # already discharging; never two ladders
-        task = asyncio.ensure_future(self._quiesce_owner(rec))
-        self._quiesce_tasks[rec.id] = task
-
-        def _retire(t, eid=rec.id):
-            if self._quiesce_tasks.get(eid) is t:
-                self._quiesce_tasks.pop(eid, None)
-        task.add_done_callback(_retire)
 
     # ------------------------------------------------------------------
     # #698 — the launch-cancellation ledger
@@ -1287,52 +1016,6 @@ class EngagementRegistry:
                 return
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def await_quiesce(self, engagement_id: str, timeout: float) -> bool:
-        """Wait for a scheduled discharge, bounded — the finalize funnel uses it
-        so the operator-visible effects follow the kill.
-
-        The task is REGISTRY-owned and shielded here, so an outer cancellation of
-        the funnel does not cancel the ladder: containment completes either way.
-        It does NOT make the funnel's own tail uncancellable — that is
-        pre-existing behaviour for every await after the terminal commit.
-        Returns True only on an observed extinction.
-
-        With no task in flight the DURABLE flag is the answer, and it is the
-        honest one: it is cleared only by an observed extinction, so an absent
-        task plus a cleared obligation means the ladder already finished and
-        succeeded — a fast ladder retires its own task before the funnel gets
-        here, and reading "not extinct" for that would be simply wrong. A record
-        that never owed one has nothing outstanding either.
-        """
-        task = self._quiesce_tasks.get(engagement_id)
-        if task is None:
-            rec = self._records.get(engagement_id)
-            return rec is not None and not rec.quiesce_pending
-        try:
-            return bool(await asyncio.wait_for(asyncio.shield(task), timeout))
-        except asyncio.TimeoutError:
-            logger.warning(
-                "engagement %s: uid quiesce still running at the funnel's "
-                "bound — continuing; the ladder reports its own outcome",
-                engagement_id[:8])
-            return False
-        except Exception:  # noqa: BLE001 — the ladder logs its own failure
-            return False
-
-    async def clear_quiesce_pending(self, engagement_id: str) -> None:
-        """#599: discharge the obligation — ONLY after an observed extinction.
-
-        Best-effort persistence: a failed write costs one idempotent re-run of
-        the ladder at the next boot, which enumerates a dead uid, finds nothing
-        and clears it then.
-        """
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None or not rec.quiesce_pending:
-                return
-            rec.quiesce_pending = False
-            await self._write_tombstone_locked()
-
     async def mark_transcripts_reaped(self, engagement_ids) -> None:
         """The transcript reaper found nothing left to delete for these
         terminal records: their tombstones may now age out. Best-effort
@@ -1348,11 +1031,6 @@ class EngagementRegistry:
                     changed = True
             if changed:
                 await self._write_tombstone_locked()
-
-    def records_owing_quiesce(self) -> list["EngagementRecord"]:
-        """Every record whose uid-quiesce obligation is still outstanding —
-        boot recovery's work list."""
-        return [r for r in self._records.values() if r.quiesce_pending]
 
     def records_owing_terminal_notification(self) -> list["EngagementRecord"]:
         """#766: every terminal outcome whose engager has not been told yet —
@@ -1385,8 +1063,7 @@ class EngagementRegistry:
         consuming resident invokes at its transport-confirmed delivery seam
         (``agent.Agent._ack_delivery``); never on the bus accepting a message.
 
-        Best-effort persistence, exactly as ``clear_quiesce_pending`` is: a
-        failed write leaves memory not-owed and disk owed, which costs one
+        Best-effort persistence: a failed write leaves memory not-owed and disk owed, which costs one
         duplicate announcement at the next boot. The refused direction is a
         LOST notice, and that is not this one.
 
@@ -1407,7 +1084,6 @@ class EngagementRegistry:
                 return  # #326: never overwrite a terminal winner
             rec.status = "completed"
             rec.completed_at = completed_at
-            rec.quiesce_pending = self._owes_quiesce(rec)
             self._release_permit(rec)
             try:
                 await self._write_tombstone_locked()
@@ -1424,7 +1100,6 @@ class EngagementRegistry:
                 return  # #326: never overwrite a terminal winner
             rec.status = "cancelled"
             rec.completed_at = time.time()
-            rec.quiesce_pending = self._owes_quiesce(rec)
             self._release_permit(rec)
             try:
                 await self._write_tombstone_locked()
@@ -1466,7 +1141,6 @@ class EngagementRegistry:
             rec.origin["error_kind"] = kind
             rec.origin["error_message"] = message
             self._stamp_shutdown_reason(rec)
-            rec.quiesce_pending = self._owes_quiesce(rec)
             self._release_permit(rec)
             try:
                 await self._write_tombstone_locked()
@@ -1523,8 +1197,7 @@ class EngagementRegistry:
         error metadata on ``origin``) and, on tombstone-write failure, restores
         the FULL snapshot and re-raises — so a persistence failure leaves the
         record exactly as it was (live), never a memory/disk split. The
-        mutate+persist runs under a shield-and-await (mirroring
-        ``advance_interaction_state``) so cancellation during ``to_thread``
+        mutate+persist runs under a shield-and-await so cancellation during ``to_thread``
         cannot tear the pair.
         """
         async with self._lock:
@@ -1561,7 +1234,6 @@ class EngagementRegistry:
                 # executor engagements, permit=None). Safe before the write:
                 # the non-strict path has no rollback, so the record is
                 # committed-terminal in memory regardless of persist outcome.
-                rec.quiesce_pending = self._owes_quiesce(rec)
                 # #766: same write as the status. Set, never cleared.
                 if owes_terminal_notification:
                     rec.terminal_notification_pending = True
@@ -1578,7 +1250,6 @@ class EngagementRegistry:
             snap_error_kind = rec.origin.get("error_kind", _FIELD_MISSING)
             snap_error_message = rec.origin.get("error_message", _FIELD_MISSING)
             snap_shutdown = rec.origin.get("shutdown_reason", _FIELD_MISSING)
-            snap_quiesce_pending = rec.quiesce_pending
             snap_owes_notification = rec.terminal_notification_pending
 
             def _restore() -> None:
@@ -1589,11 +1260,8 @@ class EngagementRegistry:
                 # #698: a rolled-back persist leaves NO partial annotation —
                 # the stop signal goes back with the rest of the snapshot.
                 _restore_origin_field(rec, "shutdown_reason", snap_shutdown)
-                # #599: a rolled-back transition leaves the record LIVE, and a
-                # live record owes nothing — restoring this with the rest is
-                # what keeps "terminal" and "owes a quiesce" inseparable.
-                rec.quiesce_pending = snap_quiesce_pending
-                # #766: and the same for the telling. A transition that did not
+                # #766: a rolled-back transition leaves the record LIVE, and a
+                # live record owes nothing. A transition that did not
                 # reach disk announced nothing, so it owes nothing; leaving the
                 # bit set would have boot replay announce an outcome that never
                 # happened, to a record that is still live.
@@ -1616,7 +1284,6 @@ class EngagementRegistry:
             # to overwrite.
             rec.status = new_status
             rec.completed_at = new_completed
-            rec.quiesce_pending = self._owes_quiesce(rec)
             # #766: committed HERE, with the terminal fields and before any
             # suspension point, so the one durable write below carries both
             # facts. Arming after the write would leave a crash window in which
@@ -1721,16 +1388,8 @@ class EngagementRegistry:
         """#588: may this record receive a turn right now — and if so, say so.
 
         ``True`` means "deliver"; a record found ``idle`` is flipped back to
-        ``active`` first, because a turn entering the engagement's stdin FIFO
-        IS the engagement becoming live again. The ordinary Telegram arrival
-        path already does that flip on the way in (``update_user_turn``), but a
-        turn REDELIVERED to a respawned CLI after a restart has no such caller:
-        boot reconcile rewrote the record ``active→idle`` (see ``load``), the
-        spool reverts its stale ``delivered`` envelope to ``queued`` and pumps
-        it straight into the FIFO, and nothing on that path touched the record.
-        The turn then ran against an ``idle`` record, and the bridge grant-gate
-        — which binds only ``active`` — refused every non-terminal casa tool it
-        called as ``tool_not_granted``, including tools the engagement holds.
+        ``active`` first, because a turn entering the engagement IS the
+        engagement becoming live again.
 
             terminal -> False   (the engagement is over; do not deliver)
             idle     -> True, flipped to ``active``
@@ -1738,17 +1397,14 @@ class EngagementRegistry:
             unknown  -> True    (no opinion — see below)
 
         SYNCHRONOUS BY CONTRACT — it must never become a coroutine and must
-        never await. The caller runs it between opening the FIFO for writing
-        (which succeeds only once the CLI is reading) and writing the first
-        byte, and the ABSENCE of a suspension point is the whole guarantee: no
-        other coroutine on casa-main's loop — no inbound MCP tool call, no
-        terminal transition — can run in between. Any await here (a lock, a
-        tombstone write) reopens exactly the window this closes, and would also
-        park the delivery behind unbounded registry I/O while holding the FIFO
-        writer open. Durability is therefore deferred to a background persist:
-        the grant-gate reads the in-memory record, so authority is already
-        restored, and a write that never lands costs only that another restart
-        re-idles the record — after which the same redelivery re-flips it.
+        never await. The driver runs it immediately before the call that hands
+        the turn to the engagement, and the ABSENCE of a suspension point is
+        the whole guarantee: no other coroutine on casa-main's loop — no tool
+        call, no terminal transition — can run in between. Any await here (a
+        lock, a tombstone write) reopens exactly the window this closes.
+        Durability is therefore deferred to a background persist: readers use
+        the in-memory record, and a write that never lands costs only that a
+        restart re-idles the record.
 
         Timestamps are deliberately untouched. A redelivery is not a new user
         turn; re-stamping ``last_user_turn_ts`` on every restart would postpone
@@ -1758,15 +1414,13 @@ class EngagementRegistry:
         An UNKNOWN record delivers rather than refusing: records leave
         ``_records`` only on a ``create()`` rollback, so this is unreachable for
         a live engagement, and making delivery hostage to registry knowledge
-        would risk silently dropping operator turns for no authority gain — the
-        bridge gate already fails closed for an id it cannot resolve.
+        would risk silently dropping operator turns for no authority gain.
 
         What this does NOT promise (design review r3-r5, stated so it is not
-        mistaken for more): it fences the FIRST byte only. A terminal
-        transition landing after delivery has begun cannot revoke the turn — a
-        pipe has no rollback, and closing the writer is itself an EOF the CLI
-        acts on. Stopping an in-flight turn is ``driver.cancel``'s job, which
-        the finalize path already does.
+        mistaken for more): it fences the decision to deliver only. A terminal
+        transition landing after delivery has begun cannot revoke the turn.
+        Stopping an in-flight turn is ``driver.cancel``'s job, which the
+        finalize path already does.
         """
         rec = self._records.get(engagement_id)
         if rec is None:
@@ -2060,76 +1714,17 @@ class EngagementRegistry:
                     rec.context_rebuild_pending = True
                 raise
 
-    async def backfill_allocated_uid(self, engagement_id: str) -> int:
-        """Containment Stage 2 (Task 10): allocate + persist an OS uid for a
-        legacy ``claude_code`` record whose ``allocated_uid`` is still the
-        ``UNALLOCATED_UID`` sentinel (created before Stage 2, or before an
-        allocator was wired), and return the resulting uid.
-
-        Called by boot replay for every UNDERGOING claude_code record before it
-        re-renders the run script under the record's uid. Idempotent: a record
-        that already carries a REAL uid (``!= UNALLOCATED_UID``) is returned
-        unchanged, no allocation, no write.
-
-        Fail-CLOSED: with no allocator configured, or if allocation raises
-        (e.g. a missing/malformed counter left the allocator un-reconstructed),
-        this raises :class:`engagement_uids.UidStateError` — the caller must
-        refuse the resume rather than launch a root/unallocated CLI. STRICT
-        persistence with rollback (mirrors :meth:`persist_session_id`): the uid
-        the subprocess will run as MUST reach disk before it is used, or the
-        next boot would re-backfill a *different* uid and orphan a workspace
-        chowned to the first — so a failed write restores the sentinel and
-        propagates.
-        """
-        from engagement_uids import UidStateError
-
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                raise UidStateError(
-                    f"backfill_allocated_uid: unknown engagement {engagement_id}"
-                )
-            if rec.allocated_uid != UNALLOCATED_UID:
-                return rec.allocated_uid
-            if self._uid_allocator is None:
-                raise UidStateError(
-                    "backfill_allocated_uid: no uid_allocator configured — "
-                    "cannot allocate a uid for a legacy record"
-                )
-            new_uid = self._uid_allocator.allocate()   # may raise UidStateError
-            prior = rec.allocated_uid
-            rec.allocated_uid = new_uid
-            task = asyncio.ensure_future(
-                self._write_tombstone_locked(strict=True))
-            cancelled: asyncio.CancelledError | None = None
-            while not task.done():
-                try:
-                    await asyncio.shield(task)
-                except asyncio.CancelledError as exc:
-                    cancelled = exc       # settle first; re-raise after
-                except Exception:  # noqa: BLE001 — retrieved below
-                    break
-            if task.cancelled() or task.exception() is not None:
-                rec.allocated_uid = prior
-            if cancelled is not None:
-                raise cancelled
-            if task.exception() is not None:
-                raise task.exception()
-            return new_uid
-
     async def set_channel_state(
         self,
         engagement_id: str,
         *,
-        pinned_message_id: int | None = None,
-        progress_message_id: int | None = None,
         current_state_emoji: str | None = None,
         strict: bool = False,
     ) -> None:
         """E-12 (v0.37.0): update the channel-state subset on a record.
 
-        Each kwarg is applied only if not None; omitting an arg leaves the
-        current value untouched. Unknown ``engagement_id`` is a no-op (matches
+        ``current_state_emoji`` is applied only if not None; omitting it leaves
+        the current value untouched. Unknown ``engagement_id`` is a no-op (matches
         the other mutators' tolerance for stale callers).
 
         ``strict`` (#529): a persistence failure PROPAGATES and the in-memory
@@ -2144,24 +1739,14 @@ class EngagementRegistry:
             rec = self._records.get(engagement_id)
             if rec is None:
                 return
-            prior = (
-                rec.pinned_message_id, rec.progress_message_id,
-                rec.current_state_emoji,
-            )
-            if pinned_message_id is not None:
-                rec.pinned_message_id = pinned_message_id
-            if progress_message_id is not None:
-                rec.progress_message_id = progress_message_id
+            prior = rec.current_state_emoji
             if current_state_emoji is not None:
                 rec.current_state_emoji = current_state_emoji
             try:
                 await self._write_tombstone_locked(strict=strict)
             except BaseException:
                 if strict and not self._last_tombstone_ok:
-                    (
-                        rec.pinned_message_id, rec.progress_message_id,
-                        rec.current_state_emoji,
-                    ) = prior
+                    rec.current_state_emoji = prior
                 raise
 
     async def set_initial_state_emoji(
@@ -2204,482 +1789,9 @@ class EngagementRegistry:
             rec.procedural_epoch = epoch
             await self._write_tombstone_locked()
 
-    async def advance_interaction_state(
-        self, engagement_id: str, event: str,
-    ) -> str | None:
-        """W2/Sol B9 (Task 7): atomic compare-and-set on ``interaction_state``.
-
-        Read record -> compute the pure transition -> write field +
-        persist, all under ``self._lock`` so two coroutines racing the same
-        event on the same record resolve to exactly one transition (the
-        second sees the already-advanced state and gets a no-op). Returns
-        the new state, or ``None`` for an unknown engagement or a no-op
-        transition (never backwards — see ``_pure_interaction_transition``).
-        """
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                return None
-            new_state = _pure_interaction_transition(rec.interaction_state, event)
-            if new_state is None:
-                return None
-            # B3 (Sol r1): persist STRICTLY and roll back on failure — the
-            # telegram callback commits the ask on a successful return, so the
-            # authorization MUST have reached disk before we report the new
-            # state. On a write failure the callback's `except` path
-            # abort_claims + "please tap again" (verified end-to-end by
-            # test_telegram_inline_callback).
-            prev_state = rec.interaction_state
-
-            async def _mutate_and_persist() -> str:
-                rec.interaction_state = new_state
-                try:
-                    await self._write_tombstone_locked(strict=True)
-                except Exception:
-                    rec.interaction_state = prev_state
-                    raise
-                return new_state
-
-            # B4 (Sol diff r2): SHIELD the mutate+persist so cancelling the
-            # CALLER (e.g. the telegram callback task) cannot tear the pair.
-            # The inner task runs to completion UNDER THE LOCK — on cancel we
-            # await it to completion BEFORE re-raising, so the durable write
-            # (and, on failure, the rollback) always finishes while we still
-            # hold the lock. Without this a CancelledError mid-``to_thread``
-            # left the request armed-then-aborted despite disk authorization
-            # (expiring ``no_answer`` on an answered ask). The callback treats
-            # a cancellation-after-authorization as committable.
-            task = asyncio.ensure_future(_mutate_and_persist())
-            try:
-                return await asyncio.shield(task)
-            except asyncio.CancelledError:
-                if not task.done():
-                    # Retrieve any inner exception (already rolled back) so it
-                    # is not flagged "never retrieved"; then honor the cancel.
-                    await asyncio.gather(task, return_exceptions=True)
-                raise
-
-    async def set_interaction_violated(self, engagement_id: str) -> None:
-        """W2/Sol B9 (Task 7): flag a mutating tool-use taken while
-        ``awaiting_operator`` — ``_finalize_engagement`` reads
-        ``rec.origin.get("interaction_violated")`` to append a violation
-        line to the completion summary. Unknown engagement is a no-op
-        (matches the other mutators' tolerance for stale callers).
-
-        B3 (Sol diff r2): persist STRICTLY and roll back on failure, mirroring
-        ``advance_interaction_state``. The driver seam
-        (``claude_code_driver._on_stream_event``) only marks
-        ``_violation_flagged`` after a SUCCESSFUL return, so a swallowed write
-        failure would permanently drop the completion warning after a restart;
-        raising lets the seam retry on the next mutating-tool frame.
-        """
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                return
-            had_flag = "interaction_violated" in rec.origin
-            prev = rec.origin.get("interaction_violated")
-            rec.origin["interaction_violated"] = True
-            try:
-                await self._write_tombstone_locked(strict=True)
-            except Exception:
-                if had_flag:
-                    rec.origin["interaction_violated"] = prev
-                else:
-                    rec.origin.pop("interaction_violated", None)
-                raise
-
     # -- v0.79.0 (§4) question numbering + open-question ledger --------------
 
-    async def allocate_question_number(self, engagement_id: str) -> int | None:
-        """Atomically allocate the next durable ``Q<n>`` for an engagement.
-
-        Bumps ``next_question_number`` under the lock and persists (same
-        transactional shield-and-await pattern as ``advance_interaction_state``
-        so a cancelled caller never tears the counter from disk). Returns the
-        allocated number, or ``None`` for an unknown engagement."""
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                return None
-            allocated = rec.next_question_number
-            prev = rec.next_question_number
-            rec.next_question_number = allocated + 1
-
-            async def _mutate_and_persist() -> int:
-                try:
-                    await self._write_tombstone_locked(strict=True)
-                except Exception:
-                    rec.next_question_number = prev
-                    raise
-                return allocated
-
-            task = asyncio.ensure_future(_mutate_and_persist())
-            try:
-                return await asyncio.shield(task)
-            except asyncio.CancelledError:
-                if not task.done():
-                    await asyncio.gather(task, return_exceptions=True)
-                raise
-
-    async def add_open_question(
-        self, engagement_id: str, number: int, tg_message_id: int | None,
-        text: str | None = None, kind: str = "button",
-        source_hash: str | None = None,
-    ) -> None:
-        """Record a still-open question ``{n, tg_message_id, text, kind}``
-        (persisted). ``text`` is the canonical displayed question so boot
-        reconciliation can re-render the settle copy over it (memory-only broker
-        state does not survive a restart). ``kind`` is ``"button"`` (broker tap)
-        or ``"anchor"`` (free-text — settled by the next operator message).
-        Idempotent on ``number``.
-
-        wb2-1 (whole-branch gate wave 2): ``source_hash`` (optional) is the
-        projection hash of the ask that produced this anchor — the SAME hash the
-        topic relay computes for the ask's tool_use block. Persisted so the relay's
-        driver-injected ``open_anchor_state`` seam can report it, letting a
-        narration-suppression candidate bind POSITIVELY to the anchor its OWN ask
-        produced (never a prior / co-existing open anchor). Absent for legacy rows
-        and button asks (harmless — button asks are never relay candidates).
-
-        v0.79.0 (§4, Sol F6): STRICT persistence — a tombstone-write failure
-        rolls ``open_questions`` back (full-field) and RE-RAISES rather than
-        silently leaving a keyboard that the ledger/summary/boot-reconciler
-        cannot see. The ask handler settles the keyboard fail-closed on the
-        raise. Uses the shield-and-await transactional pattern so cancellation
-        during ``to_thread`` cannot split memory from disk."""
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                return
-            prev = rec.open_questions
-            entries = [q for q in rec.open_questions if q.get("n") != number]
-            entry = {
-                "n": number, "tg_message_id": tg_message_id, "kind": kind,
-                # v0.83.0 (§A3): the answer-lifecycle flag + re-anchor stale-copy
-                # list. New rows carry them explicitly; old rows are .get-tolerant.
-                "answered": False, "stale_mids": [],
-            }
-            if text is not None:
-                entry["text"] = text
-            if source_hash is not None:
-                entry["source_hash"] = source_hash
-            entries.append(entry)
-            rec.open_questions = tuple(entries)
-
-            async def _mutate_and_persist() -> None:
-                try:
-                    await self._write_tombstone_locked(strict=True)
-                except Exception:
-                    rec.open_questions = prev
-                    raise
-
-            task = asyncio.ensure_future(_mutate_and_persist())
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                if not task.done():
-                    await asyncio.gather(task, return_exceptions=True)
-                raise
-
-    async def _commit_open_questions_strict(self, rec: EngagementRecord,
-                                            prev: tuple[dict, ...]) -> None:
-        """Shared strict-persist transaction for the ``open_questions`` mutators
-        (§A3): shield-and-await the tombstone write; on failure ROLL BACK the
-        whole tuple (``prev``) and RE-RAISE, so a caller can fail closed and a
-        cancelled ``to_thread`` never splits memory from disk. Caller MUST hold
-        ``self._lock`` and have already assigned the new ``rec.open_questions``."""
-        async def _mutate_and_persist() -> None:
-            try:
-                await self._write_tombstone_locked(strict=True)
-            except Exception:
-                rec.open_questions = prev
-                raise
-
-        task = asyncio.ensure_future(_mutate_and_persist())
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            if not task.done():
-                await asyncio.gather(task, return_exceptions=True)
-            raise
-
-    async def mark_question_answered(self, engagement_id: str, number: int) -> bool:
-        """§A3 (Sol r2-7): mark an open-question entry ANSWERED — the
-        answer-lifecycle decision, split from visual settlement. STRICT-persisted
-        (rollback + re-raise like ``add_open_question``). The entry stays in the
-        ledger (removed only after a confirmed settle edit) but becomes INVISIBLE
-        to ``open_question_numbers``/``oldest_open_anchor`` so the A3 gates and the
-        pinned summary stop treating an already-answered question as live.
-
-        Returns ``True`` when an entry with ``number`` was flagged, ``False`` for
-        an unknown engagement or number (idempotent on an already-answered entry).
-        """
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                return False
-            prev = rec.open_questions
-            found = False
-            entries: list[dict] = []
-            for q in rec.open_questions:
-                nq = dict(q)
-                if nq.get("n") == number:
-                    found = True
-                    nq["answered"] = True
-                entries.append(nq)
-            if not found:
-                return False
-            rec.open_questions = tuple(entries)
-            await self._commit_open_questions_strict(rec, prev)
-            return True
-
-    async def stage_stale_mid(self, engagement_id: str, number: int,
-                              mid: int, kind: str = _STALE_KIND_DEFAULT) -> bool:
-        """§A3 staged re-anchor: append ``{"mid": mid, "kind": kind}`` to an
-        entry's ``stale_mids`` (the OLD copy awaiting a confirmed settle).
-        STRICT-persisted, idempotent on ``mid`` (dedup ignores ``kind`` — the
-        first stage wins). v0.84.0 (round-4 §D6): ``kind`` defaults to
-        ``"plain"`` — the re-anchor pass ALWAYS stages plain (the atomic flip to
-        ``"reanchored"``, paired with the new-mid persist, is a separate
-        transaction owned by ``update_question_mid`` — Task D2). Any pre-existing
-        legacy bare-int entries on this question's list are normalized to dicts
-        as a side effect of this write. Returns ``False`` for an unknown
-        engagement/number."""
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                return False
-            prev = rec.open_questions
-            found = False
-            entries: list[dict] = []
-            for q in rec.open_questions:
-                nq = dict(q)
-                if nq.get("n") == number:
-                    found = True
-                    stale = [
-                        normalize_stale_mid_entry(m)
-                        for m in (nq.get("stale_mids") or [])
-                    ]
-                    if not any(s["mid"] == mid for s in stale):
-                        stale.append({"mid": mid, "kind": kind})
-                    nq["stale_mids"] = stale
-                entries.append(nq)
-            if not found:
-                return False
-            rec.open_questions = tuple(entries)
-            await self._commit_open_questions_strict(rec, prev)
-            return True
-
-    async def unstage_stale_mid(self, engagement_id: str, number: int,
-                                mid: int) -> bool:
-        """§A3: remove ``mid`` from an entry's ``stale_mids`` once its OLD copy is
-        confirmed-settled. STRICT-persisted, no-op-tolerant when the mid is absent.
-        Normalizes every remaining entry to ``{"mid", "kind"}`` (tolerates a mix
-        of legacy bare-int and dict entries on the same list). Returns ``False``
-        for an unknown engagement/number."""
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                return False
-            prev = rec.open_questions
-            found = False
-            entries: list[dict] = []
-            for q in rec.open_questions:
-                nq = dict(q)
-                if nq.get("n") == number:
-                    found = True
-                    nq["stale_mids"] = [
-                        normalize_stale_mid_entry(m)
-                        for m in (nq.get("stale_mids") or [])
-                        if normalize_stale_mid_entry(m)["mid"] != mid
-                    ]
-                entries.append(nq)
-            if not found:
-                return False
-            rec.open_questions = tuple(entries)
-            await self._commit_open_questions_strict(rec, prev)
-            return True
-
-    async def update_question_mid(self, engagement_id: str, number: int,
-                                  new_mid: int) -> bool:
-        """§A3 staged re-anchor step 3: strict-persist an entry's live
-        ``tg_message_id`` to ``new_mid`` (the freshly-posted re-anchor copy).
-        STRICT-persisted (rollback + re-raise like the sibling mutators), so the
-        caller can settle the new copy fail-closed on a raise. Returns ``False``
-        for an unknown engagement/number.
-
-        v0.84.0 (round-4 §D6, Sol r3-3/r17): the SAME transaction also flips the
-        just-staged stale entry — the one whose ``mid`` equals THIS question's
-        OLD ``tg_message_id`` (captured before the overwrite), not every
-        ``"plain"`` entry on the question — from ``"plain"`` to ``"reanchored"``.
-        Both mutations are folded into the single ``rec.open_questions`` tuple
-        assigned before ``_commit_open_questions_strict``, so a failed commit
-        rolls back the whole tuple (mid AND kind) via its existing ``prev``
-        restore, and a successful commit persists both in one write. No
-        intermediate durable (or in-memory) state exists between "old mid +
-        plain" and "new mid + reanchored"."""
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                return False
-            prev = rec.open_questions
-            found = False
-            entries: list[dict] = []
-            for q in rec.open_questions:
-                nq = dict(q)
-                if nq.get("n") == number:
-                    found = True
-                    old_mid = nq.get("tg_message_id")
-                    nq["tg_message_id"] = new_mid
-                    # D2: atomic flip — same transaction as the mid persist
-                    # above. Targets ONLY the staged old-mid entry (mid ==
-                    # old_mid), never every "plain" entry on this question.
-                    stale = [
-                        normalize_stale_mid_entry(m)
-                        for m in (nq.get("stale_mids") or [])
-                    ]
-                    for s in stale:
-                        if s["mid"] == old_mid:
-                            s["kind"] = "reanchored"
-                    nq["stale_mids"] = stale
-                entries.append(nq)
-            if not found:
-                return False
-            rec.open_questions = tuple(entries)
-            await self._commit_open_questions_strict(rec, prev)
-            return True
-
-    def open_question_entries(self, engagement_id: str) -> list[dict]:
-        """RAW list copy of every open-question entry — answered or not (§A3).
-        Used by the visual settle / boot reconciliation paths, which iterate the
-        WHOLE ledger; the gates/summary use the answered-filtered accessors."""
-        rec = self._records.get(engagement_id)
-        if rec is None:
-            return []
-        return [dict(q) for q in rec.open_questions]
-
-    def oldest_open_anchor(self, engagement_id: str) -> dict | None:
-        """The oldest still-open, UNANSWERED free-text anchor (``kind ==
-        "anchor"``), or ``None``. The next operator message settles it (§4).
-        v0.83.0 (§A3): answered anchors are excluded — an answered-but-unsettled
-        anchor must not gate replies or be re-posted as unresolved."""
-        rec = self._records.get(engagement_id)
-        if rec is None:
-            return None
-        anchors = [
-            q for q in rec.open_questions
-            if q.get("kind") == "anchor" and not q.get("answered", False)
-        ]
-        if not anchors:
-            return None
-        return min(anchors, key=lambda q: q.get("n", 0))
-
-    async def close_open_question(self, engagement_id: str, number: int) -> None:
-        """Remove a settled question from the open-question ledger (persisted).
-        ``next_question_number`` is NEVER rewound. Unknown engagement/number is
-        a no-op.
-
-        v0.83.0 (§A3, M4): the closing removal is now STRICT — a tombstone-write
-        failure ROLLS BACK ``open_questions`` (full-tuple) and RE-RAISES, like the
-        sibling mutators, so the entry can never vanish from memory while surviving
-        on disk. Callers (``_settle_ledger_entry``) treat a raise as RETAINED — the
-        entry stays present for a later settle / boot-reconcile pass."""
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                return
-            prev = rec.open_questions
-            remaining = tuple(
-                q for q in rec.open_questions if q.get("n") != number
-            )
-            if len(remaining) == len(rec.open_questions):
-                return
-            rec.open_questions = remaining
-            await self._commit_open_questions_strict(rec, prev)
-
-    def open_question_numbers(self, engagement_id: str) -> list[int]:
-        """Accessor for summary consumers (T4): the sorted list of still-open,
-        UNANSWERED question numbers (``Open questions: Q4, Q6``). v0.83.0 (§A3,
-        Sol r3-5): answered entries are excluded — this feeds the pinned summary's
-        ``Open questions:`` line and ``recompute_engagement_status``, so an
-        answered-but-unconfirmed-settle entry must stop showing/gating."""
-        rec = self._records.get(engagement_id)
-        if rec is None:
-            return []
-        return sorted(
-            q["n"] for q in rec.open_questions
-            if "n" in q and not q.get("answered", False)
-        )
-
     # -- v0.79.0 (§5) live-summary state ------------------------------------
-
-    async def set_summary_message_id(
-        self, engagement_id: str, message_id: int | None,
-    ) -> None:
-        """Persist the pinned summary Telegram message id (posted at boot).
-        No-op for an unknown engagement.
-
-        v0.79.0 (§5, Sol F6): STRICT persistence — a tombstone-write failure
-        rolls ``summary_message_id`` back and RE-RAISES rather than leaving a
-        posted-but-unpersisted summary that a restart cannot resume; the boot
-        summary post ABORTS the launch on the raise (§5 post-failure-aborts).
-        Shield-and-await so cancellation during ``to_thread`` cannot split
-        memory from disk."""
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                return
-            prev = rec.summary_message_id
-            rec.summary_message_id = message_id
-
-            async def _mutate_and_persist() -> None:
-                try:
-                    await self._write_tombstone_locked(strict=True)
-                except Exception:
-                    rec.summary_message_id = prev
-                    raise
-
-            task = asyncio.ensure_future(_mutate_and_persist())
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                if not task.done():
-                    await asyncio.gather(task, return_exceptions=True)
-                raise
-
-    async def allocate_summary_revision(self, engagement_id: str) -> int | None:
-        """Atomically allocate the next monotonic summary REVISION (§5).
-
-        Every lifecycle status transition acquires its revision here, so the
-        three status sources (driver turn lifecycle, ``interaction_state``, ask
-        registry) are totally ordered and collision-free. Uses the same
-        transactional shield-and-await pattern as ``allocate_question_number``
-        (a cancelled caller never tears the counter from disk). Returns the
-        allocated revision, or ``None`` for an unknown engagement."""
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                return None
-            allocated = rec.summary_revision
-            prev = rec.summary_revision
-            rec.summary_revision = allocated + 1
-
-            async def _mutate_and_persist() -> int:
-                try:
-                    await self._write_tombstone_locked(strict=True)
-                except Exception:
-                    rec.summary_revision = prev
-                    raise
-                return allocated
-
-            task = asyncio.ensure_future(_mutate_and_persist())
-            try:
-                return await asyncio.shield(task)
-            except asyncio.CancelledError:
-                if not task.done():
-                    await asyncio.gather(task, return_exceptions=True)
-                raise
 
     async def sweep_idle_and_suspend(
         self, *, driver: Any, now_override: float | None = None,

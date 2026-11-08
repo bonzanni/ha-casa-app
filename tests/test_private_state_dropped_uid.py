@@ -113,8 +113,7 @@ def _fixture_tree(root: Path) -> None:
         p.write_text("sensitive", encoding="utf-8")
         os.chmod(p, 0o644)
 
-    for rel in ("data/memory", "config/cc-home",
-                "config/.git", "var/log/casa-engagement-aaaaaaaa"):
+    for rel in ("data/memory", "config/cc-home", "config/.git"):
         d = root / rel
         d.mkdir(parents=True, exist_ok=True)
         os.chmod(d, 0o755)
@@ -197,13 +196,6 @@ def test_contents_of_a_tightened_directory_are_unreachable(
     inner = enforced / "config/cc-home/inside.txt"
     assert stat.S_IMODE(os.stat(inner).st_mode) == 0o644
     assert not _readable_as_dropped(str(inner))
-
-
-@pytestmark_root_only
-def test_sibling_engagement_log_is_unreachable(enforced: Path) -> None:
-    """The advisory's worst finding: ~21 MB of another engagement's stdout."""
-    sibling = enforced / "var/log/casa-engagement-aaaaaaaa/inside.txt"
-    assert not _readable_as_dropped(str(sibling))
 
 
 @pytestmark_root_only
