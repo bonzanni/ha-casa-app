@@ -61,17 +61,17 @@ async def build(tree: w.Tree, monkeypatch) -> dict:
     u = lambda p: w.under(root, p)            # noqa: E731
     facts = {}
 
-    # memory.db: an event and an engagement summary
+    # memory.db: an event, and a row in a table an earlier schema created
+    # and this one no longer declares — an install created before a table's
+    # removal still holds it, and the wipe must take it too
     store = MemoryStore(str(u(registry.MEMORY_DIR)))
     assert store.open()
     assert capture.append(store, _event("told " + tree.canary())).outcome == (
         capture.STORED)
     with store.transaction(write=True) as conn:
-        conn.execute(
-            "INSERT INTO engagement_summaries (source_key, role, "
-            "procedural_epoch, tier, text, engagement_id, at) VALUES "
-            "('event:s1', 'assistant', '', 'private', ?, 'e1', 'now')",
-            ("summary " + tree.canary(),))
+        conn.execute("CREATE TABLE engagement_summaries (text TEXT NOT NULL)")
+        conn.execute("INSERT INTO engagement_summaries (text) VALUES (?)",
+                     ("summary " + tree.canary(),))
     # the spool and the snapshot a cut-off drain leaves
     w.write(u(f"{registry.MEMORY_DIR}/spool.jsonl"),
             json.dumps({"text": tree.canary()}) + "\n")

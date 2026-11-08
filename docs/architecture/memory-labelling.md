@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-04
+last_reviewed: 2026-11-08
 ---
 
 # Memory labelling: occurrence, floor and tier
@@ -23,9 +23,9 @@ read it back is [`architecture/memory-scoping.md`](memory-scoping.md).
 operator message that carries a provider id — a Telegram DM, or a message in an engagement
 topic — is keyed by a hash of its channel, its chat and that id, so the same message
 delivered twice is one event. Everything else — a turn no person typed, each resident or
-specialist message, a delegated request and answer, an engagement summary — is keyed by a
-random id minted once, when capture builds the item, and carried on its spool line. The same
-words said twice are two events; a retried attempt's output and a regenerated answer are new
+specialist message, a delegated request and answer — is keyed by a random id minted once,
+when capture builds the item, and carried on its spool line. The same words said twice are
+two events; a retried attempt's output and a regenerated answer are new
 events; a spool drain run twice adds nothing. No key counts anything, and the short log
 correlation id is never an input, since two turns can share one. The third form names Casa's
 line that a specialist which keeps no memory posted to the operator's chat
@@ -43,8 +43,7 @@ forwarded or picked from an inline bot; not a button tap, which carries Casa's o
 carries no floor and is classified like any text, so what he says in his private chat can reach
 a lower ledger while the resident's reply to it stays `private`. A
 friend's Telegram turn and the resident's answer to it carry the friend's clearance as their
-floor; a delegated run's request and answer carry the delegating turn's. An engagement summary is
-stored at its origin's tier. A turn Casa's own schedule fired is recorded `scheduled`.
+floor; a delegated run's request and answer carry the delegating turn's. A turn Casa's own schedule fired is recorded `scheduled`.
 
 **What is captured is the turn's own text, never the query Casa composed.** Every sent user
 turn carries a per-turn time envelope, and a turn that carries Casa's notes — a Telegram

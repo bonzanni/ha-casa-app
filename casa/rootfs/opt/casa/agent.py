@@ -1851,8 +1851,8 @@ class Agent:
             # #766: the wording is timing- and storage-NEUTRAL because there is
             # now a second producer. A delegation row is converted at boot and
             # really did finish during the restart; an ENGAGEMENT outcome may
-            # have finished long before it, and its summary may well have been
-            # retained elsewhere — so "completed during a Casa restart" and
+            # have finished long before it, and its summary may well still
+            # stand in its closed topic — so "completed during a Casa restart" and
             # "the answer itself is gone" were both false on that arm, and told
             # the operator something untrue about durable state. What is true of
             # both producers is only that this NOTICE does not carry the answer.

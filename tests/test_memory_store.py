@@ -67,8 +67,7 @@ def test_fresh_store_creates_schema_v1_in_wal(opened: MemoryStore) -> None:
         conn.close()
     assert tables == {
         "events", "objects", "revisions", "dispositions", "jobs",
-        "correction_marks", "session_views", "engagement_summaries",
-        "transcript_runs", "meta",
+        "correction_marks", "session_views", "transcript_runs", "meta",
     }
     # A second open of a current store migrates nothing and stays available.
     again = MemoryStore(opened.directory)

@@ -63,16 +63,6 @@ def events(store: MemoryStore) -> list[dict]:
         conn.close()
 
 
-def summaries(store: MemoryStore) -> list[dict]:
-    conn = sqlite3.connect(store.path)
-    conn.row_factory = sqlite3.Row
-    try:
-        return [dict(r) for r in conn.execute(
-            "SELECT * FROM engagement_summaries ORDER BY id")]
-    finally:
-        conn.close()
-
-
 async def captured_events(store: MemoryStore) -> list[dict]:
     """Every event capture made durable, stored now, in the order they
     occurred. For a question about what a seam captured, not where it waited:
@@ -852,7 +842,6 @@ async def test_a_turn_a_delegation_and_an_engagement_turn_each_capture(
         ("specialist", "second part")]
     assert rows[4]["source_key"] == occurrence.provider_key(
         "telegram", f"engagement:{rec.id}", "55")
-    assert summaries(mem) == []
 
 
 # --- the turn is never held by capture --------------------------------------

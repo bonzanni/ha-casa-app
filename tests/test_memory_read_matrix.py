@@ -2,16 +2,13 @@
 
 The matrix: every read path × every reader clearance, over one store holding
 a canary at every tier — events (and a provisional one), the ``private`` and
-``friends`` ledgers with their history, correction marks and engagement
-summaries. Each path must return exactly the canaries its reader may read:
+``friends`` ledgers with their history, and correction marks. Each path must return exactly the canaries its reader may read:
 
 * the served view and ``open_memory`` (history included) by ledger: the
   highest maintained ledger at or below the reader;
 * the correction note by that ledger and by each event's tier;
 * search hits and each hit's window neighbours, date browse (its counts
   included) and the engager's search by event tier, before any paging.
-
-Engagement summaries are seeded too: no read path returns them.
 
 An id the reader's ledger does not hold gets the same answer as an id that
 does not exist. Reachability is checked per ledger, and a ledger past the
@@ -33,7 +30,6 @@ pytestmark = [pytest.mark.unit]
 
 TIERS = ("public", "friends", "family", "private")
 WORD = "kettle"
-ROLE, EPOCH = "configurator", "epoch-1"
 
 
 def rank(tier: str) -> int:
@@ -73,18 +69,6 @@ class World:
                               "body": now}], ledger=ledger)
             self.objects[then] = self.objects[now] = ledger
             self.ids[ledger].append(oid)
-        #: summary canary -> tier
-        self.summaries: dict[str, str] = {}
-        with self.store.transaction(write=True) as conn:
-            for n, tier in enumerate(TIERS):
-                c = canary()
-                conn.execute(
-                    "INSERT INTO engagement_summaries (source_key, role, "
-                    "procedural_epoch, tier, text, engagement_id, at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (f"event:{c}", ROLE, EPOCH, tier, c, f"e{n}",
-                     f"2026-01-0{n + 1}T00:00:00+00:00"))
-                self.summaries[c] = tier
 
     def readable_events(self, clearance: str) -> set[str]:
         return {c for c, (tier, provisional) in self.events.items()
@@ -95,7 +79,7 @@ class World:
         return {c for c, led in self.objects.items() if led == ledger}
 
     def all_canaries(self) -> set[str]:
-        return {*self.events, *self.objects, *self.summaries}
+        return {*self.events, *self.objects}
 
 
 def seen(world: World, text: str) -> set[str]:

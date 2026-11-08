@@ -126,8 +126,6 @@ REGISTRY: tuple[Entry, ...] = (
           Export.YES, Restore.LOAD, Wipe.DELETE),
     Entry("writer state", Kind.TABLE, ("dispositions", "jobs"),
           Export.YES, Restore.LOAD_REQUEUE, Wipe.DELETE),
-    Entry("engagement summaries", Kind.TABLE, ("engagement_summaries",),
-          Export.YES, Restore.LOAD, Wipe.DELETE),
     Entry("session views", Kind.TABLE, ("session_views",),
           Export.NO, Restore.NONE, Wipe.DELETE),
     # Run registration and confirmation: ids and times, no content. A restore

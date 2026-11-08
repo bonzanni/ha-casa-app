@@ -11,8 +11,8 @@ live forms.
   one event.
 * ``event:<id>`` — every other live item: an operator turn with no provider id
   (a scheduled, reminder or trigger turn), each resident or specialist
-  message, a delegated request and answer, an engagement summary. ``id`` is a
-  random 128-bit value minted once, when capture builds the item. The spool
+  message, a delegated request and answer. ``id`` is a random 128-bit value
+  minted once, when capture builds the item. The spool
   line carries it, so a drain that is cut off and re-run adds the item once,
   while a regenerated answer or a retry's output is a new emission with a new
   id and is kept.

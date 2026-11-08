@@ -10209,10 +10209,8 @@ async def _report_launch_death(
     primitive with ``strict=True``.
 
     Deliberately NOT ``_finalize_engagement``: that funnel would double-notify
-    the engager over the bus, overwrite ``error_kind`` with
-    ``emit_completion_error``, and — the outcome that matters — capture a
-    finalize summary into memory, which has no other copy. Nothing here
-    constructs ``completed`` and nothing here captures a summary.
+    the engager over the bus and overwrite ``error_kind`` with
+    ``emit_completion_error``. Nothing here constructs ``completed``.
 
     Never raises. Returns a :class:`LaunchDeathResult`.
     """
@@ -11209,10 +11207,9 @@ async def _finalize_engagement(
     inbound_gate: bool = False,         # G4 D1/D2 (v0.96.0): emit/completed only
     detach_teardown_tail: bool = False,  # #632: in_casa self-emit only
 ) -> "FinalizeResult":
-    """End an engagement: update registry, close topic, NOTIFY the assistant,
-    capture the engagement's summary into memory.
+    """End an engagement: update registry, close topic, NOTIFY the assistant.
 
-    Never raises on channel/memory side-effects — logs warnings and continues
+    Never raises on channel side-effects — logs warnings and continues
     so the registry always reaches a terminal state.
 
     ``stale_before`` (reap only): the terminal transition wins ONLY if the
@@ -11225,54 +11222,6 @@ async def _finalize_engagement(
     guard; ``PERSIST_FAILED`` means the tombstone write rolled back and the
     record is STILL LIVE (retryable).
     """
-    # Browser executor §5.4: a specialist that writes no memory leaves no
-    # summary either — the summary is its own output. Decided ONCE, here,
-    # and frozen: the summary run's registration and the tail's captures
-    # both read this decision, never the setting again (a reload during the
-    # teardown must not make a summary capture that no run covers).
-    from delegated_memory import role_writes_memory
-    summary_allowed = (engagement.kind != "specialist"
-                       or role_writes_memory(engagement.role_or_type))
-    # The finalize summaries are captures: their run's row exists before the
-    # terminal flip that makes the engagement's transcripts deletable
-    # (INV-ENG-027). This ``finally`` covers the row's whole life after its
-    # registration — a lost flip, a failure, a cancellation anywhere before
-    # the tail — unless a detached tail has taken it over; with no capture
-    # outstanding, closing confirms it.
-    summary_run = await _register_summary_run(engagement,
-                                              allowed=summary_allowed)
-    handed: list = []
-    try:
-        return await _finalize_engagement_funnel(
-            engagement, outcome=outcome, text=text, artifacts=artifacts,
-            next_steps=next_steps, driver=driver, stale_before=stale_before,
-            output_truncated=output_truncated, inbound_gate=inbound_gate,
-            detach_teardown_tail=detach_teardown_tail,
-            summary_allowed=summary_allowed, summary_run=summary_run,
-            handed=handed)
-    finally:
-        if not handed:
-            summary_run.close()
-
-
-async def _finalize_engagement_funnel(
-    engagement: EngagementRecord,
-    *,
-    outcome: str,
-    text: str,
-    artifacts: list[str],
-    next_steps: list[dict],
-    driver: Any | None,
-    stale_before: float | None,
-    output_truncated: bool,
-    inbound_gate: bool,
-    detach_teardown_tail: bool,
-    summary_allowed: bool,
-    summary_run: Any,
-    handed: list,
-) -> "FinalizeResult":
-    """The body of :func:`_finalize_engagement`, holding its summary run.
-    *handed* receives the detached tail when one takes the run over."""
     last_summary = engagement.origin.get("job", {}).get("last_summary")
     if outcome in ("cancelled", "error") and last_summary:
         text += f"\nLast progress: {last_summary}"
@@ -11495,13 +11444,13 @@ async def _finalize_engagement_funnel(
     if engagement.permit is not None:
         engagement.permit.release()
 
-    # #632 (Terra, seam review): freeze the tail's payload inputs NOW —
-    # before the first await after the flip. ``lower_origin_clearance`` has
-    # no terminal-state refusal and rewrites the live record's ``origin`` and
-    # ``task``; this funnel suspends (broker drain, topic round-trips) between the flip and the notification/summary reads, so
-    # without this snapshot a post-terminal clamp lands in the
-    # DelegationComplete and summary payloads. The completion records carry
-    # the values that won the flip.
+    # #632: freeze the tail's payload inputs NOW — before the first await
+    # after the flip. ``lower_origin_clearance`` has no terminal-state refusal
+    # and rewrites the live record's ``origin``; this funnel suspends (broker
+    # drain, topic round-trips) between the flip and the notification's reads,
+    # so without this snapshot a post-terminal clamp lands in the
+    # DelegationComplete payload. The completion notice carries the values
+    # that won the flip.
     frozen: dict[str, Any] = {
         "id": engagement.id,
         "kind": engagement.kind,
@@ -11509,8 +11458,6 @@ async def _finalize_engagement_funnel(
         "role_or_type": engagement.role_or_type,
         "started_at": engagement.started_at,
         "origin": dict(engagement.origin),
-        "task": engagement.task,
-        "summary_allowed": summary_allowed,
     }
 
     # [AR-4] Topic-retention ledger (2026-07-10 design): record the topic
@@ -11561,8 +11508,7 @@ async def _finalize_engagement_funnel(
                 # The copy claims what Casa can actually evidence: no turn
                 # start was RECORDED for them before the engagement ended.
                 # TOPIC-ONLY (never in `text`, which flows to the bus
-                # notification and the summary capture) and BOUNDED to one
-                # message: excerpts + count.
+                # notification) and BOUNDED to one message: excerpts + count.
                 # #848: a reservation text that was read is evidence of a
                 # lost message even when the count read raised — the
                 # paragraph is posted for it. The new arm needs BOTH the
@@ -11752,9 +11698,9 @@ async def _finalize_engagement_funnel(
             # Bounded: this await has no caller-side bound anywhere in this
             # module's history, and making it unconditional put it on the path
             # where the follow-up adjudication depends on the tail running. A
-            # close that never returns would strand ``driver.cancel``, the bus
-            # notification and the retains behind it over an already-terminal
-            # record — and, because ``driver.cancel`` is what ends the response
+            # close that never returns would strand ``driver.cancel`` and the
+            # bus notification behind it over an already-terminal record —
+            # and, because ``driver.cancel`` is what ends the response
             # iterator, would strand the follow-up turn waiting to adjudicate
             # its own cutoff. Same bound as ``_abort_engagement_topic``'s close.
             try:
@@ -11789,8 +11735,8 @@ async def _finalize_engagement_funnel(
     # (pinned SDK query.py:998-999), and on the container's CPython 3.11
     # (where asyncio.wait_for task-wraps) the CancelledError re-raises past
     # the except clauses around driver.cancel and severs the bus
-    # notification, retains, deferred Supervisor restart and finalized log —
-    # permanently, since the record is already terminal. emit_completion
+    # notification and finalized log — permanently, since the record is
+    # already terminal. emit_completion
     # opts in to detaching the tail into a Casa-owned task
     # (asyncio.create_task — never Query.spawn_task, so _close_impl cannot
     # find or cancel it), anchored in _finalize_tail_tasks and awaited
@@ -11801,24 +11747,18 @@ async def _finalize_engagement_funnel(
     # identical task, ordering and cancellation semantics as before.
     if detach_teardown_tail:
         tail = asyncio.create_task(_finalize_engagement_tail(
-            engagement, outcome=outcome, text=text, artifacts=artifacts,
+            engagement, outcome=outcome, text=text,
             next_steps=next_steps, driver=driver, now=now,
             output_truncated=output_truncated, frozen=frozen,
-            summary_run=summary_run,
         ))
-        # The tail now owns the summary run: its end is the run's outermost
-        # end, and a tail that ended with no capture interrupted confirms it.
-        handed.append(tail)
-        tail.add_done_callback(lambda _t: summary_run.close())
         _finalize_tail_tasks.add(tail)
         tail.add_done_callback(
             lambda t, _eid=engagement.id: _finalize_tail_done(_eid, t))
         return await asyncio.shield(tail)
     return await _finalize_engagement_tail(
-        engagement, outcome=outcome, text=text, artifacts=artifacts,
+        engagement, outcome=outcome, text=text,
         next_steps=next_steps, driver=driver, now=now,
         output_truncated=output_truncated, frozen=frozen,
-        summary_run=summary_run,
     )
 
 
@@ -11829,77 +11769,19 @@ def _told_nowhere(origin: Any, outcome: str) -> bool:
     return outcome == "completed" and background_jobs.is_quiet_origin(origin)
 
 
-async def _register_summary_run(engagement: EngagementRecord, *,
-                                allowed: bool):
-    """The ``summary`` run of a finalize that will write a summary
-    (``memory/transcript_runs.py``): one row, registered before the terminal
-    flip, naming the engagement's directory — which, unconfirmed, holds
-    every transcript there. A finalize that writes no summary holds a run
-    with no row. *allowed* is the summaries' own switch, decided once by the
-    finalize (the engagement summary of any kind but a specialist that
-    writes no memory; the executor summary, whose kind always passes), under
-    the origin channel's write-trust."""
-    from channel_policy import writes_to_bank
-    from engagement_transcript_reaper import transcript_cwd
-    from memory import transcript_runs
-    role = engagement.role_or_type
-    origin = getattr(engagement, "origin", None) or {}
-    if not (allowed and writes_to_bank(str(origin.get("channel", "")))):
-        return transcript_runs.unregistered(transcript_runs.SUMMARY, role=role)
-    try:
-        directory = transcript_cwd(engagement)
-    except Exception:  # noqa: BLE001 — the row then names no directory
-        directory = None
-    return await transcript_runs.Run.start(
-        transcript_runs.SUMMARY, role=role, directory=directory)
-
-
-async def _capture_summary(frozen: dict[str, Any], text: str, *,
-                           allowed: bool) -> bool:
-    """Capture one finalized engagement's summary into memory's
-    ``engagement_summaries``, at the origin's tier. ``allowed`` is the summary's own switch (a specialist
-    that writes no memory leaves none); the origin channel's write-trust
-    gates it. A failure is logged, never raised.
-    Returns whether it was kept: a receipt, or nothing to capture."""
-    from channel_policy import writes_to_bank
-    from memory import capture, eligibility
-    from sensitivity import clearance_for_origin
-    try:
-        origin = frozen["origin"]
-        channel = str(origin.get("channel", ""))
-        if eligibility.admit(
-                _CaptureSource.ENGAGEMENT_SUMMARY, text=text,
-                channel_writes=writes_to_bank(channel),
-                role_writes_memory=allowed) is None:
-            return True
-        item = capture.summary(
-            role=frozen["role_or_type"],
-            tier=clearance_for_origin(origin.get("_origin_route"),
-                                      origin.get("_origin_clearance"), channel),
-            text=text, engagement_id=frozen["id"])
-    except Exception:  # noqa: BLE001 — capture never fails a finalize
-        logger.exception("memory capture of an engagement summary failed")
-        return False
-    return await capture.record(item) is not None
-
-
 async def _finalize_engagement_tail(
     engagement: EngagementRecord,
     *,
     outcome: str,
     text: str,
-    artifacts: list[str],
     next_steps: list[dict],
     driver: Any | None,
     now: float,
     output_truncated: bool,
     frozen: dict[str, Any],
-    summary_run: Any = None,
 ) -> "FinalizeResult":
-    """#632: the finalize funnel's post-topic tail — driver teardown, bus
-    notification, retains, terminal meta rewrite, reload-marker drain,
-    deferred Supervisor restart (strictly after retains gather, H-1) and the
-    finalized log, in the funnel's historical order.
+    """#632: the finalize funnel's post-topic tail — driver teardown, the
+    completion notification and the finalized log, in that order.
 
     Payload reads come from ``frozen`` (snapshotted at the terminal flip,
     before the funnel's first post-flip await) — never from the live record,
@@ -11908,23 +11790,19 @@ async def _finalize_engagement_tail(
     record) and for log lines reading immutable identity only.
     """
     eng_id: str = frozen["id"]
-    if summary_run is None:
-        from memory import transcript_runs
-        summary_run = transcript_runs.unregistered(
-            transcript_runs.SUMMARY, role=frozen["role_or_type"])
     # 3. Tear down driver client
     if driver is not None:
         try:
             # #599: bound the teardown. The in_casa driver's ``cancel`` closes
             # the engagement's SDK client, an unbounded await that sits ahead
-            # of the bus notification and the retains below; a timeout costs
-            # only a client left to close on its own.
+            # of the bus notification below; a timeout costs only a client
+            # left to close on its own.
             await asyncio.wait_for(
                 driver.cancel(engagement), _DRIVER_CANCEL_TIMEOUT_S)
         except asyncio.TimeoutError:
             logger.error(
                 "finalize engagement %s: driver.cancel exceeded %.0fs — "
-                "continuing so the notification and retains still run",
+                "continuing so the notification still runs",
                 engagement.id[:8], _DRIVER_CANCEL_TIMEOUT_S)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -11981,37 +11859,6 @@ async def _finalize_engagement_tail(
                 "finalize engagement %s: bus.notify failed: %s",
                 engagement.id[:8], exc,
             )
-
-    # 5. Capture a structured engagement summary into memory. The
-    #    NOTIFICATION above is not itself the durable record for the engager —
-    #    it is a queue entry, and believing otherwise was #766. What is durable
-    #    is the record's `terminal_notification_pending`, which that notice's
-    #    delivery acknowledgement clears and a boot replay honours.
-    # Browser executor §5.4: a specialist that writes no memory leaves no
-    # summary either — decided once before the terminal flip (the summary
-    # run's registration read the same decision).
-    _summary_allowed = frozen["summary_allowed"]
-    summary = json.dumps({
-        "kind": "engagement_summary",
-        "engagement_id": eng_id,
-        "specialist_or_type": frozen["role_or_type"],
-        "task": frozen["task"],
-        "status": outcome,
-        "started_at": frozen["started_at"],
-        "completed_at": now,
-        "duration_s": now - frozen["started_at"],
-        "text": text,
-        "artifacts": artifacts,
-        "next_steps": next_steps,
-    })
-    # The summary's memory capture, awaited: a local append (or spool) that
-    # returns a receipt — an obligation of the finalize's summary run.
-    await summary_run.kept(
-        _capture_summary(frozen, summary, allowed=_summary_allowed))
-
-    # The summary has returned: the summary run is confirmed when it was
-    # kept, and the engagement's transcripts follow retention.
-    summary_run.close()
 
     # G-4 (v0.33.0): surface the cause when outcome=error so operators
     # have a starting point for triage. Pre-fix the only log line for
@@ -12077,8 +11924,8 @@ async def reap_stale_engagements(*, ttl_days: float | None = None) -> int:
     pass so a to-be-reaped record doesn't get a pointless reminder in the
     same run. Goes through ``_finalize_engagement`` — the same funnel as a
     manual cancel — so the topic is closed + ledger-recorded, the RIGHT
-    driver stops the process, the assistant is notified, and the summary retain
-    lands. ``stale_before=cutoff`` makes the staleness check part of the
+    driver stops the process, and the assistant is notified.
+    ``stale_before=cutoff`` makes the staleness check part of the
     locked terminal transition, so a record revived by a user turn between
     the snapshot below and the transition is NOT cancelled. Returns the
     number actually reaped.
@@ -12259,8 +12106,8 @@ async def emit_completion(args: dict) -> dict:
 
     # Bug 9 (v0.14.6): idempotency. Re-emitting completion (e.g. SDK
     # retry, hook misfire) used to re-run _finalize_engagement, which
-    # double-closes the topic, double-NOTIFYs the assistant, and double-captures
-    # the engagement summary. Re-read the live registry
+    # double-closes the topic and double-NOTIFYs the assistant. Re-read the
+    # live registry
     # state so we catch transitions that happened on another in-flight
     # turn since this engagement_var snapshot was taken.
     if _engagement_registry is not None:

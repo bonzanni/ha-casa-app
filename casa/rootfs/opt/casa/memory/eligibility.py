@@ -44,8 +44,6 @@ class Source(str, enum.Enum):
     ENGAGEMENT_TURN = "engagement_turn"
     #: One text-bearing message a specialist writes in its engagement topic.
     ENGAGEMENT_ANSWER = "engagement_answer"
-    #: A finalized engagement's summary (engagement or executor summary).
-    ENGAGEMENT_SUMMARY = "engagement_summary"
     #: Casa's own line that a specialist posted to the operator's chat, kept
     #: only for a specialist that keeps no memory (INV-MEM-040): its post is
     #: kept out, so the line is all memory learns of it.
@@ -87,8 +85,7 @@ def admit(
         if not role_writes_memory or stored_call or answer_incomplete:
             return None
         return "delegated_answer"
-    if source in (Source.ENGAGEMENT_TURN, Source.ENGAGEMENT_ANSWER,
-                  Source.ENGAGEMENT_SUMMARY):
+    if source in (Source.ENGAGEMENT_TURN, Source.ENGAGEMENT_ANSWER):
         return source.value if role_writes_memory else None
     if source in (Source.SPECIALIST_POST, Source.DESK_REPLY,
                   Source.TOPIC_MESSAGE):

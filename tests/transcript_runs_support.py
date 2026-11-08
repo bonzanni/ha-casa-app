@@ -70,16 +70,6 @@ def events(store: MemoryStore) -> list[dict]:
         conn.close()
 
 
-def summaries(store: MemoryStore) -> list[dict]:
-    conn = sqlite3.connect(store.path)
-    conn.row_factory = sqlite3.Row
-    try:
-        return [dict(r) for r in conn.execute(
-            "SELECT * FROM engagement_summaries ORDER BY id")]
-    finally:
-        conn.close()
-
-
 def unresolved(store: MemoryStore) -> int:
     with store.transaction() as conn:
         return transcript_runs.unresolved_count(conn)

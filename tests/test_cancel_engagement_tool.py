@@ -7,8 +7,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from test_memory_capture import mem, summaries  # noqa: F401 — fixture
-
 pytestmark = pytest.mark.asyncio
 
 
@@ -51,9 +49,9 @@ class TestCancelEngagement:
         assert payload["kind"] == "unknown_engagement"
 
 
-async def test_cancel_writes_meta_scope_summary(tmp_path, monkeypatch, mem):
-    """M2.G4 — cancel must not be silent: it captures a structured engagement
-    summary into memory with status=='cancelled'."""
+async def test_cancel_tells_the_requester(tmp_path, monkeypatch):
+    """Cancel must not be silent: the agent that started the engagement is
+    told it was cancelled."""
     from engagement_registry import EngagementRegistry
     from tools import cancel_engagement, init_tools
 
@@ -87,12 +85,10 @@ async def test_cancel_writes_meta_scope_summary(tmp_path, monkeypatch, mem):
     payload = json.loads(res["content"][0]["text"])
     assert payload["status"] == "ok"
 
-    stored = [json.loads(row["text"]) for row in summaries(mem)]
-    eng_summary = next(
-        s for s in stored if s["kind"] == "engagement_summary"
-    )
-    assert eng_summary["status"] == "cancelled"
-    assert eng_summary["engagement_id"] == rec.id
+    assert bus.notify.await_count == 1
+    told = bus.notify.await_args.args[0].content
+    assert (told.delegation_id, told.status, told.kind) == (
+        rec.id, "error", "cancelled")
 
 
 class TestCancelFinalizeContract:

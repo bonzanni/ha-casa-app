@@ -53,10 +53,10 @@ no option to set: Casa keeps its own memory store under `/data/memory`.
 
 - **What is said is kept as it is said.** Each turn of a Telegram
   conversation — your messages, Ellen's replies, what she asks a specialist
-  and its answer, a finished engagement's summary — is saved while the turn
-  runs, so a restart does not lose it. Not saved: voice conversations, turns
-  started by a webhook trigger or by `/invoke`, and anything a specialist set
-  to keep no memory writes (its answers and its engagement summary).
+  and its answer — is saved while the turn runs, so a restart does not lose
+  it. Not saved: voice conversations, turns started by a webhook trigger or
+  by `/invoke`, and anything a specialist set to keep no memory writes (its
+  answers).
 - **Memory-enabled conversations start knowing what matters.** In the
   background, Casa files what was said into notes. A new conversation of an
   agent with a memory budget (`memory.token_budget` above 0: Ellen and the

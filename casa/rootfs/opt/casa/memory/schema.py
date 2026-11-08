@@ -2,8 +2,11 @@
 
 ``MIGRATIONS[n]`` is the ordered list of statements that take a store from
 version ``n - 1`` to version ``n``; a fresh file is version 0, so creating a
-store and migrating one are the same loop (:mod:`memory.store`). A released
-version's statements never change: a schema change appends a new version.
+store and migrating one are the same loop (:mod:`memory.store`). A schema
+change that existing stores must follow appends a new version. Removing a
+table or a value no code reads edits its version in place instead: a store
+created earlier keeps it, unread and unexported, until a wipe or a restore
+replaces the file.
 
 Every table here is registered in :mod:`memory.registry` with its export,
 restore and wipe rule; the store pin in ``tests/test_memory_registry.py``
@@ -188,22 +191,6 @@ V1: tuple[str, ...] = (
         sdk_session_id TEXT
     ) STRICT
     """,
-    # A finalized engagement's summaries. ``source_key`` is the occurrence
-    # identity capture mints for each (so a spool drain re-run adds one row);
-    # ``procedural_epoch`` held the retired executor epoch digest; new rows
-    # leave it empty.
-    f"""
-    CREATE TABLE engagement_summaries (
-        id INTEGER PRIMARY KEY,
-        source_key TEXT NOT NULL UNIQUE,
-        role TEXT NOT NULL,
-        procedural_epoch TEXT NOT NULL DEFAULT '',
-        tier TEXT NOT NULL CHECK (tier IN {_TIERS}),
-        text TEXT NOT NULL,
-        engagement_id TEXT NOT NULL,
-        at TEXT NOT NULL
-    ) STRICT
-    """,
     # Every run that can capture, registered before its first capture and
     # confirmed once each capture it made is durable (memory/transcript_runs.py).
     # Ids and times only, never content. ``directory`` is the run's working
@@ -212,7 +199,7 @@ V1: tuple[str, ...] = (
     CREATE TABLE transcript_runs (
         run_id TEXT PRIMARY KEY,
         kind TEXT NOT NULL CHECK (kind IN
-            ('resident', 'engagement', 'delegation', 'summary')),
+            ('resident', 'engagement', 'delegation')),
         role TEXT NOT NULL,
         directory TEXT,
         session_id TEXT,

@@ -12,10 +12,9 @@ import re
 # ---------------------------------------------------------------------------
 # Browser executor §5.4 (v9.1, operator decision 2026-10-18): a specialist
 # whose role reads no memory (``memory.token_budget: 0``) is kept out of
-# memory on every path its own output takes there — its delegated answer, the
-# delegation notice a resident's turn carries, and a specialist engagement's
-# summary (``tools._finalize_engagement``). The resident's own words relaying
-# a result are captured as usual.
+# memory on every path its own output takes there — its delegated answer and
+# the delegation notice a resident's turn carries. The resident's own words
+# relaying a result are captured as usual.
 # ---------------------------------------------------------------------------
 
 # Casa's own notice header, every branch of ``Agent._synthesize_delegation_turn``

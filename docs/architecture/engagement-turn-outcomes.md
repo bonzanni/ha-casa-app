@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-05
+last_reviewed: 2026-11-08
 ---
 
 # Engagement turn outcomes: what an `in_casa` launch or follow-up turn leaves behind
@@ -28,7 +28,7 @@ admission ticket. The reasons are under each invariant below.
 
 ## Contracts & invariants
 
-**INV-ENG-011**: An `in_casa` LAUNCH turn ends holding the turn's own terminal artifact and either a terminal engagement record, operator-visible topic output, or — when every word it wrote was withheld because a call it made is still waiting on the operator's approval (#1207) — that approval's keyboard posted to the operator — or the launch's owner reports the death: one durable strict `error` transition, one bounded notice into the still-open topic, a bounded driver teardown, and the topic aborted, whether or not the tool call that launched the engagement is still running. It is never left `active` behind an ended transport with nothing posted, and the path never writes `completed` and never captures a finalize summary. A launch turn that stopped at its turn limit is never reported dead (INV-ENG-020); when its one line fails or is cancelled it is left `active`, transport live, with nothing posted.
+**INV-ENG-011**: An `in_casa` LAUNCH turn ends holding the turn's own terminal artifact and either a terminal engagement record, operator-visible topic output, or — when every word it wrote was withheld because a call it made is still waiting on the operator's approval (#1207) — that approval's keyboard posted to the operator — or the launch's owner reports the death: one durable strict `error` transition, one bounded notice into the still-open topic, a bounded driver teardown, and the topic aborted, whether or not the tool call that launched the engagement is still running. It is never left `active` behind an ended transport with nothing posted, and the path never writes `completed`. A launch turn that stopped at its turn limit is never reported dead (INV-ENG-020); when its one line fails or is cancelled it is left `active`, transport live, with nothing posted.
 
 A driver's `start()` returning has always meant *the first turn ran to its end*, never *the
 engagement reported anything*, and that gap is where a launch turn could die unnoticed. The
