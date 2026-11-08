@@ -103,6 +103,22 @@ RUN chmod +x /etc/s6-overlay/scripts/*.sh \
     && chmod +x /opt/casa/scripts/*.sh \
     && chmod +x /usr/local/bin/casactl
 
+# #957: Casa's service database compiles in this image. At every container
+# start the base's stage2 (s6-overlay's rc.init) compiles the overlay's own
+# sources, Casa's service definitions in /etc/s6-overlay/s6-rc.d and the MERGED
+# /etc/s6-overlay/user-bundles.d; a set that does not compile starts none of
+# Casa's services. Since s6-overlay 3.2.3.2 (#1357) the base ships the `user`
+# and `user2` bundles in user-bundles.d and Casa only adds members to `user`,
+# so Casa's half does not compile alone and this must follow `COPY rootfs /`
+# and the permissions above. A `user` directory left in s6-rc.d fails here too
+# (a duplicate bundle, or one with no type). BUILD_FROM floats on a tag, so
+# this runs against the base the image is actually built on. The database is
+# thrown away inside this layer.
+RUN scratch="$(mktemp -d)" \
+    && s6-rc-compile "${scratch}/db" /package/admin/s6-overlay/etc/s6-rc/sources /etc/s6-overlay/s6-rc.d /etc/s6-overlay/user-bundles.d \
+    && rm -rf "${scratch}" \
+    || { echo "Casa's s6-rc service database does not compile in this image (the sources stage2 compiles at boot)" >&2; exit 1; }
+
 # io.hass.* labels are injected by the deploy workflow (build-image action).
 LABEL org.opencontainers.image.title="Casa" \
       org.opencontainers.image.description="Personal AI agent framework powered by Claude" \
