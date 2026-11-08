@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.353.0] - 2026-11-08
+
+### Changed
+
+- **A background job now comes to your chat with Ellen when it needs you.** A job you ask for posts one silent line there, such as "📊 Finance started «…».", with a **Cancel** button. When the job ends the button goes away and the line shows how it ended. Scheduled jobs, and jobs an agent starts on its own, post no such line.
+- A specialist's job can ask you a question in your chat: tap one of its buttons, or reply to the question in words.
+- To steer a running job, reply in your chat to any of its messages there: its start line, a question, or something its plugin posted. Your words go to the job, not to Ellen.
+- If your message reaches a job just as it ends, you get one reply to it, "The job had just ended — not delivered, please resend.", instead of a list of unread messages when the job ends.
+- A quiet scheduled run that asks you something, or that you reply to, stops being quiet and tells you its result when it ends.
+- A job's topic still shows its progress for now, and you can still write or send `/cancel` there.
+
+### Upgrade notes
+
+- A job already running when you update has no start line, and a reply to a message it posted before the update is handled as before.
+
 ## [0.352.0] - 2026-11-08
 
 ### Removed
