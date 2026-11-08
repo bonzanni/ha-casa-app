@@ -8,22 +8,12 @@ executor (e.g. `plugin-developer`) to enabled.
 1. Read `agents/executors/<type>/definition.yaml` to confirm the
    executor exists and currently has `enabled: false`.
 2. Edit the file: flip `enabled: false` → `enabled: true`.
-3. `config_git_commit(message="enable executor: <type>")`.
-4. `casa_reload(scope='executors')`. Returns
-   `{status: ok, actions: ['rebuild_executor_registry']}`.
-5. `emit_completion(text="...", status="ok")`.
+3. `config_git_commit(message="enable executor: <type>")`. It
+   reloads `executors`: its `reloads` entry shows
+   `rebuild_executor_registry` among the actions.
+4. `emit_completion(text="...", status="ok")`.
 
-## Why scope='executors' and not 'agents'
-
-The `agents` scope rebuilds resident + specialist registries from
-`agents/` and `agents/specialists/`. It explicitly excludes the
-`executors/` directory (see `reload.py::reload_agents`). The new
-`executors` scope (v0.37.1+) targets `executors/` specifically and
-rebuilds the `ExecutorRegistry`. Without this scope, the on-disk
-flip never reaches the in-process registry and Ellen continues to
-report "X isn't enabled".
-
-## What this picks up
+## What the `executors` reload picks up
 
 - `enabled: false ↔ true` flips.
 - `permission_mode` changes.
@@ -31,7 +21,7 @@ report "X isn't enabled".
 - `model` changes.
 - `mcp_server_names` additions/removals.
 - `prompt_template_file` path changes (file content is lazy-read
-  per turn so prompt-only edits don't need this reload).
+  per session, so a prompt-only edit reloads nothing).
 
 ## What it does NOT pick up
 

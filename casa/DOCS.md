@@ -1006,15 +1006,20 @@ Ellen opens a topic `#[configurator] <short task>` in your engagement supergroup
 
 ### Reload behavior
 
-- hard - Supervisor app restart (~10-15s). Agent-shape changes, runtime, policy corpus.
-- soft - In-process casa_reload_triggers(role). Trigger-only edits; no downtime.
-- none - An executor's prompt and doctrine edits take effect on that executor's
-  next fresh session, not necessarily the next turn. A resident's per-trigger
-  prompt file needs the soft reload above. (How a resident writes, speaks or
-  behaves is not a config edit at all — that comes from its persona and from
-  the role doctrine Casa ships.)
+Every commit the configurator makes reloads what it changed, in-process and
+without a restart, so each change is live as soon as it is committed — a task
+that commits twice reloads twice, and a task you cancel keeps whatever it had
+already committed. The reload is as narrow as the change: one agent's triggers,
+one agent, the specialists, the executors or the policies; a commit that changes
+more than one of those, or the bindings, reloads everything. If a reload fails,
+the configurator tells you what is not live yet.
 
-Hard reload: Ellen verifies the reload landed on her resumed turn, then narrates.
+- An executor's prompt and doctrine edits reload nothing: they take effect on
+  that executor's next fresh session, not necessarily the next turn. (How a
+  resident writes, speaks or behaves is not a config edit at all — that comes
+  from its persona and from the role doctrine Casa ships.)
+- A resident's new persona waits for an app restart, which the configurator
+  asks you about first.
 
 ### Recipe discovery
 
@@ -1025,7 +1030,6 @@ Configurator reads short markdown recipes from its own doctrine tree at `/config
 - **"engagement_not_configured"** - you haven't set telegram_engagement_supergroup_id, or the bot doesn't have can_manage_topics.
 - **Configurator stalls after first message** - check engagement's driver log. If you see prompt_template_missing, restart the app.
 - **Hook denied, configurator cancelled** - expected for resident deletion. To override: edit configurator's hooks.yaml, commit, reload, retry.
-- **Soft reload didn't take effect** - casa_reload_triggers requires the role to exist before the edit.
 - **Doctrine references stale fields** - file an issue; maintainer forgot to sync doctrine with Casa-core change.
 
 ## Plugins (v0.71.0)
@@ -1732,8 +1736,8 @@ instructions say to show you before asking you to confirm; of each one it says:
 
 Saying no changes nothing. New conversations get the new setup once Casa has
 loaded it: an upgrade or a rollback that completes loads it during the change,
-and a persona is loaded by a reload of the agents, which the configurator's
-instructions say to run right after applying it. An **uninstall** asks the same
+and a persona is loaded by the reload of the configurator's commit right after
+applying it. An **uninstall** asks the same
 way, and once the specialist is removed Casa closes the conversations still
 open, telling each topic why. A specialist you **disable**
 (its `enabled: false`) cannot be confirmed beforehand: Casa closes its open

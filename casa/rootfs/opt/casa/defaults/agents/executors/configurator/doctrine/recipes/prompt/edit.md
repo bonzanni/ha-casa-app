@@ -6,7 +6,7 @@ possible at all.** Three kinds, three different answers:
 | File | Editable here | When it takes effect |
 |---|---|---|
 | an executor's `prompt.md` / `doctrine/*.md` | yes | on that executor's next COLD session, not necessarily the next turn |
-| a resident's `prompts/<trigger>.md` | yes | after `casa_reload_triggers(role=<role>)` — NOT on the next turn |
+| a resident's `prompts/<trigger>.md` | yes | when the commit's `triggers` reload has run — NOT on the next turn |
 | a resident's `prompts/system.md` | **no — Write/Edit of it are refused** | never — it is not served; see `recipes/prompt/resident.md` |
 
 ## Executor prose
@@ -21,9 +21,9 @@ make; "next time that executor is engaged fresh" is.
 
 `prompts/<trigger>.md` IS served — but its prose is resolved when the agent
 loads and then captured inside the scheduled job, so editing the file changes
-nothing until the triggers are reloaded. Always follow it with
-`casa_reload_triggers(role=<role>)`. (Webhook triggers carry no stored prompt at
-all; the schema refuses one. See `recipes/trigger/add.md`.)
+nothing until the triggers are reloaded — which the commit does, for that
+role. (Webhook triggers carry no stored prompt at all; the schema refuses one.
+See `recipes/trigger/add.md`.)
 
 **A prompt you rewrite is a prompt you re-end.** This file is what a scheduled
 turn is told to do, so the closing-silence convention applies to your edit
@@ -57,10 +57,9 @@ user, because what to offer instead depends on what they actually asked for.
 
 ## Still commit
 
-Audit trail and rollback:
+Audit trail, rollback, and the reload a trigger prompt needs:
 
     config_git_commit(message="update <role>/<file>.md prompt")
-    casa_reload_triggers(role="<role>")     # trigger prompt files ONLY
     emit_completion(status="ok", text="<what you changed in <role>'s <file>.md, in plain words>", artifacts=[<the commit>])
 
 ## Only consideration

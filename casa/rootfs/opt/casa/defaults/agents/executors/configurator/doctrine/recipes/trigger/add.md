@@ -187,15 +187,15 @@ running a resident turn. It carries `job` and no prompt, its channel is
   delegates, the way is wiring that delegate (`recipes/delegate/wire.md`): say
   so and let the operator decide.
 
-## Reload — MANDATORY before emit_completion
+## Commit — MANDATORY before emit_completion
 
-**Soft** - casa_reload_triggers(role). No restart needed. Canonical order:
+The commit reloads the role's triggers, which registers the new one in the
+live scheduler. No restart needed. Canonical order:
 
 1. config_git_commit(message="add <trigger-name> trigger to <role>")
-2. casa_reload_triggers(role="<role>")
-3. emit_completion(status="ok", text="I set up <role>'s <trigger-name> to run <when, in plain words>.", artifacts=[<the commit>])
+2. emit_completion(status="ok", text="I set up <role>'s <trigger-name> to run <when, in plain words>.", artifacts=[<the commit>])
 
-Skipping step 2 leaves the trigger committed to YAML but **NOT registered** in the live scheduler — it never fires. See completion.md for the full doctrine.
+Skipping the commit leaves the trigger on disk but **NOT registered** in the live scheduler — it never fires. See completion.md for the full doctrine.
 
 ## Verify the cron syntax
 
@@ -256,5 +256,5 @@ operator's one-time consent DM. Their state shows in **plugin health**
 change the plugin (`plugin_update`). Operator off-switch:
 `trigger_ack_revoke(name=<plugin>)` — unroutes immediately AND retires the
 per-trigger secrets; re-approval (re-prompted on the next plugin mutation or
-`casa_reload_triggers`) mints fresh ones, so the plugin's setup tool must
+trigger reload) mints fresh ones, so the plugin's setup tool must
 re-provision the external service.

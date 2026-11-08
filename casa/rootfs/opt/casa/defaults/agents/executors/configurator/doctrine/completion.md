@@ -2,46 +2,41 @@
 
 ## The canonical order — MANDATORY
 
-Every completion path is the same three tool calls, in this order:
+Every change ends with the same two tool calls, in this order:
 
-1. **Commit.** Call `config_git_commit(message="<imperative sentence>")`. Skip only if nothing you did changed a file — a tool that writes one counts (`config_trigger_upsert`, `specialist_install_commit`, …), not just your own edits. When unsure, call it: a commit with nothing to record returns an empty SHA, which is harmless. (The `plugin_*` tools commit `plugins/registry.json` themselves.)
-2. **Reload (if needed).** Call `casa_reload()` (hard) or `casa_reload_triggers(role)` (soft). Skip ONLY for none-reload changes (prompts, doctrine). Consult `reload.md` to pick the right scope.
-3. **Emit completion.** Call `emit_completion(...)` with a structured summary.
+1. **Commit.** Call `config_git_commit(message="<imperative sentence>")`. Skip only if nothing you did changed a file — a tool that writes one counts (`config_trigger_upsert`, `specialist_install_commit`, …), not just your own edits. When unsure, call it: a commit with nothing to record returns an empty SHA, which is harmless. (The `plugin_*` tools commit `plugins/registry.json` themselves.) The commit also reloads what it changed, so the change is live when it returns; its result lists those reloads under `reloads`. When it carries a `warning`, a reload did not fully succeed: deal with it before completing, and say so in your summary.
+2. **Emit completion.** Call `emit_completion(...)` with a structured summary.
 
-**Never invert step 1 and step 2/3. Never call `emit_completion` BEFORE the reload step when a reload is needed.**
+You do not call a reload after a commit. See `reload.md` for the few reloads you still call yourself.
+
+A change made in several commits goes live commit by commit, so commit when the
+change is whole enough to run, not after every file.
 
 ## A task that only asks for information
 
 A task that asks you to check, review or report, and to change nothing, still
 ends with `emit_completion`, and it is finished once you have gathered the
-answer: there is nothing to commit and nothing to reload, so steps 1 and 2 are
-skipped. Unless you have a real question for the operator, call
-`emit_completion` in the same turn. Do not end the turn with the report as
-text and wait: the engagement stays open until you complete it, and Ellen
-reads only the completion's `text`, never the topic. That `text` carries the
-findings themselves, in plain words, even when you have already written them
-in the topic.
+answer: there is nothing to commit, so step 1 is skipped. Unless you have a
+real question for the operator, call `emit_completion` in the same turn. Do not
+end the turn with the report as text and wait: the engagement stays open until
+you complete it, and Ellen reads only the completion's `text`, never the topic.
+That `text` carries the findings themselves, in plain words, even when you have
+already written them in the topic.
 
-`emit_completion` is the terminal action. After it lands, the engagement closes and Ellen reads the summary. If you fire `emit_completion` without first running the prescribed reload, the artifact is **COMMITTED BUT INERT** — the YAML on disk is correct, but the running Casa keeps the prior runtime state. The trigger does not fire; the new agent does not load; the new tool does not surface. From Ellen's point of view (and the operator's), you "succeeded" — but the change has no effect. This is the highest-leverage doctrine violation in this executor.
+`emit_completion` is the terminal action. After it lands, the engagement closes and Ellen reads the summary.
 
-## Reload before completion — and do not linger
+## After the commit — do not linger
 
-`casa_reload_triggers(role)` is in-process and returns immediately.
-
-`casa_reload()` is also in-process. It returns `{status: "ok", ms: <int>,
-actions: [...]}` — it never POSTs to Supervisor and never returns a
-`deferred` field. That vocabulary belongs to `casa_restart_supervised`,
-which is a different tool and is not part of this order.
-
-There is therefore no Supervisor restart to be killed by. But do NOT read
-that as "your turn is guaranteed to survive the reload": an agent-touching
-scope (`agent`, `agents`, `executors`, `policies`, `config_sync`, `full`)
-replaces every resident and schedules its client pool to close, and your
-engagement's turn is hosted inside the very turn that called the reload.
-Call `emit_completion` promptly after the reload rather than interposing
-work you do not need. If your turn does die before you report, the platform
-now says so in this topic instead of leaving the engagement silent — but
-the outcome of your work is lost either way, so do not rely on it.
+The commit's reload is in-process: no reload restarts the addon (only
+`casa_restart_supervised` does, and it is not part of this order). But do NOT
+read that as "your turn is guaranteed to survive the reload": a reload that
+touches an agent replaces it and schedules its client pool to close, and your
+engagement's turn is hosted inside the very turn that committed. Call
+`emit_completion` promptly after the commit rather than interposing work you do
+not need. A Read in between is fine; a long stretch of further work is not. If
+your turn does die before you report, the platform says so in this topic
+instead of leaving the engagement silent — but the outcome of your work is lost
+either way, so do not rely on it.
 
 ## emit_completion payload
 
@@ -95,14 +90,6 @@ The valid enum values are exactly `"ok" | "partial" | "failed" |
 engagement registry will record an `emit_completion_error` outcome
 even though your sub-action narrative was correct.
 
-## Hard-reload note
-
-There is no such thing here: no reload scope restarts the addon. See
-"Reload before completion — and do not linger" above for what
-`casa_reload()` actually returns and why you should still not linger
-between it and `emit_completion`. A Read between the two is fine; a long
-stretch of further work is not.
-
 ## Cancellation
 
-If the user says /cancel or you decide to abort, emit completion with `status="cancelled"`. Do NOT call `config_git_commit` if you made zero edits; DO call it if you made edits before the abort. A cancelled engagement does NOT need a reload — the artifact is either uncommitted (no edits) or operator-pending (the operator decides whether to keep the partial commit).
+If the user says /cancel or you decide to abort, emit completion with `status="cancelled"`. Do NOT call `config_git_commit` if you made zero edits; DO call it if you made edits before the abort. Every commit reloads what it changed, so whatever you committed — before the abort or in that last commit — is live and stays live after the cancel: say in `text` what is now in effect, so the operator can decide whether to keep it.

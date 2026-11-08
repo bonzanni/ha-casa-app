@@ -43,12 +43,10 @@ casa always boots — but the operator's previous version is preserved first:
    restoring the old file, which may reintroduce the very field a schema-tightening
    removed.
 
-5. **Validate + reload:** after edits, the standard config-commit gate runs schema
-   validation; then run the reload each edit recipe you re-applied through names (see
-   `reload.md` "What requires what" — e.g. `agent` for a voice edit, `triggers` for a
-   trigger prompt, `executors` for an executor definition). `scope=config_sync` re-runs the
-   sync with its own `agents` + `policies` cascade; it does not stand in for those reloads,
-   and an edit it does not cover is force-reloaded at completion. Never restore content that
+5. **Validate + commit:** after edits, the standard config-commit gate runs schema
+   validation, and the commit reloads what it changed (see `reload.md` "What a commit
+   reloads"). `scope=config_sync` re-runs the sync with its own `agents` + `policies`
+   cascade; you need it only to re-run the sync itself. Never restore content that
    fails validation — that is exactly what the backstop overwrote to keep casa booting.
 
 6. **Report leftovers:** you cannot delete files. List any `<file>.casabak` sidecars you

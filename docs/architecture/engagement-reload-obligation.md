@@ -80,6 +80,7 @@ one.
 - `tests/test_config_git_commit_reload.py`
 - `tests/test_config_git_commit_tool.py`
 - `tests/test_plugin_persist_commit_real_repo.py`
+- `tests/test_configurator_doctrine_commit_reloads.py`
 
 **Related**
 - [`architecture/configuration.md`](../architecture/configuration.md)

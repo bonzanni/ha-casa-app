@@ -48,7 +48,7 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    do NOT ask for a second message by default; only if that automatic resume fails to deliver
    would the operator need to send any message in the topic to continue. After Deny a resume turn
    normally tells you the operator refused: nothing was installed, so do not call
-   `specialist_install_commit`, commit or reload — conclude with
+   `specialist_install_commit` or commit — conclude with
    `emit_completion(status="cancelled", text=...)` saying the operator refused the install.
    If nobody answers within the card's 10 minutes it expires, and a resume turn tells you so:
    nothing changed — conclude cancelled as that turn says, telling the operator they can ask again
@@ -103,8 +103,8 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    diagnosis, not an instruction. `pending_commit_check` is what decides.
 6. If `state == "active"`: wire delegation by applying ONLY the edit steps of
    `recipes/delegate/wire.md` (edit `delegates.yaml` idempotently + ensure the
-   delegate tool is allowed). Do NOT run wire.md's own commit/reload/emit_completion
-   — steps 8–10 below perform the single commit + reload + completion for the
+   delegate tool is allowed). Do NOT run wire.md's own commit/emit_completion
+   — steps 8–9 below perform the single commit + completion for the
    whole install.
 7. **Wire bundled plugins' env vars — part of THIS install, not a follow-up.** For each bundled
    plugin the inspection listed with a non-empty `env_names` (mirrored as `required_env_vars` in
@@ -132,13 +132,12 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    setup run reports what to wire, and wiring it is a configurator's job then — see
    `recipes/plugin/secrets.md`, "A value the plugin's setup tool reports".
 8. `config_git_commit(message="install specialist <slug> from <repo>@<ref>")` — for `latest`, `<ref>` is the `resolved_ref` the inspect returned.
-9. `casa_reload(scope="agents")` (mandatory — see `completion.md`; an `active` install is on disk
-   but not in the live registry until reload runs), THEN `casa_reload(scope="agent",
-   role="<resident>")` once for EACH resident whose `delegates.yaml` step 6 edited. The `agents`
-   sweep only adds and evicts roles; it never re-reads a resident that is already live, so
-   without the per-role reload the resident keeps its old delegate list in memory and every
-   delegation to the new specialist is refused with `delegation_not_declared` (#1009).
-10. `emit_completion(status="ok", text="I installed <slug> <version> from <repo> and added it to
+   An `active` install is on disk but not in the live registry until this commit's reload runs.
+   Commit the install and step 6's `delegates.yaml` edits TOGETHER: the commit then reloads
+   `full`, which loads the specialist and re-reads each resident's delegate list. A resident
+   whose delegate list was not re-read refuses every delegation to the new specialist with
+   `delegation_not_declared` (#1009).
+9. `emit_completion(status="ok", text="I installed <slug> <version> from <repo> and added it to
     <resident>'s helpers.", artifacts=[<the commit>])`.
 
 ## Common mistakes
@@ -157,12 +156,8 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
   needs a separate add; inspect + commit install it as part of the SAME bundle. Once active, those
   tools (and `plugin_update`/`plugin_unassign`/`plugin_remove`) refuse the owned entry with `kind:
   "owned_by_specialist"` — use `specialist_upgrade`/`specialist_uninstall` on the SLUG instead.
-- Forgetting `casa_reload(scope="agents")` — an `active` install is on disk but not in the live
-  registry until reload runs.
-- Stopping at `casa_reload(scope="agents")` after editing a resident's `delegates.yaml` — the
-  specialist loads, but the resident's live delegate list is unchanged until
-  `casa_reload(scope="agent", role="<resident>")` runs, and its delegations are refused with
-  `delegation_not_declared` (#1009).
+- Skipping the commit in step 8 — an `active` install is on disk but not in the live
+  registry until the commit's reload runs.
 - Completing the engagement with a bundled plugin's `env_names` unwired (#499) — the install
   reports success, but the unresolved var keeps the plugin withheld and the specialist's first
   use hits the requires gate. Do not describe such a var as something the specialist's own setup

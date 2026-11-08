@@ -31,6 +31,6 @@ See schema/policy-disclosure.v1.json and schema/disclosure.v1.json.
 
 ## Reload
 
-`casa_reload(scope='policies')` for the global file, `casa_reload(scope='agent',
-role=<role>)` for a per-resident one. Both reload the configuration correctly;
-neither changes a served prompt, for the reason above.
+The commit reloads it: `policies` for the global file, `agent` for a
+per-resident one. Both reload the configuration correctly; neither changes a
+served prompt, for the reason above.

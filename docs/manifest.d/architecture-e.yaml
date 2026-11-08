@@ -44,6 +44,7 @@
     - tests/test_config_git_commit_reload.py
     - tests/test_config_git_commit_tool.py
     - tests/test_plugin_persist_commit_real_repo.py
+    - tests/test_configurator_doctrine_commit_reloads.py
   related: [architecture/configuration.md, architecture/engagement-completion-gate.md, architecture/tools-interface.md, architecture/plugin-mutation-tools.md, architecture/specialist-lifecycle.md]
   defines_invariants: [INV-TOOL-014]
   invariant_tests:

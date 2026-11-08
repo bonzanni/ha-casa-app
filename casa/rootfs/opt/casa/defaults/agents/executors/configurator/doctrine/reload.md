@@ -1,21 +1,68 @@
 # Reload granularity
 
-Casa supports in-process reload at eight scopes. None of them restart the
-addon. For changes that genuinely need a process restart, use
-`casa_restart_supervised` (rare).
+`config_git_commit` reloads what its commit changed, so a change is live when the
+commit returns. You do not call a reload after committing. This file says what a
+commit reloads, what it cannot make live, and the few reloads you still call yourself.
 
-## Eight reload scopes
+None of the reloads restart the addon. For changes that genuinely need a process
+restart, use `casa_restart_supervised` (rare).
 
-| `scope` | Tool | Downtime | Required `role` | When to use |
-|---|---|---|---|---|
-| `agent` | `casa_reload(scope='agent', role=...)` | <1s | yes | character/runtime/delegates/disclosure/voice/hooks edits for ONE role; plugin install/uninstall on ONE role |
-| `triggers` | `casa_reload_triggers(role=...)` | <1s | yes | triggers.yaml edits for an EXISTING agent (legacy alias for `casa_reload(scope='triggers', role=...)`) |
-| `policies` | `casa_reload(scope='policies')` | <1s | no | `policies/disclosure.yaml` edits |
-| `plugin_env` | `casa_reload(scope='plugin_env')` | <1s | no | `set_plugin_env_reference` calls / `plugin-env.conf` edits |
-| `agents` | `casa_reload(scope='agents')` | <1s | no | a specialist install/uninstall (pipeline) materialized or removed a specialist directory under `agents/specialists/`; also a persona-apply on a specialist |
-| `executors` | `casa_reload(scope='executors')` | <1s | no | executor `definition.yaml` edits; create/delete an executor; flip `enabled` / `permission_mode` / `tools.allowed` on an executor |
-| `config_sync` | `casa_reload(scope='config_sync')` | <1s | no | re-run the default-sync reconciler live (adds/updates from image defaults), then cascades `agents` + `policies` reloads |
-| `full` | `casa_reload(scope='full')` | <1s | no | catch-all when unsure or multiple categories edited |
+## What a commit reloads
+
+| Committed change | The commit reloads |
+|---|---|
+| A resident's `triggers.yaml`, or a `prompts/<trigger>.md`, and nothing else of that resident | `triggers` for that resident — a trigger prompt's prose is captured in the scheduled job at load, so this reload is what makes the edit count |
+| Any other file of a resident: `character.yaml`, `runtime.yaml`, `delegates.yaml`, `disclosure.yaml`, `voice.yaml` | `agent` for that resident (`disclosure.yaml` changes no served prompt today; see `recipes/disclosure/edit.md`) |
+| A new resident directory, or a removed one | `agents` |
+| A specialist install, upgrade, rollback or uninstall (its link under `agents/specialists/` changed) | `agents` |
+| An edit inside an installed specialist, such as its `enabled` flag | `agent` for that specialist |
+| `policies/disclosure.yaml` | `policies` |
+| An executor's `definition.yaml`, or creating or deleting an executor | `executors` |
+| An executor's `prompt.md`, `observer.yaml` or `doctrine/*` | none — effective on that executor's next COLD session; a warm client is reused without rebuilding its options, so do not promise "next turn" |
+| `plugins/registry.json` alone | none — the `plugin_*` tools activate their change and commit the registry themselves; a `plugin_update` returning `unchanged:true` changed nothing |
+| `bindings/`, `schema/`, or any other path | `full` |
+| Changes of more than one kind in one commit (say a specialist install and the resident `delegates.yaml` that wires it) | one `full` |
+
+What you cannot change, whatever you commit:
+
+- A resident's `prompts/system.md` — Write/Edit of it are refused; it is not served to a bundle-bound resident. See `recipes/prompt/resident.md`.
+- `response_shape.yaml` — the hook denies it; see `recipes/response-shape/edit.md`.
+- Any agent's `hooks.yaml` — hook-policy files are denied unconditionally; policy changes are an operator/image action.
+
+Flipping a specialist's `enabled` flag to false tears the specialist down when the
+commit's reload reads it (no agent, no bus queue, no jobs or routes, not delegatable),
+and reports `teardown_disabled_specialist`. The teardown also closes the specialist's
+open conversations (each topic is told; a close that failed is reported as
+`teardown_incomplete_close_engagements`, the operator is told, and the next `agents`
+reload retries it) — say so before flipping the flag.
+
+## Reading the commit's reloads
+
+The commit returns each reload it ran under `reloads`: `{status, scope, role, ms,
+actions}`, plus `failures` when a part of it did not take. When any reload failed or
+reported failures, the commit also carries a `warning`: the commit stands, but part of
+the change is not live. Tell the operator in plain words, then fix the cause and commit
+again, or retry the reload yourself (below). A `restart_required` kind means a
+resident's identity changed and only a restart makes it live: that is the operator's
+call (a restart costs conversations; see `recipes/persona/apply.md`), so ask before
+`casa_restart_supervised`.
+
+A reload that touches an agent replaces it and schedules its client pool to close, so
+its next turn starts a cold client, and your own turn is hosted inside the call that
+committed. Report promptly after the commit.
+
+## Reloads you call yourself
+
+| `scope` | Tool | Required `role` | When |
+|---|---|---|---|
+| `plugin_env` | `casa_reload(scope='plugin_env')` | no | after `set_plugin_env_reference` or a `plugin-env.conf` edit — that file is gitignored, so no commit reloads it |
+| `config_sync` | `casa_reload(scope='config_sync')` | no | re-run the default-sync reconciler live (adds/updates from image defaults), then cascade `agents` + `policies` |
+| any scope | `casa_reload(scope=..., role=...)` | for `agent`, `triggers` | a retry, when a commit's reload failed and you fixed the cause without a new commit, or when a tool's result asks for one |
+
+The scopes are `agent` and `triggers` (both take a `role`; `casa_reload_triggers(role=...)`
+is the same as `triggers`), `policies`, `plugin_env`, `agents`, `executors`,
+`config_sync` and `full`. `full` is always safe: policies + agents + executors +
+every agent; add `include_env=True` to also re-source `plugin-env.conf`.
 
 `role` is the agent's directory name — `assistant`, `butler`, `concierge`, or a
 specialist's slug. The tier-prefixed forms the plugin tools use for the same role
@@ -23,66 +70,5 @@ specialist's slug. The tier-prefixed forms the plugin tools use for the same rol
 `reloaded:` list) are accepted too: the prefix is stripped before the reload runs, and
 the reply's `role` names the directory the reload ran for.
 
-`casa_restart_supervised` (~10-15s) is reserved for s6 service-tree
-changes, addon options.json mutations, or kernel concerns.
-
-## What requires what
-
-| Change | Reload |
-|---|---|
-| Edit a resident's prompts/system.md | **you cannot** — Write/Edit of it are refused. It is not served to a bundle-bound resident; see `recipes/prompt/resident.md` |
-| Edit a resident's prompts/<trigger>.md | `triggers` — the prose is captured in the scheduled job at load, so an edit is inert until the reload |
-| Edit response_shape.yaml | **you cannot** — the hook denies it. The file is read into the composed fallback prompt, which a bundle-bound agent is never served; see `recipes/response-shape/edit.md` |
-| Edit executor's doctrine/*.md | none — but effective on that executor's next COLD session, not guaranteed on the next turn |
-| Edit existing agent's triggers.yaml (no other change) | `triggers` |
-| Edit character.yaml | `agent` for that role |
-| Edit runtime.yaml | `agent` for that role |
-| Edit delegates.yaml | `agent` for that role |
-| Edit disclosure.yaml | `agent` for that role — but it changes no served prompt today; see `recipes/disclosure/edit.md` |
-| Edit voice.yaml | `agent` for that role |
-| Flip a specialist's `enabled` flag | `agent` for that role — the reload that reads `enabled: false` tears the specialist down (no agent, no bus queue, no jobs or routes, not delegatable) instead of swapping it; the file-reading scopes (`triggers`, `policies`, `agents`, and so `config_sync`/`full`) honour the flag the same way, and each reports `teardown_disabled_specialist`; the teardown also closes the specialist's open conversations (each topic is told; a close that failed is reported as `teardown_incomplete_close_engagements`, the operator is told, and the next `agents` reload retries it) — say so before flipping the flag |
-| hooks.yaml (any agent's) | NOT editable by you — hook-policy files are denied unconditionally; policy changes are an operator/image action |
-| Edit policies/disclosure.yaml | `policies` — same caveat as the row above |
-| Edit an executor's `definition.yaml` | `executors` |
-| Create or delete an executor | `executors` |
-| Edit an executor's `prompt.md` / `observer.yaml` / `doctrine/*` | none — effective on that executor's next COLD session; a warm client is reused without rebuilding its options, so do not promise "next turn". `hooks.yaml` is NOT editable by you (see above) |
-| Install a specialist (pipeline) — new `agents/specialists/<slug>/` | `agents` — REQUIRED explicitly after `config_git_commit`; `specialist_install_commit` does NOT reload (see `recipes/specialist/install.md`) |
-| Uninstall a specialist (pipeline) — removed `agents/specialists/<slug>/` | `agents` — REQUIRED explicitly after `config_git_commit`; `specialist_uninstall` does NOT reload (see `recipes/specialist/uninstall.md`) |
-| `plugin_add`/`plugin_update`/`plugin_assign`/`plugin_unassign`/`plugin_remove` | none — the tool self-sequences its own reload + verify (§3.9); a `plugin_update` returning `unchanged:true` changed nothing and reloaded nothing |
-| `set_plugin_env_reference` | `plugin_env` |
-| Multiple categories edited in one engagement | `full` |
-| Unsure | `full` |
-
-## Order of operations — MANDATORY
-
-1. Make your file edits.
-2. Call `config_git_commit(message=...)`.
-3. Call the appropriate `casa_reload(scope=...)` tool **before** `emit_completion`.
-4. Call `emit_completion(...)` with the summary.
-
-**Never call `emit_completion` BEFORE the reload step.** The model
-treats `emit_completion` as the terminal action; once it fires, the
-engagement closes and you do not get another chance to call the reload.
-A skipped reload leaves the artifact **committed but inert**. See
-`completion.md`.
-
-`casa_reload(...)` returns immediately with `{status: "ok", ms: <int>,
-actions: [...]}`. There is no Supervisor restart. That removes one race,
-not every race: an agent-touching scope replaces every resident and
-schedules its client pool to close, and your turn is hosted inside the
-call that asked for it. Report promptly after the reload.
-
-## When in doubt
-
-- Touched only triggers, or a `prompts/<trigger>.md`, for one agent → `triggers`.
-- Touched a single role's other YAMLs → `agent` for that role.
-- Touched policies/*.yaml → `policies`.
-- Installed or uninstalled a specialist via the pipeline → call `casa_reload(scope="agents")` yourself after `config_git_commit` (the install/uninstall tools do NOT reload; only the `plugin_*` tools self-sequence their own reload), then `casa_reload(scope="agent", role="<resident>")` for each resident whose `delegates.yaml` you wired or unwired — `agents` never re-reads a live resident (#1009).
-- Edited an executor's `definition.yaml` (enable / permission_mode / allowed tools / model) → `executors`.
-- Created or deleted an executor → `executors`.
-- Touched `plugin-env.conf` (via `set_plugin_env_reference`) → `plugin_env`.
-- Touched anything else, or multiple of the above → `full`.
-- Need a process restart (rare) → `casa_restart_supervised`.
-
-`full` is always safe — does policies + agents + per-role agent. Add
-`include_env=True` to also re-source plugin-env.conf.
+`casa_restart_supervised` (~10-15s) is reserved for s6 service-tree changes, addon
+options.json mutations, a `restart_required` reload, or kernel concerns.

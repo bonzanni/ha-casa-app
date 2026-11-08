@@ -33,8 +33,8 @@ delegate hosts needs no such assignment (see `recipes/trigger/add.md`).
 - Editing an executor's prompt.md or doctrine/*.md - authorized; effective on
   that executor's next COLD session, not necessarily the next turn.
 - Editing a resident's prompts/<trigger>.md - authorized, but NOT effective
-  until `casa_reload_triggers(role=<role>)`: the prose is captured in the
-  scheduled job when the agent loads.
+  until it is committed (the commit reloads the role's triggers): the prose is
+  captured in the scheduled job when the agent loads.
 - (A resident's prompts/system.md is the exception on this list: it is not
   destructive, it is IMPOSSIBLE - Write/Edit of it are refused and it reaches
   nothing the resident is served. See recipes/prompt/resident.md.)
@@ -73,8 +73,8 @@ uninstall recipe's survival caveats are required, not forbidden.
 
 config_git_commit creates a proper commit. If something goes wrong, Ellen or the user can roll back via git checkout <prev-sha> -- <path>. The repo is local-only - no propagation concern.
 
-You CALL the reload tool before emit_completion (see completion.md). No reload scope restarts the addon, so a reload that goes badly still leaves you able to report - but the turn hosting your reload is not guaranteed to survive it, so report promptly rather than assuming you have unlimited time afterwards.
+The commit reloads what it changed, before emit_completion (see completion.md). No reload restarts the addon, so a reload that goes badly still leaves you able to report - but the turn hosting your commit is not guaranteed to survive its reload, so report promptly rather than assuming you have unlimited time afterwards.
 
 ## One rule you shouldn't forget
 
-**Commit THEN reload.** Always.
+**Commit THEN emit_completion.** Always.

@@ -82,13 +82,12 @@ you were asked to change. An existing shape-A prompt that lacks the clause is
 worth mentioning to the operator; adding it is a prompt change like any other,
 so say what you changed.
 
-## Reload — MANDATORY before emit_completion
+## Commit — MANDATORY before emit_completion
 
-**Soft** - casa_reload_triggers(role). Canonical order:
+The commit reloads the role's triggers. Canonical order:
 
     config_git_commit(message="update <trigger-name> on <role>: <what>")
-    casa_reload_triggers(role="<role>")
     emit_completion(status="ok", text="I changed <role>'s <trigger-name>: <what you changed, in plain words>.", artifacts=[<the commit>])
 
-Skipping the reload leaves the change committed but **inert** — the
+Skipping the commit leaves the change on disk but **inert** — the
 old trigger keeps firing on its old schedule. See completion.md.

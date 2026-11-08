@@ -40,7 +40,7 @@ apply unchanged, step 3's open-conversation warning included.
    never `specialist_install_commit`, which refuses an installed slug with
    `kind: "active_present"`. After Deny a resume turn normally tells you the operator refused: nothing
    changed and the specialist keeps its current version and settings, so do not call
-   `specialist_upgrade`, commit or reload — conclude with `emit_completion(status="cancelled",
+   `specialist_upgrade` or commit — conclude with `emit_completion(status="cancelled",
    text=...)` saying the operator refused the update.
 3. `specialist_upgrade(slug=..., component_id=..., version=..., root_digest=..., staged_dir=...,
    receipt_id=..., config={...}, secret_names_provided=[...])` using the EXACT `root_digest` and
@@ -98,8 +98,8 @@ apply unchanged, step 3's open-conversation warning included.
    finding that the candidate is unrecoverable, and never grounds to propose an uninstall.
 5. If `state == "error"`: report the validation failure the result's `last_activation_error`
    names, in plain words; the OLD version, and its owned plugin set, are still live, unchanged.
-6. If `state == "active"`: `config_git_commit`, `casa_reload(scope="agents")`, `emit_completion`
-   (canonical commit -> reload -> emit order — see `completion.md`). The new version's owned plugin
+6. If `state == "active"`: `config_git_commit` (it reloads `agents`, which loads the new version),
+   then `emit_completion` — see `completion.md`. The new version's owned plugin
    set REPLACES the old one atomically as part of `specialist_upgrade` itself (a plugin the old
    version owned but the new one no longer declares is removed; anything newly declared is
    activated) — no separate plugin step here.
@@ -110,9 +110,9 @@ apply unchanged, step 3's open-conversation warning included.
   will correctly refuse with `kind: "slug_collision"`; this is not a bug to work around.
 - Omitting `receipt_id` on `specialist_upgrade`, or reusing one from an earlier inspect call — it
   refuses with `kind: "receipt_required"`; always use the id the LATEST inspect returned.
-- Forgetting `casa_reload(scope="agents")` after `state == "active"` — the new tuple is committed on
-  disk but the live registry keeps running the old compiled bundle until reload runs. Even after
-  it, a conversation already open keeps its personality and plugin versions; only new ones get the
+- Skipping the commit after `state == "active"` — the new tuple is on disk but the live registry
+  keeps running the old compiled bundle until the commit's reload runs. Even after it, a
+  conversation already open keeps its personality and plugin versions; only new ones get the
   new version.
 - Treating `state == "pending-configuration"` or `state == "error"` as a failed upgrade that needs
   retrying blind — in BOTH cases the previously-active version, and its owned plugin set, is still
