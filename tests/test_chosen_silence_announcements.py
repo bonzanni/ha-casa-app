@@ -497,7 +497,7 @@ async def test_replayed_engagement_chosen_silence_clears_durable_obligation(
 
     agent, stub = resident
     tombstone = tmp_path / "engagements.json"
-    reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tombstone))
     topic = MagicMock()
     topic.send_to_topic = AsyncMock()
     topic.send_response_to_topic = AsyncMock()
@@ -525,7 +525,7 @@ async def test_replayed_engagement_chosen_silence_clears_durable_obligation(
         specialist_registry=MagicMock(), mcp_registry=MagicMock(),
     )
 
-    registry = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+    registry = EngagementRegistry(tombstone_path=str(tombstone))
     await registry.load()
     assert [r.id for r in registry.records_owing_terminal_notification()] == [
         rec.id]
@@ -548,7 +548,7 @@ async def test_replayed_engagement_chosen_silence_clears_durable_obligation(
 
     _assert_one_silent_discharge(stub, response, seen, counted)
     assert registry.records_owing_terminal_notification() == []
-    fresh = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+    fresh = EngagementRegistry(tombstone_path=str(tombstone))
     await fresh.load()
     assert fresh.records_owing_terminal_notification() == []
     assert fresh.get(rec.id).terminal_notification_pending is False

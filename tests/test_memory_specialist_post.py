@@ -429,7 +429,7 @@ async def topic(tmp_path, roles, mem):
     from engagement_registry import EngagementRegistry
     from test_in_casa_inbound_admission import _mk_assistant, _ScriptedClient
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     origin = {"role": "assistant", "channel": "telegram",
               "user_id": OPERATOR_CHAT}
     recs = {
@@ -457,7 +457,6 @@ async def topic(tmp_path, roles, mem):
                              default_agent="assistant")
         ch._engagement_registry = reg
         ch._engagement_driver = drv
-        ch._observer = MagicMock()
         ch._driver_advance_high_water = AsyncMock()
         ch._post_engagement_notice = AsyncMock()
         ch._driver_admit_inbound = lambda r, t: drv.admit_inbound(r.id, t)
@@ -533,7 +532,7 @@ async def test_no_topic_event_for_another_sender_a_command_an_executor_or_no_ope
         topic, mem):
     ch = topic.channel()
     # a command Casa consumes itself
-    await _say(ch, _topic_update("/silent", message_id=902))
+    await _say(ch, _topic_update("/help", message_id=902))
     # an executor's topic: not a specialist's engagement
     await _say(ch, _topic_update("adjust it", message_id=903,
                                  thread_id=TOPIC + 2))

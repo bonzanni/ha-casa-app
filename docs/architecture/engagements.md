@@ -89,15 +89,10 @@ concurrency permits, live drivers, inbound reservations and various
 in-flight maps do not. A record found `active` at startup is rewritten to `idle`, because no
 live driver survived to make `active` true.
 
-**Durable is not indefinite, and engagements can speak up unprompted.** A daily sweep
-suspends a live session after a day idle and posts recurring idle reminders (three days for
-a specialist record, seven for every other kind, refiring weekly); terminal tombstones age
-out after thirty days, bounding duplicate-task protection (one whose completion time is not a
-finite number has no known age and is kept, and an `in_casa` one only once its transcripts
-are reaped, per `architecture/engagement-transcript-reaping.md`). Separately, an observer watches
-engagement events and may post a bounded LLM interjection into the resident chat — capped
-at three per engagement and suppressible with `/silent`. The cap holds under concurrent dispatch: a
-budget slot is reserved before evaluation and returned if nothing is posted.
+**Durable is not indefinite.** A daily sweep suspends a live session after a day idle;
+terminal tombstones age out after thirty days, bounding duplicate-task protection (one whose
+completion time is not a finite number has no known age and is kept, and an `in_casa` one
+only once its transcripts are reaped, per `architecture/engagement-transcript-reaping.md`).
 
 ## Contracts & invariants
 
@@ -129,11 +124,8 @@ launching tool call. The protocol says nothing about OS identity or filesystem r
 driver that runs its agent as a separate OS process owes its own containment.
 
 **`start()`'s `prompt` is the first turn.** For the in-process driver that is the opening
-user message; a memory-enabled launch interpolates the prior-engagement archive into it (see
-[`architecture/memory-scoping.md`](memory-scoping.md)). Nothing after the launch fetches the
-archive again: a clearance rebuild *clears* the cached block rather than refetching — a
-refetch there would read at the clearance the rebuild has just left, which is the thing the
-rebuild exists to stop.
+user message. An executor's starts with no memory of earlier engagements; it reads memory
+through the clearance-gated tools (see [`architecture/memory-scoping.md`](memory-scoping.md)).
 
 **A new durable field** must be added to the record, its load path and its write path
 together — otherwise it exists at runtime and silently vanishes across a restart. A field that
@@ -179,7 +171,7 @@ persisting ledger checks it — is answered in the same document.
 - `tests/test_delegate_to_agent.py`
 - `tests/test_delegate_to_agent_interactive.py`
 - `tests/test_engagement_registry.py`
-- `tests/test_observer.py`
+- `tests/test_idle_sweep.py`
 - `tests/test_in_casa_inbound_admission.py`
 
 **Related**

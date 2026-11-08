@@ -9,8 +9,9 @@ summaries. Each path must return exactly the canaries its reader may read:
   highest maintained ledger at or below the reader;
 * the correction note by that ledger and by each event's tier;
 * search hits and each hit's window neighbours, date browse (its counts
-  included) and the engager's search by event tier, before any paging;
-* the executor archive by summary tier.
+  included) and the engager's search by event tier, before any paging.
+
+Engagement summaries are seeded too: no read path returns them.
 
 An id the reader's ledger does not hold gets the same answer as an id that
 does not exist. Reachability is checked per ledger, and a ledger past the
@@ -104,7 +105,7 @@ def seen(world: World, text: str) -> set[str]:
 @pytest.mark.parametrize("clearance", TIERS)
 def test_every_read_path_returns_only_what_the_reader_may_read(
         tmp_path, friends, clearance):
-    from tools import _engager_context, _read_executor_archive
+    from tools import _engager_context
     w = World(tmp_path)
     readable = w.readable_events(clearance)
     objects = w.ledger_objects(clearance)
@@ -142,11 +143,6 @@ def test_every_read_path_returns_only_what_the_reader_may_read(
                          first_day=date.today(), last_day=date.today())
     assert seen(w, page.text) == readable
     assert page.total == len(readable)
-
-    # The executor archive.
-    lessons = _read_executor_archive(w.store, ROLE, EPOCH, clearance, 10_000)
-    assert seen(w, "\n".join(lessons)) == {
-        c for c, tier in w.summaries.items() if rank(tier) <= rank(clearance)}
 
     # The engager's view and search.
     context = _engager_context(w.store, WORD, clearance)

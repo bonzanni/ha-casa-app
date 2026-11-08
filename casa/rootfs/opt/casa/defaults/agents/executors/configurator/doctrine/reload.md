@@ -18,7 +18,7 @@ restart, use `casa_restart_supervised` (rare).
 | An edit inside an installed specialist, such as its `enabled` flag | `agent` for that specialist |
 | `policies/disclosure.yaml` | `policies` |
 | An executor's `definition.yaml`, or creating or deleting an executor | `executors` |
-| An executor's `prompt.md`, `observer.yaml` or `doctrine/*` | none — effective on that executor's next COLD session; a warm client is reused without rebuilding its options, so do not promise "next turn" |
+| An executor's `prompt.md` or `doctrine/*` | none — effective on that executor's next COLD session; a warm client is reused without rebuilding its options, so do not promise "next turn" |
 | `plugins/registry.json` alone | none — the `plugin_*` tools activate their change and commit the registry themselves; a `plugin_update` returning `unchanged:true` changed nothing |
 | A resident's staged persona binding under `bindings/` | none — only a restart activates it (see `recipes/persona/apply.md`) |
 | `schema/`, or any other path | `full` |

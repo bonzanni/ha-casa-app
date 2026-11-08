@@ -95,7 +95,7 @@ async def _handler_ctx(tmp_path, fake_telegram_bot):
     from drivers.in_casa_driver import InCasaDriver
     from engagement_registry import EngagementRegistry
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         "executor", "configurator", "in_casa", "t",
         {"user_id": 77}, topic_id=555)
@@ -109,7 +109,6 @@ async def _handler_ctx(tmp_path, fake_telegram_bot):
                          engagement_supergroup_id=-1001)
     ch._engagement_registry = reg
     ch._engagement_driver = drv
-    ch._observer = MagicMock()
     ch._post_engagement_notice = AsyncMock()
     ch._driver_admit_inbound = lambda r, text: drv.admit_inbound(r.id, text)
     ch._driver_discharge_inbound = (
@@ -180,7 +179,7 @@ class TestInboundIngressReservation:
             tmp_path, fake_telegram_bot)
         entered, gate = _block_first_await(reg)
 
-        u = _mk_update(chat_id=-1001, text="/silent", thread_id=555,
+        u = _mk_update(chat_id=-1001, text="/help", thread_id=555,
                        user_id=77)
         task = asyncio.create_task(ch.handle_update(u))
         await asyncio.wait_for(entered.wait(), 5)
@@ -189,7 +188,7 @@ class TestInboundIngressReservation:
         gate.set()
         await task
         await _drain_all(ch)
-        ch._observer.silence.assert_called_once_with(rec.id)
+        ch._post_engagement_notice.assert_awaited_once()
         assert client.query_prompts == []
         assert (drv.inbound_unread_depth(rec.id),
                 drv.inbound_reservations(rec.id)) == (0, 0)
@@ -319,7 +318,7 @@ class TestInCasaCompletionInboundGate:
         from tools import init_tools
 
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None)
+            tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             "executor", "configurator", "in_casa", "t",
             {"role": "assistant", "channel": "telegram", "user_id": 77},
@@ -351,7 +350,6 @@ class TestInCasaCompletionInboundGate:
                              engagement_supergroup_id=-1001)
         ch._engagement_registry = reg
         ch._engagement_driver = drv
-        ch._observer = MagicMock()
 
         async def _send_user_turn(r, text, *, tg_message_id=None):
             # Mirrors casa_core's in_casa branch (casa_core.py:4386-4389).

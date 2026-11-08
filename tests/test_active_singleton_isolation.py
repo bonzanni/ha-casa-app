@@ -5,8 +5,8 @@ be able to change what a LATER test observes.
 `casa_core.main` so tool handlers can reach them without circular imports"
 (`active_engagement_driver`, `active_executor_registry`,
 `active_claude_code_driver`, `active_runtime`, `active_session_registry`),
-and `casa_core.main` writes a sixth,
-`active_observer`, which `agent.py` does not declare at all. Every consumer
+and `casa_core.main` used to write a sixth,
+`active_observer`, which `agent.py` never declared. Every consumer
 resolves them at CALL time — `tools.py:10316-10326` and the sibling resolutions
 at :10798-10804 and :11215-11218 — and gates each use on `hasattr`, a predicate
 a `MagicMock` satisfies unconditionally. So a leaked mock does not fail loudly;

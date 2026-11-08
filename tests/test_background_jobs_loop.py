@@ -178,7 +178,7 @@ async def harness(tmp_path, monkeypatch, request):
     h = Harness()
     h.bot, h.client, h.bus = Bot(), Client(), MessageBus()
     h.bus.register("assistant")
-    h.reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"), bus=None)
+    h.reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"))
     decl = jobs.JobDecl("sample:work", "sample", "work", "sample:work", "Process rows", None, None, 10)
     h.rec = await h.reg.create(
         getattr(request, "param", "specialist"), "worker", "in_casa", "Process rows",
@@ -465,7 +465,7 @@ async def test_progress_format_persistence_and_grant(harness, tmp_path):
         await h.report("x" * 310 + "\nnot included", done=0, remaining=9)
 
     async def reload():
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"))
         await reg.load()
         persisted.update(reg.get(h.rec.id).origin["job"])
     # #1033: a report counts for the batch whose turn runs as it is handled, so
@@ -519,7 +519,7 @@ async def test_restart_resumes_next_batch(harness, monkeypatch, tmp_path):
     h.rec.origin["job"].update(started=1, reported=True, last_summary="First batch")
     await h.reg.persist_origin(h.rec.id)
     await h.reg.persist_session_id(h.rec.id, "session")
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"))
     await reg.load()
     h.rec.permit.release()
     h.reg, h.rec = reg, reg.get(h.rec.id)

@@ -25,7 +25,7 @@ enabled.
 
 ## What it does NOT pick up
 
-- New `prompt.md` / `observer.yaml` / `doctrine/*` content (lazy-read
+- New `prompt.md` / `doctrine/*` content (lazy-read
   per turn). (`hooks.yaml` is NOT editable by you — hook-policy files
   are denied unconditionally; policy changes are an operator/image
   action.)

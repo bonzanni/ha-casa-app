@@ -38,7 +38,7 @@ async def test_outcome_error_emits_warning_with_reason(tmp_path, caplog):
     from engagement_registry import EngagementRegistry
     from tools import _finalize_engagement, init_tools
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa",
         task="t",
@@ -90,7 +90,7 @@ async def test_outcome_error_handles_empty_text(tmp_path, caplog):
     from engagement_registry import EngagementRegistry
     from tools import _finalize_engagement, init_tools
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa",
         task="t", origin={"role": "assistant", "channel": "telegram"},
@@ -132,7 +132,7 @@ async def test_completed_engagement_posts_the_plain_summary(
     from engagement_registry import EngagementRegistry
     from tools import _finalize_engagement, init_tools
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa",
         task="t", origin={"role": "assistant", "channel": "telegram"},
@@ -166,7 +166,7 @@ async def test_outcome_completed_stays_at_info_level(tmp_path, caplog):
     from engagement_registry import EngagementRegistry
     from tools import _finalize_engagement, init_tools
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa",
         task="t", origin={"role": "assistant", "channel": "telegram"},

@@ -26,7 +26,7 @@ def _text(res: dict) -> str:
 
 async def _pending_record(tmp_path):
     from engagement_registry import EngagementRegistry
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa",
         task="secret task", topic_id=7,
@@ -98,7 +98,7 @@ class TestInFlightReFilter:
         store_event(store, "bins go out tuesday, the alarm is fine",
                     tier="public")
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None)
+            tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="executor", role_or_type="configurator", driver="in_casa",
             task="t", topic_id=7,
@@ -279,7 +279,7 @@ class TestInCasaClampMidRead:
         if args is None:
             args = {"ids": [entry]}
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None)
+            tombstone_path=str(tmp_path / "e.json"))
         parent = {"role": "assistant", "channel": "telegram", "chat_id": "1",
                   "_origin_route": "telegram", "_origin_clearance": "private"}
         rec = await reg.create(

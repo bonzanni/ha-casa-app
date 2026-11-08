@@ -575,7 +575,7 @@ class TestDuplicateTaskGuard:
     async def _real_registry(self, tmp_path):
         from engagement_registry import EngagementRegistry
         return EngagementRegistry(
-            tombstone_path=str(tmp_path / "engagements.json"), bus=None,
+            tombstone_path=str(tmp_path / "engagements.json"),
         )
 
     async def _setup_with_real_registry(
@@ -898,7 +898,7 @@ class TestCancelledLaunchAfterRecordCompensates:
         from engagement_registry import EngagementRegistry
 
         registry = EngagementRegistry(
-            tombstone_path=str(tmp_path / "engagements.json"), bus=None)
+            tombstone_path=str(tmp_path / "engagements.json"))
         defn = _mock_executor_def()
         p = tmp_path / "prompt.md"
         p.write_text("t")
@@ -974,21 +974,17 @@ class TestCancelledLaunchAfterRecordCompensates:
         assert fake_driver.cancel.await_args.args[0].id == recs[0].id
 
 
-class TestExecutorArchiveFetchedOncePerLaunch:
-    """#583: a memory-enabled executor's launch recalls the prior-engagement
-    archive exactly once — the engager's fetch, interpolated into the launch
-    prompt.
-
-    This asserts the CALL COUNT, not the rendered status: the #583 defect was
-    two successful fetches, which no status distinguishes from one.
-    """
+class TestExecutorMemorySlotRendersEmpty:
+    """The executor archive is gone. An operator's prompt.md under /config
+    may still carry the ``{executor_memory}`` slot, and a definition may
+    still say ``memory.enabled: true``: the slot renders empty and the
+    literal placeholder never reaches the executor."""
 
     async def _launch(self, monkeypatch, tmp_path):
-        """Drive one engage_executor launch; return (fetch_calls, driver)."""
+        """Drive one engage_executor launch; return the driver."""
         from config import ExecutorMemoryConfig
         from tools import engage_executor, init_tools
         import agent as agent_mod
-        import tools as tools_mod
 
         defn = _mock_executor_def(
             memory=ExecutorMemoryConfig(enabled=True, token_budget=500),
@@ -1010,11 +1006,10 @@ class TestExecutorArchiveFetchedOncePerLaunch:
         er.try_transition_terminal = AsyncMock(return_value=True)
         er.set_channel_state = AsyncMock()
         er.set_initial_state_emoji = AsyncMock()
-        er.set_procedural_epoch = AsyncMock()
 
         channel = await _setup(
             reg, tmp_path=tmp_path,
-            prompt_template="task={task} mem={executor_memory}",
+            prompt_template="task={task} mem=[{executor_memory}]",
         )
         cm = MagicMock()
         cm.get = MagicMock(return_value=channel)
@@ -1024,15 +1019,6 @@ class TestExecutorArchiveFetchedOncePerLaunch:
             trigger_registry=MagicMock(), engagement_registry=er,
             executor_registry=reg,
         )
-
-        calls: list = []
-
-        async def _counting_fetch(**kwargs):
-            calls.append(kwargs)
-            return "ARCHIVE-BLOCK-MARKER"
-
-        monkeypatch.setattr(
-            tools_mod, "_fetch_executor_archive", _counting_fetch)
 
         driver = MagicMock(start=AsyncMock())
         monkeypatch.setattr(
@@ -1050,16 +1036,14 @@ class TestExecutorArchiveFetchedOncePerLaunch:
             })
         finally:
             agent_mod.origin_var.reset(token)
-        return calls, driver
+        return driver
 
-    async def test_an_in_casa_launch_still_fetches_the_archive_exactly_once(
-        self, monkeypatch, tmp_path,
-    ):
-        """in_casa has no second fetch anywhere, so its ONE recall stays."""
-        calls, driver = await self._launch(monkeypatch, tmp_path)
-        assert len(calls) == 1
+    async def test_the_slot_renders_empty(self, monkeypatch, tmp_path):
+        driver = await self._launch(monkeypatch, tmp_path)
         driver.start.assert_awaited_once()
-        assert "ARCHIVE-BLOCK-MARKER" in driver.start.await_args.kwargs["prompt"]
+        prompt = driver.start.await_args.kwargs["prompt"]
+        assert "mem=[]" in prompt
+        assert "{executor_memory}" not in prompt
 
 
 class TestU3TopicTitle:
@@ -1711,7 +1695,7 @@ class TestEngageExecutorPluginGate:
 def _real_registry(tmp_path):
     from engagement_registry import EngagementRegistry
     return EngagementRegistry(
-        tombstone_path=str(tmp_path / "eng-tomb.json"), bus=None,
+        tombstone_path=str(tmp_path / "eng-tomb.json"),
     )
 
 

@@ -120,7 +120,7 @@ async def test_the_refusal_is_recorded_and_persisted_with_the_bounded_text(
     pending = h.rec.origin["job"]["completion_pending"]
     assert pending == {"status": "ok",
                        "text": long[:tools._COMPLETION_TEXT_MAX] + " … [truncated]"}
-    loaded = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"), bus=None)
+    loaded = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"))
     await loaded.load()
     assert loaded.get(h.rec.id).origin["job"]["completion_pending"] == pending
 
@@ -210,7 +210,7 @@ async def test_a_clearance_downgrade_withholds_the_pending_text(fresh, tmp_path)
     brief = jobs.job_brief(h.rec)
     assert "All 40 rows" not in brief and "SECRET-PENDING" not in brief
     assert PENDING in brief and "withheld" in brief
-    loaded = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"), bus=None)
+    loaded = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"))
     await loaded.load()
     assert loaded.get(h.rec.id).origin["job"]["completion_pending"] == {"status": "ok"}
 

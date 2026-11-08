@@ -2,7 +2,7 @@
 
 Use for any structural change to an executor's definition file —
 `permission_mode`, `tools.allowed`, `model`, `mcp_server_names`,
-`idle_reminder_days`, `description`, etc.
+`description`, etc.
 
 ## Steps
 

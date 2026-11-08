@@ -25,7 +25,6 @@ class TestEngagementRecord:
             topic_id=12345,
             started_at=1000.0,
             last_user_turn_ts=1000.0,
-            last_idle_reminder_ts=0.0,
             completed_at=None,
             sdk_session_id=None,
             origin={"role": "assistant", "channel": "telegram"},
@@ -43,7 +42,7 @@ class TestRegistryInitAndLoad:
         from engagement_registry import EngagementRegistry
 
         tombstone = tmp_path / "engagements.json"
-        reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tombstone))
         await reg.load()
         assert reg.active_and_idle() == []
 
@@ -68,7 +67,7 @@ class TestRegistryInitAndLoad:
                 "task": "x",
             }
         ]))
-        reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tombstone))
         await reg.load()
         records = reg.active_and_idle()
         assert len(records) == 1
@@ -80,7 +79,7 @@ class TestRegistryInitAndLoad:
 
         tombstone = tmp_path / "engagements.json"
         tombstone.write_text("{not json")
-        reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tombstone))
         await reg.load()
         assert reg.active_and_idle() == []
         # File truncated to []
@@ -92,7 +91,7 @@ class TestRegistryCreate:
     async def test_create_assigns_uuid_and_indexes_topic(self, tmp_path):
         from engagement_registry import EngagementRegistry
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="specialist",
             role_or_type="finance",
@@ -111,7 +110,7 @@ class TestRegistryCreate:
     async def test_create_without_topic_id_still_writes_tombstone(self, tmp_path):
         from engagement_registry import EngagementRegistry
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={}, topic_id=None,
@@ -137,7 +136,7 @@ class TestRegistryCreate:
             def release(self): ...
             def commit(self): ...
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         # create() writes the tombstone synchronously — a live-object origin must
         # not raise here.
         rec = await reg.create(
@@ -168,7 +167,7 @@ class TestRegistryStateTransitions:
         the file never matched the 'tombstone' name)."""
         from engagement_registry import EngagementRegistry
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
         await reg.mark_completed(rec.id, completed_at=time.time())
         assert rec.status == "completed"
@@ -183,7 +182,7 @@ class TestRegistryStateTransitions:
         grow unboundedly; in-flight records are never pruned."""
         from engagement_registry import EngagementRegistry
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         old = await reg.create("executor", "configurator", "in_casa", "t1", {}, 1)
         await reg.mark_completed(old.id, completed_at=time.time() - 31 * 86400)
         # An in_casa record ages out only once the transcript reaper is done.
@@ -213,7 +212,7 @@ class TestRegistryStateTransitions:
             {**base, "id": "e-done", "status": "completed", "topic_id": 3,
              "completed_at": time.time()},
         ]))
-        reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tombstone))
         await reg.load()
         assert reg.get("e-active").status == "idle"
         assert reg.get("e-idle").status == "idle"
@@ -240,7 +239,7 @@ class TestRegistryStateTransitions:
             "origin": {}, "task": "t",
         }]))
         before = tombstone.read_text()
-        reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tombstone))
         await reg.load()
         assert tombstone.read_text() == before, "load() rewrote with nothing to reconcile"
 
@@ -250,14 +249,14 @@ class TestRegistryStateTransitions:
         from engagement_registry import EngagementRegistry
 
         path = str(tmp_path / "e.json")
-        reg1 = EngagementRegistry(tombstone_path=path, bus=None)
+        reg1 = EngagementRegistry(tombstone_path=path)
         rec = await reg1.create(
             "executor", "configurator", "in_casa", "install plugin X",
             {"channel": "telegram", "chat_id": "123"}, 1,
         )
         await reg1.mark_completed(rec.id, completed_at=time.time())
 
-        reg2 = EngagementRegistry(tombstone_path=path, bus=None)
+        reg2 = EngagementRegistry(tombstone_path=path)
         await reg2.load()
         found = reg2.recent_for_origin(
             channel="telegram", chat_id="123", max_age_s=3600,
@@ -267,7 +266,7 @@ class TestRegistryStateTransitions:
     async def test_mark_idle_and_back_to_active(self, tmp_path):
         from engagement_registry import EngagementRegistry
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
         await reg.mark_idle(rec.id)
         assert rec.status == "idle"
@@ -278,7 +277,7 @@ class TestRegistryStateTransitions:
     async def test_persist_session_id(self, tmp_path):
         from engagement_registry import EngagementRegistry
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
         await reg.persist_session_id(rec.id, "sess-abc")
         assert rec.sdk_session_id == "sess-abc"
@@ -293,7 +292,7 @@ class TestRegistryStateTransitions:
         guard fires again."""
         from engagement_registry import EngagementRegistry
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
 
         def boom(snapshot):
@@ -307,7 +306,7 @@ class TestRegistryStateTransitions:
     async def test_mark_error_captures_kind(self, tmp_path):
         from engagement_registry import EngagementRegistry
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
         await reg.mark_error(rec.id, kind="resume_failed", message="SDK rotated")
         assert rec.status == "error"
@@ -320,7 +319,7 @@ class TestRegistryStateTransitions:
         with a different outcome) is refused and the status is untouched."""
         from engagement_registry import EngagementRegistry
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
 
         won = await reg.try_transition_terminal(rec.id, "cancelled")
@@ -336,13 +335,13 @@ class TestRegistryStateTransitions:
     async def test_try_transition_terminal_missing_record_returns_false(self, tmp_path):
         from engagement_registry import EngagementRegistry
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         assert await reg.try_transition_terminal("ghost", "completed") is False
 
     async def test_try_transition_terminal_error_sets_origin(self, tmp_path):
         from engagement_registry import EngagementRegistry
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
         won = await reg.try_transition_terminal(
             rec.id, "error", error_kind="emit_completion_error", error_message="boom",
@@ -364,7 +363,7 @@ class TestRegistryStateTransitions:
         closed topic with a torn (memory ≠ disk) terminal record."""
         from engagement_registry import EngagementRegistry
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
         # Baseline: an active record with no error metadata.
         assert rec.status == "active"
@@ -398,7 +397,7 @@ class TestRegistryStateTransitions:
         import asyncio
         from engagement_registry import EngagementRegistry
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
 
         async def _driver():
@@ -412,7 +411,7 @@ class TestRegistryStateTransitions:
         # The durable write completed under the shield: memory is terminal AND
         # a fresh registry load sees the same terminal status.
         assert rec.status == "completed"
-        reg2 = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg2 = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         await reg2.load()
         assert reg2.get(rec.id).status == "completed"
 
@@ -422,7 +421,7 @@ class TestRegistryStateTransitions:
         import unittest.mock as _mock
         from engagement_registry import EngagementRegistry
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
         with _mock.patch.object(
             reg, "_write_tombstone", side_effect=OSError("disk full"),
@@ -434,20 +433,36 @@ class TestRegistryStateTransitions:
     async def test_terminal_records_accessor(self, tmp_path):
         from engagement_registry import EngagementRegistry
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         live = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
         gone = await reg.create("specialist", "ops", "in_casa", "t", {}, 2)
         await reg.try_transition_terminal(gone.id, "completed")
         ids = {r.id for r in reg.terminal_records()}
         assert gone.id in ids and live.id not in ids
 
-    async def test_update_last_idle_reminder(self, tmp_path):
+    async def test_a_row_with_retired_fields_loads_and_sheds_them(
+            self, tmp_path):
+        """A tombstone written before the idle reminders and the executor
+        epoch were removed still carries ``last_idle_reminder_ts`` and
+        ``procedural_epoch``. It loads, and the next write drops both."""
         from engagement_registry import EngagementRegistry
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
-        rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
-        await reg.update_last_idle_reminder(rec.id, ts=5000.0)
-        assert rec.last_idle_reminder_ts == 5000.0
+        path = tmp_path / "engagements.json"
+        path.write_text(json.dumps([{
+            "id": "b" * 32, "kind": "executor",
+            "role_or_type": "configurator", "driver": "in_casa",
+            "status": "idle", "topic_id": 7, "started_at": 1000.0,
+            "last_user_turn_ts": 1000.0, "last_idle_reminder_ts": 2000.0,
+            "procedural_epoch": "abc123", "completed_at": None,
+            "sdk_session_id": "s-1", "origin": {}, "task": "legacy",
+        }]))
+        reg = EngagementRegistry(tombstone_path=str(path))
+        await reg.load()
+        assert reg.get("b" * 32) is not None
+        await reg.update_user_turn("b" * 32, 3000.0)
+        row = json.loads(path.read_text())[0]
+        assert "last_idle_reminder_ts" not in row
+        assert "procedural_epoch" not in row
 
 
 class TestChannelStateFields:
@@ -456,7 +471,7 @@ class TestChannelStateFields:
     async def test_record_has_channel_fields_with_defaults(self, tmp_path):
         from engagement_registry import EngagementRegistry
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "engagements.json"), bus=None,
+            tombstone_path=str(tmp_path / "engagements.json"),
         )
         rec = await reg.create(
             kind="executor", role_or_type="configurator",
@@ -467,7 +482,7 @@ class TestChannelStateFields:
     async def test_set_channel_state_persists_each_field(self, tmp_path):
         from engagement_registry import EngagementRegistry
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "engagements.json"), bus=None,
+            tombstone_path=str(tmp_path / "engagements.json"),
         )
         rec = await reg.create(
             kind="executor", role_or_type="configurator",
@@ -479,7 +494,7 @@ class TestChannelStateFields:
     async def test_set_channel_state_leaves_omitted_fields_untouched(self, tmp_path):
         from engagement_registry import EngagementRegistry
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "engagements.json"), bus=None,
+            tombstone_path=str(tmp_path / "engagements.json"),
         )
         rec = await reg.create(
             kind="executor", role_or_type="configurator",
@@ -492,14 +507,14 @@ class TestChannelStateFields:
     async def test_channel_fields_round_trip_through_tombstone(self, tmp_path):
         from engagement_registry import EngagementRegistry
         tombstone = tmp_path / "engagements.json"
-        reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tombstone))
         rec = await reg.create(
             kind="executor", role_or_type="configurator",
             driver="in_casa", task="t", origin={}, topic_id=42,
         )
         await reg.set_channel_state(rec.id, current_state_emoji="🟢")
 
-        reg2 = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+        reg2 = EngagementRegistry(tombstone_path=str(tombstone))
         await reg2.load()
         rec2 = reg2.get(rec.id)
         assert rec2 is not None
@@ -508,22 +523,17 @@ class TestChannelStateFields:
     async def test_set_channel_state_unknown_engagement_noop(self, tmp_path):
         from engagement_registry import EngagementRegistry
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "engagements.json"), bus=None,
+            tombstone_path=str(tmp_path / "engagements.json"),
         )
         # Should not raise.
         await reg.set_channel_state("does-not-exist", current_state_emoji="🟢")
 
 
 @pytest.fixture
-def bus():
-    return None  # registry tolerates None per its docstring
-
-
-@pytest.fixture
-def registry(tmp_path, bus):
+def registry(tmp_path):
     from engagement_registry import EngagementRegistry
     return EngagementRegistry(
-        tombstone_path=str(tmp_path / "engagements.json"), bus=bus,
+        tombstone_path=str(tmp_path / "engagements.json"),
     )
 
 
@@ -552,10 +562,10 @@ class TestToolsAllowedField:
         )
         assert rec.tools_allowed == allow
 
-    async def test_tombstone_round_trip(self, tmp_path, bus):
+    async def test_tombstone_round_trip(self, tmp_path):
         from engagement_registry import EngagementRegistry
         path = str(tmp_path / "engagements.json")
-        reg1 = EngagementRegistry(tombstone_path=path, bus=bus)
+        reg1 = EngagementRegistry(tombstone_path=path)
         await reg1.load()
         await reg1.create(
             kind="executor",
@@ -567,14 +577,14 @@ class TestToolsAllowedField:
             tools_allowed=("Bash(npm*)", "Read"),
         )
         # Fresh registry reading the same tombstone:
-        reg2 = EngagementRegistry(tombstone_path=path, bus=bus)
+        reg2 = EngagementRegistry(tombstone_path=path)
         await reg2.load()
         ids = list(reg2._records)
         assert len(ids) == 1
         rec = reg2._records[ids[0]]
         assert rec.tools_allowed == ("Bash(npm*)", "Read")
 
-    async def test_pre_v0_37_2_tombstone_loads_with_empty(self, tmp_path, bus):
+    async def test_pre_v0_37_2_tombstone_loads_with_empty(self, tmp_path):
         """Back-compat: tombstones written before v0.37.2 lack the field."""
         import json
         from engagement_registry import EngagementRegistry
@@ -594,7 +604,7 @@ class TestToolsAllowedField:
             "origin": {},
             "task": "legacy",
         }]))
-        reg = EngagementRegistry(tombstone_path=str(path), bus=bus)
+        reg = EngagementRegistry(tombstone_path=str(path))
         await reg.load()
         rec = reg._records["a" * 32]
         assert rec.tools_allowed == ()
@@ -701,7 +711,7 @@ class TestTombstoneAtomicity:
         from engagement_registry import EngagementRegistry
 
         tombstone = tmp_path / "engagements.json"
-        reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tombstone))
         rec = await reg.create(
             kind="executor", role_or_type="configurator", driver="in_casa",
             task="keep me", origin={"channel": "telegram", "chat_id": 1},
@@ -815,8 +825,6 @@ class TestTerminalGuards:
         )
         now = time.time()
         rec.last_user_turn_ts = now - 90000  # > _SESSION_SUSPEND_IDLE_S
-        # v0.79.0: silence the idle-reminder branch for this test.
-        rec.last_idle_reminder_ts = now
 
         class Driver:
             def is_alive(self, r):
@@ -841,7 +849,7 @@ class TestResumeFailCountPersistence:
         from engagement_registry import EngagementRegistry
 
         path = str(tmp_path / "e.json")
-        reg = EngagementRegistry(tombstone_path=path, bus=None)
+        reg = EngagementRegistry(tombstone_path=path)
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={}, topic_id=3,
@@ -849,7 +857,7 @@ class TestResumeFailCountPersistence:
         await reg.set_resume_fail_count(rec.id, 1)
         assert reg.get(rec.id).origin["_resume_fail_count"] == 1
 
-        reg2 = EngagementRegistry(tombstone_path=path, bus=None)
+        reg2 = EngagementRegistry(tombstone_path=path)
         await reg2.load()
         assert reg2.get(rec.id).origin.get("_resume_fail_count") == 1
 
@@ -949,7 +957,7 @@ class TestPersistSessionIdCancellationSafety:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None)
+            tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
 
         release = threading.Event()
@@ -976,7 +984,7 @@ class TestPersistSessionIdCancellationSafety:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None)
+            tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
 
         release = threading.Event()
@@ -1010,7 +1018,7 @@ class TestChannelStateStrictAndInitial:
     async def _mk(self, tmp_path):
         from engagement_registry import EngagementRegistry
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "engagements.json"), bus=None,
+            tombstone_path=str(tmp_path / "engagements.json"),
         )
         rec = await reg.create(
             kind="executor", role_or_type="configurator",
@@ -1123,7 +1131,7 @@ class TestBeginTurnDelivery:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / name), bus=None)
+            tombstone_path=str(tmp_path / name))
         rec = await reg.create(
             "executor", "configurator", "in_casa", "t", {}, 1)
         return reg, rec
@@ -1149,16 +1157,14 @@ class TestBeginTurnDelivery:
     async def test_reactivation_does_not_restamp_the_user_turn_clock(
             self, tmp_path):
         """A redelivery is not a new user turn. Re-stamping the clock (which
-        is why `update_user_turn` is NOT reused) would push the idle-reminder
-        threshold out by the age of the engagement on every restart."""
+        is why `update_user_turn` is NOT reused) would push the idle sweep's
+        suspend threshold out by the age of the engagement on every
+        restart."""
         reg, rec = await self._mk(tmp_path)
-        await reg.update_last_idle_reminder(rec.id, 4242.0)
         await reg.mark_idle(rec.id)
         before_turn = rec.last_user_turn_ts
-        before_reminder = rec.last_idle_reminder_ts
         reg.begin_turn_delivery(rec.id)
         assert rec.last_user_turn_ts == before_turn
-        assert rec.last_idle_reminder_ts == before_reminder
 
     async def test_active_record_is_admitted_untouched(self, tmp_path):
         reg, rec = await self._mk(tmp_path)

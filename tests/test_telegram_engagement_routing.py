@@ -288,21 +288,6 @@ class TestSlashCommands:
         await ch.handle_update(u)
         ch._finalize_complete_user.assert_awaited_once()
 
-    async def test_slash_silent_sets_observer_flag(self, fake_telegram_bot, engagement_fixture):
-        from channels.telegram import TelegramChannel
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        ch._engagement_registry = engagement_fixture.registry
-        observer = MagicMock()
-        observer.silence = MagicMock()
-        ch._observer = observer
-        rec = engagement_fixture.active_record
-
-        u = _mk_update(chat_id=-1001, text="/silent", thread_id=rec.topic_id)
-        await ch.handle_update(u)
-        observer.silence.assert_called_once_with(rec.id)
-
     async def test_slash_help_answered_by_casa_not_the_agent(
         self, fake_telegram_bot, engagement_fixture,
     ):
@@ -325,8 +310,9 @@ class TestSlashCommands:
         ch._driver_send_user_turn.assert_not_called()
         ch._post_engagement_notice.assert_awaited_once()
         reply = ch._post_engagement_notice.await_args.args[1]
-        for c in ("/cancel", "/complete", "/silent"):
+        for c in ("/cancel", "/complete"):
             assert c in reply
+        assert "/silent" not in reply
 
     async def test_slash_cancel_with_bot_mention_suffix(
         self, fake_telegram_bot, engagement_fixture,
@@ -408,7 +394,7 @@ class TestSlashCommandOriginatorOnly:
 
     async def _record_with_owner(self, tmp_path, owner_user_id: int):
         from engagement_registry import EngagementRegistry
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t",
@@ -489,24 +475,6 @@ class TestSlashCommandOriginatorOnly:
                        thread_id=rec.topic_id, user_id=42)
         await ch.handle_update(u)
         ch._finalize_complete_user.assert_awaited_once()
-
-    async def test_silent_remains_unrestricted(
-        self, fake_telegram_bot, tmp_path,
-    ):
-        """/silent is local to the topic — anyone in it can quiet the observer."""
-        from channels.telegram import TelegramChannel
-        reg, rec = await self._record_with_owner(tmp_path, owner_user_id=42)
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        ch._engagement_registry = reg
-        observer = MagicMock(); observer.silence = MagicMock()
-        ch._observer = observer
-
-        u = _mk_update(chat_id=-1001, text="/silent",
-                       thread_id=rec.topic_id, user_id=999)
-        await ch.handle_update(u)
-        observer.silence.assert_called_once_with(rec.id)
 
     async def test_legacy_engagement_without_user_id_still_works(
         self, fake_telegram_bot, engagement_fixture,
@@ -689,7 +657,7 @@ class TestHandleUpdateConcurrencyRace:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None,
+            tombstone_path=str(tmp_path / "e.json"),
         )
         rec_a = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",

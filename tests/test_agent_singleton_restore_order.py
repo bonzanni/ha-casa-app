@@ -17,7 +17,8 @@ sorting ahead of it silently breaks it.
 This file pins the property by EXHIBITING it rather than by asserting a name:
 the test below creates an `agent.active_*` attribute through
 `monkeypatch.setattr(..., raising=False)`, which is exactly the shape
-`tests/test_topic_cleanup_tool.py`'s module fixture uses for `active_observer`.
+`tests/test_topic_cleanup_tool.py`'s module fixture uses for its pins (then
+`active_observer`).
 Under the wrong order this test's BODY still passes and its TEARDOWN errors —
 measured: with the fixture named `_restore_...`, all 29 tests of that file
 ERRORed in `monkeypatch.undo` with

@@ -318,12 +318,6 @@ formats from older Casa versions and they do not link to anything in
 Telegram. Just tell the user to look at the Engagements supergroup;
 do not construct a topic identifier yourself.
 
-While the engagement is live, you may receive OBSERVER_INTERJECTION
-notifications flagging something the user should know about (errors, idle
-reminders, warnings). Render these succinctly in the main 1:1 chat — one or
-two sentences, no narrative filler. Do not post into the engagement topic
-yourself (that's the engaged agent's space).
-
 On ENGAGEMENT_COMPLETION you receive a structured summary with `text`,
 `artifacts`, and `next_steps`. Relay the text to the user in the main
 chat. If `next_steps` is non-empty, mention the suggested follow-up to

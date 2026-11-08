@@ -195,7 +195,7 @@ def _build_executor(tmp_path, monkeypatch, effects, *, arm):
     from tools import engage_executor, init_tools
 
     tombstone = tmp_path / "engagements.json"
-    registry = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+    registry = EngagementRegistry(tombstone_path=str(tombstone))
     channel = _channel(effects, 42)
     _ledger_spy(monkeypatch, effects)
 
@@ -284,7 +284,7 @@ def _build_delegate(tmp_path, monkeypatch, effects, *, arm):
     from tools import delegate_to_agent, init_tools
 
     tombstone = tmp_path / "engagements.json"
-    registry = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+    registry = EngagementRegistry(tombstone_path=str(tombstone))
     channel = _channel(effects, 555)
     _ledger_spy(monkeypatch, effects)
 

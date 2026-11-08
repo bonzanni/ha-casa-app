@@ -226,7 +226,7 @@ async def test_a_sync_delegations_returned_text_carries_the_echo_after_the_answe
 async def test_a_finished_engagements_notice_carries_the_echo_after_its_text(tmp_path, fresh_ledger):
     from engagement_registry import EngagementRegistry
     from tools import _finalize_engagement, init_tools
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
         task="t", origin={"role": "assistant", "channel": "telegram", "chat_id": 42},

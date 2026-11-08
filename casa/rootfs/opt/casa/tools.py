@@ -1877,20 +1877,6 @@ MEMORY_READ_NOTE = (
     "never said: say you found nothing you can share, never that it didn't "
     "happen."
 )
-#: #581: the note a clearance- and epoch-filtered slice injected into a
-#: prompt carries (the executor lessons block): a slice is bounded whether it
-#: is empty or large, so a topic it does not mention is not a topic Casa has
-#: nothing on.
-READABLE_SLICE_NOTE = (
-    "Use relevant entries normally. This is the bounded view readable at this "
-    "surface, not a complete inventory of Casa's memory. If it does not answer "
-    "the request, do not say Casa has no record of it or does not know it — "
-    "say you have nothing you can share on that here. Do not repeat or "
-    "paraphrase this guidance to the user."
-)
-#: The same note as a line inside an injected prompt block, marked as an
-#: instruction so it cannot read as one of the facts beside it.
-READABLE_SLICE_PROMPT_LINE = f"[memory-use instruction: {READABLE_SLICE_NOTE}]"
 #: #1116: says WHEN to tell, so an outage on a check nobody asked for (a
 #: scheduled briefing) does not become a message.
 _MEMORY_UNAVAILABLE = (
@@ -10064,86 +10050,6 @@ def _duplicate_task_refusal(origin: dict, task_text: str) -> dict | None:
     })
 
 
-async def _fetch_executor_archive(
-    *, role: str, procedural_epoch: str, origin_channel: str,
-    token_budget: int, origin_route: str | None = None,
-    origin_clearance: str | None = None,
-) -> str:
-    """Prior engagements' lessons for an executor launch: the
-    newest ``engagement_summaries`` of *role* stamped with this launch's own
-    *procedural_epoch* (#215, INV-MEM-015), at a tier the originating turn's
-    clearance can read (#336), within *token_budget*, read once, off the
-    event loop. Returns them under a recognizable header, or "" when there
-    are none or memory is unavailable.
-
-    #201 — why collapsing unavailable into empty is CORRECT here: the return
-    value lands in the executor prompt's ``{executor_memory}`` slot, so ""
-    produces no memory block — silence, not a claim of absence. That depends
-    on the prompt template staying silent for the empty case; pinned for the
-    shipped default templates by tests/test_recall_absence_invariant.py.
-
-    A record with no epoch (created before epochs were persisted) matches
-    nothing: a lesson that cannot prove it was learned under the current
-    doctrine is never injected."""
-    from memory import capture
-    from sensitivity import clearance_for_origin
-    store = capture.active_store()
-    if store is None or not store.available or not procedural_epoch:
-        return ""
-    clearance = clearance_for_origin(
-        origin_route, origin_clearance, origin_channel)
-    try:
-        texts = await asyncio.to_thread(
-            _read_executor_archive, store, role, procedural_epoch, clearance,
-            token_budget)
-    except Exception:  # noqa: BLE001 — the launch runs without lessons
-        logger.warning("executor archive not read for %s", role,
-                       exc_info=True)
-        return ""
-    if not texts:
-        return ""
-    # #215: one subordination line — lessons are observations from prior
-    # engagements; the versioned doctrine files prevail wherever they
-    # disagree. Covers the same-epoch case where a lesson is merely wrong.
-    #
-    # #581: the block is a clearance-filtered AND epoch-filtered slice, so an
-    # executor reading it must not conclude that a topic it does not mention
-    # is a topic Casa has nothing on.
-    return (
-        "## Prior engagements (lessons learned)\n"
-        "These are observations from prior engagements. Where they disagree "
-        "with your doctrine files, the doctrine prevails.\n"
-        f"{READABLE_SLICE_PROMPT_LINE}\n"
-        + "\n".join(texts)
-    )
-
-
-def _read_executor_archive(store, role: str, procedural_epoch: str,
-                           clearance: str, token_budget: int) -> list[str]:
-    """The summaries an executor launch is given, oldest first: the newest
-    of *role* at *procedural_epoch* readable at *clearance*, while they fit
-    *token_budget* (four characters a token). Blocking."""
-    from sensitivity import readable_tiers
-    tiers = tuple(readable_tiers(clearance))
-    if not tiers:
-        return []
-    with store.transaction(busy_timeout=1.0) as conn:
-        rows = conn.execute(
-            "SELECT at, text FROM engagement_summaries WHERE role = ? "
-            "AND procedural_epoch = ? AND tier IN "
-            f"({', '.join('?' for _ in tiers)}) ORDER BY at DESC, id DESC",
-            (role, procedural_epoch, *tiers)).fetchall()
-    kept: list[str] = []
-    used = 0
-    for at, text in rows:
-        line = f"- [{at[:10]}] {text}"
-        if used + len(line) // 4 > token_budget:
-            break
-        kept.append(line)
-        used += len(line) // 4
-    return list(reversed(kept))
-
-
 @tool(
     "engage_executor",
     "Start a Tier 3 Executor engagement (configurator, ha-developer, etc.). "
@@ -10577,39 +10483,6 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
                 "message": str(exc),
             })
 
-        # #215: the procedural epoch of THIS launch, digested from the exact
-        # bytes it consumes (the template just read + doctrine dir) —
-        # computed before the
-        # archive fetch (whose filter needs it) and persisted on the record
-        # so finalize stamps the summary with the epoch the engagement
-        # actually ran under, not the finalize-time definition.
-        from executor_epoch import compute_procedural_epoch
-        procedural_epoch = compute_procedural_epoch(
-            defn, prompt_template=prompt_template,
-        )
-        try:
-            await _engagement_registry.set_procedural_epoch(
-                rec.id, procedural_epoch,
-            )
-        except Exception as exc:  # noqa: BLE001 — best-effort, like the
-            # state-emoji publication above: a persistence failure costs the
-            # summary its epoch tag (retained untagged, filtered later),
-            # never the launch.
-            logger.warning("set_procedural_epoch failed: %s", exc)
-
-        # Executor archive: when the executor opts in
-        # (defn.memory.enabled=True, off by default), read prior engagements'
-        # summaries for its type and epoch at the origin's read-clearance.
-        executor_memory_block = ""
-        if defn.memory.enabled:
-            executor_memory_block = await _fetch_executor_archive(
-                role=executor_type, procedural_epoch=procedural_epoch,
-                origin_channel=origin.get("channel", "telegram"),
-                token_budget=defn.memory.token_budget,
-                origin_route=origin.get("_origin_route"),
-                origin_clearance=origin.get("_origin_clearance"),
-            )
-
         # W3/Sol r5-B8: the {task} value reaches options.system_prompt through
         # this ONE seam. When a brief is present it becomes the full rendered
         # markdown block (render_brief_task); no brief → the canonical
@@ -10624,7 +10497,9 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
             .replace("{task}", task_for_prompt)
             .replace("{context}", context_text or "(none)")
             .replace("{world_state_summary}", world_state)
-            .replace("{executor_memory}", executor_memory_block)
+            # The executor archive is gone; an operator's prompt.md under
+            # /config may still carry the slot, so it renders empty.
+            .replace("{executor_memory}", "")
         )
 
         # Driver dispatch — ClaudeAgentOptions + system_prompt.
@@ -12514,7 +12389,6 @@ async def _finalize_engagement_funnel(
         "driver": engagement.driver,
         "role_or_type": engagement.role_or_type,
         "started_at": engagement.started_at,
-        "procedural_epoch": getattr(engagement, "procedural_epoch", "") or "",
         "origin": dict(engagement.origin),
         "task": engagement.task,
         "summary_allowed": summary_allowed,
@@ -12543,17 +12417,6 @@ async def _finalize_engagement_funnel(
                 "finalize engagement %s: topic ledger append failed: %s",
                 engagement.id[:8], exc,
             )
-
-    # L68/L17: drop per-engagement observer bookkeeping now that the
-    # engagement is terminal — keeps _interjection_counts/_silenced from
-    # growing unbounded over the process lifetime.
-    try:
-        import agent as agent_mod
-        _obs = getattr(agent_mod, "active_observer", None)
-        if _obs is not None:
-            _obs.forget(engagement.id)
-    except Exception:  # noqa: BLE001
-        pass
 
     # 2. Post completion message into the topic (if any), flip U3 state, close.
     if engagement.topic_id is not None and _channel_manager is not None:
@@ -12875,8 +12738,7 @@ async def _register_summary_run(engagement: EngagementRecord, *,
 async def _capture_summary(frozen: dict[str, Any], text: str, *,
                            allowed: bool) -> bool:
     """Capture one finalized engagement's summary into memory's
-    ``engagement_summaries``, at the origin's tier and stamped with the
-    record's epoch. ``allowed`` is the summary's own switch (a specialist
+    ``engagement_summaries``, at the origin's tier. ``allowed`` is the summary's own switch (a specialist
     that writes no memory leaves none); the origin channel's write-trust
     gates it. A failure is logged, never raised.
     Returns whether it was kept: a receipt, or nothing to capture."""
@@ -12893,7 +12755,6 @@ async def _capture_summary(frozen: dict[str, Any], text: str, *,
             return True
         item = capture.summary(
             role=frozen["role_or_type"],
-            procedural_epoch=frozen.get("procedural_epoch") or "",
             tier=clearance_for_origin(origin.get("_origin_route"),
                                       origin.get("_origin_clearance"), channel),
             text=text, engagement_id=frozen["id"])
@@ -13635,23 +13496,6 @@ async def query_engager(args: dict) -> dict:
             logger.warning("query_engager: memory could not be read",
                            exc_info=True)
             memory_unavailable = True
-
-    # Publish bus event so observer can see the query
-    if _bus is not None:
-        try:
-            await _bus.notify(BusMessage(
-                type=MessageType.NOTIFICATION,
-                source=engagement.role_or_type, target="observer",
-                content={
-                    "event": "query_engager",
-                    "engagement_id": engagement.id,
-                    "question": question,
-                    "status": "pending",
-                },
-                context={"engagement_id": engagement.id},
-            ))
-        except Exception:
-            pass
 
     if memory_unavailable:
         return _result({

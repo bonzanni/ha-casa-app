@@ -79,7 +79,7 @@
     - tests/test_delegate_to_agent.py
     - tests/test_delegate_to_agent_interactive.py
     - tests/test_engagement_registry.py
-    - tests/test_observer.py
+    - tests/test_idle_sweep.py
     - tests/test_in_casa_inbound_admission.py
   related: [architecture/overview.md, architecture/turn-loop.md, architecture/sdk-client-pool.md, architecture/delegation.md, architecture/engagement-finalization.md, architecture/engagement-completion-gate.md, architecture/engagement-turn-admission.md, architecture/engagement-turn-outcomes.md]
   defines_invariants: []

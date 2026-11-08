@@ -176,10 +176,10 @@ or a specialist's link, `agents`; an edit inside a present specialist its `agent
 `policies/` `policies`; an executor's definition `executors`; a mix of kinds, an unknown path
 or unreadable paths one `full`. Nothing reloads for a plugins-only commit (the plugin tools
 reload and commit their own change), a resident's staged binding under `bindings/` (only a
-restart activates it, INV-CFG-003), or an executor's prompt, observer policy or doctrine
-(read at its next session). Each runs through `tools.py::_run_reload`, as `casa_reload` does
-(INV-CFG-011). Two commits reload twice, and a cancelled task's commits stay live: nothing
-reads the caller's engagement.
+restart activates it, INV-CFG-003), an executor's prompt or doctrine (read at its next
+session), or a leftover `observer.yaml` (read by nothing). Each runs through
+`tools.py::_run_reload`, as `casa_reload` does (INV-CFG-011). Two commits reload twice,
+and a cancelled task's commits stay live: nothing reads the caller's engagement.
 
 What it does not cover: writes no commit sees — a specialist's instance tuple, which
 `persona_apply` and the specialist bundle tools reload themselves, and `plugin-env.conf`,

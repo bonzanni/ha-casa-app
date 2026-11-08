@@ -51,7 +51,7 @@ LOCKS = [
 
 async def _engager(question: str) -> dict:
     from engagement_registry import EngagementRegistry
-    reg = EngagementRegistry(tombstone_path=_engager.tmp + "/e.json", bus=None)
+    reg = EngagementRegistry(tombstone_path=_engager.tmp + "/e.json")
     rec = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
         task="t", topic_id=1,

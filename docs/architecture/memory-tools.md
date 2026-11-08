@@ -110,12 +110,11 @@ gets `search_memory` alone, at its declared clearance.
 
 ## Contracts & invariants
 
-**INV-MEM-010**: No memory read licenses a claim that Casa lacks something: every `search_memory` and `browse_memory_day` result, empty or not, carries one note, the same at every clearance, that what it returns is what is readable here and that finding nothing is not proof; a page with more behind it says so; a store that cannot be read is reported unavailable, never as an empty result; the engager query's synthesizer, the one reader handed an unframed slice, can only answer from it or return `UNKNOWN`, which reaches the executor with do-not-assert-absence guidance; and the executor lessons block carries the bounded-slice line.
+**INV-MEM-010**: No memory read licenses a claim that Casa lacks something: every `search_memory` and `browse_memory_day` result, empty or not, carries one note, the same at every clearance, that what it returns is what is readable here and that finding nothing is not proof; a page with more behind it says so; a store that cannot be read is reported unavailable, never as an empty result; the engager query's synthesizer, the one reader handed an unframed slice, can only answer from it or return `UNKNOWN`, which reaches the executor with do-not-assert-absence guidance.
 
 Enforced in the search and browse tools, which attach `tools.MEMORY_READ_NOTE` to every
-`ok` result and report an unavailable or failing store as `unavailable`; in the engager
-query's unknown and unavailable arms; and in the executor archive, which puts
-`tools.READABLE_SLICE_PROMPT_LINE` under its heading. The unavailable message
+`ok` result and report an unavailable or failing store as `unavailable`; and in the engager
+query's unknown and unavailable arms. The unavailable message
 says when to tell: a person who asked is told memory could not be checked, and an outage
 on a check nobody asked for is no reason to send anything (#1116).
 
@@ -193,7 +192,6 @@ the shared note.
 - `tests/test_correct_memory_tool.py`
 - `tests/test_memory_tools_busy.py`
 - `tests/test_query_engager_tiers.py`
-- `tests/test_recall_readable_slice_framing.py`
 
 **Related**
 - [`architecture/memory-serving.md`](../architecture/memory-serving.md)

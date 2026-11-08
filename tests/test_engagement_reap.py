@@ -45,7 +45,7 @@ def _wire(tmp_path):
     from engagement_registry import EngagementRegistry
     from tools import init_tools
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     telegram = MagicMock()
     telegram.send_to_topic = AsyncMock()
     # #678: the paged rich sender is the one the funnel PREFERS, and a bare

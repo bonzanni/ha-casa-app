@@ -26,7 +26,7 @@ class TestQueryEngager:
         from engagement_registry import EngagementRegistry
         from tools import query_engager, init_tools, engagement_var
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram",
@@ -60,7 +60,7 @@ class TestQueryEngager:
         from engagement_registry import EngagementRegistry
         from tools import query_engager, init_tools, engagement_var
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram",
@@ -89,7 +89,7 @@ class TestQueryEngager:
         from engagement_registry import EngagementRegistry
         from tools import query_engager, init_tools
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         init_tools(
             channel_manager=MagicMock(), bus=MagicMock(),
             specialist_registry=MagicMock(), mcp_registry=MagicMock(),
@@ -207,7 +207,7 @@ class TestSynthesizeAnswerMaxTokens:
         from engagement_registry import EngagementRegistry
         from tools import query_engager, init_tools, engagement_var
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram",

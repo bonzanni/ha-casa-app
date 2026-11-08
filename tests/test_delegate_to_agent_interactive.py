@@ -53,7 +53,7 @@ class TestInteractiveMode:
         from engagement_registry import EngagementRegistry
         from tools import delegate_to_agent, init_tools
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
         tch.engagement_permission_ok = True
         tch.engagement_supergroup_id = -1001
@@ -116,8 +116,7 @@ class TestInteractiveMode:
                         store_root=store)
         monkeypatch.delenv("FIN_REC_KEY", raising=False)
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"),
-                                 bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
         tch.engagement_permission_ok = True
         tch.engagement_supergroup_id = -1001
@@ -162,7 +161,7 @@ class TestInteractiveMode:
         from engagement_registry import EngagementRegistry
         from tools import delegate_to_agent, init_tools
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
         tch.engagement_permission_ok = False
         tch.engagement_supergroup_id = 0
@@ -207,7 +206,7 @@ class TestInteractiveMode:
         from tools import delegate_to_agent, init_tools
 
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None,
+            tombstone_path=str(tmp_path / "e.json"),
         )
         tch = MagicMock()
         tch.engagement_permission_ok = True
@@ -277,7 +276,7 @@ class TestInteractiveMode:
         from engagement_registry import EngagementRegistry
         from tools import delegate_to_agent, init_tools
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
         tch.engagement_permission_ok = True
         tch.engagement_supergroup_id = -1001

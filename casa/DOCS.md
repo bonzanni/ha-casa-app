@@ -813,7 +813,7 @@ the bot wasn't promoted correctly — go back to step 2 and re-check the
 easy to grep for.
 
 In Telegram, inside the engagement supergroup, type `/` in any topic.
-The autocomplete should list `/cancel`, `/complete`, and `/silent`.
+The autocomplete should list `/cancel` and `/complete`.
 These commands are registered via Telegram's `setMyCommands` scoped to
 the supergroup only — they do NOT appear in your 1:1 DM with Ellen.
 
@@ -897,20 +897,16 @@ agent drop what it's doing and check in with you, or prefix a message with
 |---------|--------------|
 | `/cancel` | End this engagement now. Topic is closed, the engaged agent's client is torn down, Ellen is notified in the main chat. |
 | `/complete` | Mark this engagement complete without requesting an agent summary. Same cleanup as `/cancel` but with a neutral status. |
-| `/silent` | Stop the observer from interjecting to Ellen about this engagement. The specialist keeps working in the topic. |
 | `/help` | List the commands that work in this topic. |
 
 The engaged agent can also end the engagement itself by calling the
 `emit_completion` MCP tool — that produces a structured summary
 (text + artifacts + next_steps) which Ellen relays to you.
 
-### Idle reminders
+### Idle engagements
 
-Engagements have no hard timeout. If an engagement sits idle for 3 days
-(specialists) or 7 days (executors, Plan 3+), Ellen will nudge you in the
-main 1:1 chat. Reminder re-fires weekly.
-
-Suspend/resume is automatic — after 24 hours of inactivity Casa tears
+Engagements have no hard timeout, and Casa does not nudge you about one
+that sits idle. Suspend/resume is automatic — after 24 hours of inactivity Casa tears
 down the underlying SDK client to free resources. It resumes seamlessly
 on your next message in the topic (the conversation-session state is
 persisted and reloaded). If two consecutive resume attempts fail (e.g.
@@ -923,7 +919,7 @@ as errored and tells you to start a fresh one.
   Most common: the bot wasn't promoted to admin with **Manage topics**.
   Re-check step 2 of Setup. Also check `telegram_engagement_supergroup_id`
   is not `0` and the app was restarted after the option was set.
-- **`/cancel` / `/complete` / `/silent` don't appear in autocomplete.**
+- **`/cancel` / `/complete` don't appear in autocomplete.**
   They're scoped to the supergroup only. Make sure you're typing `/` in
   a topic inside the engagement supergroup, not your 1:1 DM with Ellen.
   Also: Telegram caches `setMyCommands` client-side — restart the

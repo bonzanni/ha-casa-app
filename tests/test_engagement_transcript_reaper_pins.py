@@ -36,7 +36,7 @@ from test_engagement_transcript_reaper import (  # noqa: F401 — home is a fixt
 
 def _registry(tmp_path: Path) -> EngagementRegistry:
     return EngagementRegistry(
-        tombstone_path=str(tmp_path / "engagements.json"), bus=None)
+        tombstone_path=str(tmp_path / "engagements.json"))
 
 
 async def _record(registry, *, kind="specialist", role="researcher",

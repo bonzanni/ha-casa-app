@@ -68,7 +68,7 @@ async def wired(tmp_path):
     """Real registry + real channel + the real react tool, fake bot."""
     from engagement_registry import EngagementRegistry
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         kind="executor", role_or_type="plugin-developer", driver="in_casa",
         task="t", origin={"role": "assistant", "channel": "telegram"},

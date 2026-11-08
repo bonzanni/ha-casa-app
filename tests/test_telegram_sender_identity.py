@@ -279,7 +279,7 @@ class TestEngagementClearanceClampOnSteering:
     async def _registry(self, tmp_path, creator_clearance):
         from engagement_registry import EngagementRegistry
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None)
+            tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="executor", role_or_type="configurator", driver="claude_code",
             task="t",
@@ -310,7 +310,7 @@ class TestEngagementClearanceClampOnSteering:
         # would silently change their behaviour.
         from engagement_registry import EngagementRegistry
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None)
+            tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="executor", role_or_type="configurator", driver="claude_code",
             task="t", origin={"channel": "telegram"}, topic_id=99)
@@ -322,7 +322,7 @@ class TestEngagementClearanceClampOnSteering:
         path = str(tmp_path / "e.json")
         reg, rec = await self._registry(tmp_path, "private")
         await reg.lower_origin_clearance(rec.id, "public")
-        reloaded = EngagementRegistry(tombstone_path=path, bus=None)
+        reloaded = EngagementRegistry(tombstone_path=path)
         await reloaded.load()
         assert reloaded.get(rec.id).origin["_origin_clearance"] == "public"
 

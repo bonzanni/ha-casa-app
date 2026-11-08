@@ -206,7 +206,7 @@ class WarmTurnFactory:
 
 class _FakeSdkClient:
     """A ``ClaudeSDKClient`` substitute for the non-pooled read loops
-    (delegated specialist runs, ``_synthesize_answer``, the observer), which
+    (delegated specialist runs, ``_synthesize_answer``), which
     use ``async with ClaudeSDKClient(...)`` directly rather than the pool."""
 
     _script: list = []
@@ -548,10 +548,6 @@ def test_every_sdk_read_loop_declares_how_it_handles_an_api_fault():
         # 1) the delegated specialist run and 2) query_engager synthesis —
         #    both read both carriers and raise.
         "tools.py": (2, "raises from the delegated run and from synthesis"),
-        # Suppresses the prose; the JSON parse then fails and the caller's
-        # existing handler suppresses the interjection — the honest outcome
-        # for an observer that could not decide.
-        "observer.py": (1, "suppresses; an undecidable interjection is dropped"),
         # 1) _deliver_turn — suppresses the prose so it is never streamed
         #    into the engagement's topic, and logs the kind. The engagement's
         #    TERMINAL kind is still the generic one — tracked separately, see

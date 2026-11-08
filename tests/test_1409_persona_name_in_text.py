@@ -1,10 +1,7 @@
 """#1409: text a model or the operator reads names the CONFIGURED assistant,
 never the default persona hard-coded."""
 import json
-import sys
-import types
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -31,49 +28,6 @@ def test_no_default_persona_name_in_static_text():
     assert "Ellen" not in tools.emit_completion.description
     assert "Ellen" not in tools.SPECIALIST_OPEN_CONVERSATION_NOTICE_TEMPLATE
     assert "Ellen" not in json.dumps(TelegramChannel.ENGAGEMENT_COMMANDS)
-
-
-@pytest.mark.asyncio
-async def test_observer_prompt_names_the_engagers_persona(monkeypatch):
-    import claude_agent_sdk
-    import sdk_logging
-    import tools
-    from observer import Observer
-
-    monkeypatch.setattr(tools, "_agent_role_map", _role_map(assistant="Marta"))
-    captured = {}
-    fake = types.ModuleType("claude_agent_sdk")
-    fake.ClaudeAgentOptions = claude_agent_sdk.ClaudeAgentOptions
-    fake.TextBlock = claude_agent_sdk.TextBlock
-    fake.AssistantMessage = claude_agent_sdk.AssistantMessage
-
-    class Client:
-        def __init__(self, options):
-            captured["system"] = options.system_prompt
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-        async def query(self, prompt):
-            pass
-
-        async def receive_response(self):
-            if False:
-                yield None
-
-    fake.ClaudeSDKClient = Client
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake)
-    monkeypatch.setattr(sdk_logging, "with_stderr_callback",
-                        lambda options, engagement_id=None: options)
-    obs = Observer(bus=MagicMock(), engagement_registry=MagicMock(),
-                   model_name="haiku")
-    rec = SimpleNamespace(id="e-1", task="t", role_or_type="x",
-                          origin={"role": "assistant"})
-    await obs._decide_interjection("warn", {}, rec)
-    assert captured["system"].startswith("You are Marta's observer."), captured
 
 
 try:

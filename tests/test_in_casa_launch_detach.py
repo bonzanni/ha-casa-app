@@ -744,7 +744,7 @@ async def test_an_inline_abort_reached_after_the_drains_mints_nothing(tmp_path, 
 async def test_the_boot_replay_addresses_a_roleless_record_to_the_configured_assistant(tmp_path):
     import casa_core
     from engagement_registry import EngagementRegistry
-    registry = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    registry = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await registry.create(kind="executor", role_or_type="configurator", driver="in_casa",
                                 topic_id=7, origin={"channel": "telegram", "cid": "c", "chat_id": "1"},
                                 task="t")
@@ -778,7 +778,7 @@ async def test_the_drain_awaits_the_telling_a_just_completed_abort_is_about_to_m
     import tools as tools_mod
     from engagement_registry import EngagementRegistry
     from tools import LaunchAbortResult
-    registry = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    registry = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     monkeypatch.setattr(tools_mod, "_engagement_registry", registry)
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
@@ -1034,7 +1034,7 @@ async def test_the_stop_returns_only_when_no_anchor_has_pending_work(tmp_path, m
     pending."""
     import tools as tools_mod
     from engagement_registry import EngagementRegistry
-    registry = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    registry = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     release = asyncio.Event(); told: list = []
 
     async def _late_telling():

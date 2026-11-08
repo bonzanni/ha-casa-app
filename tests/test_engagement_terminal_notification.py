@@ -114,7 +114,7 @@ async def _build(tmp_path, *, bus=None):
     from tools import init_tools
 
     tombstone = tmp_path / "engagements.json"
-    reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tombstone))
 
     snapshots: list[list[dict]] = []
     _real_write = reg._write_tombstone
@@ -291,7 +291,7 @@ class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
         tombstone.write_text(json.dumps(rows))
 
         reloaded = EngagementRegistry(
-            tombstone_path=str(tombstone), bus=None)
+            tombstone_path=str(tombstone))
         await reloaded.load()
 
         assert reloaded.get(rec.id).terminal_notification_pending is False

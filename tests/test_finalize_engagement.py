@@ -24,7 +24,7 @@ class TestFinalizeEngagement:
         from engagement_registry import EngagementRegistry
         from tools import _finalize_engagement, init_tools
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t",
@@ -70,7 +70,7 @@ class TestFinalizeEngagement:
         from engagement_registry import EngagementRegistry
         from tools import _finalize_engagement, init_tools
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram"},
@@ -109,7 +109,7 @@ class TestFinalizeU3Transition:
         from engagement_registry import EngagementRegistry
         from tools import _finalize_engagement, init_tools
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="executor", role_or_type="configurator",
             driver="in_casa", task="t",
@@ -164,7 +164,7 @@ class TestFinalizeU3Transition:
         from engagement_registry import EngagementRegistry
         from tools import _finalize_engagement, init_tools
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="executor", role_or_type="configurator",
             driver="in_casa", task="t",
@@ -224,7 +224,7 @@ def test_terminal_hook_abort_raises_and_leaves_live():
     async def run(tmp_path="/tmp"):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
-            reg = EngagementRegistry(tombstone_path=td + "/e.json", bus=None)
+            reg = EngagementRegistry(tombstone_path=td + "/e.json")
             rec = await reg.create(
                 kind="executor", role_or_type="configurator",
                 driver="in_casa", task="t",
@@ -317,7 +317,7 @@ async def _build_finalize(tmp_path, *, rich_returns=None, rich_raises=None):
     from engagement_registry import EngagementRegistry
     from tools import init_tools
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa",
         task="t",

@@ -56,13 +56,10 @@ def _fresh_ledger(monkeypatch, tmp_path):
 @pytest.fixture(autouse=True)
 def _quiet_agent_singletons(monkeypatch):
     """The finalize funnel consults agent.* singletons via getattr; pin them
-    to None so no background observer work runs regardless of test order."""
+    to None so no background work runs regardless of test order."""
     import agent as agent_mod
 
-    for attr in (
-        "active_observer",
-        "active_engagement_driver", "active_claude_code_driver",
-    ):
+    for attr in ("active_engagement_driver", "active_claude_code_driver"):
         monkeypatch.setattr(agent_mod, attr, None, raising=False)
 
 
@@ -109,7 +106,7 @@ def _wire(reg, *, channel_manager):
 async def _make_engagement(tmp_path, *, topic_id):
     from engagement_registry import EngagementRegistry
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa",
         task="t", origin={"role": "assistant", "channel": "telegram"},

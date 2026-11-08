@@ -190,7 +190,8 @@ V1: tuple[str, ...] = (
     """,
     # A finalized engagement's summaries. ``source_key`` is the occurrence
     # identity capture mints for each (so a spool drain re-run adds one row);
-    # ``procedural_epoch`` is the executor epoch digest, empty when none.
+    # ``procedural_epoch`` held the retired executor epoch digest; new rows
+    # leave it empty.
     f"""
     CREATE TABLE engagement_summaries (
         id INTEGER PRIMARY KEY,

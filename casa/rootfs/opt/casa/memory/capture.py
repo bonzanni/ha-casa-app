@@ -177,9 +177,11 @@ def event(*, role: str, channel: str, speaker_kind: str, origin_kind: str,
         occurred_at=occurred_at, tz=tz, local_day=local_day, **optional)
 
 
-def summary(*, role: str, procedural_epoch: str, tier: str, text: str,
-            engagement_id: str) -> Summary:
-    """A :class:`Summary` stamped now, under a fresh ``event:`` key."""
+def summary(*, role: str, tier: str, text: str, engagement_id: str,
+            procedural_epoch: str = "") -> Summary:
+    """A :class:`Summary` stamped now, under a fresh ``event:`` key.
+    ``procedural_epoch`` is a legacy column (the executor epoch is retired);
+    Casa leaves it empty, and the field stays so spooled items replay."""
     return Summary(
         source_key=occurrence.event_key(), role=role,
         procedural_epoch=procedural_epoch or "", tier=tier, text=text,

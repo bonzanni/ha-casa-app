@@ -92,7 +92,7 @@ async def test_terminal_sdk_transcripts_are_reaped(
     session a terminal specialist-hosted job names, are gone after the
     periodic passes — at the base all five targets survive."""
     tombstone = tmp_path / "engagements.json"
-    registry = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+    registry = EngagementRegistry(tombstone_path=str(tombstone))
     _specialists(monkeypatch, researcher=SimpleNamespace(
         role="researcher", cwd=specialist_cwd))
 

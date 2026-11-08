@@ -2,8 +2,8 @@
 effort decided for it.
 
 The decision, per call path under the shipped option defaults: the assistant
-on Opus 5.5 at medium; the butler, the concierge, the tier classifier, the
-observer and query_engager's synthesis on Haiku 5.5 at low; the finance
+on Opus 5.5 at medium; the butler, the concierge, the tier classifier and
+query_engager's synthesis on Haiku 5.5 at low; the finance
 specialist on Sonnet 5.5 at medium; the configurator on
 Sonnet 5 at high; the Casa Browser action check on Opus 5.5 at high, fixed; the memory writer on Opus 5.5 at medium. The CLI's own defaults (model and effort) move with every
 CLI release, so a call that leaves either out silently changes behaviour on
@@ -94,7 +94,7 @@ def test_every_options_site_passes_effort_for_its_own_model():
                     or len(effort.args) != 1
                     or ast.unparse(effort.args[0]) != ast.unparse(model)):
                 problems.append(f"{where}: effort is not effort_for(<model>)")
-    assert count == 11, count
+    assert count == 10, count
     assert fixed_seen == set(FIXED_EFFORT), fixed_seen
     assert not problems, problems
 
@@ -126,17 +126,6 @@ async def test_query_engager_synthesis_runs_haiku_at_low(monkeypatch):
     monkeypatch.setenv("SECONDARY_AGENT_MODEL", "opus")  # no longer read
     launches = await _synthesis_launches(monkeypatch)
     assert [(o.model, o.effort) for o in launches] == [("claude-haiku-5-5", "low")]
-
-
-def test_observer_is_wired_to_the_full_haiku_id():
-    """casa_core builds the one Observer with ``resolve_model("haiku")`` —
-    never a bare alias the CLI resolves by its own release."""
-    tree = ast.parse((APP_ROOT / "casa_core.py").read_text(encoding="utf-8"))
-    calls = [n for n in ast.walk(tree)
-             if isinstance(n, ast.Call) and _call_name(n) == "Observer"]
-    assert len(calls) == 1
-    kw = {k.arg: k.value for k in calls[0].keywords}
-    assert ast.unparse(kw["model_name"]) == "resolve_model('haiku')"
 
 
 @pytest.mark.parametrize("executor", ["configurator"])

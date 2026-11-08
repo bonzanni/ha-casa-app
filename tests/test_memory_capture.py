@@ -836,7 +836,7 @@ async def test_a_turn_a_delegation_and_an_engagement_turn_each_capture(
     rec = EngagementRecord(
         id="e" * 32, kind="specialist", role_or_type="finance",
         driver="in_casa", status="active", topic_id=99, started_at=0.0,
-        last_user_turn_ts=0.0, last_idle_reminder_ts=0.0, completed_at=None,
+        last_user_turn_ts=0.0, completed_at=None,
         sdk_session_id=None, task="t",
         origin={"channel": "telegram", "_origin_route": "telegram",
                 "_origin_clearance": "private"})

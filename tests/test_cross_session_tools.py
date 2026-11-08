@@ -269,32 +269,6 @@ async def _synthesis_launches(monkeypatch) -> list:
     return launches
 
 
-async def _observer_launches(monkeypatch) -> list:
-    import claude_agent_sdk
-    import sdk_logging
-    from observer import Observer
-
-    launches = []
-    fake = types.ModuleType("claude_agent_sdk")
-    fake.ClaudeAgentOptions = claude_agent_sdk.ClaudeAgentOptions
-    fake.TextBlock = claude_agent_sdk.TextBlock
-    fake.AssistantMessage = claude_agent_sdk.AssistantMessage
-
-    class Client(_CapturingClient):
-        def __init__(self, options):
-            launches.append(options)
-
-    fake.ClaudeSDKClient = Client
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake)
-    monkeypatch.setattr(sdk_logging, "with_stderr_callback",
-                        lambda options, engagement_id=None: options)
-    obs = Observer(bus=MagicMock(), engagement_registry=MagicMock(),
-                   model_name="haiku")
-    await obs._decide_interjection(
-        "warn", {}, MagicMock(id="e-1", task="t", role_or_type="x"))
-    return launches
-
-
 async def _classifier_launches(monkeypatch) -> list:
     import claude_agent_sdk
     import tier_classifier
@@ -385,7 +359,6 @@ async def _memory_writer_launches(monkeypatch) -> list:
 # empty reply once (#508), so it launches twice and both launches count.
 _ONE_SHOTS = {
     "synthesis": (_synthesis_launches, 1),
-    "observer": (_observer_launches, 1),
     "classifier": (_classifier_launches, 2),
     "admission": (_admission_launches, 1),
     "action_judgement": (_judgement_launches, 1),
@@ -395,13 +368,6 @@ _ONE_SHOTS = {
 
 async def test_query_engager_synthesis_options(monkeypatch):
     launches = await _synthesis_launches(monkeypatch)
-    assert len(launches) == 1
-    _assert_locked(launches[0])
-    _assert_loads_no_settings_source(launches[0])
-
-
-async def test_observer_decider_options(monkeypatch):
-    launches = await _observer_launches(monkeypatch)
     assert len(launches) == 1
     _assert_locked(launches[0])
     _assert_loads_no_settings_source(launches[0])
@@ -486,8 +452,6 @@ EXPECTED_SITES = {
     ("tools.py", "_build_executor_options"):
         "test_specialist_and_executor_options",
     ("tools.py", "_synthesize_answer"): "test_query_engager_synthesis_options",
-    ("observer.py", "Observer._decide_interjection"):
-        "test_observer_decider_options",
     ("tier_classifier.py", "classify_tier"): "test_tier_classifier_options",
     ("run_admission.py", "_ask_model"): "test_run_admission_options",
     ("action_judgement.py", "_ask_check"): "test_action_judgement_options",

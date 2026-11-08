@@ -740,7 +740,7 @@ class TestInteractiveEngagementPermitRelease:
 
         limiter = SpecialistLimiter(max_global=1)
         eng_reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None)
+            tombstone_path=str(tmp_path / "e.json"))
         tm.init_tools(
             channel_manager=None, bus=None,
             specialist_registry=SpecialistRegistry(
@@ -784,7 +784,7 @@ class TestInteractiveEngagementPermitRelease:
         import tools as tm
 
         limiter = SpecialistLimiter(max_global=1)
-        eng_reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        eng_reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
         tch.engagement_permission_ok = True
         tch.engagement_supergroup_id = -1001
@@ -849,7 +849,7 @@ class TestInteractiveEngagementPermitRelease:
         import tools as tm
 
         limiter = SpecialistLimiter(max_global=1)
-        eng_reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        eng_reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
         tch.engagement_permission_ok = True
         tch.engagement_supergroup_id = -1001
@@ -904,7 +904,7 @@ class TestInteractiveEngagementPermitRelease:
 
         limiter = SpecialistLimiter(max_global=1)
         eng_reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None)
+            tombstone_path=str(tmp_path / "e.json"))
         scope = "room-1:finance"
         permit = limiter.try_acquire(scope)
         assert permit is not None
@@ -952,7 +952,7 @@ class TestInteractiveEngagementPermitRelease:
         rec = EngagementRecord(
             id="e1", kind="specialist", role_or_type="finance",
             driver="in_casa", status="active", topic_id=99,
-            started_at=0.0, last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
+            started_at=0.0, last_user_turn_ts=0.0,
             completed_at=None, sdk_session_id=None, origin={}, task="t",
         )
         client = _FakeDriverClient(
@@ -984,7 +984,7 @@ class TestInteractiveEngagementPermitRelease:
         rec = EngagementRecord(
             id="e1", kind="specialist", role_or_type="finance",
             driver="in_casa", status="active", topic_id=99,
-            started_at=0.0, last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
+            started_at=0.0, last_user_turn_ts=0.0,
             completed_at=None, sdk_session_id=None, origin={}, task="t",
         )
         drv._clients["e1"] = _FakeDriverClient(text="x" * 100)
@@ -1011,7 +1011,7 @@ class TestInteractiveEngagementPermitRelease:
         rec = EngagementRecord(
             id="e2", kind="executor", role_or_type="configurator",
             driver="in_casa", status="active", topic_id=99,
-            started_at=0.0, last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
+            started_at=0.0, last_user_turn_ts=0.0,
             completed_at=None, sdk_session_id=None, origin={}, task="t",
         )
         drv._clients["e2"] = _FakeDriverClient(text="y" * 100)

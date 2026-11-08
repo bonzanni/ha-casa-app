@@ -217,7 +217,7 @@ class TestInteractiveSpawn:
 
         lim = AgentSpawnLimiter(max_spawns=3)
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None,
+            tombstone_path=str(tmp_path / "e.json"),
             agent_spawn_limiter=lim)
         tch = _channel(ok=True)
         tch.open_engagement_topic = AsyncMock(return_value=555)
@@ -267,7 +267,7 @@ class TestInteractiveSpawn:
 
         lim = AgentSpawnLimiter(max_spawns=3)
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None,
+            tombstone_path=str(tmp_path / "e.json"),
             agent_spawn_limiter=lim)
         tch = _channel(ok=True)
         tch.open_engagement_topic = AsyncMock(return_value=556)

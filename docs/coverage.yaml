@@ -113,8 +113,6 @@
   doc: architecture/plugin-events.md
 - item: casa/rootfs/opt/casa/event_spool.py
   doc: architecture/plugin-events.md
-- item: casa/rootfs/opt/casa/executor_epoch.py
-  doc: architecture/memory-scoping.md
 - item: casa/rootfs/opt/casa/executor_registry.py
   doc: architecture/agent-taxonomy.md
 - item: casa/rootfs/opt/casa/explanation_store.py
@@ -183,8 +181,6 @@
   doc: architecture/memory-serving.md
 - item: casa/rootfs/opt/casa/memory/writer.py
   doc: architecture/memory-writer.md
-- item: casa/rootfs/opt/casa/observer.py
-  doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/output_boundary.py
   doc: architecture/output-boundary.md
 - item: casa/rootfs/opt/casa/persona_install.py

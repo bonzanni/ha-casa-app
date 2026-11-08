@@ -110,7 +110,7 @@ def _hold_first_topic(runtime):
 async def _reload(runtime, monkeypatch, rec, *, resume):
     """A restart: a fresh registry loaded from the tombstone and, with
     *resume*, the old client ended and the record resumed on the real driver."""
-    restored = EngagementRegistry(tombstone_path=runtime.registry._tombstone_path, bus=None)
+    restored = EngagementRegistry(tombstone_path=runtime.registry._tombstone_path)
     await restored.load()
     monkeypatch.setattr(tools, "_engagement_registry", restored)
     if resume:
@@ -621,7 +621,7 @@ def _live_ledger_jobs(reg):
 
 async def _specialist_ledger_job(tmp_path, limiter, prior):
     """A live specialist-hosted `finance.ledger` job holding its role's permit."""
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "engagements.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "engagements.json"))
     rec = await reg.create("specialist", "finance", "in_casa", "classify",
                            {"job": dict(_LEDGER_JOB),
                             "plugin_job": {"plugin": "finance.ledger"}}, 7)
@@ -812,7 +812,7 @@ async def test_the_installed_plugin_check_also_counts_a_pending_terminal_write(
     only by its `plugin_job` marker, and still refuses."""
     from specialist_limits import SpecialistLimiter
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "engagements.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "engagements.json"))
     rec = await reg.create("specialist", "finance", "in_casa", "classify",
                            {"job": {"name": "oldledger:classify", "title": "Classify"},
                             "plugin_job": {"plugin": "finance.ledger"}}, 7)

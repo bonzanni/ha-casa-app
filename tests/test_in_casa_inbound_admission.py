@@ -93,7 +93,7 @@ async def _mk_driver_rec(tmp_path, client):
     from drivers.in_casa_driver import InCasaDriver
     from engagement_registry import EngagementRegistry
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         "executor", "configurator", "in_casa", "t",
         {"role": "assistant", "channel": "telegram", "user_id": 77},
@@ -246,7 +246,6 @@ async def _mk_channel(tmp_path, fake_telegram_bot, client):
                          engagement_supergroup_id=-1001)
     ch._engagement_registry = reg
     ch._engagement_driver = drv
-    ch._observer = MagicMock()
     ch._driver_advance_high_water = AsyncMock()
     ch._post_engagement_notice = AsyncMock()
     ch._driver_admit_inbound = lambda r, text: drv.admit_inbound(r.id, text)

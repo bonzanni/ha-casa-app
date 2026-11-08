@@ -190,7 +190,7 @@ async def test_each_batch_resets_once_then_starts_with_the_brief(fresh, tmp_path
     assert h.client.prompts[0] == "Acknowledge the job"
     assert persisted == ["launch", "s1", "s2"]
     assert ledger(h.rec.origin) == ["launch", "s1", "s2"]
-    loaded = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"), bus=None)
+    loaded = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"))
     await loaded.load()
     assert ledger(loaded.get(h.rec.id).origin) == ["launch", "s1", "s2"]
     h.assert_terminal("completed", "All rows handled")
@@ -254,7 +254,7 @@ async def test_brief_context_is_the_launch_context_verbatim_across_batches_and_r
         assert TASK in prompt
     # A restart: a new registry loads the record, the client is resumed, and
     # the first turn after it is fresh and carries the same context bytes.
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"))
     await reg.load()
     assert reg.get(h.rec.id).origin["job"]["brief_context"] == CONTEXT
 
@@ -266,7 +266,7 @@ async def test_restart_turn_is_fresh_and_carries_the_launch_context(
     h.rec.origin["job"].update(started=1, reported=True, last_summary="First batch")
     await h.reg.persist_origin(h.rec.id)
     await h.reg.persist_session_id(h.rec.id, "launch")
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"))
     await reg.load()
     h.rec.permit.release()
     h.reg, h.rec = reg, reg.get(h.rec.id)
@@ -312,7 +312,7 @@ async def test_start_job_records_brief_context_only_for_a_fresh_job(runtime, mon
         assert rec.origin['job']['brief_context'] == CONTEXT
     else:
         assert 'brief_context' not in rec.origin['job']
-    loaded = EngagementRegistry(tombstone_path=runtime.registry._tombstone_path, bus=None)
+    loaded = EngagementRegistry(tombstone_path=runtime.registry._tombstone_path)
     await loaded.load()
     assert loaded.get(rec.id).origin['job'] == rec.origin['job']
 
@@ -710,7 +710,7 @@ async def test_a_clearance_downgrade_keeps_the_sid_ledger(fresh, tmp_path):
     assert h.rec.sdk_session_id is None
     assert ledger(h.rec.origin) == expected
     assert _ledger_on_disk(h, tmp_path) == expected
-    loaded = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"), bus=None)
+    loaded = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"))
     await loaded.load()
     assert ledger(loaded.get(h.rec.id).origin) == expected
 

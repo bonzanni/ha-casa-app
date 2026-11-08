@@ -44,7 +44,7 @@ def _mk_update(*, chat_id, text, thread_id=None, user_id=77):
 
 async def _private_engagement(tmp_path):
     from engagement_registry import EngagementRegistry
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa",
         task="secret task", topic_id=555,

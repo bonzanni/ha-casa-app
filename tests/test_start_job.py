@@ -71,7 +71,7 @@ async def runtime(tmp_path, monkeypatch):
                               engagement_supergroup_id=-1001)
     channel._app = SimpleNamespace(bot=bot)
     channel.engagement_permission_ok = True
-    registry = EngagementRegistry(tombstone_path=str(tmp_path / 'eng.json'), bus=bus)
+    registry = EngagementRegistry(tombstone_path=str(tmp_path / 'eng.json'))
     channel._engagement_registry = registry
     driver = InCasaDriver(topic_stream_factory=channel.create_topic_stream,
                           persist_session_id=registry.persist_session_id,

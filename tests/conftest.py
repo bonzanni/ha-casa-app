@@ -415,7 +415,7 @@ def fake_telegram_bot():
 async def engagement_fixture(tmp_path):
     from engagement_registry import EngagementRegistry
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
         task="t", origin={"role": "assistant"}, topic_id=555,
@@ -437,9 +437,10 @@ def _agent_active_singletons_restored():
     ``agent.py`` declares four of them ("written by ``casa_core.main`` so tool
     handlers can reach them without circular imports": ``active_engagement_driver``,
     ``active_executor_registry``, ``active_runtime``,
-    ``active_session_registry``) and ``casa_core.main`` writes a sixth, ``active_observer``, that ``agent.py`` does not declare at
-    all. Every consumer resolves them at CALL time with
-    ``getattr(agent_mod, "<name>", None)`` and gates each use on ``hasattr`` — a
+    ``active_session_registry``); ``casa_core.main`` used to write a sixth,
+    ``active_observer``, that ``agent.py`` never declared. Every consumer
+    resolves them at CALL time with ``getattr(agent_mod, "<name>", None)``
+    and gates each use on ``hasattr`` — a
     predicate a ``MagicMock`` satisfies unconditionally — so a leaked mock does
     not fail loudly: it reaches an ``await`` inside a log-and-continue arm and
     the caller degrades to its fallback text.
@@ -485,7 +486,7 @@ def _agent_active_singletons_restored():
     ``monkeypatch`` instance exists, and torn down after its undo. Measured:
     named ``_restore_...`` it sorted after ``_fresh_reload_locks(monkeypatch)``
     and all 29 tests of ``tests/test_topic_cleanup_tool.py`` — whose module
-    autouse fixture pins ``active_observer`` to ``None`` with ``raising=False``
+    autouse fixture pinned ``active_observer`` to ``None`` with ``raising=False``
     — ERRORed in ``monkeypatch.undo``.
 
     Guarded like ``_fresh_reload_locks`` above, and for a reason that is not
