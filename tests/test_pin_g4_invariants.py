@@ -14,17 +14,18 @@ import reload as reload_mod
 
 
 def test_pin_inv_cfg_001_exactly_eight_scopes_none_reading_options():
-    """INV-CFG-001: exactly eight reload scopes exist, and none rereads the
-    app manifest options.
+    """INV-CFG-001: exactly seven reload scopes exist (the `executors` scope
+    went in v0.351.0; the test keeps its name because the
+    corpus binds it), and none rereads the app manifest options.
 
-    Red case demonstrated: registering a ninth scope
+    Red case demonstrated: registering an eighth scope
     (`register_handler("options", ...)`) fails the set equality.
     """
     import inspect
 
     assert set(reload_mod._HANDLERS) == {
         "triggers", "agent", "policies", "plugin_env",
-        "agents", "executors", "config_sync", "full",
+        "agents", "config_sync", "full",
     }
     # "Rereads the app manifest options" means the Supervisor options store —
     # /data/options.json or a bashio read — not os.environ generally (the

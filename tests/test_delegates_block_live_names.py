@@ -40,7 +40,7 @@ pytestmark = pytest.mark.unit
 _TOOLS_GLOBALS = (
     "_channel_manager", "_bus", "_specialist_registry", "_mcp_registry",
     "_agent_role_map", "_agent_registry", "_trigger_registry",
-    "_engagement_registry", "_executor_registry", "_runtime",
+    "_engagement_registry", "_runtime",
     "_specialist_limiter", "_specialist_telemetry", "_agent_spawn_limiter",
     "_voice_job_route_cap",
 )
@@ -204,7 +204,6 @@ def _make_runtime(tmp_path: Path):
         agents={},
         role_configs={},
         specialist_registry=MagicMock(),
-        executor_registry=MagicMock(),
         engagement_registry=MagicMock(),
         agent_registry=MagicMock(),
         trigger_registry=MagicMock(),

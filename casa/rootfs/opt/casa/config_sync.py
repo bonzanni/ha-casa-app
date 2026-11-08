@@ -48,8 +48,8 @@ SYNC_TREES = ("agents", "policies", "bindings", "specialists")
 # Keyed on (first path component, basename) and deliberately NOT derived from
 # the schemas. Deriving it — "any schema with an array of objects" — would
 # silently enrol future files whose entries are not order-independent. These
-# three are: a trigger's meaning does not depend on its neighbours, and
-# delegates/executors are independent prompt cards. That is a fact about these
+# two are: a trigger's meaning does not depend on its neighbours, and
+# delegates are independent prompt cards. That is a fact about these
 # files, not about their shape, so the table is written out.
 #
 # The tree component is load-bearing for the same reason ``_make_validator`` is
@@ -61,7 +61,6 @@ SYNC_TREES = ("agents", "policies", "bindings", "specialists")
 MERGE_ELIGIBLE: dict[tuple[str, str], tuple[str, str]] = {
     ("agents", "triggers.yaml"):  ("triggers", "name"),
     ("agents", "delegates.yaml"): ("delegates", "agent"),
-    ("agents", "executors.yaml"): ("executors", "executor_type"),
 }
 
 

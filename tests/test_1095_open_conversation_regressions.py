@@ -165,12 +165,12 @@ async def test_a_confirmed_uninstalls_continuations_carry_its_acknowledgement(
     tm = sflow.tm
     delivered: list = []
 
-    def deliverer(channel, eng, *, inbound_reservation=None):
+    def deliverer(channel, chat_id, operator_id, *, what):
         async def deliver(text):
             delivered.append(text)
             return True
         return deliver
-    monkeypatch.setattr(tm, "_engagement_deliverer", deliverer)
+    monkeypatch.setattr(tm, "_configurator_deliverer", deliverer)
     a = await _open(reg)
     out = _out(await tm.specialist_uninstall.handler(
         {"slug": "fin", "acknowledged_conversations": [a.id]}))
@@ -191,7 +191,7 @@ async def test_a_confirmed_uninstalls_continuations_carry_its_acknowledgement(
     await tm._deliver_erasure_outcome(
         "specialist_uninstall", "fin",
         [pe.ErasureOutcome("fin.bank", "1" * 64, "complete", "gone")],
-        deliverer(None, None), f", acknowledged_conversations={[a.id]!r}")
+        deliverer(None, None, None, what="fin"), f", acknowledged_conversations={[a.id]!r}")
     assert f"acknowledged_conversations={[a.id]!r}" in delivered[-1]
 
 

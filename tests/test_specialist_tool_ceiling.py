@@ -51,7 +51,6 @@ def test_allowlisted_grants_load(tmp_path: Path):
 
 @pytest.mark.parametrize("grant", [
     "mcp__casa-framework",                          # server-level = everything
-    "mcp__casa-framework__engage_executor",         # spawn
     "mcp__casa-framework__delegate_to_agent",       # spawn
     "mcp__casa-framework__plugin_add",              # plugin management
     "mcp__casa-framework__config_git_commit",       # config mutation
@@ -136,10 +135,10 @@ def test_violations_helper_names_every_offender():
     offenders = specialist_casa_tool_violations([
         "Read",
         "mcp__casa-framework",
-        "mcp__casa-framework__engage_executor",
+        "mcp__casa-framework__delegate_to_agent",
         "mcp__casa-framework__search_memory",   # allowlisted — not named
         "mcp__plugin_x_x__tool",                # out of scope — not named
     ])
     assert offenders == [
-        "mcp__casa-framework", "mcp__casa-framework__engage_executor",
+        "mcp__casa-framework", "mcp__casa-framework__delegate_to_agent",
     ]

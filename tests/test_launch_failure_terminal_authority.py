@@ -160,88 +160,6 @@ def _cancel_on_create(registry):
     registry.create = _create
 
 
-# --------------------------------------------------------------------------
-# executor arms — six of the ten
-# --------------------------------------------------------------------------
-
-def _executor_def(tmp_path, *, driver="in_casa", prompt_exists=True):
-    from config import ExecutorDefinition
-
-    p = tmp_path / "prompt.md"
-    if prompt_exists:
-        p.write_text("do {task} / {context} / {world_state_summary}")
-    return ExecutorDefinition(
-        role_artifact=STUB_ROLE_ARTIFACT,
-        type="configurator",
-        description="Configurator for the #757 launch-authority red case.",
-        model="claude-sonnet-4-6",
-        driver=driver,
-        enabled=True,
-        tools_allowed=["Read"],
-        tools_disallowed=[],
-        permission_mode="acceptEdits",
-        mcp_server_names=["casa-framework"],
-        idle_reminder_days=7,
-        prompt_template_path=str(p),
-        hooks_path=None,
-        observer_policy_path=None,
-        doctrine_dir="",
-    )
-
-
-def _build_executor(tmp_path, monkeypatch, effects, *, arm):
-    """Real registry + real ``engage_executor.handler``, one failure arm armed."""
-    import agent as agent_mod
-    from engagement_registry import EngagementRegistry
-    from tools import engage_executor, init_tools
-
-    tombstone = tmp_path / "engagements.json"
-    registry = EngagementRegistry(tombstone_path=str(tombstone))
-    channel = _channel(effects, 42)
-    _ledger_spy(monkeypatch, effects)
-
-    defn = _executor_def(
-        tmp_path, prompt_exists=(arm != "prompt_template_missing"))
-
-    exec_reg = MagicMock()
-    exec_reg.get = MagicMock(return_value=defn)
-    exec_reg.list_types = MagicMock(return_value=["configurator"])
-
-    cm = MagicMock()
-    cm.get = MagicMock(return_value=channel)
-
-    driver = MagicMock()
-    driver.start = AsyncMock(side_effect=_start_effect(arm))
-    driver.cancel = AsyncMock()
-
-    monkeypatch.setattr(
-        agent_mod, "active_engagement_driver",
-        None if arm.endswith("no_driver") else driver, raising=False)
-
-    if arm == "plugin_superseded":
-        import tools as tools_mod
-
-        # STABLE across the bind loop (sample → resolve → verify), then BUMPED
-        # once the record exists — which is exactly the manual
-        # `casa_reload(scope="full")` seam this arm exists for: it moves the
-        # snapshot without the plugin-tools lock, so the post-create recheck
-        # is the only thing that catches it.
-        def _gen():
-            return 2 if registry._records else 1
-
-        monkeypatch.setattr(
-            tools_mod.plugin_registry, "snapshot_generation", _gen,
-            raising=False)
-
-    init_tools(
-        channel_manager=cm, bus=MagicMock(),
-        specialist_registry=MagicMock(), mcp_registry=MagicMock(),
-        trigger_registry=MagicMock(), engagement_registry=registry,
-        executor_registry=exec_reg,
-    )
-    return engage_executor, registry, tombstone, channel
-
-
 def _start_effect(arm: str):
     from drivers.driver_protocol import StaleLaunchError
     from error_kinds import ApiErrorTurn, ErrorKind
@@ -254,7 +172,7 @@ def _start_effect(arm: str):
 
 
 # --------------------------------------------------------------------------
-# a specialist-hosted job's engagement launch arms — the other four
+# a specialist-hosted job's engagement launch arms
 # --------------------------------------------------------------------------
 
 def _assistant_cfg():
@@ -323,10 +241,13 @@ def _build_job(tmp_path, monkeypatch, effects, *, arm):
 
 
 # --------------------------------------------------------------------------
-# the ten arms
+# the four arms
 # --------------------------------------------------------------------------
 
-#: (case id, handler family, arm key, the kind the caller MUST still be told)
+#: (case id, handler family, arm key, the kind the caller MUST still be told).
+#: The configurator's six executor arms went with ``engage_executor``: the
+#: configurator is a delegated run now, and the job launch owner is the one
+#: engagement launcher left.
 ARMS = [
     ("job_no_driver",           "job", "no_driver",
      "no_driver"),
@@ -336,18 +257,6 @@ ARMS = [
      "rate_limit"),
     ("job_start_failed",        "job", "start_failed",
      "driver_start_failed"),
-    ("executor_plugin_superseded",   "executor", "plugin_superseded",
-     "plugin_superseded"),
-    ("executor_prompt_missing",      "executor", "prompt_template_missing",
-     "prompt_template_missing"),
-    ("executor_incasa_no_driver",    "executor", "no_driver",
-     "no_driver"),
-    ("executor_incasa_stale",        "executor", "clearance_changed_during_launch",
-     "clearance_changed_during_launch"),
-    ("executor_incasa_api_error",    "executor", "api_error",
-     "rate_limit"),
-    ("executor_incasa_start_failed", "executor", "start_failed",
-     "driver_start_failed"),
 ]
 
 
@@ -355,15 +264,10 @@ async def _run(family, tmp_path, monkeypatch, effects, *, arm, sabotage=None):
     """Drive one launch-failure arm end to end and return its payload."""
     import agent as agent_mod
 
-    if family == "job":
-        handler, registry, tombstone, channel = _build_job(
-            tmp_path, monkeypatch, effects, arm=arm)
-        args = {"agent": "finance", "task": "Plan Q2", "context": ""}
-    else:
-        handler, registry, tombstone, channel = _build_executor(
-            tmp_path, monkeypatch, effects, arm=arm)
-        args = {"executor_type": "configurator", "task": "do it",
-                "context": ""}
+    assert family == "job"
+    handler, registry, tombstone, channel = _build_job(
+        tmp_path, monkeypatch, effects, arm=arm)
+    args = {"agent": "finance", "task": "Plan Q2", "context": ""}
 
     if sabotage is not None:
         sabotage(registry, tombstone)
@@ -445,7 +349,7 @@ class TestOnlyADurableWinMayCloseTheTopic:
     async def test_a_durable_win_still_paints_closes_and_appends_once(
         self, case, family, arm, kind, tmp_path, monkeypatch,
     ):
-        """The regression control for all ten arms.
+        """The regression control for every arm.
 
         Without this, "never abort" passes the two cases above. Exactly one
         paint, one close and one ledger append, and still no notice — the
@@ -488,7 +392,7 @@ class TestTheAuthorityOutlivesItsLauncher:
         reached_ledger = asyncio.Event()
         release_paint = asyncio.Event()
 
-        handler, registry, tombstone, channel = _build_executor(
+        handler, registry, tombstone, channel = _build_job(
             tmp_path, monkeypatch, effects, arm="start_failed")
 
         import topic_ledger
@@ -513,8 +417,7 @@ class TestTheAuthorityOutlivesItsLauncher:
         })
         try:
             caller = asyncio.ensure_future(handler.handler({
-                "executor_type": "configurator", "task": "do it",
-                "context": "",
+                "agent": "finance", "task": "Plan Q2", "context": "",
             }))
             await asyncio.wait_for(reached_ledger.wait(), 10)
 

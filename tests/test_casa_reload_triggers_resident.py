@@ -117,7 +117,7 @@ def _runtime_with(tmp_path: Path, *, trigger_registry):
     from runtime import CasaRuntime
     return CasaRuntime(
         agents={}, role_configs={}, specialist_registry=MagicMock(),
-        executor_registry=MagicMock(), engagement_registry=MagicMock(),
+        engagement_registry=MagicMock(),
         agent_registry=MagicMock(),
         trigger_registry=trigger_registry,
         mcp_registry=MagicMock(),

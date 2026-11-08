@@ -142,7 +142,6 @@ def process_stopping() -> bool:
 # Module-level driver/provider/registry references written by casa_core.main
 # so tool handlers can reach them without circular imports.
 active_engagement_driver = None   # InCasaDriver | None, set by casa_core.main
-active_executor_registry = None   # ExecutorRegistry | None, set by casa_core.main
 active_runtime = None             # CasaRuntime | None, set by casa_core.main (Task C.3)
 active_session_registry = None    # SessionRegistry | None, set by casa_core.main (#411)
 
@@ -366,18 +365,6 @@ def _render_jobs_block(caller_role, delegates, registry, *, live_names=None,
     return "\n".join(lines)
 
 
-def _render_executors_block(executors) -> str:
-    """Render the <executors> system-prompt block (assistant role only)."""
-    if not executors:
-        return ""
-    lines = ["<executors>"]
-    for e in executors:
-        lines.append(f"- {e.executor_type} — {e.purpose}")
-        lines.append(f"  Engage when: {e.when}")
-    lines.append("</executors>")
-    return "\n".join(lines)
-
-
 @dataclass(frozen=True, slots=True)
 class PromptSurface:
     """The STRUCTURAL part of a system prompt, rendered once per turn (#1029).
@@ -420,14 +407,13 @@ class PromptSurface:
     so the operator's sessions keep the digest computed without it."""
     delegates: str
     jobs: str
-    executors: str
     digest: str
     tool_servers: tuple = ()
     reader: str | None = None
 
 
 def _render_prompt_surface(caller_role, delegates, registry, *, live_names=None,
-                           allowed_tools=None, executors=(),
+                           allowed_tools=None,
                            tool_servers=(), reader=None) -> PromptSurface:
     """Render the structural blocks and digest them as one immutable unit."""
     delegates_block = _render_delegates_block(
@@ -437,9 +423,8 @@ def _render_prompt_surface(caller_role, delegates, registry, *, live_names=None,
         caller_role, delegates, registry, live_names=live_names,
         allowed_tools=allowed_tools,
     )
-    executors_block = _render_executors_block(executors)
     tool_servers = tuple(tool_servers)
-    parts = [delegates_block, jobs_block, executors_block]
+    parts = [delegates_block, jobs_block]
     if tool_servers:
         parts.append("\x1e".join(
             f"{name}={surface}" for name, _config, surface in tool_servers
@@ -450,8 +435,7 @@ def _render_prompt_surface(caller_role, delegates, registry, *, live_names=None,
         "\x1f".join(parts).encode("utf-8")
     ).hexdigest()
     return PromptSurface(
-        delegates=delegates_block, jobs=jobs_block,
-        executors=executors_block, digest=digest,
+        delegates=delegates_block, jobs=jobs_block, digest=digest,
         tool_servers=tool_servers, reader=reader,
     )
 
@@ -478,14 +462,14 @@ def _armed_surface_digest() -> str | None:
 
 
 def _carried_prompt_surface(caller_role, delegates, registry, *, live_names=None,
-                            allowed_tools=None, executors=()) -> PromptSurface:
+                            allowed_tools=None) -> PromptSurface:
     """This turn's surface: the carried one if armed, else a fresh render."""
     carried = _prompt_surface_var.get()
     if carried is not None:
         return carried
     return _render_prompt_surface(
         caller_role, delegates, registry, live_names=live_names,
-        allowed_tools=allowed_tools, executors=executors,
+        allowed_tools=allowed_tools,
     )
 
 
@@ -1176,6 +1160,24 @@ class _TurnCapture:
         return await capture.record(item) is not None
 
 
+def _offers_configurator_restart(handle):
+    """A narration turn for a configurator run
+    that needs a Casa restart is followed by the Restart now button, after the
+    resident's own answer — whether or not it relayed the configurator's words."""
+    @functools.wraps(handle)
+    async def _handle(self, msg: BusMessage) -> BusMessage | None:
+        if not (msg.type == MessageType.NOTIFICATION
+                and isinstance(msg.content, DelegationComplete)):
+            return await handle(self, msg)
+        try:
+            return await handle(self, msg)
+        finally:
+            if not process_stopping():
+                import configurator_run
+                await configurator_run.offer_restart(msg.content.delegation_id)
+    return _handle
+
+
 class Agent:
     """A Casa agent backed by the Claude Agent SDK."""
 
@@ -1287,6 +1289,7 @@ class Agent:
     # Public entry point (used as bus handler)
     # ------------------------------------------------------------------
 
+    @_offers_configurator_restart
     async def handle_message(self, msg: BusMessage) -> BusMessage | None:
         """Process an inbound message and return a response BusMessage.
 
@@ -3087,7 +3090,6 @@ class Agent:
                 self.config.role, self.config.delegates, self._agent_registry,
                 live_names=_live_agent_directory(),
                 allowed_tools=self.config.tools.allowed,
-                executors=self.config.executors,
                 tool_servers=self._mcp_registry.role_surfaces(
                     self.config.mcp_server_names, role=self.config.role,
                 ),
@@ -3247,15 +3249,11 @@ class Agent:
             self.config.role, self.config.delegates, self._agent_registry,
             live_names=_live_agent_directory(),
             allowed_tools=self.config.tools.allowed,
-            executors=self.config.executors,
         )
         if surface.delegates:
             system_parts.append("\n" + surface.delegates)
         if surface.jobs:
             system_parts.append("\n" + surface.jobs)
-        # <executors> block — assistant role only (loader enforces this).
-        if surface.executors:
-            system_parts.append("\n" + surface.executors)
         # NOTE: <current_time> is intentionally NOT part of the system prompt —
         # a per-second timestamp in the cached prefix would invalidate Anthropic
         # prompt caching for the whole conversation every turn (see M27). It

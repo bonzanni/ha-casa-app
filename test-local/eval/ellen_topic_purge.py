@@ -4,8 +4,8 @@ resident runs the full purge herself, in the agreed order — a dry run, the
 count in an ``ask_user`` question, and the real purge only after the person
 confirms.
 
-Live-model gate, the shape of ``ellen_handoff_line.py``: the resident's REAL
-compiled text projection plus its ``<executors>`` block, with side-effect-free
+Live-model gate: the resident's REAL
+compiled text projection, with side-effect-free
 FAKES of ``cleanup_engagement_topics`` and ``ask_user`` carrying the
 PRODUCTION descriptions and input schemas and answering in the production
 result shapes. Each case runs TWO turns in one session, as production does:
@@ -65,7 +65,6 @@ def _paths(local: bool) -> tuple[str, str]:
 
 
 def _system_prompt(local: bool, voice: bool = False) -> tuple[str, str]:
-    from agent import _render_executors_block
     from agent_loader import load_agent_from_dir
     from policies import load_policies
     from prompt_compiler import projection_for
@@ -83,9 +82,8 @@ def _system_prompt(local: bool, voice: bool = False) -> tuple[str, str]:
         base = projection_for(bundle, channel="telegram", origin_route="telegram").system_prompt
         channel = ("\n<channel_context>\nchannel: telegram\ntrust: authenticated "
                    "(operator)\n</channel_context>")
-    block = _render_executors_block(getattr(cfg, "executors", None)) or ""
     from config import resolve_model
-    return base + channel + "\n" + block, resolve_model(cfg.model)
+    return base + channel, resolve_model(cfg.model)
 
 
 def _sweep(count: int, dry_run: bool) -> str:

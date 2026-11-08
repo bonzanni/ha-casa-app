@@ -146,17 +146,18 @@ the staged tree before it. The pinning test runs the gate over the same staged t
 declaration that changes afterwards arrives through an upgrade, which re-inspects and
 re-consents.
 
-**INV-SPEC-010**: An install approval that was recorded at tap-commit, but whose requesting engagement is terminal or gone when the operator taps it, does not leave the DM claiming an install: the recorded approval is not revoked by the failed continuation, and the single approval edit is selected from the reconciliation outcome rather than written before it.
+**INV-SPEC-010**: An install approval that was recorded at tap-commit, but whose continuation of the configurator the desk route does not report as taken, does not leave the DM claiming an install: the recorded approval is not revoked by the failed continuation, and the single approval edit is selected from the continuation's report rather than written before it.
 
 The invariant is conditioned on a recorded approval because an approval can legitimately
 fail to record — the persona store refuses a tap whose consent was revoked underneath it —
 and that case takes its own earlier branch, which reconciliation never reaches. When the
 acknowledgement IS written (synchronously, at tap-commit) a failed continuation never
-revokes it, so the recovery the corrective DM names — start a new configurator engagement
-and re-run the install (the update, on an upgrade's keyboard) — short-circuits as `pre_authorized` whenever an ack for that exact
+revokes it, so the recovery the corrective DM names — re-run the install (the update, on an
+upgrade's keyboard) — short-circuits as `pre_authorized` whenever an ack for that exact
 artifact identity is still on file.
 
-The finish hook awaits the reconciliation callback *before* it edits, and the edit it then
+The finish hook awaits the continuation callback (`tools.py::_continue_configurator`, one
+desk turn of the configurator, [`configurator.md`](configurator.md)) *before* it edits, and the edit it then
 makes is one of three. A literal `True` selects the success wording. A `False`, a bare
 `None` and an absent callback select the corrective wording, which states that the install
 was not started automatically. That is the callback's report, not a proof: see the
@@ -167,61 +168,29 @@ unknown rather than known-negative, so it says the automatic start could not be 
 and that re-running is safe either way. The tap-callback never-raise contract is unchanged
 — `except Exception`, so `CancelledError` stays control flow.
 
-What it does not cover, deliberately: `True` is **not a delivery receipt**. It now says one
-thing rather than a weaker one — the seam accepted the continuation and a delivery task exists
-for it — and that remains exactly what the DM claims: that a continuation was *requested*.
+What it does not cover, deliberately: `True` is **not a delivery receipt**, nor a run. It is
+the desk route's report that it handled the continuation, and the route reports `True` once the
+operator was told either way — when it started the desk turn, and when it refused one with its
+own line (the configurator no longer delegable, or its desk busy) — so the success edit, which
+says a continuation was *requested*, can stand beside the desk's refusal line. A desk turn that
+starts can still be refused by the configurator lease, with its busy line (INV-CFG-014). The
+recorded approval makes a re-run safe either way.
 
-That is a narrowing of what this paragraph used to say, and it is worth being precise about
-which half moved. The report used to be a lock-free status sample taken *before* the seam ran,
-and it could be wrong in both directions: a resume failure, a failed context rebuild or the
-shutdown gate abandoned delivery after a positive report, while a transiently terminal status —
-a strict terminal transition whose persistence then rolled back — produced a negative report
-for a turn that WAS handed off. Both of those are gone, because the answer is now the seam's
-own decision rather than a guess about it: the gate the seam runs is what decides, and it
-decides under the topic lock after the context rebuild.
-
-**One direction remains open, and it is not closable from here.** The seam reports its
-hand-off, not the driver's admission: the admission is taken inside the engagement's per-turn
-lock, which is held for a whole turn, and waiting for it would park this tap callback behind
-an unbounded model turn — measured, not supposed, and the reason the seam reports what it
-does. So an ungated terminal writer (a cancellation, the operator's own complete command, the
-stale-engagement reap, a failed or cancelled completion outcome, a direct error mark) can still terminalize between the hand-off and the admission, after this DM
-has said a continuation was requested. **Do not read a positive report as a guarantee that a
-turn ran.** The engagement's own terminal path discloses the un-taken message, and the recorded
-approval makes a re-run safe — but this DM is not where that is learned.
-
-The pre-admission half of the race is separately closed, and not by this report: the tap now
-takes a synchronous ingress reservation at its commit step, so a successful completion can no
-longer commit in the interval between the operator's tap and the continuation's admission. See
-[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md).
-
-**An upgrade is worded as an update, and a Deny asks to tell the engagement.** An upgrade, and a
-settings change at the installed version, go through the same keyboard and bind the same
+**An upgrade is worded as an update; a Deny and an expiry only edit the card.** An upgrade,
+and a settings change at the installed version, go through the same keyboard and bind the same
 approval identity as a fresh install. The keyboard and every edit but the success one name the
 operation an update rather than an install; the identity, the recorded ack and the
 `pre_authorized` short-circuit do not see the difference. A Deny records nothing and edits the
-DM as before, then hands the requesting engagement a continuation through the same seam,
-having taken the same tap-commit reservation, so that the configurator can learn of the refusal
-and conclude instead of waiting for a turn that never comes. That hand-off is a request in
-exactly the sense above, and the Deny edit is not chosen from it: when the seam refuses the
-hand-off, nothing retries it and the engagement is not told.
-
-**An expiry tells the engagement too; a withdrawal or a cancellation does not.** A card nobody
-answers within its ten minutes is edited to say it expired and nothing changed, exactly as
-before, and then — whether or not that edit succeeded — the requesting engagement is handed a
-continuation through the same seam saying the consent expired, nothing changed, and that it
-should conclude as cancelled, telling the operator that asking again brings a fresh card (a new
-run re-inspects the same repository and ref). Without it the configurator stayed open waiting for
-a tap that could no longer come, so the assistant read the change as still running and a retry
-as a duplicate. No reservation rides on it — there was no tap, and a completion that lands first
-only makes the seam refuse the hand-off — and, as for a Deny, it is a request. Whether another
-card the same engagement posted is still waiting is left to the configurator. Each requesting
-engagement gets its own card: the coordinator keys a consent card by the approval identity AND
-the requester, so a second engagement asking for the same artifact no longer shares the first
-one's card and never hears how it settled; the approval identity, the recorded ack and the
-`pre_authorized` short-circuit do not see the requester. A card that already expired is not
-re-issued by any tool — `consent_reprompt` says so ([`plugin-mutation-tools.md`](plugin-mutation-tools.md)) — it comes back only by running the install
-or update again.
+DM; a card nobody answers within its ten minutes is edited to say it expired and nothing
+changed. Neither continues the configurator, whose run ended when it posted the card, and
+nothing is reserved for either: the operator asks again, and a new run re-inspects the same
+repository and ref for a fresh card. Each requesting run gets its own card: the coordinator
+keys a consent card by the approval identity AND the configurator run that asked
+(`tools.py::_configurator_run_key`), so a second run asking for the same artifact does not
+share the first one's card; the approval identity, the recorded ack and the `pre_authorized`
+short-circuit do not see the requester. A card that already expired is not re-issued by any
+tool — `consent_reprompt` says so ([`plugin-mutation-tools.md`](plugin-mutation-tools.md)) —
+it comes back only by running the install or update again.
 
 **INV-SPEC-007**: A failed system-requirement replacement preserves the previously working installation — the replacement is built as a new generation in the plugin's own namespace and published by a single atomic retarget of the launcher link; the serving generation is never moved, and the superseded one is retained until the next install.
 

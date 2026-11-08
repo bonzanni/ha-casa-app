@@ -1,7 +1,7 @@
 """S4 §3/§7: the route — an operator's swipe-reply on a retained specialist
 post becomes one desk turn with the operator's exact words, first in the DM
 handler (ahead of /new) and after the chat's rate decision; every other
-message takes today's path untouched (INV-DESK-001). An approval
+message takes today's path untouched (INV-DESK-005). An approval
 continuation marked for a desk is dispatched to that desk only when the
 approver is the operator and the specialist is still delegable.
 """

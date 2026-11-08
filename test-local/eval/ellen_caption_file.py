@@ -5,8 +5,8 @@ invoice PDF captioned "add it to the invoices" the resident passes the file to
 Finance — a copy shared for a plugin and a delegation to Finance — without
 asking first.
 
-Live-model gate, the shape of ``ellen_delegation_fidelity.py`` and
-``ellen_handoff_line.py``: the resident's REAL compiled text projection plus a
+Live-model gate, the shape of ``ellen_delegation_fidelity.py``:
+the resident's REAL compiled text projection plus a
 ``<delegates>`` block of the shape ``agent._render_prompt_surface`` renders,
 through ONE turn per run. The query is composed by the production
 ``timekeeping.compose_turn_preamble`` with the production

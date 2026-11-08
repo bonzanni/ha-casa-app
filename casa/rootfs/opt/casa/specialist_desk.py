@@ -3,7 +3,8 @@
 A swipe-reply the operator sends on a message Casa posted for a specialist
 (an ``operator_message``/``operator_file``/``operator_link`` post, or a desk
 reply) reaches that specialist as ONE desk turn carrying the operator's exact
-words — never a resident turn (INV-DESK-001). The desk is a bounded dialogue
+words — never a resident turn (INV-DESK-005). The configurator holds a desk
+the same way (:func:`has_desk`). The desk is a bounded dialogue
 log injected into each turn's prompt, not an SDK session resume: the
 specialist runner runs every delegated turn in a fresh CLI session and gives
 the specialist its memory by prompt injection, and the plugin's own store is
@@ -277,19 +278,36 @@ class Desk:
         self._changed.set()
 
     @contextlib.asynccontextmanager
-    async def use(self, reservation: "Reservation | None"):
+    async def use(self, reservation: "Reservation | None", deadline: "float | None" = None):
         """One use of the desk: wait until *reservation* is at the head of
         the queue (an abandoned place ahead is skipped as it is released),
-        take the lock, release the place, yield; the lock is released on
-        every exit."""
-        if reservation is not None:
-            while self._queue and self._queue[0] is not reservation and not reservation.released:
-                self._changed.clear()
-                await self._changed.wait()
-        async with self.lock:
+        take the lock, release the place, yield ``True``; the lock is released
+        on every exit. With *deadline* (a ``time.monotonic`` instant) the wait
+        ends there: the place is released and the use yields ``False``,
+        holding nothing."""
+        async def _admit() -> None:
+            if reservation is not None:
+                while self._queue and self._queue[0] is not reservation and not reservation.released:
+                    self._changed.clear()
+                    await self._changed.wait()
+            await self.lock.acquire()
+
+        if deadline is None:
+            await _admit()
+        else:
+            try:
+                await asyncio.wait_for(_admit(), max(deadline - time.monotonic(), 0.0))
+            except asyncio.TimeoutError:
+                if reservation is not None:
+                    reservation.release()
+                yield False
+                return
+        try:
             if reservation is not None:
                 reservation.release()
-            yield
+            yield True
+        finally:
+            self.lock.release()
 
     # -- the window (every call below runs under ``lock``) ------------------
     def begin_use(self, now: float) -> None:
@@ -498,15 +516,22 @@ def is_specialist(cfg: Any) -> bool:
     return getattr(cfg, "kind", "") == "specialist"
 
 
+def has_desk(cfg: Any) -> bool:
+    """Who holds a desk: a specialist, or the configurator (kind ``executor``,
+    since v0.351.0) — a reply on its post reaches it here, and an
+    approval it raised continues here. A resident holds none."""
+    return getattr(cfg, "kind", "") in ("specialist", "executor")
+
+
 def desk_target_ok(resident_role: str, role: str) -> bool:
-    """The route's live ACL: *role* is a specialist the chat's resident
+    """The route's live ACL: *role* holds a desk (:func:`has_desk`), the chat's resident
     currently declares as a delegate AND is dispatchable now — the same map
     the delegation ACL and the ``<delegates>`` block read."""
     import tools as tools_mod
     if not role or role == resident_role:
         return False
     cfg = tools_mod._agent_role_map.get(role)
-    if cfg is None or not is_specialist(cfg):
+    if cfg is None or not has_desk(cfg):
         return False
     return bool(tools_mod.declares_delegate(resident_role, role))
 
@@ -624,7 +649,7 @@ def desk_for_delegation(origin: dict, cfg: Any, agent_name: str) -> Desk | None:
     chat = strict_positive_id(origin.get("chat_id"))
     if chat is None or not agent_name:
         return None
-    if not is_specialist(cfg):
+    if not has_desk(cfg):
         return None
     return DESKS.get_or_create(chat, agent_name)
 
@@ -645,8 +670,13 @@ async def delegation_use(desk: Desk, *, reservation: "Reservation | None", run: 
     # entry, before any await, from the task's own origin snapshot
     caller = str(tools_mod._snapshot_origin().get("role") or "")
     resident_name = tools_mod._display_name_for_role(caller) if caller else None
+    import configurator_run
+    # a configurator request's whole wait, desk then lease, is one bound
+    deadline = configurator_run.wait_deadline() if configurator_run.is_configurator(cfg) else None
     try:
-        async with desk.use(reservation):
+        async with desk.use(reservation, deadline) as admitted:
+            if not admitted:
+                raise configurator_run.busy_error()
             if desk.faulted:
                 # a delegation queued before the fault must not run
                 raise DeskFaulted(f"{cfg.role!r}'s desk is faulted")
@@ -668,8 +698,10 @@ async def delegation_use(desk: Desk, *, reservation: "Reservation | None", run: 
             runs: list = []
             sink_tok = tools_mod._desk_run_sink.set(runs)
             try:
-                output = await run(cfg, task_text, context, resolution=resolution,
-                                   output_format=output_format)
+                with (configurator_run.waiting_until(deadline) if deadline is not None
+                      else contextlib.nullcontext()):
+                    output = await run(cfg, task_text, context, resolution=resolution,
+                                       output_format=output_format)
             finally:
                 tools_mod._desk_run_sink.reset(sink_tok)
                 desk.hold_unwinding(runs)     # #1197: before the permit and the lock
@@ -832,7 +864,16 @@ async def handle_reply(
                 channel=channel, chat_id=chat_id, user_id=user_id, user_name=user_name,
                 message_id=message_id, resident=resident_role, desk_role=desk_role,
                 text=text or "")
-        async with desk.use(reservation):
+        import configurator_run
+        # a configurator request's whole wait, desk then lease, is one bound
+        deadline = (configurator_run.wait_deadline() if configurator_run.is_configurator(
+            tools_mod._agent_role_map.get(desk_role)) else None)
+        async with desk.use(reservation, deadline) as admitted:
+            if not admitted:
+                busy = str(configurator_run.busy_error())
+                await _tell(f"{busy.removeprefix('the configurator ')}.", notice=True,
+                            receipt=False)
+                return
             if desk.faulted:
                 # S5 §14.8: a reply queued before the fault finds it here,
                 # before the idle reset, the run and any permit
@@ -884,8 +925,10 @@ async def handle_reply(
                 qk = tools_mod._delegation_quota_key.set(turn_id)
                 sk = tools_mod._desk_run_sink.set(runs)
                 try:
-                    run = asyncio.create_task(
-                        tools_mod._run_delegated_agent_bounded(cfg, task_text, context_text))
+                    with (configurator_run.waiting_until(deadline) if deadline is not None
+                          else contextlib.nullcontext()):
+                        run = asyncio.create_task(
+                            tools_mod._run_delegated_agent_bounded(cfg, task_text, context_text))
                 finally:
                     agent_mod.origin_var.reset(ov)
                     tools_mod._delegation_quota_key.reset(qk)
@@ -896,6 +939,11 @@ async def handle_reply(
             except Exception as exc:  # noqa: BLE001 — the class, never the text
                 failure = tools_mod._classify_error(exc).value
                 logger.warning("desk turn for %s failed: %s", desk_role, type(exc).__name__)
+                import configurator_run
+                if isinstance(exc, configurator_run.ConfiguratorBusy):
+                    # nothing of this reply ran: say what is running instead
+                    failure = "configurator_busy"
+                    busy_line = f"{str(exc).removeprefix('the configurator ')}."
             finally:
                 desk.hold_unwinding(runs)     # #1197: before the permit and the lock
                 if permit is not None:
@@ -921,7 +969,9 @@ async def handle_reply(
             trimmed = None
             if failure is None and not strips_to_silence(shown):
                 trimmed = closing_silence_prefix(shown, getattr(output, "reply_messages", ()))
-            if failure is not None:
+            if failure == "configurator_busy":
+                await _tell(busy_line, notice=True, receipt=False)
+            elif failure is not None:
                 what = "your file {name}" if file_name is not None else "your reply"
                 await _tell(f"could not handle {what} ({failure}).", notice=True, receipt=False)
             elif strips_to_silence(shown) or (trimmed is not None and proven and kept is None):
@@ -975,6 +1025,9 @@ async def handle_reply(
             desk.append("specialist", specialist_side, done)
             for line, (_, outcome) in zip(rb.echo_lines(posts), rb.echo_parts(posts)):
                 await _tell(line, raw=True, outcome=outcome)
+            # a restart the configurator asked for: the button follows its answer
+            import configurator_run
+            await configurator_run.offer_restart(turn_id)
     finally:
         reservation.release()                 # idempotent: a cancel while waiting
         channel._release_typing(context, str(chat_id))

@@ -32,13 +32,13 @@ warning. After an uninstall commits, it attempts to close the conversations stil
 
 A specialist's open conversations are its active or idle specialist-kind engagements —
 its background jobs and launches still in flight, and any interactive conversation an older
-install left open ([`engagements.md`](engagements.md)); the configurator's
-own executor engagement and plugin jobs are another kind and never listed. Each of the four
+install left open ([`engagements.md`](engagements.md)); plugin jobs are another kind and
+never listed, and the configurator, a delegated run, has no engagement at all. Each of the four
 tools commits on the call, so the warning can only come first as a pending result:
 `ok: false`, `kind: "open_conversations_unconfirmed"`, the conversations by topic and task,
 and a `warning` the configurator relays verbatim before asking. The operator's yes comes back
 as `acknowledged_conversations`, carried in the call itself: the check reads only the ids
-the call carries and matches no call to the configurator conversation that was warned, so a
+the call carries and matches no call to the configurator run that was warned, so a
 call without the ids is warned again and one carrying them commits, whoever makes it. An id counts only when the registry knows it as
 one of that specialist's engagements, so a made-up list acknowledges nothing; the calls
 Casa's erase-question continuations tell the model to make carry the same ids. For a persona, upgrade or rollback the warning

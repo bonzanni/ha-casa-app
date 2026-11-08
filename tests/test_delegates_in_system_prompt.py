@@ -65,26 +65,3 @@ def test_delegates_block_omitted_when_no_delegates():
     reg = AgentRegistry.build(residents={"butler": cfg}, specialists={})
     from agent import _render_delegates_block
     assert _render_delegates_block(cfg.delegates, reg) == ""
-
-
-def test_executors_block_renders_for_assistant():
-    from agent import _render_executors_block
-    from config import ExecutorEntry
-    cfg = _cfg("assistant", "Ellen")
-    cfg.executors = [
-        ExecutorEntry(
-            executor_type="configurator",
-            purpose="Edit configs.",
-            when="User wants to change configuration.",
-        ),
-    ]
-    block = _render_executors_block(cfg.executors)
-    assert "<executors>" in block
-    assert "configurator" in block
-    assert "Edit configs." in block
-    assert "Engage when: User wants to change configuration." in block
-
-
-def test_executors_block_omitted_when_empty():
-    from agent import _render_executors_block
-    assert _render_executors_block([]) == ""

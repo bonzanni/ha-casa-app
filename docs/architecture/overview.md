@@ -67,12 +67,13 @@ do:
 |---|---|---|
 | **Resident** | long-lived, a fixed set of slots | memory, delegation, channel reach |
 | **Specialist** | ephemeral per delegated invocation, role-keyed | no channel of its own |
-| **Executor** | ephemeral, task-bounded | outside the role registry entirely |
+| **Executor** (the configurator only) | ephemeral per delegated run, shipped with the image | outside the role registry; joins only the delegation role map |
 
 One boundary matters more than the table: **the role registry models residents and
-specialists only.** Its tier type admits those two, and executors load separately. Reasoning
-about executors through the registry is the likeliest way to be wrong here;
-`architecture/agent-taxonomy.md` sets that boundary out.
+specialists only.** Its tier type admits those two; the configurator is loaded from the image
+alone and reached as a delegate ([`configurator.md`](configurator.md)). Reasoning about it
+through the registry is the likeliest way to be wrong here; `architecture/agent-taxonomy.md`
+sets that boundary out.
 
 ## Contracts & invariants
 

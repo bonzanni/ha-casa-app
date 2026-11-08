@@ -1373,8 +1373,7 @@ def _observation_records(caplog, family):
     return [
         r for r in caplog.records
         if r.name == "drivers.in_casa_driver"
-        # #1350: the turn's body (the outer method closes its step log)
-        and r.funcName == "_deliver_turn_body"
+        and r.funcName == "_deliver_turn"
         and family in r.getMessage()
     ]
 
@@ -1506,3 +1505,65 @@ class TestTurnIncompleteObservationIsInfo:
         assert record.levelno == logging.INFO
         assert claim not in record.getMessage()
         assert drv.followup_turn_incomplete(rec.id, token) == expected
+
+
+# ---------------------------------------------------------------------------
+# A specialist's topic streams every text block, across its tool calls
+# ---------------------------------------------------------------------------
+
+async def test_a_specialists_conversation_streams_every_text_block():
+    """The operator chats with a specialist turn by turn: the text written
+    before a tool call and the text written after it both stream, and the
+    finalize posts the whole turn."""
+    from claude_agent_sdk import (
+        ResultMessage, ToolResultBlock, ToolUseBlock, UserMessage,
+    )
+    from channels import DeliveryOutcome
+    from drivers.in_casa_driver import InCasaDriver
+    from engagement_registry import EngagementRecord
+
+    before = "Now let me look that up."
+    after = "Found it. Shall I go ahead?"
+    calls: list[tuple[str, str]] = []
+
+    class _Stream:
+        async def emit(self, text):
+            calls.append(("emit", text))
+
+        async def finalize(self, text):
+            calls.append(("finalize", text))
+            return DeliveryOutcome.DELIVERED
+
+    def _say(*blocks):
+        return AssistantMessage(content=list(blocks), model="m",
+                                parent_tool_use_id=None)
+
+    class _Client:
+        async def query(self, prompt):
+            pass
+
+        async def receive_response(self):
+            yield _say(TextBlock(before))
+            yield _say(ToolUseBlock(id="t1", name="n", input={}))
+            yield UserMessage(content=[
+                ToolResultBlock(tool_use_id="t1", content="ok")])
+            yield _say(TextBlock(after))
+            yield ResultMessage(
+                subtype="success", duration_ms=1, duration_api_ms=1,
+                is_error=False, num_turns=1, session_id="s1",
+                total_cost_usd=0.0, usage={}, result="",
+                stop_reason="end_turn")
+
+    rec = EngagementRecord(
+        id="e1", kind="specialist", role_or_type="finance", driver="in_casa",
+        status="active", topic_id=99, started_at=0.0, last_user_turn_ts=0.0,
+        completed_at=None, sdk_session_id=None, origin={}, task="t")
+    drv = InCasaDriver(topic_stream_factory=lambda tid: _Stream())
+    drv._clients["e1"] = _Client()
+    drv._locks["e1"] = asyncio.Lock()
+    await drv._deliver_turn(rec, "go")
+    assert calls == [
+        ("emit", before),
+        ("emit", f"{before}\n\n{after}"),
+        ("finalize", f"{before}\n\n{after}"),
+    ]

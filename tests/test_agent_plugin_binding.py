@@ -1,10 +1,10 @@
 """§3.3/§3.9: agents consume the resolver snapshot; active binding recorded
 at construction; resolve happens off-loop; specialist options resolve with
-their concrete role; executor options carry plugins but no grants/callback."""
+their concrete role; the configurator (since v0.351.0) is built
+through the specialist builder like any delegate."""
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 import threading
 import time
@@ -249,38 +249,17 @@ def test_specialist_project_scope_no_longer_dropped(tmp_path, monkeypatch):
     assert len(opts.plugins) == 1                 # NOT dropped
 
 
-def _exec_defn():
-    return SimpleNamespace(
-        hooks_path=None, mcp_server_names=[], tools_allowed=["Read"],
-        model="claude-sonnet-4-6", permission_mode="auto", max_turns=None,
-        tools_disallowed=[], driver="claude_code",
-    )
-
-
-def test_executor_options_have_plugins_but_no_grants_no_callback(tmp_path,
-                                                                 monkeypatch):
-    """Pins INV-PLUG-006. Red case demonstrated: appending a plugin-grant tool
-    name to _build_executor_options' allowed_tools fails this test."""
-    import tools as tools_mod
-    store = tmp_path / "store"
-    # #923: attached to a worker ⇒ bundled. INV-PLUG-006's assertion that
-    # executor options DO carry plugins is preserved, never weakened.
-    e = entry("execplug", ["executor:probe-exec"], source_type="bundled")
-    art = mk_artifact(store, "execplug", e["artifact_id"],
-                      mcp_servers={"execplug": {}})
-    reload_snapshot(registry_path=mk_registry(tmp_path, [e]), store_root=store)
-    monkeypatch.setattr(tools_mod, "_mcp_registry", None, raising=False)
-    opts = tools_mod._build_executor_options(_exec_defn(),
-                                             executor_type="probe-exec")
-    assert opts.plugins == [{"type": "local", "path": str(art)}]
-    assert opts.can_use_tool is None              # executors keep the relay
-    assert not any(t.startswith("mcp__plugin_") for t in opts.allowed_tools)
+def _configurator_cfg():
+    import agent_loader
+    return agent_loader.load_configurator()
 
 
 def test_executor_options_prefer_passed_resolution_over_fresh_resolve(
         tmp_path, monkeypatch):
     """Sol F5: one resolve feeds gate + record + options — a passed resolution
-    is used verbatim and resolve_for is NOT called again."""
+    is used verbatim and resolve_for is NOT called again. Since v0.351.0
+    the configurator (kind ``executor``) is built through
+    ``_build_specialist_options``, which keeps that contract."""
     import tools as tools_mod
     rp = SimpleNamespace(name="a", artifact_id="0" * 64, path="/store/a",
                          version="1.0.0", manifest={})
@@ -291,45 +270,10 @@ def test_executor_options_prefer_passed_resolution_over_fresh_resolve(
 
     monkeypatch.setattr(plugin_registry, "resolve_for", boom)
     monkeypatch.setattr(tools_mod, "_mcp_registry", None, raising=False)
-    opts = tools_mod._build_executor_options(
-        _exec_defn(), executor_type="x", resolution=passed)
+    monkeypatch.setattr(tools_mod, "_agent_registry", None, raising=False)
+    opts = tools_mod._build_specialist_options(
+        _configurator_cfg(), resolution=passed)
     assert opts.plugins == [{"type": "local", "path": "/store/a"}]
-
-
-def test_executor_resume_uses_recorded_paths_never_resolves(tmp_path,
-                                                            monkeypatch):
-    import tools as tools_mod
-    from unittest.mock import MagicMock
-    art_dir = tmp_path / "store" / "rec" / ("a" * 64)
-    art_dir.mkdir(parents=True)
-
-    def boom(target):
-        raise AssertionError("resume must NOT re-resolve current assignments")
-
-    monkeypatch.setattr(plugin_registry, "resolve_for", boom)
-    monkeypatch.setattr(tools_mod, "_mcp_registry", None, raising=False)
-    exec_reg = MagicMock()
-    exec_reg.get = MagicMock(return_value=_exec_defn())
-    tools_mod.init_tools(
-        channel_manager=MagicMock(), bus=MagicMock(),
-        specialist_registry=MagicMock(), mcp_registry=None,
-        trigger_registry=MagicMock(), engagement_registry=MagicMock(),
-        executor_registry=exec_reg,
-    )
-    eng = SimpleNamespace(
-        kind="executor", role_or_type="rec",
-        plugin_artifacts=[{"name": "rec", "artifact_id": "a" * 64,
-                           "path": str(art_dir)}])
-    opts = tools_mod.build_engagement_resume_options(eng, "sess-1")
-    assert opts.plugins == [{"type": "local", "path": str(art_dir)}]
-
-    # A missing recorded path fails the resume CLOSED.
-    eng_missing = SimpleNamespace(
-        kind="executor", role_or_type="rec",
-        plugin_artifacts=[{"name": "rec", "artifact_id": "a" * 64,
-                           "path": str(tmp_path / "gone")}])
-    with pytest.raises(Exception):
-        tools_mod.build_engagement_resume_options(eng_missing, "sess-2")
 
 
 # --- §3.10 first-contact notice --------------------------------------------
@@ -407,7 +351,9 @@ def test_delegated_resident_resolves_resident_tier(tmp_path, monkeypatch):
 def test_specialist_and_executor_options_inject_plugins_guard(tmp_path,
                                                               monkeypatch):
     """Sol #5: the /config/plugins + settings.json guard is injected code-side
-    into specialist AND executor options — not just residents."""
+    into specialist AND configurator options — not just residents. The
+    configurator (kind ``executor``) is built through the specialist builder
+    since v0.351.0."""
     import tools as tools_mod
     store = tmp_path / "store"
     e = entry("p", ["specialist:finance"])
@@ -422,8 +368,7 @@ def test_specialist_and_executor_options_inject_plugins_guard(tmp_path,
                    == "Write|Edit|MultiEdit|NotebookEdit|Bash" for m in pre)
 
     assert _has_guard(tools_mod._build_specialist_options(_spec_cfg("finance")))
-    assert _has_guard(tools_mod._build_executor_options(
-        _exec_defn(), executor_type="probe-exec"))
+    assert _has_guard(tools_mod._build_specialist_options(_configurator_cfg()))
 
 
 def test_resolution_from_recorded_builds_and_fails_closed(tmp_path):
@@ -707,35 +652,3 @@ def test_resident_options_load_and_pin_the_declared_vars(tmp_path, monkeypatch):
     asyncio.run(run())
 
 
-def test_executor_resume_pins_declared_vars_from_recorded_paths(
-        tmp_path, monkeypatch):
-    """The resume path attaches recorded artifacts by PATH and builds no
-    resolution, so there is nothing to read the declarations off — without a
-    manifest read there, a resumed executor would get the literal ${VAR} the
-    fresh build carefully avoids."""
-    import tools as tools_mod
-    from unittest.mock import MagicMock
-    art_dir = tmp_path / "store" / "bank-feed" / ("a" * 64)
-    (art_dir / ".claude-plugin").mkdir(parents=True)
-    (art_dir / ".claude-plugin" / "plugin.json").write_text(
-        json.dumps({"name": "bank-feed", "version": "1.0.0",
-                    **_BANKFEED_CASA}), encoding="utf-8")
-    (art_dir / ".mcp.json").write_text(
-        json.dumps({"mcpServers": _BANKFEED_MCP}), encoding="utf-8")
-    for var in ("CASA_PLUGIN_BANKFEED_PRIVATE_KEY", "CASA_PLUGIN_BANKFEED_CP_TOKEN"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(tools_mod, "_mcp_registry", None, raising=False)
-    exec_reg = MagicMock()
-    exec_reg.get = MagicMock(return_value=_exec_defn())
-    tools_mod.init_tools(
-        channel_manager=MagicMock(), bus=MagicMock(),
-        specialist_registry=MagicMock(), mcp_registry=None,
-        trigger_registry=MagicMock(), engagement_registry=MagicMock(),
-        executor_registry=exec_reg,
-    )
-    eng = SimpleNamespace(
-        kind="executor", role_or_type="rec",
-        plugin_artifacts=[{"name": "bank-feed", "artifact_id": "a" * 64,
-                           "path": str(art_dir)}])
-    opts = tools_mod.build_engagement_resume_options(eng, "sess-1")
-    assert opts.env == {"CASA_PLUGIN_BANKFEED_PRIVATE_KEY": ""}

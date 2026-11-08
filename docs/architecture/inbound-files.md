@@ -171,7 +171,7 @@ denied, as does every other path the agent could not read before — the one sep
 admission, a session's own oversized tool results, is INV-MCP-012 in
 [`hook-resolution.md`](hook-resolution.md) and is not part of this grant. An inbox that fails to
 provision grants nothing, and files for that role are refused with the storage line, never
-redirected. The in-casa executor hook build passes no grant at all. The tools are granted where
+redirected. The configurator has no inbox and gets no grant. The tools are granted where
 a specialist's permissions are decided — its allowed list and the framework server's selected
 tools — not through the hook, since a specialist's tool permissions are derived separately from
 its hooks (S6).

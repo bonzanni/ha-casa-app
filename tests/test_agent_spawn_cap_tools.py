@@ -1,6 +1,6 @@
-"""#283 — the agent-spawn cap at the two engagement-creating tool sites.
+"""#283 — the agent-spawn cap at the engagement-creating launch.
 
-Pins: (a) an agent-context ``engage_executor`` at the cap is refused typed
+Pins: (a) an agent-context engagement launch at the cap is refused typed
 and side-effect-free (no Telegram call of any kind); (b) an operator-marked
 turn is exempt (no occupancy taken); (c) a post-acquire failure releases the
 reservation (leak-free); (d) engagement-bound and delegated turns classify
@@ -31,22 +31,6 @@ except ImportError:
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
 
-def _executor_reg(tmp_path):
-    try:
-        from tests.test_engage_executor_tool import _mock_executor_def
-    except ImportError:
-        from test_engage_executor_tool import _mock_executor_def
-    defn = _mock_executor_def()
-    p = tmp_path / "prompt.md"
-    p.write_text("T {task} C {context} W {world_state_summary} "
-                 "M {executor_memory}")
-    defn.prompt_template_path = str(p)
-    reg = MagicMock()
-    reg.get = MagicMock(return_value=defn)
-    reg.list_types = MagicMock(return_value=["configurator"])
-    return reg
-
-
 def _channel(ok=True):
     ch = MagicMock()
     ch.engagement_supergroup_id = -100123 if ok else 0
@@ -59,14 +43,23 @@ def _channel(ok=True):
 
 def _wire(tmp_path, *, limiter, channel_ok=True, engagement_registry=None):
     from tools import init_tools
+    try:
+        from tests.test_delegate_to_agent_interactive import (
+            _make_alex_cfg, _make_assistant_cfg)
+    except ImportError:
+        from test_delegate_to_agent_interactive import (
+            _make_alex_cfg, _make_assistant_cfg)
     ch = _channel(channel_ok)
     cm = MagicMock(); cm.get.return_value = ch
+    specialist_reg = MagicMock()
+    specialist_reg.get.return_value = _make_alex_cfg()
     init_tools(
         channel_manager=cm, bus=MagicMock(),
-        specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+        specialist_registry=specialist_reg, mcp_registry=MagicMock(),
         trigger_registry=MagicMock(),
         engagement_registry=engagement_registry or MagicMock(),
-        executor_registry=_executor_reg(tmp_path),
+        agent_role_map={"assistant": _make_assistant_cfg(),
+                        "finance": _make_alex_cfg()},
         agent_spawn_limiter=limiter,
     )
     return ch
@@ -79,20 +72,20 @@ _AGENT_ORIGIN = {
 
 
 async def _engage(origin):
-    import agent as agent_mod
-    from tools import engage_executor
-    token = agent_mod.origin_var.set(dict(origin))
+    """One engagement launch — a specialist-hosted job through the launch
+    owner, the engagement-creating site left — under *origin*."""
     try:
-        r = await engage_executor.handler({
-            "executor_type": "configurator", "task": "do the thing",
-            "context": "",
-        })
-    finally:
-        agent_mod.origin_var.reset(token)
+        from tests.test_delegate_to_agent_interactive import launch_job
+    except ImportError:
+        from test_delegate_to_agent_interactive import launch_job
+    r = await launch_job("do the thing", origin=dict(origin))
     return json.loads(r["content"][0]["text"])
 
 
 class TestEngageExecutorSpawnCap:
+    """The cap at the engagement launch (the class keeps the name it had when
+    ``engage_executor`` was the launcher under test)."""
+
     async def test_agent_context_at_cap_refused_before_any_telegram_call(
             self, tmp_path):
         lim = AgentSpawnLimiter(max_spawns=1)
@@ -141,13 +134,31 @@ class TestEngageExecutorSpawnCap:
 
     async def test_delegated_turn_is_agent_context_despite_marker(
             self, tmp_path):
+        """A delegated turn reaches the cap only by starting its specialist's
+        OWN job (S7a self-host: no depth gate); the depth it carries still
+        makes it agent context, whatever marker rides the origin."""
+        import agent as agent_mod
+        import tools as tools_mod
+        try:
+            from tests.test_delegate_to_agent_interactive import _job
+        except ImportError:
+            from test_delegate_to_agent_interactive import _job
         lim = AgentSpawnLimiter(max_spawns=1)
         assert lim.try_acquire() is not None
-        _wire(tmp_path, limiter=lim)
-        payload = await _engage({
-            **_AGENT_ORIGIN, "_operator_turn": True, "delegation_depth": 1,
-        })
+        ch = _wire(tmp_path, limiter=lim)
+        origin = {**_AGENT_ORIGIN, "role": "finance", "_operator_turn": True,
+                  "delegation_depth": 1, "plugin_job": {"plugin": "finplan"}}
+        token = agent_mod.origin_var.set(origin)
+        try:
+            r = await tools_mod._launch_interactive_engagement(
+                "finance", "do the thing", "", origin, job=_job(),
+                self_host=True)
+        finally:
+            agent_mod.origin_var.reset(token)
+        payload = json.loads(r["content"][0]["text"])
         assert payload["kind"] == "agent_spawn_cap_exceeded"
+        ch.open_engagement_topic.assert_not_awaited()
+        assert lim.occupancy == 1
 
     async def test_no_limiter_wired_means_cap_off(self, tmp_path):
         _wire(tmp_path, limiter=None, channel_ok=False)

@@ -237,7 +237,7 @@ def _run_delegation_stop(monkeypatch, tmp_path, *, late_pair: bool,
         tools.init_tools(
             channel_manager=cm, bus=bus, specialist_registry=spec,
             mcp_registry=MagicMock(), trigger_registry=MagicMock(),
-            engagement_registry=MagicMock(), executor_registry=MagicMock())
+            engagement_registry=MagicMock())
 
         for did in ids:
             gates[did] = asyncio.Event()

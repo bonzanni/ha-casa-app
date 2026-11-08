@@ -10,8 +10,9 @@ the ledger meets the platform:
   unretryable).
 - The pre-driver abort path (``tools._abort_engagement_topic``) appends
   too (outcome="error") — those topics are today's most orphan-prone.
-- [AR-7] the on-demand ``cleanup_engagement_topics`` tool (configurator and,
-  since #1373, the assistant for both scopes).
+- [AR-7] the on-demand ``cleanup_engagement_topics`` tool (since #1373 the
+  assistant for both scopes; the configurator lost it in
+  v0.351.0).
 - [AR-8] casa_core's periodic topics pass: skips cleanly when telegram is
   unconfigured, sweeps scope="due", and nags the operator for the
   "Delete messages" right at most once per boot.
@@ -345,9 +346,10 @@ async def test_tool_all_terminal_scope(monkeypatch):
     calls = _sweep_recorder(monkeypatch)
     _wire_tool(_telegram_channel())
 
-    # v0.69.12: all_terminal is configurator-only.
+    # all_terminal is the assistant's (#1373; the configurator, v0.69.12's
+    # holder, lost it in v0.351.0).
     import agent as agent_mod
-    tok = agent_mod.origin_var.set({"role": "configurator"})
+    tok = agent_mod.origin_var.set({"role": "assistant"})
     try:
         res = await tools_mod.cleanup_engagement_topics.handler(
             {"scope": "all_terminal"},
@@ -533,7 +535,7 @@ async def test_tool_all_terminal_purges_real_ledger_end_to_end():
     _wire_tool(tch)
 
     import agent as agent_mod
-    tok = agent_mod.origin_var.set({"role": "configurator"})  # all_terminal (v0.69.12)
+    tok = agent_mod.origin_var.set({"role": "assistant"})  # all_terminal (#1373)
     try:
         res = await tools_mod.cleanup_engagement_topics.handler(
             {"scope": "all_terminal"},

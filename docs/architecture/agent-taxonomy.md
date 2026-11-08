@@ -18,9 +18,11 @@ An agent is a **directory of configuration**, not a class: the loader checks a p
 set rather than importing anything. That decision explains most of the shape here.
 
 **The role registry models residents and specialists only** — its tier type admits exactly
-those two, and executors load on their own isolated path. Every registry claim below is
-scoped to that boundary, and reasoning about executors through it is the likeliest mistake
-in this area.
+those two. The one agent of kind `executor`, the configurator, is not a directory under
+`/config` at all: it ships with Casa (`agent_loader.py::load_configurator`) and joins only the
+delegation role map ([`configurator.md`](configurator.md)). Every registry claim below is
+scoped to residents and specialists, and reasoning about the configurator through the
+registry is the likeliest mistake in this area.
 
 Two names exist for a registered agent and they are not interchangeable. The **role** is the
 stable identifier the system routes on. The **name** is what a person sees. Code resolves by
@@ -30,10 +32,12 @@ name-keyed behaviour is not guaranteed to survive one. Routing is what a rename 
 for; not everything is routing.
 
 Failure is **not uniform across tiers**, and that is the second thing to internalise.
-Residents are gating: a bad one stops boot. Specialists and executors load on isolated paths
-whose failures are deliberately boot-non-fatal — one broken specialist does not take the
-system down, and the code says so at the loader's walk. A document claiming "a validation
-failure is a boot failure" would be wrong for two of the three tiers.
+Residents are gating: a bad one stops boot. Specialists load on an isolated path whose
+failures are deliberately boot-non-fatal — one broken specialist does not take the system
+down, and the code says so at the loader's walk. The configurator's load is non-fatal too: it
+is loaded once per process (`tools.py::_configurator_config`), and a failure is logged and
+leaves configuring unavailable, nothing else. A document claiming "a validation failure is a
+boot failure" would be wrong for every agent but a resident.
 
 The registry is the read side: a small, already-validated index answering what tier a role
 belongs to, what it is called, and whether it exists at all.
@@ -72,17 +76,15 @@ already taken, and `tools.sync_agent_role_map` does the same, each logging
 degrades consistently, with the resident kept everywhere — but it degrades silently, visible
 only as those two warnings.
 
-**INV-AGENT-002**: For residents and specialists, `_check_file_set` refuses a missing required file, a forbidden file, or an unrecognised one. The executor path implements its own weaker check and does not refuse unrecognised files.
+**INV-AGENT-002**: For residents and specialists, `_check_file_set` refuses a missing required file, a forbidden file, or an unrecognised one.
 
-All three directions apply only on the first path, and that asymmetry is easy to miss
-because both paths talk about required and forbidden files. `_check_file_set` has a single
-caller; executors are loaded elsewhere and are checked only for missing-required and
-present-forbidden. An unexpected file in an executor directory is not an error.
+The configurator has no directory to check: its prompt and doctrine are read from the image
+and its role artifact is validated as one (`agent_loader.py::load_configurator`).
 
 Where the strict check does run, directories, dotfiles and recognised editor backups are
 skipped, so a stray save does not become a half-parsed agent.
 
-**INV-AGENT-003**: Specialist and executor loading is isolated per agent and boot-non-fatal; resident loading is not.
+**INV-AGENT-003**: Specialist loading is isolated per agent and boot-non-fatal; resident loading is not.
 
 Stated as the asymmetry it is. `validate_config_repo` additionally skips the
 pipeline-managed specialists subtree, so it is not a whole-repository gate either. The
@@ -118,17 +120,12 @@ Nothing resolves a role by touching disk at request time.
 ## Failure behavior
 
 **A required file is missing, forbidden, or unrecognised.** `_check_file_set` raises naming
-the role and the files. For a resident this stops boot; for a specialist or executor the
-isolated path absorbs it and the rest of the system continues — noting that the executor
-check never refuses an unrecognised file in the first place (INV-AGENT-002), so for
-executors only missing-required and forbidden files reach this failure at all.
+the role and the files. For a resident this stops boot; for a specialist the isolated path
+absorbs it and the rest of the system continues.
 
-**An agent is disabled.** `enabled: false` makes a specialist or executor valid but
-inactive — excluded from normal lookup and new launches, not failed and not unknown. A
-disabled *executor's* definition additionally stays available to recovery paths, so an
-engagement that already exists can resume after a restart: disabling an executor is not a
-termination control for in-flight work. Disabling a *specialist* is: when the disable takes
-effect, Casa attempts to close its open conversations and retries a failed close at the next
+**An agent is disabled.** `enabled: false` makes a specialist valid but inactive —
+excluded from normal lookup and new launches, not failed and not unknown. Disabling it is a
+termination control for in-flight work too: when the disable takes effect, Casa attempts to close its open conversations and retries a failed close at the next
 `agents` reload (INV-CFG-013).
 
 **A resident and a specialist claim one role.** Registry construction raises, naming the
@@ -150,16 +147,17 @@ a design change, not a directory.
 **A new specialist** is closer to the simple story: a directory under its tier, the file set
 that tier requires, and a role no resident or specialist already claims.
 
-**A new executor** needs the file set, but is outside the cross-tier uniqueness check, since
-that check spans residents and specialists only. Do not look to the role registry to tell
-you whether an executor's role is free; it does not model executors at all.
+**The configurator's role** is outside the cross-tier uniqueness check, since that check
+spans residents and specialists only; the delegation role map adds it only when no resident
+or specialist already holds the name (`tools.py::build_agent_role_map`, which boot's
+`_build_role_registry` and every reload's `sync_agent_role_map` both build through).
 
 A new tier is larger still: the file set, the loading path and the registry's tier type all
 move together, and the type currently admits two tiers.
 
 A new required artifact means updating the tier's file set and every agent of that tier in
 the same change. What a missing file costs depends on the tier — boot for a resident, that
-one agent for a specialist or executor.
+one agent for a specialist.
 
 **An optional artifact still has to be on the tier's list**, even one no shipped agent
 carries. The file set is an allowlist, and the loader refuses a directory containing anything

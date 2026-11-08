@@ -141,7 +141,7 @@ logged and stop nothing: the credential subset can be re-read from the filesyste
 of use (`credential_modes_ok`), but nothing consumes that check today, so a bearer-credential
 path that cannot be made root-only refuses nothing. An already-open file descriptor is
 unaffected by a mode change, and one report file is deliberately left world-readable because
-a shipped executor recipe reads it. The default mode of the shared atomic writer stays
+a shipped configurator recipe reads it. The default mode of the shared atomic writer stays
 world-readable on purpose, so private call sites opt in explicitly.
 
 ## Failure behavior
@@ -169,7 +169,7 @@ pass deletes the CLI sessions that record names (INV-ENG-027,
 row (INV-ENG-028, `architecture/engagement-transcript-reaping.md`); sessions nothing names are not touched.
 
 An entry also records the digest of the structural prompt surface the session was
-created with — the delegates, background jobs and executors the agent could reach at
+created with — the delegates and background jobs the agent could reach at
 that moment, and for the butler the names of the Home Assistant tools the facade had
 published, and the read clearance the session was created for when it is not `private`. It
 is what lets the next turn tell that a resumed conversation's pinned

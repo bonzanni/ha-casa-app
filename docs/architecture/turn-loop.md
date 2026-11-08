@@ -199,7 +199,7 @@ hold unchanged. The winning attempt's `turn_report["approval_cut"]` — how many
 before a call still waiting on an approval — is read with them on any turn, for the #1252 rule
 there, which also stops the stream at the cut (INV-TURN-009).
 
-**INV-TURN-012**: A conversation is resumed only while the structural surface of its system prompt — the delegates, background jobs and executors the agent can reach; for a role whose Home Assistant tools the facade publishes, the names of the tools last published; and the clearance the turn reads at — still digests to what the session was registered with. A surface that differs, or a session that never recorded one, starts a fresh session with the old one retained. The surface is rendered once per turn and the same render is what the resume decision gates on, what the prompt carries, the published tool servers the session connects with, and what the registration stores.
+**INV-TURN-012**: A conversation is resumed only while the structural surface of its system prompt — the delegates and background jobs the agent can reach; for a role whose Home Assistant tools the facade publishes, the names of the tools last published; and the clearance the turn reads at — still digests to what the session was registered with. A surface that differs, or a session that never recorded one, starts a fresh session with the old one retained. The surface is rendered once per turn and the same render is what the resume decision gates on, what the prompt carries, the published tool servers the session connects with, and what the registration stores.
 
 The CLI pins a session's system prompt when the session is created. Rebuilding options on a
 cold connect therefore does not reach a conversation that is being resumed: the prompt is

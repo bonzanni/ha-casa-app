@@ -896,7 +896,7 @@ class _CloseLedger:
     that dispatch RETURNS (#854).
 
     The fuse is the pool's per-entry drain window, and it used to start at the
-    swap — so a reload that kept working after the swap (the executors load,
+    swap — so a reload that kept working after the swap (the agents sweep,
     the fan-out re-swap, the per-role pass, the paired reconciles, the
     post-lock secret report) spent that window before returning, and the
     force-close of the entry still hosting the caller's own turn landed at
@@ -2352,89 +2352,6 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
 register_handler("agents", reload_agents)
 
 
-async def reload_executors(
-    runtime: Any, *, role: str | None = None,
-) -> list[str]:
-    """v0.37.1 A-1: re-scan executors/ and rebuild ExecutorRegistry.
-
-    Picks up adds, deletes, enabled-flag flips, permission_mode
-    changes, allowed_tools edits, prompt path changes — anything
-    that lives in the executor's `definition.yaml` or its sibling
-    files. ~30ms in steady state.
-
-    Closes the v0.35.0+ contract gap where executor lifecycle
-    changes required a Supervisor restart.
-
-    O-2a (v0.37.9): residents cache their `<executors>` system-prompt
-    block (rendered from ``self.config.executors`` at construct_agent
-    time). Re-running the registry load alone leaves residents holding
-    stale prompts until the next agent-scope reload. Fan out to
-    ``reload_agent`` per resident so the cached state regenerates.
-    Specialists are NOT in the fan-out — they don't see executors.
-    Per-resident sub-actions are surfaced with prefix ``agent:<role>:``
-    so casactl output makes the cascade visible.
-    """
-    try:
-        await asyncio.to_thread(runtime.executor_registry.load)
-    except Exception as exc:  # noqa: BLE001
-        raise ReloadError("load_error", f"executors: {exc}") from exc
-    actions: list[str] = ["rebuild_executor_registry"]
-    # #1096: the registry catches a per-definition failure (and a
-    # collection-level one, publishing an EMPTY registry) and carries on; a
-    # NEW executor that failed leaves no row below, so report both here.
-    if getattr(runtime.executor_registry, "collection_failed", False) is True:
-        _note_failure(None, "executor_collection_load_failed")
-    for t in sorted(getattr(runtime.executor_registry, "failed_types", set()) or set()):
-        _note_failure(t, f"executor_load_failed:{t}")
-
-    for r in list(runtime.role_configs.keys()):
-        try:
-            # #327(d): same serialization as the policies cascade — this
-            # fan-out swaps each role's agent outside the dispatcher's
-            # agent:<role> lock, racing a concurrent scope=agent reload.
-            async with _get_lock(_lock_key("agent", r)):
-                sub = await _HANDLERS["agent"](runtime, role=r)
-            actions += [f"agent:{r}:{a}" for a in sub]
-        except ReloadError as exc:
-            actions.append(f"agent:{r}:failed:{exc.kind}:{exc.message}")
-            # #1096: unattributed — the SHARED executor definitions did not
-            # reach `r`'s cached <executors> block.
-            _note_failure(None, actions[-1])
-        except Exception as exc:  # noqa: BLE001
-            actions.append(f"agent:{r}:failed:{exc}")
-            _note_failure(None, actions[-1])
-
-    # v0.71.1 (Sol Task-5): an executor enable/disable flip changes plugin
-    # authorization (a disabled executor is dormant; enabling it makes its
-    # grant checks real). Refresh plugin-health from the rebuilt registry so
-    # enabling an executor whose assigned plugin lacks a grant surfaces
-    # authorization_missing + a DM now, instead of leaving the report
-    # stale-green until an unrelated regeneration trigger. Never fail the
-    # reload on the refresh.
-    try:
-        import tools as tools_mod
-        # #582 batch (Sol design r1): serialized with §3.9 registry mutations
-        # exactly as the plugin_env scope already is — the report lock orders
-        # the WRITE, not the computation before it, so an unguarded pass can
-        # write a pre-mutation result last and delete the row that mutation
-        # just added. The GUARD, not the raw lock: this handler is reachable
-        # from a `full` cascade whose entry point already holds it.
-        # #706: and now from EVERY dispatched path, because the executors scope
-        # is fenced at the entry too (tools._plugin_tools_reload_guard) — this
-        # acquisition is a same-task re-entrant no-op there. Kept for the direct
-        # callers, which it still serializes; INV-CFG-011.
-        await tools_mod._regenerate_plugin_health_guarded(
-            then=tools_mod._notify_plugin_health_if_possible)
-        actions.append("plugin_health_regenerated")
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("executors reload: plugin-health regen skipped: %s", exc)
-
-    return actions
-
-
-register_handler("executors", reload_executors)
-
-
 async def reload_config_sync(runtime: Any, *, role: str | None = None) -> list[str]:
     """Re-run the default-sync reconciler live (same entry as boot), then
     cascade agents + policies reloads so synced files take effect without a
@@ -2544,19 +2461,11 @@ register_handler("config_sync", reload_config_sync)
 async def reload_full(
     runtime: Any, *, role: str | None = None, include_env: bool = False,
 ) -> list[str]:
-    """Compose policies + agents + executors + per-role agent
-    (+ optional plugin_env).
+    """Compose policies + agents + per-role agent (+ optional plugin_env).
 
     Each sub-handler is invoked DIRECTLY (not via dispatch) so a
     single ``full``-scope lock guards the whole sequence —
     sub-handlers don't re-enter the dispatcher's lock machinery.
-
-    Order rationale: executors before per-role agent reload because
-    ``engage_executor`` lookups go through the ExecutorRegistry; if
-    an operator edits an executor definition and a resident
-    delegate-list at the same time, we want the executor refresh to
-    land first so any subsequent delegate is dispatching against
-    fresh state.
     """
     actions: list[str] = []
 
@@ -2575,10 +2484,6 @@ async def reload_full(
     # Agents — adds/evicts residents + specialists.
     sub = await _HANDLERS["agents"](runtime, role=None)
     actions += [f"agents:{a}" for a in sub]
-
-    # v0.37.1 A-1: executors — picks up definition.yaml edits + adds/deletes.
-    sub = await _HANDLERS["executors"](runtime, role=None)
-    actions += [f"executors:{a}" for a in sub]
 
     # Per-role agent reload.
     for r in list(runtime.role_configs.keys()) + list(
@@ -2605,9 +2510,9 @@ register_handler("full", reload_full)
 # asks for `full`. A kind of None asks for nothing: the plugin tools activate
 # their own registry change (and commit it themselves); `bindings/` holds the
 # residents' staged persona bindings, which only a restart activates — an
-# in-process reload refuses them with `restart_required` (INV-CFG-003); an
-# executor's prompt and doctrine are read when its next session starts; and
-# an `observer.yaml` is no longer read at all.
+# in-process reload refuses them with `restart_required` (INV-CFG-003); and
+# nothing reads `agents/executors/` any more (the configurator ships with Casa
+# since v0.351.0), so a leftover file there reloads nothing.
 # `unit` is the resident's or specialist's directory name. A specialist's link
 # (`agents/specialists/<slug>`) changes on install, upgrade, rollback and
 # uninstall; its content lives in `.<slug>.material-<hex>/`.
@@ -2616,8 +2521,7 @@ _COMMIT_RELOAD_ROWS: "tuple[tuple[re.Pattern[str], str | None], ...]" = tuple(
         (r"plugins/registry\.json", None),
         (r"bindings/.+", None),
         (r"policies/.+", "policies"),
-        (r"agents/executors/[^/]+/(?:prompt\.md|observer\.yaml|doctrine/.+)", None),
-        (r"agents/executors/[^/]+/.+", "executors"),
+        (r"agents/executors/.+", None),
         (r"agents/specialists/(?P<unit>[^./][^/]*)", "specialist_link"),
         (r"agents/specialists/\.(?P<unit>[^/]+?)\.(?:material|link|prior)"
          r"-[0-9a-f]{32}(?:/.+)?", "specialist"),

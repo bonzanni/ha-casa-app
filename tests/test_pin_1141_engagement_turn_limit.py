@@ -4,8 +4,8 @@ its turn limit stays open, and the operator is told once in its topic.
 Specified by Astra (rounds-C13/redcase-specify-astra.md, run 2026-09-30); each
 case fails at the base on an assertion, never an import. Real code under test:
 the real ``InCasaDriver`` turn, the real anchored launch owner
-(``tools._own_in_casa_launch``, reached through ``engage_executor`` or directly
-for a job), and the real follow-up owner (``TelegramChannel._deliver_turn_bg`` →
+(``tools._own_in_casa_launch``, reached through the job launch owner
+``tools._launch_interactive_engagement`` or directly), and the real follow-up owner (``TelegramChannel._deliver_turn_bg`` →
 ``_report_incomplete_turn``) behind the production seam
 (``casa_core.read_followup_incomplete``).
 
@@ -235,14 +235,15 @@ def _not_delivered():
     ("text", True, "text_not_delivered"),
 ], ids=["RC1-tool-only", "RC2-with-text", "RC3-text-not-delivered"])
 async def test_launch(tmp_path, monkeypatch, caplog, shape, refused, reason):
-    """RC1-RC3: a configurator launch turn that stops at its limit stays open;
+    """RC1-RC3: an engagement's launch turn (a job's, through the launch
+    owner) that stops at its limit stays open;
     whatever it posted stands, then ONE line, ONE WARNING, no death, nothing
     to the engager."""
     import agent
     assert agent._LIMIT_CONTINUE == LINE
     probe = _Probe()
     client_cls = _launch_client(shape)
-    engage_executor, registry, channel, driver = _build(
+    launcher, registry, channel, driver = _build(
         tmp_path, monkeypatch, probe, client_cls)
     seen, inner_obs = _spy_launch(
         monkeypatch, driver, probe,
@@ -250,7 +251,7 @@ async def test_launch(tmp_path, monkeypatch, caplog, shape, refused, reason):
     caplog.set_level(logging.DEBUG)
     caplog.clear()
 
-    envelope = await _launch(engage_executor)
+    envelope = await _launch(launcher)
     assert json.loads(envelope["content"][0]["text"]).get("status") == "pending"
     await asyncio.wait_for(_drain_owner(), _WATCHDOG_S)
 
@@ -271,7 +272,7 @@ async def _job_rig(tmp_path, monkeypatch, probe, kind, shape="tool"):
     from claude_agent_sdk import ClaudeAgentOptions
     import background_jobs as jobs
     client_cls = _launch_client(shape)
-    _engage, registry, channel, driver = _build(
+    _launcher, registry, channel, driver = _build(
         tmp_path, monkeypatch, probe, client_cls)
     decl = jobs.JobDecl("sample:work", "sample", "work", "sample:work",
                         "Process rows", None, None, 10)
@@ -508,7 +509,7 @@ async def test_cancel(tmp_path, monkeypatch, caplog, where):
     import tools
     probe = _Probe()
     client_cls = _launch_client("tool")
-    engage_executor, registry, channel, driver = _build(
+    launcher, registry, channel, driver = _build(
         tmp_path, monkeypatch, probe, client_cls)
     seen, _inner = _spy_launch(monkeypatch, driver, probe)
     entered, never = asyncio.Event(), asyncio.Event()
@@ -529,7 +530,7 @@ async def test_cancel(tmp_path, monkeypatch, caplog, where):
     caplog.set_level(logging.DEBUG)
     caplog.clear()
 
-    await _launch(engage_executor)
+    await _launch(launcher)
     owner = next(iter(tools._LAUNCH_TURN_TASKS))
     rec_id = next(iter(registry._records))
     try:
@@ -649,14 +650,14 @@ async def test_telling_fault(tmp_path, fake_telegram_bot, monkeypatch, caplog,
         if owner == "launch":
             probe = _Probe()
             client_cls = _launch_client("tool")
-            engage_executor, registry, channel, driver = _build(
+            launcher, registry, channel, driver = _build(
                 tmp_path, monkeypatch, probe, client_cls)
             seen, _inner = _spy_launch(monkeypatch, driver, probe)
             channel._post_engagement_notice = AsyncMock(side_effect=_notice)
             if step == "read":
                 monkeypatch.setattr(registry, "settled_terminal_state", _state)
             caplog.clear()
-            await _launch(engage_executor)
+            await _launch(launcher)
             await asyncio.wait_for(_drain_owner(), _WATCHDOG_S)
             rec = registry.get(next(iter(registry._records)))
             _assert_launch_live(rec, probe, seen, driver, client_cls)

@@ -81,8 +81,8 @@ None of them declares anything or changes the call's own validation or delivery.
 tracking, and not a defence against a producer that lies in its own declaration — a `safe`
 tool that returns a credential, or a `capability` tool that copies the value into a field
 it did not declare, is the plugin-author trust boundary the protected-tool ruling already
-accepts. Executor sessions are outside it (#923): they carry no approval
-seam, so they have no grant identity to bind a capability to. A resident-hosted
+accepts. No executor session loads a plugin (an `executor:` target is dormant), and the
+configurator's runs are built by the same builder as a delegated specialist's. A resident-hosted
 background-job worker is inside it: it loads exactly its declaring plugin, and its calls
 derive an identity bound to the host resident and that pinned artifact
 ([`background-jobs.md`](background-jobs.md)).
@@ -122,7 +122,7 @@ callback that runs, in order, contract admission, then the authorization decisio
 protected tool, then arming — because the SDK dispatches same-event matchers concurrently
 and arming must follow the authorization decision, never race it.
 
-What it does not cover: executor sessions, and a plugin's setup
+What it does not cover: a plugin's setup
 tool declared absent or `safe`, which passes both hooks unchanged whoever calls it, save
 while its plugin is being erased (INV-PLUG-042) — the
 manual re-run of a setup tool is a documented flow. A setup tool the plugin declares as a
@@ -130,14 +130,6 @@ capability delivering its link is not exempt: it takes the capability path throu
 hooks (INV-PLUG-025), which is what lets a sign-in link produced at setup reach the
 operator the same way a link produced by any other tool does.
 
-The executor exclusion is not a gap in the contract's reach, and the reason changed with
-#923. Nothing an executor loads is the operator's choice: an operator cannot give a worker
-a plugin, so a worker's set is at most the bundled entries an earlier Casa seeded (Casa
-seeds none today). A contract whose purpose is to hold third-party code to a shape has
-nothing third-party to hold there — any bundled plugin that returns a capability was
-Casa's to make conformant before it shipped. If workers
-are opened to operator-installed plugins later, this exclusion is the first thing that
-has to be revisited.
 
 **INV-PLUG-018**: A capability reference is bound to the grant identity of the call that minted it — operator, chat, enforcement role, artifact and engagement, derived by the same code the authorization hook uses — is single-use, expires after one approval-keyboard window plus one grant window, is redeemable only by a parameter a tool of the same plugin declared as consuming that slot, in a session with the same identity, through a per-call ticket the consumer receives in its rewritten input, and is purged with the artifact or role it was minted under and lost on restart.
 
@@ -223,9 +215,6 @@ re-checked on every artifact-verification path; per-plugin degradation, never in
 where it appends the authorization hook, passes the same resolution to both, and puts the
 per-client id in the CLI environment it builds — the hooks and the plugin's servers must
 agree on it by construction, not by lookup.
-
-**Executor sessions** are the open question (#923): they need an approval identity before
-they can carry the contract.
 
 ## Source & test map
 

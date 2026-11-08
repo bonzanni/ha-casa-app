@@ -39,8 +39,8 @@ awaits the append, so every capture a turn made has returned by the time the tur
   topic, as it was admitted (never the preamble Casa prepends after a context rebuild), and
   each message the specialist writes, before it is streamed and whatever the stream's
   output bound clips. The operator's message is captured before the delivery fence, whose
-  window must not await. Executors and plugin jobs are not memory-writing specialists.
-- **A finalized engagement's summary**, and an executor's per-type summary, into the store's
+  window must not await. Plugin jobs are not memory-writing specialists.
+- **A finalized engagement's summary** into the store's
   `engagement_summaries`, awaited by the finalize tail, under the specialist's own memory
   switch (below).
 - **Casa's line that a specialist which keeps no memory posted to the operator's chat**, in
@@ -208,7 +208,7 @@ which its own delegated capture decides. A desk reply is not marked for `correct
 write is detached: a crash between the desk task's start and the write loses his words, never
 the desk turn.
 
-**INV-MEM-044**: When the operator's message in the engagement topic of a specialist that writes no memory is handed to that engagement as a turn, exactly his typed words are captured once as his message — speaker `operator`, origin `operator`, no floor, the chat's resident as its role, his user id as its speaker id, keyed by the topic message with the key a memory-writing specialist's engagement gives it (`memory.occurrence.engagement_key`) — never the specialist's turn; nothing is captured for a specialist that writes memory, an executor's or a plugin job's topic, a command Casa consumes, a sender other than the configured operator or a channel with none, and a capture that fails never fails the turn.
+**INV-MEM-044**: When the operator's message in the engagement topic of a specialist that writes no memory is handed to that engagement as a turn, exactly his typed words are captured once as his message — speaker `operator`, origin `operator`, no floor, the chat's resident as its role, his user id as its speaker id, keyed by the topic message with the key a memory-writing specialist's engagement gives it (`memory.occurrence.engagement_key`) — never the specialist's turn; nothing is captured for a specialist that writes memory, a plugin job's topic, a command Casa consumes, a sender other than the configured operator or a channel with none, and a capture that fails never fails the turn.
 
 The specialist's engagement captures nothing (INV-MEM-032), and the operator's words went down
 with it: what he asked Fido in the topic left no trace for the writer. They are his, so they
@@ -219,7 +219,7 @@ operator's chat and a topic message one in the engagement supergroup, so no mess
 both. Pinned through the real `handle_update` over a real channel and a real `in_casa` driver
 whose specialist answers with a canary, against a real store: the canary reaches no row.
 
-What it does not cover: the operator's messages in an executor's or a plugin job's topic, and
+What it does not cover: the operator's messages in a plugin job's topic, and
 the rest of the engagement: the specialist's turns, its summary, Casa's cards in the topic and
 the taps answering them stay out. A topic message is not marked for `correct_memory`. The write
 is detached: a crash between the hand-off and the write loses his words, never the turn.

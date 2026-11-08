@@ -70,25 +70,33 @@ KNOWN_PLUGIN_SERVERS = frozenset({"context7"})
 REQUIRED_FRAMEWORK_TOOLS: dict[str, set[str]] = {
     "assistant": {
         "search_memory", "browse_memory_day", "open_memory", "correct_memory",
-        "delegate_to_agent", "engage_executor",
+        "delegate_to_agent",
         "send_message", "get_schedule", "send_media",
     },
     "butler": {"search_memory", "browse_memory_day"},  # the voice channel
-    "configurator": {
-        "emit_completion", "config_git_commit",
-        "cleanup_engagement_topics",       # v0.65.0 topic retention: doctrine tells it to
-    },
+    # Since v0.351.0 the configurator is a delegated run — it no
+    # longer completes an engagement or cleans up engagement topics.
+    "configurator": {"config_git_commit"},
 }
+
+CONFIGURATOR_ROLE_YAML = CASA / "defaults" / "roles" / "executor" / "configurator" / "role.yaml"
 
 
 def _agent_configs() -> list[tuple[str, Path, dict]]:
     """(role, config_path, parsed) for every resident/specialist runtime.yaml
-    and every executor definition.yaml."""
+    and the configurator. Since v0.351.0 the configurator ships as
+    an image-owned role artifact; its entry is the RUNTIME config Casa builds
+    from it (``agent_loader.load_configurator``), keyed to that role.yaml."""
+    import agent_loader
+
     out = []
     for rt in sorted(AGENTS.rglob("runtime.yaml")):
         out.append((rt.parent.name, rt, yaml.safe_load(rt.read_text(encoding="utf-8")) or {}))
-    for defn in sorted(AGENTS.glob("executors/*/definition.yaml")):
-        out.append((defn.parent.name, defn, yaml.safe_load(defn.read_text(encoding="utf-8")) or {}))
+    cfg = agent_loader.load_configurator()
+    out.append(("configurator", CONFIGURATOR_ROLE_YAML, {
+        "tools": {"allowed": list(cfg.tools.allowed)},
+        "mcp_server_names": list(cfg.mcp_server_names),
+    }))
     return out
 
 
@@ -143,17 +151,14 @@ def test_configurator_has_no_bash() -> None:
     removed at the capability layer — argv inspection (managed_component_guard)
     can never close the script-writer/unmodeled-binary bypass class, and a
     doctrine audit found no legitimate configurator Bash dependency. Pinned in
-    BOTH the runtime allowlist source (definition.yaml — feeds
-    ClaudeAgentOptions.allowed_tools via agent_loader.load_all_executors ->
-    tools._build_executor_options) and the canonical role artifact
-    (role.yaml)."""
+    BOTH the runtime config (``agent_loader.load_configurator`` — feeds
+    ClaudeAgentOptions.allowed_tools via tools._build_specialist_options since
+    v0.351.0) and the canonical role artifact (role.yaml)."""
     by_role = {r: d for r, _, d in _agent_configs()}
     cfg_allowed = (by_role["configurator"].get("tools") or {}).get("allowed") or []
     assert "Bash" not in cfg_allowed, (
-        "configurator definition.yaml must NOT allow Bash (round-2 W1)")
-    role_yaml = yaml.safe_load(
-        (CASA / "defaults" / "roles" / "executor" / "configurator" /
-         "role.yaml").read_text(encoding="utf-8"))
+        "the configurator's runtime config must NOT allow Bash (round-2 W1)")
+    role_yaml = yaml.safe_load(CONFIGURATOR_ROLE_YAML.read_text(encoding="utf-8"))
     assert "Bash" not in ((role_yaml.get("tools") or {}).get("allowed") or []), (
         "configurator role.yaml must NOT allow Bash (round-2 W1)")
 
@@ -183,7 +188,8 @@ def test_cleanup_engagement_topics_grant_limited_to_configurator_and_assistant()
     every other caller (see test_topic_cleanup_tool
     test_tool_all_terminal_refused_for_other_roles). The grant must never
     spread beyond {configurator, assistant} — any other role is a security
-    regression, not a convenience."""
+    regression, not a convenience. Since v0.351.0 the
+    configurator no longer holds it (it opens no topics)."""
     granted = {
         role
         for role, _path, data in _agent_configs()
@@ -197,7 +203,8 @@ def test_cleanup_engagement_topics_grant_limited_to_configurator_and_assistant()
         f"and the assistant; currently granted to: "
         f"{sorted(granted)}"
     )
-    assert "configurator" in granted
+    # Positive control: the predicate still sees a real grant.
+    assert "assistant" in granted
 
 
 def test_trigger_prompt_files_and_channels_resolve() -> None:
@@ -244,23 +251,18 @@ def test_every_option_has_a_translation() -> None:
 def test_configurator_definition_and_role_allowlists_are_identical() -> None:
     """#210 true root cause (round-3, both reviewers): Plan 2 added the
     specialist/persona pipeline tools to role.yaml only, but the RUNTIME
-    allowlist flows from definition.yaml (load_all_executors ->
-    ClaudeAgentOptions.allowed_tools) — so the live configurator had no
-    typed install path and hand-authored instead. The two lists must never
-    drift again."""
-    defn = yaml.safe_load(
-        (AGENTS / "executors/configurator/definition.yaml")
-        .read_text(encoding="utf-8"))
-    role = yaml.safe_load(
-        (Path(__file__).resolve().parents[1]
-         / "casa/rootfs/opt/casa/defaults/roles/executor/configurator"
-         / "role.yaml").read_text(encoding="utf-8"))
-    defn_allowed = set((defn.get("tools") or {}).get("allowed") or [])
+    allowlist flowed from a separate definition.yaml — so the live
+    configurator had no typed install path and hand-authored instead. Since
+    v0.351.0 the runtime config is built from role.yaml itself
+    (``agent_loader.load_configurator``); the two must never drift again."""
+    import agent_loader
+    runtime_allowed = set(agent_loader.load_configurator().tools.allowed)
+    role = yaml.safe_load(CONFIGURATOR_ROLE_YAML.read_text(encoding="utf-8"))
     role_allowed = set((role.get("tools") or {}).get("allowed") or [])
-    assert defn_allowed == role_allowed, (
+    assert runtime_allowed == role_allowed, (
         "configurator tool allowlists drifted:\n"
-        f"  only in definition.yaml: {sorted(defn_allowed - role_allowed)}\n"
-        f"  only in role.yaml:       {sorted(role_allowed - defn_allowed)}")
+        f"  only in the runtime config: {sorted(runtime_allowed - role_allowed)}\n"
+        f"  only in role.yaml:          {sorted(role_allowed - runtime_allowed)}")
 
 
 def test_assistant_denies_bash():
@@ -302,15 +304,15 @@ def test_assistant_denies_bash():
 # base. Its job is to keep holding.
 # ---------------------------------------------------------------------------
 
-GRANT_CARRIERS = ("runtime.yaml", "definition.yaml", "role.yaml")
+# Since v0.351.0 no executor definition.yaml ships any more — the
+# configurator's grants are its role.yaml's.
+GRANT_CARRIERS = ("runtime.yaml", "role.yaml")
 
 
 def _grant_carrier_paths() -> dict[str, list[Path]]:
     defaults = CASA / "defaults"
     return {
         "runtime": sorted((defaults / "agents").glob("*/runtime.yaml")),
-        "definition": sorted(
-            (defaults / "agents" / "executors").glob("*/definition.yaml")),
         "role": sorted((defaults / "roles").glob("*/*/role.yaml")),
     }
 
@@ -318,7 +320,6 @@ def _grant_carrier_paths() -> dict[str, list[Path]]:
 def test_no_shipped_agent_artifact_selects_wipe_memory():
     by_kind = _grant_carrier_paths()
     assert len(by_kind["runtime"]) == 3
-    assert len(by_kind["definition"]) == 1
     assert len(by_kind["role"]) == 4
 
     carriers: list[tuple[Path, frozenset[str]]] = []
@@ -329,7 +330,7 @@ def test_no_shipped_agent_artifact_selects_wipe_memory():
             if isinstance(allowed, str):
                 allowed = allowed.split()
             carriers.append((path, frozenset(str(x) for x in allowed)))
-    assert len(carriers) == 8
+    assert len(carriers) == 7
 
     selected_wipes = [
         (path, tool.name)
@@ -342,6 +343,6 @@ def test_no_shipped_agent_artifact_selects_wipe_memory():
     # The predicate itself is exercised, so a selector that stopped selecting
     # anything cannot make the assertion above pass for the wrong reason.
     assert sum(len(tools.select_casa_tools(allowed)) > 0
-               for _path, allowed in carriers) == 8
+               for _path, allowed in carriers) == 7
     assert len(tools.select_casa_tools(
         frozenset({"mcp__casa-framework__wipe_memory"}))) == 1

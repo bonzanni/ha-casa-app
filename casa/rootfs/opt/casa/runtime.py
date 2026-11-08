@@ -21,7 +21,6 @@ if TYPE_CHECKING:
     from channels import ChannelManager
     from config import AgentConfig
     from engagement_registry import EngagementRegistry
-    from executor_registry import ExecutorRegistry
     from job_registry import JobRegistry
     from mcp_registry import McpServerRegistry
     from personality_binding import BindingRecord
@@ -62,7 +61,6 @@ class CasaRuntime:
 
     # Registries (replaced by reloads; never mutated in place)
     specialist_registry: "SpecialistRegistry"
-    executor_registry: "ExecutorRegistry"
     engagement_registry: "EngagementRegistry"
     agent_registry: "AgentRegistry"
     trigger_registry: "TriggerRegistry"

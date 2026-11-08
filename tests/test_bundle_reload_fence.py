@@ -1,7 +1,8 @@
 """Task 10 checkpoint 2f: ENTRY-POINT-ONLY manual-reload fencing (spec §3.1).
 
 Every caller that dispatches a reload whose handler reaches the plugin-tools
-lock — scopes `full`, `executors` and `plugin_env` (#706), the set
+lock — scopes `full` and `plugin_env` (#706; `executors` until v0.351.0
+removed that scope), the set
 `tools._PLUGIN_TOOLS_RELOAD_SCOPES` — must acquire _PLUGIN_TOOLS_LOCK BEFORE
 dispatch, establishing the global lock order `_PLUGIN_TOOLS_LOCK -> reload
 writer/reader lock` for every path (INV-CFG-011). The two entry points are the
@@ -77,8 +78,8 @@ async def test_non_full_reload_is_not_fenced(monkeypatch) -> None:
     #706: "non-full" was the right rationale only while `full` was the whole
     fenced set. `agent` is unfenced because its handler never touches the
     plugin lock, which is also why a bundle op holding that lock can complete
-    its own dispatch("agent"); `executors` and `plugin_env` ARE fenced now, and
-    their rows are asserted separately below.
+    its own dispatch("agent"); `plugin_env` IS fenced now, and its rows are
+    asserted separately below.
     """
     import reload as reload_mod
     import tools as tools_mod
@@ -233,18 +234,18 @@ async def test_plugin_tools_guard_excludes_other_tasks() -> None:
 
 # ---------------------------------------------------------------------------
 # #706 red cases (INV-CFG-011). `dispatch` takes the reload RW lock for EVERY
-# scope and holds it across the handler (reload.py:293-305), and the executors
-# and plugin_env handlers acquire the plugin-tools guard UNDERNEATH that held
-# reader (reload.py:1868, reload.py:1486) — the reverse of the documented
+# scope and holds it across the handler (reload.py:293-305), and the
+# plugin_env handler (and, until v0.351.0 removed that scope,
+# the executors handler) acquires the plugin-tools guard UNDERNEATH that held
+# reader (reload.py:1486) — the reverse of the documented
 # `_PLUGIN_TOOLS_LOCK -> reload RW lock` order the entry points state and, at
 # the base commit, fence for scope="full" ONLY. Two tasks, no timeout on
 # either side:
 #
-#   Y: entry point, scope="executors"/"plugin_env" -> RW reader -> wants guard
+#   Y: entry point, scope="plugin_env"            -> RW reader -> wants guard
 #   X: holds the guard                             -> dispatch("full") -> wants RW writer
 #
-# ONE red case per inversion site, so removing either scope from the fenced
-# set identifies the uncovered half; a combined mutation would not.
+# One red case per entry point for the remaining inversion site.
 # ---------------------------------------------------------------------------
 
 
@@ -373,35 +374,6 @@ async def _race_against_a_guard_holder(monkeypatch, *, runtime, start_y):
 
 
 
-def _arm_executors(monkeypatch):
-    """Seams for the REAL reload_executors: registry load is a no-op, no shared
-    hook-policy map, no residents to fan out to. The guard site at
-    reload.py:1868 stays real."""
-    import agent as agent_mod
-    import reload as reload_mod
-
-    monkeypatch.setitem(
-        reload_mod._HANDLERS, "executors", reload_mod.reload_executors)
-
-    class _Registry:
-        failed_types: set = set()
-
-        def load(self):
-            return None
-
-        def definition_any(self, name):
-            return None
-
-    class _Runtime:
-        executor_registry = _Registry()
-        executor_cc_policies = None
-        role_configs: dict = {}
-
-    runtime = _Runtime()
-    monkeypatch.setattr(agent_mod, "active_runtime", runtime, raising=False)
-    return runtime
-
-
 def _arm_plugin_env(monkeypatch):
     """Seams for the REAL reload_plugin_env: empty env conf, no resolver cache
     drop, no remembered keys. The guard site at reload.py:1486 stays real."""
@@ -447,48 +419,9 @@ async def _assert_no_inversion(monkeypatch, *, runtime, start_y,
     assert [e for e in got["errors"] if e is not None] == []
 
 
-# Both inversion sites x both production entry points. The scope x entry matrix
-# is covered because a fix is free to fence one scope in one entry point and the
-# other scope in the other: each of the two diagonal pairs alone leaves a live
-# deadlock behind two green tests (acceptor's clause (a), round 1).
-
-
-async def test_casa_reload_executors_takes_plugin_guard_before_rw_reader(
-    monkeypatch, _fresh_reload_locks, configurator_origin,
-) -> None:
-    """#706 — the `executors` inversion site (reload.py:1868) through the
-    casa_reload tool entry point, with the REAL reload_executors.
-
-    Pre-fix signature: the guard attempt is made with ONE reader held, X's
-    writer sits queued behind it, and neither task completes.
-    """
-    import plugin_setup_episodes
-
-    regen, notify = _count_health_io(monkeypatch)
-    full_calls = _counted_full_handler(monkeypatch)
-    monkeypatch.setattr(plugin_setup_episodes, "kick", lambda: None)
-    runtime = _arm_executors(monkeypatch)
-
-    await _assert_no_inversion(
-        monkeypatch, runtime=runtime, start_y=_via_casa_reload("executors"),
-        full_calls=full_calls, regen=regen, notify=notify)
-
-
-async def test_admin_reload_executors_takes_plugin_guard_before_rw_reader(
-    monkeypatch, _fresh_reload_locks,
-) -> None:
-    """#706 — the same `executors` site through POST /admin/reload."""
-    import plugin_setup_episodes
-
-    regen, notify = _count_health_io(monkeypatch)
-    full_calls = _counted_full_handler(monkeypatch)
-    monkeypatch.setattr(plugin_setup_episodes, "kick", lambda: None)
-    runtime = _arm_executors(monkeypatch)
-
-    await _assert_no_inversion(
-        monkeypatch, runtime=runtime,
-        start_y=_via_admin_route("executors", runtime),
-        full_calls=full_calls, regen=regen, notify=notify)
+# The inversion site through both production entry points: a fix is free to
+# fence the scope in one entry point and not the other (acceptor's clause (a),
+# round 1).
 
 
 async def test_admin_reload_plugin_env_takes_plugin_guard_before_rw_reader(
@@ -534,15 +467,15 @@ async def test_casa_reload_plugin_env_takes_plugin_guard_before_rw_reader(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("scope", ["full", "executors", "plugin_env"])
+@pytest.mark.parametrize("scope", ["full", "plugin_env"])
 @pytest.mark.parametrize("entry", ["tool", "route"])
 async def test_every_fenced_scope_waits_at_every_entry_point(
     monkeypatch, configurator_origin, entry, scope,
 ) -> None:
-    """Each of the six (entry point x fenced scope) cells waits for the plugin
+    """Each of the four (entry point x fenced scope) cells waits for the plugin
     lock BEFORE dispatching, and dispatches exactly once after release.
 
-    Six rows rather than one per scope: the classification lives in one helper
+    Four rows rather than one per scope: the classification lives in one helper
     precisely so the two entry points cannot disagree, and this is what would
     catch it if one of them stopped calling it."""
     import agent as agent_mod
@@ -608,36 +541,3 @@ async def test_casa_reload_agent_scope_is_not_fenced(
         assert log == ["agent"]
         assert task.done() is False                 # #824, as above
     await asyncio.wait_for(task, timeout=5.0)
-
-
-async def test_direct_reload_executors_still_serializes_its_health_regen(
-    monkeypatch, _fresh_reload_locks,
-) -> None:
-    """The entry fence must not become the ONLY thing serializing the health
-    regeneration: reload_executors' own guard (reload.py:1868) is retained, and
-    a DIRECT call to the handler still waits for a plugin-tools lock another
-    task holds.
-
-    Without this, removing that guard leaves every other test green — the outer
-    entry fence masks it (measured: real handler under a held lock →
-    regen/notify calls 0; guard-removed → 2, with one action either way).
-    reload_plugin_env's half is pinned by
-    test_reload.py::test_health_regen_serialized_under_plugin_tools_lock.
-    """
-    import reload as reload_mod
-    import tools as tools_mod
-
-    regen, notify = _count_health_io(monkeypatch)
-    runtime = _arm_executors(monkeypatch)
-    done: list = []
-
-    async def _direct():
-        await reload_mod.reload_executors(runtime, role=None)
-        done.append(True)
-
-    async with tools_mod._plugin_tools_guard():
-        task = asyncio.create_task(_direct())
-        await asyncio.sleep(0.02)
-        assert (len(done), len(regen), len(notify)) == (0, 0, 0)
-    await asyncio.wait_for(task, timeout=5.0)
-    assert (len(done), len(regen), len(notify)) == (1, 1, 1)

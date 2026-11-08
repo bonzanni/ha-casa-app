@@ -20,10 +20,10 @@ obligation to tell the engager is in
 
 ## Mental model
 
-**The engager is not held.** Until v0.314.0 `engage_executor` awaited the driver's `start()`
-inline, so the whole first turn of the engagement ran inside the engaging resident's own tool
-call. On the 2026-09-15 install the assistant's tool call was held for three minutes while the
-configurator worked, the reload the configurator ran replaced the assistant, and the pool's
+**The engager is not held.** A launch once awaited the driver's `start()` inline, so the
+whole first turn of the engagement ran inside the engaging resident's own tool call. On the
+2026-09-15 install the assistant's tool call was held for three minutes while the
+configurator, then an engagement, worked; the reload it ran replaced the assistant, and the pool's
 drain fuse then cut the launch turn from under it. The operator saw the assistant silent, then
 the configurator's output relayed by the assistant, and no result. Now the tool call opens the
 client, hands the launch turn to an owner Casa anchors, and answers `pending` at once; the
@@ -106,8 +106,8 @@ drains complete nothing is minted there — nor by a launcher cancelled while st
 its topic, which the ledger walk could not see — because the interpreter's final sweep is
 next and would destroy the report pending; the residual is logged and boot re-idles the live
 record.
-A launcher that fails or is refused between its topic and its record — a `create()` that could
-not persist, the executor's duplicate refusal or plugin gate under the plugin-tools lock — is in
+A launcher that fails between its topic and its record — a `create()` that could not
+persist — is in
 no ledger either, so it does not close its topic inline: it hands the abort to the same anchored
 owner as the cancelled launcher and returns its own error envelope at once. After the mark that
 owner mints nothing and the topic, which has no record behind it, is logged as left open.

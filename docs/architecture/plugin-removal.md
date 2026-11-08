@@ -82,7 +82,7 @@ establishes nothing either way and the envelope says so, while still stating the
 that hold regardless — the plugin's CLI-managed persistent data was not deleted, and no
 provider revocation was performed. The shipped surfaces say the same thing: the tool's own description, the plugin
 removal recipe, and all four specialist recipes — install, upgrade, rollback and uninstall —
-each instructing the engager to relay the note rather than restate it as a deletion, and the
+each instructing the configurator to relay the note rather than restate it as a deletion, and the
 three that can now receive it from a successful swap naming that arm too, since there the
 removal is confirmed rather than measured or unknown. A payload no recipe relays is a
 disclosure the operator never sees, so the payload gate and the recipe gate cover the same
@@ -108,7 +108,7 @@ direct `plugin_remove` whose reload-and-verify tail raises. In both the mutation
 committed and there is no result envelope to carry the disclosure, so the operator gets a
 hard error where a persisting removal went unstated. That is a bounded, non-silent gap: the
 error is loud, and every recipe on a removal-capable path — the plugin removal one and all
-four specialist ones — tells the engager to say the removal may have taken
+four specialist ones — tells the configurator to say the removal may have taken
 effect, that the plugin's CLI-managed persistent data was not deleted and no provider
 revocation was performed either way, and to check with `plugin_list()`. That fallback is the
 same shape in all five, because the gap is: an invariant about envelopes says nothing where
@@ -121,7 +121,7 @@ every bundle tool rather than the removal ones.
 **A removal path raises after the commit.** There is then no result envelope to carry the
 disclosure, and the operator gets a hard error where a persisting removal went unstated.
 The gap is bounded and loud rather than silent, and every recipe on a removal-capable path
-tells the engager to say the removal may have taken effect, that the plugin's CLI-managed
+tells the configurator to say the removal may have taken effect, that the plugin's CLI-managed
 persistent data was not deleted and no provider revocation was performed either way, and to
 check with `plugin_list()`.
 

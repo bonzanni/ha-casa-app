@@ -26,25 +26,24 @@ import config_sync
 # --------------------------------------------------------------------------
 
 
-def test_merge_eligible_table_is_exactly_the_three_list_files():
+def test_merge_eligible_table_is_exactly_the_two_list_files():
     """Explicit, not derived from the schemas.
 
     Deriving eligibility from "the schema contains an array of objects" would
     silently enrol any future file of that shape, including files whose entries
-    are NOT order-independent. These three are, which is a fact about them
-    rather than about their shape.
+    are NOT order-independent. These two are, which is a fact about them
+    rather than about their shape. (``executors.yaml`` left the table in
+    v0.351.0: nothing reads it.)
     """
     assert config_sync.MERGE_ELIGIBLE == {
         ("agents", "triggers.yaml"): ("triggers", "name"),
         ("agents", "delegates.yaml"): ("delegates", "agent"),
-        ("agents", "executors.yaml"): ("executors", "executor_type"),
     }
 
 
 @pytest.mark.parametrize("rel,expected", [
     ("agents/assistant/triggers.yaml", ("triggers", "name")),
     ("agents/butler/delegates.yaml", ("delegates", "agent")),
-    ("agents/assistant/executors.yaml", ("executors", "executor_type")),
 ])
 def test_merge_spec_for_eligible_paths(rel, expected):
     assert config_sync._merge_spec(rel) == expected
@@ -55,6 +54,8 @@ def test_merge_spec_for_eligible_paths(rel, expected):
     "agents/assistant/runtime.yaml",
     "agents/assistant/character.yaml",
     "agents/executors/configurator/hooks.yaml",
+    # No longer read (since v0.351.0), so no longer merged.
+    "agents/assistant/executors.yaml",
     "agents/assistant/prompts/morning-briefing.md",
     # A nested mapping, not a list.
     "policies/disclosure.yaml",

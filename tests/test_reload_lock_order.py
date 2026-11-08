@@ -1,7 +1,7 @@
 """#706 / INV-CFG-011 — the fenced reload-scope set, pinned against drift.
 
 The behavioural cases live in `test_bundle_reload_fence.py`: they prove that
-today's `executors` and `plugin_env` reloads take the plugin-tools lock before
+today's `plugin_env` reload takes the plugin-tools lock before
 the reload RW lock, at both entry points. They cannot prove the SET stays
 right. Two ways it silently stops being right, one arm each:
 
@@ -80,7 +80,7 @@ def test_the_fenced_set_is_the_scopes_whose_handlers_take_the_guard() -> None:
         if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
         and _takes_the_guard(fn)
     )
-    assert guard_takers == ["reload_executors", "reload_plugin_env"]
+    assert guard_takers == ["reload_plugin_env"]
 
     unfenced = sorted(
         (fn, registered.get(fn)) for fn in guard_takers
@@ -124,13 +124,13 @@ def test_no_production_caller_dispatches_a_fenced_scope_outside_an_entry_point()
         "before the reload RW lock on that path (INV-CFG-011)")
 
 
-@pytest.mark.parametrize("scope", ["full", "executors", "plugin_env"])
+@pytest.mark.parametrize("scope", ["full", "plugin_env"])
 def test_the_fenced_set_contains(scope: str) -> None:
     assert scope in _fenced_scopes()
 
 
-def test_the_fenced_set_is_exactly_three_scopes() -> None:
+def test_the_fenced_set_is_exactly_two_scopes() -> None:
     """`agent`, `agents`, `policies`, `triggers` and `config_sync` must stay
     OUT: a bundle transaction holds the raw plugin lock and dispatches
     `agent`/`agents`, so fencing those would deadlock it against itself."""
-    assert _fenced_scopes() == frozenset({"full", "executors", "plugin_env"})
+    assert _fenced_scopes() == frozenset({"full", "plugin_env"})

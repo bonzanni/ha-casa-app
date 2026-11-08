@@ -1,8 +1,8 @@
 """INV-ENG-021 (design 2026-09-15 §2.A): the engager is not held.
 
 On the production box (2026-09-15) Ellen's tool call was held for three minutes because
-``engage_executor`` awaited the whole in-casa launch turn inline. Now the tool
-call opens the client, hands the launch TURN to an anchored owner in one
+the engagement launcher (then the configurator's ``engage_executor``) awaited the
+whole in-casa launch turn inline. Now the launch opens the client, hands the launch TURN to an anchored owner in one
 synchronous block, and returns ``pending``. The owner does what the tool call
 did after ``start()`` returned — reports a death through the reporter with the
 engager's obligation armed and tells the engager live — and a never-started
@@ -80,12 +80,12 @@ async def _drain_all(tools_mod):
 async def test_the_engager_gets_pending_before_the_launch_turn_starts(tmp_path, monkeypatch):
     probe = _Probe()
     GatedClient.gate = asyncio.Event()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, GatedClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, GatedClient)
     tools_mod = _with_bus(monkeypatch, _RecordingBus())
 
     # bounded: an inline launch would wait on the gated first frame for ever,
     # and a hang is not a pin
-    envelope = await asyncio.wait_for(_launch(engage_executor), 5)
+    envelope = await asyncio.wait_for(_launch(launcher), 5)
     payload = json.loads(envelope["content"][0]["text"])
     assert payload["status"] == "pending", payload
     assert GatedClient.frames_yielded == 0          # the turn has not begun
@@ -107,11 +107,11 @@ async def test_the_engager_gets_pending_before_the_launch_turn_starts(tmp_path, 
 
 async def test_a_cutoff_after_pending_tells_the_engager_live(tmp_path, monkeypatch):
     probe = _Probe()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
 
-    envelope = await _launch(engage_executor)
+    envelope = await _launch(launcher)
     assert json.loads(envelope["content"][0]["text"])["status"] == "pending"
     await _drain_all(tools_mod)
 
@@ -139,11 +139,11 @@ async def test_a_cutoff_after_pending_tells_the_engager_live(tmp_path, monkeypat
 
 async def test_a_pre_frame_api_fault_after_pending_is_told_once(tmp_path, monkeypatch):
     probe = _Probe()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, PreFrameApiErrorClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, PreFrameApiErrorClient)
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
 
-    envelope = await _launch(engage_executor)
+    envelope = await _launch(launcher)
     assert json.loads(envelope["content"][0]["text"])["status"] == "pending"
     await _drain_all(tools_mod)
 
@@ -158,11 +158,11 @@ async def test_a_pre_frame_api_fault_after_pending_is_told_once(tmp_path, monkey
 
 async def test_a_dropped_bus_target_leaves_the_obligation_owed(tmp_path, monkeypatch):
     probe = _Probe()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     bus = _RecordingBus(roles=())          # the engager's role is not registered
     tools_mod = _with_bus(monkeypatch, bus)
 
-    await _launch(engage_executor)
+    await _launch(launcher)
     await _drain_all(tools_mod)
 
     created_id = next(iter(registry._records))
@@ -175,10 +175,10 @@ async def test_a_dropped_bus_target_leaves_the_obligation_owed(tmp_path, monkeyp
 async def test_cancelling_the_tool_task_after_return_does_not_cancel_the_turn(tmp_path, monkeypatch):
     probe = _Probe()
     GatedClient.gate = asyncio.Event()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, GatedClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, GatedClient)
     tools_mod = _with_bus(monkeypatch, _RecordingBus())
 
-    task = asyncio.ensure_future(_launch(engage_executor))
+    task = asyncio.ensure_future(_launch(launcher))
     envelope = await task
     assert json.loads(envelope["content"][0]["text"])["status"] == "pending"
     task.cancel()                           # a finished task: nothing to cancel
@@ -192,11 +192,11 @@ async def test_cancelling_the_tool_task_after_return_does_not_cancel_the_turn(tm
 async def test_the_stop_drains_a_running_owner_and_reports_the_cancellation(tmp_path, monkeypatch):
     probe = _Probe()
     GatedClient.gate = asyncio.Event()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, GatedClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, GatedClient)
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
 
-    await _launch(engage_executor)
+    await _launch(launcher)
     await asyncio.sleep(0)                  # the owner has started and is gated
     assert len(tools_mod._LAUNCH_TURN_TASKS) == 1
     owner = next(iter(tools_mod._LAUNCH_TURN_TASKS))
@@ -222,7 +222,7 @@ async def test_the_stop_drains_a_running_owner_and_reports_the_cancellation(tmp_
 
 async def test_a_stop_latched_during_open_mints_no_owner(tmp_path, monkeypatch):
     probe = _Probe()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
 
@@ -242,7 +242,7 @@ async def test_a_stop_latched_during_open_mints_no_owner(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ScriptedCutoffClient, "__aenter__", _latch_then_enter)
 
-    envelope = await _launch(engage_executor)
+    envelope = await _launch(launcher)
     payload = json.loads(envelope["content"][0]["text"])
     assert payload["status"] == "error", payload
     assert payload["kind"] == "launch_cancelled"
@@ -263,7 +263,7 @@ async def test_a_stop_latched_during_open_mints_no_owner(tmp_path, monkeypatch):
 async def test_an_owner_cancelled_before_its_first_step_is_reported_by_its_callback(
         tmp_path, monkeypatch):
     probe = _Probe()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
 
@@ -272,7 +272,7 @@ async def test_an_owner_cancelled_before_its_first_step_is_reported_by_its_callb
     import agent as agent_mod
     from engagement_registry import EngagementRecord
     rec = await registry.create(
-        kind="executor", role_or_type="configurator", driver="in_casa",
+        kind="specialist", role_or_type="finance", driver="in_casa",
         topic_id=42, origin={"role": "assistant", "channel": "telegram", "chat_id": "c1",
                              "cid": "x", "user_text": "hi"}, task="t")
     options = AsyncMock()
@@ -298,11 +298,11 @@ async def test_an_owner_cancelled_before_its_first_step_is_reported_by_its_callb
 
 async def test_after_the_drains_a_never_started_owner_is_only_logged(tmp_path, monkeypatch, caplog):
     probe = _Probe()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
     rec = await registry.create(
-        kind="executor", role_or_type="configurator", driver="in_casa",
+        kind="specialist", role_or_type="finance", driver="in_casa",
         topic_id=42, origin={"role": "assistant"}, task="t")
     await driver.open(rec, options=AsyncMock(), expected_generation=rec.context_generation)
     registry.mark_launch_drains_complete()
@@ -324,7 +324,7 @@ async def test_after_the_drains_a_never_started_owner_is_only_logged(tmp_path, m
 async def test_a_persist_failure_after_pending_tells_the_engager_the_outcome_is_uncommitted(
         tmp_path, monkeypatch):
     probe = _Probe()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
     real_write = registry._write_tombstone
@@ -336,7 +336,7 @@ async def test_a_persist_failure_after_pending_tells_the_engager_the_outcome_is_
 
     monkeypatch.setattr(registry, "_write_tombstone", _boom_on_terminal)
 
-    envelope = await _launch(engage_executor)
+    envelope = await _launch(launcher)
     assert json.loads(envelope["content"][0]["text"])["status"] == "pending"
     await _drain_all(tools_mod)
 
@@ -377,13 +377,13 @@ def test_the_consumer_narrates_an_uncommitted_outcome_as_still_open():
 
 async def test_an_inline_named_abort_is_acknowledged_on_return(tmp_path, monkeypatch):
     probe = _Probe()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
     import agent as agent_mod
     monkeypatch.setattr(agent_mod, "active_engagement_driver", None, raising=False)
 
-    envelope = await _launch(engage_executor)
+    envelope = await _launch(launcher)
     payload = json.loads(envelope["content"][0]["text"])
     assert payload["status"] == "error" and payload["kind"] == "no_driver"
     created_id = next(iter(registry._records))
@@ -435,7 +435,7 @@ async def test_a_job_engagement_launch_returns_pending_before_its_turn(tmp_path,
     init_tools(
         channel_manager=cm, bus=MagicMock(), specialist_registry=specialist_reg,
         mcp_registry=MagicMock(), trigger_registry=MagicMock(),
-        engagement_registry=registry, executor_registry=MagicMock(),
+        engagement_registry=registry, 
         agent_role_map={"assistant": _make_assistant_cfg()},
     )
     tools_mod = _with_bus(monkeypatch, _RecordingBus())
@@ -457,7 +457,7 @@ async def test_a_job_engagement_launch_returns_pending_before_its_turn(tmp_path,
 
 async def test_an_inline_abort_cancelled_before_its_return_is_told_live(tmp_path, monkeypatch):
     probe = _Probe()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
     import agent as agent_mod
@@ -471,7 +471,7 @@ async def test_an_inline_abort_cancelled_before_its_return_is_told_live(tmp_path
 
     channel.close_topic = AsyncMock(side_effect=_blocked_close)
 
-    task = asyncio.ensure_future(_launch(engage_executor))
+    task = asyncio.ensure_future(_launch(launcher))
     await asyncio.wait_for(entered.wait(), 5)       # the strict flip committed; the close is wedged
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -494,7 +494,7 @@ async def test_an_inline_abort_cancelled_before_its_return_is_told_live(tmp_path
 
 async def test_an_owner_cancelled_inside_its_live_telling_tells_the_engager_once(tmp_path, monkeypatch):
     probe = _Probe()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     entered = asyncio.Event(); release = asyncio.Event()
 
     class _BlockingBus(_RecordingBus):
@@ -507,7 +507,7 @@ async def test_an_owner_cancelled_inside_its_live_telling_tells_the_engager_once
     bus = _BlockingBus()
     tools_mod = _with_bus(monkeypatch, bus)
 
-    await _launch(engage_executor)
+    await _launch(launcher)
     await asyncio.wait_for(entered.wait(), 5)
     owner = next(iter(tools_mod._LAUNCH_TURN_TASKS))
     owner.cancel()
@@ -531,7 +531,7 @@ async def test_an_owner_cancelled_inside_its_live_telling_tells_the_engager_once
 async def test_a_stop_whose_cancellation_report_cannot_persist_still_tells(tmp_path, monkeypatch):
     probe = _Probe()
     GatedClient.gate = asyncio.Event()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, GatedClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, GatedClient)
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
     real_write = registry._write_tombstone
@@ -543,7 +543,7 @@ async def test_a_stop_whose_cancellation_report_cannot_persist_still_tells(tmp_p
 
     monkeypatch.setattr(registry, "_write_tombstone", _boom_on_terminal)
 
-    await _launch(engage_executor)
+    await _launch(launcher)
     await asyncio.sleep(0)
     await asyncio.wait_for(tools_mod.stop_engagement_launches(registry), 5)
 
@@ -562,11 +562,11 @@ async def test_a_stop_whose_cancellation_report_cannot_persist_still_tells(tmp_p
 async def test_a_cancellation_owner_that_loses_to_a_telling_writer_sends_nothing(tmp_path, monkeypatch):
     probe = _Probe()
     GatedClient.gate = asyncio.Event()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, GatedClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, GatedClient)
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
 
-    await _launch(engage_executor)
+    await _launch(launcher)
     await asyncio.sleep(0)
     created_id = next(iter(registry._records))
     # The funnel (the operator cancelled the engagement) wins the terminal and
@@ -588,7 +588,7 @@ async def test_a_cancellation_owner_that_loses_to_a_telling_writer_sends_nothing
 
 async def test_a_losing_inline_abort_does_not_clear_another_writers_obligation(tmp_path, monkeypatch):
     probe = _Probe()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
     import agent as agent_mod
@@ -604,7 +604,7 @@ async def test_a_losing_inline_abort_does_not_clear_another_writers_obligation(t
 
     monkeypatch.setattr(registry, "create", _create_then_lose)
 
-    envelope = await _launch(engage_executor)
+    envelope = await _launch(launcher)
     payload = json.loads(envelope["content"][0]["text"])
     assert payload["status"] == "error" and payload["kind"] == "no_driver"   # its own fault, as ever
     await _drain_all(tools_mod)
@@ -621,7 +621,7 @@ async def test_a_losing_inline_abort_does_not_clear_another_writers_obligation(t
 
 async def test_a_launcher_cancelled_after_the_drains_mints_no_compensation(tmp_path, monkeypatch, caplog):
     probe = _Probe()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     tools_mod = _with_bus(monkeypatch, _RecordingBus())
     entered = asyncio.Event(); release = asyncio.Event()
 
@@ -631,7 +631,7 @@ async def test_a_launcher_cancelled_after_the_drains_mints_no_compensation(tmp_p
         return 42
 
     channel.open_engagement_topic = AsyncMock(side_effect=_slow_topic)
-    task = asyncio.ensure_future(_launch(engage_executor))
+    task = asyncio.ensure_future(_launch(launcher))
     await asyncio.wait_for(entered.wait(), 5)           # the topic is being created; no record yet
     # The whole stop ran meanwhile: its ledger walk could not see this launch,
     # so it latched, drained and marked. The handler then creates its record
@@ -654,7 +654,7 @@ async def test_a_launcher_cancelled_after_the_drains_mints_no_compensation(tmp_p
 
 async def test_an_owner_cancelled_inside_its_uncommitted_telling_tells_once(tmp_path, monkeypatch):
     probe = _Probe()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     real_write = registry._write_tombstone
 
     def _boom_on_terminal(snapshot):
@@ -675,7 +675,7 @@ async def test_an_owner_cancelled_inside_its_uncommitted_telling_tells_once(tmp_
     bus = _BlockingBus()
     tools_mod = _with_bus(monkeypatch, bus)
 
-    await _launch(engage_executor)
+    await _launch(launcher)
     await asyncio.wait_for(entered.wait(), 5)          # the uncommitted telling is in flight
     owner = next(iter(tools_mod._LAUNCH_TURN_TASKS))
     owner.cancel()
@@ -694,36 +694,38 @@ async def test_an_owner_cancelled_inside_its_uncommitted_telling_tells_once(tmp_
 # --- diff round 2 (Astra J2): a named-fault arm reached after the drains mints nothing --
 
 async def test_an_inline_abort_reached_after_the_drains_mints_nothing(tmp_path, monkeypatch, caplog):
+    """A launcher enrolled after the stop's ledger walk is cancelled at
+    enrolment, but the cancellation is only DELIVERED at its next suspension;
+    a named-fault arm reached before then must mint nothing. (The configurator's
+    launcher reached ``plugin_superseded`` with no suspension in between; the
+    job launcher suspends at every step before its arms, so the window is built
+    directly: enrol after the mark, then take the named arm synchronously.)"""
     probe = _Probe()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
-    # The plugin snapshot moves while the record is being created, so the FIRST
-    # arm after enrolment — `plugin_superseded`, with no suspension between the
-    # two — fires before the enrolment's cancellation has been delivered.
-    gens = iter([1, 1, 2, 2, 2, 2])       # stable at create (1 == 1), moved by the recheck (2 != 1)
-    monkeypatch.setattr(tools_mod.plugin_registry, "snapshot_generation", lambda: next(gens))
-    entered = asyncio.Event(); release = asyncio.Event()
-
-    async def _slow_topic(*a, **kw):
-        entered.set()
-        await release.wait()
-        return 42
-
-    channel.open_engagement_topic = AsyncMock(side_effect=_slow_topic)
-    task = asyncio.ensure_future(_launch(engage_executor))
-    await asyncio.wait_for(entered.wait(), 5)
-    registry.begin_launch_shutdown()          # the whole stop ran while the topic was being created
+    rec = await registry.create(
+        kind="specialist", role_or_type="finance", driver="in_casa", topic_id=42,
+        origin={"role": "assistant", "channel": "telegram", "chat_id": "c1", "cid": "x"},
+        task="t")
+    registry.begin_launch_shutdown()          # the whole stop ran before this launch enrolled
     registry.mark_launch_drains_complete()
+
+    async def _launch_reaching_its_arm():
+        handle = tools_mod._register_launch_safe(rec.id)   # enrolment cancels; not yet delivered
+        try:
+            return await tools_mod._abort_launch_inline(
+                channel, rec, 42, kind="plugin_superseded", message="moved")
+        finally:
+            tools_mod._unregister_launch_safe(handle)
+
     with caplog.at_level(logging.ERROR):
-        release.set()                          # enrolment cancels; the arm runs before the cancel lands
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 5)
+            await asyncio.wait_for(asyncio.ensure_future(_launch_reaching_its_arm()), 5)
         await asyncio.sleep(0)
     assert not tools_mod._LAUNCH_DEATH_TASKS     # no abort, no compensator
     assert not tools_mod._LAUNCH_TURN_TASKS
-    created_id = next(iter(registry._records))
-    assert registry.get(created_id).status == "active"
+    assert registry.get(rec.id).status == "active"
     assert bus.messages == [] and channel.close_topic.await_count == 0
     assert any("plugin_superseded abort after the stop's drains completed" in r.getMessage()
                for r in caplog.records), [r.getMessage() for r in caplog.records]
@@ -735,7 +737,7 @@ async def test_the_boot_replay_addresses_a_roleless_record_to_the_configured_ass
     import casa_core
     from engagement_registry import EngagementRegistry
     registry = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-    rec = await registry.create(kind="executor", role_or_type="configurator", driver="in_casa",
+    rec = await registry.create(kind="specialist", role_or_type="finance", driver="in_casa",
                                 topic_id=7, origin={"channel": "telegram", "cid": "c", "chat_id": "1"},
                                 task="t")
     assert await registry.try_transition_terminal(
@@ -772,7 +774,7 @@ async def test_the_drain_awaits_the_telling_a_just_completed_abort_is_about_to_m
     monkeypatch.setattr(tools_mod, "_engagement_registry", registry)
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
-    rec = await registry.create(kind="executor", role_or_type="configurator", driver="in_casa",
+    rec = await registry.create(kind="specialist", role_or_type="finance", driver="in_casa",
                                 topic_id=42, origin={"role": "assistant", "channel": "telegram",
                                                      "cid": "c", "chat_id": "1"}, task="t")
     # the abort WON its transition and armed the obligation, as the inline arm does
@@ -802,7 +804,7 @@ async def test_the_drain_awaits_the_telling_a_just_completed_abort_is_about_to_m
 # --- diff round 4 (Astra): the pre-record topic abort is drained, and fenced after the mark --
 
 async def _cancel_between_topic_and_record(tmp_path, monkeypatch, probe):
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     entered = asyncio.Event(); release = asyncio.Event()
     real_create = registry.create
 
@@ -812,7 +814,7 @@ async def _cancel_between_topic_and_record(tmp_path, monkeypatch, probe):
         return await real_create(*a, **kw)
 
     monkeypatch.setattr(registry, "create", _slow_create)
-    task = asyncio.ensure_future(_launch(engage_executor))
+    task = asyncio.ensure_future(_launch(launcher))
     await asyncio.wait_for(entered.wait(), 5)         # the topic exists (42); the record does not
     return task, registry, channel
 
@@ -862,16 +864,16 @@ async def test_a_pre_record_cancellation_after_the_drains_mints_nothing(tmp_path
 
 # --- #998: the pre-record FAILURE arms' topic aborts are drained, and fenced after the mark --
 
-_PRE_RECORD_ARMS = ("job_persist", "executor_duplicate",
-                    "executor_gate", "executor_persist")
+_PRE_RECORD_ARMS = ("job_persist",)
 _PRE_RECORD_ORIGIN = {"role": "assistant", "channel": "telegram",
                       "chat_id": "c1", "cid": "x", "user_text": "hi"}
 
 
-def _arm_pre_record_failure(arm, tmp_path, monkeypatch, engage_executor, registry):
-    """Drive one of the four exception arms between topic creation and record
-    creation. Returns (launch coroutine factory, the arm's base envelope,
-    a check of the seam counts that proves the named arm was the one taken)."""
+def _arm_pre_record_failure(arm, tmp_path, monkeypatch, launcher, registry):
+    """Drive the exception arm between topic creation and record creation
+    (the record's strict create() fails). Returns (launch coroutine factory,
+    the arm's base envelope, a check of the seam counts that proves the named
+    arm was the one taken)."""
     import plugin_registry as plugin_registry_mod
     import tools as tools_mod
     import topic_ledger
@@ -884,69 +886,28 @@ def _arm_pre_record_failure(arm, tmp_path, monkeypatch, engage_executor, registr
         creates.append(1)
         raise OSError("persist sentinel")
 
-    async def _counting_create(*a, **kw):
-        creates.append(1)
-        raise AssertionError("create() must not be reached on this arm")
+    assert arm == "job_persist"
+    from test_delegate_to_agent_interactive import _job, _make_alex_cfg
+    valid = plugin_registry_mod.ResolutionResult(registry_valid=True)
 
-    if arm == "job_persist":
-        from test_delegate_to_agent_interactive import _job, _make_alex_cfg
-        valid = plugin_registry_mod.ResolutionResult(registry_valid=True)
+    async def _prelaunch(*a, **kw):
+        return "finance", _make_alex_cfg(), valid, None, None
 
-        async def _prelaunch(*a, **kw):
-            return "finance", _make_alex_cfg(), valid, None, None
-
-        monkeypatch.setattr(tools_mod, "_prelaunch", _prelaunch)
-        monkeypatch.setattr(registry, "create", _failing_create)
-
-        def launch():
-            return tools_mod._launch_interactive_engagement(
-                "finance", "Plan Q2", "", dict(_PRE_RECORD_ORIGIN), job=_job())
-        return launch, persist, lambda: creates == [1]
-
-    if arm == "executor_duplicate":
-        dup = tools_mod._result({"status": "error", "kind": "duplicate_task",
-                                 "message": "duplicate sentinel"})
-        calls: list = []
-
-        def _dup(origin, task_text):
-            calls.append(1)
-            return None if len(calls) == 1 else dup
-
-        monkeypatch.setattr(tools_mod, "_duplicate_task_refusal", _dup)
-        monkeypatch.setattr(registry, "create", _counting_create)
-        return (lambda: _launch(engage_executor)), dup, \
-            lambda: calls == [1, 1] and creates == []
-
-    if arm == "executor_gate":
-        resolves: list = []
-
-        def _resolve_for(target):
-            resolves.append(target)
-            return plugin_registry_mod.ResolutionResult(
-                registry_valid=len(resolves) == 1)
-
-        monkeypatch.setattr(plugin_registry_mod, "resolve_for", _resolve_for)
-        monkeypatch.setattr(registry, "create", _counting_create)
-        gate = tools_mod._result({
-            "status": "error", "kind": "plugin_registry_invalid",
-            "message": ("plugin registry is invalid — executor launches are "
-                        "blocked until it is repaired "
-                        "(see /data/plugin-health.json)"),
-        })
-        return (lambda: _launch(engage_executor)), gate, \
-            lambda: len(resolves) == 2 and creates == []
-
-    assert arm == "executor_persist"
+    monkeypatch.setattr(tools_mod, "_prelaunch", _prelaunch)
     monkeypatch.setattr(registry, "create", _failing_create)
-    return (lambda: _launch(engage_executor)), persist, lambda: creates == [1]
+
+    def launch():
+        return tools_mod._launch_interactive_engagement(
+            "finance", "Plan Q2", "", dict(_PRE_RECORD_ORIGIN), job=_job())
+    return launch, persist, lambda: creates == [1]
 
 
 @pytest.mark.parametrize("arm", _PRE_RECORD_ARMS)
 async def test_the_stop_drains_a_pre_record_failure_abort(tmp_path, monkeypatch, arm):
     probe = _Probe()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     import tools as tools_mod
-    launch, expected, took_arm = _arm_pre_record_failure(arm, tmp_path, monkeypatch, engage_executor, registry)
+    launch, expected, took_arm = _arm_pre_record_failure(arm, tmp_path, monkeypatch, launcher, registry)
     closing = asyncio.Event(); release_close = asyncio.Event(); close_marks: list = []
 
     async def _slow_close(*, thread_id):
@@ -982,9 +943,9 @@ async def test_the_stop_drains_a_pre_record_failure_abort(tmp_path, monkeypatch,
 async def test_a_pre_record_failure_after_the_drains_mints_nothing(
         tmp_path, monkeypatch, caplog, arm):
     probe = _Probe()
-    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     import tools as tools_mod
-    launch, expected, took_arm = _arm_pre_record_failure(arm, tmp_path, monkeypatch, engage_executor, registry)
+    launch, expected, took_arm = _arm_pre_record_failure(arm, tmp_path, monkeypatch, launcher, registry)
     opening = asyncio.Event(); release_open = asyncio.Event()
 
     async def _gated_open(**kw):

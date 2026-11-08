@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.351.0] - 2026-11-08
+
+### Changed
+
+- **The configurator now works in your chat with Ellen, not in a topic of its own.** Ask Ellen to change something and the configurator does it in the background: a short progress line shows while it works and disappears when its answer arrives in your chat.
+- When the configurator asks you something, reply to its message and your answer goes straight to it. A normal message to Ellen also works.
+- Tapping Approve on something the configurator asked to install lets it carry on by itself; Deny or an expired request just shows on the card.
+- Time spent downloading and installing a plugin, specialist or persona no longer counts against the configurator's time limit, up to 30 minutes for each step of an install.
+- Plugin health messages wait until the configurator has finished.
+- When a change needs Casa to restart, the configurator's answer is followed by a **Restart now** button; Casa restarts only when you tap it.
+- The configurator works on one request at a time. If it is busy, a second request waits up to a minute and is then told what it is busy with, so you can ask again shortly.
+- If Casa restarts while the configurator is working, you are told once after the restart which task was interrupted; nothing is redone by itself.
+- The configurator's own instructions now ship with Casa and are no longer copied into your configuration.
+
+### Upgrade notes
+
+- **Not backward compatible.** A configurator topic still open from before this update is not resumed: close it before updating, or end it with `/cancel` in the topic afterwards. The configurator files left under `/config/agents/executors/` and `/config/agents/assistant/executors.yaml` are no longer used; you can delete them.
+
 ## [0.350.0] - 2026-11-08
 
 ### Removed

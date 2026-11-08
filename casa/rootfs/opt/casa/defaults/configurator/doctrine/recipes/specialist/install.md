@@ -1,0 +1,177 @@
+# Recipe: install a specialist from a repository
+
+A specialist component is a distributable package living in its own repository. This is the ONLY
+way to add a specialist — the legacy hand-authored path is retired (the loader refuses
+hand-created directories; see recipes/specialist/create.md). Installed specialists are managed:
+their identity, persona binding, and runtime files are all derived from the component, never
+hand-edited.
+
+A component may declare bundled or repo-sourced plugin dependencies (e.g. a weather specialist's `weather` plugin).
+These are NEVER installed separately: `specialist_install_inspect` resolves and validates the whole
+dependency closure (persona, corpus, plugins) in one pass, ONE consent DM covers the specialist AND
+every dependency together, and `specialist_install_commit` activates all of it atomically. Do not
+call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add.md`.
+
+## Ask the user
+
+1. **Repository locator** (`owner/repo` + a ref — branch/tag/sha). When the operator asks for
+   the latest version, or names no version at all, pass `ref="latest"`:
+   `specialist_install_inspect` resolves it server-side to the newest published release tag
+   (GitHub's latest release, else the highest `v<semver>` tag), records that tag in the receipt,
+   and reports it as `resolved_ref` — write `<repo>@<resolved_ref>` in your commit message and
+   answer. You have no web tool: do not try to browse releases or tags, and never choose a
+   branch on your own — a branch or a sha is passed only when the operator names it. A repo with
+   no published release refuses with `no_release_found` and nothing is staged; report that and ask
+   the operator whether to install a branch or a sha they name.
+2. Nothing else up front — `specialist_install_inspect` reports the component's own declared
+   mission, default persona, dependencies (including any bundled/declared plugin), and required
+   config/secret names; ask the operator to supply THOSE by name once inspection returns.
+
+## Steps
+
+1. `specialist_install_inspect(repo=..., ref=...)`. On any `ok: false`, report the `kind`/`detail`
+   verbatim and stop — do NOT retry with fabricated inputs. On `ok: true` the result carries a
+   `receipt_id` for this exact inspected closure — hold onto it verbatim; `specialist_install_commit`
+   requires it back unchanged.
+2. When the result says `consent: "keyboard_posted"`, the approval card is in the operator's DM
+   (posted server-side by `prompt_specialist_install_consent`, not by this recipe). It is the
+   actual approval gate, and it already covers the WHOLE install (the specialist AND every
+   dependency) in ONE consent. There is no separate consent, and no separate `plugin_add`, for a
+   dependency plugin — ever. End your run with a short answer: what the specialist is (mission,
+   default persona, dependencies — including what any bundled plugin needs), any required
+   config/secret names you need from him, and that the card is waiting for his tap. When it says
+   `consent: "pre_authorized"` (he already approved this exact install), go straight to step 4.
+3. Approve starts a new run by itself, whose task carries the staged values (`component_id`,
+   `version`, `root_digest`, `slug`, `staged_dir`, `receipt_id`): continue from step 4 with them
+   and any config values agreed in the exchanges it brings. Re-inspect only if you need to (the
+   values are missing, or the commit refuses them): a re-inspect of the same version returns
+   `consent: "pre_authorized"`, with a fresh `receipt_id` to use. Deny or expiry is shown on the
+   card; no run starts for them, and nothing is needed from you. If the commit refuses with
+   `kind: "consent_missing"`, the tap has not landed: say the card is still waiting and end the run
+   (do not loop-retry).
+4. Once approved: `specialist_install_commit(component_id=..., version=..., root_digest=...,
+   slug=..., staged_dir=..., receipt_id=..., config={...}, secret_names_provided=[...])` using the
+   EXACT values `specialist_install_inspect` returned, `receipt_id` included. Omitting it (or
+   passing a stale one from an earlier inspect) refuses with `kind: "receipt_required"` — re-run
+   inspect and retry with the fresh id; never fabricate one. If the result carries
+   `plugin_data_note` — the commit's owned-set swap replaced a stale owned entry, which
+   is rare but is a removal — on ANY outcome, including an `ok:false` result that
+   carries no `state` at all, relay it verbatim with the names in
+   `plugin_data_plugins`, exactly as `recipes/plugin/remove.md` step 4
+   describes. Do not restate it as a confirmed removal unless the note itself
+   says so: the note says which of the three it is — the successful owned-set
+   swap dropped those entries, or a failed compensation left them measured
+   still removed, or Casa could not read the registry back and does not know. If the call RAISES instead of returning a result,
+   its owned-set swap may already have committed with no envelope to carry
+   that note. Say so: an owned plugin may have been removed, and if it was,
+   the same survival applies — no plugin data was deleted and nothing was
+   revoked at the provider. Run `plugin_list()` to see which entries are
+   gone.
+5. If `state == "pending-configuration"`: report which config/secret names are still missing, then
+   finish the install by CALLING THE TOOL THE RESULT NAMES again — never by re-inspecting. The
+   pending result carries the five values that second call takes (`receipt_id`, `staged_dir`,
+   `component_id`, `version`, `root_digest`) and a sixth, `tool`, naming the handler that takes
+   them; pass the five back verbatim with `slug` and the config/secret values the operator
+   supplied. **Call the tool `tool` names and no other** — a pending UPGRADE keeps the old version
+   active, and `specialist_install_commit` refuses any slug with an active tuple
+   (`kind: "active_present"`), so its resume goes to `specialist_upgrade`. The receipt and
+   the staged bytes are RETAINED for exactly this.
+   A LATER run that no longer has that result gets the same six from
+   `casactl specialist status <slug>` under `pending_commit` (the operator runs it and pastes the
+   result), beside `pending_commit_check`, which is the only thing that says whether they may be
+   used. It has exactly two states:
+   - `{"state": "verified"}` — the values were checked against the very predicate the named tool
+     applies. Make the call.
+   - `{"state": "not_verified", "reason": ...}` — they were NOT checked, and you may not use
+     them. **This is never a finding that the install is unrecoverable, whatever the reason
+     says.** Every read on the way to that verdict can fail transiently: `receipt_required`,
+     `staged_dir_invalid` and `incomplete_inputs` say a resource did not come back on THIS read;
+     `checksum_changed` and `receipt_mismatch` say what was read did not match; `recovery_pending`
+     says a transaction is in flight; `unreadable_*` says a read failed; `observation_changed`
+     says the tree moved while it was being checked. Report the reason to the operator as what to
+     look at, run `casactl specialist status <slug>` again after a moment, and say plainly that
+     the candidate may still be resumable. **Never propose `specialist_uninstall` from this
+     payload** — it is irreversible, it destroys the operator's already-supplied configuration,
+     and this payload cannot tell a lost resource from a read that failed once. If the operator
+     asks to start over, that is their call and `recipes/specialist/uninstall.md` is the route.
+   - No `pending_commit` and no `pending_commit_check` at all: the slug holds no candidate.
+   A null member of `pending_commit` is a value that could not be derived on this read; it is a
+   diagnosis, not an instruction. `pending_commit_check` is what decides.
+6. If `state == "active"`: wire delegation by applying ONLY the edit steps of
+   `recipes/delegate/wire.md` (edit `delegates.yaml` idempotently + ensure the
+   delegate tool is allowed). Do NOT run wire.md's own commit or answer
+   — steps 8–9 below do the single commit and answer for the
+   whole install.
+7. **Wire bundled plugins' env vars — part of THIS install, not a follow-up.** For each bundled
+   plugin the inspection listed with a non-empty `env_names` (mirrored as `required_env_vars` in
+   the commit result, keyed by the SCOPED registry name `<slug>.<plugin>` — use that exact key as
+   the plugin identifier below), run the `recipes/plugin/secrets.md` flow now — explore, then
+   wire, then ask. Search 1Password for every unresolved required variable not declared in
+   `casa.setupProvides`, except a variable that configures how 1Password itself is used (which
+   vault). That one is never mapped to an item, and the default vault is named in your world
+   state, so search it (`list_vault_items`, `get_item_fields`) before asking; ask the operator
+   which item or field it is only when a found item holds a candidate field you cannot settle
+   — never for a secret value — and handle a variable nothing found holds exactly as
+   `secrets.md` says; then `set_plugin_env_reference(plugin="<slug>.<plugin>", ...)` once per
+   var, then `casa_reload(scope="plugin_env")`, and confirm via
+   `verify_plugin_state(plugin_name="<slug>.<plugin>")` that no `secrets[*].status: unresolved`
+   remains. An unresolved required var withholds the plugin from
+   session builds entirely: the specialist's very first tool call would be refused with
+   "required env unresolved", costing the operator a second configurator run (#499).
+   A plugin with empty `env_names` needs nothing here.
+   `env_names` is exactly what Casa withholds the plugin on. The inspection's
+   `exempt_env_names` (and the consent's "Env referenced, not required" line) are the other
+   names the plugin's `.mcp.json` mentions — a `${VAR:-default}` the CLI satisfies from its own
+   default, or a `casa.setupProvides` name the plugin's own setup tool creates. **Never ask the
+   operator for one of those** (#994): nothing is withheld on them, `verify_plugin_state` never
+   lists them as unresolved. A setup-provisioned name is NOT filled in by itself: the plugin's
+   setup run reports what to wire, and wiring it is a configurator's job then — see
+   `recipes/plugin/secrets.md`, "A value the plugin's setup tool reports".
+8. `config_git_commit(message="install specialist <slug> from <repo>@<ref>")` — for `latest`, `<ref>` is the `resolved_ref` the inspect returned.
+   An `active` install is on disk but not in the live registry until this commit's reload runs.
+   Commit the install and step 6's `delegates.yaml` edits TOGETHER: the commit then reloads
+   `full`, which loads the specialist and re-reads each resident's delegate list. A resident
+   whose delegate list was not re-read refuses every delegation to the new specialist with
+   `delegation_not_declared` (#1009).
+9. End with your answer, e.g. "I installed <slug> <version> from <repo> and added it to
+    <resident>'s helpers."
+
+## Common mistakes
+
+- Calling `specialist_install_commit` before the operator has actually tapped Approve — it will
+  correctly refuse (`kind: "consent_missing"`); this is not a bug to work around, it IS the consent
+  gate.
+- Calling `specialist_install_commit` without `receipt_id`, or with one carried over from an
+  EARLIER inspect — it refuses with `kind: "receipt_required"`; always use the id the LATEST
+  `specialist_install_inspect` call returned.
+- Re-inspecting to resume a `pending-configuration` install — `specialist_install_inspect` refuses
+  the now-occupied slug with `kind: "slug_collision"`, and `mode="upgrade"` refuses a first install
+  that never activated with `kind: "no_active_tuple"`. Neither is a bug to work around: the resume
+  is the second `specialist_install_commit` with the retained values (step 5).
+- Calling `plugin_add`/`plugin_assign` for a dependency the component already declares — it never
+  needs a separate add; inspect + commit install it as part of the SAME bundle. Once active, those
+  tools (and `plugin_update`/`plugin_unassign`/`plugin_remove`) refuse the owned entry with `kind:
+  "owned_by_specialist"` — use `specialist_upgrade`/`specialist_uninstall` on the SLUG instead.
+- Skipping the commit in step 8 — an `active` install is on disk but not in the live
+  registry until the commit's reload runs.
+- Ending the run with a bundled plugin's `env_names` unwired (#499) — the install
+  reports success, but the unresolved var keeps the plugin withheld and the specialist's first
+  use hits the requires gate. Do not describe such a var as something the specialist's own setup
+  tool will provision: a var in `env_names` is the installer's to wire, in step 7, here.
+- The mirror image (#994): asking the operator for a name from `exempt_env_names`. Those are
+  disclosed so the operator knows what the plugin reads. A `${VAR:-default}` among them is never
+  yours to wire. A `casa.setupProvides` name among them is not wired in step 7 either — but once
+  the plugin's setup run reports its value, wiring it IS a configurator's job
+  (`recipes/plugin/secrets.md`, "A value the plugin's setup tool reports"); never refuse it as
+  "not the installer's".
+- Relaying a bundled plugin's OWN consent (a trigger/callback/event
+  `*_pending_ack` after commit) through your own question, or asking the
+  assistant to `ask_user` it (#494): those surfaces accept the Approve tap and
+  commit NOTHING — the routing ledger stays empty and setup wedges. The
+  server-posted DM keyboard is the only committing surface; when it expired or
+  was missed, call `consent_reprompt` and relay its result.
+- Re-approving a DIFFERENT re-fetch under the same slug: a second `specialist_install_inspect` call
+  yields a NEW `root_digest` (and a NEW `receipt_id`) if the repo moved (or any bundled
+  persona/corpus/plugin dependency changed), which requires a NEW consent DM — the old approval
+  never carries over (see `install_consent_identity`'s four-field binding, now keyed on
+  `root_digest`).

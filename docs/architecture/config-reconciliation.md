@@ -29,8 +29,8 @@ other path the unconditional reseed is what repairs a deleted required file befo
 fatals on it. Predicting which of your edits survive means knowing which of these cases
 each file is in.
 
-**Three files resolve per entry rather than per file, and that changes the answer for
-them.** A small explicit set — the trigger, delegate and executor lists under each agent —
+**Two files resolve per entry rather than per file, and that changes the answer for
+them.** A small explicit set — the trigger and delegate lists under each agent —
 are lists of named entries for which the shipped copy is a *seed*, not the whole truth.
 For these, ownership is decided one entry at a time: a name the image ships tracks the
 image, and a name added locally is kept rather than dying alongside it. The same
@@ -110,7 +110,7 @@ validated without the environment that will eventually fill it in.
 **Deciding which strategy a file gets is a deliberate act, not a property of its shape.**
 The set is a written table, because a file being a list of objects is not what makes
 entry-level resolution safe — entries being independent of each other is, and that is a
-fact about these three files rather than about their schemas.
+fact about these two files rather than about their schemas.
 
 ## Contracts & invariants
 

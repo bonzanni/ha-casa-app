@@ -839,8 +839,9 @@ def test_turn_outcomes_row_moves_to_launch_shard():
     row stays in the E shard (membership only, no count over the shard).
     v0.347.11 binds the executor closing-text tests to INV-ENG-011 in this row,
     and the claude_code driver's removal then drops its boot-replay and
-    claude_code anchors and bindings from it, so the digest is the row as it
-    stands after those changes.
+    claude_code anchors and bindings from it, and v0.351.0
+    drops the executor closing-text tests again, so the digest is the row as
+    it stands after those changes.
 
     Specified by **astra** in the drive red-case round.
     """
@@ -861,8 +862,8 @@ def test_turn_outcomes_row_moves_to_launch_shard():
         json.dumps(rows[0], sort_keys=True).encode("utf-8")
     ).hexdigest()
     assert digest == (
-        "052d4c0469a7dc5cc6cf04a4111c97cc0b"
-        "0b301afd3aa91b53bae4f11d6e9538"
+        "01dfeddde37311e7f9f9ae8a2aa4e66bc3"
+        "6fe0a0cf18252b28cfbaaf9fc88784"
     ), digest
     retained = yaml.safe_load(
         (DOCS / "manifest.d/architecture-e.yaml").read_text()
@@ -936,6 +937,9 @@ PLUGIN_SHARD_RANGES = {
 # The plugin-delivered-files and plugin-handoff rows were re-pinned when the
 # claude_code driver's removal dropped their private-outbox and dropped-uid
 # bindings and prose.
+# The plugin-health row was re-pinned when v0.351.0 moved the
+# install hold from the engagement to the configurator lease (the plugin
+# invariant that held it was retired for INV-CFG-018).
 PLUGIN_SHARD_ROW_DIGESTS = {
     "architecture/plugin-authorization.md":
         "3d428f89a763a6365d072808fb7564576b964ba30cc6b1e77871eec9a45ff4e6",
@@ -950,7 +954,7 @@ PLUGIN_SHARD_ROW_DIGESTS = {
     "architecture/plugin-handoff.md":
         "83914c68bf237085ef09f7ff8937b9bbf9dac214c3a769b40e7308850975a4f2",
     "architecture/plugin-health.md":
-        "cf8eb3d389f0dda9b94d518e613df11ed17ca8a76aa51cf3b1a6af8adfb7dedf",
+        "be13868187b5bc55611f63b46b79ec7742d3acd00037276b1bc82a806a63c4f4",
 }
 
 

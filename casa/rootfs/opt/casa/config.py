@@ -515,13 +515,6 @@ class DelegateEntry:
 
 
 @dataclass
-class ExecutorEntry:
-    executor_type: str
-    purpose: str
-    when: str
-
-
-@dataclass
 class TriggerSpec:
     name: str
     type: str                            # interval | cron | date | webhook
@@ -620,7 +613,6 @@ class AgentConfig:
     response_shape: ResponseShapeConfig = field(default_factory=ResponseShapeConfig)
     disclosure: DisclosureConfig | None = None
     delegates: list[DelegateEntry] = field(default_factory=list)
-    executors: list[ExecutorEntry] = field(default_factory=list)
     triggers: list[TriggerSpec] = field(default_factory=list)
     hooks: HooksConfig = field(default_factory=HooksConfig)
     system_prompt: str = ""
@@ -656,61 +648,3 @@ class AgentConfig:
     # override) carries no component_root; for a resident tuple a root is only a
     # label, and the resident activation never sets this.
     active_tuple_root: "str | None" = dataclasses.field(default=None, kw_only=True)
-
-
-@dataclass
-class ExecutorMemoryConfig:
-    """The parsed ``memory:`` block of an executor definition. Nothing
-    reads it since the executor archive was removed; it is still parsed
-    because the schema accepts the key and existing definitions carry it.
-    """
-    enabled: bool = False
-    token_budget: int = 2000
-
-
-@dataclass
-class ExecutorDefinition:
-    """Tier 3 Executor type definition.
-
-    Materially different shape from AgentConfig: no session, no
-    channels. Mirrors spec section 5.2 YAML.
-    """
-    type: str
-    description: str
-    model: str
-    driver: str                                  # "in_casa"
-    enabled: bool = True
-    tools_allowed: list[str] = field(default_factory=list)
-    tools_disallowed: list[str] = field(default_factory=list)
-    permission_mode: str = "acceptEdits"
-    mcp_server_names: list[str] = field(default_factory=list)
-    # Parsed but unread, like ``observer_policy_path`` and ``memory`` below:
-    # the idle reminders and the observer are gone, the schema keys stay.
-    idle_reminder_days: int = 7
-    prompt_template_path: str = ""
-    hooks_path: str | None = None
-    # Task 3 (#360): the load-time-validated, constructible parsed hooks
-    # document — snapshotted verbatim for EVERY executor regardless of
-    # driver (agent_loader.load_all_executors / _resolve_executor_hooks).
-    # `{}` ONLY when no hooks file exists at all; an executor WITH a hooks
-    # file (including in_casa's configurator) gets its REAL declared
-    # entries here, never a synthesized default (REVISION 3b). Consumed
-    # verbatim downstream (Tasks 4-6) — never re-read from disk.
-    hooks_document: dict = field(default_factory=dict)
-    observer_policy_path: str | None = None
-    doctrine_dir: str = ""
-    # --- M4 addition (engagement memory) ---
-    memory: ExecutorMemoryConfig = field(default_factory=ExecutorMemoryConfig)
-    # --- Personality Phase A, Task 5/6 addition ---
-    # The image-owned canonical role artifact at defaults/roles/executor/<type>/.
-    # Executors have no persona and no binding (see role.yaml persona: forbidden).
-    # REQUIRED as of Task 6 (kw_only, no default) — see AgentConfig's identical
-    # note above; unit-test fixtures pass tests/role_artifact_stub.py's stand-in.
-    role_artifact: RoleArtifactSource = dataclasses.field(kw_only=True)
-    # Personality Phase A, Task 6: the role-only identity triple (spec §2.3),
-    # populated by agent_loader.load_all_executors via materialize_role +
-    # compute_executor_identity.
-    role_id: str = dataclasses.field(default="", kw_only=True)
-    role_checksum: str = dataclasses.field(default="", kw_only=True)
-    resolved_model: str = dataclasses.field(default="", kw_only=True)
-    effective_config_digest: str = dataclasses.field(default="", kw_only=True)

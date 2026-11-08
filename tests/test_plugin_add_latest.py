@@ -124,7 +124,7 @@ def test_the_tool_descriptions_offer_latest(tool_name):
 # --- doctrine: the configurator passes "latest", never browses, never a branch
 
 _ADD = (Path(__file__).resolve().parents[1]
-        / "casa/rootfs/opt/casa/defaults/agents/executors/configurator/doctrine/recipes/plugin/add.md")
+        / "casa/rootfs/opt/casa/defaults/configurator/doctrine/recipes/plugin/add.md")
 
 
 def _collapse_ws(text: str) -> str:

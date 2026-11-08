@@ -179,24 +179,20 @@ def _specialist_cfg():
     )
 
 
-def _executor_defn():
-    return SimpleNamespace(
-        hooks_path=None, mcp_server_names=[], tools_allowed=["Read"],
-        model="claude-sonnet-4-6", permission_mode="acceptEdits",
-        max_turns=None, tools_disallowed=[], driver="in_casa",
-    )
-
-
 def test_specialist_and_executor_options(monkeypatch):
+    """A specialist and the configurator (kind ``executor``, built through the
+    same specialist builder since v0.351.0)."""
+    import agent_loader
     from plugin_registry import ResolutionResult
     import tools as tools_mod
 
     monkeypatch.setattr(tools_mod, "_mcp_registry", None)
+    monkeypatch.setattr(tools_mod, "_agent_registry", None)
     for opts in (
         tools_mod._build_specialist_options(
             _specialist_cfg(), resolution=ResolutionResult(registry_valid=True)),
-        tools_mod._build_executor_options(
-            _executor_defn(), executor_type="configurator",
+        tools_mod._build_specialist_options(
+            agent_loader.load_configurator(),
             resolution=ResolutionResult(registry_valid=True)),
     ):
         _assert_locked(opts)
@@ -206,7 +202,7 @@ def test_specialist_and_executor_options(monkeypatch):
         assert opts.session_id is None
 
 
-@pytest.mark.parametrize("kind", ["specialist", "executor"])
+@pytest.mark.parametrize("kind", ["specialist"])
 def test_engagement_resume_options(monkeypatch, kind):
     import plugin_registry
     import tools as tools_mod
@@ -215,16 +211,14 @@ def test_engagement_resume_options(monkeypatch, kind):
         tools_mod.plugin_registry, "resolve_for",
         lambda t: plugin_registry.ResolutionResult(registry_valid=True))
     monkeypatch.setattr("hooks.resolve_hooks", lambda *a, **kw: {})
-    spec_reg, exec_reg = MagicMock(), MagicMock()
+    spec_reg = MagicMock()
     spec_reg.get = MagicMock(return_value=_specialist_cfg())
-    exec_reg.get = MagicMock(return_value=_executor_defn())
     tools_mod.init_tools(
         channel_manager=MagicMock(), bus=MagicMock(),
         specialist_registry=spec_reg, mcp_registry=MagicMock(),
         trigger_registry=MagicMock(), engagement_registry=MagicMock(),
-        executor_registry=exec_reg,
     )
-    role = "finance" if kind == "specialist" else "configurator"
+    role = "finance"
     opts = tools_mod.build_engagement_resume_options(
         SimpleNamespace(kind=kind, role_or_type=role), "sess-1")
     assert opts.resume == "sess-1"
@@ -449,8 +443,6 @@ EXPECTED_SITES = {
         "test_specialist_and_executor_options",
     ("tools.py", "_build_plugin_job_options"):
         "test_plugin_job_launch.py::test_worker_options_record_and_topic",
-    ("tools.py", "_build_executor_options"):
-        "test_specialist_and_executor_options",
     ("tools.py", "_synthesize_answer"): "test_query_engager_synthesis_options",
     ("tier_classifier.py", "classify_tier"): "test_tier_classifier_options",
     ("run_admission.py", "_ask_model"): "test_run_admission_options",

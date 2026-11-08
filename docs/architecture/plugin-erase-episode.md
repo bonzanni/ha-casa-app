@@ -71,11 +71,13 @@ tapped artifact and stamped with the question id and the kind: `complete` only w
 eraser said so, otherwise not complete. The
 episode stops at the first plugin whose erasure did not complete, because the uninstall
 proceeds only when all of them did, and running the rest would erase data the operator
-then keeps a plugin for. The outcome then continues the configurator engagement: a
-complete erasure hands over the plugins' reports and tells the engager to call
+then keeps a plugin for. The outcome then continues the configurator, as one turn on its
+desk: a complete erasure hands over the plugins' reports and tells it to call
 `erase_data=true` again to finish; anything else hands over the report verbatim, says
-nothing was removed, and tells the engager to ask the operator whether to try again later
-or to uninstall anyway keeping what is left (`erase_data=false`).
+nothing was removed, and tells it to ask the operator whether to try again later
+or to uninstall anyway keeping what is left (`erase_data=false`). While an eraser runs, a new
+configurator run waits for it before it starts (INV-CFG-014, in
+[`configurator.md`](configurator.md)).
 
 ## Contracts & invariants
 
@@ -92,7 +94,7 @@ turn and inert on any other marker, and by `run_erase_episode`.
 **INV-PLUG-042**: From an erase episode's dispatch, any turn's call of an erasing plugin's tools but its own eraser call is refused before it runs until the episode ends incomplete, its question stops being open, or an `erase_data=true` call can no longer finish its erasure; a finishing call's fence is settled only by that call (a specialist's by its transaction), then stays while the registry file lacks it.
 
 Enforced by `plugin_erasure.EraseFence` (by name) and the broker's admission hook. Not
-covered: a call admitted before it rose; executors (bundled only).
+covered: a call admitted before it rose.
 
 ## Failure behavior
 

@@ -1,11 +1,10 @@
 """Shared minimal RoleArtifactSource stub for unit tests that construct
-AgentConfig/ExecutorDefinition directly (not through agent_loader.load_agent_from_dir
-/ load_all_executors).
+AgentConfig directly (not through agent_loader.load_agent_from_dir).
 
-Personality Phase A, Task 6 makes ``AgentConfig.role_artifact`` and
-``ExecutorDefinition.role_artifact`` required keyword-only constructor fields
-with no default (see ``config.py``) — every direct-construction call site that
-is not itself testing the role-artifact wiring needs SOME value there. These
+Personality Phase A, Task 6 makes ``AgentConfig.role_artifact`` a required
+keyword-only constructor field with no default (see ``config.py``) — every
+direct-construction call site that is not itself testing the role-artifact
+wiring needs SOME value there. These
 tests don't exercise role_artifact content, so one shared, frozen, minimal
 stand-in is enough; they must NOT reach into ``role_slot.materialize_role`` or
 ``role_artifact.load_role_artifact`` (which would validate/schema-check it).

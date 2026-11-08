@@ -59,10 +59,8 @@ a message that dies with the engagement is disclosed is in
 Enforced by the registry's terminal transition, which refuses a missing or already-terminal
 record and returns failure; the finalize path performs topic closure, driver teardown and
 notification only on success. The winning transition — and only it, so a strict transition that rolled back tells nobody — hands the record to one
-optional observer, which may only schedule work: the tools layer uses it to run the
-plugin-health pass an ended install owes (INV-PLUG-032, in
-[`architecture/plugin-health.md`](plugin-health.md)) and to withdraw the engagement's
-unanswered authorization challenges (INV-PLUG-033, in
+optional observer, which may only schedule work: the tools layer uses it to withdraw the
+engagement's unanswered authorization challenges (INV-PLUG-033, in
 [`architecture/plugin-authorization.md`](plugin-authorization.md)).
 
 The direct status mutators honour the same boundary: each re-checks for a prior terminal

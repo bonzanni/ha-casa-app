@@ -434,10 +434,9 @@ def _agent_active_singletons_restored():
     on the ``agent`` module at each test's setup and restore THE SNAPSHOT at its
     teardown — restoring names the test deleted and removing names it added.
 
-    ``agent.py`` declares four of them ("written by ``casa_core.main`` so tool
+    ``agent.py`` declares three of them ("written by ``casa_core.main`` so tool
     handlers can reach them without circular imports": ``active_engagement_driver``,
-    ``active_executor_registry``, ``active_runtime``,
-    ``active_session_registry``); ``casa_core.main`` used to write a sixth,
+    ``active_runtime``, ``active_session_registry``); ``casa_core.main`` used to write a sixth,
     ``active_observer``, that ``agent.py`` never declared. Every consumer
     resolves them at CALL time with ``getattr(agent_mod, "<name>", None)``
     and gates each use on ``hasattr`` — a

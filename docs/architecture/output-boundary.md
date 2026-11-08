@@ -201,7 +201,7 @@ names the line the same way; `set_reminder`'s
 payload carries `note`; `ask_user`'s `awaiting_user` payload gains `casa_prefixed` when a
 line was added; `delegate_to_agent` reports the brief's note as `casa_note` on either
 pending result — the async one and a synchronous wait that degraded to pending — and
-its async result, like `engage_executor`'s `pending`, carries `note` naming the hand-off
+its async result carries `note` naming the hand-off
 line Casa posted in the operator's chat, as does a degraded synchronous wait once that
 line's send has posted it. The transcript the model builds on therefore says
 what the operator saw.

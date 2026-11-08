@@ -281,7 +281,7 @@ class TestEngagementClearanceClampOnSteering:
         reg = EngagementRegistry(
             tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
-            kind="executor", role_or_type="configurator", driver="claude_code",
+            kind="specialist", role_or_type="finance", driver="in_casa",
             task="t",
             origin={"channel": "telegram", "_origin_route": "telegram",
                     "_origin_clearance": creator_clearance},
@@ -312,7 +312,7 @@ class TestEngagementClearanceClampOnSteering:
         reg = EngagementRegistry(
             tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
-            kind="executor", role_or_type="configurator", driver="claude_code",
+            kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"channel": "telegram"}, topic_id=99)
         assert await reg.lower_origin_clearance(rec.id, "public") is False
         assert "_origin_clearance" not in rec.origin
@@ -355,53 +355,3 @@ class TestEngagementClearanceClampOnSteering:
             tools_mod.engagement_var.reset(token)
         hits = json.loads(out["content"][0]["text"])["hits"]
         assert [h["text"] for h in hits] == ["the alarm sounds at noon on tests"]
-
-
-class TestNestedEngagementInheritsMarkers:
-    """Terra r3 / Sol r4: an engagement that spawns a NESTED engagement calls
-    engage_executor over the internal socket, where the ambient origin carries
-    no route — so without inheritance the child record would persist no
-    markers and its own reads would fall back to the channel default
-    (private), laundering a low-clearance parent into a high-clearance
-    child."""
-
-    def _inherited(self, parent_origin, ambient):
-        """The markers PRODUCTION stamps onto a child record — this calls
-        ``tools.inherit_origin_markers``, the function ``engage_executor``
-        itself uses, rather than reimplementing the rule (Terra, review r5)."""
-        import tools as tools_mod
-
-        class _Rec:
-            def __init__(self, origin):
-                self.origin = origin
-
-        token = tools_mod.engagement_var.set(_Rec(parent_origin))
-        try:
-            out = tools_mod.inherit_origin_markers(dict(ambient))
-        finally:
-            tools_mod.engagement_var.reset(token)
-        return out.get("_origin_route"), out.get("_origin_clearance")
-
-    def test_child_inherits_a_low_clearance_parent(self):
-        assert self._inherited(
-            {"_origin_route": "telegram", "_origin_clearance": "public"},
-            ambient={"role": "configurator", "channel": "telegram"},
-        ) == ("telegram", "public")
-
-    def test_child_inherits_a_private_parent_unchanged(self):
-        assert self._inherited(
-            {"_origin_route": "telegram", "_origin_clearance": "private"},
-            ambient={"role": "configurator", "channel": "telegram"},
-        ) == ("telegram", "private")
-
-    def test_an_ambient_route_is_not_overwritten(self):
-        # A resident turn creating an engagement carries its own markers.
-        assert self._inherited(
-            {"_origin_route": "telegram", "_origin_clearance": "public"},
-            ambient={"_origin_route": "telegram", "_origin_clearance": "private"},
-        ) == ("telegram", "private")
-
-    def test_marker_less_parent_stamps_nothing(self):
-        assert self._inherited(
-            {}, ambient={"role": "assistant", "channel": "telegram"},
-        ) == (None, None)

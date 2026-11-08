@@ -13,7 +13,6 @@ DEFAULTS_DIR="/opt/casa/defaults"
 
 mkdir -p "$CONFIG_DIR/agents" \
          "$CONFIG_DIR/agents/specialists" \
-         "$CONFIG_DIR/agents/executors" \
          "$CONFIG_DIR/policies" \
          "$CONFIG_DIR/bindings" \
          "$CONFIG_DIR/bindings/resident-assistant" \

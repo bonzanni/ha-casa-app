@@ -3,7 +3,7 @@
 specialist reaches it in the operator's own words, delegated before any
 clarifying question.
 
-Live-model gate, the shape of ``ellen_brief_fidelity.py``. It drives the
+Live-model gate. It drives the
 resident's REAL compiled text projection — the prompt a bundle-bound resident
 is actually served (``prompt_compiler.projection_for``), loaded with
 ``binding_commit=False`` so nothing under /config or /data is written — plus a

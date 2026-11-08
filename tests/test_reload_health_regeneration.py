@@ -356,8 +356,9 @@ async def test_a_cancelled_reload_holds_the_guard_until_its_writer_settles(
 async def test_a_reload_cancelled_while_queued_for_the_guard_still_refreshes(
         entry, rig_factory) -> None:
     """The other cancellation door, and the reachable one: the guard can be held
-    by an operation that refreshes no health of its own (`_engage_executor_impl`
-    holds the raw lock across topic creation and the resolver gate), so a reload
+    by an operation that refreshes no health of its own (the configurator's
+    engagement launch once held the raw lock across topic creation and the
+    resolver gate; a reconcile under the guard is another), so a reload
     that healed routing can sit queued behind it. Cancelled there, a refresh that
     is merely awaited is dropped and the row the reload just made false stands.
     Settling the whole acquire-write-release unit through cancellation keeps it.
@@ -474,22 +475,21 @@ async def test_dispatch_itself_still_regenerates_nothing(rig_factory) -> None:
 
 
 @pytest.mark.parametrize(
-    "include_env, regens, notifies", [(False, 2, 1), (True, 3, 2)])
+    "include_env, regens, notifies", [(False, 1, 0), (True, 2, 1)])
 async def test_a_full_reload_regenerates_once_per_step_plus_once_after_the_pair(
         include_env, regens, notifies, rig_factory) -> None:
-    """`reload_full` invokes the `executors` sub-handler directly, and the
-    `plugin_env` one when asked; each regenerates AND notifies, both BEFORE
-    dispatch's paired reconcile. The entry point's regeneration then runs after
-    it. So a `full` reload regenerates twice and announces once ordinarily, and
-    three times announcing twice with plugin environment included — deliberately:
-    only the LAST can describe the completed routing pair, and the entry point's
-    own regeneration adds no announcement of its own.
+    """`reload_full` invokes the `plugin_env` sub-handler directly when asked,
+    which regenerates AND notifies, BEFORE dispatch's paired reconcile. The
+    entry point's regeneration then runs after it. So a `full` reload
+    regenerates once and announces nothing ordinarily, and twice announcing once
+    with plugin environment included — deliberately: only the LAST can describe
+    the completed routing pair, and the entry point's own regeneration adds no
+    announcement of its own. (The `executors` step, which regenerated and
+    announced too, left with the executor registry.)
 
-    The sub-handler doubles reproduce the two production blocks exactly — the
-    guard, the threaded regeneration, the notify, the `plugin_health_regenerated`
-    action (reload.py:reload_executors, reload.py:reload_plugin_env). A real
-    `executors` handler rebuilds the executor registry, which is not the region
-    under test.
+    The sub-handler double reproduces the production block exactly — the guard,
+    the threaded regeneration, the notify, the `plugin_health_regenerated`
+    action (reload.py:reload_plugin_env).
     """
     rig = rig_factory()
     import reload as reload_mod
@@ -504,14 +504,12 @@ async def test_a_full_reload_regenerates_once_per_step_plus_once_after_the_pair(
         return []
 
     async def _full(runtime, *, role=None, include_env=False):
-        actions = [f"executors:{a}"
-                   for a in await _regen_and_notify(runtime, role=None)]
+        actions = []
         if include_env:
             actions += [f"plugin_env:{a}"
                         for a in await _regen_and_notify(runtime, role=None)]
         return actions
 
-    rig.mp.setitem(reload_mod._HANDLERS, "executors", _regen_and_notify)
     rig.mp.setitem(reload_mod._HANDLERS, "plugin_env", _regen_and_notify)
     rig.mp.setitem(reload_mod._HANDLERS, "full", _full)
     rig.mp.setitem(reload_mod._HANDLERS, "policies", _noop)

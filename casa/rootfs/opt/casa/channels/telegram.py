@@ -2034,11 +2034,11 @@ class TelegramChannel(Channel):
     # ------------------------------------------------------------------
 
     async def _maybe_route_desk_reply(self, update: Update, chat_id: str) -> bool:
-        """INV-DESK-001: four positive conditions — the sender is the
+        """INV-DESK-005: four positive conditions — the sender is the
         authenticated operator, the quoted message is retained in the post
         map for this chat and was posted for this operator, the poster is not
-        this chat's resident, and the poster is a specialist the resident may
-        delegate to now — then the chat's rate decision, exactly as today's
+        this chat's resident, and the poster holds a desk (a specialist or the
+        configurator) the resident may delegate to now — then the chat's rate decision, exactly as today's
         path takes it, then ONE tracked desk task. ``True`` when the message
         was consumed here (routed, or rate-limited with the notice)."""
         import result_broker
@@ -2611,6 +2611,30 @@ class TelegramChannel(Channel):
             return True
         except Exception as exc:  # noqa: BLE001 — a notice fault is logged
             logger.warning("hand-off line failed: %s", type(exc).__name__)
+            return False
+
+    async def send_step_line(self, chat_id: int, text: str) -> "int | None":
+        """The configurator's step line in the operator's DM — Casa's
+        text, silent. Returns the message id, or None when not posted."""
+        if self._app is None:
+            return None
+        try:
+            msg = await self._app.bot.send_message(
+                chat_id=chat_id, text=text, disable_notification=True)
+        except Exception as exc:  # noqa: BLE001 — progress is never the work's fault
+            logger.info("step line not posted: %s", type(exc).__name__)
+            return None
+        return getattr(msg, "message_id", None)
+
+    async def delete_dm_message(self, chat_id: int, message_id: int) -> bool:
+        """Delete one message Casa posted in a DM; a failure is logged."""
+        if self._app is None:
+            return False
+        try:
+            return bool(await self._app.bot.delete_message(
+                chat_id=chat_id, message_id=message_id))
+        except Exception as exc:  # noqa: BLE001
+            logger.info("DM message not deleted: %s", type(exc).__name__)
             return False
 
     # ------------------------------------------------------------------

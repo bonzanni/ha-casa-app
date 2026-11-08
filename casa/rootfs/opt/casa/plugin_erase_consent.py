@@ -8,8 +8,8 @@ The tap IS the authorization: an Erase tap records a single-use choice grant,
 of the kind tapped, that ``plugin_remove`` / ``specialist_uninstall`` consume
 before any eraser runs, so the model can never assert "erase" — or pick which
 eraser — on the operator's behalf. Keep and Cancel record nothing (keeping
-the data is today's removal). Every tap continues the configurator engagement
-through the caller's callback."""
+the data is today's removal). Every tap continues the configurator, on its
+desk in the operator's DM, through the caller's callback."""
 from __future__ import annotations
 
 import logging
@@ -115,11 +115,11 @@ def render_erase_choice(what: str,
 
 
 _EDITS = {
-    KEEP: "Keeping the data — the uninstall continues in the configurator topic.",
+    KEEP: "Keeping the data — the Configurator carries on with the uninstall.",
     ERASE: "Erase everything — the plugin's eraser runs first; the "
-           "configurator topic reports what it says.",
+           "Configurator tells you what it says.",
     ERASE_DATA_ONLY: "Erase data, keep sign-ins — the plugin's eraser runs "
-                     "first; the configurator topic reports what it says.",
+                     "first; the Configurator tells you what it says.",
     CANCEL: "Cancelled — nothing was removed.",
 }
 
@@ -128,7 +128,6 @@ def prompt_erase_choice(
     *, coordinator: Any, channel: Any, key: EraseChoiceKey, text: str,
     continue_cb: "Callable[[int], Awaitable[bool]]",
     grants: "ChoiceGrants | None" = None,
-    inbound_reservation: Any | None = None,
     choices: "tuple[int, ...]" = (KEEP, ERASE, CANCEL),
 ) -> Any:
     """Post the question with *choices* as its buttons, in order; every
@@ -146,18 +145,9 @@ def prompt_erase_choice(
         choice = _choice(idx)
         if choice in (ERASE, ERASE_DATA_ONLY):
             grants.mint(key, choice)
-        if inbound_reservation is not None:
-            inbound_reservation.take()
 
     def _finish_factory(message_id: int, req: Any) -> Callable[[dict], Any]:
         async def _finish(outcome: dict) -> None:
-            try:
-                await _finish_inner(outcome)
-            finally:
-                if inbound_reservation is not None:
-                    inbound_reservation.release()
-
-        async def _finish_inner(outcome: dict) -> None:
             o = outcome.get("outcome") if isinstance(outcome, dict) else None
             if o != "answered":
                 await channel.edit_dm_message(

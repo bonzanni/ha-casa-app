@@ -6,7 +6,7 @@ take it — so a plugin that declares a new background job never reaches a
 conversation that was already open, for the life of that session, silently.
 
 The gate here is the sibling of the existing ``binding_digest`` gate: a session
-whose STRUCTURAL prompt surface (``<delegates>``/``<jobs>``/``<executors>``) no
+whose STRUCTURAL prompt surface (``<delegates>``/``<jobs>``) no
 longer matches what Casa would render is not resumed; a fresh one is started and
 the old conversation is retained.
 
@@ -215,7 +215,6 @@ async def test_build_options_splices_the_armed_surface_without_re_rendering(
     sentinel = agent_mod.PromptSurface(
         delegates="<delegates>\n- SENTINEL-DELEGATE\n</delegates>",
         jobs="<jobs>\n- SENTINEL-JOB\n</jobs>",
-        executors="<executors>\n- SENTINEL-EXECUTOR\n</executors>",
         digest="sha256:" + "c" * 64,
     )
 
@@ -241,7 +240,6 @@ async def test_build_options_splices_the_armed_surface_without_re_rendering(
     prompt = opts.system_prompt or ""
     assert "SENTINEL-DELEGATE" in prompt
     assert "SENTINEL-JOB" in prompt
-    assert "SENTINEL-EXECUTOR" in prompt
     assert renders["n"] == 0, (
         "_build_options re-rendered the surface instead of splicing the armed "
         "one — the drift both design reviewers reproduced is back"

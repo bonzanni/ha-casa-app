@@ -182,7 +182,7 @@ def test_pending_read_recovery_rule_is_shipped() -> None:
     import tools as tools_mod
 
     corpus = REPO_ROOT / "docs" / "doctrine" / "operating-casa.md"
-    runtime = (Path(tools_mod.__file__).parent / "defaults/agents/executors"
+    runtime = (Path(tools_mod.__file__).parent / "defaults"
                / "configurator/doctrine/safety.md")
     flat_rule = " ".join(_RULE.split())
 
@@ -190,7 +190,7 @@ def test_pending_read_recovery_rule_is_shipped() -> None:
 
     # The runtime counterpart is only reachable because the prompt routes the
     # configurator into safety doctrine before it picks a recipe.
-    prompt = _flat(Path(tools_mod.__file__).parent / "defaults/agents/executors"
+    prompt = _flat(Path(tools_mod.__file__).parent / "defaults"
                    / "configurator/prompt.md")
     assert "doctrine/safety.md" in prompt
 

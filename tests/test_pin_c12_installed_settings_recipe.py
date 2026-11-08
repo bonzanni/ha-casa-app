@@ -30,7 +30,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RECIPES_DIR = (
     REPO_ROOT
-    / "casa/rootfs/opt/casa/defaults/agents/executors/configurator/doctrine/recipes"
+    / "casa/rootfs/opt/casa/defaults/configurator/doctrine/recipes"
 )
 
 TOOL = "specialist_install_commit"

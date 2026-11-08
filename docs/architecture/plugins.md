@@ -50,8 +50,7 @@ revalidation. So a *registry* edit is invisible until a reload — deliberate, b
 validation is expensive and a long-lived agent should not see a half-written registry — while
 a mutation *inside a stored artifact* can become visible immediately and evades the cached
 checksum until an explicit verification, the next snapshot reload — or a specialist
-engagement's resume, which deep-validates its recorded artifacts automatically. Executor
-resume checks only that the recorded directories still exist.
+engagement's resume, which deep-validates its recorded artifacts automatically.
 
 **An assignment may hold a profile.** Beside `targets`, an entry may carry a sibling
 `profiles` map naming, per target, one of the plugin's manifest-declared tool subsets; a
@@ -69,15 +68,11 @@ specialists get plugin grants merged into their allowed tools, a fail-closed too
 the protected-tool approval hook. A specialist's options also deny Bash unless its role lists
 Bash in some form, bare or scoped (`Bash(<pattern>)`), because the pinned CLI runs a read-only
 command without asking that gate. A role that lists a scoped form keeps the tool, and its
-read-only commands, background ones included, still skip the gate. **Executors get none of those** — they
-receive plugin paths, and their declared tool list is passed to the SDK as *auto-approved* tools, which is
-a convenience rather than an enforcement boundary: sub-agent spawning bypasses an
-allowed-tools list, and only the disallowed list is CLI-enforced. What actually constrains an
-executor is the code-mandatory clamps merged into every options build — sub-agent spawn tools
-are hard-denied, Bash is hard-denied unless the declaration allows it (an executor's options
-count only a bare `Bash`), and guard hooks
-protect managed components and agent-home settings. A plugin declaring protected tools
-protects resident and specialist calls; it creates no equivalent gate on the executor path.
+read-only commands, background ones included, still skip the gate. The configurator is
+built by the same delegated builder as a specialist, its plugin set resolved as one would be
+(`specialist:configurator`), so it gets the same gates
+([`configurator.md`](configurator.md)). No session loads a plugin through an `executor:`
+target: verification reports such a target `dormant`.
 
 **A third producer declaration sits beside protected tools and the setup tool.** The
 result contract names which of a plugin's tools return a live capability; those values are
@@ -116,14 +111,6 @@ Enforced by an explicit per-member loop. The standard library's extraction filte
 as well where the runtime supports it, but it is defence in depth — the per-member loop is
 what actually carries the guarantee, and the fallback exists because the shipped interpreter
 predates the filter.
-
-**INV-PLUG-006**: Executor options receive plugin paths without a grant merge and without a tool gate.
-
-Stated as an invariant because it is a security-relevant asymmetry that reads like an
-oversight and is not one — the executor path is constrained by its code-mandatory disallow
-clamps and guard hooks instead; its declared tool list is auto-approval, not a gate.
-Verification will report an executor whose declaration lacks a needed authorisation, but
-nothing merges it automatically.
 
 **INV-PLUG-021**: An operator-installed plugin — one whose registry entry's `source.type` is not the seeded-default type — cannot acquire an `executor:*` target through `plugin_add`, `plugin_assign` or `plugin_update`, each of which refuses the operation with a stated reason before any artifact is published, any system requirement is installed and any registry write; and an `executor:*` target already stored on such an entry is ignored when a fresh executor launch resolves its plugin set, is left in the registry document unchanged, and is reported to the operator as ignored. Outside this statement: bundled entries, an executor engagement resumed from recorded artifacts, and a registry file edited by hand outside the tools.
 
@@ -178,8 +165,9 @@ loadable; the agents that should carry it still need their own reload to rebuild
 registry file directly is not sufficient: nothing takes effect until a snapshot reload runs.
 
 **Which populations a plugin may be given to.** Residents and specialists take
-operator-installed plugins; executors, for now, do not. An executor's plugin set is limited
-to bundled entries — those whose registry `source.type` is the seeded-default type, which
+operator-installed plugins; an `executor:` target does not, and no executor loads the
+plugins of one at all. Only a bundled entry may hold such a target — one whose registry
+`source.type` is the seeded-default type, which
 an earlier Casa seeded and Casa seeds none of today — and the rule is stated as *not
 bundled* rather than as a list of names, so a source
 type added later is excluded by default and a default the operator removed and re-added
@@ -198,15 +186,11 @@ entry without that target, so every reader of the entry list — the resolver, v
 health regeneration, the event and callback reconcilers — agrees without each of them
 restating the rule; nothing on a read path writes the registry. One report-only row per
 ignored target names the plugin and the executor, carries no artifact id so a routine
-re-pin does not re-announce it, and is scoped to no target's resolution at all: that is
-what keeps the executor launchable, since a launch is refused on any issue in its own
-resolution. It reaches the operator by direct message and `plugin_status`, never on the
+re-pin does not re-announce it, and is scoped to no target's resolution at all. It reaches the operator by direct message and `plugin_status`, never on the
 in-band notice, which excludes executor-addressed rows. `plugin_unassign` clears it, and
 `plugin_list` and `verify_plugin_state` show the stored and the served sets side by side.
 
-**Adding MCP tools** means shipping the declaration; grants are derived per server. If a
-bundled plugin targets an executor, that executor's own declared tool list must be updated
-separately — verification will tell you it is missing, but no merge happens for you.
+**Adding MCP tools** means shipping the declaration; grants are derived per server.
 
 **Adding a protected tool** is a manifest declaration. Validation checks its shape and name
 uniqueness, **not that the named tool exists**; a typo produces a declaration that protects
@@ -238,7 +222,7 @@ upgrade that leaves the declaration unchanged keeps consent — because a callba
 role turn and no memory access, only a spool deposit. The mechanism lives in
 `architecture/callbacks.md`.
 
-**Reloading** refreshes the snapshot before agents and executors are rebuilt, and purges
+**Reloading** refreshes the snapshot before agents are rebuilt, and purges
 role-scoped grants and pending challenges before a role is replaced or removed.
 
 ## Source & test map

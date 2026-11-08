@@ -47,26 +47,20 @@ class TestCasaRestartSupervised:
         payload = json.loads(result["content"][0]["text"])
         assert payload["kind"] == "not_authorized"
 
-    async def test_engagement_bound_defers(self):
-        """Inside an engagement, must NOT POST inline — sets deferred marker."""
-        import tools as tools_mod
-        from tools import casa_restart_supervised, engagement_var
-        from engagement_registry import EngagementRecord
-
-        rec = EngagementRecord(
-            id="eng-1", kind="executor", role_or_type="configurator",
-            driver="claude_code", status="active", topic_id=1,
-            started_at=0.0, last_user_turn_ts=0.0,
-            completed_at=None,
-            sdk_session_id=None, origin={}, task="",
-        )
-        tok = engagement_var.set(rec)
+    async def test_a_delegated_run_defers_to_the_restart_button(self):
+        """Inside a configurator run (a delegation id on the origin) nothing
+        is POSTed: the run's answer gets the Restart now button."""
+        import agent as agent_mod
+        import configurator_run
+        from tools import casa_restart_supervised
+        tok = agent_mod.origin_var.set({"role": "assistant",
+                                        "execution_role": "configurator",
+                                        "_delegation_id": "d-1"})
         try:
             with patch.dict(os.environ, {}, clear=True):
                 result = await casa_restart_supervised.handler({})
-            assert rec.id in tools_mod._ENGAGEMENTS_DEFERRED_HARD_RELOAD
         finally:
-            engagement_var.reset(tok)
-            tools_mod._ENGAGEMENTS_DEFERRED_HARD_RELOAD.discard(rec.id)
+            agent_mod.origin_var.reset(tok)
+            configurator_run._reset_for_tests()
         payload = json.loads(result["content"][0]["text"])
         assert payload["deferred"] is True

@@ -84,7 +84,7 @@ declared eraser on the operator's Erase tap — is
 [`plugin-erase-episode.md`](plugin-erase-episode.md)'s; this invariant is only its identity.
 
 What it does not cover: turns with no identity at all — voice, webhook, scheduled,
-callback-nudge and every other synthetic marker, and executor sessions — which refuse a
+callback-nudge and every other synthetic marker — which refuse a
 capability tool before it runs, as before; a renewal a scheduled reminder tries to start
 cannot mint a link, and the resident asks the operator instead.
 

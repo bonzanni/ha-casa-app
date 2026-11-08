@@ -37,7 +37,7 @@ configured nobody can consent, and the tool door refuses everyone.
 
 **Which door a shipped install actually has.** The terminal door, and only that one. A Casa
 tool reaches an agent's MCP server only when that agent's resolved grants name it, and no
-shipped runtime, role or executor artifact names the wipe tool — so the agent door exists,
+shipped runtime or role artifact names the wipe tool — so the agent door exists,
 is correct, and is held by nobody. An operator's own agent configuration can grant it, and
 the tool's gates then apply unchanged. Because the door is unreachable by default, every
 shipped resident's doctrine carries the matching refusal: claim the capability only when

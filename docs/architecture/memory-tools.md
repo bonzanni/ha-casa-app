@@ -97,10 +97,10 @@ kept, and the writer files it as his right version (INV-MEM-041,
 [`memory-writer.md`](memory-writer.md)). A turn no message of his opened — a scheduled turn, an engagement, a delegation —
 marks nothing, and says so.
 
-**The engager query reads the same memory.** An executor's `query_engager` asks a
+**The engager query reads the same memory.** An engagement's `query_engager` asks a
 synthesizer that sees only the engager's view of the ledger its engagement's clearance
 reads and the first page of a search for the question, read at that clearance. With
-nothing readable, or when the synthesizer says `UNKNOWN`, the executor is told the
+nothing readable, or when the synthesizer says `UNKNOWN`, the engagement is told the
 readable memory had nothing — not that nothing exists.
 
 **Grants follow the roles.** The assistant holds all four tools. The butler, which serves
@@ -110,7 +110,7 @@ gets `search_memory` alone, at its declared clearance.
 
 ## Contracts & invariants
 
-**INV-MEM-010**: No memory read licenses a claim that Casa lacks something: every `search_memory` and `browse_memory_day` result, empty or not, carries one note, the same at every clearance, that what it returns is what is readable here and that finding nothing is not proof; a page with more behind it says so; a store that cannot be read is reported unavailable, never as an empty result; the engager query's synthesizer, the one reader handed an unframed slice, can only answer from it or return `UNKNOWN`, which reaches the executor with do-not-assert-absence guidance.
+**INV-MEM-010**: No memory read licenses a claim that Casa lacks something: every `search_memory` and `browse_memory_day` result, empty or not, carries one note, the same at every clearance, that what it returns is what is readable here and that finding nothing is not proof; a page with more behind it says so; a store that cannot be read is reported unavailable, never as an empty result; the engager query's synthesizer, the one reader handed an unframed slice, can only answer from it or return `UNKNOWN`, which reaches the engagement that asked with do-not-assert-absence guidance.
 
 Enforced in the search and browse tools, which attach `tools.MEMORY_READ_NOTE` to every
 `ok` result and report an unavailable or failing store as `unavailable`; and in the engager

@@ -12,7 +12,6 @@ the next bump — which is what these tests pin.
 from __future__ import annotations
 
 import ast
-import re
 from pathlib import Path
 
 import pytest
@@ -94,7 +93,7 @@ def test_every_options_site_passes_effort_for_its_own_model():
                     or len(effort.args) != 1
                     or ast.unparse(effort.args[0]) != ast.unparse(model)):
                 problems.append(f"{where}: effort is not effort_for(<model>)")
-    assert count == 10, count
+    assert count == 9, count
     assert fixed_seen == set(FIXED_EFFORT), fixed_seen
     assert not problems, problems
 
@@ -137,9 +136,10 @@ def test_shipped_executors_stay_on_sonnet_5(executor):
         source=load_role_artifact(DEFAULTS / "roles" / "executor" / executor),
         options=_ha_model_options({}))
     assert role.resolved_model.sdk_model == "claude-sonnet-5"
-    text = (DEFAULTS / "agents" / "executors" / executor
-            / "definition.yaml").read_text(encoding="utf-8")
-    assert re.search(r"(?m)^model: claude-sonnet-5$", text)
+    # Since v0.351.0 the configurator's runtime config is built from
+    # that same role artifact (no definition.yaml any more).
+    import agent_loader
+    assert agent_loader.load_configurator().model == "claude-sonnet-5"
 
 
 @pytest.mark.parametrize("resident,option,expected", [

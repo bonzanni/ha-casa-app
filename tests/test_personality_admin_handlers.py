@@ -901,7 +901,7 @@ def _runtime_with_registry(specialist_registry, *, role_configs=None):
     return CasaRuntime(
         agents={}, role_configs={} if role_configs is None else role_configs,
         specialist_registry=specialist_registry,
-        executor_registry=MagicMock(), engagement_registry=MagicMock(),
+        engagement_registry=MagicMock(),
         agent_registry=MagicMock(), trigger_registry=MagicMock(),
         mcp_registry=MagicMock(), session_registry=MagicMock(),
         channel_manager=MagicMock(), bus=MagicMock(),

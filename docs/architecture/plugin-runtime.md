@@ -58,11 +58,7 @@ specialist execution target needs no such hold: specialists build their options 
 delegation against the current environment. Every successful reload — plugin-env landing
 the secrets, or any agent-reconstructing scope — kicks the episode worker.
 
-What it does not cover: the executor path, whose options builder hands out plugin paths
-without this gate (the same asymmetry as INV-PLUG-006 — a configurator
-executor must be able to work on a plugin whose secrets are not wired yet). Since #923 the
-paths handed out there are Casa's own: an executor resolves the bundled population only,
-so this ungated hand-out no longer reaches an operator-installed plugin at all. A *malformed*
+What it does not cover: a *malformed*
 declaration yields no requirements and passes this gate deliberately: the shared parser
 gives the CLI nothing to spawn a server from, so no placeholder-credential path exists,
 and malformed-ness is reported on the verification surface instead. The withhold decision
@@ -153,9 +149,8 @@ the environment happens to hold — including a leftover unresolvable `op://` re
 which an idempotent setup tool can easily read as "already provisioned" and skip the
 creation over.
 
-It covers every path that attaches a plugin: the three in-process options builders
-(resident/specialist Agent, delegated specialist, executor — including its by-path resume
-branch).
+It covers every path that attaches a plugin: the in-process options builders, among them
+the delegated builder that also builds the configurator's runs.
 
 What it does not cover: the exemption is not phase-scoped. An exempt plugin loads in
 *ordinary* sessions too, on empty credentials, not only in the session that runs its

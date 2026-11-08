@@ -47,7 +47,6 @@ def _make_runtime(tmp_path: Path):
         agents={},
         role_configs={},
         specialist_registry=MagicMock(),
-        executor_registry=MagicMock(),
         engagement_registry=MagicMock(),
         agent_registry=MagicMock(),
         trigger_registry=MagicMock(),

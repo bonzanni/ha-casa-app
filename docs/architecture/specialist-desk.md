@@ -32,13 +32,19 @@ retold: the specialist answers in the operator's chat under its own label (`📊
 the resident learns of the exchange as one body-free line at its next turn. A reply that does
 not meet the route's four conditions — the sender is the authenticated operator, the quoted
 message is retained in the post map for this chat and was posted for this operator, the
-poster is not the chat's own resident, and the poster is a specialist (`is_specialist`: the
-loaded role's `kind`, the same predicate the delegation gate reads) the resident may
-delegate to now — takes the resident's path as before, its text unchanged (a reply carrying
-Casa's note of what it answered, below). The route runs first in
-the DM handler, ahead of the `/new` interception (so `/new, start over` on a Finance post is
+poster is not the chat's own resident, and the poster holds a desk (`has_desk`: the loaded
+role's `kind` is `specialist`, or `executor` for the configurator; the same predicate the
+delegation gate reads) and is one the resident may delegate to now — takes the resident's
+path, its text unchanged (a reply carrying Casa's note of what it answered, below). The route
+runs first in the DM handler, ahead of the `/new` interception (so `/new, start over` on a Finance post is
 Finance's turn, as text: it resets nothing, neither the resident nor the desk), and after the
 chat's rate decision, taken exactly as today's path takes it.
+
+**The configurator holds a desk as a specialist does.** A reply on a post Casa made for it,
+its answer the resident relayed or its own earlier desk reply, is the configurator's desk
+turn, and the resident's DM delegation to it uses the same desk; each such run also takes the
+configurator lease ([`configurator.md`](configurator.md)). Everything below about a
+specialist's desk holds for it alike.
 
 **The post map is filed as messages land.** The channel files every physical message a post
 produces — each page, each plain fallback chunk, the media message, the link message, a desk
@@ -133,7 +139,7 @@ opens it or shares it with a plugin, whatever else the inbox holds
 
 ## Contracts & invariants
 
-**INV-DESK-001**: An operator's Telegram message that quotes a message Casa posted for a specialist's slot in that chat, for that operator, and still retained in its post map, reaches that specialist as one desk turn carrying the operator's exact words — never a resident turn — when the specialist is one the chat's resident may delegate to; every other message, quoting or not, takes the path that existed before.
+**INV-DESK-005**: An operator's Telegram message that quotes a message Casa posted for an agent that holds a desk (a specialist or the configurator) in that chat, for that operator, and still retained in its post map, reaches that agent as one desk turn carrying the operator's exact words — never a resident turn — when it is one the chat's resident may delegate to; every other message, quoting or not, takes the resident's path.
 
 The four conditions are positive and read from Casa's own state — the authenticated
 operator check the ingress already makes, the post map the channel filed, the chat's default

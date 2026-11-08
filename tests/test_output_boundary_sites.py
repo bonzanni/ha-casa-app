@@ -91,9 +91,9 @@ EDIT_DM_MESSAGE_CALLERS = {
     ("channels/telegram.py", "_edit_proposal_message"): {"status"},
     ("callback_consent.py", "_finish"): {"plugin"},                # consent bodies are plugin-authored
     ("event_consent.py", "_finish"): {"plugin"},
-    ("persona_install_consent.py", "_finish_inner"): {"plugin"},
-    ("plugin_erase_consent.py", "_finish_inner"): {"status"},      # #1046: fixed Keep/Erase/Cancel/expired statuses
-    ("specialist_install_consent.py", "_finish_inner"): {"plugin"},
+    ("persona_install_consent.py", "_finish"): {"plugin"},
+    ("plugin_erase_consent.py", "_finish"): {"status"},      # #1046: fixed Keep/Erase/Cancel/expired statuses
+    ("specialist_install_consent.py", "_finish"): {"plugin"},
     ("trigger_consent.py", "_finish"): {"plugin"},
     ("operator_calls.py", "_finish"): {"plugin"},                  # browser executor: a plugin's question, ☑ label / retired
     ("plugin_stop.py", "settle_run_card"): {"status"},             # the Stop: the card's stored text + ☑ Stopped / Ended / Stop asked
@@ -129,6 +129,7 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "send_reply_line"): "notice",           # the Stop: its one outcome line, Casa-composed
     ("channels/telegram.py", "notify_operator"): "notice",           # the memory wipe's restart and done lines
     ("channels/telegram.py", "_send_plain_line"): "notice",          # the memory wipe's courtesy line
+    ("channels/telegram.py", "send_step_line"): "notice",            # the configurator's step line, Casa template
     # topic — engagement-topic methods (out of this boundary)
     ("channels/telegram.py", "edit_topic_message"): "topic",
     ("channels/telegram.py", "emit"): "topic",                      # TopicStreamHandle
@@ -228,7 +229,7 @@ NOTICE_METHODS = {"deliver_operator_link", "deliver_operator_message", "deliver_
                   "deliver_operator_file", "deliver_desk_notice", "send_handoff_line", "reply",
                   "deliver_operator_proposal", "replace_operator_proposal",
                   "deliver_operator_question", "notify_operator", "deliver_run_card",
-                  "send_reply_line"}
+                  "send_reply_line", "send_step_line"}
 # dispatch — the text becomes a TURN's input, not an emission (Astra r1 item 1)
 DISPATCH_METHODS = {"deliver_system_turn"}
 

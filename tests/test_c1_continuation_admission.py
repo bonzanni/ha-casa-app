@@ -16,7 +16,7 @@ and the resume turn is dropped.
 
 Both are pinned here with REAL modules — a real ``EngagementRegistry``, a real
 ``InCasaDriver``, the real Telegram seams, the real ``VerdictBroker`` and the
-real consent modules. Event-driven only; no sleeps, and never a patch of
+real authorization-challenge coordinator. Event-driven only; no sleeps, and never a patch of
 ``<module>.asyncio.sleep``.
 
 Two deliberate constructions keep the PRE-FIX failure the intended one rather
@@ -284,25 +284,6 @@ class TestFollowUpAdmissionFence:
 # ===========================================================================
 
 
-class _Acks:
-    """Ack store that RECORDS its call into a shared ordered event log, so a
-    reservation taken before the ack (which would reorder around #543's
-    revocation generations) is visible as an ordering failure."""
-
-    def __init__(self, events, acked=True):
-        self.events = events
-        self.acked = acked
-        self.records: list[dict] = []
-
-    def record(self, **kwargs):
-        self.events.append("acks.record")
-        self.records.append(kwargs)
-        return self.acked
-
-    def revocation_generations(self, **kwargs):
-        return {}
-
-
 class _SpyLease:
     """Wraps the channel's real reservation lease so the production CALL
     ORDER is observable. Only constructed when the production factory exists;
@@ -321,34 +302,34 @@ class _SpyLease:
         self._inner.release()
 
 
-class _FakeCoordinator:
-    def register_challenge(self, key, **kwargs):
-        self.on_commit_sync = kwargs["on_commit_sync"]
-        self.finish_factory = kwargs["finish_factory"]
-        return SimpleNamespace(created=True)
+def _authz_challenge(ch, engagement_id):
+    """An engagement-origin authorization challenge built by the REAL
+    ``ChallengeCoordinator.get_or_create`` against the REAL channel, with only
+    the broker registration captured: it returns the coordinator holding the
+    challenge's ``on_commit_sync`` (the synchronous tap-commit step, which
+    takes the engagement's ingress reservation) and its ``finish_factory``.
 
+    The authz grant is the continuation kind that still takes the reservation
+    at the tap commit; the install-consent cards that used to (#663) now
+    continue the configurator on its desk, outside any engagement."""
+    from authz_grants import ChallengeCoordinator, GrantKey, GrantStore
 
-def _inspection():
-    from specialist_install import DependencyResolution, InspectionResult
-    return InspectionResult(
-        component_id="casa-test/mtg", version="0.1.0", slug="mtg",
-        component_checksum="sha256:" + "1" * 64,
-        root_digest="sha256:" + "4" * 64,
-        mission="Answer test questions.",
-        default_persona_ref="casa/judge@0.1.0",
-        default_persona_checksum="sha256:" + "2" * 64,
-        required_config_names=(), required_secret_names=(),
-        dependencies=(DependencyResolution(
-            kind="persona", identifier="casa/judge@0.1.0",
-            digest="sha256:" + "2" * 64, available=True, detail=""),),
-        staged_dir=Path("/config/specialists/.staging/x"),
-    )
+    class _Capture(ChallengeCoordinator):
+        def register_challenge(self, key, **kwargs):
+            self.on_commit_sync = kwargs["on_commit_sync"]
+            self.finish_factory = kwargs["finish_factory"]
+            return SimpleNamespace(created=True)
 
-
-def _persona_inspection():
-    return SimpleNamespace(
-        persona_id="casa/judge", version="0.1.0",
-        checksum="sha256:" + "3" * 64, display_name="Judge")
+    coord = _Capture()
+    key = GrantKey(operator_id=701, chat_id=701, enforcement_role="finance",
+                   artifact_id="art-1", tool_name="mcp__ledger__reset",
+                   args_hash="h", engagement_id=engagement_id)
+    coord.get_or_create(
+        key, chat_id=701, operator_id=701, target_role="finance",
+        tool_name="mcp__ledger__reset", canonical_json="{}",
+        enforcement_role="finance", channel=ch, grants=GrantStore(),
+        engagement_id=engagement_id)
+    return coord
 
 
 async def _mk_ctx(tmp_path, fake_telegram_bot, *, lock=None):
@@ -400,8 +381,8 @@ async def _mk_ctx(tmp_path, fake_telegram_bot, *, lock=None):
 
 def _lease(ch, engagement_id, events):
     """The lease the production caller will build, or ``None`` on the pre-fix
-    tree — where the channel exposes no such factory and the consent module
-    accepts no such keyword."""
+    tree — where the channel exposes no such factory and the seam accepts no
+    such keyword."""
     factory = getattr(ch, "engagement_inbound_reservation", None)
     return None if factory is None else _SpyLease(factory(engagement_id),
                                                   events)
@@ -419,333 +400,6 @@ async def _emit_ok(rec):
     return json.loads(res["content"][0]["text"])
 
 
-class TestReservationIsBornAtTheTapCommit:
-    """The window is [``BROKER.commit()`` returns, the finish-hook task's
-    first step]. ``_on_commit_sync`` is the only synchronous instant inside
-    it, so the reservation is born there or not at all."""
-
-    async def test_specialist_approve_reserves_after_the_ack(
-            self, tmp_path, fake_telegram_bot):
-        """Pre-fix: the ack is recorded and NOTHING counts as inbound, so a
-        successful completion racing the hook has nothing to be vetoed on."""
-        import agent as agent_mod
-        from specialist_install_consent import (
-            prompt_specialist_install_consent)
-        ch, reg, rec, drv, client, tch = await _mk_ctx(
-            tmp_path, fake_telegram_bot)
-        try:
-            events: list[str] = []
-            acks = _Acks(events)
-            _supported(
-                prompt_specialist_install_consent,
-                coordinator=(coord := _FakeCoordinator()), channel=ch,
-                chat_id=701, operator_id=701, inspection=_inspection(),
-                acks=acks, reconcile_cb=None,
-                inbound_reservation=_lease(ch, rec.id, events))
-            coord.on_commit_sync(0, {})
-
-            facts = (events, _reservations(drv, rec.id))
-            assert facts == (["acks.record", "reserve"], 1), (
-                f"specialist tap-commit facts: {facts!r}")
-        finally:
-            agent_mod.active_engagement_driver = None
-
-    async def test_persona_approve_reserves_after_the_ack(
-            self, tmp_path, fake_telegram_bot):
-        """The persona sibling. ``acks.record`` RETURNS the acked bool into
-        ``meta["acked"]`` (#543 revocation generations), so the reservation
-        must not reorder around it."""
-        import agent as agent_mod
-        from persona_install_consent import prompt_persona_install_consent
-        ch, reg, rec, drv, client, tch = await _mk_ctx(
-            tmp_path, fake_telegram_bot)
-        try:
-            events: list[str] = []
-            acks = _Acks(events)
-            meta: dict = {}
-            _supported(
-                prompt_persona_install_consent,
-                coordinator=(coord := _FakeCoordinator()), channel=ch,
-                chat_id=701, operator_id=701,
-                inspection=_persona_inspection(), acks=acks, reconcile_cb=None,
-                inbound_reservation=_lease(ch, rec.id, events))
-            coord.on_commit_sync(0, meta)
-
-            facts = (events, _reservations(drv, rec.id), meta.get("acked"))
-            assert facts == (["acks.record", "reserve"], 1, True), (
-                f"persona tap-commit facts: {facts!r}")
-        finally:
-            agent_mod.active_engagement_driver = None
-
-    @pytest.mark.parametrize("with_continuation", [True, False])
-    @pytest.mark.parametrize("arm", ["specialist", "specialist-upgrade", "persona"])
-    async def test_a_deny_tap_reserves_only_with_a_deny_continuation(
-            self, tmp_path, fake_telegram_bot, arm, with_continuation):
-        """#1251: a Deny that dispatches a continuation takes the reservation
-        at the tap commit, exactly as Approve does, and records no ack.
-
-        Boundary kept from the test this replaces: a reservation taken with no
-        Deny continuation to hand it to is a visible failure — without one, a
-        Deny reserves nothing.
-
-        Pre-fix: no Deny continuation can be supplied, so the first half reads
-        ``([], 0)``.
-        """
-        import agent as agent_mod
-        from persona_install_consent import prompt_persona_install_consent
-        from specialist_install_consent import (
-            prompt_specialist_install_consent)
-        ch, reg, rec, drv, client, tch = await _mk_ctx(
-            tmp_path, fake_telegram_bot)
-        try:
-            events: list[str] = []
-
-            async def _deny_cb():
-                return False
-            kwargs = dict(
-                coordinator=(coord := _FakeCoordinator()), channel=ch,
-                chat_id=701, operator_id=701, acks=_Acks(events),
-                reconcile_cb=None,
-                inbound_reservation=_lease(ch, rec.id, events))
-            if with_continuation:
-                kwargs["deny_cb"] = _deny_cb
-            if arm == "persona":
-                _supported(prompt_persona_install_consent,
-                           inspection=_persona_inspection(), **kwargs)
-            else:
-                if arm == "specialist-upgrade":
-                    kwargs["mode"] = "upgrade"
-                _supported(prompt_specialist_install_consent,
-                           inspection=_inspection(), **kwargs)
-            coord.on_commit_sync(1, {})
-
-            facts = (events, _reservations(drv, rec.id))
-            expected = (["reserve"], 1) if with_continuation else ([], 0)
-            assert facts == expected, f"deny facts: {facts!r}"
-        finally:
-            agent_mod.active_engagement_driver = None
-
-    @pytest.mark.parametrize("arm", ["specialist", "specialist-upgrade", "persona"])
-    async def test_a_completion_during_the_deny_edit_is_refused(
-            self, tmp_path, fake_telegram_bot, arm):
-        """#1251: the Deny edit is awaited before the continuation is handed
-        over, so the window is a whole Telegram round trip. A successful
-        completion landing inside it must be refused, not commit over a
-        refusal the engagement has not yet been told.
-
-        Pre-fix: nothing is reserved on Deny and the completion commits.
-        """
-        import agent as agent_mod
-        from persona_install_consent import prompt_persona_install_consent
-        from specialist_install_consent import (
-            prompt_specialist_install_consent)
-        ch, reg, rec, drv, client, tch = await _mk_ctx(
-            tmp_path, fake_telegram_bot)
-        entered, gate = asyncio.Event(), asyncio.Event()
-        task = None
-        try:
-            events: list[str] = []
-            lease = _lease(ch, rec.id, events)
-            handed: list[bool] = []
-
-            async def _deny_cb():
-                handed.append(True)
-                return await _supported(ch.deliver_system_turn, rec, "denied",
-                                        inbound_reservation=lease)
-
-            async def _edit(chat_id, message_id, text):
-                entered.set()
-                await gate.wait()
-            ch.edit_dm_message = _edit
-            ch._resume_and_ready = AsyncMock(return_value=True)
-            kwargs = dict(
-                coordinator=(coord := _FakeCoordinator()), channel=ch,
-                chat_id=701, operator_id=701, acks=_Acks(events),
-                reconcile_cb=None, deny_cb=_deny_cb, inbound_reservation=lease)
-            if arm == "persona":
-                _supported(prompt_persona_install_consent,
-                           inspection=_persona_inspection(), **kwargs)
-            else:
-                if arm == "specialist-upgrade":
-                    kwargs["mode"] = "upgrade"
-                _supported(prompt_specialist_install_consent,
-                           inspection=_inspection(), **kwargs)
-            req = SimpleNamespace(meta={})
-            coord.on_commit_sync(1, req.meta)
-            at_commit = _reservations(drv, rec.id)
-            task = asyncio.create_task(coord.finish_factory(88, req)(
-                {"outcome": "answered", "option_index": 1}))
-            await asyncio.wait_for(entered.wait(), 5)
-            during = _reservations(drv, rec.id)
-
-            payload = await _emit_ok(rec)
-            facts = (at_commit, during, payload.get("kind"),
-                     reg.get(rec.id).status, tch.close_topic.await_count,
-                     len(handed))
-            assert facts == (1, 1, "unread_inbound", "active", 0, 0), (
-                f"deny-edit race facts: {facts!r}")
-        finally:
-            gate.set()
-            if task is not None:
-                await asyncio.wait_for(asyncio.gather(
-                    task, return_exceptions=True), 5)
-                await _drain_tasks(ch)
-            agent_mod.active_engagement_driver = None
-
-    async def test_a_deny_continuation_hands_its_reservation_to_the_ticket(
-            self, tmp_path, fake_telegram_bot):
-        """#1251: through the real seam, the Deny continuation's ticket is
-        admitted and the tap-commit reservation released with no await
-        between, and nothing is left held once the hook has finished.
-
-        Pre-fix: no reservation is taken on Deny and nothing is handed over.
-        """
-        import agent as agent_mod
-        from specialist_install_consent import (
-            prompt_specialist_install_consent)
-        ch, reg, rec, drv, client, tch = await _mk_ctx(
-            tmp_path, fake_telegram_bot)
-        try:
-            events: list[str] = []
-            observed: list[tuple[int, int]] = []
-            lease = _lease(ch, rec.id, events)
-
-            inner_admit = ch._driver_admit_inbound
-
-            def _admit(r, text):
-                events.append("admit")
-                return inner_admit(r, text)
-            ch._driver_admit_inbound = _admit
-
-            async def _ready(r):
-                events.append("ready_enter")
-                observed.append((drv.inbound_unread_depth(r.id),
-                                 _reservations(drv, r.id)))
-                return True
-            ch._resume_and_ready = _ready
-
-            async def _deny_cb():
-                return await _supported(ch.deliver_system_turn, rec, "denied",
-                                        inbound_reservation=lease)
-            _supported(
-                prompt_specialist_install_consent,
-                coordinator=(coord := _FakeCoordinator()), channel=ch,
-                chat_id=701, operator_id=701, inspection=_inspection(),
-                acks=_Acks(events), reconcile_cb=None, deny_cb=_deny_cb,
-                inbound_reservation=lease)
-            req = SimpleNamespace(meta={})
-            coord.on_commit_sync(1, req.meta)
-            await coord.finish_factory(88, req)(
-                {"outcome": "answered", "option_index": 1})
-            await _drain_tasks(ch)
-
-            facts = (events, observed, _reservations(drv, rec.id),
-                     drv.inbound_unread_depth(rec.id))
-            assert facts == (
-                ["reserve", "admit", "release", "ready_enter", "release"],
-                [(1, 0)], 0, 0), f"deny transfer facts: {facts!r}"
-        finally:
-            agent_mod.active_engagement_driver = None
-
-    async def test_an_approve_continuation_hands_its_reservation_to_the_ticket(
-            self, tmp_path, fake_telegram_bot, monkeypatch):
-        """#1261, the Approve sibling of the Deny transfer above, end to end:
-        the REAL ``specialist_install_inspect`` builds the lease and the
-        callback, the REAL consent module takes it at the tap commit, and the
-        REAL seam admits the continuation's ticket. With the approval edit
-        HELD after the continuation turn has run and consumed its ticket, the
-        reservation is already gone, so a successful ``emit_completion`` inside
-        that edit is not refused (INV-ENG-003 refuses only over unread,
-        in-flight or reserved inbound, and none is left).
-
-        Pre-fix: the Approve callback never hands the lease to the seam, so it
-        is held until the finish hook's ``finally`` — after the edit — and the
-        completion is refused ``unread_inbound`` with nothing unread.
-        """
-        import agent as agent_mod
-        import test_tools_specialist_install as tsi
-        from tools import engagement_var, specialist_install_inspect
-        ch, reg, rec, drv, client, tch = await _mk_ctx(
-            tmp_path, fake_telegram_bot)
-        events: list[str] = []
-        real_factory = ch.engagement_inbound_reservation
-
-        class _EffectiveLease:
-            """Records a release only when it actually drops the driver's
-            count, so the finish hook's idempotent second call is not an
-            event."""
-
-            def __init__(self, inner):
-                self._inner = inner
-
-            def take(self) -> bool:
-                events.append("reserve")
-                return self._inner.take()
-
-            def release(self) -> None:
-                before = _reservations(drv, rec.id)
-                self._inner.release()
-                if _reservations(drv, rec.id) < before:
-                    events.append("release")
-
-        ch.engagement_inbound_reservation = (
-            lambda eid: _EffectiveLease(real_factory(eid)))
-        inner_admit = ch._driver_admit_inbound
-
-        def _admit(r, text):
-            events.append("admit")
-            return inner_admit(r, text)
-        ch._driver_admit_inbound = _admit
-        ch._resume_and_ready = AsyncMock(return_value=True)
-        entered, gate = asyncio.Event(), asyncio.Event()
-
-        async def _edit(chat_id, message_id, text):
-            events.append("edit")
-            entered.set()
-            await gate.wait()
-        ch.edit_dm_message = _edit
-        tsi._wire_inspect(monkeypatch, tmp_path, channel=ch)
-        cap = tsi._capture_real_consent(monkeypatch)
-        task = None
-        try:
-            # A production configurator engagement is kind "executor".
-            token = engagement_var.set(SimpleNamespace(id=rec.id,
-                                                       kind="executor"))
-            try:
-                payload = tsi._payload(
-                    await specialist_install_inspect.handler(
-                        {"repo": "owner/repo", "ref": "main"}))
-            finally:
-                engagement_var.reset(token)
-            assert payload.get("consent") == "keyboard_posted", payload
-            req = SimpleNamespace(meta={})
-            cap["on_commit_sync"](0, req.meta)
-            task = asyncio.get_running_loop().create_task(
-                cap["finish_factory"](88, req)(
-                    {"outcome": "answered", "option_index": 0}))
-            await asyncio.wait_for(entered.wait(), 5)
-            # The continuation turn runs to its end while the edit is held.
-            await _drain_tasks(ch)
-            during = (len(client.query_prompts),
-                      drv.inbound_unread_depth(rec.id),
-                      _reservations(drv, rec.id))
-            completion = await _emit_ok(rec)
-            gate.set()
-            await asyncio.wait_for(task, 5)
-            facts = (during, completion.get("status"),
-                     completion.get("kind"), events)
-            assert facts == ((1, 0, 0), "acknowledged", None,
-                             ["reserve", "admit", "release", "edit"]), (
-                f"approve transfer facts: {facts!r}")
-        finally:
-            gate.set()
-            if task is not None:
-                await asyncio.wait_for(asyncio.gather(
-                    task, return_exceptions=True), 5)
-            await _drain_tasks(ch)
-            agent_mod.active_engagement_driver = None
-
-
 class TestACompletionRacingTheContinuationIsRefused:
     """INV-ENG-003, extended to in_casa: an admitted-but-undelivered system
     continuation exists from the tap-commit that decided it."""
@@ -757,18 +411,10 @@ class TestACompletionRacingTheContinuationIsRefused:
         completion is ACKNOWLEDGED past a continuation the operator has
         already approved."""
         import agent as agent_mod
-        from specialist_install_consent import (
-            prompt_specialist_install_consent)
         ch, reg, rec, drv, client, tch = await _mk_ctx(
             tmp_path, fake_telegram_bot)
         try:
-            events: list[str] = []
-            _supported(
-                prompt_specialist_install_consent,
-                coordinator=(coord := _FakeCoordinator()), channel=ch,
-                chat_id=701, operator_id=701, inspection=_inspection(),
-                acks=_Acks(events), reconcile_cb=None,
-                inbound_reservation=_lease(ch, rec.id, events))
+            coord = _authz_challenge(ch, rec.id)
             coord.on_commit_sync(0, {})
 
             payload = await _emit_ok(rec)
@@ -794,18 +440,10 @@ class TestACompletionRacingTheContinuationIsRefused:
         commits, and the approved continuation is dropped.
         """
         import agent as agent_mod
-        from specialist_install_consent import (
-            prompt_specialist_install_consent)
         ch, reg, rec, drv, client, tch = await _mk_ctx(
             tmp_path, fake_telegram_bot)
         try:
-            events: list[str] = []
-            _supported(
-                prompt_specialist_install_consent,
-                coordinator=(coord := _FakeCoordinator()), channel=ch,
-                chat_id=701, operator_id=701, inspection=_inspection(),
-                acks=_Acks(events), reconcile_cb=None,
-                inbound_reservation=_lease(ch, rec.id, events))
+            coord = _authz_challenge(ch, rec.id)
 
             import tools
             real_register = tools._register_summary_run
@@ -952,36 +590,39 @@ class TestTheHandOffOutcomeAndTheTransfer:
 
     async def test_a_finish_hook_that_never_reaches_the_seam_still_releases(
             self, tmp_path, fake_telegram_bot):
-        """Release-guarantee: an arm whose reconcile callback is absent never
-        enters ``deliver_system_turn``, so the whole-body ``finally`` is the
-        only thing that can dispose of the reservation. An unreleased one
-        makes a successful completion permanently impossible under
-        INV-ENG-003.
+        """Release-guarantee: an arm that never enters
+        ``deliver_system_turn`` — here an approval whose mint the commit step
+        did not record, which must never dispatch — leaves the whole-body
+        ``finally`` as the only thing that can dispose of the reservation. An
+        unreleased one makes a successful completion permanently impossible
+        under INV-ENG-003.
 
         Pre-fix: nothing is reserved, so the first count is 0.
         """
         import agent as agent_mod
-        from specialist_install_consent import (
-            prompt_specialist_install_consent)
         ch, reg, rec, drv, client, tch = await _mk_ctx(
             tmp_path, fake_telegram_bot)
         try:
-            events: list[str] = []
             counts: list[int] = []
-            _supported(
-                prompt_specialist_install_consent,
-                coordinator=(coord := _FakeCoordinator()), channel=ch,
-                chat_id=701, operator_id=701, inspection=_inspection(),
-                acks=_Acks(events), reconcile_cb=None,
-                inbound_reservation=_lease(ch, rec.id, events))
-            req = SimpleNamespace(meta={})
-            coord.on_commit_sync(0, req.meta)
+            dispatched: list[bool] = []
+            real_dispatch = ch._dispatch_engagement_continuation
+
+            async def _spy_dispatch(**kw):
+                dispatched.append(True)
+                return await real_dispatch(**kw)
+            ch._dispatch_engagement_continuation = _spy_dispatch
+            coord = _authz_challenge(ch, rec.id)
+            # the commit step ran (the reservation is taken), but its mint
+            # record did not reach the request the finish hook reads
+            coord.on_commit_sync(0, {})
+            req = SimpleNamespace(meta={}, request_id="rid-1")
             counts.append(_reservations(drv, rec.id))
             await coord.finish_factory(88, req)(
                 {"outcome": "answered", "option_index": 0})
             counts.append(_reservations(drv, rec.id))
 
-            assert counts == [1, 0], f"release-guarantee counts: {counts!r}"
+            assert (counts, dispatched) == ([1, 0], []), (
+                f"release-guarantee counts: {counts!r}, dispatched: {dispatched!r}")
         finally:
             agent_mod.active_engagement_driver = None
 

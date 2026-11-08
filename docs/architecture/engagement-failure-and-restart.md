@@ -109,7 +109,9 @@ bounded and logged.
 **A restart interrupts an engagement.** Persisted records load with `active` rewritten to
 `idle`, because no live driver survived to make `active` true. No engagement is resumed at
 boot; a live one that runs a background job is continued once channels and residents are up,
-as [`architecture/background-jobs.md`](background-jobs.md) describes.
+as [`architecture/background-jobs.md`](background-jobs.md) describes. An `executor` record an
+older install left behind, from when the configurator ran as an engagement, has no config to
+rebuild from: its resume refuses (`config not found`) rather than open a bare session.
 
 **A restart replays an outcome nobody was told.** A terminal record is not only state to be
 tidied: if the finalization funnel committed it, somebody is still owed the news (INV-ENG-018,
@@ -167,6 +169,7 @@ decide it.
 - `tests/test_engage_executor_tool.py`
 - `tests/test_launch_failure_terminal_authority.py`
 - `tests/test_graceful_shutdown_engagement_launch.py`
+- `tests/test_engagement_resume_options.py::test_an_executor_engagement_left_from_an_upgrade_fails_closed`
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)

@@ -9,9 +9,10 @@ every absolute path — the guard failed OPEN, admitting exactly the writes it
 existed to refuse.
 
 The rule these tests pin: a mistyped parameter raises ``UnknownPolicyError``
-out of the factory. ``agent_loader._resolve_hooks_file`` turns that into a
-``LoadError`` and the executor fails closed at load, the same way an unknown
-parameter name already did.
+out of the factory, so a session build fails closed, the same way an unknown
+parameter name already did. (The executor load boundary this used to pin went
+in v0.351.0: the configurator's hooks ship with Casa, and
+``test_hooks_managed_component_guard.py`` resolves the shipped ones.)
 """
 
 from __future__ import annotations
@@ -160,30 +161,6 @@ class TestMistypedParamFailsClosedThroughTheConfigPath:
             build_policy_callbacks_from_hooks_yaml({"pre_tool_use": [
                 {"policy": "casa_config_guard", "forbid_write_paths": "/data"},
             ]})
-
-
-class TestAMistypedParamFailsTheExecutorLoad:
-    """Sol r1 P2: nothing pinned the LOAD boundary the invariant claims.
-
-    Deleting agent_loader's constructibility check left every other test in
-    this file green, so this one calls the loader.
-    """
-
-    def test_executor_with_mistyped_param_fails_to_load(self, tmp_path):
-        import agent_loader
-        exec_dir = tmp_path / "executors" / "broken"
-        exec_dir.mkdir(parents=True)
-        (exec_dir / "hooks.yaml").write_text(
-            "schema_version: 1\n"
-            "pre_tool_use:\n"
-            "  - policy: path_scope\n"
-            "    writable: /config\n"
-        )
-        with pytest.raises(agent_loader.LoadError) as exc:
-            agent_loader._resolve_executor_hooks(
-                str(exec_dir), "broken", {}, {"hooks.yaml"},
-            )
-        assert "writable" in str(exc.value)
 
 
 @pytest.mark.asyncio

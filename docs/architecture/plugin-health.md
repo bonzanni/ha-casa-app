@@ -135,12 +135,12 @@ delivers them on a schedule.
 **An install's own intermediate states are not faults while it runs.** Installing a plugin
 walks it through states that are expected on the way: consent still to give, a
 setup-provided value not wired yet, setup still to run, a first install not loaded yet, a
-plugin installed before its specialist. The plugin mutations an engagement makes record
-that engagement as installing the plugin — bundle entries by their scoped names — and while
-it is live the DM neither names nor marks that plugin's rows in those states. They stay new,
-so when the engagement ends, by whatever path, one notify pass runs and names whatever still
-stands; an install that ended with the plugin not working is exactly what the operator must
-hear. Every other row — a failed setup, a corrupt artifact — is sent at once, install or not,
+plugin installed before its specialist. The plugin mutations a configurator run makes
+record the plugin on the run's lease — bundle entries by their scoped names — and while the
+lease is held the DM neither names nor marks that plugin's rows in those states. They stay
+new, so when the lease is released, however the run ended, one notify pass runs and names
+whatever still stands; an install that ended with the plugin not working is exactly what the
+operator must hear (INV-CFG-018, in [`configurator.md`](configurator.md)). Every other row — a failed setup, a corrupt artifact — is sent at once, install or not,
 and a row never lets an install-phase state stand in front of a real fault: a report row
 carries one reason, and an install-phase one only when every other input of the plugin's
 readiness is ready or install-phase too — including a missing program, which verification
@@ -230,16 +230,6 @@ own parent, so it settles only the thread hop there. What this does not cover: t
 reconcile regenerations, which run before the HTTP server, the channels and the agent loops
 start, so nothing can race them.
 
-**INV-PLUG-032**: While the engagement installing a plugin is live, the operator DM neither names nor marks that plugin's rows whose reason is an install phase (consent pending, a setup-provided value unwired, setup pending, not loaded yet, target pending); every other row is sent as before; and when that engagement reaches a terminal state in this process, a notify pass runs that can name those rows.
-
-Both halves fail silently. Deferring without the ending pass leaves an install that stopped
-short unannounced until some later mutation or boot, which may never come; so the pass is
-driven from the engagement registry's one terminal funnel, which every in-process terminal
-write reaches — and a strict transition that rolled back, leaving the engagement live, does
-not. Deferring by plugin alone would withhold a real fault for as long as the install runs,
-which is why the filter keys on the reason as well, and why a row's reason is chosen so that
-an install-phase code never hides one.
-
 ## Failure behavior
 
 **The report cannot be written at boot.** Boot still exits successfully — deliberately,
@@ -284,7 +274,7 @@ alone and re-announces nothing, and its `detail` names the executor. It is addre
 that executor, which is what keeps it off the in-band notice — the notice selects rows
 addressed to the reading role or to nobody — so it reaches the operator by direct message
 and through the status tool, both of which report the standing set unfiltered. And it is
-scoped to no target's resolution, so it cannot make that executor unlaunchable. Such a row
+scoped to no target's resolution. Such a row
 does earn a reason phrase of its own: the family classifier would degrade it to the plain
 statement, which tells the operator the plugin is broken when it is not.
 
@@ -323,4 +313,5 @@ setup run and wired by the configurator ([`plugin-runtime.md`](plugin-runtime.md
 - [`architecture/plugin-setup.md`](../architecture/plugin-setup.md)
 - [`architecture/plugin-events.md`](../architecture/plugin-events.md)
 - [`architecture/telegram.md`](../architecture/telegram.md)
+- [`architecture/configurator.md`](../architecture/configurator.md)
 <!-- END SOURCEMAP -->

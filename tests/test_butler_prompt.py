@@ -24,7 +24,7 @@ def _butler_md_path() -> Path:
 def _resident_ha_doctrine_path() -> Path:
     root = Path(__file__).resolve().parent.parent
     return root / (
-        "casa/rootfs/opt/casa/defaults/agents/executors/"
+        "casa/rootfs/opt/casa/defaults/"
         "configurator/doctrine/recipes/resident/grant_ha_tools.md"
     )
 

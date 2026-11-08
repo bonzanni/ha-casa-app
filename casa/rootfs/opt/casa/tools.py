@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import enum
 import importlib
 import json
@@ -24,7 +25,6 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 if TYPE_CHECKING:
     from trigger_registry import TriggerRegistry
 
-from executor_registry import ExecutorRegistry
 from plugin_env_conf import set_entry as _set_env_entry  # noqa: F401 — available for future use
 from system_requirements.orchestrator import install_requirements, OrchestrationError
 from system_requirements.manifest import (
@@ -87,7 +87,6 @@ from mcp_registry import McpServerRegistry
 import sdk_logging
 import specialist_limits
 from tokens import extract_usage
-from drivers.brief import normalize_brief, render_brief_task, validate_brief
 from engagement_registry import TerminalPreconditionFailed, EngagementRecord, EngagementRegistry
 from specialist_registry import (
     DelegationComplete,
@@ -121,7 +120,6 @@ _mcp_registry: McpServerRegistry | None = None
 _agent_role_map: dict[str, "AgentConfig"] = {}  # merged residents + specialists
 _trigger_registry: "TriggerRegistry | None" = None
 _engagement_registry: EngagementRegistry | None = None
-_executor_registry: "ExecutorRegistry | None" = None
 _agent_registry = None  # AgentRegistry | None
 _runtime = None  # CasaRuntime | None — set by init_tools(runtime=...)
 # Task 6 (spec §4.6): specialist concurrency cap + per-role telemetry. Both
@@ -149,7 +147,6 @@ def init_tools(
     agent_registry=None,
     trigger_registry=None,
     engagement_registry=None,
-    executor_registry=None,
     runtime=None,                         # NEW — Task C.1
     specialist_limiter=None,              # Task 6 (spec §4.6)
     specialist_telemetry=None,            # Task 6 (spec §4.6)
@@ -184,7 +181,7 @@ def init_tools(
     """
     global _channel_manager, _bus, _specialist_registry, _mcp_registry, \
         _agent_role_map, _agent_registry, _trigger_registry, \
-        _engagement_registry, _executor_registry, _runtime, \
+        _engagement_registry, _runtime, \
         _specialist_limiter, _specialist_telemetry, \
         _agent_spawn_limiter, \
         _voice_job_route_cap  # noqa: PLW0603
@@ -200,16 +197,46 @@ def init_tools(
     _agent_registry = agent_registry
     _trigger_registry = trigger_registry
     _engagement_registry = engagement_registry
-    # #1053: an ended install engagement owes the DM the rows it deferred.
+    # #1049: an ended engagement retires its unanswered authorization challenges.
     if engagement_registry is not None and hasattr(
             engagement_registry, "set_terminal_observer"):
         engagement_registry.set_terminal_observer(_on_engagement_terminal)
-    _executor_registry = executor_registry
     _runtime = runtime
     _specialist_limiter = specialist_limiter
     _specialist_telemetry = specialist_telemetry
     _agent_spawn_limiter = agent_spawn_limiter
     _voice_job_route_cap = voice_job_route_cap
+
+
+def build_agent_role_map(residents: dict, specialists: dict, *,
+                         strict: bool = False) -> dict:
+    """The delegation role map, built the same way at boot
+    (``casa_core._build_role_registry``) and on every reload
+    (:func:`sync_agent_role_map`): residents, then the image-owned configurator
+    (kind ``executor``), then specialists. A role in
+    both tiers raises when *strict* (boot: a configuration bug) and otherwise
+    keeps the resident entry with a warning (a reload must not brick). A
+    resident or specialist named like the configurator keeps its entry."""
+    overlap = set(residents) & set(specialists)
+    if overlap and strict:
+        raise ValueError(
+            f"duplicate role(s) across residents and specialists: "
+            f"{sorted(overlap)} — each role must be unique"
+        )
+    merged = dict(residents)
+    configurator = _configurator_config()
+    if (configurator is not None and configurator.role not in merged
+            and configurator.role not in specialists):
+        merged[configurator.role] = configurator
+    for name, cfg in specialists.items():
+        if name in merged:
+            logger.warning(
+                "sync_agent_role_map: role %r exists in both tiers — "
+                "resident entry wins", name,
+            )
+            continue
+        merged[name] = cfg
+    return merged
 
 
 def sync_agent_role_map(runtime: Any) -> None:
@@ -238,21 +265,30 @@ def sync_agent_role_map(runtime: Any) -> None:
     residents = dict(getattr(runtime, "role_configs", {}) or {})
     registry = getattr(runtime, "specialist_registry", None)
     specialists = dict(registry.all_configs()) if registry is not None else {}
-    merged = dict(residents)
-    for name, cfg in specialists.items():
-        if name in merged:
-            logger.warning(
-                "sync_agent_role_map: role %r exists in both tiers — "
-                "resident entry wins", name,
-            )
-            continue
-        merged[name] = cfg
-    _agent_role_map = merged
+    _agent_role_map = build_agent_role_map(residents, specialists)
     fresh_registry = getattr(runtime, "agent_registry", None)
     if fresh_registry is not None:
         # Only ever REPLACE with a real registry: a runtime stand-in without one
         # (the reload test suite has several) must not blank the boot capture.
         _agent_registry = fresh_registry
+
+
+_CONFIGURATOR_CFG: Any = None
+
+
+def _configurator_config() -> Any:
+    """The image-owned configurator's config, loaded once per process (it ships
+    with Casa and cannot change without a release). ``None`` when it does
+    not load, which is logged: configuring then stops, nothing else does."""
+    global _CONFIGURATOR_CFG  # noqa: PLW0603
+    if _CONFIGURATOR_CFG is None:
+        try:
+            import agent_loader
+            _CONFIGURATOR_CFG = agent_loader.load_configurator()
+        except Exception:  # noqa: BLE001 — never brick a reload or the boot
+            logger.error("the configurator did not load", exc_info=True)
+            return None
+    return _CONFIGURATOR_CFG
 
 
 def _text_result(text: str, *, is_error: bool = False) -> dict:
@@ -2433,23 +2469,6 @@ _VOICE_FALLBACK_RESERVE_S: float = 5.0
 _VOICE_TEARDOWN_BOUND_S: float = 2.0
 
 
-# H-1 fix (v0.34.0): casa_reload's Supervisor restart races the SDK
-# subprocess — the POST returns in <1s but Supervisor's container kill
-# arrives ~13s later, cancelling the SDK before the model can call
-# emit_completion. Result: engagement stuck status=active, no user-DM
-# completion message, _finalize_engagement never runs.
-#
-# Mechanism: when ``casa_reload`` is called inside an active engagement
-# (engagement_var bound), it does NOT POST to Supervisor. Instead it
-# adds engagement.id to this set and returns immediately. The actual
-# Supervisor POST is performed at the end of _finalize_engagement —
-# AFTER the bus-message write + engagement-summary retain land — so the
-# user-DM "Done" relay survives the addon kill. Out-of-engagement
-# casa_reload calls (operator-triggered via /invoke) still POST
-# inline since there is no engagement to wait for.
-_ENGAGEMENTS_DEFERRED_HARD_RELOAD: set[str] = set()
-
-
 def _snapshot_origin() -> dict:
     """Copy the current origin at handler entry (AR-2, pooling spec §Q7).
 
@@ -2546,31 +2565,6 @@ def _engagement_rebuild_fence() -> dict | None:
     }
 
 
-def inherit_origin_markers(origin: dict) -> dict:
-    """Stamp the effective origin markers onto an engagement's origin dict.
-
-    #336 (Terra, review r3): an engagement that spawns a NESTED engagement
-    calls ``engage_executor`` over the internal socket, where the ambient
-    origin carries no route — so the child record would persist no markers and
-    its own reads would fall back to the channel default (private on
-    telegram), laundering a low-clearance parent into a high-clearance child.
-    Inheriting the parent's effective markers means clearance cannot be gained
-    by nesting.
-
-    Returns *origin* (mutated in place — it is already a per-call snapshot
-    copy, never the shared ContextVar holder). An origin that carries its own
-    route is left untouched: a resident turn creating an engagement is the
-    authority on its own clearance.
-    """
-    if "_origin_route" in origin:
-        return origin
-    route, clearance = _origin_clearance_markers(origin)
-    if route is not None:
-        origin["_origin_route"] = route
-        origin["_origin_clearance"] = clearance
-    return origin
-
-
 def _effective_delegation_depth(origin: dict) -> int:
     """The delegation depth an anti-chaining decision must use (#283).
 
@@ -2630,7 +2624,7 @@ def _result(payload: dict, *, is_error: bool | None = None) -> dict:
     envelope. Without this flag the SDK's ``ToolResultBlock`` defaults
     ``is_error=False`` and ``sdk_logging.log_tool_result`` emits
     ``ok=True`` even for failures — operators reading turn telemetry
-    would think a registry-rejected ``engage_executor`` actually spawned.
+    would think a registry-rejected launch actually spawned.
     Auto-detection via ``payload["status"]`` keeps the existing call sites
     untouched while making every error path consistently observable.
 
@@ -3336,173 +3330,6 @@ def _build_plugin_job_options(rec, resolution,
     )
 
 
-def _build_executor_options(
-    defn,
-    *,
-    executor_type: str,
-    resolution=None,
-    plugin_paths: "list[str] | None" = None,
-    extra_casa_tools: tuple[str, ...] = (),
-) -> ClaudeAgentOptions:
-    """Build ClaudeAgentOptions for a Tier 3 Executor invocation.
-
-    Unlike specialists, executors DO have MCP servers and structured hooks
-    driven by their definition.yaml + hooks.yaml. Prompt is injected at
-    engage_executor time - this helper does not set system_prompt.
-
-    Plugins (§3.8/§3.9), in priority order: explicit ``plugin_paths`` (resume
-    from recorded artifacts — never re-resolved), else a passed ``resolution``
-    (engage_executor feeds the SAME result it gated + recorded — one resolve,
-    one binding), else a fresh resolve for ``executor:<executor_type>``.
-    Executors get NO grant merge + NO can_use_tool (they keep the relay).
-    """
-    from config import HooksConfig
-    from hooks import resolve_hooks
-
-    # Task 4 (#360): build from the load-time-validated snapshot
-    # (ExecutorDefinition.hooks_document, Task 3) instead of re-reading
-    # hooks_path here — a post-load edit to the on-disk hooks.yaml must not
-    # change what an in-casa executor session
-    # enforces. hooks_document is populated for every executor ({} only
-    # when there is no hooks file).
-    raw = getattr(defn, "hooks_document", None) or {}
-    hooks_cfg = HooksConfig(pre_tool_use=list(raw.get("pre_tool_use") or []))
-
-    resolved_hooks = resolve_hooks(hooks_cfg, default_cwd="/config")
-    # Sol #5: in_casa executors run with cwd=/config (the configurator has no
-    # shell since v0.101.0, but an executor definition may list Bash and
-    # hooks.yaml is operator-editable) — inject the same code-side guard so a Bash write to
-    # /config/plugins or settings.json is denied regardless of yaml policy.
-    from hooks import (
-        agent_home_settings_guard_matcher,
-        managed_component_guard_matcher,
-    )
-    resolved_hooks = dict(resolved_hooks)
-    resolved_hooks["PreToolUse"] = [
-        *resolved_hooks.get("PreToolUse", []),
-        agent_home_settings_guard_matcher(),
-    ]
-    # Round-4 (Terra P0): managed_component_guard is CODE-MANDATORY, exactly
-    # like the settings guard above — definition.yaml's `hooks_file:` is a
-    # config-editable pointer (executor/edit-definition is a legitimate
-    # recipe), so a session whose hooks.yaml was repointed/hollowed must
-    # still carry the guard; yaml policies are additive-only. Skipped only
-    # when the yaml itself already declared the policy (resolve_hooks then
-    # built the identical canonical matcher+factory — avoid the duplicate;
-    # the yaml cannot alter either: the matcher comes from HOOK_POLICIES and
-    # the factory rejects params). The resume path inherits this
-    # automatically (build_engagement_resume_options -> this builder).
-    if not any(e.get("policy") == "managed_component_guard"
-               for e in (hooks_cfg.pre_tool_use or [])):
-        resolved_hooks["PreToolUse"].append(managed_component_guard_matcher())
-
-    # #403: agents/<role>/triggers.yaml has a SECOND writer — the resident's
-    # own reminder tools, inside this process. An executor's Read→Edit spans
-    # model thinking time in another process, so a reminder set in that window
-    # is silently discarded. Code-mandatory for the same reason as the guard
-    # above, and load-bearing rather than defence-in-depth: this is the only
-    # thing routing the edit to config_trigger_upsert / config_trigger_delete,
-    # which perform it here, on the loop, where nothing can interleave.
-    from hooks import trigger_file_write_guard_matcher
-    if not any(e.get("policy") == "trigger_file_write_guard"
-               for e in (hooks_cfg.pre_tool_use or [])):
-        resolved_hooks["PreToolUse"].append(trigger_file_write_guard_matcher())
-
-    # #610: agents/<role>/response_shape.yaml is read and rendered into the
-    # composed FALLBACK prompt, which a persona-bound resident is never served
-    # — its active compiled bundle replaces the composed prompt
-    # this file feeds (INV-PERS-001) — so an edit here is committed and
-    # reported live while changing nothing the model sees. Code-side for the
-    # same reason as its neighbours: `hooks_file:` is a config-editable pointer
-    # the configurator may legitimately rewrite.
-    from hooks import response_shape_write_guard_matcher
-    if not any(e.get("policy") == "response_shape_write_guard"
-               for e in (hooks_cfg.pre_tool_use or [])):
-        resolved_hooks["PreToolUse"].append(response_shape_write_guard_matcher())
-
-    # #631: agents/<role>/prompts/system.md is the same defect one file over,
-    # with a wider steering surface — five doctrine sites and DOCS.md routed
-    # behavioural instructions into it. Code-side for the same reason.
-    from hooks import resident_prompt_write_guard_matcher
-    if not any(e.get("policy") == "resident_prompt_write_guard"
-               for e in (hooks_cfg.pre_tool_use or [])):
-        resolved_hooks["PreToolUse"].append(
-            resident_prompt_write_guard_matcher())
-
-    if plugin_paths is not None:
-        sdk_plugins = [{"type": "local", "path": p} for p in plugin_paths]
-        # #429: the resume path attaches artifacts by PATH, with no
-        # ResolutionResult to read declarations off — build the minimal
-        # stand-in the sanitizer needs (path + manifest) so a resumed
-        # executor gets the same empty-string pinning a fresh build does,
-        # instead of the literal ${VAR} the CLI would otherwise expand.
-        sanitized_env = sanitized_env_for_paths(plugin_paths)
-    else:
-        if resolution is None:
-            resolution = plugin_registry.resolve_for(
-                f"executor:{executor_type}")
-        sdk_plugins = [{"type": "local", "path": rp.path}
-                       for rp in resolution.plugins]
-        sanitized_env = sanitized_env_for_resolution(resolution)
-
-    # Skills via skills="all" below; strip any config-supplied "Skill"
-    # (deprecated) — (f) v0.69.9.
-    allowed_tools = [t for t in defn.tools_allowed if t != "Skill"]
-    for grant in extra_casa_tools:
-        if grant not in allowed_tools:
-            allowed_tools.append(grant)
-
-    if _mcp_registry is not None:
-        mcp_servers = _mcp_registry.resolve(
-            defn.mcp_server_names,
-            role=executor_type,
-            allowed_tools=allowed_tools,
-        )
-    else:
-        mcp_servers = {}
-
-    # Round-6 P0-1 (Sol): Q-1 (v0.69.8, above) — Agent/Task BYPASS
-    # allowed_tools and the fail-closed can_use_tool callback; only
-    # disallowed_tools is CLI-enforced. Executors shipped disallowed: [],
-    # so a configurator could spawn a sub-agent carrying the broad default
-    # toolset (Bash included) around every guard. Merge the same
-    # sub-agent-spawn denial the specialist builder gets, CODE-SIDE,
-    # regardless of definition.yaml contents. The resume path inherits this
-    # (build_engagement_resume_options -> this builder).
-    disallowed_tools = _with_subagent_spawn_disallowed(defn.tools_disallowed)
-    # Round-6 P0-2 belt+suspenders (Sol): an executor whose CLAMPED
-    # allowlist does not carry Bash gets it hard-denied too — the Bash
-    # denial then holds independent of allowlist/permission_mode machinery
-    # entirely. Harmless for an executor whose allowlist carries Bash.
-    if "Bash" not in allowed_tools and "Bash" not in disallowed_tools:
-        disallowed_tools.append("Bash")
-
-    # Executors (in_casa driver — Configurator, future Tier-3) operate on
-    # the addon-config root rather than an agent-home, because their
-    # mutation surface spans /config/ (agents/, marketplace/,
-    # plugin-env.conf, etc.).
-    return ClaudeAgentOptions(
-        model=defn.model,
-        effort=effort_for(defn.model),
-        cli_path=CLAUDE_CLI_PATH,
-        max_buffer_size=SDK_MAX_BUFFER_SIZE,
-        system_prompt="",
-        allowed_tools=allowed_tools,
-        disallowed_tools=disallowed_tools,
-        settings=cli_session_settings(),
-        permission_mode=defn.permission_mode or "acceptEdits",
-        max_turns=200,
-        mcp_servers=mcp_servers if mcp_servers else {},
-        hooks=resolved_hooks,
-        cwd=EXECUTOR_CWD,
-        resume=None,
-        setting_sources=["project"],
-        skills="all",  # (f) v0.69.9
-        plugins=sdk_plugins,
-        env=sanitized_env,
-    )
-
-
 def build_engagement_resume_options(
     engagement, session_id: str | None,
 ) -> ClaudeAgentOptions:
@@ -3510,18 +3337,18 @@ def build_engagement_resume_options(
     ``resume=session_id`` (Finding 2, codex review v0.69.10).
 
     ``InCasaDriver.resume()`` used to open a BARE ``ClaudeAgentOptions(resume=)``,
-    so a resumed interactive specialist/executor lost ``disallowed_tools``
+    so a resumed specialist lost ``disallowed_tools``
     (Agent/Task — Q-1), the fail-closed ``can_use_tool`` callback, ``hooks``
     (the I-2 settings guard), ``skills``, ``mcp_servers``, and ``cwd`` — running
     on the CLI's broad default surface. Rebuilt from the engagement's CURRENT
     config via the same builder the initial start used.
 
-    Fails CLOSED: if the specialist/executor config is gone (removed while the
+    Fails CLOSED: if the specialist config is gone (removed while the
     engagement was suspended), raise rather than resume with dropped
-    restrictions. §3.8: an executor resumes from its RECORDED plugin artifacts
-    (never re-resolving current assignments); a missing recorded artifact
-    fails the resume closed (plugin_artifact_missing). Reads registry snapshot
-    files — call off the event loop.
+    restrictions; so does an executor engagement left from before the
+    configurator became a delegated run (there is no migration). §3.8: a
+    resume rebuilds from its RECORDED plugin artifacts. Reads registry
+    snapshot files — call off the event loop.
     """
     import dataclasses
 
@@ -3540,34 +3367,11 @@ def build_engagement_resume_options(
             resolution, context=f"plugin job {engagement.id} resume")
         opts = _build_plugin_job_options(engagement, resolution,
                                          plan_out=_applied_plans)
-    elif kind == "executor":
-        defn = _executor_registry.get(role) if _executor_registry is not None else None
-        if defn is not None:
-            recorded = getattr(engagement, "plugin_artifacts", None) or ()
-            plugin_paths: list[str] = []
-            for pa in recorded:
-                path = pa.get("path") if isinstance(pa, dict) else None
-                if not path or not os.path.isdir(path):
-                    raise RuntimeError(
-                        f"cannot resume executor engagement role={role!r}: "
-                        f"recorded plugin artifact missing "
-                        f"(plugin_artifact_missing): {pa!r}")
-                plugin_paths.append(path)
-            opts = _build_executor_options(
-                defn,
-                executor_type=role,
-                plugin_paths=plugin_paths,
-                # Only the launch-mandatory grants here (query/emit). `react`
-                # comes from the executor's OWN definition; adding it
-                # unconditionally would offer a resumed configurator a tool its
-                # record does not carry (Sol/Terra re-review r2).
-                extra_casa_tools=SPECIALIST_CASA_GRANTS,
-            )
     else:
         cfg = _specialist_registry.get(role) if _specialist_registry is not None else None
         if cfg is not None:
             # Sol round-3 H7b / round-4: a resumed specialist rebuilds from its
-            # RECORDED artifacts (§3.8) — like executors — never re-resolving
+            # RECORDED artifacts (§3.8) — never re-resolving
             # current assignments. An EMPTY record ([]) is AUTHORITATIVE (started
             # with no plugins → resume with none); only a pre-v0.71.0 record
             # (field absent → None) falls back to a fresh resolve.
@@ -3615,9 +3419,9 @@ def build_engagement_resume_options(
 def _build_world_state_summary() -> str:
     """Return a short (<=500 tokens) snapshot of Casa's config surface.
 
-    Called at engagement start and interpolated into the executor's
-    prompt template as {world_state_summary}. Read-only - does not
-    include in-flight session or delegation state.
+    Appended to the configurator's system prompt at each run's options
+    build. Read-only - does not include in-flight session or delegation
+    state.
     """
     lines: list[str] = []
     try:
@@ -3640,14 +3444,6 @@ def _build_world_state_summary() -> str:
     except OSError:
         pass
     lines.append(f"Residents:            {', '.join(residents) or '(none)'}")
-
-    try:
-        import agent as agent_mod
-        exec_reg = getattr(agent_mod, "active_executor_registry", None)
-        exec_types = exec_reg.list_types() if exec_reg else []
-    except Exception:  # noqa: BLE001
-        exec_types = []
-    lines.append(f"Enabled executors:    {', '.join(exec_types) or '(none)'}")
 
     # The version is exported by svc-casa/run as CASA_VERSION; the VERSION
     # files this block used to read never existed, so every engagement read
@@ -4039,6 +3835,37 @@ def _int_or_none(value: object) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value
+
+
+def _configurator_step_line(cfg: Any, origin: dict) -> Any:
+    """A step line for a configurator run (kind ``executor``), posted
+    silently to the operator's DM and deleted when the run ends; ``None`` for
+    any other run or when the DM is unavailable."""
+    if getattr(cfg, "kind", "") != "executor":
+        return None
+    channel = _channel_manager.get("telegram") if _channel_manager is not None else None
+    send = getattr(channel, "send_step_line", None)
+    delete = getattr(channel, "delete_dm_message", None)
+    edit = getattr(channel, "edit_dm_message", None)
+    import trigger_consent
+    op = trigger_consent.operator_identity(channel) if channel is not None else None
+    if send is None or delete is None or edit is None or op is None:
+        return None
+    chat_id = op[0]
+    import configurator_run
+    from drivers.turn_progress import TurnProgressLine
+
+    async def _send(text: str) -> "int | None":
+        mid = await send(chat_id, text)
+        if mid is not None:
+            # a stop that cuts the run off leaves the line; the boot deletes it
+            configurator_run.record_step_line(chat_id, mid)
+        return mid
+
+    return TurnProgressLine(
+        send=_send,
+        edit=lambda mid, text: edit(chat_id, mid, text),
+        delete=lambda mid: delete(chat_id, mid))
 
 
 def _known_role(value: object) -> str:
@@ -4704,12 +4531,21 @@ async def _run_delegated_turn(
     # processes itself)
     _tree = _bounded_tree.get() if _owner is None else None
     _bounded_tree.set(None)
+    # The configurator's live step line in the
+    # operator's DM, removed when the run ends.
+    _steps = _configurator_step_line(cfg, parent)
 
     def _options_and_binding():
         res = resolution if resolution is not None \
             else _delegated_resolution(cfg)
-        return (_build_specialist_options(cfg, resolution=res,
-                                          output_format=output_format),
+        opts = _build_specialist_options(cfg, resolution=res,
+                                         output_format=output_format)
+        if getattr(cfg, "kind", "") == "executor":
+            # the configurator reads the live config surface at each run
+            opts = replace(opts, system_prompt=(
+                f"{opts.system_prompt}\n\n## Current world state\n\n"
+                f"{_build_world_state_summary()}\n"))
+        return (opts,
                 {rp.name: rp.artifact_id
                  for rp in (getattr(res, "plugins", None) or [])})
     try:
@@ -4797,6 +4633,10 @@ async def _run_delegated_turn(
                                 if not _first_tool:
                                     _first_tool = True
                                     _ph["first_tool"] = time.monotonic()
+                                if _steps is not None:
+                                    from drivers.turn_progress import activity_for_tool
+                                    _steps.step(activity_for_tool(
+                                        str(getattr(block, "name", ""))))
                     elif isinstance(sdk_msg, UserMessage):
                         if approval_scope is not None:
                             for block in getattr(sdk_msg, "content", None) or []:
@@ -4813,6 +4653,8 @@ async def _run_delegated_turn(
                         # client raises before the loop reaches a ResultMessage).
                         result_msg = sdk_msg
     finally:
+        if _steps is not None:
+            _steps.finish(ok=True)        # the line goes as the answer comes
         # #1207: the grants this run left waiting on the operator, for a
         # synchronous launcher's fold — published however the run ended (an
         # abort or a raise leaves the keyboard up all the same). Only calls
@@ -6257,6 +6099,43 @@ def _ceiling_paused():
         clock.resume()
 
 
+# The longest one install-like call keeps its run's ceiling clock paused.
+# Fetch and install time does not count toward the ceiling, but it is not
+# unbounded: a call still running past this — say, waiting on the plugin lock
+# behind a stalled mutation — counts again, so the run and its lease still end.
+_OFF_THE_CEILING_MAX_S: float = 30 * 60.0
+
+
+def _off_the_ceiling(handler):
+    """A tool whose call fetches or installs
+    (a repository fetch, npm or venv setup, system requirements) runs with its
+    run's ceiling clock paused, for at most ``_OFF_THE_CEILING_MAX_S`` per
+    call; past that the clock runs again while the call goes on. The ceiling
+    stays the backstop for a run that loops. The body is read off
+    ``__wrapped__`` at call time."""
+    @functools.wraps(handler)
+    async def _paused(args: dict) -> dict:
+        clock = _ceiling_clock.get()
+        if clock is None:
+            return await _paused.__wrapped__(args)
+        clock.pause()
+        resumed = False
+
+        def _resume() -> None:
+            nonlocal resumed
+            if not resumed:
+                resumed = True
+                clock.resume()
+
+        timer = asyncio.get_running_loop().call_later(_OFF_THE_CEILING_MAX_S, _resume)
+        try:
+            return await _paused.__wrapped__(args)
+        finally:
+            timer.cancel()
+            _resume()
+    return _paused
+
+
 class DelegationCeilingExceeded(asyncio.TimeoutError):
     """A delegated turn exceeded the wall-clock ceiling and was cancelled.
 
@@ -6304,6 +6183,32 @@ async def _run_delegated_agent_bounded(
     Both bounds are read off the module at call time so tests can
     monkeypatch them."""
     import pinned_run
+    # One configurator run at a time, from every
+    # origin, taken before the ceiling clock and before anything of the run
+    # (its options build reads /config) — waiting for it never counts.
+    lease = await _configurator_lease(cfg, task_text)
+    try:
+        return await _bounded_run(cfg, task_text, context_text, resolution,
+                                  output_format, pinned_run, lease)
+    finally:
+        if lease is not None and not lease.watched:
+            lease.release()          # nothing of the run started
+
+
+async def _configurator_lease(cfg, task_text: str):
+    """The configurator lease for a run of *cfg*, or ``None`` for any other role."""
+    import configurator_run
+    if not configurator_run.is_configurator(cfg):
+        return None
+    origin = _snapshot_origin() or {}
+    return await configurator_run.acquire(
+        run_key=str(origin.get("_delegation_id") or _delegation_quota_key.get() or ""),
+        via="desk" if origin.get("desk") is not None else "delegation",
+        task=task_text)
+
+
+async def _bounded_run(cfg, task_text, context_text, resolution, output_format,
+                       pinned_run, lease) -> DelegatedOutput:
     tool_counts: dict[str, int] = {}
     sink = _desk_run_sink.get()
     role = _known_role(getattr(cfg, "role", None))
@@ -6327,6 +6232,9 @@ async def _run_delegated_agent_bounded(
         _ceiling_clock.reset(clock_tok)
         _bounded_tree.reset(tree_tok)
         _desk_run_sink.reset(sink_tok)
+    if lease is not None:
+        import configurator_run
+        configurator_run.release_when_done(lease, inner)
     if sink is not None:
         sink.append(inner)
     try:
@@ -7146,9 +7054,7 @@ async def _launch_interactive_engagement(
         # the origin the record persists; the depth gate reads it back
         # through the engagement-record fallback, so an interactively
         # engaged specialist cannot delegate onward. Unconditional:
-        # operator-initiated children run at depth 1 too (they may still
-        # engage_executor — that path is deliberately depth-exempt and
-        # cap-bounded instead).
+        # operator-initiated children run at depth 1 too.
         # S7a: a specialist's own job is never deeper than one, as a
         # resident-started job is — it cannot delegate onward either way.
         origin["delegation_depth"] = (
@@ -7178,7 +7084,7 @@ async def _launch_interactive_engagement(
                 await channel.setup_engagement_features()  # type: ignore[attr-defined]
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "engage_executor: in-line setup_engagement_features "
+                    "start_job: in-line setup_engagement_features "
                     "retry failed: %s", exc,
                 )
         if (channel is None
@@ -7321,8 +7227,7 @@ async def _launch_interactive_engagement(
         spawn_owned = None
         # #678 (Terra, seam rounds 3+4): ONE CancelledError handler
         # covering the WHOLE interval from the committed create() through
-        # the ownership transfer, mirroring engage_executor — which has
-        # exactly this structure. Before it, this branch had no
+        # the ownership transfer. Before it, this branch had no
         # cancellation compensation at all past create(): a cancellation
         # at set_initial_state_emoji, at _build_specialist_options or
         # inside driver.start() escaped every handler, the outer finally
@@ -7332,11 +7237,11 @@ async def _launch_interactive_engagement(
         # alone and the second named two more awaits, so the interval is
         # covered once rather than a third handler added.
         # #698: enrol this launch with the graceful stop, before the
-        # interval's first await, exactly as engage_executor does.
+        # interval's first await.
         _launch_handle = _register_launch_safe(rec.id)
         try:
             # #369 (Sol diff-gate r3): capture the context generation at
-            # prompt-source time, exactly as engage_executor does — this
+            # prompt-source time — this
             # interactive prompt is built from the pre-clamp task/context
             # locals, so a clamp→rebuild cycle completing during the option/
             # client startup awaits must abort this launch at the driver gate.
@@ -7503,7 +7408,7 @@ async def _launch_interactive_engagement(
                     return _result({"status": "error", "kind": "driver_start_failed",
                                     "message": str(exc)})
 
-                # #678: as in engage_executor — start() returning means the
+                # #678: start() returning means the
                 # first turn ran to its end, never that anything was reported.
                 # An interactive specialist that ENDS its launch turn having
                 # posted text is legitimately awaiting the operator and is left
@@ -7532,7 +7437,7 @@ async def _launch_interactive_engagement(
                 # finally to release the now-live engagement's permit.
 
             else:
-                # §2.A: the same two-call launch as engage_executor.
+                # §2.A: the two-call launch.
                 try:
                     await driver.open(
                         rec, options=options, expected_generation=_ctx_gen0)
@@ -7760,6 +7665,14 @@ async def start_job(args: dict) -> dict:
     return _result(payload) if self_host else result
 
 
+def _delegation_mode_for(cfg: Any, mode: str) -> str:
+    """``async`` for a target of kind ``executor`` (the configurator), else
+    *mode* unchanged."""
+    if getattr(cfg, "kind", "") == "executor" and mode == "sync":
+        return "async"
+    return mode
+
+
 @tool(
     "delegate_to_agent",
     "Delegate a task to another agent (resident or specialist) and return its result.",
@@ -7920,6 +7833,9 @@ async def delegate_to_agent(args: dict) -> dict:
         if handoff_reservation is not None:
             handoff_reservation.release()
         return prelaunch_error
+    # The configurator always runs detached. A commit
+    # that reloads the caller would otherwise cancel a run its turn awaits.
+    mode = _delegation_mode_for(cfg, mode)
 
     # Task 6 (spec §4.6): lexical ownership guard. `owned` holds the permit
     # from _prelaunch's acquire until launch transfers it. The finally
@@ -9596,29 +9512,30 @@ _PRIVILEGED_CONFIG_ROLES = frozenset({"configurator"})
 def _effective_caller_role() -> str | None:
     """Return the calling agent's role for authorisation checks.
 
-    Inside an active engagement (engagement_var set), the calling role
-    IS the engagement's role_or_type — this takes precedence over the
-    bus's origin_var.role, which inside in_casa engagements still
-    reflects the engager (the assistant role) because contextvars
-    inherit through the same async task.
+    The EXECUTING role first: Casa stamps ``execution_role`` on the origin of
+    every delegated run and desk turn from the loaded config it runs
+    (``_run_delegated_turn``, ``specialist_desk._desk_origin``), while
+    ``origin["role"]`` there is the caller (the resident). Then an active
+    engagement's role (a background job, whose turn inherits the engager's
+    origin), then the origin's own role.
 
-    Returns None if neither context is bound — caller must refuse rather
-    than fall back to a permissive default.
+    Returns None if nothing is bound — caller must refuse rather than fall
+    back to a permissive default.
     """
+    try:
+        origin = _snapshot_origin()
+    except Exception:  # noqa: BLE001 - defensive against import-time issues
+        origin = {}
+    r = (origin or {}).get("execution_role")
+    if r:
+        return r
     eng = engagement_var.get(None)
     if eng is not None:
         r = getattr(eng, "role_or_type", None)
         if r:
             return r
-    try:
-        origin = _snapshot_origin()
-        if origin:
-            r = origin.get("role")
-            if r:
-                return r
-    except Exception:  # noqa: BLE001 - defensive against import-time issues
-        pass
-    return None
+    r = (origin or {}).get("role")
+    return r or None
 
 
 def _refuse_unprivileged(tool_name: str, caller: str | None) -> dict:
@@ -9628,7 +9545,7 @@ def _refuse_unprivileged(tool_name: str, caller: str | None) -> dict:
         "message": (
             f"{tool_name} is restricted to roles "
             f"{sorted(_PRIVILEGED_CONFIG_ROLES)}; calling role={caller!r}. "
-            "Have a configurator engagement perform this action instead."
+            "Ask the configurator to perform this action instead."
         ),
     })
 
@@ -9765,7 +9682,7 @@ def _reload_role_arg(raw) -> "str | None":
     "casa_reload",
     "In-process reload of Casa runtime state at a given scope. "
     "Valid scopes: 'agent' (requires role), 'triggers' (requires role), "
-    "'policies', 'plugin_env', 'agents', 'executors', 'config_sync', 'full'. Use 'full' "
+    "'policies', 'plugin_env', 'agents', 'config_sync', 'full'. Use 'full' "
     "as a catch-all when unsure. Does NOT restart the addon - for that, "
     "see casa_restart_supervised. Restricted to the configurator role.",
     # Explicit schema: the shorthand marked role and include_env required, so
@@ -9789,7 +9706,7 @@ async def casa_reload(args: dict) -> dict:
             "message": (
                 "casa_reload requires a 'scope' argument. Valid: "
                 "'agent', 'triggers', 'policies', 'plugin_env', "
-                "'agents', 'executors', 'config_sync', 'full'. See doctrine/reload.md."
+                "'agents', 'config_sync', 'full'. See doctrine/reload.md."
             ),
         })
 
@@ -9850,12 +9767,9 @@ async def _run_reload(scope: str, *, runtime, role: "str | None" = None,
 
 
 async def _post_supervisor_restart() -> dict:
-    """Internal helper used by ``_finalize_engagement`` to honor a
-    deferred hard-reload after the bus message + engagement-summary retain have
-    landed. Returns a result-shaped dict for logging; never raises. The
-    request itself lives in :mod:`supervisor_restart`, which the memory wipe
-    uses too.
-    """
+    """POST the Supervisor restart. Returns a result-shaped dict for logging;
+    never raises. The request itself lives in :mod:`supervisor_restart`, which
+    the memory wipe and the configurator's Restart now button use too."""
     import supervisor_restart
     return await supervisor_restart.request_app_restart()
 
@@ -9864,8 +9778,11 @@ async def _post_supervisor_restart() -> dict:
     "casa_restart_supervised",
     "Full Supervisor-driven addon restart. Use ONLY when changes require "
     "process-restart semantics (s6 service tree changes, addon "
-    "options.json mutations). For routine config edits, use "
-    "casa_reload(scope=...) instead. Restricted to the configurator role.",
+    "options.json mutations, a resident persona change). For routine config "
+    "edits a commit already reloads what it changed. Inside your run this "
+    "restarts nothing itself: Casa puts a Restart now button under your "
+    "answer, and the operator restarts when it suits him. Restricted to the "
+    "configurator role.",
     {},
 )
 async def casa_restart_supervised(_: dict) -> dict:
@@ -9873,746 +9790,23 @@ async def casa_restart_supervised(_: dict) -> dict:
     if caller not in _PRIVILEGED_CONFIG_ROLES:
         return _refuse_unprivileged("casa_restart_supervised", caller)
 
-    eng = engagement_var.get(None)
-    if eng is not None:
-        # H-1 carry-forward: defer until _finalize_engagement.
-        _ENGAGEMENTS_DEFERRED_HARD_RELOAD.add(eng.id)
+    origin = _snapshot_origin() or {}
+    run_key = origin.get("_delegation_id")
+    if run_key:
+        # Never inline from a run — the
+        # operator restarts by tapping the button that follows the answer.
+        import configurator_run
+        configurator_run.note_restart(str(run_key), str(origin.get("user_text") or ""))
         return _result({
-            "supervisor_status": 200,
             "deferred": True,
             "message": (
-                "Supervisor restart deferred until engagement finalizes. "
-                "Continue with emit_completion."
-            ),
+                "Nothing restarted yet. Casa puts a Restart now button under "
+                "your answer; end your turn with that answer, saying what the "
+                "restart is for and what it costs."),
         })
 
-    # Out-of-engagement (operator-driven /invoke etc): POST inline.
+    # Outside a delegated run (operator-driven /invoke etc): POST inline.
     return _result(await _post_supervisor_restart())
-
-
-# ---------------------------------------------------------------------------
-# engage_executor — Plan 3 real impl (configurator + future Tier 3 types)
-# ---------------------------------------------------------------------------
-
-# P32 (v0.37.10): duplicate-task guard. Refuses a new engage_executor
-# spawn whose ``task=`` overlaps with the most-recent engagement in the
-# same channel/chat_id within ``_DUPLICATE_TASK_MAX_AGE_S`` seconds at a
-# word-level Jaccard >= ``_DUPLICATE_TASK_JACCARD_THRESHOLD``. Guards
-# against the cumulative-context bleed pattern observed in
-# ``docs/bug-review-2026-05-14-exploration6.md::O-6``: the assistant's
-# back-to-back tool calls re-emitting a prior turn's task as a stale
-# second engage_executor argument.
-_DUPLICATE_TASK_JACCARD_THRESHOLD = 0.5
-_DUPLICATE_TASK_MAX_AGE_S = 60.0
-_TASK_TOKEN_RE = re.compile(r"[a-z0-9]+")
-
-
-def _task_tokens(text: str) -> set[str]:
-    return set(_TASK_TOKEN_RE.findall((text or "").lower()))
-
-
-def _jaccard_task_similarity(a: str, b: str) -> float:
-    """Word-level Jaccard similarity on lowercased alphanumeric tokens.
-
-    Returns 0.0 for empty inputs. Used by the P32 duplicate-task guard
-    at the ``engage_executor`` MCP call site.
-    """
-    ta, tb = _task_tokens(a), _task_tokens(b)
-    if not ta or not tb:
-        return 0.0
-    return len(ta & tb) / len(ta | tb)
-
-
-def _duplicate_task_refusal(origin: dict, task_text: str) -> dict | None:
-    """P32 (v0.37.10) duplicate-task guard: compare against the most-recent
-    engagement for the same channel/chat_id within the last
-    ``_DUPLICATE_TASK_MAX_AGE_S`` seconds; word-level Jaccard overlap >=
-    ``_DUPLICATE_TASK_JACCARD_THRESHOLD`` returns the refusal envelope,
-    else None. Guards against the cumulative-context bleed pattern observed
-    live (back-to-back assistant turns re-emitting the prior turn's task).
-
-    #320: called TWICE per spawn — a fast path before the topic-creation
-    network RT, then again inside the ``_PLUGIN_TOOLS_LOCK`` critical
-    section right before ``create()``. Only the locked re-check is
-    authoritative: two concurrent identical calls (a single model turn can
-    legally emit parallel tool calls) both pass the unlocked fast path, but
-    the loser re-checks after the winner's create() and sees its record.
-
-    isinstance check falls through gracefully when the registry is a
-    MagicMock in unit tests; production callers always pass a real
-    EngagementRegistry."""
-    if _engagement_registry is None or not hasattr(
-        _engagement_registry, "recent_for_origin",
-    ):
-        return None
-    try:
-        prior = _engagement_registry.recent_for_origin(
-            channel=origin.get("channel", "telegram"),
-            chat_id=str(origin.get("chat_id", "")),
-            max_age_s=_DUPLICATE_TASK_MAX_AGE_S,
-        )
-    except Exception as exc:  # noqa: BLE001 — defensive in mock-driven tests
-        logger.debug("recent_for_origin lookup skipped: %s", exc)
-        return None
-    if not isinstance(prior, EngagementRecord):
-        return None
-    sim = _jaccard_task_similarity(prior.task, task_text)
-    if sim < _DUPLICATE_TASK_JACCARD_THRESHOLD:
-        return None
-    age_s = int(time.time() - prior.started_at)
-    return _result({
-        "status": "error", "kind": "duplicate_task",
-        "message": (
-            f"engage_executor refused: task overlaps with "
-            f"engagement {prior.id[:8]} "
-            f"({prior.role_or_type}, started {age_s}s ago) "
-            f"at Jaccard {sim:.2f} >= "
-            f"{_DUPLICATE_TASK_JACCARD_THRESHOLD}. "
-            f"You may be re-emitting a prior turn's task. "
-            f"If you mean a new task, narrow the task= text. "
-            f"If you mean to retry, /cancel {prior.id[:8]} first."
-        ),
-    })
-
-
-@tool(
-    "engage_executor",
-    "Start a Tier 3 Executor engagement (configurator, ha-developer, etc.). "
-    "Provide EITHER a plain 'task' string OR a structured 'brief' object "
-    "(objective + acceptance_criteria + process_requirements + context + "
-    "interaction_required), not both. Returns engagement_id; result arrives "
-    "later as a NOTIFICATION.",
-    # W3/Sol r3-B8: an explicit JSON Schema so task/brief/context are all
-    # schema-OPTIONAL (only executor_type is required). The task-XOR-brief and
-    # legacy-top-level-context rules are enforced in the handler — a JSON
-    # Schema can't cleanly express the cross-field XOR. The old
-    # required-everything shorthand ({"executor_type": str, "task": str,
-    # "context": str}) made all three required, so the MCP validator rejected
-    # BOTH XOR branches before the handler ever ran.
-    {
-        "type": "object",
-        "properties": {
-            "executor_type": {"type": "string"},
-            "task": {"type": "string"},
-            "context": {"type": "string"},
-            # W-R6 (v0.81.0): OPTIONAL short topic title. Normalized +
-            # persisted at ingest; absent → a Casa-derived label from task/brief.
-            "topic_title": {"type": "string", "description":
-                            "Short name for the job, up to about 40 "
-                            "characters; a longer one is cut with '…'."},
-            "brief": {
-                "type": "object",
-                "properties": {
-                    "objective": {"type": "string"},
-                    "acceptance_criteria": {
-                        "type": "array", "items": {"type": "string"},
-                    },
-                    "process_requirements": {
-                        "type": "array", "items": {"type": "string"},
-                    },
-                    "context": {"type": "string"},
-                    "interaction_required": {"type": "boolean"},
-                },
-                "required": ["objective"],
-            },
-        },
-        "required": ["executor_type"],
-    },
-)
-async def engage_executor(args: dict) -> dict:
-    # #283: lexical ownership guard for the agent-spawn reservation. The
-    # impl acquires into ``holder`` before any external side effect and
-    # nulls it when ownership transfers to the record at create(); this
-    # finally releases on EVERY other exit — early error returns and a
-    # CancelledError raised at any await (topic creation included), which
-    # per-site releases would leak (design r4, Sol S2). Release is
-    # idempotent, so overlap with a terminal-transition release is safe.
-    holder: dict = {"token": None}
-    try:
-        return await _engage_executor_impl(args, holder)
-    finally:
-        _tok = holder.get("token")
-        if _tok is not None:
-            _tok.release()
-
-
-async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
-    import agent as agent_mod
-    # AR-2: snapshot at entry — this handler awaits extensively (topic
-    # creation, engagement-registry create, driver dispatch) and reads
-    # `origin` well after those awaits; a pooled client's holder rewrite
-    # by a later turn must not leak into this in-flight engagement.
-    origin = _snapshot_origin()
-    if not origin:
-        return _result({
-            "status": "error", "kind": "no_origin",
-            "message": "engage_executor called outside a turn",
-        })
-    origin = inherit_origin_markers(origin)
-
-    executor_type = args.get("executor_type", "")
-    task_text = args.get("task", "") or ""
-    context_text = args.get("context", "") or ""
-
-    # W3/Sol B10: task XOR brief. The brief object is the alternative to a
-    # plain task string; the handler enforces the cross-field rules a JSON
-    # Schema can't. ``brief`` is persisted VERBATIM later — validate but never
-    # mutate it here; the normalized (defaults-applied) VIEW drives rendering.
-    brief = args.get("brief")
-    has_brief = brief is not None
-    has_task = bool(task_text)
-    normalized_brief: dict | None = None
-    if has_brief and has_task:
-        return _result({
-            "status": "error", "kind": "invalid_arguments",
-            "message": "provide EITHER task OR brief, not both",
-        })
-    if not has_brief and not has_task:
-        return _result({
-            "status": "error", "kind": "invalid_arguments",
-            "message": "provide either a task string or a brief object",
-        })
-    if has_brief and context_text:
-        return _result({
-            "status": "error", "kind": "invalid_arguments",
-            "message": (
-                "legacy top-level 'context' is not allowed alongside 'brief' — "
-                "put context inside brief.context"
-            ),
-        })
-    if has_brief:
-        _brief_err = validate_brief(brief)
-        if _brief_err is not None:
-            return _result({
-                "status": "error", "kind": "invalid_arguments",
-                "message": _brief_err,
-            })
-        normalized_brief = normalize_brief(brief)
-        # Canonical string = the objective — drives concise_task titles, the
-        # P32 Jaccard compare, and engagement.task (those call sites below are
-        # UNCHANGED; only the value they read is now the objective).
-        task_text = normalized_brief["objective"]
-
-    if _executor_registry is None or not _executor_registry.list_types():
-        return _result({
-            "status": "error", "kind": "no_executor_types",
-            "message": (
-                "No Tier 3 Executor types registered. "
-                "Ship Plan 3/4/5 or enable an executor in its definition.yaml."
-            ),
-        })
-
-    defn = _executor_registry.get(executor_type)
-    if defn is None:
-        return _result({
-            "status": "error", "kind": "unknown_executor_type",
-            "message": (
-                f"No enabled executor type named {executor_type!r}. "
-                f"Available: {_executor_registry.list_types()}"
-            ),
-        })
-
-    # #283: agent-spawn cap — acquired HERE, after argument validation and
-    # BEFORE any await with external effects (the setup_engagement_features
-    # retry and topic creation below are Telegram round-trips; design r2/r3).
-    # Operator turns are exempt only when positively marked; absence of the
-    # server-stamped ``_operator_turn`` means agent context (fail closed).
-    # The origin marker is what create() counts and load() restores.
-    if _agent_spawn_limiter is not None and _is_agent_context(origin):
-        _spawn_tok = _agent_spawn_limiter.try_acquire()
-        if _spawn_tok is None:
-            return _agent_spawn_cap_refusal()
-        origin["_agent_spawned"] = True
-        _spawn_holder["token"] = _spawn_tok
-
-    # §3.5/§3.8/§3.9: resolve this executor's plugin assignment ONCE — the
-    # result feeds the launch gate, the recorded binding, AND the in-casa
-    # options (one resolve, one binding). Gate BEFORE topic creation so a
-    # blocked launch never leaves a dangling topic.
-    def _resolve_and_gate():
-        """Returns (plugin_resolution, plugin_artifacts, error_result|None)."""
-        res = plugin_registry.resolve_for(f"executor:{executor_type}")
-        if not res.registry_valid:
-            return res, (), _result({
-                "status": "error", "kind": "plugin_registry_invalid",
-                "message": ("plugin registry is invalid — executor launches are "
-                            "blocked until it is repaired "
-                            "(see /data/plugin-health.json)"),
-            })
-        if res.issues:
-            detail = [(i.name, i.reason_code) for i in res.issues]
-            return res, (), _result({
-                "status": "error", "kind": "plugin_unavailable",
-                "message": (f"required plugin(s) unavailable for "
-                            f"{executor_type!r}: {detail}"),
-            })
-        # Sol round-3 B4: also gate on CONFIGURED readiness — a resolvable plugin
-        # that is not ready (authorization_missing / unresolved secret / missing
-        # system requirement / malformed .mcp.json) must NOT launch with
-        # --plugin-dir. Check each assigned plugin's executor-target row through
-        # the same verification path.
-        target = f"executor:{executor_type}"
-        not_ready = []
-        for rp in res.plugins:
-            try:
-                v = _tool_verify_plugin_state(plugin_name=rp.name)
-            except Exception as exc:  # noqa: BLE001 — Sol round-4 M: fail CLOSED
-                logger.warning("launch readiness verify raised for %s: %s",
-                               rp.name, exc)
-                not_ready.append((rp.name, "verify_error"))
-                continue
-            row = next((r for r in v.get("targets", [])
-                        if r.get("target") == target), None)
-            if row is not None and not row.get("ready"):
-                not_ready.append((rp.name, (row.get("reasons") or ["not_ready"])[0]))
-            elif row is None and v.get("ready") is not True:
-                not_ready.append((rp.name, (v.get("reasons") or ["not_ready"])[0]))
-        if not_ready:
-            return res, (), _result({
-                "status": "error", "kind": "plugin_not_ready",
-                "message": (f"plugin(s) not ready for {executor_type!r}: "
-                            f"{not_ready} (see /data/plugin-health.json)"),
-            })
-        arts = tuple(
-            {"name": rp.name, "artifact_id": rp.artifact_id, "path": rp.path,
-             # Task 5: recorded so a resumed session reproduces the same
-             # runtime identity via _resolution_from_recorded (above).
-             "manifest_name": rp.manifest_name}
-            for rp in res.plugins)
-        return res, arts, None
-
-    # Sol #6: capture the snapshot generation at resolve so a concurrent
-    # plugin_update during the topic-creation await can be detected before the
-    # engagement record pins its artifacts (below, just before create()).
-    # Sol round-4 M: run the resolve + readiness verification OFF the event loop
-    # (it does per-plugin artifact checks + YAML/file reads). This is the
-    # PRE-TOPIC gate (fail fast before creating a topic on a known-unavailable
-    # plugin); the authoritative record binding is (re)resolved under the lock
-    # below, bound to a stable snapshot generation.
-    _, _, _gate_err = await asyncio.to_thread(_resolve_and_gate)
-    if _gate_err is not None:
-        return _gate_err
-
-    if _channel_manager is None:
-        return _result({
-            "status": "error", "kind": "no_channel_manager",
-            "message": "channel manager missing",
-        })
-    channel = _channel_manager.get(origin.get("channel", "telegram"))
-    # E-F (v0.30.0): if supergroup IS configured but
-    # engagement_permission_ok is still False, the boot-time setup may
-    # have lost a race with a transient first-boot setWebhook NetworkError.
-    # The setup is now wired into _rebuild's tail (self-healing on every
-    # reconnect), but in the rare window where the user spawns an
-    # engagement before any rebuild has completed, attempt one in-line
-    # retry before giving up. Idempotent; cheap on success.
-    if (channel is not None
-            and getattr(channel, "engagement_supergroup_id", 0)
-            and not getattr(channel, "engagement_permission_ok", False)):
-        try:
-            await channel.setup_engagement_features()  # type: ignore[attr-defined]
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "engage_executor: in-line setup_engagement_features "
-                "retry failed: %s", exc,
-            )
-    if (channel is None
-            or not getattr(channel, "engagement_supergroup_id", 0)
-            or not getattr(channel, "engagement_permission_ok", False)):
-        return _engagement_unavailable_result(origin)  # R-2 (v0.69.7)
-
-    # P32 (v0.37.10): refuse duplicate-task spawns — fast path, before the
-    # topic-creation network RT. #320: this unlocked read alone is NOT the
-    # guard; the authoritative re-check runs under _PLUGIN_TOOLS_LOCK below.
-    dup = _duplicate_task_refusal(origin, task_text)
-    if dup is not None:
-        return dup
-
-    # E-12 (v0.37.0) + v0.37.1 D-1: U3 state-encoded topic title.
-    # ``<state-emoji> <concise task>`` per spec §6.3 — the role icon
-    # is delivered via the bubble (icon_custom_emoji_id from
-    # channels.topic_icons.icon_id_for_role), not the title text.
-    from channels.state_emoji import (
-        STATE_EMOJI, compose_topic_title, concise_task, normalize_topic_title,
-    )
-    first_line = (task_text or "").splitlines()[0]
-    short_task = concise_task(first_line) or "engagement"
-    # W-R6 (v0.81.0): normalize ONCE at ingest — an engager-supplied topic_title
-    # (rejected + fell back if UNSAFE/blank), else the Casa-derived short label.
-    # The SAME persisted value feeds the topic-name state edits AND the live
-    # summary title (single source — see EngagementRecord.topic_title).
-    persisted_title = normalize_topic_title(args.get("topic_title")) or short_task
-    topic_name = compose_topic_title(
-        state="active", short_task=persisted_title,
-    )
-    try:
-        topic_id = await channel.open_engagement_topic(
-            name=topic_name,
-            role=executor_type,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return _result({
-            "status": "error", "kind": "topic_create_failed",
-            "message": str(exc),
-        })
-
-    # Sol #6 / round-3 H6 / round-4 TOCTOU fence: hold the plugin-tools lock
-    # across the re-resolve + durable record write so a concurrent plugin_update
-    # (which bumps the snapshot generation UNDER THE SAME LOCK during its reload)
-    # cannot interleave. plugin_update holds this lock; the manual-edit seam
-    # reload_full() does NOT, so we BIND the recorded artifacts to a stable
-    # generation: sample → resolve → verify unchanged, retrying if reload_full
-    # moved the snapshot mid-resolve. `_gen_at_create` is then the generation the
-    # recorded artifacts actually came from, making the post-create recheck sound.
-    # The lock covers only this brief section — NOT the topic-creation RT above.
-    #
-    # #363: the topic now exists but no record does — a cancellation anywhere
-    # in this window (lock acquire, the to_thread resolve gate, create()
-    # itself) used to unwind through no handler at all, orphaning the topic
-    # outside the retention ledger. The except CancelledError below closes it
-    # in the background (a cancelled task cannot await network RTs) and
-    # re-raises; create() compensates its own record, so the topic is the
-    # only cleanup owed here.
-    try:
-        async with _PLUGIN_TOOLS_LOCK:
-            # #320: authoritative duplicate re-check. The fast path above is
-            # an unlocked read followed by awaits (topic creation), so two
-            # concurrent identical calls both pass it against an empty
-            # history. create() below runs under THIS lock, so by the time
-            # the loser gets here the winner's record is visible and the
-            # loser gets the documented duplicate_task refusal. The
-            # just-created topic is aborted like every other pre-driver
-            # failure.
-            dup = _duplicate_task_refusal(origin, task_text)
-            if dup is not None:
-                _abort_topic_on_failure(channel, "engage-abort", topic_id)
-                return dup
-            _gate_err = None
-            for _attempt in range(5):
-                _gen_at_create = plugin_registry.snapshot_generation()
-                plugin_resolution, plugin_artifacts, _gate_err = \
-                    await asyncio.to_thread(_resolve_and_gate)
-                if plugin_registry.snapshot_generation() == _gen_at_create:
-                    break   # artifacts + generation agree
-            if _gate_err is not None:
-                _abort_topic_on_failure(channel, "engage-abort", topic_id)
-                return _gate_err
-
-            # Computed BEFORE create() so it can be persisted onto the
-            # record's origin.
-            world_state = _build_world_state_summary()
-
-            # W3 (Task 8): persist the RAW brief VERBATIM on origin (no
-            # injected default keys) — the single authoritative source every
-            # consumer re-renders from (design §211).
-            _origin_extra = {
-                "context": context_text, "world_state_summary": world_state,
-            }
-            if brief is not None:
-                _origin_extra["brief"] = brief
-
-            # #326: create() persists STRICTLY — a tombstone write failure
-            # raises (no ghost record). Abort the just-created topic before
-            # surfacing the error, mirroring the _gate_err path above.
-            # (create() compensates its own record on cancellation; the
-            # outer except CancelledError handles the topic.)
-            try:
-                rec = await _engagement_registry.create(
-                    kind="executor", role_or_type=executor_type,
-                    driver=defn.driver,
-                    task=task_text,
-                    # #1038: see the in_casa launch above.
-                    origin={**_launch_note(origin, task_text)[0], **_origin_extra},
-                    topic_id=topic_id,
-                    # v0.166.0: include the launch-mandatory casa grants so the
-                    # bridge gate admits query_engager/emit_completion even for an
-                    # executor whose definition omits them (e.g. configurator).
-                    # `react` is intentionally NOT added here — only a definition
-                    # that lists it, or a resume, grants it.
-                    tools_allowed=tuple(dict.fromkeys(
-                        (*(defn.tools_allowed or ()), *SPECIALIST_CASA_GRANTS))),
-                    permission_mode=getattr(
-                        defn, "permission_mode", "acceptEdits"),
-                    plugin_artifacts=plugin_artifacts,  # §3.8 recorded binding
-                    topic_title=persisted_title,  # W-R6 durable short title
-                    # #283: reservation rides the record from here (r4).
-                    agent_spawn_permit=_spawn_holder.get("token"),
-                )
-            except Exception as exc:  # noqa: BLE001
-                _abort_topic_on_failure(channel, "engage-abort", topic_id)
-                return _result({
-                    "status": "error", "kind": "record_persist_failed",
-                    "message": str(exc)})
-            # #283 (design r4): ownership transferred at successful create —
-            # terminal registry transitions release it from here on. A
-            # cancellation between create and driver-live must NOT release
-            # the token while the durable record stays live; the wrapper's
-            # finally now sees None.
-            _spawn_holder["token"] = None
-            # #369 (Terra diff-gate r2): capture the record's context
-            # generation at PROMPT-SOURCE time — the prompt below derives
-            # from materials current now; the drivers compare this right
-            # before the initial enqueue and abort if any clamp moved it.
-            _ctx_gen0 = rec.context_generation
-    except asyncio.CancelledError:
-        _abort_topic_on_cancel(channel, "engage-abort", topic_id)
-        raise
-
-    # #698: the record is durable, so the graceful stop can be told about this
-    # launch — and the FIRST thing after create() returns, with no await in
-    # between, because a launch the stop does not know about gets no cause and
-    # therefore the ordinary destructive rollback.
-    _launch_handle = _register_launch_safe(rec.id)
-
-    # Sol r1 (#363 family): the record now EXISTS — a cancellation anywhere
-    # from here until the driver is live (state persist, prompt read, memory
-    # fetch, options build, driver.start) used to unwind through no handler,
-    # leaving a durably-active record and an open topic with no driver.
-    # Compensate in the background: mark the record errored + abort the topic.
-    try:
-        # Sol round-4: the manual-edit seam `casa_reload(scope="full")` bumps the
-        # snapshot generation WITHOUT the plugin-tools lock, so it can move the
-        # snapshot while create() awaits. Recheck against the pre-create generation
-        # and abort before the driver starts — the record must not launch stale.
-        if plugin_registry.snapshot_generation() != _gen_at_create:
-            await _abort_launch_inline(
-                channel, rec, topic_id,
-                kind="plugin_superseded", message="plugin snapshot changed during launch")
-            return _result({
-                "status": "error", "kind": "plugin_superseded",
-                "message": ("plugin registry changed during launch — engagement "
-                            "aborted before start; retry")})
-
-        # Persist the initial state emoji so Task 23 ``update_topic_state`` knows
-        # whether it needs to edit the title (no-op when state didn't change).
-        # #529: conditional — a delayed launch path must not overwrite a
-        # terminal paint's settled emoji or an in-flight paint's sentinel.
-        try:
-            await _engagement_registry.set_initial_state_emoji(
-                rec.id, STATE_EMOJI["active"],
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("set_initial_state_emoji(active) failed: %s", exc)
-
-        # Read + interpolate prompt template (options.system_prompt).
-        prompt_template = ""
-        try:
-            with open(defn.prompt_template_path, "r", encoding="utf-8") as fh:
-                prompt_template = fh.read()
-        except OSError as exc:
-            await _abort_launch_inline(
-                channel, rec, topic_id,
-                kind="prompt_template_missing", message=str(exc))
-            return _result({
-                "status": "error", "kind": "prompt_template_missing",
-                "message": str(exc),
-            })
-
-        # W3/Sol r5-B8: the {task} value reaches options.system_prompt through
-        # this ONE seam. When a brief is present it becomes the full rendered
-        # markdown block (render_brief_task); no brief → the canonical
-        # task_text (the else branch is task_text, NOT `task`, which doesn't exist
-        # here — using it would break every legacy task= invocation).
-        task_for_prompt = (
-            render_brief_task(normalized_brief)
-            if brief is not None else task_text
-        )
-        prompt = (
-            prompt_template
-            .replace("{task}", task_for_prompt)
-            .replace("{context}", context_text or "(none)")
-            .replace("{world_state_summary}", world_state)
-            # The executor archive is gone; an operator's prompt.md under
-            # /config may still carry the slot, so it renders empty.
-            .replace("{executor_memory}", "")
-        )
-
-        # Driver dispatch — ClaudeAgentOptions + system_prompt.
-        # Off-loop: _build_executor_options reads hooks.yaml. §3.9: feed the
-        # SAME resolution gated + recorded above (one resolve, one binding).
-        options = await asyncio.to_thread(
-            _build_executor_options, defn, executor_type=executor_type,
-            resolution=plugin_resolution,
-            extra_casa_tools=SPECIALIST_CASA_GRANTS,
-        )
-        options.system_prompt = prompt
-
-        driver = getattr(agent_mod, "active_engagement_driver", None)
-        if driver is None:
-            await _abort_launch_inline(
-                channel, rec, topic_id,
-                kind="no_driver", message="engagement driver not initialized")
-            return _result({
-                "status": "error", "kind": "no_driver",
-                "message": "engagement driver not initialized",
-            })
-        from drivers.driver_protocol import StaleLaunchError
-        if getattr(driver, "supports_split_launch", False) is not True:
-            # A driver without the §2.A split (a fake, or a protocol
-            # consumer that has not adopted it) keeps the pre-detach
-            # shape: the whole first turn runs inside this tool call.
-            try:
-                await driver.start(
-                    rec, prompt=prompt, options=options,
-                    expected_generation=_ctx_gen0)
-            except StaleLaunchError as exc:
-                # #369: a clearance clamp landed during launch — the prompt
-                # in hand was rendered from pre-clamp materials. Terra r5:
-                # when a clamp→rebuild cycle COMPLETED meanwhile, the
-                # engagement is ALIVE on its rebuilt floor session — only
-                # this stale prompt aborts.
-                if exc.record_live:
-                    return _result({
-                        "status": "pending", "engagement_id": rec.id,
-                        "executor_type": executor_type, "topic_id": topic_id,
-                    })
-                await _abort_launch_inline(
-                    channel, rec, topic_id,
-                    kind="clearance_changed_during_launch", message=str(exc))
-                return _result({
-                    "status": "error", "kind": "clearance_changed_during_launch",
-                    "message": str(exc),
-                })
-            except ApiErrorTurn as exc:
-                # #595: as in the interactive-specialist launch above — the
-                # carried kind reaches the terminal record, so `refusal` and
-                # `api_error` are distinguishable from a crash here too.
-                _kind = exc.kind.value
-                await _abort_launch_inline(
-                    channel, rec, topic_id,
-                    kind=_kind, message=str(exc))
-                return _result({
-                    "status": "error", "kind": _kind,
-                    "message": _USER_MESSAGES.get(exc.kind, str(exc)),
-                })
-            except Exception as exc:  # noqa: BLE001
-                await _abort_launch_inline(
-                    channel, rec, topic_id,
-                    kind="driver_start_failed", message=str(exc))
-                return _result({
-                    "status": "error", "kind": "driver_start_failed",
-                    "message": str(exc),
-                })
-
-            # #678: start() returning means the first turn ran to its END —
-            # never that the engagement reported anything. That gap is the
-            # defect: a turn cut off mid-tool-loop returns here normally,
-            # this handler answers "pending", the engaging agent narrates
-            # "started, I'll report back", and the record sits `active` with
-            # nothing ever posted. Ask the driver what the turn left behind
-            # (in_casa only — see _launch_incomplete_reason) and, if it left
-            # nothing, hand the death to its one anchored owner.
-            _incomplete = _launch_incomplete_reason(driver, rec.id)
-            if _incomplete:
-                _detail = _LAUNCH_INCOMPLETE_DETAIL.get(
-                    _incomplete, _incomplete)
-                _outcome = await asyncio.shield(_spawn_launch_death_report(
-                    channel, rec, topic_id, kind=LAUNCH_INCOMPLETE_KIND,
-                    detail=_detail, driver=driver))
-                if _outcome is not LaunchDeathResult.ALREADY_TERMINAL:
-                    return _result({
-                        "status": "error", "kind": LAUNCH_INCOMPLETE_KIND,
-                        "message": _detail,
-                    })
-                # Lost the terminal race: the engagement really did report
-                # itself between the turn's end and this read, so the engager
-                # is told what a successful launch is told.
-
-        else:
-            # Design 2026-09-15 §2.A: open the client inline (the stale-launch
-            # gate stays synchronous with this tool call), then hand the
-            # launch TURN to an anchored owner and return `pending` at once —
-            # the engaging resident's turn is not held for the first turn.
-            try:
-                await driver.open(
-                    rec, options=options, expected_generation=_ctx_gen0)
-            except StaleLaunchError as exc:
-                if exc.record_live:
-                    return _result({
-                        "status": "pending", "engagement_id": rec.id,
-                        "executor_type": executor_type, "topic_id": topic_id,
-                    })
-                await _abort_launch_inline(
-                    channel, rec, topic_id,
-                    kind="clearance_changed_during_launch", message=str(exc))
-                return _result({
-                    "status": "error", "kind": "clearance_changed_during_launch",
-                    "message": str(exc),
-                })
-            except Exception as exc:  # noqa: BLE001
-                await _abort_launch_inline(
-                    channel, rec, topic_id,
-                    kind="driver_start_failed", message=str(exc))
-                return _result({
-                    "status": "error", "kind": "driver_start_failed",
-                    "message": str(exc),
-                })
-            # --- the handoff: one synchronous block, no await inside ---
-            if (_engagement_registry is not None
-                    and _engagement_registry.launch_shutdown_active()):
-                # The stop latched while open() was suspended: mint no
-                # task (its done callback would fire after the drains),
-                # report inline and answer the caller.
-                # ARMED + acknowledged on return, like every inline abort:
-                # a launcher whose own cancellation lands inside the
-                # shield leaves the obligation for the cancellation owner.
-                _detail = "Casa was stopping when this launch was cancelled"
-                await _report_launch_death_inline(
-                    channel, rec, topic_id, kind="launch_cancelled",
-                    detail=_detail, driver=driver)
-                return _result({
-                    "status": "error", "kind": "launch_cancelled",
-                    "message": _detail,
-                })
-            _hand_off_launch_turn(driver, rec, prompt, channel, topic_id,
-                                  _launch_handle)
-            _launch_handle = None
-
-    except asyncio.CancelledError:
-        _abort_launch_on_cancel(channel, rec, topic_id)
-        raise
-    finally:
-        _unregister_launch_safe(_launch_handle)
-    # #1350: the launch was handed off. Two lines stating facts already true,
-    # neither awaited: the hand-off in the person's chat (an operator turn
-    # only), and what an in-process engagement is for at the top of its topic.
-    _handoff_name = _display_name_for_role(executor_type)
-    _title = getattr(rec, "topic_title", "") or executor_type
-    _handoff_shown = _post_handoff_line(
-        origin, f"⚙️ Passed to the {_handoff_name}: “{_title}”. "
-                "Its topic is in Engagements.")
-    _post_topic_opening(channel, topic_id, _title, task_text)
-    return _result({
-        "status": "pending",
-        "engagement_id": rec.id,
-        "executor_type": executor_type,
-        "topic_id": topic_id,
-        **({"note": HANDOFF_SHOWN_NOTE.format(name=f"the {_handoff_name}")}
-           if _handoff_shown else {}),
-    })
-
-
-def _post_topic_opening(channel: Any, topic_id: Any, title: str, task: str) -> None:
-    """#1350: the engagement topic's opening line — its title and what it was
-    asked, a standing fact never edited — posted without awaiting it."""
-    send = getattr(channel, "send_to_topic", None)
-    if send is None or topic_id is None:
-        return
-    body = (task or "").strip()
-    if len(body) > 300:
-        body = body[:300].rstrip() + "…"
-    text = f"📋 {title}\n{body}" if body else f"📋 {title}"
-
-    async def _post() -> None:
-        try:
-            await asyncio.wait_for(
-                send(topic_id, text, disable_notification=True), 10.0)
-        except Exception as exc:  # noqa: BLE001 — never the engagement's fault
-            logger.info("topic opening line not posted: %s", type(exc).__name__)
-
-    task_ = asyncio.ensure_future(_post())
-    _handoff_line_tasks.add(task_)
-    task_.add_done_callback(_handoff_line_tasks.discard)
 
 
 def _engagement_supergroup_chat_id(channel: Any | None) -> int | None:
@@ -12815,55 +12009,9 @@ async def _finalize_engagement_tail(
     await summary_run.kept(
         _capture_summary(frozen, summary, allowed=_summary_allowed))
 
-    # Per-executor-type structured summary (only kind=executor), captured
-    # beside the engagement summary above.
-    if frozen["kind"] == "executor":
-        type_summary = json.dumps({
-            "kind": "executor_engagement_summary",
-            "engagement_id": eng_id,
-            "executor_type": frozen["role_or_type"],
-            "started_at": frozen["started_at"],
-            "finished_at": now,
-            "duration_s": now - frozen["started_at"],
-            "terminal_state": outcome,
-            "engager": frozen["origin"].get("role") or "assistant",
-            "task": frozen["task"],
-            "last_text": text,
-            "artifacts": artifacts,
-        })
-        # The executor summary's memory capture, awaited, stamped with the
-        # record's epoch (the archive an executor is served is per epoch).
-        await summary_run.kept(
-            _capture_summary(frozen, type_summary, allowed=True))
-    # Both summaries have returned: the summary run is confirmed when each
-    # was kept, and the engagement's transcripts follow retention.
+    # The summary has returned: the summary run is confirmed when it was
+    # kept, and the engagement's transcripts follow retention.
     summary_run.close()
-    # H-1 (v0.34.0): honor deferred hard-reload now that all bus and
-    # memory writes have landed. Only on outcome=completed — on a cancel
-    # or an error the restart decision is the operator's, not the
-    # platform's (each commit already reloaded what it changed, so only
-    # the restart itself is withheld). Drain the marker on every path
-    # to prevent stale state from haunting an idempotent re-call or
-    # a follow-up engagement reusing the (very short) id slice.
-    deferred_pending = eng_id in _ENGAGEMENTS_DEFERRED_HARD_RELOAD
-    _ENGAGEMENTS_DEFERRED_HARD_RELOAD.discard(eng_id)
-    if outcome == "completed" and deferred_pending:
-        # H-1: the Supervisor container-kill is sequenced AFTER the summary
-        # captures above, which are awaited.
-        result = await _post_supervisor_restart()
-        if result.get("status") == "error":
-            logger.warning(
-                "finalize engagement %s: deferred Supervisor "
-                "restart failed: %s",
-                engagement.id[:8], result.get("message"),
-            )
-        else:
-            logger.info(
-                "finalize engagement %s: deferred Supervisor restart "
-                "POSTed (supervisor_status=%s); container kill arrives "
-                "asynchronously, the bus message is already on disk.",
-                engagement.id[:8], result.get("supervisor_status"),
-            )
 
     # G-4 (v0.33.0): surface the cause when outcome=error so operators
     # have a starting point for triage. Pre-fix the only log line for
@@ -13832,11 +12980,11 @@ async def casa_reload_triggers(args: dict) -> dict:
 
 _TOPIC_CLEANUP_SCOPES = ("due", "all_terminal")
 
-# #1373: the roles that may run the immediate `all_terminal` purge. The
-# assistant joined the configurator so the operator can ask her directly to
-# remove every finished topic (her prompt runs a dry run, tells the count and
-# asks for confirmation first); every other role keeps `due` only.
-_TOPIC_PURGE_ROLES = frozenset({"configurator", "assistant"})
+# #1373: the roles that may run the immediate `all_terminal` purge: the
+# assistant, so the operator can ask her directly to remove every finished
+# topic (her prompt runs a dry run, tells the count and asks for confirmation
+# first); every other role keeps `due` only.
+_TOPIC_PURGE_ROLES = frozenset({"assistant"})
 
 
 @tool(
@@ -13844,7 +12992,7 @@ _TOPIC_PURGE_ROLES = frozenset({"configurator", "assistant"})
     "Delete finished engagements' Telegram forum topics recorded in the "
     "topic ledger. scope='due' (default) deletes only entries past the "
     "7-day retention window; 'all_terminal' purges every ledger entry "
-    "immediately and is limited to the configurator and the assistant. "
+    "immediately and is limited to the assistant. "
     "Deletion is irreversible — pass dry_run=true first to preview what "
     "would be deleted.",
     # Explicit schema: the assistant prompt's `cleanup_engagement_topics()`
@@ -13892,7 +13040,7 @@ async def cleanup_engagement_topics(args: dict) -> dict:
             "status": "error", "kind": "not_authorized",
             "message": (
                 "scope='all_terminal' (immediate purge of every engagement "
-                "topic) is restricted to the configurator and the assistant; "
+                "topic) is restricted to the assistant; "
                 "use scope='due' to delete only topics past the retention "
                 "window."
             ),
@@ -13971,14 +13119,14 @@ async def _plugin_tools_guard():
 # and holds it across the handler, so a scope in this set that is dispatched
 # WITHOUT the plugin lock already held runs `RW reader -> plugin lock` — the
 # reverse of the global order stated above, and a two-party deadlock against any
-# full-scope entry (which holds the plugin lock and wants the RW WRITER). Both
-# handlers were reachable that way: `executors` and `plugin_env` are dispatched
-# unguarded by the casa_reload tool and by POST /admin/reload, and neither
-# acquisition has a timeout.
+# full-scope entry (which holds the plugin lock and wants the RW WRITER). The
+# `plugin_env` handler is reachable that way: it is dispatched unguarded by the
+# casa_reload tool and by POST /admin/reload, and the acquisition has no
+# timeout.
 #
 # The set is the classification, in ONE place: the entry points below carry no
 # scope logic of their own, so the two of them cannot drift apart.
-_PLUGIN_TOOLS_RELOAD_SCOPES = frozenset({"full", "executors", "plugin_env"})
+_PLUGIN_TOOLS_RELOAD_SCOPES = frozenset({"full", "plugin_env"})
 
 
 @asynccontextmanager
@@ -14151,7 +13299,7 @@ async def _regenerate_plugin_health_after_reload(scope: str, result: dict) -> No
     write the correct report and then has this one's older report land last
     (`plugin_health._REPORT_LOCK` orders the WRITE, not the compute before it, so
     it cannot close this); cancelled while still QUEUED for the guard — behind, say,
-    an `_engage_executor_impl` critical section, which holds the raw lock and
+    a plugin-tool critical section, which holds the raw lock and
     refreshes no health of its own — the refresh is skipped entirely and a row the
     reload just made false stands until something unrelated regenerates.
 
@@ -14604,64 +13752,36 @@ async def _notify_plugin_health_if_possible() -> None:
         logger.debug("plugin health notify skipped", exc_info=True)
 
 
-# #1053: which engagement is installing each plugin — registry name (scoped for
-# a bundle's entries) → engagement id, written by the plugin mutations an
-# engagement makes. In-process only: after a restart nothing is deferred, so a
-# still-running install's rows are announced (a spare DM, never a lost one).
-_PLUGIN_INSTALLERS: dict[str, str] = {}
-# Strong refs for the notify passes the terminal observer schedules.
-_INSTALL_END_NOTIFIES: set = set()
+# #1053: the plugins a configurator run is installing are held back from the
+# plugin-health DM while its lease is held; the
+# lease's release schedules the deferred notify pass. In-process only: after a
+# restart nothing is deferred, so a still-running install's rows are announced
+# (a spare DM, never a lost one).
 
 
 def _record_plugin_installer(names) -> None:
-    """Record the bound engagement, if any, as installing each of *names*."""
-    eng = engagement_var.get(None)
-    if eng is None:
-        return
-    for name in names:
-        if isinstance(name, str) and name:
-            _PLUGIN_INSTALLERS[name] = eng.id
+    """Record each of *names* as installed by the configurator run holding
+    the lease, if one does."""
+    import configurator_run
+    configurator_run.record_installing(names)
 
 
 def plugins_under_live_install() -> set:
-    """Names whose recorded installing engagement is still live. Only
-    :func:`_on_engagement_terminal` removes an entry."""
-    reg = _engagement_registry
-    if reg is None:
-        return set()
-    live: set = set()
-    for name, eid in list(_PLUGIN_INSTALLERS.items()):
-        rec = reg.get(eid)
-        if rec is None or rec.status in ("completed", "cancelled", "error"):
-            # Read-only: the status flips before the terminal write settles and
-            # the observer runs after it, so pruning here would take the entry
-            # the observer needs to know a pass is owed.
-            continue
-        live.add(name)
-    return live
+    """Names a configurator run holding the lease is installing."""
+    import configurator_run
+    return configurator_run.installing()
 
 
 def _on_engagement_terminal(rec) -> None:
-    """EngagementRegistry terminal observer: an engagement that was installing
-    plugins has ended, so the rows the DM deferred for them are deferred no
-    longer — run one notify pass now rather than at the next mutation or boot,
-    which may never come. Runs under the registry lock: schedule only.
+    """EngagementRegistry terminal observer.
 
-    #1049: an ended engagement also retires its own unanswered authorization
+    #1049: an ended engagement retires its own unanswered authorization
     challenges — a later tap could only mint a grant bound to an engagement
     nothing will ever resume. Synchronously, in this same step: a deferred
     retirement left a window after the transition in which a tap still
     committed. ``cancel_matching`` never awaits; the keyboard edits it causes
     run later on the broker's own hook tasks."""
     CHALLENGES.cancel_matching(engagement=rec.id, reason="engagement_ended")
-    if rec.id not in _PLUGIN_INSTALLERS.values():
-        return
-    for name, eid in list(_PLUGIN_INSTALLERS.items()):
-        if eid == rec.id:
-            del _PLUGIN_INSTALLERS[name]
-    task = asyncio.ensure_future(_notify_plugin_health_if_possible())
-    _INSTALL_END_NOTIFIES.add(task)
-    task.add_done_callback(_INSTALL_END_NOTIFIES.discard)
 
 
 def _specialist_target_pending(runtime, role: str) -> bool:
@@ -16224,6 +15344,7 @@ def _plugin_change_tool_note(kind: str, *, removal: bool = False) -> str:
          "acknowledged_conversations": _ACKNOWLEDGED_SCHEMA},
      "required": ["name", "repo", "ref", "targets"]},
 )
+@_off_the_ceiling
 async def plugin_add(args: dict) -> dict:
     def reached() -> list:
         refusal, state = _plugin_add_local(
@@ -16296,6 +15417,7 @@ async def plugin_add(args: dict) -> dict:
          "acknowledged_conversations": _ACKNOWLEDGED_SCHEMA},
      "required": ["name", "new_ref"]},
 )
+@_off_the_ceiling
 async def plugin_update(args: dict) -> dict:
     def reached() -> list:
         refusal, state = _plugin_update_local(name=args["name"])
@@ -16377,6 +15499,7 @@ async def plugin_update(args: dict) -> dict:
         "target_slug": {"type": "string"}},
      "required": ["repo", "ref"]},
 )
+@_off_the_ceiling
 async def specialist_install_inspect(args: dict) -> dict:
     from specialist_install import SpecialistInstallError, inspect_specialist_repo
 
@@ -16489,15 +15612,15 @@ async def specialist_install_inspect(args: dict) -> dict:
         })
     chat_id, operator_id = op
 
-    # v0.102.0 (#217): auto-resume the paused configurator engagement after the
-    # operator taps Approve. Capture the requesting engagement HERE —
-    # engagement_var is LIVE (this tool runs inside the configurator's own
-    # turn). The ack is recorded synchronously before _reconcile_cb ever fires
-    # (specialist_install_consent._on_commit_sync); without the resume the
-    # install stalled at commit's consent_missing until the operator sent a
-    # manual topic nudge.
-    eng = engagement_var.get(None)
+    # An Approve tap continues the configurator by itself — one turn on its
+    # desk in the operator's DM, whose text carries every staged value,
+    # because that turn starts a fresh session. Deny and expiry show on the
+    # card only.
     mode = args.get("mode", "install")
+    _staged = (
+        f"component_id {result.component_id!r}, version {result.version!r}, "
+        f"root_digest {result.root_digest!r}, slug {result.slug!r}, staged_dir "
+        f"{str(result.staged_dir)!r}, receipt_id {result.receipt_id!r}")
     # #1150/#1163: an upgrade re-consents through this same keyboard, but its
     # recipe continues with specialist_upgrade (upgrade.md step 3) —
     # specialist_install_commit refuses an installed slug (active_present) and
@@ -16506,168 +15629,22 @@ async def specialist_install_inspect(args: dict) -> dict:
         continuation = (
             "The operator approved the consent for upgrading "
             f"specialist:{result.slug}. Continue the upgrade recipe now without "
-            "waiting for further input: call specialist_upgrade with the staged "
-            "values and this inspect's receipt_id, then finish the upgrade recipe "
-            "from its step 3 onward (config_git_commit, emit_completion).")
+            f"waiting for further input: call specialist_upgrade with {_staged} "
+            "(and any config values agreed in the conversation above), then "
+            "finish the upgrade recipe from its step 3 onward "
+            "(config_git_commit), and end with your answer.")
     else:
         continuation = (
             "The operator approved the install consent for "
             f"specialist:{result.slug}. Continue the recipe now without "
-            "waiting for further input: call specialist_install_commit with "
-            "the staged values, then finish the recipe (wire delegation, "
-            "config_git_commit, emit_completion).")
-    # #1251: what a Deny tells the engagement. Nothing was applied, so the
-    # recipe concludes as cancelled with no commit and no reload; an update's
-    # text never names the install tool, which refuses an installed slug.
-    _conclude = (
-        "Conclude now without waiting for further input: call emit_completion "
-        "with status \"cancelled\" and a text saying the operator refused it "
-        "— no config_git_commit, nothing changed.")
-    if mode == "upgrade":
-        deny_continuation = (
-            "The operator denied the consent for updating "
-            f"specialist:{result.slug}. Nothing was changed: the specialist "
-            "keeps its current version and settings. Do not call "
-            "specialist_upgrade for this staged fetch. " + _conclude
-            + " A later request from the operator to update it is a new "
-            "request.")
-    else:
-        deny_continuation = (
-            "The operator denied the install consent for "
-            f"specialist:{result.slug}. Nothing was installed. Do not call "
-            "specialist_install_commit for it. " + _conclude
-            + " A later request from the operator to install it is a new "
-            "request.")
-    # #1445: what an expiry tells the engagement. Nothing was applied; the
-    # engagement concludes so it no longer reads as running, and its text
-    # tells the operator how the card comes back. Whether another card it
-    # posted is still waiting is the configurator's judgement.
-    _retry = (f"{args['repo']} at {args['ref']}"
-              + (f" (subdir {args['subdir']})" if args.get("subdir") else ""))
-    _expire_tail = (
-        "If another consent card you posted is still waiting for an answer, "
-        "drop only this one and keep waiting for that. Otherwise conclude now "
-        "without waiting for further input: call emit_completion with status "
-        "\"cancelled\" and a short text saying the consent expired unanswered, "
-        "nothing changed, and the operator can ask again to get a fresh "
-        f"consent card (a new run re-inspects {_retry}) — no "
-        "config_git_commit.")
-    if mode == "upgrade":
-        expire_continuation = (
-            "The operator did not answer the consent for updating "
-            f"specialist:{result.slug} within its 10 minutes, so it expired. "
-            "Nothing was changed: the specialist keeps its current version and "
-            "settings. Do not call specialist_upgrade for this staged fetch. "
-            + _expire_tail)
-    else:
-        expire_continuation = (
-            "The operator did not answer the install consent for "
-            f"specialist:{result.slug} within its 10 minutes, so it expired. "
-            "Nothing was installed. Do not call specialist_install_commit for "
-            "this staged fetch. " + _expire_tail)
+            f"waiting for further input: call specialist_install_commit with "
+            f"{_staged} (and any config values agreed in the conversation "
+            "above), then finish the recipe (wire delegation, "
+            "config_git_commit), and end with your answer.")
 
     async def _reconcile_cb() -> bool:
-        # Post-Approve+ack: deliver a synthetic RESUME turn so the LLM finishes
-        # the WHOLE recipe itself (commit or upgrade + delegation wiring for an
-        # install + config_git_commit + emit_completion) — never commit
-        # server-side, the recipe does far more than commit. FAIL-SAFE: this runs from the tap-callback
-        # finish hook and must NEVER raise into it; any failure (engagement
-        # gone, TTL-expired driver dead, channel seam missing) is logged and
-        # swallowed, leaving the operator's manual nudge as the fallback.
-        # IDEMPOTENT: a resume turn PLUS a stray manual nudge are both safe — a
-        # second specialist_install_commit on the now-active slug fails closed
-        # with a clean typed `concurrent_mutation` the LLM handles.
-        #
-        # #662: every one of those failure paths used to return a bare None,
-        # which the finish hook could not tell from success — so a tap landing
-        # after its engagement terminalised left "installing" on screen with
-        # nothing installed and no pointer to the recovery. Report the outcome
-        # instead. What the result does and does not establish, and which
-        # residuals it leaves open, are stated once — in INV-SPEC-010
-        # (docs/architecture/specialist-lifecycle.md). This comment does not
-        # restate them: five review rounds were spent on paraphrases of that
-        # contract that each drifted from it.
-        if eng is None:
-            return False
-        try:
-            registry = getattr(channel, "_engagement_registry", None)
-            deliver = getattr(channel, "deliver_system_turn", None)
-            if registry is None or deliver is None:
-                return False
-            rec = registry.get(eng.id)
-            if rec is None:
-                return False
-            # #663: report what the SEAM decided, not a status sampled before
-            # it ran. The old pre-seam sample existed because a post-seam
-            # status read answers a different question badly — a terminal
-            # transition can win the registry lock during `_resume_and_ready`'s
-            # own `update_user_turn` await, after which the turn IS handed off
-            # and a post-sample reports that hand-off as a failure. The seam's
-            # own return has neither problem: it is the gate's decision, taken
-            # under the topic lock after the context rebuild.
-            #
-            # It is a HAND-OFF report and nothing more — not a delivery
-            # receipt, not a turn outcome. The driver's admission fence runs
-            # later, inside the engagement's per-turn lock, and what that
-            # leaves open is stated once, in INV-SPEC-010
-            # (docs/architecture/specialist-lifecycle.md).
-            return bool(await deliver(
-                rec, continuation, inbound_reservation=inbound_reservation))
-        except Exception:  # noqa: BLE001 — tap-callback path: never raise
-            logger.warning(
-                "post-consent auto-resume failed (slug=%s) — operator can nudge "
-                "manually", result.slug, exc_info=True)
-            return False
-
-    # #663/#1251: ONE lease per keyboard — taken at the tap commit, and the
-    # same object is handed to the seam by the Deny continuation, which
-    # releases it in the step that admits the continuation's ticket.
-    inbound_reservation = _continuation_inbound_reservation(channel, eng)
-
-    async def _deny_cb() -> bool:
-        # #1251: after a Deny, tell the requesting engagement. Same guards and
-        # never-raise contract as _reconcile_cb; the result is the seam's
-        # hand-off decision, nothing more.
-        if eng is None:
-            return False
-        try:
-            registry = getattr(channel, "_engagement_registry", None)
-            deliver = getattr(channel, "deliver_system_turn", None)
-            if registry is None or deliver is None:
-                return False
-            rec = registry.get(eng.id)
-            if rec is None:
-                return False
-            return bool(await deliver(
-                rec, deny_continuation, inbound_reservation=inbound_reservation))
-        except Exception:  # noqa: BLE001 — tap-callback path: never raise
-            logger.warning(
-                "post-deny continuation failed (slug=%s)", result.slug,
-                exc_info=True)
-            return False
-
-    async def _expire_cb() -> bool:
-        # #1445: after an expiry, tell the requesting engagement — same guards
-        # and never-raise contract as _deny_cb. No reservation: there was no
-        # tap, so there is no commit instant to reserve at, and a completion
-        # that lands first only makes the seam refuse this hand-off.
-        if eng is None:
-            return False
-        try:
-            registry = getattr(channel, "_engagement_registry", None)
-            deliver = getattr(channel, "deliver_system_turn", None)
-            if registry is None or deliver is None:
-                return False
-            rec = registry.get(eng.id)
-            if rec is None:
-                return False
-            return bool(await deliver(rec, expire_continuation,
-                                      inbound_reservation=None))
-        except Exception:  # noqa: BLE001 — finish-hook path: never raise
-            logger.warning(
-                "post-expiry continuation failed (slug=%s)", result.slug,
-                exc_info=True)
-            return False
+        return await _continue_configurator(channel, chat_id, operator_id, continuation,
+                                            what=f"specialist:{result.slug}")
 
     try:
         # Round-3 fix (finding #3): register_challenge (authz_grants.py)
@@ -16680,13 +15657,10 @@ async def specialist_install_inspect(args: dict) -> dict:
             coordinator=CHALLENGES,
             channel=channel, chat_id=chat_id, operator_id=operator_id, inspection=result,
             acks=acks, reconcile_cb=_reconcile_cb,
-            # #663: taken synchronously at the tap-commit, released the instant
-            # the seam admits the continuation's ticket.
-            inbound_reservation=inbound_reservation,
             # #1225: the keyboard and its edits name an upgrade as an update.
-            mode=mode, deny_cb=_deny_cb,
-            # #1445: an expiry tells the engagement too, and the card is its own.
-            expire_cb=_expire_cb, requester=str(eng.id) if eng is not None else "",
+            mode=mode,
+            # #1445: each run gets its own card.
+            requester=_configurator_run_key(),
         )
     except Exception as exc:  # noqa: BLE001 — round-5b: structured, never a silent ok:true
         logger.exception("specialist install consent prompt failed to post")
@@ -16699,33 +15673,36 @@ async def specialist_install_inspect(args: dict) -> dict:
     return _result(ok_payload)
 
 
+def _configurator_run_key() -> str:
+    """The configurator run this tool runs in (its delegation id or desk turn
+    id), or ``""``."""
+    origin = _snapshot_origin() or {}
+    return str(origin.get("_delegation_id") or "")
+
+
+async def _continue_configurator(channel: Any, chat_id: Any, operator_id: Any,
+                                 text: str, *, what: str) -> bool:
+    """Continue the configurator after an approval, as one turn on its
+    desk in the operator's DM — a fresh session whose task is *text*. Returns
+    the desk route's own report (the operator was told either way). Runs from a
+    tap-callback finish hook: never raises."""
+    dispatch = getattr(channel, "_dispatch_desk_continuation", None)
+    if dispatch is None:
+        return False
+    try:
+        return bool(await dispatch(
+            chat_id=int(chat_id), user_id=int(operator_id), desk_role="configurator",
+            request_id=uuid.uuid4().hex, text=text))
+    except Exception:  # noqa: BLE001 — tap-callback path: never raise
+        logger.warning("configurator continuation failed (%s)", what, exc_info=True)
+        return False
+
+
 # Round-5b: bound on awaiting the consent keyboard's settled post. The
 # coordinator's setup driver only posts (the operator tap resolves later,
 # elsewhere), so this normally settles in one Telegram round-trip; the bound
 # exists so a wedged channel yields a structured failure, not a hung tool.
 _INSTALL_CONSENT_POST_TIMEOUT_S = 30.0
-
-
-def _continuation_inbound_reservation(channel: Any, engagement: Any) -> Any:
-    """#663: build the requesting engagement's SYNCHRONOUS ingress lease, or
-    ``None`` when there is nothing to reserve against.
-
-    Built HERE because this is the layer that knows the engagement — the
-    consent modules deliberately do not. Duck-typed on the channel so those
-    modules hold an object with ``take()`` and ``release()`` and nothing more.
-    ``None`` (no engagement in context, or a channel without the seam) means
-    the tap simply takes no reservation, which is exactly today's behaviour.
-    """
-    if engagement is None:
-        return None
-    factory = getattr(channel, "engagement_inbound_reservation", None)
-    if factory is None:
-        return None
-    try:
-        return factory(engagement.id)
-    except Exception:  # noqa: BLE001 — never abort an inspect over this
-        logger.debug("inbound reservation factory failed", exc_info=True)
-        return None
 
 
 async def _settle_install_consent_post(handle) -> "dict | None":
@@ -17191,6 +16168,7 @@ def _activation_error_disclosure(instance) -> dict:
         "secret_names_provided": {"type": "array", "items": {"type": "string"}}},
      "required": ["component_id", "version", "root_digest", "slug", "staged_dir", "receipt_id"]},
 )
+@_off_the_ceiling
 async def specialist_install_commit(args: dict) -> dict:
     from specialist_install import (
         InspectionResult, SpecialistInstallError, commit_specialist_install,
@@ -17334,6 +16312,7 @@ async def specialist_install_commit(args: dict) -> dict:
         "acknowledged_conversations": _ACKNOWLEDGED_SCHEMA},
      "required": ["slug", "component_id", "version", "root_digest", "staged_dir", "receipt_id"]},
 )
+@_off_the_ceiling
 async def specialist_upgrade(args: dict) -> dict:
     import agent as agent_mod
     from specialist_install import (
@@ -17655,6 +16634,7 @@ async def specialist_uninstall(args: dict) -> dict:
         "repo": {"type": "string"}, "ref": {"type": "string"}, "subdir": {"type": "string"},
         "expected_revision": {"type": "string"}}, "required": ["repo", "ref"]},
 )
+@_off_the_ceiling
 async def persona_install_inspect(args: dict) -> dict:
     from persona_install import (
         PersonaInstallAckStore, inspect_persona_repo, persona_install_consent_identity,
@@ -17711,119 +16691,20 @@ async def persona_install_inspect(args: dict) -> dict:
         })
     chat_id, operator_id = op
 
-    # v0.102.0 (#217): mirror specialist_install_inspect — auto-resume the
-    # paused configurator engagement after Approve+ack so the recipe finishes
-    # on its own instead of stalling until a manual topic nudge. engagement_var
-    # is LIVE here (this tool runs inside the configurator's own turn).
-    eng = engagement_var.get(None)
+    # As specialist_install_inspect — Approve
+    # continues the configurator on its desk with the staged values; Deny and
+    # expiry show on the card only.
+    continuation = (
+        "The operator approved the install consent for persona "
+        f"{result.persona_id}. Continue the recipe now without waiting for "
+        f"further input: call persona_install_commit with persona_id "
+        f"{result.persona_id!r}, version {result.version!r}, checksum "
+        f"{result.checksum!r} and staged_dir {str(result.staged_dir)!r}, then "
+        "finish the recipe (config_git_commit), and end with your answer.")
 
     async def _reconcile_cb() -> bool:
-        # Post-Approve+ack: deliver a synthetic RESUME turn so the LLM finishes
-        # the whole persona recipe itself (commit + config_git + reload +
-        # emit_completion). FAIL-SAFE: runs from the tap-callback finish hook,
-        # must NEVER raise into it — any failure is logged and swallowed, with
-        # the operator's manual nudge as the fallback. IDEMPOTENT: a resume turn
-        # plus a stray manual nudge are both safe — persona_install_commit on
-        # the SAME approved persona is a checksum-verified no-op re-commit.
-        #
-        # #662: sibling of specialist_install_inspect's callback above — report
-        # the outcome instead of returning a bare None the finish hook cannot
-        # tell from success. See that comment for exactly what True does and
-        # does not establish.
-        if eng is None:
-            return False
-        try:
-            registry = getattr(channel, "_engagement_registry", None)
-            deliver = getattr(channel, "deliver_system_turn", None)
-            if registry is None or deliver is None:
-                return False
-            rec = registry.get(eng.id)
-            if rec is None:
-                return False
-            # #663: the seam's HAND-OFF decision, not a pre-seam status
-            # sample — same as the specialist sibling above, and for the same
-            # reason; INV-PERS-011 defers to INV-SPEC-010 for what it does and
-            # does not establish.
-            return bool(await deliver(
-                rec,
-                "The operator approved the install consent for persona "
-                f"{result.persona_id}. Continue the recipe now without waiting "
-                "for further input: call persona_install_commit with the staged "
-                "values, then finish the recipe (config_git_commit, "
-                "emit_completion).",
-                inbound_reservation=inbound_reservation))
-        except Exception:  # noqa: BLE001 — tap-callback path: never raise
-            logger.warning(
-                "post-consent persona auto-resume failed (persona_id=%s) — "
-                "operator can nudge manually", result.persona_id, exc_info=True)
-            return False
-
-    # #663/#1251: one lease, handed to the seam by the Deny continuation —
-    # see the specialist sibling.
-    inbound_reservation = _continuation_inbound_reservation(channel, eng)
-
-    async def _deny_cb() -> bool:
-        # #1251: see the specialist sibling.
-        if eng is None:
-            return False
-        try:
-            registry = getattr(channel, "_engagement_registry", None)
-            deliver = getattr(channel, "deliver_system_turn", None)
-            if registry is None or deliver is None:
-                return False
-            rec = registry.get(eng.id)
-            if rec is None:
-                return False
-            return bool(await deliver(
-                rec,
-                "The operator denied the install consent for persona "
-                f"{result.persona_id}. Nothing was installed. Do not call "
-                "persona_install_commit for it. Conclude now without waiting "
-                "for further input: call emit_completion with status "
-                "\"cancelled\" and a text saying the operator refused it — no "
-                "config_git_commit, nothing changed. A later "
-                "request from the operator to install it is a new request.",
-                inbound_reservation=inbound_reservation))
-        except Exception:  # noqa: BLE001 — tap-callback path: never raise
-            logger.warning(
-                "post-deny persona continuation failed (persona_id=%s)",
-                result.persona_id, exc_info=True)
-            return False
-
-    _retry = (f"{args['repo']} at {result.resolved_ref}"
-              + (f" (subdir {args['subdir']})" if args.get("subdir") else ""))
-
-    async def _expire_cb() -> bool:
-        # #1445: see the specialist sibling.
-        if eng is None:
-            return False
-        try:
-            registry = getattr(channel, "_engagement_registry", None)
-            deliver = getattr(channel, "deliver_system_turn", None)
-            if registry is None or deliver is None:
-                return False
-            rec = registry.get(eng.id)
-            if rec is None:
-                return False
-            return bool(await deliver(
-                rec,
-                "The operator did not answer the install consent for persona "
-                f"{result.persona_id} within its 10 minutes, so it expired. "
-                "Nothing was installed. Do not call persona_install_commit for "
-                "this staged fetch. If another consent card you posted is still "
-                "waiting for an answer, drop only this one and keep waiting for "
-                "that. Otherwise conclude now without waiting for further "
-                "input: call emit_completion with status \"cancelled\" and a "
-                "short text saying the consent expired unanswered, nothing "
-                "changed, and the operator can ask again to get a fresh consent "
-                f"card (a new run re-inspects {_retry}) — no "
-                "config_git_commit.",
-                inbound_reservation=None))
-        except Exception:  # noqa: BLE001 — finish-hook path: never raise
-            logger.warning(
-                "post-expiry persona continuation failed (persona_id=%s)",
-                result.persona_id, exc_info=True)
-            return False
+        return await _continue_configurator(channel, chat_id, operator_id, continuation,
+                                            what=f"persona {result.persona_id}")
 
     try:
         # Round-3 fix (finding #3): same event-loop requirement as
@@ -17835,10 +16716,8 @@ async def persona_install_inspect(args: dict) -> dict:
             coordinator=CHALLENGES,
             channel=channel, chat_id=chat_id, operator_id=operator_id, inspection=result,
             acks=acks, reconcile_cb=_reconcile_cb,
-            # #663: see the specialist sibling.
-            inbound_reservation=inbound_reservation, deny_cb=_deny_cb,
-            # #1445: see the specialist sibling.
-            expire_cb=_expire_cb, requester=str(eng.id) if eng is not None else "",
+            # #1445: each run gets its own card.
+            requester=_configurator_run_key(),
         )
     except Exception as exc:  # noqa: BLE001 — round-5b: structured, never a silent ok:true
         logger.exception("persona install consent prompt failed to post")
@@ -17860,6 +16739,7 @@ async def persona_install_inspect(args: dict) -> dict:
         "checksum": {"type": "string"}, "staged_dir": {"type": "string"}},
      "required": ["persona_id", "version", "checksum", "staged_dir"]},
 )
+@_off_the_ceiling
 async def persona_install_commit(args: dict) -> dict:
     from persona_install import PersonaInspectionResult, PersonaInstallAckStore, commit_persona_install
     from persona_pack import PersonaPackError, load_persona_pack
@@ -18779,27 +17659,13 @@ def _owned_entries_now(slug: str) -> "list[dict]":
     return plugin_registry.owned_entries_for(slug, data) if data.valid else []
 
 
-def _engagement_deliverer(channel: Any, eng: Any, *,
-                          inbound_reservation: Any = None):
-    """A continuation into the configurator engagement *eng* (the persona
-    install-consent precedent): returns True only when the turn was handed
-    off. #1261: an *inbound_reservation* (a tap's lease) is handed to the seam,
-    which releases it in the step that admits the ticket; without one the
-    seam is called exactly as before, with no keyword at all."""
+def _configurator_deliverer(channel: Any, chat_id: Any, operator_id: Any, *, what: str):
+    """A continuation of the configurator: one turn on its desk in the
+    operator's DM; returns True when the desk route took it."""
     async def _deliver(text: str) -> bool:
-        if eng is None or channel is None:
+        if channel is None:
             return False
-        registry = getattr(channel, "_engagement_registry", None)
-        deliver = getattr(channel, "deliver_system_turn", None)
-        if registry is None or deliver is None:
-            return False
-        rec = registry.get(eng.id)
-        if rec is None:
-            return False
-        if inbound_reservation is None:
-            return bool(await deliver(rec, text))
-        return bool(await deliver(rec, text,
-                                  inbound_reservation=inbound_reservation))
+        return await _continue_configurator(channel, chat_id, operator_id, text, what=what)
     return _deliver
 
 
@@ -18819,16 +17685,17 @@ def _choice_continuation(tool: str, arg: str, name: str, choice: int,
     if choice in (pec.ERASE, pec.ERASE_DATA_ONLY):
         label = pec.LABELS[choice]
         return (f"The operator chose {label}. Call {_erase_call(tool, arg, name, True, extra)} "
-                "now: it starts the plugin's eraser and removes nothing yet. Casa "
-                "then sends the eraser's result into this topic — wait for it.")
+                "now: it starts the plugin's eraser and removes nothing yet. Then "
+                "end your turn with one short line saying the data is being "
+                "erased; Casa continues you with the eraser's result.")
     return (f"The operator cancelled uninstalling {name!r}. Nothing was removed; "
             "tell them so and finish.")
 
 
 async def _deliver_erasure_outcome(tool: str, name: str, outcomes: list,
                                    deliver, extra: str = "") -> None:
-    """Continue the configurator with what the eraser(s) said; if the
-    engagement cannot take it, tell the operator directly. Never raises."""
+    """Continue the configurator with what the eraser(s) said; if its desk
+    cannot take it, tell the operator directly. Never raises."""
     arg = "slug" if tool == "specialist_uninstall" else "name"
     try:
         if outcomes and all(o.verdict == "complete" for o in outcomes):
@@ -18961,8 +17828,7 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
                            "erase_data=false to keep the data.")}, []
     chat_id, operator_id = op
     artifacts = tuple(s.artifact_id for s in specs)
-    eng = engagement_var.get(None)
-    deliver = _engagement_deliverer(channel, eng)
+    deliver = _configurator_deliverer(channel, chat_id, operator_id, what=name)
     if erase is None:
         if confirm is not None:
             had = questions.current(subject) is not None
@@ -18988,24 +17854,16 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
             if pec.ERASE in choices:
                 erasers.append((s.name, s.tool, s.summary))
         text = pec.render_erase_choice(what, erasers, choices)
-        # #1261: the tap's lease, taken at the tap commit, is handed to the
-        # seam by the choice's own continuation — never by the background
-        # outcome delivery, which keeps the lease-free deliverer above.
-        lease = _continuation_inbound_reservation(channel, eng)
-
         async def _continue(choice: int) -> bool:
             if choice in (pec.CANCEL, pec.KEEP):
                 # Keep and Cancel answer the question now: an erase already
                 # approved and queued must not run behind them.
                 questions.close(subject, question)
-            return await _engagement_deliverer(
-                channel, eng, inbound_reservation=lease)(
-                    _choice_continuation(tool, arg, name, choice, call_extra))
+            return await deliver(_choice_continuation(tool, arg, name, choice, call_extra))
         try:
             handle = pec.prompt_erase_choice(
                 coordinator=CHALLENGES, channel=channel, key=key, text=text,
                 continue_cb=_continue,
-                inbound_reservation=lease,
                 choices=choices)
         except Exception as exc:  # noqa: BLE001 — structured, never a raise
             logger.exception("erase-choice prompt failed to post")
@@ -19018,7 +17876,8 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
                 "detail": ("Nothing was removed yet. The operator was asked in "
                            "their DM whether to also erase the data "
                            f"({', '.join(s.name for s in specs)}); Casa continues "
-                           "this topic with their choice — wait for it.")}, []
+                           "you with their choice. End your turn now with one "
+                           "short line saying what you asked.")}, []
     question = questions.current(subject)
     key = pec.EraseChoiceKey(operator_id=operator_id, chat_id=chat_id,
                              subject=subject, artifacts=artifacts,
@@ -19945,8 +18804,8 @@ def _tool_verify_plugin_state(
     """Tier-aware verification (§3.9): does the RUNNING state agree with the
     registry's DESIRED state? Constructed residents/specialists must have the
     desired artifact bound (else reload_required); dormant targets report
-    configured readiness only; executors also need their plugin MCP namespaces
-    authorized; running engagements on a previous artifact are informational.
+    configured readiness only (an `executor:` target is always dormant: no
+    executor loads plugins); running engagements on a previous artifact are informational.
     Verification can never report active agreement while a running consumer
     executes different code (FR3).
 
@@ -20235,7 +19094,6 @@ def _tool_verify_plugin_state(
 
     runtime = getattr(agent_mod, "active_runtime", None)
     agents = getattr(runtime, "agents", {}) or {}
-    exec_reg = getattr(runtime, "executor_registry", None)
 
     target_rows = []
     stale_targets = []
@@ -20312,25 +19170,10 @@ def _tool_verify_plugin_state(
             else:
                 row["state"] = "dormant"
         elif tier == "executor":
-            # A DISABLED executor (enabled: false) is absent from the registry's
-            # get() by design, so its tools.allowed would read empty and every
-            # derived grant would look unauthorized — a false authorization_missing
-            # + operator DM on every boot. A plugin assigned to a disabled executor
-            # is dormant-by-config, NOT a health failure: report state="disabled"
-            # and never flag it not-ready. Its authorization is still recorded
-            # (validated against the disabled defn) and is re-checked for real the
-            # moment the operator enables the executor.
-            disabled = (exec_reg is not None and exec_reg.is_disabled(role))
-            row["state"] = "disabled" if disabled else "dormant"
-            defn = (exec_reg.definition_any(role) if disabled
-                    else (exec_reg.get(role) if exec_reg is not None else None))
-            allowed = list(getattr(defn, "tools_allowed", []) or []) if defn else []
-            missing = [g for g in granted
-                       if not cc_tool_pattern.matches_any(allowed, g, {})]
-            row["authorization"] = {"required": granted, "missing": missing}
-            if missing and not disabled:
-                row["ready"] = False
-                row["reasons"] = ["authorization_missing"]
+            # No executor runs plugins any more (the
+            # configurator is a delegated run with none), so such a target is
+            # never loaded — dormant, with nothing to authorize.
+            row["state"] = "dormant"
         target_rows.append(row)
 
     # Running executor engagements on a PREVIOUS artifact — informational.
@@ -21181,7 +20024,6 @@ CASA_TOOLS: tuple = (
     set_reminder,                  # #396 — durable reminders
     cancel_reminder,               # #396
     ack_event,                     # #419 — plugin-events delivery receipt
-    engage_executor,
     emit_completion,
     report_job_progress,
     cancel_engagement,

@@ -174,7 +174,7 @@ async def test_what_each_kind_of_evidence_tells(seq, told, monkeypatch):
 
 
 def test_the_documents_no_longer_say_the_sequencer_arm_always_loaded():
-    recipe = (REPO / "casa/rootfs/opt/casa/defaults/agents/executors/configurator/"
+    recipe = (REPO / "casa/rootfs/opt/casa/defaults/configurator/"
               "doctrine/recipes/specialist/upgrade.md").read_text(encoding="utf-8")
     recovery = (REPO / "docs/architecture/specialist-bundle-recovery.md").read_text(
         encoding="utf-8")

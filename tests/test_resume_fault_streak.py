@@ -87,7 +87,6 @@ def _align_seeded_surface(reg: SessionRegistry, agent, chat: str = "fault-scope"
         agent.config.role, agent.config.delegates, agent._agent_registry,
         live_names=_live_agent_directory(),
         allowed_tools=agent.config.tools.allowed,
-        executors=agent.config.executors,
     ).digest
 
 
