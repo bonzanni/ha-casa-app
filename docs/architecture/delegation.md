@@ -23,27 +23,22 @@ is in [`architecture/engagement-completion-gate.md`](engagement-completion-gate.
 **A delegated turn and an engagement are different things.** Delegation in its ordinary form
 is a task handed to a specialist that runs and returns — ephemeral. An engagement is a
 durable record with its own topic, which outlives the call that created it. Specialist
-delegation, `sync` or `async`, runs ephemerally; engaging an executor or starting a
+delegation, `sync` or `async`, runs ephemerally, and so does a delegation to the
+configurator, which always runs `async` ([`configurator.md`](configurator.md)); starting a
 background job creates an engagement. The retired `mode='interactive'` is refused
 (`interactive_retired`) before any gate, with a message naming a `sync` delegation, after
 which the person talks with the specialist by replying to its message
 ([`specialist-desk.md`](specialist-desk.md)).
 
 **The operator sees a hand-off as it happens.** When the operator's own Telegram turn hands
-work on — a `sync` or `async` delegation once the specialist's run has been created, or an
-executor engagement once its launch has been handed off — Casa posts one silent line in
-that chat recording it (`📊 Passed to Alex.`, `⚙️ Passed to the configurator: “<title>”. …`).
-The title is the one Casa keeps for the engagement, which also names its Engagements topic:
-the engager's `topic_title` up to about 40 characters (fewer for emoji, to stay within the
-topic name's byte limit), shortened only between words and ending in “…” whenever it was
-shortened (`normalize_topic_title`), or Casa's own label from the task when that title is
-blank or unsafe.
+work on — a `sync` or `async` delegation once the delegate's run has been created — Casa
+posts one silent line in that chat recording it (`📊 Passed to Alex.`).
 Every line states a hand-off that has already happened, so it stays true whatever the work
 then does; the answer or the failure still comes from the assistant. The send is spawned,
 never awaited, so it adds no wait and no cancellation point to the tool. Only a turn the spawn
 cap counts as the operator's own (`_operator_turn`, no bound engagement, depth 0) gets one:
-scheduled, notice, nested and voice turns post nothing. An `async` delegation's or an
-engagement's `pending` result then carries a note telling the assistant the person already
+scheduled, notice, nested and voice turns post nothing. An `async` delegation's `pending`
+result then carries a note telling the assistant the person already
 sees the line and to stay silent when it has nothing else; a `sync` result's answer is the
 reply, so it carries none (only, when Casa holds that answer, a `relay` field naming its id
 for [`relay_answer`](delegate-answer-relay.md), or, when the delegate closed its turn with
@@ -55,9 +50,7 @@ line: the person has the hand-off line, and often a card the specialist already 
 territory.** The *depth cap* stops delegation from chaining: an agent reached through
 delegation, or running a job hosted on it, cannot call the delegation tool again. The
 *agent-spawn cap* bounds fan-out: engagements created from agent context, whatever the
-path, draw from one small global pool of live slots. The executor launch path is
-deliberately outside the depth cap (launching executors is what that tool is for) and
-inside the spawn cap. A specialist starting a job its own plugins declare, hosted on itself,
+path, draw from one small global pool of live slots. A specialist starting a job its own plugins declare, hosted on itself,
 is not a delegation either: it passes neither the ACL nor the depth cap, and it stays inside
 the spawn cap ([`specialist-job-start.md`](specialist-job-start.md)).
 
@@ -87,7 +80,7 @@ starts a use of the same desk; its route is [`inbound-files.md`](inbound-files.m
 
 **A brief is text stored for a later turn to narrate, and its disclosure resolves at
 launch.** Every `delegate_to_agent` launch — synchronous ones included, since a synchronous
-wait degrades to pending — and both engagement `create` sites resolve the launching turn's
+wait degrades to pending — and the job launch owner's `create` resolve the launching turn's
 obligation against the brief now (`_launch_note`): when the launcher had listed inbound files
 and neither opened nor shared any, the record's origin carries the resolved note as the plain string
 `_inherited_note`, which survives persistence where the live scope does not, and the pending
@@ -130,9 +123,7 @@ stamped when an ephemeral delegated child's origin is built AND when the job lau
 creates a job's engagement, so a job's specialist runs at depth one and is refused onward
 delegation exactly as an ephemeral delegate is.
 
-What it does not cover: the executor launch path neither reads nor stamps the depth — BY
-DESIGN, since launching executors is the purpose of that tool; its fan-out is bounded by
-INV-ENG-008 instead. A specialist's `hand_off` is not this tool and has its own bounds
+What it does not cover: a specialist's `hand_off` is not this tool and has its own bounds
 (INV-ENG-025, [`specialist-handoff.md`](specialist-handoff.md)). The guarantee is "delegated work cannot chain the delegation tool",
 not "agent-created work cannot exist".
 
@@ -140,7 +131,7 @@ not "agent-created work cannot exist".
 
 Agent context is anything that is not a positively-marked live operator turn: a bound
 engagement turn, a delegated turn, or any turn without the reserved `_operator_turn`
-marker. Both engagement-creating call sites acquire an occupancy reservation from one
+marker. The engagement-creating call site, the job launch owner, acquires an occupancy reservation from one
 global limiter *synchronously, before any await with external effects* — before the
 channel-setup retry, duplicate-task lookups and topic creation — so a refused spawn
 performs no Telegram traffic at all, and parallel calls cannot pass a shared count check

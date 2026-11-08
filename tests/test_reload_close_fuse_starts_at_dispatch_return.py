@@ -14,9 +14,8 @@ Declared invariant (D34), pinned by this file:
 
 Probe shape (the survey's, refined by the red-case specification): the REAL
 ``reload.dispatch("full")`` -> real ``reload_full`` -> real policies cascade ->
-real ``reload_agents`` -> real ``reload_executors`` (with a real
-``asyncio.to_thread`` registry load as the post-swap work) -> real per-role
-pass -> real ``_schedule_agent_close`` -> the real ``Agent.aclose`` body ->
+real ``reload_agents`` -> real per-role pass (whose first call is preceded
+by a real ``asyncio.to_thread`` wait standing in for post-swap work) -> real ``_schedule_agent_close`` -> the real ``Agent.aclose`` body ->
 a real ``SdkClientPool``. Fakes ONLY at the SDK-client boundary and at the
 loaders the reload suites already stub. The 120 s production fuse is scaled
 through ``SdkClientPool.aclose.__kwdefaults__`` — never by editing a constant.
@@ -217,7 +216,7 @@ async def _install(h, monkeypatch, tmp_path, *, replacements, live=None):
 
     runtime = CasaRuntime(
         agents={}, role_configs={}, specialist_registry=MagicMock(),
-        executor_registry=MagicMock(), engagement_registry=MagicMock(),
+        engagement_registry=MagicMock(),
         agent_registry=MagicMock(), trigger_registry=MagicMock(),
         mcp_registry=MagicMock(), session_registry=MagicMock(),
         channel_manager=MagicMock(), bus=MagicMock(),
@@ -232,11 +231,16 @@ async def _install(h, monkeypatch, tmp_path, *, replacements, live=None):
     runtime.agents["assistant"] = (
         live if live is not None else await h.measured_agent("original"))
 
-    def _executor_load():
-        h.executor_loads += 1
-        time.sleep(POST_SWAP)              # real to_thread work after the swap
+    real_agent_handler = reload_mod._HANDLERS["agent"]
 
-    runtime.executor_registry.load = _executor_load
+    async def _agent_after_post_swap_work(runtime, *, role=None, **kw):
+        if h.executor_loads == 0:
+            h.executor_loads += 1
+            # real to_thread work after the swap
+            await asyncio.to_thread(time.sleep, POST_SWAP)
+        return await real_agent_handler(runtime, role=role, **kw)
+
+    monkeypatch.setitem(reload_mod._HANDLERS, "agent", _agent_after_post_swap_work)
 
     queue = list(replacements)
 
@@ -303,14 +307,16 @@ async def _drive(h, runtime, *, cancel_at):
 
 ARMS = {
     # arm: (measured replacements, standin replacements, exit kind)
-    "full_single":  dict(measured_repl=0, standins=3, exit="ok"),
-    "full_fanout":  dict(measured_repl=2, standins=1, exit="ok"),
+    # a `full` constructs the resident twice: the agents sweep, then the
+    # per-role pass
+    "full_single":  dict(measured_repl=0, standins=2, exit="ok"),
+    "full_fanout":  dict(measured_repl=1, standins=1, exit="ok"),
     "reload_error": dict(measured_repl=0, standins=1, exit="reload_error"),
     "unexpected":   dict(measured_repl=0, standins=1, exit="unexpected"),
     "cancel_handler": dict(measured_repl=0, standins=1, exit="cancel_handler"),
     # cancel_probe keeps the REAL cascade: the cancellation must land in the
     # post-lock probe, so nothing may block earlier.
-    "cancel_probe":   dict(measured_repl=0, standins=3, exit="cancel_probe"),
+    "cancel_probe":   dict(measured_repl=0, standins=2, exit="cancel_probe"),
 }
 
 

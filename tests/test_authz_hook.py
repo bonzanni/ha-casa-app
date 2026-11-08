@@ -858,20 +858,25 @@ class TestWiring:
         assert _has_settings_guard(opts)  # guard still present
 
     def test_executor_options_have_no_authz_matcher(self, tmp_path, monkeypatch):
+        """Engagement trim stage 4: the configurator (the only executor) is
+        built through the specialist builder and loads no plugin — not even
+        one assigned to ``executor:configurator`` — so it has no protected
+        tool and no authz matcher."""
+        import agent_loader
         from plugin_registry import reload_snapshot
         from plugin_fixtures import entry, mk_artifact, mk_registry
-        from test_agent_plugin_binding import _exec_defn
 
         store = tmp_path / "store"
-        e = entry("p", ["executor:probe-exec"])
+        e = entry("p", ["executor:configurator"])
         mk_artifact(store, "p", e["artifact_id"], mcp_servers={"p": {}},
                     extra_manifest=_PROTECTED_MANIFEST)
         reload_snapshot(registry_path=mk_registry(tmp_path, [e]),
                         store_root=store)
         monkeypatch.setattr(tools_mod, "_mcp_registry", None, raising=False)
+        monkeypatch.setattr(tools_mod, "_agent_registry", None, raising=False)
 
-        opts = tools_mod._build_executor_options(
-            _exec_defn(), executor_type="probe-exec")
+        opts = tools_mod._build_specialist_options(agent_loader.load_configurator())
+        assert opts.plugins == []
         assert _authz_matcher(opts) is None  # executors get NOTHING
 
 

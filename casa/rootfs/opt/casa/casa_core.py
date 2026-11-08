@@ -1646,10 +1646,11 @@ async def _notify_plugin_health_locked(channel_manager: Any, path: str) -> None:
                if e.get("fingerprint") in fp_set]
     # #1053: an install walks its plugin through states that are expected on
     # the way (consent pending, a setup-provided value not wired yet, setup
-    # still to run…). While the engagement installing that plugin is live, its
-    # install-phase rows are neither named nor marked — so they stay new, and
-    # the pass run when that engagement ends (tools._on_engagement_terminal)
-    # names whatever still stands. Any other row is a fault and is sent as ever.
+    # still to run…). While the configurator run installing that plugin holds
+    # its lease, its install-phase rows are neither named nor marked — so they
+    # stay new, and the pass run when the lease is released
+    # (configurator_run._release) names whatever still stands. Any other row
+    # is a fault and is sent as ever.
     try:
         import tools as _tools_mod
         installing = _tools_mod.plugins_under_live_install()
@@ -2541,6 +2542,11 @@ async def main() -> None:
     )
     await job_registry.load()
     recovered_jobs = await job_registry.recover_after_restart()
+    # Engagement trim stage 4: a configurator run the last process did not
+    # finish left its lease file; it is removed now, so no run is blocked by
+    # it, and announced once after the channels start (below).
+    import configurator_run
+    interrupted_configurator = configurator_run.claim_interrupted()
 
     # Task 13: the NEW installed-specialist data model — a SEPARATE tree
     # (/config/specialists/<slug>/) and a SEPARATE object from the legacy
@@ -2606,12 +2612,6 @@ async def main() -> None:
         agent_spawn_limiter=agent_spawn_limiter,
     )
     await engagement_registry.load()
-
-    from executor_registry import ExecutorRegistry
-    executor_registry = ExecutorRegistry(
-        os.path.join(CONFIG_DIR, "agents", "executors"),
-    )
-    executor_registry.load()
 
     # Scheduler + trigger registry constructed here so the get_schedule
     # tool can see the registry via init_tools. The per-role
@@ -2726,7 +2726,6 @@ async def main() -> None:
         agents={},                            # populated below at line ~984
         role_configs=role_configs,
         specialist_registry=specialist_registry,
-        executor_registry=executor_registry,
         engagement_registry=engagement_registry,
         agent_registry=agent_registry,
         trigger_registry=trigger_registry,
@@ -2775,7 +2774,6 @@ async def main() -> None:
         agent_registry=agent_registry,
         trigger_registry=trigger_registry,
         engagement_registry=engagement_registry,
-        executor_registry=executor_registry,
         runtime=runtime,
         specialist_limiter=specialist_limiter,
         specialist_telemetry=specialist_telemetry,
@@ -3000,23 +2998,6 @@ async def main() -> None:
         )
         return telegram_channel.create_topic_stream(topic_id)
 
-    # #1350: an executor turn's step log in its topic (drivers/turn_progress).
-    # Plain text, silent; each call is bounded inside the line itself.
-    def _turn_progress_factory(topic_id: int):
-        from drivers.turn_progress import TurnProgressLine
-        ch = telegram_channel
-        if ch is None:
-            return None
-
-        async def _send(text: str):
-            return await ch.send_to_topic(
-                topic_id, text, disable_notification=True)
-
-        async def _edit(message_id: int, text: str) -> bool:
-            return await ch.edit_topic_message(topic_id, message_id, text)
-
-        return TurnProgressLine(send=_send, edit=_edit)
-
     # Task 6 (spec §4.6): observe interactive specialist ResultMessages so
     # their cost/usage reaches SpecialistTelemetry too (ephemeral sync/async
     # delegations are captured in tools._run_delegated_agent). Only
@@ -3034,7 +3015,6 @@ async def main() -> None:
 
     engagement_driver = InCasaDriver(
         topic_stream_factory=_topic_stream_factory,
-        turn_progress_factory=_turn_progress_factory,
         persist_session_id=engagement_registry.persist_session_id,
         # S8: the profile a rebuilt session enforces is persisted before it opens.
         persist_plugin_profiles=engagement_registry.update_plugin_profiles,
@@ -3059,7 +3039,6 @@ async def main() -> None:
     memory_capture.configure(notify=_memory_spool_notice)
     memory_writer.active().notify = _memory_spool_notice
     agent_mod.active_session_registry = session_registry  # #411 — wipe orchestrator input
-    agent_mod.active_executor_registry = executor_registry
     runtime.engagement_driver = engagement_driver
 
     # Stash runtime on agent module so reload handlers and tools find it.
@@ -3681,6 +3660,13 @@ async def main() -> None:
     await _notify_recovered_delegations(
         recovered_jobs, job_registry, bus, assistant_role=assistant_role,
     )
+    # The interrupted configurator run, once — unless the replay above already
+    # tells the operator about that same delegation.
+    await configurator_run.announce_interrupted(
+        interrupted_configurator,
+        recovered_ids={getattr(j, "id", None)
+                       for j in recovered_jobs or ()},
+        notify=lambda text: operator_notify(channel_manager, text))
 
     # 13b'. #766: and every ENGAGEMENT outcome that still owes its engager a
     # telling. Beside the delegation replay for the same reason it sits here:

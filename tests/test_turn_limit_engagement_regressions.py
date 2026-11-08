@@ -111,10 +111,10 @@ async def test_a_mute_launch_that_did_not_stop_at_its_limit_still_dies(
     live)."""
     probe = _Probe()
     client_cls = _launch_client("tool", subtype="error_during_execution")
-    engage_executor, registry, channel, driver = _build(
+    launcher, registry, channel, driver = _build(
         tmp_path, monkeypatch, probe, client_cls)
     seen, _inner = _spy_launch(monkeypatch, driver, probe)
-    await _launch(engage_executor)
+    await _launch(launcher)
     await asyncio.wait_for(_drain_owner(), _WATCHDOG_S)
     rec = registry.get(next(iter(registry._records)))
     assert rec.status == "error", rec.status
@@ -183,7 +183,7 @@ async def test_a_launch_limit_stop_over_a_terminal_record_posts_nothing(
     survivor of the committed tests; added at the cut."""
     probe = _Probe()
     client_cls = _launch_client("text")
-    engage_executor, registry, channel, driver = _build(
+    launcher, registry, channel, driver = _build(
         tmp_path, monkeypatch, probe, client_cls)
     seen, _inner = _spy_launch(monkeypatch, driver, probe)
 
@@ -192,7 +192,7 @@ async def test_a_launch_limit_stop_over_a_terminal_record_posts_nothing(
     monkeypatch.setattr(registry, "settled_terminal_state", _settled)
     caplog.set_level(logging.DEBUG)
     caplog.clear()
-    await _launch(engage_executor)
+    await _launch(launcher)
     await asyncio.wait_for(_drain_owner(), _WATCHDOG_S)
     assert probe.events.count("finalize") == 1, probe.events
     assert probe.notice_texts == [], probe.notice_texts

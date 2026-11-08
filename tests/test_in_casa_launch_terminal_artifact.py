@@ -31,11 +31,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-try:
-    from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
-except ImportError:
-    from role_artifact_stub import STUB_ROLE_ARTIFACT
-
 pytestmark = [pytest.mark.asyncio]
 
 
@@ -128,30 +123,6 @@ class ScriptedCompleteClient(ScriptedCutoffClient):
 
 # --- the harness ------------------------------------------------------------
 
-def _mock_executor_def(tmp_path, **overrides):
-    from config import ExecutorDefinition
-    p = tmp_path / "prompt.md"
-    p.write_text("You are {task}. Context: {context}. State: {world_state_summary}")
-    defaults = {
-        "type": "configurator",
-        "description": "Test configurator for the #678 launch-artifact red case.",
-        "model": "claude-sonnet-4-6",
-        "driver": "in_casa",
-        "enabled": True,
-        "tools_allowed": ["Read"],
-        "tools_disallowed": [],
-        "permission_mode": "acceptEdits",
-        "mcp_server_names": ["casa-framework"],
-        "idle_reminder_days": 7,
-        "prompt_template_path": str(p),
-        "hooks_path": None,
-        "observer_policy_path": None,
-        "doctrine_dir": "",
-    }
-    defaults.update(overrides)
-    return ExecutorDefinition(role_artifact=STUB_ROLE_ARTIFACT, **defaults)
-
-
 class _Probe:
     """Ordered, counted observation of every operator-visible effect."""
 
@@ -167,12 +138,22 @@ class _Probe:
         self.topic_closed = False
 
 
-def _build(tmp_path, monkeypatch, probe, client_cls, *, driver_kind="in_casa"):
-    """Real registry + real InCasaDriver + real engage_executor.handler."""
+def _build(tmp_path, monkeypatch, probe, client_cls):
+    """Real registry + real InCasaDriver + the real job launch owner
+    (``tools._launch_interactive_engagement``, a specialist-hosted job).
+
+    Returns ``(launcher, registry, channel, driver)``; ``_launch(launcher)``
+    runs one launch with the engaging resident's origin bound."""
     import agent as agent_mod
     from engagement_registry import EngagementRegistry
     from drivers.in_casa_driver import InCasaDriver
-    from tools import engage_executor, init_tools
+    from tools import init_tools
+    try:
+        from tests.test_delegate_to_agent_interactive import (
+            _make_alex_cfg, _make_assistant_cfg, launch_job)
+    except ImportError:
+        from test_delegate_to_agent_interactive import (
+            _make_alex_cfg, _make_assistant_cfg, launch_job)
 
     monkeypatch.setattr(
         "drivers.in_casa_driver.ClaudeSDKClient", client_cls,
@@ -245,32 +226,21 @@ def _build(tmp_path, monkeypatch, probe, client_cls, *, driver_kind="in_casa"):
     cm = MagicMock()
     cm.get = MagicMock(return_value=channel)
 
-    defn = _mock_executor_def(tmp_path, driver=driver_kind)
-    exec_reg = MagicMock()
-    exec_reg.get = MagicMock(return_value=defn)
-    exec_reg.list_types = MagicMock(return_value=["configurator"])
-
+    specialist_reg = MagicMock()
+    specialist_reg.get.return_value = _make_alex_cfg()
     init_tools(
         channel_manager=cm, bus=MagicMock(),
-        specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+        specialist_registry=specialist_reg, mcp_registry=MagicMock(),
         trigger_registry=MagicMock(), engagement_registry=registry,
-        executor_registry=exec_reg,
+        agent_role_map={"assistant": _make_assistant_cfg()},
     )
-    return engage_executor, registry, channel, driver
+    return launch_job, registry, channel, driver
 
 
-async def _launch(engage_executor, task="remove the weather plugin"):
-    import agent as agent_mod
-    token = agent_mod.origin_var.set({
-        "role": "assistant", "channel": "telegram",
-        "chat_id": "c1", "cid": "x", "user_text": "hi",
-    })
-    try:
-        return await engage_executor.handler({
-            "executor_type": "configurator", "task": task, "context": "",
-        })
-    finally:
-        agent_mod.origin_var.reset(token)
+async def _launch(launcher, task="Plan Q2"):
+    """One job launch, as ``_start_job_on_host`` hands it to the launch owner,
+    with the engaging resident's origin (``role: assistant``) bound."""
+    return await launcher(task)
 
 
 # --- the red case -----------------------------------------------------------
@@ -284,11 +254,11 @@ class TestInCasaLaunchTerminalArtifact:
         self, tmp_path, monkeypatch,
     ):
         probe = _Probe()
-        engage_executor, registry, channel, driver = _build(
+        launcher, registry, channel, driver = _build(
             tmp_path, monkeypatch, probe, ScriptedCutoffClient,
         )
 
-        envelope = await _launch(engage_executor)
+        envelope = await _launch(launcher)
         # §2.A (INV-ENG-021): the tool call returned `pending` before the
         # launch turn ran; the turn and its death report are the anchored
         # owner's. Await the owner, then assert what it left behind.
@@ -346,11 +316,11 @@ class TestInCasaLaunchTerminalArtifact:
         frames plus the turn's ResultMessage and a text block is a legitimate
         conversational launch end. Nothing is reported, nothing is closed."""
         probe = _Probe()
-        engage_executor, registry, channel, driver = _build(
+        launcher, registry, channel, driver = _build(
             tmp_path, monkeypatch, probe, ScriptedCompleteClient,
         )
 
-        envelope = await _launch(engage_executor)
+        envelope = await _launch(launcher)
         payload = json.loads(envelope["content"][0]["text"])
         assert payload.get("status") == "pending", payload
         import tools as tools_mod

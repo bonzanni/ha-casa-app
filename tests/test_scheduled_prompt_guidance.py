@@ -53,7 +53,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _RECIPES = (
     REPO_ROOT
-    / "casa/rootfs/opt/casa/defaults/agents/executors/configurator"
+    / "casa/rootfs/opt/casa/defaults/configurator"
     / "doctrine/recipes/trigger"
 )
 
@@ -195,7 +195,7 @@ def test_shape_a_is_defined_by_the_delivery_tool_not_by_tool_use(path):
 
 _DOCTRINE = (
     REPO_ROOT
-    / "casa/rootfs/opt/casa/defaults/agents/executors/configurator/doctrine"
+    / "casa/rootfs/opt/casa/defaults/configurator/doctrine"
 )
 PROMPT_EDIT = _DOCTRINE / "recipes/prompt/edit.md"
 
@@ -494,7 +494,6 @@ NOT_A_DELIVERY = {
     "tools.py::continue_voice_job",
     "tools.py::correct_memory",
     "tools.py::delegate_to_agent",
-    "tools.py::engage_executor",
     "tools.py::event_ack_revoke",
     "tools.py::get_item_fields",
     "tools.py::get_schedule",

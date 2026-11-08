@@ -146,7 +146,7 @@ Ordering is part of the invariant. The global order is
 a permanent deadlock.
 
 What it does not cover: a process-wide stop of every turn — no operation needs one, since
-the memory wipe runs at container start. Nor engagement and executor turns, which run their
+the memory wipe runs at container start. Nor engagement turns, which run their
 own clients and persist engagement session ids rather than `SessionRegistry` pointers.
 
 ## Failure behavior

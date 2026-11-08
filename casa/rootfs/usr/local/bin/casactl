@@ -10,7 +10,6 @@ Usage:
     casactl reload --scope=policies
     casactl reload --scope=plugin_env
     casactl reload --scope=agents
-    casactl reload --scope=executors
     casactl reload --scope=config_sync
     casactl reload --scope=full [--include-env]
     casactl restart-supervised
@@ -242,7 +241,7 @@ def main() -> int:
     reload_p.add_argument(
         "--scope", required=True,
         choices=["agent", "triggers", "policies",
-                 "plugin_env", "agents", "executors", "config_sync", "full"],
+                 "plugin_env", "agents", "config_sync", "full"],
     )
     reload_p.add_argument("--role", default=None)
     reload_p.add_argument("--include-env", action="store_true")

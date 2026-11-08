@@ -137,7 +137,6 @@ init_tools(
     agent_registry=agent_registry,
     trigger_registry=None,
     engagement_registry=None,
-    executor_registry=None,
 )
 print("HARNESS: init_tools OK", file=sys.stderr)
 

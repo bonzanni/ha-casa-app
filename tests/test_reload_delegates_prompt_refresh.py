@@ -65,7 +65,7 @@ def _make_runtime(tmp_path: Path):
     from runtime import CasaRuntime
     return CasaRuntime(
         agents={}, role_configs={},
-        specialist_registry=MagicMock(), executor_registry=MagicMock(),
+        specialist_registry=MagicMock(), 
         engagement_registry=MagicMock(), agent_registry=MagicMock(),
         trigger_registry=MagicMock(), mcp_registry=MagicMock(),
         session_registry=MagicMock(), channel_manager=MagicMock(),

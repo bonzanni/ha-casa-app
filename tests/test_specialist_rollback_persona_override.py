@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 _DOCTRINE = (Path(__file__).resolve().parent.parent
-             / "casa/rootfs/opt/casa/defaults/agents/executors/configurator/doctrine")
+             / "casa/rootfs/opt/casa/defaults/configurator/doctrine")
 _DISCLOSURE_KEYS = ("plugin_data_plugins", "plugin_data_may_remain",
                     "provider_revocation_performed", "plugin_data_note")
 

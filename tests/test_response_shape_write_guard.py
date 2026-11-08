@@ -22,8 +22,9 @@ Scope, deliberately one directory depth (mirroring `_is_resident_trigger_file`):
   `managed_component_guard` already denies it, in its own words. Two guards on
   one path and neither on the reason is the failure mode the trigger guard
   documents avoiding.
-* executors are not claimed either: `agent_loader.TIER_FILES` FORBIDS
-  `response_shape.yaml` for an executor, so there is no such file to protect.
+* executors are not claimed either: no executor has an agent directory under
+  /config (engagement trim stage 4 — the configurator ships with Casa), so
+  there is no such file to protect.
 """
 from __future__ import annotations
 
@@ -108,8 +109,9 @@ class TestResponseShapeWriteGuard:
             "file_path": "/config/agents/specialists/mtg/response_shape.yaml"}) == {}
 
     async def test_does_not_claim_an_executor_path(self):
-        """`TIER_FILES["executor"]` FORBIDS this file, so an executor has none
-        to protect and a claim here would be a guard over an empty set."""
+        """No executor reads an agent directory under /config (engagement trim
+        stage 4), so an executor has no such file to protect and a claim here
+        would be a guard over an empty set."""
         assert await self._run("Edit", {
             "file_path": "/config/agents/executors/configurator/response_shape.yaml"}) == {}
 
@@ -164,10 +166,9 @@ class TestResponseShapeGuardIsWired:
             HOOK_POLICIES["response_shape_write_guard"]["factory"](nonsense=True)
 
     @pytest.mark.parametrize("module,needle", [
-        # The executor session builder (tools.py) and the resident one
-        # (agent.py). Injected CODE-SIDE in both: a yaml-only policy can be
-        # shed by rewriting definition.yaml's `hooks_file:` pointer, which the
-        # configurator is otherwise entitled to do.
+        # The delegated-resident session builder (tools.py) and the resident
+        # one (agent.py). Injected CODE-SIDE in both, never left to a yaml a
+        # config edit could rewrite.
         ("casa/rootfs/opt/casa/tools.py", "response_shape_write_guard_matcher()"),
         ("casa/rootfs/opt/casa/agent.py", "response_shape_write_guard_matcher()"),
     ])
@@ -204,12 +205,6 @@ class TestTheFileIsActuallyDead:
         for slot in slots:
             doc = yaml.safe_load((roles / slot / "role.yaml").read_text())
             assert doc["persona"]["policy"] == "required", slot
-
-    def test_executors_are_forbidden_the_file(self):
-        from agent_loader import TIER_FILES
-
-        assert "response_shape.yaml" in TIER_FILES["executor"]["forbidden"]
-        assert "response_shape.yaml" in TIER_FILES["resident"]["required"]
 
 
 # --- The read/render/not-served pair, and the corpus statement that names it ---
@@ -574,25 +569,29 @@ class TestTheWriteClauseHoldsOnEveryPathItNames:
     def test_three_builder_paths_deny_and_a_specialist_abstains(
         self, tmp_path, monkeypatch,
     ):
-        """(executor, resident, delegated-resident, specialist) == (1, 1, 1, 0).
+        """(configurator, resident, delegated-resident, specialist)
+        == (1, 1, 1, 0).
 
         The fourth is 0 BY DESIGN: an actual specialist writing its own
         engagement artifacts must not be refused by a basename match.
-        Mutation: drop the guard from any one builder and that entry becomes 0.
+        Mutation: drop the guard from any one builder (or from the
+        configurator's shipped hooks) and that entry becomes 0. Engagement
+        trim stage 4: the configurator session is built through
+        ``_build_specialist_options`` from the image-owned config.
         """
         import asyncio
         from types import SimpleNamespace
 
+        import agent_loader
         import tools as tools_mod
         from test_agent_plugin_binding import _make_agent
-        from test_resident_prompt_write_guard import (
-            _SpecialistCfg, _executor_defn,
-        )
+        from test_resident_prompt_write_guard import _SpecialistCfg
 
         async def run():
-            executor = tools_mod._build_executor_options(
-                _executor_defn(), executor_type="configurator",
-                plugin_paths=[])
+            monkeypatch.setattr(tools_mod, "_mcp_registry", None, raising=False)
+            monkeypatch.setattr(tools_mod, "_agent_registry", None, raising=False)
+            executor = tools_mod._build_specialist_options(
+                agent_loader.load_configurator())
             agent = _make_agent(tmp_path, role="assistant")
             resident = await agent._build_options(
                 channel="telegram", channel_key="k", is_fresh=True,

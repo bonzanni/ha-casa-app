@@ -76,8 +76,8 @@ def concise_task(task: str) -> str:
     return truncate_for_topic(s, byte_budget=U3_TASK_BYTE_BUDGET)
 
 
-# W-R6 (v0.81.0): an engager may supply a short ``topic_title`` on
-# engage_executor. It is normalized ONCE at ingest, persisted on the
+# W-R6 (v0.81.0): a launcher may supply a short ``topic_title``. It is
+# normalized ONCE at ingest, persisted on the
 # EngagementRecord, and shared by the topic-name state edit, the live summary
 # title and the hand-off line in the person's chat — a single source.
 # v0.347.12: about 40 chars, cut between words, and a cut always shows "…".

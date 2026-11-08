@@ -243,26 +243,6 @@ class TestRegistryStateTransitions:
         await reg.load()
         assert tombstone.read_text() == before, "load() rewrote with nothing to reconcile"
 
-    async def test_recent_for_origin_survives_restart_via_tombstone(self, tmp_path):
-        """D-4: the P32 duplicate-task guard reads recent engagements from
-        memory; persisting terminal tombstones makes it hold across restarts."""
-        from engagement_registry import EngagementRegistry
-
-        path = str(tmp_path / "e.json")
-        reg1 = EngagementRegistry(tombstone_path=path)
-        rec = await reg1.create(
-            "executor", "configurator", "in_casa", "install plugin X",
-            {"channel": "telegram", "chat_id": "123"}, 1,
-        )
-        await reg1.mark_completed(rec.id, completed_at=time.time())
-
-        reg2 = EngagementRegistry(tombstone_path=path)
-        await reg2.load()
-        found = reg2.recent_for_origin(
-            channel="telegram", chat_id="123", max_age_s=3600,
-        )
-        assert found is not None and found.id == rec.id
-
     async def test_mark_idle_and_back_to_active(self, tmp_path):
         from engagement_registry import EngagementRegistry
 
@@ -608,92 +588,6 @@ class TestToolsAllowedField:
         await reg.load()
         rec = reg._records["a" * 32]
         assert rec.tools_allowed == ()
-
-
-class TestRecentForOrigin:
-    """P32 (v0.37.10): query the most-recent engagement for a given
-    (channel, chat_id) within a time window. Powers the duplicate-task
-    guard at the engage_executor MCP call site — see
-    docs/bug-review-2026-05-14-exploration6.md::O-6.
-    """
-
-    async def test_returns_most_recent_within_window(self, registry):
-        older = await registry.create(
-            kind="executor", role_or_type="configurator", driver="in_casa",
-            task="old", origin={"channel": "telegram", "chat_id": "c1"},
-            topic_id=10,
-        )
-        newer = await registry.create(
-            kind="executor", role_or_type="configurator", driver="in_casa",
-            task="new", origin={"channel": "telegram", "chat_id": "c1"},
-            topic_id=11,
-        )
-        result = registry.recent_for_origin(
-            channel="telegram", chat_id="c1", max_age_s=60.0,
-        )
-        assert result is newer
-        assert result.id != older.id
-
-    async def test_returns_none_for_no_match(self, registry):
-        await registry.create(
-            kind="executor", role_or_type="configurator", driver="in_casa",
-            task="t", origin={"channel": "telegram", "chat_id": "c1"},
-            topic_id=10,
-        )
-        assert registry.recent_for_origin(
-            channel="telegram", chat_id="other", max_age_s=60.0,
-        ) is None
-        assert registry.recent_for_origin(
-            channel="discord", chat_id="c1", max_age_s=60.0,
-        ) is None
-
-    async def test_excludes_older_than_max_age(self, registry):
-        import time as time_mod
-        rec = await registry.create(
-            kind="executor", role_or_type="configurator", driver="in_casa",
-            task="t", origin={"channel": "telegram", "chat_id": "c1"},
-            topic_id=10,
-        )
-        # Backdate the engagement past the window.
-        rec.started_at = time_mod.time() - 300.0
-        assert registry.recent_for_origin(
-            channel="telegram", chat_id="c1", max_age_s=60.0,
-        ) is None
-        # But a wider window still returns it.
-        assert registry.recent_for_origin(
-            channel="telegram", chat_id="c1", max_age_s=600.0,
-        ) is rec
-
-    async def test_includes_terminal_status_engagements(self, registry):
-        """Completed / cancelled / error engagements stay in memory
-        post-finalize (the tombstone drops them but ``_records`` retains).
-        The duplicate-task guard must still see them so back-to-back
-        spawns where the prior just terminated are caught."""
-        rec = await registry.create(
-            kind="executor", role_or_type="configurator", driver="in_casa",
-            task="t", origin={"channel": "telegram", "chat_id": "c1"},
-            topic_id=10,
-        )
-        await registry.mark_completed(rec.id, completed_at=rec.started_at + 1)
-        # Even completed, recent_for_origin returns it for the duplicate
-        # guard (we want to compare against the LAST task spawned, not the
-        # last ACTIVE task).
-        assert registry.recent_for_origin(
-            channel="telegram", chat_id="c1", max_age_s=60.0,
-        ) is rec
-
-    async def test_coerces_chat_id_to_string(self, registry):
-        """``EngagementRecord.origin['chat_id']`` may be int or str
-        depending on the channel adapter. The query must coerce for a
-        consistent compare so a telegram int chat_id matches a str."""
-        await registry.create(
-            kind="executor", role_or_type="configurator", driver="in_casa",
-            task="t", origin={"channel": "telegram", "chat_id": 42},
-            topic_id=10,
-        )
-        assert registry.recent_for_origin(
-            channel="telegram", chat_id="42", max_age_s=60.0,
-        ) is not None
 
 
 # ---------------------------------------------------------------------------

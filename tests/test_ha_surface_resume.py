@@ -469,14 +469,15 @@ async def test_prefixed_live_context_keeps_the_facade_contract(caplog):
 
 def test_a_role_with_no_published_surface_keeps_its_digest_byte_identical():
     """Only the butler's identity may move: with no tool surface the digest is
-    exactly the #1029 formula over the three blocks."""
+    exactly the #1029 formula over the two blocks (``<executors>`` went with
+    engagement trim stage 4)."""
     import hashlib
 
     surface = agent_mod._render_prompt_surface(
         "assistant", [], None, live_names={}, allowed_tools=[],
     )
     expected = "sha256:" + hashlib.sha256("\x1f".join(
-        (surface.delegates, surface.jobs, surface.executors),
+        (surface.delegates, surface.jobs),
     ).encode("utf-8")).hexdigest()
     assert surface.tool_servers == ()
     assert surface.digest == expected

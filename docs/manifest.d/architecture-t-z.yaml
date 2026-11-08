@@ -96,7 +96,7 @@
     - tests/test_config_git_commit_reload.py
     - tests/test_configurator_doctrine_commit_reloads.py
     - tests/test_1095_change_load_timing.py
-  related: [architecture/mcp-and-tools.md, architecture/engagements.md, architecture/plugin-mutation-tools.md, architecture/tool-questions.md, architecture/configuration.md]
+  related: [architecture/mcp-and-tools.md, architecture/engagements.md, architecture/plugin-mutation-tools.md, architecture/tool-questions.md, architecture/configuration.md, architecture/configurator.md]
   defines_invariants: [INV-TOOL-001, INV-TOOL-006, INV-TOOL-014]
   invariant_tests:
     INV-TOOL-014: [tests/test_config_git_commit_reload.py::test_commit_reload_table, tests/test_config_git_commit_reload.py::test_trigger_edit_reloads_the_roles_triggers, tests/test_config_git_commit_reload.py::test_character_edit_rebuilds_that_resident, tests/test_config_git_commit_reload.py::test_two_commits_reload_twice, tests/test_config_git_commit_reload.py::test_policies_edit_reloads_policies, tests/test_config_git_commit_reload.py::test_fleet_scopes_run_through_the_entry_point_fence, tests/test_config_git_commit_reload.py::test_mixed_commit_reloads_full_once, tests/test_config_git_commit_reload.py::test_plugins_only_commit_reloads_nothing, tests/test_config_git_commit_reload.py::test_executor_prompt_edit_reloads_nothing, tests/test_config_git_commit_reload.py::test_unreadable_paths_reload_full, tests/test_config_git_commit_reload.py::test_a_failed_reload_is_reported_and_the_commit_stands, tests/test_config_git_commit_reload.py::test_a_reported_subordinate_failure_is_surfaced, tests/test_config_git_commit_reload.py::test_inside_an_engagement_it_reloads_the_same_way]

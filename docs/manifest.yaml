@@ -80,6 +80,10 @@
   kind: meta
   summary: Manifest shard — the specialist desk-reply document, split from the specialist desk at the 25 KB document ceiling and born in its own shard because the S shard stands just under the 40 KB index ceiling.
 
+- doc: manifest.d/architecture-configurator.yaml
+  kind: meta
+  summary: Manifest shard — the configurator document, born in its own shard because the A-D shard stands just under the 40 KB index ceiling.
+
 - doc: manifest.d/architecture-browser-core.yaml
   kind: meta
   summary: Manifest shard — the specialist hand-off and plugin operator-call documents, born in their own shard because the S and plugin-M-R shards stand near the index ceiling.

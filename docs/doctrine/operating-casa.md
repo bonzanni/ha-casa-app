@@ -60,16 +60,16 @@ file and a tool call are the agent's own machinery: "per recipe step 6: commit, 
 `casa_reload(...)`" tells the operator nothing he can use. Say in plain words what was found,
 changed or is needed from him; a result an agent is told to relay verbatim stays as written.
 Nor are the agent's steps news for him ("now committing and reloading"), so they are not
-narrated; in an in-process executor's topic Casa posts only the text a turn writes after its
-last tool call, so a question belongs at the end of the turn. A completion text is written for him too: it says in plain words what the agent
+narrated; of a delegate's run only the message it closes with is posted under its name
+([`delegate-answer-relay.md`](../architecture/delegate-answer-relay.md)), so a question belongs
+at the end of the run. A completion text is written for him too: it says in plain words what the agent
 found or changed and what is left for him, and a commit SHA, a result field or a reload scope goes in
 the completion's artifacts, never in its text. It is also all the engaging agent reads of the
 engagement, so a task that only asks for information completes as soon as it is answered,
 with the findings in that text rather than in a turn's closing words left waiting in the topic.
-The configurator's prompt carries this rule for its topic (its Output discipline,
-`casa/rootfs/opt/casa/defaults/agents/executors/configurator/prompt.md`) and, for the
-closing text, its completion doctrine
-(`casa/rootfs/opt/casa/defaults/agents/executors/configurator/doctrine/completion.md`), and the setup
+The configurator's prompt carries this rule (its Output discipline,
+`casa/rootfs/opt/casa/defaults/configurator/prompt.md`) and, for how a run ends, its
+completion doctrine (`casa/rootfs/opt/casa/defaults/configurator/doctrine/completion.md`), and the setup
 turn's instruction asks for the setup tool's outcome in one plain line
 (`plugin_setup_episodes._compose`).
 

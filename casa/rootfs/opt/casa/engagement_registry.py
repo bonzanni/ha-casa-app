@@ -1,4 +1,4 @@
-"""Engagement primitive — Tier 2 Specialists' background jobs + Tier 3 Executors.
+"""Engagement primitive — Tier 2 Specialists' and residents' background jobs.
 
 Symmetric with :mod:`specialist_registry`. Owns:
 - EngagementRecord (one in-flight engagement)
@@ -40,8 +40,8 @@ logger = logging.getLogger(__name__)
 _SESSION_SUSPEND_IDLE_S = 86400
 _IDLE_SWEEP_CRON = "0 8 * * *"            # daily 08:00 user TZ
 # D-4 (v0.69.0): terminal tombstones stay on disk this long, then age out of
-# the snapshot on the next write — bounds the file while keeping the P32
-# duplicate-task guard and post-mortems working across restarts.
+# the snapshot on the next write — bounds the file while keeping post-mortems
+# working across restarts.
 _TERMINAL_RETENTION_DAYS = 30
 # #1162: the key, inside ``origin["job"]``, of the list of every SDK session a
 # background job's client served. Its writer rotates a job's sessions; the
@@ -229,8 +229,8 @@ class EngagementRecord:
     # exactly once by ``_release_permit`` on every terminal transition.
     agent_spawn_permit: Any = None
     # W-R6 (v0.81.0): the persisted SHORT topic title (~40 chars). Set once at
-    # engage_executor ingest (engager-supplied ``topic_title`` normalized, or a
-    # Casa-derived fallback from the brief/task), then read by BOTH the
+    # launch (a launcher-supplied ``topic_title`` normalized, or a
+    # Casa-derived fallback from the task), then read by BOTH the
     # topic-name state edit (telegram.update_topic_state) — a single durable
     # source.
     # Additive + absent-tolerant on load (legacy rows have no key → "" → each
@@ -539,54 +539,13 @@ class EngagementRegistry:
         rec_id = self._topic_index.get(topic_id)
         return self._records.get(rec_id) if rec_id else None
 
-    def recent_for_origin(
-        self,
-        *,
-        channel: str,
-        chat_id: str,
-        max_age_s: float,
-        now: float | None = None,
-    ) -> EngagementRecord | None:
-        """P32 (v0.37.10): return the most-recent engagement (by
-        ``started_at``) for this ``(channel, chat_id)`` started within
-        the last ``max_age_s`` seconds, regardless of status.
-
-        Includes completed / cancelled / errored engagements: they stay
-        in ``_records`` for the process lifetime and (since D-4,
-        v0.69.0) persist on disk as tombstones for
-        ``_TERMINAL_RETENTION_DAYS``, so the guard also holds across
-        restarts. The duplicate-task guard at the ``engage_executor``
-        call site uses this to refuse spawns that overlap with whichever
-        task was spawned last.
-
-        ``chat_id`` is coerced via ``str()`` for the compare; channel
-        adapters may store the value as int (telegram) or str.
-        """
-        if now is None:
-            now = time.time()
-        cutoff = now - max_age_s
-        candidates: list[EngagementRecord] = []
-        for rec in self._records.values():
-            if rec.origin.get("channel", "") != channel:
-                continue
-            if str(rec.origin.get("chat_id", "")) != chat_id:
-                continue
-            if rec.started_at < cutoff:
-                continue
-            candidates.append(rec)
-        if not candidates:
-            return None
-        candidates.sort(key=lambda r: r.started_at, reverse=True)
-        return candidates[0]
-
     # -- Persist helper ---------------------------------------------------
 
     async def _write_tombstone_locked(self, *, strict: bool = False) -> None:
         """Caller MUST hold self._lock.
 
         Terminal records are persisted as real tombstones (D-4, v0.69.0) —
-        they used to be silently dropped, so the P32 duplicate-task guard
-        forgot recent spawns across restarts and the file never matched its
+        they used to be silently dropped, so the file never matched its
         name. Tombstones age out after ``_TERMINAL_RETENTION_DAYS`` to bound
         the file.
 

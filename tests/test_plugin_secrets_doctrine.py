@@ -18,10 +18,10 @@ import pytest
 
 _ROOT = Path(__file__).resolve().parents[1]
 _DEFAULTS = _ROOT / "casa/rootfs/opt/casa/defaults"
-_SECRETS = _DEFAULTS / "agents/executors/configurator/doctrine/recipes/plugin/secrets.md"
-_ADD = _DEFAULTS / "agents/executors/configurator/doctrine/recipes/plugin/add.md"
-_UPDATE = _DEFAULTS / "agents/executors/configurator/doctrine/recipes/plugin/update.md"
-_SPEC_INSTALL = _DEFAULTS / "agents/executors/configurator/doctrine/recipes/specialist/install.md"
+_SECRETS = _DEFAULTS / "configurator/doctrine/recipes/plugin/secrets.md"
+_ADD = _DEFAULTS / "configurator/doctrine/recipes/plugin/add.md"
+_UPDATE = _DEFAULTS / "configurator/doctrine/recipes/plugin/update.md"
+_SPEC_INSTALL = _DEFAULTS / "configurator/doctrine/recipes/specialist/install.md"
 _SYSTEM = _DEFAULTS / "agents/assistant/prompts/system.md"
 _DOCTRINE = _DEFAULTS / "roles/resident/assistant/doctrine.md"
 
@@ -42,8 +42,8 @@ _SECRETS_RULES = [
     "`plugin_add` and `plugin_update` already searched the default vault for you",
     # one match, every var maps to one field → wire
     "exactly one item matches and every unresolved variable maps to exactly one field role, wire it",
-    # several / unmappable → ask in the topic with what was found
-    "ask in the engagement topic, naming what you found",
+    # several / unmappable → ask the operator with what was found
+    "ask the operator (end your run with the question), naming what you found",
     # never ask for a value
     "Never ask the operator for a secret value",
     # nothing → report what was searched
@@ -73,7 +73,7 @@ def test_add_recipe_makes_wiring_a_required_stage():
     text = _read(_ADD)
     # #1077: the vault-search account is owed for every required variable (the
     # #1020 credential-only scope is gone with the split).
-    assert ("A completion that leaves a required variable unwired without saying "
+    assert ("An answer that leaves a required variable unwired without saying "
             "which vault was searched, for what, and what was found is a doctrine "
             "violation.") in text
     assert "secret_candidates" in text
@@ -194,7 +194,7 @@ def test_the_user_docs_describe_the_secret_wiring_rule():
 
 
 _SETUP_REPORT_RULE = ("When a setup tool's result names values for the configurator to "
-                      "wire, engage the configurator with that report and relay what it "
+                      "wire, delegate that report to the configurator and relay what it "
                       "did; the setup run does not wire them itself.")
 
 

@@ -845,7 +845,7 @@ def test_install_recipe_defaults_to_latest_through_the_tool() -> None:
     import re
 
     recipe = (Path(__file__).resolve().parents[1]
-              / "casa/rootfs/opt/casa/defaults/agents/executors/configurator"
+              / "casa/rootfs/opt/casa/defaults/configurator"
               / "doctrine/recipes/persona/install.md")
     text = re.sub(r"\s+", " ", recipe.read_text(encoding="utf-8"))
     assert 'names no version at all, pass `ref="latest"`' in text

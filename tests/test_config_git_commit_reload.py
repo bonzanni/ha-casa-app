@@ -9,7 +9,7 @@ a spy that records each call, its scope and role, and whether the plugin-tools
 guard was held while it ran; and, for ``triggers``, ``agent`` and ``policies``,
 the real reload handlers against a real resident tree, so the reload's effect
 is asserted too (the trigger registry saw the new triggers, the agent was
-rebuilt). Handlers replaced by counters (``agents``, ``executors``, ``full``)
+rebuilt). Handlers replaced by counters (``agents``, ``full``)
 pin which reload ran, not what it does — that is tests/test_reload.py's.
 
 No test binds an engagement unless it says so: the reload must not depend on
@@ -45,7 +45,8 @@ def _w(path: Path, text: str) -> None:
 def table_runtime(tmp_path):
     """Live residents assistant and butler; a resident directory `newbie` that
     is not live yet; specialists `finance` (installed: a link to its content
-    directory) and `legacy` (a plain directory); one executor."""
+    directory) and `legacy` (a plain directory); a leftover executor directory
+    (nothing reads it since engagement trim stage 4)."""
     agents = tmp_path / "agents"
     for d in ("assistant", "butler", "newbie", "executors/configurator",
               f"specialists/.finance.material-{_HEX}", "specialists/legacy"):
@@ -83,10 +84,11 @@ _TABLE = [
     ([f"{_MATERIAL}/runtime.yaml"], [("agent", "finance")]),        # edit in place
     (["agents/specialists/legacy/runtime.yaml"], [("agent", "legacy")]),
     (["agents/specialists/dropped/runtime.yaml"], [("agents", None)]),
-    # executors
-    (["agents/executors/configurator/definition.yaml"], [("executors", None)]),
+    # executors: nothing reads agents/executors/ any more (engagement trim
+    # stage 4 — the configurator ships with Casa), so nothing there reloads
+    (["agents/executors/configurator/definition.yaml"], []),
     (["agents/executors/probe/definition.yaml",
-      "agents/executors/probe/prompt.md"], [("executors", None)]),
+      "agents/executors/probe/prompt.md"], []),
     (["agents/executors/configurator/prompt.md"], []),
     (["agents/executors/configurator/observer.yaml",
       "agents/executors/configurator/doctrine/reload.md"], []),
@@ -104,13 +106,13 @@ _TABLE = [
     ([], [("full", None)]),                                         # paths unreadable
     ([".gitignore"], [("full", None)]),
     (["agents/README.md"], [("full", None)]),
-    (["agents/executors/README.md"], [("full", None)]),
+    (["agents/executors/README.md"], []),
     (["agents/specialists/.stray/file"], [("full", None)]),
     # mixed kinds collapse to one full
     (["agents/specialists/finance",
       "agents/assistant/delegates.yaml"], [("full", None)]),
     (["policies/disclosure.yaml",
-      "agents/executors/configurator/definition.yaml"], [("full", None)]),
+      "agents/executors/configurator/definition.yaml"], [("policies", None)]),
     (["agents/assistant/triggers.yaml",
       "agents/butler/character.yaml"], [("full", None)]),
     (["agents/assistant/character.yaml",
@@ -344,7 +346,6 @@ async def test_policies_edit_reloads_policies(world):
 
 
 @pytest.mark.parametrize("scope, path, fenced", [
-    ("executors", "agents/executors/probe/definition.yaml", True),
     ("full", "schema/probe.v1.json", True),
     ("agents", "agents/newbie/character.yaml", False),     # a resident not live yet
 ])
@@ -421,9 +422,9 @@ async def test_a_failed_reload_is_reported_and_the_commit_stands(world, monkeypa
 
 
 async def test_a_reported_subordinate_failure_is_surfaced(world, monkeypatch):
-    world.count_handler(monkeypatch, "executors", note=("probe", "probe_load_failed"))
-    _w(world.root / "agents" / "executors" / "probe" / "definition.yaml", "enabled: 1\n")
-    r = await world.commit(["agents/executors/probe/definition.yaml"])
+    world.count_handler(monkeypatch, "agents", note=("probe", "probe_load_failed"))
+    _w(world.root / "agents" / "newbie" / "character.yaml", "probe: 1\n")
+    r = await world.commit(["agents/newbie/character.yaml"])
     assert r["reloads"][0]["status"] == "ok"
     assert r["reloads"][0]["failures"] == [{"unit": "probe", "detail": "probe_load_failed"}]
     assert "not live" in r["warning"]

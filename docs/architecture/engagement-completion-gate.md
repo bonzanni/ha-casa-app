@@ -57,16 +57,11 @@ open with a warning rather than wedging termination.
 **The in-casa driver also reserves, and the reason is a message that does not exist yet.** Its
 other counts are all backed by a text: a ticket carries the exact prompt from the moment it is
 admitted. A broker-driven *system continuation* — the resume turn dispatched after an operator
-answers an install consent, the uninstall erase-data question or an engagement-origin tool
-authorization — has no text anywhere until the delivery seam admits it, and the interval before
-that is not short. After an approval on the two install-consent arms, and after any answer to
-the erase-data question, it is the finish hook's task-scheduling gap, one event-loop iteration
-and unremovable; after a denial there, and on the authorization arm, it is
-a whole message-edit round trip to Telegram, because the DM edit is awaited before the
-continuation is dispatched. An install-consent denial dispatches one only when its requester
-supplied it, and only then reserves. An install consent that expires unanswered also dispatches one
-to its requester, and reserves nothing: there was no answer to commit, and a completion that
-lands first only makes the delivery seam refuse that continuation. A successful
+answers an engagement-origin tool authorization — has no text anywhere until the delivery seam
+admits it, and the interval before that is not short: a whole message-edit round trip to
+Telegram, because the DM edit is awaited before the continuation is dispatched. (An install
+consent or an erase-data answer continues no engagement: it continues the configurator on its
+desk, [`configurator.md`](configurator.md).) A successful
 completion landing inside it used to read an empty inbox, commit, and take the engagement
 terminal, and the approved continuation was then dropped with only a log line to show for it.
 
@@ -79,8 +74,8 @@ hand-over is refused by whichever of the two it happens to read.
 
 Release is guaranteed by an idempotent lease rather than by discipline. The lease owns its own
 held bit, so the seam's release and the finish hook's whole-body release are both correct and
-the second is a no-op — which matters because the arms that never reach the seam (a denial
-with no continuation, an expiry, an unrecorded approval, a raising edit) have only the hook to dispose of theirs. An
+the second is a no-op — which matters because the arms that never reach the seam (a raising
+edit, for one) have only the hook to dispose of theirs. An
 unreleased reservation would make a successful completion permanently impossible, which is
 exactly what this hook must never do; the in-casa driver has no forced-boundary valve to
 relieve one, so release is the only exit.

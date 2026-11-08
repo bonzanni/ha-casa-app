@@ -1447,7 +1447,7 @@ def test_removal_recipes_instruct_the_engager_to_surface_the_note():
     from pathlib import Path
     import tools as tools_mod
 
-    root = (Path(tools_mod.__file__).parent / "defaults/agents/executors"
+    root = (Path(tools_mod.__file__).parent / "defaults"
             / "configurator/doctrine/recipes")
     # Whitespace-normalized: a fragment assertion that a line rewrap can break
     # is pinning the prose's layout, not its instruction.

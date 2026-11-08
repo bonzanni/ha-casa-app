@@ -9,7 +9,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 RECIPE = Path(
-    "casa/rootfs/opt/casa/defaults/agents/executors/configurator/"
+    "casa/rootfs/opt/casa/defaults/configurator/"
     "doctrine/recipes/config/reconcile-defaults.md"
 )
 

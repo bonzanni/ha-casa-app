@@ -1,7 +1,7 @@
 """The configurator doctrine teaches that a commit reloads what it changed
 (INV-TOOL-014), so no recipe asks for a reload after committing.
 
-The configurator used to be told commit -> reload -> emit_completion, and
+The configurator used to be told commit -> reload -> complete, and
 skipped or mis-scoped the reload often enough that Casa force-reloaded at
 completion. ``config_git_commit`` now runs the reload itself; a recipe that
 still asked for one would cost a second reload of the same change, or a wrong
@@ -20,7 +20,7 @@ import pytest
 
 _DOCTRINE_ROOT = (
     Path(__file__).resolve().parent.parent
-    / "casa" / "rootfs" / "opt" / "casa" / "defaults" / "agents" / "executors"
+    / "casa" / "rootfs" / "opt" / "casa" / "defaults"
     / "configurator" / "doctrine"
 )
 
@@ -31,13 +31,13 @@ def _recipes() -> list[Path]:
     return sorted((_DOCTRINE_ROOT / "recipes").rglob("*.md"))
 
 
-def test_completion_md_order_is_commit_then_emit():
+def test_completion_md_order_is_commit_then_answer():
     text = (_DOCTRINE_ROOT / "completion.md").read_text(encoding="utf-8")
     commit = text.find("**Commit.**")
-    emit = text.find("**Emit completion.**")
-    assert 0 <= commit < emit, (commit, emit)
+    answer = text.find("**Answer.**")
+    assert 0 <= commit < answer, (commit, answer)
     assert "**Reload" not in text
-    step_one = text[commit:emit]
+    step_one = text[commit:answer]
     assert "also reloads what it changed" in step_one
 
 

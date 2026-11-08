@@ -79,11 +79,10 @@ returns `erase_choice_pending` with nothing removed. An Erase tap records a sing
 choice bound to the operator, the uninstall subject (`plugin:<name>` or
 `specialist:<slug>`) and the erasing artifacts as they were at question time, valid for
 300 s, and records its kind; Keep and Cancel record nothing, because keeping the data is the ordinary removal.
-Every tap continues the configurator engagement with the exact call to make next, and the
-DM message is edited to say what happens — including, when the engagement could not be
-resumed, that the operator has to ask the configurator to continue. The tap reserves the
-engagement's inbound and its continuation hands that reservation to the delivery seam, which
-releases it as it admits the turn; the background outcome delivery holds none. The model can never
+Every tap continues the configurator with the exact call to make next, as one turn on its
+desk ([`configurator.md`](configurator.md)), and the DM message is edited to say what
+happens — including, when the desk route did not report the continuation taken, that the
+operator has to ask the configurator to continue. Nothing is reserved for it. The model can never
 assert "erase" on the operator's behalf, nor pick the kind — `erase_data=true` runs the
 kind the tap recorded, so a "keep sign-ins" tap can never become a clean slate or the
 reverse: an `erase_data=true` call that neither finishes a
@@ -195,9 +194,9 @@ operator Telegram chat, or a bus that refused the turn — all leave the plugin 
 happens next; the configurator's recipe forbids removing the plugin without that answer,
 since removal would destroy the one tool that can finish the erasure.
 
-**The engagement cannot take the continuation.** A tap whose continuation did not start
-edits the DM to say the configurator was not resumed. An episode outcome the engagement
-cannot take becomes an operator notice in Casa's own words, never the plugin's report, and
+**The configurator's desk cannot take the continuation.** A tap whose continuation the desk
+route did not report taken edits the DM to say the configurator was not resumed. An episode
+outcome its desk cannot take becomes an operator notice in Casa's own words, never the plugin's report, and
 asks the operator to run the uninstall again, which asks again.
 
 **A removal fails after a complete erasure.** The finishing call consumed the records

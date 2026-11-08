@@ -1268,23 +1268,6 @@ class TestValidateConfigRepoBootParity:
         errors = validate_config_repo(str(repo))
         assert any("unknown file" in e for e in errors), errors
 
-    def test_schema_valid_executors_yaml_on_non_assistant_refused(self, tmp_path):
-        from agent_loader import validate_config_repo
-
-        repo = tmp_path / "cfg"
-        d = _seed_resident(repo / "agents", "butler")
-        self._policies(repo)
-        _w(d / "executors.yaml", """\
-            schema_version: 1
-            executors:
-              - executor_type: configurator
-                purpose: config edits
-                when: on request
-        """)
-
-        errors = validate_config_repo(str(repo))
-        assert any("only allowed on the assistant role" in e for e in errors), errors
-
     def test_delegates_without_delegate_tool_refused(self, tmp_path):
         from agent_loader import validate_config_repo
 
@@ -1786,117 +1769,21 @@ class TestValidateConfigRepoWalkScope:
             "runtime.yaml" in e and "kind" in e for e in errors
         ), errors
 
-    def test_executor_hooks_yaml_still_schema_gated(self, tmp_path):
-        """#213 executor-coverage decision, ownership moved by #312: the
-        gate's POINTER PASS (not the basename walk, which now skips executor
-        hooks.yaml) schema-gates executor hooks documents — including a
-        default-named hooks.yaml in a dir with no definition.yaml. Dropping
-        the pass would silently un-gate them."""
-        from agent_loader import validate_config_repo
-
-        repo = tmp_path / "cfg"
-        _seed_resident(repo / "agents", "assistant")
-        _policies_file(repo / "policies")
-        _w(repo / "agents" / "executors" / "task" / "hooks.yaml", """\
-            schema_version: 1
-            BOGUS_HOOK_KEY: true
-        """)
-        _seed_remaining_residents(repo)
-
-        errors = validate_config_repo(str(repo))
-        assert len(errors) == 1, errors
-        assert "hooks.yaml" in errors[0]
-        assert "BOGUS_HOOK_KEY" in errors[0]
-
-
 class TestValidateConfigRepoExecutorGrantGuard:
-    """Task 12 — config-validate guard: an executor may not hold the
-    whole-server ``mcp__casa-framework`` grant. No shipped executor grants
-    it today; this guard fails the build if config drift ever adds one, so
-    the gate catches it before it ships."""
+    """Task 12, re-pointed by engagement trim stage 4: an executor may not
+    hold the whole-server ``mcp__casa-framework`` grant. The only executor,
+    the configurator, now ships with Casa (its role artifact, not a
+    ``/config`` definition), so the check moved from validate_config_repo to
+    the shipped config itself."""
 
-    def _executor_defn(self, allowed: list[str]) -> str:
-        return textwrap.dedent(f"""\
-            schema_version: 1
-            type: task
-            description: A reasonably long description meeting minLength 20.
-            model: sonnet
-            driver: in_casa
-            enabled: true
-            tools:
-              allowed: {allowed}
-              permission_mode: acceptEdits
-            mcp_server_names: [casa-framework]
-        """)
+    def test_shipped_configurator_grants_pass(self):
+        """The shipped configurator does not grant the bare server-level tool
+        — it holds per-tool grants only."""
+        import agent_loader
 
-    def test_rejects_server_level_casa_grant_on_executor(self, tmp_path):
-        from agent_loader import validate_config_repo
-
-        repo = tmp_path / "cfg"
-        _seed_resident(repo / "agents", "assistant")
-        _policies_file(repo / "policies")
-        _w(
-            repo / "agents" / "executors" / "task" / "definition.yaml",
-            self._executor_defn(["Read", "mcp__casa-framework"]),
-        )
-        _w(repo / "agents" / "executors" / "task" / "prompt.md", "Hi.")
-
-        errors = validate_config_repo(str(repo))
-        assert any(
-            "task" in e and "mcp__casa-framework" in e for e in errors
-        ), errors
-
-    def test_normal_executor_grant_passes(self, tmp_path):
-        """A real, per-tool grant list — no bare server-level grant — must
-        not trip the guard."""
-        from agent_loader import validate_config_repo
-
-        repo = tmp_path / "cfg"
-        _seed_resident(repo / "agents", "assistant")
-        _policies_file(repo / "policies")
-        _w(
-            repo / "agents" / "executors" / "task" / "definition.yaml",
-            self._executor_defn([
-                "Read",
-                "mcp__casa-framework__query_engager",
-                "mcp__casa-framework__emit_completion",
-            ]),
-        )
-        _w(repo / "agents" / "executors" / "task" / "prompt.md", "Hi.")
-        _seed_remaining_residents(repo)
-
-        errors = validate_config_repo(str(repo))
-        assert errors == [], errors
-
-    def test_shipped_configurator_grants_pass(self, tmp_path):
-        """The real, shipped configurator definition.yaml does not grant
-        the bare server-level tool — copy it verbatim into a synthetic repo
-        and confirm the guard does not fire (the configurator is NOT
-        exempted; it simply does not hold that grant)."""
-        from agent_loader import validate_config_repo
-
-        real_defn = (
-            Path(__file__).resolve().parents[1]
-            / "casa/rootfs/opt/casa/defaults/agents/executors/configurator"
-            / "definition.yaml"
-        ).read_text(encoding="utf-8")
-
-        repo = tmp_path / "cfg"
-        _seed_resident(repo / "agents", "assistant")
-        _policies_file(repo / "policies")
-        _w(
-            repo / "agents" / "executors" / "configurator" / "definition.yaml",
-            real_defn,
-        )
-        _w(
-            repo / "agents" / "executors" / "configurator" / "prompt.md",
-            "Hi.",
-        )
-
-        errors = validate_config_repo(str(repo))
-        assert not any(
-            "mcp__casa-framework" in e and "grants" in e for e in errors
-        ), errors
+        allowed = agent_loader.load_configurator().tools.allowed
+        assert "mcp__casa-framework" not in allowed
+        assert any(t.startswith("mcp__casa-framework__") for t in allowed)
 
 
 class TestSpecialistBindingActivation:

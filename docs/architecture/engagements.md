@@ -32,15 +32,18 @@ the turn loop itself, nor what a driver's underlying runtime does once started.
 is a task handed to a specialist that runs and returns — ephemeral. An engagement is a
 durable record with its own topic, which outlives the call that created it.
 
-Two launch paths create an engagement, and they are not symmetrical. Engaging an executor
-always creates one. `start_job` launches a background job through the one job launch owner
-(`tools.py::_launch_interactive_engagement`), as a `specialist` record when a delegate hosts
-the job and as a third record kind, `plugin`, when the declaring plugin is installed on the
-calling resident — a worker record whose `role_or_type` is that resident and whose session
-carries neither the resident's tools nor its prompt; what Casa then does with a job's
-engagement is [`architecture/background-jobs.md`](background-jobs.md). Both paths pass the
-agent-spawn gate first (INV-ENG-008). Specialist delegation, sync or async, runs
-ephemerally and creates none.
+One launch path creates an engagement: `start_job` launches a background job through the
+one job launch owner (`tools.py::_launch_interactive_engagement`), as a `specialist` record
+when a delegate hosts the job and as a second record kind, `plugin`, when the declaring
+plugin is installed on the calling resident — a worker record whose `role_or_type` is that
+resident and whose session carries neither the resident's tools nor its prompt; what Casa
+then does with a job's engagement is [`architecture/background-jobs.md`](background-jobs.md).
+The launch passes the agent-spawn gate first (INV-ENG-008). Specialist delegation, sync or
+async, runs ephemerally and creates none, and so does the configurator: it is a delegated
+run in the operator's DM, not an engagement
+([`architecture/configurator.md`](configurator.md)). An `executor` record an older install
+left behind loads like any other, and a resume of it fails closed
+([`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md)).
 
 **Interactive specialist engagements are retired; the desk replaced them.** A
 `delegate_to_agent` call naming `mode='interactive'` is refused with `interactive_retired`
@@ -53,30 +56,6 @@ install left open loads as any `specialist` record does: it is not resumed at bo
 jobs are), it stays one of its specialist's open conversations (a job on that specialist
 is refused `engagement_busy` meanwhile), the operator may still write in its topic, and
 `/complete`, `/cancel` or the stale-engagement reap ends it.
-
-**An in-process executor's topic says what it was asked and shows each turn's steps.**
-When an `in_casa` executor's launch is handed off, its topic gets a first line with the
-title and the start of the task. Then each turn that uses tools keeps one step log in the
-topic. The log is posted at the turn's first main-loop tool use and edited as steps start
-(`🔧 This turn so far: 3 steps — latest: updating plugins (at 32s)`). When the turn ends,
-the method that ran it hands the log its real outcome, and the log closes itself in the
-background (`☑ This turn: 7 steps in 1m 12s`, or `✖ This turn stopped after 3 steps`).
-Each text records steps that have already started, so a close that fails, or a topic
-closed first by a completion, leaves a true record, never a claim about the present. No
-write is awaited by the turn, so a slow Telegram never delays a turn or changes its
-outcome; writes are coalesced and spaced, and each Telegram call is bounded. Nothing is
-persisted. Because the log shows the steps, the topic is given only the text a turn wrote
-after its last main-loop tool call: text written before or between calls ("now let me read
-the recipe") is not posted, a turn with no text after its last call posts nothing beyond
-the log, and a turn with no calls posts all its text. Which text that is follows from where
-the blocks sit, never from the words. Nothing streams while the turn runs, so no interim
-line is ever shown and later replaced. The closing text is posted when the turn ends the
-way a streamed turn posts a single block — sent raw, then rendered in place, so a failed
-render leaves the raw closing text, never an earlier line; a long text is sent one page at a
-time, so that a failed page never drops a later one — or, when the turn raises or is
-cancelled first, on its way out, within a bound. A cancellation that lands while the text is being sent waits for that
-same send, within the same bound, and the send is never restarted, so no page repeats. A sub-agent's words are inside a call and are never the closing text. A specialist
-job's topic, where no step log runs, still streams every text block.
 
 **A specialist's engagements are its open conversations, and a change to the specialist
 does not reach them.** One keeps the personality and the plugin versions it started with
@@ -126,8 +105,8 @@ launching tool call. The protocol says nothing about OS identity or filesystem r
 driver that runs its agent as a separate OS process owes its own containment.
 
 **`start()`'s `prompt` is the first turn.** For the in-process driver that is the opening
-user message. An executor's starts with no memory of earlier engagements; it reads memory
-through the clearance-gated tools (see [`architecture/memory-scoping.md`](memory-scoping.md)).
+user message; what its turns may read from memory is clearance-gated (see
+[`architecture/memory-scoping.md`](memory-scoping.md)).
 
 **A new durable field** must be added to the record, its load path and its write path
 together — otherwise it exists at runtime and silently vanishes across a restart. A field that
@@ -158,17 +137,10 @@ persisting ledger checks it — is answered in the same document.
 **Source**
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRecord`
 - `casa/rootfs/opt/casa/drivers/driver_protocol.py::DriverProtocol`
-- `casa/rootfs/opt/casa/tools.py::engage_executor`
-- `casa/rootfs/opt/casa/tools.py::_post_topic_opening`
-- `casa/rootfs/opt/casa/drivers/turn_progress.py::TurnProgressLine`
-- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::_fold_closing_text`
+- `casa/rootfs/opt/casa/tools.py::_launch_interactive_engagement`
 
 **Tests**
 - `tests/test_engagement_stays_open.py`
-- `tests/test_turn_progress.py`
-- `tests/test_in_casa_turn_progress.py`
-- `tests/test_in_casa_executor_closing_text.py`
-- `tests/test_engage_executor_tool.py::TestEngageHandoffLines`
 - `tests/test_delegate_to_agent.py`
 - `tests/test_delegate_to_agent_interactive.py`
 - `tests/test_engagement_registry.py`

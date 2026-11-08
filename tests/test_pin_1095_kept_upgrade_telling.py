@@ -26,7 +26,7 @@ from types import SimpleNamespace
 import pytest
 
 _DOCTRINE = (Path(__file__).resolve().parent.parent
-             / "casa/rootfs/opt/casa/defaults/agents/executors/configurator/doctrine")
+             / "casa/rootfs/opt/casa/defaults/configurator/doctrine")
 NOT_ACTIVE = "not active yet"
 PREVIOUS = "new and open conversations still use the previous version"
 RERUN = "re-running the same upgrade finishes it"

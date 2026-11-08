@@ -213,7 +213,7 @@ over a surface's persona ceiling is still refused. Nor where a pack came from: a
 `demo/` id. Nor a specialist, whose own role decides. Nor the install, which consults no role, so
 a pack no role admits can still be installed, consent tap included, and only refused at apply.
 
-**INV-PERS-011**: A persona install approval that was recorded at tap-commit, but whose requesting engagement is terminal or gone when the operator taps it, does not leave the DM claiming an install: the recorded approval is not revoked by the failed continuation, and the single approval edit is selected from the reconciliation outcome rather than written before it.
+**INV-PERS-011**: A persona install approval that was recorded at tap-commit, but whose continuation of the configurator the desk route does not report as taken, does not leave the DM claiming an install: the recorded approval is not revoked by the failed continuation, and the single approval edit is selected from the continuation's report rather than written before it.
 
 The persona and specialist consent finish hooks are separately written copies of one
 shape, so this is the sibling of INV-SPEC-010 and holds for the same reasons — and it
@@ -221,9 +221,9 @@ carries the same condition, which bites harder here: the acknowledgement is writ
 tap-commit only if the revocation-generation check passes, so a tap that lands after a
 `persona_ack_revoke` records nothing and takes the earlier "this approval was not
 recorded" branch, which reconciliation never reaches. When it IS recorded, the hook awaits
-the reconciliation callback before it edits, and only a literal `True` selects the success
-wording. The corrective wording names a recovery valid from a terminal engagement — start
-a new configurator engagement and re-run the install — and says the recorded approval is
+the continuation callback before it edits, and only a literal `True` selects the success
+wording. The corrective wording names a recovery — re-run the install — and says the
+recorded approval is
 reused *if it still applies*, because an explicit revocation legitimately makes a fresh
 prompt correct. A contained callback raise takes the same third, weaker wording as the
 specialist sibling.
@@ -233,12 +233,9 @@ both directions. See INV-SPEC-010 in `architecture/specialist-lifecycle.md` for 
 what a positive report establishes, what remains outside it, and why the absence of a
 positive report is not a guarantee that the operator learned anything.
 
-A Deny records nothing and, after its DM edit, hands the requesting engagement a continuation
-through the same seam, having taken the same tap-commit reservation — the specialist sibling's
-Deny behaviour, described there — so that the configurator can learn of the refusal and
-conclude. As there, the hand-off is a request: when the seam refuses it, nothing retries it and
-the engagement is not told. An expiry hands the engagement a continuation as well, and the card
-is keyed to its requesting engagement — both as the specialist sibling describes.
+A Deny records nothing and edits the card, and an expiry edits it too; neither continues the
+configurator, and the card is keyed to the configurator run that asked — both as the
+specialist sibling describes.
 
 **INV-PERS-013**: A persona ref that arrives through a persona tool — a swap, a reset, an apply, an install commit, a removal or the sweep — has its id and version segments validated against the shared canonical patterns before any path join under the approved roots, and where the tool loads a pack to bind it — a swap, a reset, an apply — the pack must declare the identity the ref names; so a traversal-bearing ref never reaches a caller-facing persona path join and a mis-parked pack is never bound under a ref it does not declare.
 

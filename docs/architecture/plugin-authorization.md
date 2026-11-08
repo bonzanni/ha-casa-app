@@ -30,7 +30,7 @@ grant binds operator, chat, tier-stripped role, artifact, full tool name, and a 
 canonical arguments — so an approval authorises one action with one argument set, not a
 capability.
 
-What it does not cover: unprotected plugin tools, and the executor path entirely. And
+What it does not cover: unprotected plugin tools. And
 "proceeds by consuming" applies to direct resident calls, ephemerally delegated
 specialists, and — since #400 — specialist *engagements* (a specialist's jobs): a protected call whose
 provenance is an engagement routes through the same DM authorization challenge, but its grant

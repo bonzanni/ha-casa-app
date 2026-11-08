@@ -48,7 +48,7 @@ from test_persona_install import install_persona_for_apply
 CASA = Path(__file__).resolve().parent.parent / "casa" / "rootfs" / "opt" / "casa"
 ASSISTANT_ROLE_DIR = CASA / "defaults" / "roles" / "resident" / "assistant"
 APPLY_RECIPE = (
-    CASA / "defaults" / "agents" / "executors" / "configurator" / "doctrine"
+    CASA / "defaults" / "configurator" / "doctrine"
     / "recipes" / "persona" / "apply.md"
 )
 

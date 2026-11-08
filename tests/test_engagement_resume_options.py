@@ -27,14 +27,11 @@ def _wire(
     monkeypatch.setattr("hooks.resolve_hooks", lambda *a, **kw: {})
     spec_reg = MagicMock()
     spec_reg.get = MagicMock(return_value=specialist_cfg)
-    exec_reg = MagicMock()
-    exec_reg.get = MagicMock(return_value=executor_defn)
     tools_mod.init_tools(
         channel_manager=MagicMock(), bus=MagicMock(),
         specialist_registry=spec_reg,
         mcp_registry=mcp_registry if mcp_registry is not None else MagicMock(),
         trigger_registry=MagicMock(), engagement_registry=MagicMock(),
-        executor_registry=exec_reg,
     )
     return tools_mod
 
@@ -91,32 +88,6 @@ async def test_resume_options_rebuild_specialist_keeps_restrictions(tmp_path, mo
     } <= server["resolved_grants"]
 
 
-async def test_resume_options_rebuild_executor(monkeypatch):
-    defn = SimpleNamespace(
-        hooks_path=None, mcp_server_names=["casa-framework"], tools_allowed=["Read"],
-        model="claude-sonnet-4-6", permission_mode="auto", max_turns=None,
-        tools_disallowed=[], driver="in_casa",
-    )
-    mcp = _role_aware_mcp_registry()
-    tools_mod = _wire(
-        monkeypatch, executor_defn=defn, mcp_registry=mcp,
-    )
-    eng = SimpleNamespace(kind="executor", role_or_type="configurator")
-    opts = tools_mod.build_engagement_resume_options(eng, "sess-abc")
-    assert opts.resume == "sess-abc"
-    assert opts.skills == "all"
-    assert {
-        "mcp__casa-framework__query_engager",
-        "mcp__casa-framework__emit_completion",
-    } <= set(opts.allowed_tools)
-    server = opts.mcp_servers["casa-framework"]
-    assert server["resolved_role"] == "configurator"
-    assert {
-        "mcp__casa-framework__query_engager",
-        "mcp__casa-framework__emit_completion",
-    } <= server["resolved_grants"]
-
-
 async def test_resume_options_missing_config_fails_closed(monkeypatch):
     """If the specialist/executor config is gone (removed since suspension),
     resume must FAIL rather than fall back to an unrestricted bare options."""
@@ -126,41 +97,12 @@ async def test_resume_options_missing_config_fails_closed(monkeypatch):
         tools_mod.build_engagement_resume_options(eng, "sess-1")
 
 
-async def test_resume_options_executor_disallows_subagent_spawn_and_bash(monkeypatch):
-    """Round-6 P0-1 (Sol): Q-1 — Agent/Task bypass allowed_tools and only
-    disallowed_tools is CLI-enforced. A resumed executor built from a
-    definition with disallowed: [] must still hard-deny Agent/Task, plus
-    Bash when the clamped allowlist does not carry it (P0-2 belt)."""
-    defn = SimpleNamespace(
-        hooks_path=None, mcp_server_names=["casa-framework"],
-        tools_allowed=["Read"], model="claude-sonnet-4-6",
-        permission_mode="acceptEdits", max_turns=None,
-        tools_disallowed=[], driver="in_casa",
-    )
-    tools_mod = _wire(
-        monkeypatch, executor_defn=defn,
-        mcp_registry=_role_aware_mcp_registry(),
-    )
-    eng = SimpleNamespace(kind="executor", role_or_type="configurator")
-    opts = tools_mod.build_engagement_resume_options(eng, "sess-q1")
-    assert {"Agent", "Task", "Bash"} <= set(opts.disallowed_tools)
-
-
-async def test_resume_options_executor_keeps_legitimate_bash(monkeypatch):
-    """plugin-developer-shaped resume: Bash in the (clamped) allowlist ->
-    Agent/Task still denied, Bash not."""
-    defn = SimpleNamespace(
-        hooks_path=None, mcp_server_names=["casa-framework"],
-        tools_allowed=["Read", "Bash"], model="claude-sonnet-4-6",
-        permission_mode="acceptEdits", max_turns=None,
-        tools_disallowed=[], driver="in_casa",
-    )
-    tools_mod = _wire(
-        monkeypatch, executor_defn=defn,
-        mcp_registry=_role_aware_mcp_registry(),
-    )
-    eng = SimpleNamespace(kind="executor", role_or_type="plugin-developer")
-    opts = tools_mod.build_engagement_resume_options(eng, "sess-q1b")
-    assert {"Agent", "Task"} <= set(opts.disallowed_tools)
-    assert "Bash" not in opts.disallowed_tools
-    assert "Bash" in opts.allowed_tools
+async def test_an_executor_engagement_left_from_an_upgrade_fails_closed(monkeypatch):
+    """Engagement trim stage 4: the configurator is no longer an engagement,
+    and there is no migration — an executor record left open across the
+    upgrade cannot resume, and refuses rather than resuming bare."""
+    tools_mod = _wire(monkeypatch)
+    eng = SimpleNamespace(kind="executor", role_or_type="configurator",
+                          plugin_artifacts=())
+    with pytest.raises(RuntimeError, match="config not found"):
+        tools_mod.build_engagement_resume_options(eng, "sid-1")

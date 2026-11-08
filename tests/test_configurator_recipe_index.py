@@ -14,7 +14,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIGURATOR = (
     REPO_ROOT
-    / "casa/rootfs/opt/casa/defaults/agents/executors/configurator"
+    / "casa/rootfs/opt/casa/defaults/configurator"
 )
 RECIPES_DIR = CONFIGURATOR / "doctrine/recipes"
 PROMPT = CONFIGURATOR / "prompt.md"
@@ -86,20 +86,17 @@ def test_cross_recipe_references_resolve():
             assert ref in on_disk, f"{p.relative_to(RECIPES_DIR)} references missing recipe {ref}.md"
 
 
-def test_the_topic_is_told_in_plain_words_not_recipe_steps():
+def test_the_operator_is_told_in_plain_words_not_recipe_steps():
     """casa-test, a Fido upgrade: the configurator wrote "Per recipe step 6: commit, then
-    `casa_reload(scope="agents")`" to the operator's topic. The prompt's output discipline,
-    which the configurator reads on every engagement, says the topic is the operator's and
+    `casa_reload(scope="agents")`" to the operator. The prompt's output discipline,
+    which the configurator reads on every run, says the answer is the operator's and
     names what never goes in it."""
-    text = PROMPT.read_text(encoding="utf-8")
-    m = re.search(r"^## Output discipline.*?(?=^## |\Z)", text, re.M | re.S)
-    assert m is not None
-    section = " ".join(m.group(0).split())
+    section = _output_discipline()
     assert section.count(
-        "The operator reads everything you write in this topic. Tell him what is happening in "
-        "plain words: what you found, what you changed, what you need from him.") == 1
+        "Tell him what is happening in plain words: what you found, what you changed, what "
+        "you need from him.") == 1
     assert "never cite them (\"per recipe step 6\"), and never write a tool name or a call " \
-           "such as `casa_reload(...)` in the topic." in section
+           "such as `casa_reload(...)` in your answer." in section
     assert "A result a recipe tells you to relay verbatim is still relayed as written." in section
 
 
@@ -110,97 +107,78 @@ def _output_discipline() -> str:
     return " ".join(m.group(0).split())
 
 
-def test_the_topic_is_not_told_each_step_as_it_runs():
-    """casa-test, a Fido upgrade: the topic got "Now let me read the specialist/upgrade
+def test_the_operator_is_not_told_each_step_as_it_runs():
+    """casa-test, a Fido upgrade: the operator got "Now let me read the specialist/upgrade
     recipe." and "Committed and reloaded. Finalizing with completion summary." A prompt
     line asking not to narrate did not hold for the text written before each tool call,
-    so the driver now posts only a turn's closing text; the prompt says so and keeps
-    the one instruction that matters to the operator — end the turn with the question."""
+    so only a run's closing text reaches him; the prompt says so."""
     section = _output_discipline()
     assert "One or two sentences of status update, then the tool call." not in section
     assert "Do not narrate your steps" not in section
     assert section.count(
-        "Only the text you write after your last tool call in a turn reaches him; what "
-        "you write before or between tool calls is not shown, and the topic already shows "
-        "your steps. So when you need him, end your turn with your question, and put there "
-        "everything he should see: something you found that he should know, or a result "
-        "you are told to relay. When the task is done, end it with `emit_completion` "
-        "instead: its `text` is posted in the topic and is all Ellen reads. Be terse.") == 1
+        "Only the text you write after your last tool call reaches him; what you write "
+        "before or between tool calls is not shown. Put there everything he should see. "
+        "Be terse.") == 1
 
 
-def test_the_completion_text_is_written_for_the_operator():
-    """The same Fido upgrade closed its topic with "specialist_upgrade returned
-    state=active ... Committed as SHA 9a44ae47..., then soft-reloaded scope=agents" — the
-    completion text the prompt and completion.md had asked to carry the SHA and the
-    reload."""
+def test_the_answer_is_written_for_the_operator():
+    """The same Fido upgrade closed with "specialist_upgrade returned state=active ...
+    Committed as SHA 9a44ae47..., then soft-reloaded scope=agents" — the text the prompt
+    and completion.md had asked to carry the SHA and the reload."""
     section = _output_discipline()
     assert "what commit SHA, what reload was triggered" not in section
-    assert section.count(
-        "Write your emit_completion `text` for him too, in plain words: what you found or "
-        "changed, whether you made it take effect, and anything he still has to do. For a "
-        "task that only asks for information, the text is the findings themselves, even if "
-        "you already wrote them in the topic. The commit SHA and the files changed go in "
-        "`artifacts`; the text names no SHA, tool, result field or reload scope.") == 1
+    assert section.count("Name no commit SHA, tool, result field or reload scope.") == 1
     completion = " ".join(
         (CONFIGURATOR / "doctrine/completion.md").read_text(encoding="utf-8").split())
     assert "Committed SHA abc123" not in completion
     assert "`text` is what Ellen READS" not in completion
-    assert ("Write `text` for the operator. Make it: - Factually complete. - Plain words: "
-            "what you found or changed, whether you made it take effect") in completion
-    assert ("no reload scopes — they are how you work, not news for him. The commit SHA "
-            "and the files changed go in `artifacts` above.") in completion
+    assert ("Write it for the operator. Make it: - Factually complete. - Plain words: "
+            "what you found or changed, whether it is live") in completion
+    assert ("Free of machinery: no commit SHA, no tool names, no result fields such as "
+            "`state=active`, no reload scopes.") in completion
 
 
 def test_an_information_task_completes_with_its_findings():
-    """casa-test, 2026-11-04, topic 3612: "review Fido's configuration and its vault
-    secrets and tell me what's wired; change nothing". The configurator ended its first
-    turn with the full report as text and no emit_completion, so the engagement stayed
-    open until the operator wrote that they were done; it then completed with a closing
-    line, and that line was all Ellen received. The prompt and completion.md say that a
-    task asking only for information completes once the answer is gathered, with the
-    findings in the completion text, which is the only thing Ellen reads."""
+    """casa-test, 2026-11-04: "review Fido's configuration and its vault secrets and tell
+    me what's wired; change nothing". The configurator reported its findings but ended
+    with only a closing line, and that line was all Ellen received. A run's closing text
+    is all that reaches the operator, so a task asking only for information ends with the
+    findings themselves."""
     text = PROMPT.read_text(encoding="utf-8")
-    m = re.search(r"^## Communication.*?(?=^## |\Z)", text, re.M | re.S)
+    m = re.search(r"^## How a run ends.*?(?=^## |\Z)", text, re.M | re.S)
     assert m is not None
-    communication = " ".join(m.group(0).split())
-    assert communication.count(
-        "A task that only asks for information is finished once you have gathered it. "
-        "Unless you have a real question for him, complete it in the same turn: there is "
-        "nothing to commit or reload, so call `emit_completion` with the findings in its "
-        "`text`. Do not end a turn with the report and wait; the engagement stays open "
-        "until you call `emit_completion`, and Ellen reads only its `text`, never the "
-        "topic.") == 1
+    ending = " ".join(m.group(0).split())
+    assert ending.count(
+        "End every run with your answer or your question to the operator: that text, "
+        "after your last tool call, is all that reaches him.") == 1
     completion = " ".join(
         (CONFIGURATOR / "doctrine/completion.md").read_text(encoding="utf-8").split())
     assert completion.count("## A task that only asks for information") == 1
-    assert ("there is nothing to commit, so step 1 is skipped. Unless you have a real "
-            "question for the operator, call `emit_completion` in the same turn.") in completion
-    assert ("Do not end the turn with the report as text and wait: the engagement stays "
-            "open until you complete it, and Ellen reads only the completion's `text`, "
-            "never the topic.") in completion
-    assert ("That `text` carries the findings themselves, in plain words, even when you "
-            "have already written them in the topic.") in completion
+    assert ("is finished once you have gathered the answer: there is nothing to commit, so "
+            "step 1 is skipped. The answer carries the findings themselves, in plain "
+            "words.") in completion
     # A findings report may need more room than a change's 2-5 sentences.
     assert "Terse. One paragraph, 2-5 sentences." not in completion
     assert ("Terse. A change takes one paragraph, 2-5 sentences; findings take the room "
             "they need and no more.") in completion
 
 
-def test_no_example_completion_text_carries_the_commit_or_the_reload():
-    """Every recipe's example ``emit_completion(... text="...")`` is a model the
-    configurator copies; the ones that said "committed SHA <sha>, called
-    casa_reload(scope='agent')" put exactly that in the operator's topic."""
+def test_no_example_answer_carries_the_commit_or_the_reload():
+    """Every recipe's example answer (``e.g. "..."``) is a model the configurator
+    copies; the ones that said "committed SHA <sha>, called casa_reload(scope='agent')"
+    put exactly that in front of the operator."""
     docs = [CONFIGURATOR / "doctrine/completion.md", *sorted(RECIPES_DIR.rglob("*.md"))]
     examples = []
     for path in docs:
         text = path.read_text(encoding="utf-8")
-        for m in re.finditer(r'emit_completion\([^)]*?text="([^"]*)"', text, re.S):
+        for m in re.finditer(r'(?:answer, e\.g\.|E\.g\.)\s+`?"([^"]*)"', text, re.S):
             examples.append((path.name, " ".join(m.group(1).split())))
     # The recipes that model a finished change all carry one (and completion.md's
-    # payload skeleton), so the scan cannot pass by matching nothing.
-    assert len(examples) >= 10, examples
+    # own example), so the scan cannot pass by matching nothing.
+    assert len(examples) >= 9, examples
     for name, example in examples:
         # <ref> may be a commit sha the operator named (specialist/install.md).
         for machinery in ("SHA", "sha>", "<ref>", "casa_reload", "reloaded triggers",
                           "scope="):
             assert machinery not in example, (name, example)
+    assert not any("emit_completion" in p.read_text(encoding="utf-8") for p in docs)

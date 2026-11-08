@@ -13,7 +13,6 @@ def test_casa_runtime_holds_all_required_fields():
         agents={},
         role_configs={},
         specialist_registry=MagicMock(),
-        executor_registry=MagicMock(),
         engagement_registry=MagicMock(),
         agent_registry=MagicMock(),
         trigger_registry=MagicMock(),
@@ -37,7 +36,7 @@ def test_casa_runtime_agents_is_mutable():
 
     rt = CasaRuntime(
         agents={}, role_configs={}, specialist_registry=MagicMock(),
-        executor_registry=MagicMock(), engagement_registry=MagicMock(),
+        engagement_registry=MagicMock(),
         agent_registry=MagicMock(), trigger_registry=MagicMock(),
         mcp_registry=MagicMock(),
         session_registry=MagicMock(), channel_manager=MagicMock(),
@@ -55,7 +54,7 @@ def test_init_tools_accepts_runtime():
     from tools import init_tools
     rt = CasaRuntime(
         agents={}, role_configs={}, specialist_registry=MagicMock(),
-        executor_registry=MagicMock(), engagement_registry=MagicMock(),
+        engagement_registry=MagicMock(),
         agent_registry=MagicMock(), trigger_registry=MagicMock(),
         mcp_registry=MagicMock(),
         session_registry=MagicMock(), channel_manager=MagicMock(),
@@ -69,7 +68,6 @@ def test_init_tools_accepts_runtime():
         agent_role_map={}, agent_registry=rt.agent_registry,
         trigger_registry=rt.trigger_registry,
         engagement_registry=rt.engagement_registry,
-        executor_registry=rt.executor_registry,
         runtime=rt,
     )
     import tools

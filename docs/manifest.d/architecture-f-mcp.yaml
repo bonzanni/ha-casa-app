@@ -96,20 +96,19 @@
     INV-MCP-014: [tests/test_cross_session_tools.py::test_shared_constants_name_the_three_tools_and_refuse, tests/test_cross_session_tools.py::test_resident_options, tests/test_cross_session_tools.py::test_restricted_webhook_options, tests/test_cross_session_tools.py::test_specialist_and_executor_options, tests/test_cross_session_tools.py::test_engagement_resume_options, tests/test_plugin_job_launch.py::test_worker_options_record_and_topic, tests/test_cross_session_tools.py::test_query_engager_synthesis_options, tests/test_cross_session_tools.py::test_tier_classifier_options, tests/test_cross_session_tools.py::test_pinned_sdk_forwards_the_denial_and_the_refusal_to_the_cli, tests/test_cross_session_tools.py::test_every_production_claude_options_passes_denial_and_settings]
 
 - doc: architecture/hook-resolution.md
-  summary: How an agent's hooks are resolved in process, how an executor's hooks document is validated and captured at load, the read grant, and the path_scope tool-results rule.
-  when_changing: hook resolution, hook policy parameters and their types, an executor's hooks document snapshot, or what path_scope admits
+  summary: How an agent's hooks are resolved in process, where the configurator's hooks come from, the read grant, and the path_scope tool-results rule.
+  when_changing: hook resolution, hook policy parameters and their types, the configurator's hook list, or what path_scope admits
   covers:
     - casa/rootfs/opt/casa/hooks.py::resolve_hooks
-    - casa/rootfs/opt/casa/agent_loader.py::read_hooks_document
     - casa/rootfs/opt/casa/hooks.py::build_policy_callbacks_from_hooks_yaml
   tests:
     - tests/test_hooks_policy_param_types.py
     - tests/test_hooks.py
     - tests/test_hooks_policies.py
-  related: [architecture/mcp-and-tools.md, architecture/engagements.md]
+  related: [architecture/mcp-and-tools.md, architecture/configurator.md]
   defines_invariants: [INV-MCP-007, INV-MCP-012]
   invariant_tests:
-    INV-MCP-007: [tests/test_hooks_policy_param_types.py::TestTheFailOpenIsGone::test_string_writable_never_yields_an_admitting_hook, tests/test_hooks_policy_param_types.py::TestCasaConfigGuardParamTypes::test_forbid_delete_residents_falsy_non_bool_is_refused, tests/test_hooks_policy_param_types.py::TestCommitSizeGuardParamTypes::test_numeric_string_is_refused, tests/test_hooks_policy_param_types.py::TestAMistypedParamFailsTheExecutorLoad::test_executor_with_mistyped_param_fails_to_load]
+    INV-MCP-007: [tests/test_hooks_policy_param_types.py::TestTheFailOpenIsGone::test_string_writable_never_yields_an_admitting_hook, tests/test_hooks_policy_param_types.py::TestCasaConfigGuardParamTypes::test_forbid_delete_residents_falsy_non_bool_is_refused, tests/test_hooks_policy_param_types.py::TestCommitSizeGuardParamTypes::test_numeric_string_is_refused]
     INV-MCP-012: [tests/test_hooks_policies.py::TestPathScopeToolResultsOverflow::test_own_session_overflow_file_is_readable, tests/test_hooks_policies.py::TestPathScopeToolResultsOverflow::test_other_session_overflow_file_is_denied, tests/test_hooks_policies.py::TestPathScopeToolResultsOverflow::test_the_transcript_and_the_session_dir_stay_denied, tests/test_hooks_policies.py::TestPathScopeToolResultsOverflow::test_no_grant_without_a_usable_transcript_path, tests/test_hooks_policies.py::TestPathScopeToolResultsOverflow::test_writes_into_tool_results_stay_denied, tests/test_hooks_policies.py::TestPathScopeToolResultsOverflow::test_a_relative_transcript_grants_nothing, tests/test_hooks_policies.py::TestPathScopeToolResultsOverflow::test_resumed_under_another_project_folder_is_readable, tests/test_hooks_policies.py::TestPathScopeToolResultsOverflow::test_the_reported_session_id_alone_is_enough, tests/test_hooks_policies.py::TestPathScopeToolResultsOverflow::test_another_session_in_another_folder_is_denied]
 
 - doc: architecture/inbound-files.md

@@ -59,49 +59,6 @@ def test_system_prompt_forbids_llm_arithmetic_for_finance(system_md_text):
     )
 
 
-def test_executors_yaml_lists_only_real_registered_executor_types():
-    """F-6 (v0.32.0) doctrine drift guard.
-
-    The 2026-05-02 exploration session caught Ellen narrating
-    ``engagement`` as a third executor type because
-    ``defaults/agents/assistant/executors.yaml`` listed it as one.
-    There is no ``engagement`` executor in the registry —
-    talking with a specialist is a delegation to it, conceptually
-    different from a Tier 3 executor type.
-
-    This test enumerates real executor directories under
-    ``defaults/agents/executors/`` and asserts every ``executor_type``
-    listed in Ellen's doctrine matches one of them. Catches future
-    additions or removals on either side that drift apart.
-    """
-    import yaml
-
-    # _system_md_path() = .../defaults/agents/assistant/prompts/system.md
-    # parents: prompts → assistant → agents
-    agents_dir = _system_md_path().parent.parent.parent
-    executors_dir = agents_dir / "executors"
-    yaml_path = agents_dir / "assistant" / "executors.yaml"
-
-    real_executor_types = sorted(
-        p.name for p in executors_dir.iterdir()
-        if p.is_dir() and not p.name.startswith(".")
-    )
-
-    doctrine = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-    doctrine_types = sorted(
-        entry["executor_type"] for entry in doctrine.get("executors", [])
-    )
-
-    drift = set(doctrine_types) - set(real_executor_types)
-    assert not drift, (
-        f"Ellen's executors.yaml doctrine lists executor_type values "
-        f"that don't exist in the registry: {sorted(drift)}. "
-        f"Real executor directories: {real_executor_types}. "
-        f"Either add the missing executor definition or remove the "
-        f"doctrine entry."
-    )
-
-
 def test_system_prompt_teaches_talking_with_a_specialist(system_md_text):
     """Interactive specialist engagements are retired in favour of the desk:
     Ellen must not be taught to open one, and a request to talk with a
@@ -123,52 +80,6 @@ def test_system_prompt_teaches_talking_with_a_specialist(system_md_text):
     assert "engagements supergroup" in text, (
         "system prompt must reference the Engagements supergroup as "
         "the destination for jobs and executor engagements."
-    )
-
-
-def test_ellen_brief_doctrine_present(system_md_text):
-    """W3/Sol B11 regression guard: Ellen's brief-envelope doctrine must be
-    present VERBATIM in both executors.yaml cards + system.md, or a future
-    edit could silently revert it back to a bare `task=` string — the exact
-    failure mode that produced the invoice_reset mistranslation this
-    release fixes (a process instruction like "discuss with me first"
-    getting paraphrased into a feature requirement instead of landing in
-    ``brief.process_requirements`` verbatim).
-    """
-    executors_path = (
-        _system_md_path().parent.parent / "executors.yaml"
-    )
-    executors_text_raw = executors_path.read_text(encoding="utf-8")
-    system_text = _collapse_ws(system_md_text)
-    executors_text = _collapse_ws(executors_text_raw)
-
-    doctrine_anchors = [
-        "use the `brief` envelope on `engage_executor`",
-        "into `brief.process_requirements` VERBATIM",
-        "NEVER paraphrase a process instruction into a feature requirement",
-        "Set `interaction_required: true` whenever the user asks for "
-        "discussion/convergence/review",
-        "Relay the executor's completion, which must account for each "
-        "acceptance criterion",
-    ]
-
-    for anchor in doctrine_anchors:
-        assert anchor in system_text, (
-            f"system.md missing Ellen brief-envelope doctrine anchor: "
-            f"{anchor!r}"
-        )
-        assert anchor in executors_text, (
-            f"executors.yaml missing Ellen brief-envelope doctrine anchor: "
-            f"{anchor!r}"
-        )
-
-    # Every executor card must carry the doctrine — one per card, so a card
-    # added later cannot be silently exempted from process fidelity.
-    cards = yaml.safe_load(executors_text_raw)["executors"]
-    assert executors_text.count(doctrine_anchors[0]) == len(cards), (
-        "the brief-envelope doctrine must appear on EVERY executor card "
-        f"in executors.yaml ({len(cards)}), found "
-        f"{executors_text.count(doctrine_anchors[0])} occurrence(s)"
     )
 
 
@@ -259,28 +170,17 @@ def test_butler_prompt_teaches_protected_tool_challenge_only():
 
 
 def _configurator_card() -> dict:
-    """Parse executors.yaml and return the configurator executor card
-    specifically (not a whole-file substring scan)."""
+    """The configurator's entry in the assistant's delegates.yaml (engagement
+    trim stage 4: the configurator is a delegate, and this card is what the
+    `<delegates>` block serves a bundle-bound assistant)."""
     import yaml
 
-    executors_path = _system_md_path().parent.parent / "executors.yaml"
-    doc = yaml.safe_load(executors_path.read_text(encoding="utf-8"))
-    for entry in doc.get("executors", []):
-        if entry.get("executor_type") == "configurator":
+    path = _system_md_path().parent.parent / "delegates.yaml"
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    for entry in doc.get("delegates", []):
+        if entry.get("agent") == "configurator":
             return entry
-    raise AssertionError("configurator executor card not found in executors.yaml")
-
-
-def _configurator_description() -> str:
-    """The configurator's own `definition.yaml` `description` — the third
-    carrier of the persona routing sentence (#927). It has no runtime reader
-    at the moment, which is exactly why a test must read it: nothing else
-    notices when it drifts from the card it is supposed to agree with."""
-    import yaml
-
-    path = (_system_md_path().parents[2]
-            / "executors/configurator/definition.yaml")
-    return yaml.safe_load(path.read_text(encoding="utf-8"))["description"]
+    raise AssertionError("configurator card not found in delegates.yaml")
 
 
 def _system_md_section(text: str, heading: str) -> str:
@@ -423,7 +323,8 @@ def test_configurator_card_routes_repo_installs_with_correct_lifecycles():
     delegates_doc = yaml.safe_load(
         (_system_md_path().parent.parent / "delegates.yaml")
         .read_text(encoding="utf-8"))
-    assert [entry["agent"] for entry in delegates_doc["delegates"]] == ["butler"]
+    assert [entry["agent"] for entry in delegates_doc["delegates"]] == [
+        "butler", "configurator"]
     assistant_role = yaml.safe_load(
         (_system_md_path().parents[3] / "roles/resident/assistant/role.yaml")
         .read_text(encoding="utf-8"))
@@ -440,14 +341,51 @@ def test_configurator_card_routes_repo_installs_with_correct_lifecycles():
         r"reset a resident", low
     ), "card must state reset is residents-only"
 
-    # (e) no bare engage_executor(task=..., context=...) example — it would
-    #     contradict the card's own mandatory `brief`-envelope rule.
-    assert not re.search(r"task\s*=\s*['\"<.]", blob), (
-        "configurator card must not show a bare task= engage_executor example "
-        "in any quoted/placeholder form (it must use the brief envelope)"
-    )
-    assert "brief" in low, "configurator card must reference the brief envelope"
+    # (e) the card hands the person's words on, process instructions verbatim,
+    #     and says how the answer comes back.
+    assert "verbatim" in low and "relay_answer" in low
 
+
+
+
+def _shipped_setup_prompts() -> list[Path]:
+    """Every bundled prompt/doctrine file that speaks about the plugin
+    setup-tool hand-back — the three surfaces the #443 incident traversed."""
+    root = Path(__file__).resolve().parent.parent
+    base = root / "casa/rootfs/opt/casa/defaults"
+    paths = [
+        base / "agents/assistant/prompts/system.md",
+        base / "configurator/doctrine/recipes/plugin/add.md",
+        base / "configurator/doctrine/recipes/plugin/update.md",
+    ]
+    # A renamed or moved file must fail these tests LOUDLY rather than let them
+    # pass over nothing (a vacuous guard is worse than no guard).
+    missing = [p for p in paths if not p.is_file()]
+    assert not missing, f"setup-prompt surfaces moved: {missing}"
+    return paths
+
+
+# The EXPLICIT prohibition each surface must carry. This is the load-bearing
+# assertion: a phrase deny-list cannot fence an open namespace of ways to say
+# "the integration is down" (a reviewer's "the service is unavailable until
+# setup completes" defeats any such list), so what is pinned is that the
+# instruction NOT to make the claim is present and reaches the model at all.
+_REQUIRED_PROHIBITION = {
+    "system.md": "Do not relay anyone else's verdict on whether a connection works",
+    "add.md": "Make no claim of your own about whether the integration works, in either direction",
+    "update.md": "Make no claim about the integration's state, in either direction",
+}
+
+# Known-bad wordings, kept as a secondary belt: each shipped in one of these
+# files before this release, so a revert to any of them is caught by name. This
+# list is NOT the guarantee — see above.
+_FORBIDDEN_LIVENESS_CLAIMS = [
+    "the integration is dead",
+    "the integration is down",
+    "the integration is not live",
+    "integration is NOT live",
+    "the integration goes live after",
+]
 
 def test_create_vs_install_distinction_pinned(system_md_text):
     """The create-vs-install distinction must stay explicit in BOTH the
@@ -494,8 +432,6 @@ def test_create_vs_install_distinction_pinned(system_md_text):
     # has no runtime reader — both are pinned so the three carriers keep
     # saying the same thing as the served card.
     _assert_persona_routing_current(system_md_text, "system.md")
-    _assert_persona_routing_current(_configurator_description(),
-                                    "configurator definition description")
     # The full lifecycle must be stated in BOTH system.md sections that route
     # persona work, not once somewhere in the file.
     for heading in ("Configuration requests",
@@ -506,82 +442,6 @@ def test_create_vs_install_distinction_pinned(system_md_text):
             f"system.md section {heading!r} does not state the full persona "
             f"lifecycle {PERSONA_VERBS}"
         )
-
-
-def test_system_prompt_forbids_engage_executor_context_bleed(system_md_text):
-    """O-6 (v0.37.9): Ellen's ``engage_executor`` ``task=`` arg must
-    carry ONLY the new task description — not the cumulative
-    conversation context with prior tasks bleeding through.
-
-    Live evidence: 2026-05-14 P27.2 cid ``093a02c7`` — Ellen's single
-    turn spawned BOTH configurator AND plugin-developer engagements,
-    and the configurator engagement received P27.1's rename task
-    description instead of P27.2's repo creation task. Cause: Ellen's
-    SDK conversation history carried the prior task into the new
-    engage_executor call. This guard catches accidental revert of the
-    prompt-side mitigation.
-    """
-    text = system_md_text.lower()
-    # Anchor phrase from the v0.37.9 prompt fix — match the spirit of the
-    # rule without over-binding the exact wording so editorial polish
-    # remains possible.
-    assert "only" in text and "engage_executor" in text, (
-        "system prompt must include ONLY-the-new-task guidance for "
-        "engage_executor calls."
-    )
-    assert (
-        "do not carry" in text
-        or "do not include" in text
-        or "do not bleed" in text
-        or "without bleeding" in text
-    ), (
-        "system prompt must forbid bleeding prior conversation context "
-        "into engage_executor's task arg."
-    )
-
-
-# ---------------------------------------------------------------------------
-# INV-TOOL-005 (#443) — no shipped prompt asserts an integration's liveness
-# ---------------------------------------------------------------------------
-
-def _shipped_setup_prompts() -> list[Path]:
-    """Every bundled prompt/doctrine file that speaks about the plugin
-    setup-tool hand-back — the three surfaces the #443 incident traversed."""
-    root = Path(__file__).resolve().parent.parent
-    base = root / "casa/rootfs/opt/casa/defaults/agents"
-    paths = [
-        base / "assistant/prompts/system.md",
-        base / "executors/configurator/doctrine/recipes/plugin/add.md",
-        base / "executors/configurator/doctrine/recipes/plugin/update.md",
-    ]
-    # A renamed or moved file must fail these tests LOUDLY rather than let them
-    # pass over nothing (a vacuous guard is worse than no guard).
-    missing = [p for p in paths if not p.is_file()]
-    assert not missing, f"setup-prompt surfaces moved: {missing}"
-    return paths
-
-
-# The EXPLICIT prohibition each surface must carry. This is the load-bearing
-# assertion: a phrase deny-list cannot fence an open namespace of ways to say
-# "the integration is down" (a reviewer's "the service is unavailable until
-# setup completes" defeats any such list), so what is pinned is that the
-# instruction NOT to make the claim is present and reaches the model at all.
-_REQUIRED_PROHIBITION = {
-    "system.md": "Do not relay anyone else's verdict on whether a connection works",
-    "add.md": "Make no claim of your own about whether the integration works, in either direction",
-    "update.md": "Make no claim about the integration's state, in either direction",
-}
-
-# Known-bad wordings, kept as a secondary belt: each shipped in one of these
-# files before this release, so a revert to any of them is caught by name. This
-# list is NOT the guarantee — see above.
-_FORBIDDEN_LIVENESS_CLAIMS = [
-    "the integration is dead",
-    "the integration is down",
-    "the integration is not live",
-    "integration is NOT live",
-    "the integration goes live after",
-]
 
 
 @pytest.mark.parametrize("path", _shipped_setup_prompts(),
@@ -1290,13 +1150,19 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # `assistant:*` carrier, and on `assistant:text` the changes inside those three
 # paragraphs and nothing else; the six other carriers byte-identical. No
 # retention claim.
+# MOVED (engagement trim stage 4, the configurator becomes a delegate), the
+# three `assistant:*` carriers, core doctrine only: "task-bounded executors"
+# becomes "the configurator"; "the executor reported" becomes "the delegate
+# reported"; the setup-report rule says "delegate that report to the
+# configurator" instead of "engage the configurator with that report". The six
+# other carriers byte-identical. No retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
-        "cd629245a767ddc0f9b606153725d77093167a65c4551a18d3c7f489608cb73b",
+        "1f07ca5b5a3318b184d76f1f51a764caf873a9ec67cc9c51b8fc82a493c65978",
     "assistant:text":
-        "9c6a640bd84f761b3dfebc21e67788038febb5009ca89557e3061d86437376bc",
+        "492d933429e0c97a14ac55f9b2a314cd804f58058f6c2308ac7db684d293242d",
     "assistant:voice":
-        "60569e8ecba1da03ad61a2bac8f600d124dfbd1ce0c44ddfa28e9b3eaf57ee4b",
+        "6f3e93bc630acee568ba20dfeece54e5260903f3de398358cc2dc5736f14be02",
     "butler:restricted_webhook":
         "817241ec5da254b2fef07d2d0e6c7db0073bf1965a28be8d9b6818e59bc7f60b",
     "butler:text":
@@ -2354,3 +2220,20 @@ def test_the_stop_paragraph_asks_first_and_otherwise_says_only_what_stopped(syst
     desc = _collapse_ws(tools_mod.stop_work.description)
     assert ("Unless you must ask him which one, write nothing to the person between the two "
             "calls.") in desc
+
+
+def test_the_configurator_is_a_delegate_and_no_executor_card_ships():
+    """Engagement trim stage 4: the configurator is reached with
+    delegate_to_agent; executors.yaml and engage_executor are gone."""
+    agents_dir = _system_md_path().parent.parent.parent
+    assert not (agents_dir / "assistant" / "executors.yaml").exists()
+    assert not (agents_dir / "executors").exists()
+    assert _configurator_card()["agent"] == "configurator"
+
+
+def test_system_prompt_forbids_task_context_bleed(system_md_text):
+    """O-6 (v0.37.9): a delegation's ``task=`` carries ONLY the new task —
+    not the cumulative conversation with prior tasks bleeding through."""
+    text = system_md_text.lower()
+    assert "engage_executor" not in text
+    assert "pass only the" in text and "do not carry" in text

@@ -702,22 +702,21 @@ def _broker_hooks(opts):
 
 
 def test_executor_builder_carries_no_broker(tmp_path, monkeypatch):
-    """Executors of both drivers are outside the contract (#923):
-    INV-PLUG-006 stays exactly true — plugins, no grants, no callback, and
-    now no broker matchers and no broker env either."""
+    """Executors are outside the contract (#923). Engagement trim stage 4: the
+    only executor, the configurator, is built through the specialist builder
+    and loads no plugin — not even one assigned to ``executor:configurator``
+    — so it carries no broker matchers and no broker env."""
+    import agent_loader
     from plugin_registry import reload_snapshot
     from plugin_fixtures import entry, mk_artifact, mk_registry
-    from test_agent_plugin_binding import _exec_defn
     store = tmp_path / "store"
-    # #923: a plugin attached to a worker is one Casa ships — bundled. Keeping
-    # the non-empty plugin assertion below is the point: the restriction must
-    # not be accommodated by weakening INV-PLUG-006's sibling here.
-    e = entry("execplug", ["executor:probe-exec"], source_type="bundled")
+    e = entry("execplug", ["executor:configurator"], source_type="bundled")
     mk_artifact(store, "execplug", e["artifact_id"], mcp_servers={"execplug": {}})
     reload_snapshot(registry_path=mk_registry(tmp_path, [e]), store_root=store)
     monkeypatch.setattr(tools_mod, "_mcp_registry", None, raising=False)
-    opts = tools_mod._build_executor_options(_exec_defn(), executor_type="probe-exec")
-    assert len(opts.plugins) == 1
+    monkeypatch.setattr(tools_mod, "_agent_registry", None, raising=False)
+    opts = tools_mod._build_specialist_options(agent_loader.load_configurator())
+    assert opts.plugins == []
     assert _broker_hooks(opts) == {}
     assert not any(k.startswith("CASA_BROKER_") for k in (opts.env or {}))
 

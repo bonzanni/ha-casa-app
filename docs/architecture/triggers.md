@@ -140,11 +140,11 @@ the operator replaces that entry through the typed tool, which rewrites it whole
 
 **INV-TRIG-011**: An agent's file-tool write whose path *resolves* to a resident's `triggers.yaml` is refused, and every writer of that file — the typed tools, the reminder tools, and the config reconciler's whole pass — serializes its read-modify-write under one process lock.
 
-Two halves, and both are load-bearing. A code-mandatory PreToolUse guard — carried by every
-executor, every resident, and, since the resident-prompt guard's wiring made it visible,
-every *delegated* resident too — refuses the write. It is applied uniformly rather than only
+Two halves, and both are load-bearing. A PreToolUse guard — code-mandatory on every
+resident and, since the resident-prompt guard's wiring made it visible, every *delegated*
+resident too, and listed in the configurator's image-owned hook list — refuses the write. It is applied uniformly rather than only
 to an agent the loader knows has `Bash`. No shipped resident carries `Bash` today (#460
-removed it from the assistant, the last one that did), and no shipped executor does either;
+removed it from the assistant, the last one that did), and the configurator does not either;
 the guard's universality is what keeps whether it runs from depending on that fact. The typed replacement then makes the change *inside* Casa, and the read, judgement
 and write are held under `trigger_write_lock.PASS_LOCK`, which the `config_sync` reconciler
 also holds across its entire pass (#458): a reminder or configurator write can only land
@@ -156,7 +156,7 @@ thread, uncoordinated; the shared lock covers all three writers and is taken off
 
 **The two tool families the guard covers are not equally decidable, and it asks each of them
 a different question.** A `Write`/`Edit`/`MultiEdit`/`NotebookEdit` path is a literal:
-resolved against the *session's* working directory — an executor's is `/config`, a
+resolved against the *session's* working directory — the configurator's is `/config`, a
 resident's is its agent home, and assuming one of them is how a `../../` spelling read as
 allowed — then normalized and symlink-resolved, and refused outright when no working
 directory is reported at all, since a relative path is then not resolvable by anything.

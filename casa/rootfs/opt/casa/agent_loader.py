@@ -22,8 +22,6 @@ from config import (
     CharacterConfig,
     DelegateEntry,
     DisclosureConfig,
-    ExecutorEntry,
-    ExecutorMemoryConfig,
     HooksConfig,
     MemoryConfig,
     RequiresConfig,
@@ -43,7 +41,6 @@ from role_slot import (
     EMPTY_CONFIG_DIGEST,
     FIXED_RESIDENT_SLOTS,
     _ha_model_options,
-    compute_executor_identity,
     materialize_role,
 )
 
@@ -54,16 +51,6 @@ SCHEMA_DIR = os.path.join(os.path.dirname(__file__), "defaults", "schema")
 # threaded through the loader functions below default to this and let tests
 # inject a synthetic tree instead of patching the filesystem.
 DEFAULT_ROLES_DIR = os.path.join(os.path.dirname(__file__), "defaults", "roles")
-
-# Round-6 P0-2 (Sol): executor permission modes ranked by permissiveness.
-# The image-owned role artifact's tools.permission_mode is the CEILING a
-# definition.yaml may not exceed (shipped: configurator=acceptEdits).
-# "bypassPermissions" is deliberately ABSENT — it
-# would reduce allowed_tools to mere auto-approval and is NEVER honored for
-# executors, whatever the role says; see load_all_executors for the clamp.
-_EXECUTOR_PERMISSION_MODE_RANK: dict[str, int] = {
-    "plan": 0, "default": 1, "acceptEdits": 2, "dontAsk": 3, "auto": 4,
-}
 
 # --- Tier file-set rules ---------------------------------------------------
 
@@ -87,14 +74,6 @@ TIER_FILES: dict[str, dict[str, set[str]]] = {
         "forbidden": {"disclosure.yaml", "delegates.yaml", "executors.yaml",
                       "triggers.yaml"},
     },
-}
-
-TIER_FILES["executor"] = {
-    "required":  {"definition.yaml", "prompt.md"},
-    "optional":  {"hooks.yaml", "observer.yaml", "plugins.yaml"},
-    "forbidden": {"character.yaml", "runtime.yaml", "delegates.yaml",
-                  "executors.yaml", "disclosure.yaml",
-                  "response_shape.yaml", "voice.yaml", "triggers.yaml"},
 }
 
 # S-1 fix (v0.35.2): editor backup artifacts that strict-load tolerates.
@@ -122,15 +101,7 @@ def _is_editor_backup(name: str) -> bool:
 
 _DELEGATE_MCP_TOOL = "mcp__casa-framework__delegate_to_agent"
 
-# Config-validate guard: no executor may hold the whole-server
-# ``mcp__casa-framework`` grant, which grants every casa tool at once. No
-# shipped executor grants it; this set exists so a future definition.yaml
-# edit cannot silently widen an executor to all of Casa's tools. Exact
-# tokens, no prefix matching (a real per-tool grant like
-# ``mcp__casa-framework__query_engager`` must never trip this).
-_FORBIDDEN_EXECUTOR_GRANTS: frozenset[str] = frozenset({
-    "mcp__casa-framework",
-})
+logger = logging.getLogger(__name__)
 
 
 class LoadError(Exception):
@@ -267,10 +238,8 @@ _SCHEMA_BY_FILENAME: dict[str, str] = {
     "runtime.yaml":        "runtime",
     "disclosure.yaml":     "disclosure",
     "delegates.yaml":      "delegates",
-    "executors.yaml":      "executors",
     "triggers.yaml":       "triggers",
     "hooks.yaml":          "hooks",
-    "definition.yaml":     "executor",
 }
 
 # Maps a filename in ``policies/`` to (schema_name, version). Separate from
@@ -281,10 +250,10 @@ _SCHEMA_BY_POLICY_FILE: dict[str, tuple[str, str]] = {
     "disclosure.yaml": ("policy-disclosure", "v1"),
 }
 
-# Non-resident subtrees at the agents/ root: Tier 2 specialists and Tier 3
-# executors, each loaded on its own isolated, boot-non-fatal path. Shared by
-# ``load_all_agents`` and ``validate_config_repo``'s boot-parity replay so
-# the two skip sets cannot drift (#213).
+# Non-resident subtrees at the agents/ root: Tier 2 specialists, loaded on
+# their own isolated, boot-non-fatal path, and ``executors/``, whose leftovers
+# nothing reads any more. Shared by ``load_all_agents`` and
+# ``validate_config_repo`` so the skip sets cannot drift (#213).
 _NON_RESIDENT_AGENT_DIRS: tuple[str, ...] = ("specialists", "executors")
 
 
@@ -339,27 +308,15 @@ def validate_config_repo(
             # validation authority (per-specialist failures are
             # boot-non-fatal and deliberately not gate errors). Walking it
             # here double-validates the materialized files and false-flags
-            # them. executors/ deliberately STAYS in the walk: it schema-
-            # validates default-named executor hooks.yaml files by basename
-            # (custom-named ``hooks_file:`` targets are covered by the #312
-            # pointer pass below; load_all_executors validates both at boot
-            # via the same _resolve_executor_hooks).
-            if root == agents_root and "specialists" in dirs:
-                dirs.remove("specialists")
+            # them. executors/ holds only leftovers nothing reads since the
+            # configurator ships with Casa (engagement trim stage 4).
+            if root == agents_root:
+                for skipped in _NON_RESIDENT_AGENT_DIRS:
+                    if skipped in dirs:
+                        dirs.remove(skipped)
             for name in files:
                 schema_name = _SCHEMA_BY_FILENAME.get(name)
                 if schema_name is None:
-                    continue
-                # #312 (Terra r2-P1): executor hooks documents are owned by
-                # the pointer pass below, which runs the FULL boot-parity
-                # resolver (schema + factory constructibility) for default
-                # and custom names alike. Validating them here too would
-                # double-report every schema failure.
-                if name == "hooks.yaml" and (
-                    root == os.path.join(agents_root, "executors")
-                    or root.startswith(
-                        os.path.join(agents_root, "executors") + os.sep)
-                ):
                     continue
                 path = os.path.join(root, name)
                 try:
@@ -369,84 +326,6 @@ def validate_config_repo(
                     validate_persisted(_read_yaml(path), schema_name, path)
                 except LoadError as exc:
                     errors.append(str(exc))
-
-    # #312 gate parity (Terra r1-P2 / r2-P1): boot fail-closes on a hooks
-    # pointer whose target is absent, schema-invalid, or non-constructible
-    # (factory-refused params), so the gate must refuse those commits too
-    # (the recurring validate-weaker-than-boot family). This pass runs the
-    # SAME resolver boot uses, for default and custom names alike — the
-    # basename walk above skips executor hooks.yaml files so nothing
-    # double-reports. Broad except (Terra r2-P2): the gate's mandate is
-    # report-never-crash.
-    executors_root = os.path.join(agents_root, "executors")
-    try:
-        executor_entries = (
-            sorted(os.listdir(executors_root))
-            if os.path.isdir(executors_root) else []
-        )
-    except OSError as exc:  # Sol r2-3: report, never crash
-        executor_entries = []
-        errors.append(f"agents/executors unreadable: {exc}")
-    if executor_entries:
-        for entry in executor_entries:
-            exec_dir = os.path.join(executors_root, entry)
-            defn_path = os.path.join(exec_dir, "definition.yaml")
-            if not os.path.isdir(exec_dir):
-                continue
-            defn: dict = {}
-            if os.path.isfile(defn_path):
-                try:
-                    defn = _read_yaml(defn_path)
-                except LoadError:
-                    continue  # malformed definition — surfaced by the walk
-                if not isinstance(defn, dict):
-                    continue
-            # Containment Stage 2 drift guard (belt-and-suspenders — see
-            # _FORBIDDEN_EXECUTOR_GRANTS above). Checked against the RAW
-            # declared tools.allowed, independent of the role-ceiling clamp
-            # load_all_executors applies at boot: this is a build-time gate
-            # on the committed config, not a runtime capability check, and
-            # must fail closed even if a role artifact would have dropped
-            # the grant silently. Every executor is in scope, including the
-            # configurator — it does not hold any of these tools today (see
-            # defaults/agents/executors/configurator/definition.yaml).
-            declared_tools = defn.get("tools") or {}
-            if isinstance(declared_tools, dict):
-                declared_allowed = declared_tools.get("allowed") or []
-            else:
-                declared_allowed = []
-            if isinstance(declared_allowed, list):
-                forbidden_hits = sorted(
-                    set(declared_allowed) & _FORBIDDEN_EXECUTOR_GRANTS)
-                if forbidden_hits:
-                    errors.append(
-                        f"executor {entry!r}: definition.yaml tools.allowed "
-                        f"grants {forbidden_hits} — the server-level "
-                        f"mcp__casa-framework grant hands an executor every "
-                        f"casa tool at once, so no executor may hold it"
-                    )
-
-            # A dir WITHOUT definition.yaml fails to load as an executor at
-            # boot anyway, but a present default-named hooks.yaml still gets
-            # schema-gated here (defn = {} resolves the default pointer) —
-            # the walk skips executor hooks.yaml, so this pass is their sole
-            # gate.
-            try:
-                present = {
-                    f for f in os.listdir(exec_dir)
-                    if os.path.isfile(os.path.join(exec_dir, f))
-                }
-                _resolve_executor_hooks(exec_dir, entry, defn, present)
-                # Task 3 floor check is deliberately NOT enforced here — this
-                # pass only validates the hooks POINTER (Terra r1-P2 parity);
-                # the containment floor is a load_all_executors gate (#360).
-            except LoadError as exc:
-                errors.append(str(exc))
-            except Exception as exc:  # noqa: BLE001 — report, never crash
-                errors.append(
-                    f"executor {entry!r}: hooks pointer validation failed: "
-                    f"{exc}"
-                )
 
     policies_root = os.path.join(config_dir, "policies")
     if os.path.isdir(policies_root):
@@ -467,7 +346,7 @@ def validate_config_repo(
     # The per-file schema walks above cannot see the CROSS-FILE invariants
     # boot's load_all_agents enforces and FATALs on: character.yaml role ==
     # directory name, the tier file-set rules (unknown/forbidden files),
-    # executors.yaml assistant-only, and delegates.yaml -> the delegate MCP
+    # and delegates.yaml -> the delegate MCP
     # tool in runtime tools.allowed. A commit can pass every per-file schema
     # yet crash-loop the add-on on the next boot (e.g. a copied resident dir
     # still declaring role: assistant). Exercise the real resident loader so
@@ -594,8 +473,7 @@ def validate_config_repo(
         # content dirs) is pipeline-managed and validated by the digest-aware
         # load_all_specialists replay below — per-file schema validation there
         # would double-validate the materialized files and false-flag them.
-        # executors/ is the deliberate exception and stays in the walk: its
-        # hooks.yaml has no other schema gate.
+        # executors/ is skipped too: nothing reads its leftovers.
         if policy_lib is not None:
             for slot in FIXED_RESIDENT_SLOTS:
                 if slot in resident_dir_names:
@@ -832,8 +710,8 @@ def _load_executor_role_artifact(
     entry: str, roles_dir: str | None,
 ) -> RoleArtifactSource:
     """Load and cross-validate the canonical role artifact for one executor
-    type directory. Executors are checked more strictly (id, kind, AND
-    slot) since ``load_all_executors`` has no separate directory-name
+    type directory (the configurator's). Executors are checked more strictly
+    (id, kind, AND slot) since ``load_configurator`` has no separate directory-name
     cross-check elsewhere in its per-entry loop the way residents/
     specialists get from ``character.yaml``'s role field."""
     base = roles_dir or DEFAULT_ROLES_DIR
@@ -1058,38 +936,6 @@ def _build_delegates(data: dict[str, Any]) -> list[DelegateEntry]:
     ]
 
 
-def _build_executors(data: dict[str, Any]) -> list[ExecutorEntry]:
-    return [
-        ExecutorEntry(
-            executor_type=e["executor_type"],
-            purpose=e["purpose"],
-            when=e["when"],
-        )
-        for e in (data.get("executors") or [])
-    ]
-
-
-def _build_executor_memory(block: dict[str, Any]) -> "ExecutorMemoryConfig":
-    """Build an ExecutorMemoryConfig from the parsed `memory:` block.
-
-    Empty block -> default-disabled. Schema validation has already
-    enforced the shape before this is called.
-    """
-    if not block:
-        return ExecutorMemoryConfig()
-    return ExecutorMemoryConfig(
-        enabled=bool(block.get("enabled", False)),
-        token_budget=int(block.get("token_budget", 2000)),
-    )
-
-
-logger = logging.getLogger(__name__)
-
-# Default signature header per auth mode (spec A1). Keyed on the MODE alone —
-# there is no owner branch — so a default naming one vendor is served to every
-# caller of that mode, whoever owns the secret (#655). These names are neutral
-# on purpose; an operator whose provider mandates a particular header sets
-# `header` explicitly, which is always preserved.
 _DEFAULT_AUTH_HEADER = {
     "hmac_body": "X-Webhook-Signature",
     "static_header": "X-API-Key",
@@ -1380,17 +1226,8 @@ def load_agent_from_dir(
         _validate(deleg_data, "delegates", deleg_path)
         cfg.delegates = _build_delegates(deleg_data)
 
-    # executors.yaml — optional, ASSISTANT role only.
-    exec_path = os.path.join(agent_dir, "executors.yaml")
-    if os.path.exists(exec_path):
-        if role_from_path != "assistant":
-            raise LoadError(
-                f"agent {role_from_path!r}: executors.yaml is only allowed "
-                f"on the assistant role (found at {exec_path})"
-            )
-        exec_data = _read_yaml(exec_path)
-        _validate(exec_data, "executors", exec_path)
-        cfg.executors = _build_executors(exec_data)
+    # executors.yaml: no longer read (engagement trim stage 4 — the configurator
+    # is a delegate in delegates.yaml); a leftover file is tolerated.
 
     # triggers.yaml — optional, resident only.
     trig_path = os.path.join(agent_dir, "triggers.yaml")
@@ -1744,7 +1581,7 @@ def load_all_specialists(
         per-specialist load errors.
 
     O-2b (v0.37.9): per-specialist isolation. Mirrors the
-    ``load_all_executors`` v0.37.1 B-1b pattern — one malformed
+    v0.37.1 B-1b pattern — one malformed
     specialist directory does NOT prevent its siblings from loading,
     and the registry can surface failures to ``casactl reload`` callers
     instead of swallowing them in a single ``except LoadError``.
@@ -1800,332 +1637,78 @@ def load_all_specialists(
     return found, failed
 
 
-def read_hooks_document(path: str) -> dict[str, Any]:
-    """THE reader for executor hooks documents (#312 / Sol r1-2).
+# --- The image-owned configurator (engagement trim, stage 4) --------------
 
-    Env-substituting (``_read_yaml``), shared by load-time validation and
-    every enforcement-time consumer. Pre-fix those consumers re-read the file with a raw ``yaml.safe_load`` while validation
-    substituted ``${VAR}`` references — a document could validate yet break
-    (or silently change) at enforcement time. One reader, one document.
-    """
-    return _read_yaml(path)
-
-
-def _resolve_executor_hooks(
-    exec_dir: str, entry: str, defn: dict, present: set[str],
-) -> tuple[str | None, dict[str, Any]]:
-    """#312: resolve ``definition.yaml``'s ``hooks_file`` pointer, fail closed.
-
-    Pre-fix, ANY present file satisfied the pointer — ``hooks_file:
-    definition.yaml`` silently shed every declared containment policy (only
-    the code-mandatory managed_component_guard survived) — and a
-    declared-but-absent pointer silently dropped hooks entirely. Now: a
-    present target must validate against the hooks schema; an absent target
-    is a LoadError unless the resolved NAME is the default ``hooks.yaml``
-    (which stays optional — an explicit ``hooks_file: hooks.yaml`` is the
-    default spelled out, not a stricter declaration, Terra r1-P1). Shared by
-    ``load_all_executors`` (boot/reload) and ``validate_config_repo`` (the
-    pre-commit gate) so the two cannot diverge (Terra r1-P2).
-
-    Task 3 (#360): returns ``(hooks_abs, hooks_data)`` — the resolved path
-    (or ``None`` if no hooks file applies) AND the validated, constructible
-    parsed document (``{}`` only when no hooks file exists at all), so the
-    caller can snapshot the REAL declared document onto
-    ``ExecutorDefinition.hooks_document`` instead of re-reading it later.
-    """
-    hooks_name = defn.get("hooks_file", "hooks.yaml")
-    if not isinstance(hooks_name, str) or not hooks_name:
-        # Terra r2-P2: the executor schema pins hooks_file to a string, but
-        # this helper is also reached by the pre-commit gate BEFORE schema
-        # validation — an unhashable value (list/dict) would raise TypeError
-        # out of the ``in present`` test below. Report, never crash.
-        raise LoadError(
-            f"executor {entry!r}: hooks_file must be a non-empty string, "
-            f"got {hooks_name!r}"
-        )
-    if hooks_name in present:
-        hooks_abs = os.path.join(exec_dir, hooks_name)
-        try:
-            hooks_data = read_hooks_document(hooks_abs)
-            _validate(hooks_data, "hooks", hooks_abs)
-            # Sol r1-1/r1-2: schema validity is not constructibility — the
-            # hooks schema deliberately allows arbitrary per-policy params
-            # (additionalProperties), so `max_files: notanumber` or an
-            # unknown parameter validates yet raises in the policy factory.
-            # Pre-fix that raise happened inside the policy-map builder,
-            # which SKIPS the executor — enforcement silently fell back to
-            # the broader defaults (commit_size_guard 20 vs a configured 5).
-            # Build the callbacks once here so a non-constructible document
-            # fail-closes the whole executor at load instead.
-            from hooks import build_policy_callbacks_from_hooks_yaml
-            build_policy_callbacks_from_hooks_yaml(hooks_data)
-        except LoadError as exc:
-            raise LoadError(
-                f"executor {entry!r}: hooks_file {hooks_name!r} is "
-                f"not a valid hooks document: {exc}"
-            ) from exc
-        except Exception as exc:  # noqa: BLE001 — factory param errors
-            raise LoadError(
-                f"executor {entry!r}: hooks_file {hooks_name!r} declares "
-                f"a policy the hook factories refuse: {exc}"
-            ) from exc
-        return hooks_abs, hooks_data
-    if hooks_name != "hooks.yaml":
-        raise LoadError(
-            f"executor {entry!r}: hooks_file {hooks_name!r} not found"
-        )
-    return None, {}
+# Its prompt and doctrine ship with Casa (D7): an image-only tree that
+# config-sync never copies into /config, so a change takes a release. The
+# role artifact beside the other canonical roles (defaults/roles/executor/
+# configurator/) holds the capability ceiling, the hooks and the model; that
+# directory admits exactly role.yaml and doctrine.md, so the prompt and the
+# doctrine files live here instead.
+CONFIGURATOR_DIR = os.path.join(os.path.dirname(__file__), "defaults", "configurator")
+CONFIGURATOR_ROLE = "configurator"
+CONFIGURATOR_CWD = "/config"
+CONFIGURATOR_NAME = "Configurator"
 
 
-def load_all_executors(
-    base_dir: str, *, roles_dir: str | None = None,
-) -> tuple[dict[str, "ExecutorDefinition"], list[tuple[str, str]]]:
-    """Scan ``<base_dir>/executors/*/`` and return ``(loaded, failed)``.
+def load_configurator(
+    *, roles_dir: str | None = None, configurator_dir: str | None = None,
+) -> AgentConfig:
+    """Build the configurator's ``AgentConfig`` from the image: kind
+    ``executor``, run as a delegate through the specialist builder with
+    ``cwd=/config``, its hooks from the role artifact's ``hooks.pre_tool_use``
+    and its system prompt from ``prompt.md``. Raises :class:`LoadError`."""
+    artifact = _load_executor_role_artifact(CONFIGURATOR_ROLE, roles_dir)
+    role = artifact.role
+    try:
+        role_slot_value = materialize_role(source=artifact, options=_ha_model_options())
+    except Exception as exc:  # noqa: BLE001 — one typed error for the caller
+        raise LoadError(f"configurator: role artifact invalid: {exc}") from exc
+    prompt_path = os.path.join(configurator_dir or CONFIGURATOR_DIR, "prompt.md")
+    try:
+        with open(prompt_path, encoding="utf-8") as fh:
+            prompt = fh.read()
+    except OSError as exc:
+        raise LoadError(f"configurator: prompt unreadable at {prompt_path}: {exc}") from exc
+    tools_block = dict(role.get("tools") or {})
+    memory = dict(role.get("memory") or {})
+    hooks = [dict(_thaw(h)) for h in ((role.get("hooks") or {}).get("pre_tool_use") or [])]
+    cfg = AgentConfig(
+        role=CONFIGURATOR_ROLE,
+        enabled=bool(role.get("enabled", True)),
+        tools=ToolsConfig(
+            allowed=list(tools_block.get("allowed") or []),
+            disallowed=list(tools_block.get("disallowed") or []),
+            permission_mode=str(tools_block.get("permission_mode") or "acceptEdits"),
+            max_turns=int(tools_block.get("max_turns") or 200),
+            skills=str(tools_block.get("skills") or "all"),
+            voice_guard=str(tools_block.get("voice_guard") or "none"),
+        ),
+        mcp_server_names=list(role.get("mcp_servers") or []),
+        memory=MemoryConfig(token_budget=int(memory.get("token_budget", 0)),
+                            read_strategy=str(memory.get("read_strategy", "per_turn"))),
+        session=SessionConfig(strategy="ephemeral"),
+        channels=[],
+        cwd=CONFIGURATOR_CWD,
+        character=CharacterConfig(name=CONFIGURATOR_NAME),
+        hooks=HooksConfig(pre_tool_use=hooks),
+        system_prompt=prompt,
+        role_artifact=artifact,
+    )
+    cfg.role_slot = role_slot_value
+    cfg.kind = role_slot_value.kind
+    cfg.role_id = role_slot_value.role_id
+    cfg.resolved_model = role_slot_value.resolved_model.effective
+    cfg.model = role_slot_value.resolved_model.sdk_model
+    cfg.role_checksum = role_slot_value.checksum
+    return cfg
 
-    Each executor dir must contain ``definition.yaml`` and ``prompt.md``.
-    ``hooks.yaml`` and ``observer.yaml`` are optional.
 
-    v0.37.1 B-1b: per-file isolation — a single broken executor
-    (schema violation, missing required file, forbidden file, prompt
-    file missing, directory/type mismatch) does NOT prevent its
-    siblings from loading. The broken one is reported in ``failed`` as
-    ``(name, error_message)``; the caller (typically
-    :meth:`ExecutorRegistry.load`) decides whether to log/raise.
-
-    A collection-level error (e.g. ``executors_root`` missing) still
-    short-circuits with an empty ``(out, failed)`` per the existing
-    early-return contract.
-
-    Personality Phase A, Task 5: each executor type also gets its
-    canonical role artifact loaded from ``<roles_dir or DEFAULT_ROLES_DIR>/
-    executor/<type>/`` and cross-validated (id, kind, and slot must match
-    the executor type). A missing or mismatched artifact is a per-executor
-    failure like any other, isolated the same way. The existing
-    ``definition.yaml``, prompt, hooks, observer, and doctrine directory
-    remain operational inputs during Phase A — they are not checksum
-    inputs. Executors have no persona and no binding.
-    """
-    from config import ExecutorDefinition, resolve_model
-
-    executors_root = os.path.join(base_dir, "executors")
-    out: dict[str, ExecutorDefinition] = {}
-    failed: list[tuple[str, str]] = []
-    if not os.path.isdir(executors_root):
-        return out, failed
-
-    for entry in sorted(os.listdir(executors_root)):
-        exec_dir = os.path.join(executors_root, entry)
-        if not os.path.isdir(exec_dir):
-            continue
-
-        try:
-            present = {
-                f for f in os.listdir(exec_dir)
-                if os.path.isfile(os.path.join(exec_dir, f))
-            }
-            rules = TIER_FILES["executor"]
-            missing = rules["required"] - present
-            if missing:
-                raise LoadError(
-                    f"executor {entry!r}: missing required file(s) {sorted(missing)}"
-                )
-            forbidden = present & rules["forbidden"]
-            if forbidden:
-                raise LoadError(
-                    f"executor {entry!r}: forbidden file(s) present {sorted(forbidden)}"
-                )
-
-            defn_path = os.path.join(exec_dir, "definition.yaml")
-            defn = _read_yaml(defn_path)
-            _validate(defn, "executor", defn_path)
-
-            tools = defn.get("tools") or {}
-            doctrine_name = defn.get("doctrine_dir", "doctrine")
-            # v0.74.2: an EXPLICITLY empty doctrine_dir is the opt-out for a
-            # doctrine-less executor (provisioning fails closed on a missing
-            # dir otherwise — Sol: never recreate the silent degradation).
-            doctrine_abs = (os.path.join(exec_dir, doctrine_name)
-                            if doctrine_name else "")
-
-            # #312: the hooks pointer must resolve to a schema-valid hooks
-            # document — see _resolve_executor_hooks (shared with the
-            # pre-commit gate so the two cannot diverge).
-            #
-            # Task 3 (#360): the resolver also hands back the validated,
-            # constructible parsed document — snapshot it onto
-            # ExecutorDefinition.hooks_document verbatim (the executor's
-            # REAL declared entries; {} only when no hooks file exists at
-            # all — REVISION 3b, Sol r3 plan:171/179: an empty snapshot for
-            # in_casa would let resolve_hooks({}) resynthesize the WIDER
-            # default /config-wide path_scope, reopening the in_casa hole).
-            hooks_abs, hooks_doc = _resolve_executor_hooks(
-                exec_dir, entry, defn, present)
-
-            observer_name = defn.get("observer_policy_file", "observer.yaml")
-            observer_abs = (os.path.join(exec_dir, observer_name)
-                            if observer_name in present else None)
-
-            prompt_name = defn.get("prompt_template_file", "prompt.md")
-            prompt_abs = os.path.join(exec_dir, prompt_name)
-            if not os.path.isfile(prompt_abs):
-                raise LoadError(
-                    f"executor {entry!r}: prompt template file "
-                    f"{prompt_name!r} not found"
-                )
-
-            role_artifact = _load_executor_role_artifact(entry, roles_dir)
-
-            # Personality Phase A, Task 6: materialize the canonical role
-            # (kind/model resolution/checksum) and derive the role-only
-            # identity triple (spec §2.3) — executors have no persona and no
-            # binding, so effective_config_digest is always EMPTY_CONFIG_DIGEST
-            # today (see role_slot.compute_executor_identity's docstring).
-            executor_role_slot = materialize_role(
-                source=role_artifact, options=_ha_model_options(),
-            )
-            executor_identity = compute_executor_identity(
-                role=executor_role_slot, effective_config_digest=EMPTY_CONFIG_DIGEST,
-            )
-
-            # #205: model boot-parity, the third guard on operator edits of
-            # definition.yaml (the tool-allowlist clamp and permission-mode
-            # downgrade below are the other two). `defn["model"]` is what
-            # ACTUALLY runs — tools.py feeds ExecutorDefinition.model straight
-            # into ClaudeAgentOptions.model — while `resolved_model` carries the
-            # image-owned role artifact's choice for identity/checksum only.
-            # Nothing reconciled them, so an edited definition.yaml could
-            # silently run a model the canonical artifact does not declare.
-            #
-            # Residents have had this since Phase A: _build_runtime_fields
-            # LoadErrors when runtime.yaml's model block differs from
-            # role.yaml's. Executors get the same rule.
-            #
-            # FAIL, don't clamp: unlike tools (intersect) and permission_mode
-            # (rank), a model has no "narrower" direction to degrade toward —
-            # there is no safe default between two model IDs, so a disagreement
-            # is unresolvable and the executor must not load. Isolated per
-            # executor like every other failure here (reported in `failed`,
-            # boot-non-fatal), so one bad definition cannot take down its
-            # siblings or the add-on.
-            #
-            # Compare RESOLVED SDK IDs, not raw text: `defn["model"]` is a
-            # shortname ("sonnet") or a full ID, and resolve_model() normalizes
-            # both, so `model: sonnet` and `model: claude-sonnet-4-5-…` agree
-            # rather than false-flagging. `resolved_model.effective` is the
-            # SHORTNAME — comparing against it would mismatch every executor.
-            declared_sdk_model = resolve_model(defn["model"])
-            if declared_sdk_model != executor_role_slot.resolved_model.sdk_model:
-                raise LoadError(
-                    f"executor {entry!r}: definition.yaml model "
-                    f"{defn['model']!r} resolves to {declared_sdk_model!r}, "
-                    f"which disagrees with the canonical role artifact's "
-                    f"{executor_role_slot.resolved_model.sdk_model!r} "
-                    f"(defaults/roles/executor/{entry}/role.yaml is the "
-                    f"authority — definition.yaml may not change the model; "
-                    f"treat an unexpected mismatch as a tamper signal)"
-                )
-
-            # Round-5 (Terra P0): the canonical role artifact is the
-            # immutable capability CEILING. definition.yaml is legitimately
-            # editable in operation (executor/enable|disable|edit-definition
-            # recipes), so a compromised/mistaken session could re-add a tool
-            # (e.g. Bash) that the image-owned role artifact
-            # (defaults/roles/executor/<type>/role.yaml — not operator-
-            # writable, covered by role_checksum) deliberately does not
-            # grant: capability self-escalation through the operational
-            # file. Clamp the effective allowlist to the INTERSECTION —
-            # definition.yaml may only narrow the role's grant, never exceed
-            # it. A role artifact without a tools.allowed list yields an
-            # EMPTY ceiling (fail-closed). Dropped entries are a tamper
-            # signal — logged loudly, never silent. (tools.disallowed is
-            # deliberately NOT clamped: it can only remove capability, so
-            # definition editing cannot escalate through it.)
-            declared_allowed = list(tools.get("allowed", []))
-            role_ceiling = set(
-                (role_artifact.role.get("tools") or {}).get("allowed") or [])
-            effective_allowed = [
-                t for t in declared_allowed if t in role_ceiling]
-            dropped_beyond_ceiling = [
-                t for t in declared_allowed if t not in role_ceiling]
-            if dropped_beyond_ceiling:
-                logger.error(
-                    "executor %r: definition.yaml grants tools beyond its "
-                    "role ceiling; dropped: %s (role.yaml under "
-                    "defaults/roles/executor/%s/ is the immutable "
-                    "capability ceiling — definition.yaml may only narrow "
-                    "it; treat an unexpected drop as a tamper signal)",
-                    entry, dropped_beyond_ceiling, entry,
-                )
-
-            # Round-6 P0-2 (Sol): permission_mode is a definition-editable
-            # capability field — a self-edit to "bypassPermissions" would
-            # turn the clamped allowlist into mere auto-approval and
-            # resurrect everything the allowlist excludes. The role
-            # artifact's required tools.permission_mode (role.v1.json — a
-            # free string; shipped: configurator=acceptEdits) is the CEILING: the definition may
-            # declare an equally- or less-permissive mode, never a more
-            # permissive one, and "bypassPermissions" is NEVER honored for
-            # an executor regardless of the role (it has no rank).
-            # Downgrades log the same tamper-signal style as the tool clamp
-            # above. (defaults/schema/executor.v1.json — what _validate()
-            # checks definition.yaml against — deliberately keeps its wider
-            # enum: a tampered value must DEGRADE to a safe mode here, not
-            # brick the executor at schema validation.)
-            declared_mode = tools.get("permission_mode", "acceptEdits")
-            role_mode = (
-                (role_artifact.role.get("tools") or {}).get("permission_mode"))
-            mode_ceiling = _EXECUTOR_PERMISSION_MODE_RANK.get(
-                role_mode, _EXECUTOR_PERMISSION_MODE_RANK["acceptEdits"])
-            if (declared_mode not in _EXECUTOR_PERMISSION_MODE_RANK
-                    or _EXECUTOR_PERMISSION_MODE_RANK[declared_mode]
-                    > mode_ceiling):
-                effective_mode = (
-                    role_mode
-                    if role_mode in _EXECUTOR_PERMISSION_MODE_RANK
-                    else "acceptEdits")
-                logger.error(
-                    "executor %r: definition.yaml permission_mode %r exceeds "
-                    "what executors may run at (role ceiling %r; "
-                    "bypassPermissions is never honored); downgraded to %r "
-                    "— treat as a tamper signal",
-                    entry, declared_mode, role_mode, effective_mode,
-                )
-            else:
-                effective_mode = declared_mode
-
-            memory_block = defn.get("memory") or {}
-            d = ExecutorDefinition(
-                type=defn["type"],
-                description=defn["description"],
-                model=resolve_model(defn["model"]),
-                driver=defn["driver"],
-                enabled=defn.get("enabled", True),
-                tools_allowed=effective_allowed,
-                tools_disallowed=list(tools.get("disallowed", [])),
-                permission_mode=effective_mode,
-                mcp_server_names=list(defn.get("mcp_server_names", [])),
-                idle_reminder_days=int(defn.get("idle_reminder_days", 7)),
-                prompt_template_path=prompt_abs,
-                hooks_path=hooks_abs,
-                hooks_document=hooks_doc,
-                observer_policy_path=observer_abs,
-                doctrine_dir=doctrine_abs,
-                role_artifact=role_artifact,
-                role_id=executor_role_slot.role_id,
-                role_checksum=executor_role_slot.checksum,
-                resolved_model=executor_role_slot.resolved_model.effective,
-                effective_config_digest=executor_identity.effective_config_digest,
-                # M4 addition (engagement memory)
-                memory=_build_executor_memory(memory_block),
-            )
-            if d.type != entry:
-                raise LoadError(
-                    f"executor directory {entry!r} holds definition with "
-                    f"type={d.type!r} - mismatch"
-                )
-            out[d.type] = d
-        except (LoadError, OSError, ValueError, TypeError, yaml.YAMLError) as exc:
-            failed.append((entry, str(exc)))
-            continue
-
-    return out, failed
+def _thaw(value: Any) -> Any:
+    """A plain copy of a deep-frozen role value (mappings and tuples)."""
+    from collections.abc import Mapping
+    if isinstance(value, Mapping):
+        return {k: _thaw(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_thaw(v) for v in value]
+    return value

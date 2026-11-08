@@ -685,3 +685,18 @@ async def test_a_sticky_fault_set_while_a_cut_off_run_unwinds_outlives_that_run(
         assert env.desk.fault is fault and not env.desk.lock.locked()
     finally:
         await survivor.end_first()
+
+
+async def test_a_busy_configurator_says_what_it_is_busy_with(env):
+    """Engagement trim stage 4: a reply that waited past the lease bound ran
+    nothing, and the notice names the task the configurator is busy with."""
+    import configurator_run
+
+    async def respond(call):
+        raise configurator_run.ConfiguratorBusy(
+            configurator_run.busy_text("install the weather plugin"))
+    env.respond = respond
+    await _reply(env)
+    assert env.channel.replies == []
+    assert env.channel.notices == [(OPERATOR, LABEL + " is busy with «install the weather "
+                                    "plugin»; try again shortly.")]

@@ -37,7 +37,7 @@ A third-party specialist bundle may legitimately have granted itself a privilege
 casa-framework tool before the install-time ceiling existed, and that grant is pinned on
 its engagement record — so the central tool wrapper every casa tool passes through refuses
 any casa tool outside the consumer-safe ceiling whenever the bound record is a
-specialist. Executor records are not ceilinged: their definitions are image-owned.
+specialist.
 
 **One optional MCP server rides on the environment.** Setting `N8N_URL` registers an n8n
 workflow server (bearer-authenticated when `N8N_API_KEY` is set), read by
@@ -75,9 +75,8 @@ the layer that revokes a forbidden grant PINNED on a record before the install a
 ceilings existed — a session's server is built from the record's grants faithfully, so
 without this a pre-ceiling self-granted spawn tool would still dispatch.
 
-What it does not cover: executor records (image-owned definitions, deliberately not
-ceilinged), unbound callers (residents and ephemeral delegations — their surface is bounded
-by the loaded, clamped config), and non-casa tools (CC built-ins are the CLI layer's to
+What it does not cover: unbound callers (residents and ephemeral delegations, the
+configurator's runs among them — their surface is bounded by the loaded, clamped config), and non-casa tools (CC built-ins are the CLI layer's to
 gate). The terminal-binding completion tool bypasses the wrapper but is itself inside the
 ceiling.
 

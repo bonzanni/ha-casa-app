@@ -28,9 +28,10 @@ The second is the **config tree on disk** — agents, policies, bindings, specia
 is reconciled against image defaults at boot and can be reloaded in-process afterwards.
 
 **Reload is scope-specific, and it is not a restart.** The registered scopes — triggers,
-agent, agents, policies, plugin_env, executors, config_sync, and full (the set INV-CFG-001
-pins) — each rebuild a defined slice: executors rebuilds the executor registry with a
-resident cascade, and config_sync reruns reconciliation then cascades agents and policies.
+agent, agents, policies, plugin_env, config_sync, and full (the set INV-CFG-001 pins) — each
+rebuild a defined slice: config_sync, for one, reruns reconciliation then cascades agents and
+policies. Nothing reloads the configurator, which ships with Casa
+([`configurator.md`](configurator.md)).
 There is no
 scope that rereads manifest options, reconstructs channels, or re-reads arbitrary files. If
 your change is an operator option, reload will not help you, and this is the single most
@@ -56,14 +57,13 @@ that publication until the reload coroutine resumes, and a reload cancelled whil
 in that hand-off skips its rebind entirely. A rebind that fails is a named row, never an
 aborted reload.
 
-**Three scopes reach plugin state, and they are locked from outside the dispatcher.** The
-executors scope and the plugin-environment scope each regenerate the plugin health report,
-and the full scope reaches both through its cascade; all three therefore take the
-plugin-mutation lock (INV-TOOL-003). The dispatcher holds its own read/write lock across the
+**Two scopes reach plugin state, and they are locked from outside the dispatcher.** The
+plugin-environment scope regenerates the plugin health report, and the full scope reaches it
+through its cascade; both therefore take the plugin-mutation lock (INV-TOOL-003). The dispatcher holds its own read/write lock across the
 handler, so a handler that asked for the plugin lock from in there would be holding one lock
 and requesting the other in the order opposite to every plugin mutation — which is a
 deadlock with no timeout on either side, not a slow path. The two entry points therefore
-acquire the plugin lock for exactly those three scopes *before* dispatching, off one shared
+acquire the plugin lock for exactly those two scopes *before* dispatching, off one shared
 classification rather than one apiece, and the handlers' own acquisitions survive only as
 same-task re-entries that serialize a direct, undispatched call. Every other scope stays
 unfenced and concurrent, which is what lets a plugin mutation holding that lock finish its
@@ -80,12 +80,10 @@ caller that goes away neither drops the refresh while queued for the lock nor ab
 write already in flight for a newer one to lose to. There are four such entry points: the
 reload tool, the soft trigger-reload tool, the configuration commit and the internal route.
 Regenerating is all it does — it announces nothing, and a regeneration that fails is logged rather than failing the
-reload it followed. A full reload therefore regenerates more than once: the executors step
-inside its cascade regenerates and announces, the plugin-environment step does the same when
-the reload asked for it, and this one runs after all of them — so two regenerations and one
-announcement ordinarily, three and two when plugin environment is included. Only the last
-describes the routing the reload left behind; the earlier ones run before the reconcile that
-decides it.
+reload it followed. A full reload that includes plugin environment therefore regenerates
+twice: the plugin-environment step inside its cascade regenerates and announces, and this one
+runs after it. Only the last describes the routing the reload left behind; the earlier one
+runs before the reconcile that decides it.
 
 **The config tree is a git repository, but only a whitelist is tracked.** Agents, policies,
 bindings, schema, and specific registry files are versioned; plugin stores, staging areas,
@@ -126,11 +124,11 @@ the same value the add-on verifies.
 
 ## Contracts & invariants
 
-**INV-CFG-001**: Exactly eight reload scopes exist, and none of them rereads the app manifest options.
+**INV-CFG-001**: Exactly seven reload scopes exist, and none of them rereads the app manifest options.
 
 Maintained by the module-level registration calls in the reload module. The set is not
 mechanically closed — the registry is a plain dict and accepts any scope string — so
-"exactly eight" is the current, deliberate count of registrations, held by review and the
+"exactly seven" is the current, deliberate count of registrations, held by review and the
 pinning test rather than by an enum.
 
 What it does not cover, and it is the point of stating it: no scope reloads operator options,
@@ -143,7 +141,7 @@ Enforced by a reader/writer lock, with non-full scopes serialized per scope key.
 What it does not cover: the sequence is not transactional. There is no rollback across its
 steps, so a mid-sequence failure leaves earlier steps in effect. A handler called directly,
 outside the dispatcher, takes no lock for *itself*; the cascading handlers (policies,
-executors, config_sync) do take the lock of each scope or role they fan out into, in a
+config_sync) do take the lock of each scope or role they fan out into, in a
 fixed one-directional order, so a cascade cannot interleave with a directly-dispatched
 reload of the same role or scope.
 
@@ -211,8 +209,7 @@ follow raise a reload error whose kind names the step (`specialist_reload_failed
 envelope and the policies cascade reports as `failed:<role>:<kind>` beside the rows already
 earned; a delegation-map refresh that fails is a `refresh_role_map_failed` row.
 
-What it does not cover: scopes that read no agent file (the plugin-environment and
-executors scopes); a role no reload has read since the flag changed — the flag is honoured
+What it does not cover: a scope that reads no agent file (the plugin-environment scope); a role no reload has read since the flag changed — the flag is honoured
 when a scope reads it, not when it is written; and the agent scope's own swap window, in
 which a flip between its load and its re-scan installs an agent the registry calls disabled
 until the next reload that reads the file or the registry. The personality maps refreshed
@@ -300,12 +297,11 @@ in the envelope without aborting another's.
 **A reload handler catches a failure and carries on.** The envelope stays `status: ok` — the
 handler returned — and carries an additive `failures` list, absent when nothing was noted: one
 `{"unit", "detail"}` entry per subordinate failure a handler notes (not every best-effort step
-notes one), `unit` naming the resident, specialist or executor the failure belongs to, or null
+notes one), `unit` naming the resident or specialist the failure belongs to, or null
 when no one unit is to blame. The dispatcher collects them for the whole dispatch, so a failure
-inside a composed scope (`full`, `config_sync`, the `policies` and `executors` cascades) is
+inside a composed scope (`full`, `config_sync`, the `policies` cascade) is
 reported however its row was folded, and so are failures that write no row: a new resident or a
-specialist's agent that could not be constructed, an executor whose definition or hook policies
-did not load, a scan that failed as a whole. The list sits beside the action rows and replaces
+specialist's agent that could not be constructed, a scan that failed as a whole. The list sits beside the action rows and replaces
 none of them. A personality-map refresh that fails is a `refresh_personality_maps_failed` row,
 and a noted failure, both after a registry re-scan and inside the delegation-map refresh.
 

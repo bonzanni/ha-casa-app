@@ -4,7 +4,7 @@ Before this tool the resident could not answer "what went wrong with the
 fx-setup install?" at all: no tool in CASA_TOOLS read the health report or the
 setup-episode store for any role, the assistant holds no plugin grants, and
 `Read` is inert for residents (an empty path_scope denies everything). The only
-path was `engage_executor("configurator")` — a spawned engagement thread to
+path was the configurator's engagement (`engage_executor`) — a spawned thread to
 answer a question — and even that could not answer a HISTORICAL failure, which
 lives only in the episode row's `last_error`.
 

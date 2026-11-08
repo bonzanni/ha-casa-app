@@ -86,7 +86,7 @@ def _stop(monkeypatch, tmp_path, *, release: bool, with_bus: bool,
         tools.init_tools(
             channel_manager=cm, bus=bus, specialist_registry=spec,
             mcp_registry=MagicMock(), trigger_registry=MagicMock(),
-            engagement_registry=MagicMock(), executor_registry=MagicMock())
+            engagement_registry=MagicMock())
         gate_holder["gate"] = asyncio.Event()
         rec = DelegationRecord(
             id="d-1", agent="researcher", started_at=time.time(),

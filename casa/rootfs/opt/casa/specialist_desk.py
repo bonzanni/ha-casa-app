@@ -498,15 +498,22 @@ def is_specialist(cfg: Any) -> bool:
     return getattr(cfg, "kind", "") == "specialist"
 
 
+def has_desk(cfg: Any) -> bool:
+    """Who holds a desk: a specialist, or the configurator (kind ``executor``,
+    engagement trim stage 4) — a reply on its post reaches it here, and an
+    approval it raised continues here. A resident holds none."""
+    return getattr(cfg, "kind", "") in ("specialist", "executor")
+
+
 def desk_target_ok(resident_role: str, role: str) -> bool:
-    """The route's live ACL: *role* is a specialist the chat's resident
+    """The route's live ACL: *role* holds a desk (:func:`has_desk`), the chat's resident
     currently declares as a delegate AND is dispatchable now — the same map
     the delegation ACL and the ``<delegates>`` block read."""
     import tools as tools_mod
     if not role or role == resident_role:
         return False
     cfg = tools_mod._agent_role_map.get(role)
-    if cfg is None or not is_specialist(cfg):
+    if cfg is None or not has_desk(cfg):
         return False
     return bool(tools_mod.declares_delegate(resident_role, role))
 
@@ -624,7 +631,7 @@ def desk_for_delegation(origin: dict, cfg: Any, agent_name: str) -> Desk | None:
     chat = strict_positive_id(origin.get("chat_id"))
     if chat is None or not agent_name:
         return None
-    if not is_specialist(cfg):
+    if not has_desk(cfg):
         return None
     return DESKS.get_or_create(chat, agent_name)
 
@@ -896,6 +903,11 @@ async def handle_reply(
             except Exception as exc:  # noqa: BLE001 — the class, never the text
                 failure = tools_mod._classify_error(exc).value
                 logger.warning("desk turn for %s failed: %s", desk_role, type(exc).__name__)
+                import configurator_run
+                if isinstance(exc, configurator_run.ConfiguratorBusy):
+                    # nothing of this reply ran: say what is running instead
+                    failure = "configurator_busy"
+                    busy_line = f"{str(exc).removeprefix('the configurator ')}."
             finally:
                 desk.hold_unwinding(runs)     # #1197: before the permit and the lock
                 if permit is not None:
@@ -921,7 +933,9 @@ async def handle_reply(
             trimmed = None
             if failure is None and not strips_to_silence(shown):
                 trimmed = closing_silence_prefix(shown, getattr(output, "reply_messages", ()))
-            if failure is not None:
+            if failure == "configurator_busy":
+                await _tell(busy_line, notice=True, receipt=False)
+            elif failure is not None:
                 what = "your file {name}" if file_name is not None else "your reply"
                 await _tell(f"could not handle {what} ({failure}).", notice=True, receipt=False)
             elif strips_to_silence(shown) or (trimmed is not None and proven and kept is None):
@@ -975,6 +989,9 @@ async def handle_reply(
             desk.append("specialist", specialist_side, done)
             for line, (_, outcome) in zip(rb.echo_lines(posts), rb.echo_parts(posts)):
                 await _tell(line, raw=True, outcome=outcome)
+            # a restart the configurator asked for: the button follows its answer
+            import configurator_run
+            await configurator_run.offer_restart(turn_id)
     finally:
         reservation.release()                 # idempotent: a cancel while waiting
         channel._release_typing(context, str(chat_id))

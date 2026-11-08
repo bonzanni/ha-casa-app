@@ -193,7 +193,7 @@ async def _shutdown(runtime, *, bound: float = 0.05, bus=None,
     tools.init_tools(
         channel_manager=cm, bus=bus, specialist_registry=MagicMock(),
         mcp_registry=MagicMock(), trigger_registry=MagicMock(),
-        engagement_registry=engagement_registry, executor_registry=MagicMock())
+        engagement_registry=engagement_registry)
     real_asyncio = casa_core.asyncio
     casa_core.asyncio = _FastWaitForAsyncio(bound)
     try:

@@ -3,12 +3,6 @@
 Measurement and live-model checks run against a live Casa (see each script's
 header for the required options/env); none is part of the pytest unit gate.
 
-- `ellen_brief_fidelity.py` — live-model gate (W3/Sol B11): pins the
-  invoice_reset mistranslation — Ellen's `engage_executor` call must carry
-  process instructions VERBATIM in `brief.process_requirements` with
-  `interaction_required=True`, never paraphrased into a feature requirement.
-  REQUIRED pre-merge command (see script header for the in-container run
-  command); not part of the pytest unit gate (needs a live model).
 - `ellen_caption_file.py` — live-model check (#1378): a file sent with a caption runs
   one turn whose message is the caption; for an invoice PDF captioned "add it to the
   invoices" the resident shares the file and delegates to Finance without asking.
@@ -19,9 +13,3 @@ header for the required options/env); none is part of the pytest unit gate.
   of one long session built under the pre-#1390 description — the live condition; a
   fresh session did not reproduce the failure. Runs in the container or with
   `--local --cli` (see script header).
-- `configurator_job_trigger.py` — live-model check (#1437): asked to add a cron trigger whose
-  `job` is a delegate's plugin job (`bank-feed:daily-sync`, the plugin registered as
-  `finance.bank-feed` on the finance specialist), the configurator writes it as given, completes,
-  and neither says it will not run nor proposes assigning the plugin to the assistant. Runs locally
-  with `--cli`; `--root` measures another tree (the real configurator prompt and doctrine, fake
-  tools with the tree's production descriptions).

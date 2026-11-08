@@ -14,7 +14,7 @@ Three long-lived **residents** ship with Casa:
 | Butler | Tina | Voice-first house control (lights, climate, locks, media, sensors), in short spoken answers. |
 | Concierge | Gary | A medium-trust voice agent for anyone in the room: general questions and delegated lookups, no house control and no private data. |
 
-Two more tiers extend the fleet without changing the residents. **Specialists** are ephemeral agents a resident delegates focused work to — finances, a mailbox, a hobby domain — installed from git repositories. **Executors** are task-bounded agents that work in a dedicated Telegram topic: the *configurator* changes Casa's own configuration for you. Specialists, plugins and personas all install the same way, by asking in chat.
+Two more tiers extend the fleet without changing the residents. **Specialists** are ephemeral agents a resident delegates focused work to — finances, a mailbox, a hobby domain — installed from git repositories. The **configurator** ships with Casa and changes Casa's own configuration for you: ask Ellen, and its answers come to your chat. Specialists, plugins and personas all install the same way, by asking in chat.
 
 A fresh install ships with no specialists installed; see [Installing a specialist from a repository](#installing-a-specialist-from-a-repository).
 
@@ -38,7 +38,7 @@ A fresh install ships with no specialists installed; see [Installing a specialis
 |--------|-------------|
 | `telegram_bot_token` | Telegram bot token from @BotFather. Enables the Telegram channel. |
 | `telegram_chat_id` | Telegram chat ID to restrict messages to. Leave empty to accept all chats. **Setting it is a security control**, not just a filter: this id is the operator identity, so only the sender whose Telegram user id matches it is attributed as the operator and reads memory at private clearance — any other accepted sender is recorded under its own `telegram:<id>` identity and reads at public clearance only, as does any engagement they start. Protected plugin tools (v0.139.0) can only be authorized by the configured operator: a non-operator sender's protected call is denied outright, and with the option empty (accept-all) no sender is the operator, so protected tools are denied for everyone — the add-on logs a warning at startup in that mode. Set this id unless you specifically want an open bot. |
-| `telegram_engagement_supergroup_id` | Chat ID of the dedicated Telegram forum supergroup used for engagements (specialists' background jobs; Tier 3 Executor types). Must be a negative integer. Leave at 0 to disable engagements. |
+| `telegram_engagement_supergroup_id` | Chat ID of the dedicated Telegram forum supergroup used for engagements (specialists' background jobs). Must be a negative integer. Leave at 0 to disable engagements. |
 
 ### Memory
 
@@ -90,7 +90,7 @@ no option to set: Casa keeps its own memory store under `/data/memory`.
 Conversation transcripts on disk are kept for a while after their
 conversation ends: an assistant or butler conversation's for 30 days after it
 can no longer be resumed, a delegation's for 30 days after its run ended, and
-an in-Casa specialist or executor engagement's for 30 days after the
+an in-Casa specialist engagement's for 30 days after the
 engagement ends. A transcript is deleted only once
 every run recorded in its folder is confirmed — that is, once everything Casa
 captured from those runs is durably stored — so it can be kept longer, never
@@ -706,7 +706,7 @@ agent as part of that scheduled run, not as a message from you.
 ## Engagements (v0.11.0)
 
 Casa supports **engagements** — bounded threads where a specialist's
-background job (Tier 2) or an executor (Tier 3) works on a specific task,
+background job (Tier 2) works on a specific task,
 separate from your 1:1 chat with Ellen. Each engagement lives in its own
 Telegram forum topic inside a dedicated supergroup.
 
@@ -718,8 +718,7 @@ such a conversation, are retired.)
 
 The setup is a one-time Telegram configuration. Skip this section to
 keep Casa running in 1:1-only mode (Ellen delegates and returns the
-answer; a background job or an executor returns
-`engagement_not_configured`).
+answer; a background job returns `engagement_not_configured`).
 
 ### Delegation limits
 
@@ -797,7 +796,7 @@ Alternatives:
 1. Home Assistant → **Settings** → **Apps** (formerly Add-ons) → **Casa** → **Configuration**.
 2. Set `telegram_engagement_supergroup_id` to the negative integer from step 3.
    Leave it at `0` to disable engagements (Casa still boots; a background
-   job or an executor returns `engagement_not_configured`).
+   job returns `engagement_not_configured`).
 3. **Save** → **Restart** the app.
 
 #### 5. Verify
@@ -955,7 +954,7 @@ as errored and tells you to start a fresh one.
 
 ## Configurator (v0.12.0)
 
-The `configurator` is the first Tier 3 Executor - knows Casa's configuration surface and can CRUD it on your behalf. Ask Ellen for a configuration change; she opens a dedicated engagement topic where you talk directly to the configurator.
+The `configurator` knows Casa's configuration surface and changes it on your behalf. It ships with Casa (you cannot edit it in `/config`) and needs no engagement supergroup: it works in your 1:1 chat with Ellen.
 
 ### What's supported
 
@@ -965,7 +964,7 @@ The `configurator` is the first Tier 3 Executor - knows Casa's configuration sur
 | Specialists from a repository (install/upgrade/rollback/uninstall) | yes | yes | yes | yes |
 | Resident agents (Tier 1) | rare | yes | yes | blocked by default |
 | Per-agent YAMLs | yes | yes | yes | yes |
-| Per-agent prompts (executor prose, per-trigger prompts) | yes | yes | yes | yes |
+| Per-agent prompts (per-trigger prompts) | yes | yes | yes | yes |
 | A resident's `prompts/system.md` | - | yes | **no** (not served; a file-tool edit is refused) | - |
 | Triggers (cron, interval, webhook) | yes | yes | yes | yes |
 | Delegate wiring | yes | yes | yes | yes |
@@ -984,8 +983,7 @@ specialists use their own recipe — see
 
 Not yet supported:
 
-- Eval running (configurator can shell to casa_eval, but no first-class recipe).
-- Creating new executor types - waiting on Plans 4/5.
+- Eval running (no recipe).
 
 ### Invocation
 
@@ -999,7 +997,24 @@ Ask Ellen for a configuration change in 1:1 chat. Examples:
 
 > **Reminders do not need the configurator.** Just ask Ellen directly — "remind me tomorrow before 9am to put the bins out", "remind me every Thursday at 7 to go to the gym" — and she sets it herself. She confirms the exact time, asks whether it should repeat when that is unclear, and can cancel it later.
 
-Ellen opens a topic `#[configurator] <short task>` in your engagement supergroup. The configurator reads its doctrine, asks questions as needed, edits YAMLs, commits, and reloads Casa.
+Ellen passes your request on and says so in one short line (`📊 Passed to Configurator.`).
+The configurator works by itself — a line in your chat shows its steps while it works and
+goes away when it is done — and its answer comes to your chat under its own name.
+
+- **It asks you something?** Reply to its message (swipe to reply), or just tell Ellen.
+  Each reply starts a fresh run that sees the conversation so far.
+- **An approval card** (installing a specialist or a persona): tap Approve and the
+  configurator carries on by itself. Deny or letting it expire only updates the card;
+  ask again for a fresh one.
+- **It needs a Casa restart?** Its answer is followed by a **Restart now** button. Casa
+  restarts when you tap it, never in the middle of the work; the button works once and
+  expires after a day.
+- **One task at a time.** A second request while it works waits up to a minute, then you
+  are told `Configurator is busy with «…»; try again shortly.`
+- **Casa restarted while it was working?** You get one message naming the task: nothing
+  was replayed, so ask again if it is still needed.
+- Install time (downloading and setting up a plugin or specialist) does not count toward
+  the ten-minute limit of a run.
 
 ### Reload behavior
 
@@ -1007,26 +1022,22 @@ Every commit the configurator makes reloads what it changed, in-process and
 without a restart, so each change is live as soon as it is committed — a task
 that commits twice reloads twice, and a task you cancel keeps whatever it had
 already committed. The reload is as narrow as the change: one agent's triggers,
-one agent, the specialists, the executors or the policies; a commit that changes
+one agent, the specialists or the policies; a commit that changes
 more than one of those reloads everything. If a reload fails,
 the configurator tells you what is not live yet.
 
-- An executor's prompt and doctrine edits reload nothing: they take effect on
-  that executor's next fresh session, not necessarily the next turn. (How a
-  resident writes, speaks or behaves is not a config edit at all — that comes
-  from its persona and from the role doctrine Casa ships.)
-- A resident's new persona waits for an app restart, which the configurator
-  asks you about first.
+- How a resident writes, speaks or behaves is not a config edit at all — that
+  comes from its persona and from the role doctrine Casa ships.
+- A resident's new persona waits for an app restart: the **Restart now** button.
 
 ### Recipe discovery
 
-Configurator reads short markdown recipes from its own doctrine tree at `/config/agents/executors/configurator/doctrine/`. Edit these recipes to customize per-instance (e.g., add house rules).
+The configurator reads short markdown recipes from its doctrine, which ships with Casa (`/opt/casa/defaults/configurator/doctrine/`) and changes only with a release.
 
 ### Troubleshooting
 
-- **"engagement_not_configured"** - you haven't set telegram_engagement_supergroup_id, or the bot doesn't have can_manage_topics.
-- **Configurator stalls after first message** - check engagement's driver log. If you see prompt_template_missing, restart the app.
-- **Hook denied, configurator cancelled** - expected for resident deletion. To override: edit configurator's hooks.yaml, commit, reload, retry.
+- **"Configurator is busy"** - another configuration task is running; ask again when its answer arrives.
+- **Hook denied** - expected for resident deletion and other protected changes; the configurator says what it could not do. Its hooks ship with Casa and cannot be overridden in `/config`.
 - **Doctrine references stale fields** - file an issue; maintainer forgot to sync doctrine with Casa-core change.
 
 ## Plugins (v0.71.0)
@@ -1047,13 +1058,13 @@ immutable copy that every tier loads the same way.
   a new commit produces a new artifact, never an in-place overwrite.
 
 Residents and specialists load their assigned plugins directly through the
-Claude Agent SDK. Executor engagements do too, but pin their exact
-artifacts at launch and load those, so a plugin update never
-changes the code a running engagement is already executing.
+Claude Agent SDK. A specialist's background job pins its exact artifacts at
+launch and loads those, so a plugin update never changes the code a running
+job is already executing.
 
 ### Managing plugins (via the Configurator)
 
-Ask Ellen for a plugin change; she opens a configurator engagement that uses
+Ask Ellen for a plugin change; she passes it to the configurator, which uses
 these tools:
 
 - `plugin_add(name, repo, ref, subdir, targets, expected_revision?)` — publish
@@ -1069,8 +1080,8 @@ these tools:
   state is actionable.
 - `plugin_assign(name, target)` / `plugin_unassign(name, target)` — change which
   agents load a plugin. Targets look like `resident:ellen` or
-  `specialist:finance`. **For now you cannot give a plugin of your own to a
-  worker** (an `executor:<type>` target): adding, assigning or re-pinning one is
+  `specialist:finance`. **You cannot give a plugin of your own to a
+  worker** (an `executor:<type>` target, which nothing loads): adding, assigning or re-pinning one is
   refused with the reason stated, before anything is installed. A worker target
   that is already stored on a plugin you installed stays in the registry file
   but is ignored — `plugin_list` shows it under `ignored_targets`, the plugin
@@ -1427,8 +1438,7 @@ ignores it.
 contract has every tool except its setup tool refused, from this release on,
 until the plugin is updated; the assistant is told to ask you to update it.
 There is no grace period — a permissive window is exactly what would stop
-this being a boundary. Skill-only plugins (no MCP server) are unaffected, and
-so are executor engagements, which are outside the contract for now.
+this being a boundary. Skill-only plugins (no MCP server) are unaffected.
 Casa validates the declaration's shape and never guesses one for a plugin
 that lacks it; a plugin whose declaration is malformed is refused at install.
 
@@ -1811,10 +1821,10 @@ When you install a persona and name no version, Casa takes its newest published 
 tells you which one. A repository with no release or version tag is refused unless you name
 a branch or a commit.
 
-Casa's configurator is instructed to spell this out before it restarts
-anything, and the tools that stage a resident's persona return the warning
-with the result — but nothing *forces* it into the sentence you read. **If you are asked to
-approve a restart and were not told what it costs, ask before you agree.**
+Casa's configurator is instructed to spell this out in the answer that carries the
+**Restart now** button, and the tools that stage a resident's persona return the warning
+with the result — but nothing *forces* it into the sentence you read. **If you are offered
+a restart and were not told what it costs, ask before you tap.**
 Treat it as a real possibility rather than a certainty either way: what a
 restart activates is settled at start-up, not when you ask for the change.
 

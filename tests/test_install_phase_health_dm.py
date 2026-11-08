@@ -1,8 +1,9 @@
 """#1053: the plugin-health DM does not announce an install's own intermediate
 rows (consent pending, a setup-provided value not wired yet, setup still to
-run, not loaded yet, waiting for its specialist) while the engagement
-installing that plugin is live; the pass run when it ends names whatever still
-stands; a real fault is sent at once, install or not."""
+run, not loaded yet, waiting for its specialist) while the configurator run
+installing that plugin holds its lease (engagement trim stage 4, D4); the pass
+run when the lease is released names whatever still stands; a real fault is
+sent at once, install or not."""
 from __future__ import annotations
 
 import asyncio
@@ -46,36 +47,32 @@ def _issue(name, code, target=None):
 
 @pytest.fixture
 def wired(tmp_path, monkeypatch):
-    """A real EngagementRegistry wired into tools the way init_tools does it,
-    a health report path, and a channel manager."""
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-    reg.set_terminal_observer(tools_mod._on_engagement_terminal)
+    """A health report path, a channel manager, and a clean configurator lease."""
+    import configurator_run
     cm = _CM()
     path = tmp_path / "plugin-health.json"
-    monkeypatch.setattr(tools_mod, "_engagement_registry", reg)
     monkeypatch.setattr(tools_mod, "_channel_manager", cm)
     monkeypatch.setattr(tools_mod, "_PLUGIN_HEALTH_PATH", str(path))
-    monkeypatch.setattr(tools_mod, "_PLUGIN_INSTALLERS", {})
-    return SimpleNamespace(reg=reg, cm=cm, path=path)
+    monkeypatch.setattr(configurator_run, "LEASE_PATH", str(tmp_path / "lease.json"))
+    configurator_run._reset_for_tests()
+    yield SimpleNamespace(cm=cm, path=path)
+    configurator_run._reset_for_tests()
 
 
-async def _install_engagement(reg):
-    return await reg.create(kind="executor", role_or_type="configurator",
-                            driver="in_casa", task="install", origin={},
-                            topic_id=None)
+async def _install_run():
+    import configurator_run
+    return await configurator_run.acquire(run_key="run-1", via="delegation",
+                                          task="install")
 
 
-def _recorded_by(rec, *names):
-    token = tools_mod.engagement_var.set(rec)
-    try:
-        tools_mod._record_plugin_installer(list(names))
-    finally:
-        tools_mod.engagement_var.reset(token)
+def _recorded(*names):
+    tools_mod._record_plugin_installer(list(names))
 
 
 async def _drain():
+    import configurator_run
     for _ in range(3):
-        pending = list(tools_mod._INSTALL_END_NOTIFIES)
+        pending = list(configurator_run._NOTIFIES)
         if pending:
             await asyncio.gather(*pending)
         await asyncio.sleep(0)
@@ -135,8 +132,8 @@ async def test_row_reason_of_a_fault_is_unchanged():
 # ------------------------------------------------------------------ the DM
 
 async def test_live_install_defers_its_install_rows_and_sends_its_faults(wired):
-    rec = await _install_engagement(wired.reg)
-    _recorded_by(rec, "gmail")
+    await _install_run()
+    _recorded("gmail")
     plugin_health.write_report(issues=[
         _issue("gmail", "setup_env_unprovisioned"),
         _issue("gmail", "trigger_pending_ack"),
@@ -158,8 +155,8 @@ async def test_live_install_defers_its_install_rows_and_sends_its_faults(wired):
 
 
 async def test_a_pass_with_only_deferred_rows_sends_nothing(wired):
-    rec = await _install_engagement(wired.reg)
-    _recorded_by(rec, "gmail")
+    await _install_run()
+    _recorded("gmail")
     plugin_health.write_report(issues=[
         _issue("gmail", "setup_env_unprovisioned"),
         _issue("gmail", "event_pending_ack")], warnings=[], path=wired.path)
@@ -169,7 +166,7 @@ async def test_a_pass_with_only_deferred_rows_sends_nothing(wired):
         plugin_health.load_report(wired.path))) == 2
 
 
-async def test_without_an_installing_engagement_nothing_is_deferred(wired):
+async def test_without_an_installing_run_nothing_is_deferred(wired):
     plugin_health.write_report(issues=[
         _issue("gmail", "setup_env_unprovisioned")], warnings=[],
         path=wired.path)
@@ -177,62 +174,33 @@ async def test_without_an_installing_engagement_nothing_is_deferred(wired):
     assert len(wired.cm.channel.sent) == 1
 
 
-@pytest.mark.parametrize("end", ["completed", "cancelled", "error",
-                                 "transition", "strict"])
-async def test_the_install_ending_names_what_still_stands(wired, end):
-    rec = await _install_engagement(wired.reg)
-    _recorded_by(rec, "gmail")
+async def test_the_install_ending_names_what_still_stands(wired):
+    lease = await _install_run()
+    _recorded("gmail")
     plugin_health.write_report(issues=[
         _issue("gmail", "setup_env_unprovisioned")], warnings=[],
         path=wired.path)
     await casa_core.notify_plugin_health(wired.cm, path=str(wired.path))
     assert wired.cm.channel.sent == []
-    if end == "completed":
-        await wired.reg.mark_completed(rec.id, 1.0)
-    elif end == "cancelled":
-        await wired.reg.mark_cancelled(rec.id)
-    elif end == "error":
-        assert await wired.reg.mark_error(rec.id, "k", "m")
-    elif end == "transition":
-        await wired.reg.try_transition_terminal(rec.id, "completed")
-    else:
-        await wired.reg.try_transition_terminal(rec.id, "cancelled",
-                                                strict=True)
+    lease.release()
     await _drain()
     assert len(wired.cm.channel.sent) == 1
     assert "gmail is waiting for a setup-provided value" in \
         wired.cm.channel.sent[0]
-    assert tools_mod._PLUGIN_INSTALLERS == {}
+    assert tools_mod.plugins_under_live_install() == set()
 
 
-async def test_a_rolled_back_transition_leaves_the_install_live(wired):
-    import unittest.mock as _mock
-    rec = await _install_engagement(wired.reg)
-    _recorded_by(rec, "gmail")
-    with _mock.patch.object(wired.reg, "_write_tombstone",
-                            side_effect=OSError("disk full")):
-        with pytest.raises(OSError):
-            await wired.reg.try_transition_terminal(rec.id, "cancelled",
-                                                    strict=True)
-    await _drain()
-    assert rec.status == "active"
-    assert tools_mod.plugins_under_live_install() == {"gmail"}
-
-
-async def test_an_unrelated_engagement_ending_runs_no_pass(wired, monkeypatch):
+async def test_a_run_that_installed_nothing_runs_no_pass(wired, monkeypatch):
     calls = []
 
     async def _notify():
         calls.append(1)
 
     monkeypatch.setattr(tools_mod, "_notify_plugin_health_if_possible", _notify)
-    installing = await _install_engagement(wired.reg)
-    other = await _install_engagement(wired.reg)
-    _recorded_by(installing, "gmail")
-    await wired.reg.mark_completed(other.id, 1.0)
+    lease = await _install_run()
+    lease.release()
     await _drain()
     assert calls == []
-    assert tools_mod.plugins_under_live_install() == {"gmail"}
 
 
 async def test_a_failing_observer_never_fails_the_transition(tmp_path):
@@ -242,14 +210,16 @@ async def test_a_failing_observer_never_fails_the_transition(tmp_path):
         raise RuntimeError("observer")
 
     reg.set_terminal_observer(_boom)
-    rec = await _install_engagement(reg)
+    rec = await reg.create(kind="specialist", role_or_type="finance",
+                           driver="in_casa", task="job", origin={},
+                           topic_id=None)
     await reg.mark_cancelled(rec.id)
     assert rec.status == "cancelled"
 
 
 # ------------------------------------------------------- who records the install
 
-async def test_a_plugin_mutation_records_its_engagement(wired, monkeypatch):
+async def test_a_plugin_mutation_records_its_run(wired, monkeypatch):
     import agent as agent_mod
     import callback_reconcile
     import event_reconcile
@@ -276,34 +246,25 @@ async def test_a_plugin_mutation_records_its_engagement(wired, monkeypatch):
                         AsyncMock(return_value=[]))
     monkeypatch.setattr(event_reconcile, "reconcile_plugin_events",
                         AsyncMock(return_value=[]))
-    rec = await _install_engagement(wired.reg)
-    token = tools_mod.engagement_var.set(rec)
-    try:
-        await tools_mod._reload_and_verify_targets("gmail", [],
-                                                   expect="present")
-    finally:
-        tools_mod.engagement_var.reset(token)
+    await _install_run()
+    await tools_mod._reload_and_verify_targets("gmail", [], expect="present")
     # Recorded before the mutation's own notify pass reads it.
     assert seen == [{"gmail"}]
 
 
-async def test_an_env_wiring_records_its_engagement(wired, monkeypatch):
+async def test_an_env_wiring_records_its_run(wired, monkeypatch):
     import plugin_env_conf
     monkeypatch.setattr(plugin_env_conf, "set_entry", lambda *a, **k: None)
-    rec = await _install_engagement(wired.reg)
-    token = tools_mod.engagement_var.set(rec)
-    try:
-        await tools_mod.set_plugin_env_reference.handler(
-            {"plugin": "gmail", "var_name": "GMAIL_TOKEN",
-             "op_ref_or_value": "op://v/i/f"})
-    finally:
-        tools_mod.engagement_var.reset(token)
+    await _install_run()
+    await tools_mod.set_plugin_env_reference.handler(
+        {"plugin": "gmail", "var_name": "GMAIL_TOKEN",
+         "op_ref_or_value": "op://v/i/f"})
     assert tools_mod.plugins_under_live_install() == {"gmail"}
 
 
 async def test_an_unbound_mutation_records_nothing(wired):
     tools_mod._record_plugin_installer(["gmail"])
-    assert tools_mod._PLUGIN_INSTALLERS == {}
+    assert tools_mod.plugins_under_live_install() == set()
 
 
 async def test_a_bundle_install_records_its_scoped_entries(wired, monkeypatch):
@@ -337,49 +298,27 @@ async def test_a_bundle_install_records_its_scoped_entries(wired, monkeypatch):
         seen.append(tools_mod.plugins_under_live_install())
 
     monkeypatch.setattr(tools_mod, "_notify_plugin_health_if_possible", _notify)
-    rec = await _install_engagement(wired.reg)
-    token = tools_mod.engagement_var.set(rec)
-    try:
-        await tools_mod._bundle_reload_and_verify(
-            "finance", removed_artifact_ids=[], targets_removed=[])
-    finally:
-        tools_mod.engagement_var.reset(token)
+    await _install_run()
+    await tools_mod._bundle_reload_and_verify(
+        "finance", removed_artifact_ids=[], targets_removed=[])
     assert seen == [{"finance.bank-feed", "finance.ledger"}]
-
-
-async def test_an_install_that_ended_unobserved_defers_nothing(tmp_path,
-                                                               monkeypatch):
-    # A registry with no observer wired (or a record already terminal when it
-    # was recorded): the lookup itself must not treat it as live.
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-    monkeypatch.setattr(tools_mod, "_engagement_registry", reg)
-    monkeypatch.setattr(tools_mod, "_PLUGIN_INSTALLERS", {})
-    rec = await _install_engagement(reg)
-    _recorded_by(rec, "gmail")
-    await reg.mark_completed(rec.id, 1.0)
-    assert tools_mod.plugins_under_live_install() == set()
-    # The lookup only reads; removal is the observer's.
-    assert tools_mod._PLUGIN_INSTALLERS == {"gmail": rec.id}
 
 
 # ------------------------------------------ diff round 1 (Astra): pruning race
 
-async def test_a_notify_between_the_flip_and_the_observer_keeps_the_pass_owed(
-        wired):
-    # The status flips in memory before the terminal write settles and the
-    # observer runs after it. A pass landing in that window — here with the
-    # channel down — must not consume the record the observer needs.
-    rec = await _install_engagement(wired.reg)
-    _recorded_by(rec, "gmail")
+async def test_a_notify_while_the_channel_is_down_keeps_the_pass_owed(wired):
+    # A pass landing while the run still holds the lease, with the channel
+    # down, sends nothing and consumes nothing: the release's pass names it.
+    lease = await _install_run()
+    _recorded("gmail")
     plugin_health.write_report(issues=[
         _issue("gmail", "setup_env_unprovisioned")], warnings=[],
         path=wired.path)
-    rec.status = "cancelled"
     wired.cm.channel.is_ready = False
     await casa_core.notify_plugin_health(wired.cm, path=str(wired.path))
     assert wired.cm.channel.sent == []
     wired.cm.channel.is_ready = True
-    tools_mod._on_engagement_terminal(rec)
+    lease.release()
     await _drain()
     assert len(wired.cm.channel.sent) == 1
     assert "gmail" in wired.cm.channel.sent[0]

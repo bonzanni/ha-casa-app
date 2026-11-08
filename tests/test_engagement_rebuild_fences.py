@@ -28,7 +28,7 @@ async def _pending_record(tmp_path):
     from engagement_registry import EngagementRegistry
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
-        kind="executor", role_or_type="configurator", driver="in_casa",
+        kind="specialist", role_or_type="finance", driver="in_casa",
         task="secret task", topic_id=7,
         origin={"channel": "telegram", "_origin_route": "telegram",
                 "_origin_clearance": "private"},
@@ -44,7 +44,7 @@ class TestInProcessToolFence:
         ("browse_memory_day", {"date": "2026-10-05"}),
         ("open_memory", {"ids": ["o0000000000000000"]}),
         ("query_engager", {"question": "the topic?"}),
-        ("engage_executor", {"executor_type": "configurator", "task": "t"}),
+        ("start_job", {"job": "finplan:plan", "task": "t"}),
         ("delegate_to_agent", {"agent": "finance", "task": "t"}),
         ("send_media", {"path": "/tmp/x.pdf", "kind": "document"}),
     ])
@@ -100,7 +100,7 @@ class TestInFlightReFilter:
         reg = EngagementRegistry(
             tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
-            kind="executor", role_or_type="configurator", driver="in_casa",
+            kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", topic_id=7,
             origin={"channel": "telegram", "_origin_route": "telegram",
                     "_origin_clearance": "private"},
@@ -159,7 +159,7 @@ class TestInCasaLaunchGate:
         from drivers.in_casa_driver import InCasaDriver
 
         rec = SimpleNamespace(
-            id="e-launch", topic_id=7, kind="executor",
+            id="e-launch", topic_id=7, kind="specialist",
             context_rebuild_pending=True, sdk_session_id=None, origin={})
         driver = InCasaDriver(
             topic_stream_factory=lambda tid: None,
@@ -202,7 +202,7 @@ class TestInCasaLaunchGate:
         from drivers.in_casa_driver import InCasaDriver
 
         rec = SimpleNamespace(
-            id="e-gen", topic_id=7, kind="executor",
+            id="e-gen", topic_id=7, kind="specialist",
             context_rebuild_pending=False,   # rebuild already cleared it
             context_generation=1,            # ...but the clamp bumped this
             sdk_session_id=None, origin={})

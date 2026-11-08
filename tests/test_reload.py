@@ -32,7 +32,7 @@ def _make_runtime():
     from runtime import CasaRuntime
     return CasaRuntime(
         agents={}, role_configs={}, specialist_registry=MagicMock(),
-        executor_registry=MagicMock(), engagement_registry=MagicMock(),
+        engagement_registry=MagicMock(),
         agent_registry=MagicMock(), trigger_registry=MagicMock(),
         mcp_registry=MagicMock(),
         session_registry=MagicMock(), channel_manager=MagicMock(),
@@ -58,45 +58,6 @@ class TestDispatchUnknownScope:
         result = await dispatch("nope", runtime=runtime)
         assert result["scope"] == "nope"
         assert "ms" in result and result["ms"] >= 0
-
-
-class TestReloadExecutorsHealth:
-    async def test_executors_reload_regenerates_plugin_health(self, monkeypatch):
-        """v0.71.1 (Sol Task-5): enabling/disabling an executor changes plugin
-        authorization, so an executors reload must refresh plugin-health (regen +
-        notify) — else a newly-enabled executor whose plugin lacks a grant stays
-        stale-green with no DM until an unrelated trigger."""
-        import tools as tools_mod
-        from reload import reload_executors
-        regen_calls, notify_calls = [], []
-        monkeypatch.setattr(tools_mod, "_regenerate_plugin_health",
-                            lambda extra: regen_calls.append(extra))
-
-        async def _fake_notify():
-            notify_calls.append(True)
-
-        monkeypatch.setattr(tools_mod, "_notify_plugin_health_if_possible",
-                            _fake_notify)
-        runtime = _make_runtime()          # empty role_configs, MagicMock registry
-        actions = await reload_executors(runtime)
-        assert "rebuild_executor_registry" in actions
-        assert "plugin_health_regenerated" in actions
-        assert regen_calls == [[]]         # regen once, no mutation-specific extras
-        assert notify_calls == [True]
-
-    async def test_executors_reload_survives_health_regen_failure(self, monkeypatch):
-        """The health refresh must never fail the reload itself."""
-        import tools as tools_mod
-        from reload import reload_executors
-
-        def _boom(extra):
-            raise RuntimeError("regen blew up")
-
-        monkeypatch.setattr(tools_mod, "_regenerate_plugin_health", _boom)
-        runtime = _make_runtime()
-        actions = await reload_executors(runtime)
-        assert "rebuild_executor_registry" in actions
-        assert "plugin_health_regenerated" not in actions   # skipped, not fatal
 
 
 class TestReloadError:
@@ -1743,127 +1704,6 @@ class TestRWLockFifoAdmission:
         await rw.release_read()
 
 
-class TestExecutorsScope:
-    """A-1: 7th reload scope for ExecutorRegistry."""
-
-    async def test_executors_scope_calls_registry_load(self):
-        from reload import dispatch
-        runtime = _make_runtime()
-        # Drive the registry mock to assert load() was awaited.
-        runtime.executor_registry.load = MagicMock()
-        result = await dispatch("executors", runtime=runtime)
-        assert result["status"] == "ok"
-        assert result["scope"] == "executors"
-        # O-2a (v0.37.9): rebuild_executor_registry is first; per-resident
-        # reload_agent fan-out follows so cached system-prompt state
-        # regenerates. role_configs is empty in this fixture, so the only
-        # action remains the registry rebuild.
-        assert result["actions"] == ["rebuild_executor_registry"]
-        runtime.executor_registry.load.assert_called_once()
-
-    async def test_executors_scope_fans_out_to_residents(self, monkeypatch):
-        """O-2a (v0.37.9): after rebuilding the executor registry,
-        reload_executors must call ``reload_agent`` for each resident so
-        the resident's cached ``<executors>`` system-prompt block (built
-        from a snapshot at construct_agent time) regenerates. Without
-        this, an operator who flips ``enabled: true`` on a previously-
-        disabled executor and runs ``casactl reload --scope=executors``
-        sees the registry rebuild but Ellen's prompt block stays stale
-        until the next ``--scope=agent`` fires.
-
-        Live evidence: 2026-05-14 P22 row5b — Ellen replied "No" to
-        "is plugin-developer enabled?" between an executor scope reload
-        and the next agent-scope reload, contradicting the live
-        registry state.
-        """
-        from reload import dispatch
-        import reload as reload_mod
-
-        # Stub the executors handler so it just records and returns the
-        # registry-rebuild action; we want to assert the fan-out shape
-        # at the dispatcher level, not re-run executor_registry.load.
-        runtime = _make_runtime()
-        runtime.role_configs = {"assistant": MagicMock(), "butler": MagicMock()}
-
-        fan_out_calls: list[str] = []
-
-        async def fake_agent(rt, role=None):
-            fan_out_calls.append(role)
-            return ["load_config", "construct_agent", "reregister_bus"]
-
-        monkeypatch.setitem(reload_mod._HANDLERS, "agent", fake_agent)
-        runtime.executor_registry.load = MagicMock()
-
-        result = await dispatch("executors", runtime=runtime)
-
-        assert result["status"] == "ok"
-        # Each resident must have been refreshed.
-        assert sorted(fan_out_calls) == ["assistant", "butler"]
-        # Action trail surfaces the per-resident sub-actions with prefix.
-        assert "rebuild_executor_registry" in result["actions"]
-        for role in ("assistant", "butler"):
-            for sub in ("load_config", "construct_agent", "reregister_bus"):
-                assert f"agent:{role}:{sub}" in result["actions"], (
-                    f"expected agent:{role}:{sub} in actions, got "
-                    f"{result['actions']!r}"
-                )
-
-    async def test_executors_load_raises_becomes_load_error(self):
-        from reload import dispatch
-        runtime = _make_runtime()
-        runtime.executor_registry.load = MagicMock(
-            side_effect=RuntimeError("synthetic")
-        )
-        result = await dispatch("executors", runtime=runtime)
-        assert result["status"] == "error"
-        assert result["kind"] == "load_error"
-        assert "synthetic" in result["message"]
-
-    async def test_full_scope_includes_executors_rebuild(self, monkeypatch):
-        """reload_full chains executors BEFORE per-role agent reload."""
-        from reload import dispatch
-        import reload as reload_mod
-
-        # Capture handler invocation order.
-        order: list[str] = []
-
-        async def fake_policies(runtime, role=None):
-            order.append("policies")
-            return ["pol"]
-
-        async def fake_agents(runtime, role=None):
-            order.append("agents")
-            return ["ag"]
-
-        async def fake_executors(runtime, role=None):
-            order.append("executors")
-            return ["rebuild_executor_registry"]
-
-        async def fake_agent(runtime, role=None):
-            order.append(f"agent:{role}")
-            return ["a_load"]
-
-        monkeypatch.setitem(reload_mod._HANDLERS, "policies", fake_policies)
-        monkeypatch.setitem(reload_mod._HANDLERS, "agents", fake_agents)
-        monkeypatch.setitem(reload_mod._HANDLERS, "executors", fake_executors)
-        monkeypatch.setitem(reload_mod._HANDLERS, "agent", fake_agent)
-
-        runtime = _make_runtime()
-        runtime.role_configs = {"assistant": MagicMock()}
-        runtime.specialist_registry.all_configs = MagicMock(return_value={})
-
-        result = await dispatch("full", runtime=runtime)
-        assert result["status"] == "ok"
-        # executors must precede per-role agent reload.
-        executors_idx = order.index("executors")
-        agent_idx = order.index("agent:assistant")
-        assert executors_idx < agent_idx
-        assert any(
-            a == "executors:rebuild_executor_registry"
-            for a in result["actions"]
-        )
-
-
 class TestReloadRefreshesDelegationRoleMap:
     """P-6 (live run 2026-07-11): ``tools._agent_role_map`` is populated once
     at boot and no reload handler refreshed it, so ``delegate_to_agent``
@@ -1955,9 +1795,13 @@ class TestReloadRefreshesDelegationRoleMap:
 
         result = await dispatch("agents", runtime=runtime)
         assert result["status"] == "ok"
+        # Engagement trim stage 4: the image-owned configurator is merged in
+        # as a delegate beside the residents and specialists.
         assert tools_mod._agent_role_map == {
             "ellen": resident_cfg, "finance": spec_cfg,
+            "configurator": tools_mod._configurator_config(),
         }
+        assert tools_mod._agent_role_map["configurator"].kind == "executor"
 
 
 class TestReloadFullSnapshotOrdering:
@@ -1977,13 +1821,12 @@ class TestReloadFullSnapshotOrdering:
                 return []
             return h
 
-        for name in ("policies", "agents", "executors", "agent", "plugin_env"):
+        for name in ("policies", "agents", "agent", "plugin_env"):
             monkeypatch.setitem(reload_mod._HANDLERS, name, _rec(name))
 
         await reload_mod.reload_full(_make_runtime())
         assert order[0] == "snapshot"
         assert order.index("snapshot") < order.index("agents")
-        assert order.index("snapshot") < order.index("executors")
 
 
 class TestDisabledSpecialistReload:

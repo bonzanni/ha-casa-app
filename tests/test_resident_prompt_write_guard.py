@@ -461,15 +461,6 @@ async def _stack_denies(opts) -> bool:
     return False
 
 
-def _executor_defn(hooks_document: dict | None = None):
-    return SimpleNamespace(
-        hooks_path=None, hooks_document=hooks_document or {},
-        mcp_server_names=[], tools_allowed=["Read"],
-        model="sonnet", permission_mode="acceptEdits",
-        tools_disallowed=[], driver="in_casa",
-    )
-
-
 class _SpecialistCfg:
     model = "claude-sonnet-4-6"
     system_prompt = "P\n"
@@ -489,20 +480,25 @@ class TestTheGuardIsCodeMandatoryEverywhereCasaBuildsHooks:
 
     def test_four_builder_paths_deny_or_abstain_exactly(self, tmp_path,
                                                         monkeypatch):
-        """(executor, resident, delegated-resident, specialist) denials
+        """(configurator, resident, delegated-resident, specialist) denials
         == (1, 1, 1, 0).
 
         Pre-fix all four are 0: no builder appends the guard, so nothing in any
         stack refuses. The fourth entry is 0 BY DESIGN, not by omission — an
-        actual specialist keeps today's settings-guard-only stack.
+        actual specialist keeps today's settings-guard-only stack. Engagement
+        trim stage 4: the configurator session is built through
+        ``_build_specialist_options`` from the image-owned config, whose
+        shipped hooks declare the guard.
         """
+        import agent_loader
         import tools as tools_mod
         from test_agent_plugin_binding import _make_agent
 
         async def run() -> tuple[int, int, int, int]:
-            ex = tools_mod._build_executor_options(
-                _executor_defn(), executor_type="configurator",
-                plugin_paths=[])
+            monkeypatch.setattr(tools_mod, "_mcp_registry", None, raising=False)
+            monkeypatch.setattr(tools_mod, "_agent_registry", None, raising=False)
+            ex = tools_mod._build_specialist_options(
+                agent_loader.load_configurator())
             agent = _make_agent(tmp_path, role="assistant")
             res_opts = await agent._build_options(
                 channel="telegram", channel_key="k", is_fresh=True,

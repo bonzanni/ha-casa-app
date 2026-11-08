@@ -124,7 +124,7 @@ def test_server_level_framework_grant_keeps_full_surface():
 def test_ha_grant_doctrine_forbids_duplicate_raw_and_facade_names():
     path = (
         Path(__file__).parents[1]
-        / "casa/rootfs/opt/casa/defaults/agents/executors/configurator"
+        / "casa/rootfs/opt/casa/defaults/configurator"
         / "doctrine/recipes/resident/grant_ha_tools.md"
     )
     text = path.read_text(encoding="utf-8")

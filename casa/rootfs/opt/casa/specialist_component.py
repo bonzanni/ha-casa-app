@@ -21,7 +21,7 @@ MAX_SCOPED_NAME_BYTES = 72
 # to CASA_TOOLS later would be granted-by-default under a deny-set). Bare
 # names; the role.yaml entries carry the ``mcp__casa-framework__`` prefix.
 # Converged over design rounds 1-4 (2026-08-13, Sol+Terra):
-#   - spawn (engage_executor, delegate_to_agent), plugin management, config
+#   - spawn (delegate_to_agent), plugin management, config
 #     mutation, secrets (list_vault_items/get_item_fields), install/persona
 #     lifecycle, workspace admin, reload/restart: NEVER grantable by bundle.
 #   - send_message OUT: an unbounded outbound Telegram send primitive.

@@ -69,7 +69,7 @@ its absence is not a failure and its presence is not a promise that anything mat
 
 **The vault tools' schema is the recipe's fence.** `list_vault_items` requires a `query` and
 `get_item_fields` an `item`; `vault` is optional on both and falls back to the configured
-default, which every executor engagement's world-state block also names (`Default vault:`),
+default, which every configurator run's world-state block also names (`Default vault:`),
 so the configurator can omit it or name it in its report. The schemas are explicit JSON
 Schema objects: the SDK compiles the dict shorthand to required-all, which is how #535's
 handler-side fallback shipped without ever being reachable through the validator — the
@@ -89,14 +89,14 @@ variable is a field whose role matches it, or, when no found field's role matche
 with no role (null or `other_known`) on an item that could hold it. An item holding no
 candidate field for a variable is never put to the operator, even when its title matches. A
 variable whose role matches exactly one field is wired, one `set_plugin_env_reference` per
-variable, then reloaded and verified, and named in the completion — even when another
+variable, then reloaded and verified, and named in the answer — even when another
 variable has no candidate field; a variable whose candidate fields do not settle it — several
-of them, or only fields with no role — is a question asked in the engagement topic naming what was found — each item described by its category and the roles of
+of them, or only fields with no role — is a question to the operator naming what was found — each item described by its category and the roles of
 its fields, which the operator can recognise, and never by its `matched_query`. A variable no
 found item holds is one more search with a different keyword if one is plausible; then a
 non-secret value is taken from the plugin's documentation or asked of the operator, and a
 secret — or a variable that cannot be told apart from one — is reported unwired, naming the
-vault and the queries, and its value is never asked for. A completion that leaves a required
+vault and the queries, and its value is never asked for. An answer that leaves a required
 variable unwired without saying what was searched is a doctrine violation, pinned in prose
 tests like the liveness prohibition.
 

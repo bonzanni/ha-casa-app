@@ -37,7 +37,7 @@ except ImportError:
     from specialist_fixtures import write_minimal_component
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-RECIPES = (REPO_ROOT / "casa/rootfs/opt/casa/defaults/agents/executors/configurator"
+RECIPES = (REPO_ROOT / "casa/rootfs/opt/casa/defaults/configurator"
            / "doctrine/recipes/specialist")
 
 
@@ -193,17 +193,17 @@ def test_specialist_upgrade_description_admits_the_installed_version():
     assert desc.endswith(tools._ORDINARY_CHANGE_TOOL_NOTE)
 
 
-def test_upgrade_recipe_states_the_upgrade_worded_resume_turn():
-    # #1150/#1163: the post-Approve resume turn (tools.py `_reconcile_cb`)
+def test_upgrade_recipe_states_the_upgrade_worded_continuation():
+    # #1150/#1163: the run an Approve starts (tools.py `_reconcile_cb`)
     # follows the inspect's mode, so an upgrade -- a settings change included --
     # is told to continue with step 3's specialist_upgrade. Step 2 says so,
-    # and no longer tells the configurator to ignore an install-worded turn.
+    # and no longer tells the configurator to ignore an install-worded task.
     import tools
     source = Path(tools.__file__).read_text(encoding="utf-8")
-    assert "call specialist_upgrade with the staged" in source
+    assert "call specialist_upgrade with {_staged}" in source
     text = _flat("upgrade.md")
     step2 = text[text.index(" 2. Same consent flow"):text.index(" 3. `specialist_upgrade(")]
-    assert ("The automatic resume turn after Approve tells you to continue with "
+    assert ("The run Approve starts tells you to continue with "
             "step 3's `specialist_upgrade` — never `specialist_install_commit`, "
             'which refuses an installed slug with `kind: "active_present"`') in step2
     assert "worded for a fresh install" not in step2

@@ -226,17 +226,12 @@ async def test_resident_specialist_and_executor_options_use_verified_cli(
         specialist_cfg,
         resolution=ResolutionResult(registry_valid=True),
     )
-    executor_defn = SimpleNamespace(
-        hooks_path=None,
-        mcp_server_names=[],
-        tools_allowed=["Read"],
-        model="claude-sonnet-4-6",
-        permission_mode="acceptEdits",
-        tools_disallowed=[],
-    )
-    executor_options = tools_mod._build_executor_options(
-        executor_defn,
-        executor_type="configurator",
+    # Engagement trim stage 4: the configurator (kind ``executor``) is built
+    # through the specialist builder from its image-owned config.
+    import agent_loader
+    monkeypatch.setattr(tools_mod, "_agent_registry", None)
+    executor_options = tools_mod._build_specialist_options(
+        agent_loader.load_configurator(),
         resolution=ResolutionResult(registry_valid=True),
     )
 

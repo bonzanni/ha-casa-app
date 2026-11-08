@@ -73,7 +73,7 @@ lock at all — an already-in-flight turn races the reset and is handled by the 
 registry's session-id checks instead: the reset removes only the session it snapshotted.
 
 **No single writer orders a topic's output.** An engagement topic's posts — a turn's
-stream, an executor's step log, platform and completion notices — are each sent directly, so
+stream, platform and completion notices — are each sent directly, so
 their relative order is the order in which their sends complete. Nothing mechanically orders
 one direct send against another; the per-topic handler lock orders the *inbound* side only.
 
@@ -189,8 +189,7 @@ connection or pool failure), or when no Bot API call was possible before any out
 attempted. An earlier attempt that failed *ambiguously*
 (a lost acknowledgement) weakens the claim to `unknown` — its text may be on screen, so a
 later refusal cannot establish that the turn was wholly invisible. A finalize with no prior
-emit and several pages — always the case for an executor's long closing text, whose one emit
-is skipped for its length — sends each page on its own, as the overflow pages are sent, so a failed page
+emit and several pages sends each page on its own, as the overflow pages are sent, so a failed page
 never drops a later one (where a question usually sits). Any page that lands latches
 `delivered`; one imprecision is deliberate: when none lands the outcome is `unknown`, never
 a claim that would hand a false death to a turn one of whose pages may have been accepted.

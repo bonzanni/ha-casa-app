@@ -77,7 +77,7 @@ turn's explanation record names the ledger and the base.
 **The view has one slot in the prompt.** For a resident the compiled projection is fixed;
 the view is placed in its one opaque slot, after `<persona>` and before `<role_doctrine>`,
 outside the projection's admission ceilings and outside its digest, so a memory commit never
-changes the digests a session's resume is gated on. A specialist or executor with a
+changes the digests a session's resume is gated on. A specialist with a
 composed prompt gets the block at the head of its prompt. A delegated specialist runs one
 turn: its view, at the delegating turn's clearance and within the specialist's own budget,
 goes into its user prompt beside the brief, read in the same snapshot as its correction

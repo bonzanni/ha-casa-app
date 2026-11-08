@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 DOCTRINE = (Path(__file__).resolve().parents[1]
-            / "casa/rootfs/opt/casa/defaults/agents/executors/configurator/doctrine")
+            / "casa/rootfs/opt/casa/defaults/configurator/doctrine")
 
 
 def _flat(path: Path) -> str:

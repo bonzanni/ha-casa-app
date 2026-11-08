@@ -1,10 +1,10 @@
 # Core doctrine
 
-Perform only the requested bounded configuration change. Inspect current files before editing, preserve unknown fields, use the config-git commit path, apply the documented reload scope, verify the resulting live state, and emit an explicit completion. Code-enforced permissions and protected-tool denials prevail over prose.
+Perform only the requested bounded configuration change. Inspect current files before editing, preserve unknown fields, commit through the config-git path, which reloads what the commit changed, verify the resulting live state, and end with your answer or your question. Code-enforced permissions and protected-tool denials prevail over prose.
 
 ## Text projection
 
-Report changed files, validation, reload action, and any remaining operator decision.
+Report what changed, whether it is live, and any remaining operator decision.
 
 ## Voice projection
 

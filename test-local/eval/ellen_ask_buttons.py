@@ -4,7 +4,7 @@ between naturally long choices, do the buttons show words, or does the whole
 keyboard fall back to "Option 1/2/3"?
 
 Live-model check, in the shape of the sibling ``ellen_*`` evals: the
-resident's REAL compiled text projection plus its ``<executors>`` block, and
+resident's REAL compiled text projection, and
 side-effect-free FAKES of every ``casa-framework`` tool the resident is
 granted, carrying the PRODUCTION descriptions and input schemas (a lone
 ``ask_user`` reads differently from one tool among eighteen). The model,
@@ -67,7 +67,7 @@ WARM = [
 ]
 CASA_TOOLS = [
     "cancel_engagement", "cleanup_engagement_topics", "start_job",
-    "delegate_to_agent", "engage_executor", "ask_user", "get_schedule",
+    "delegate_to_agent", "ask_user", "get_schedule",
     "list_inbound_files", "share_inbound_file", "vault_drop_off",
     "plugin_status", "set_reminder", "cancel_reminder", "ack_event",
     "consent_reprompt", "search_memory", "browse_memory_day", "open_memory",

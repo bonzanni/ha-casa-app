@@ -1180,13 +1180,13 @@ async def test_inspect_prompt_exception_is_structured(monkeypatch, tmp_path) -> 
 
 
 # ---------------------------------------------------------------------------
-# v0.102.0 (#217): the inspect tool captures the requesting configurator
-# engagement into reconcile_cb; on Approve+ack that callback delivers a
-# synthetic RESUME turn through the channel's resume-if-needed delivery seam
-# (deliver_system_turn) so the install proceeds without a manual operator
-# nudge. reconcile_cb runs from the tap-callback finish hook — it must NEVER
-# raise into it. These tests drive reconcile_cb directly (captured off the
-# prompt kwargs), so they never depend on Telegram delivery mechanics.
+# v0.102.0 (#217), reworked by engagement trim stage 4 (D2): on Approve+ack
+# the reconcile_cb the inspect tool built continues the configurator by
+# itself, as one turn on its desk in the operator's DM
+# (``_dispatch_desk_continuation``), so the install proceeds without a manual
+# operator nudge. reconcile_cb runs from the tap-callback finish hook — it
+# must NEVER raise into it. These tests drive reconcile_cb directly (captured
+# off the prompt kwargs), so they never depend on Telegram delivery mechanics.
 # ---------------------------------------------------------------------------
 
 
@@ -1206,45 +1206,9 @@ def _capture_reconcile(monkeypatch):
     return cap
 
 
-def _resume_channel(*, registry, deliver):
-    return SimpleNamespace(
-        chat_id="123", _engagement_registry=registry, deliver_system_turn=deliver)
-
-
-@pytest.mark.asyncio
-async def test_reconcile_cb_resumes_the_captured_engagement(monkeypatch, tmp_path) -> None:
-    from tools import specialist_install_inspect, engagement_var
-
-    delivered: list = []
-    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
-    registry = SimpleNamespace(get=lambda eid: rec if eid == "eng-abc" else None)
-
-    async def _deliver(r, text, *, inbound_reservation=None):
-        delivered.append((r, text))
-        # C1/#663: the production seam reports its HAND-OFF decision. A double
-        # returning None would read as a refusal and pass silently.
-        return True
-
-    _wire_inspect(monkeypatch, tmp_path,
-                  channel=_resume_channel(registry=registry, deliver=_deliver))
-    cap = _capture_reconcile(monkeypatch)
-
-    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
-    try:
-        payload = _payload(await specialist_install_inspect.handler(
-            {"repo": "owner/repo", "ref": "main"}))
-    finally:
-        engagement_var.reset(token)
-    assert payload["consent"] == "keyboard_posted"
-
-    # The tap-callback finish hook fires reconcile_cb after Approve+ack.
-    # #662: the callback REPORTS its outcome — a bare None here is what let a
-    # late tap show "installing" with nothing installed.
-    assert await cap["reconcile_cb"]() is True
-    assert len(delivered) == 1
-    assert delivered[0][0] is rec  # resolved for the captured engagement id
-    assert "specialist_install_commit" in delivered[0][1]
-    assert "specialist:mtg" in delivered[0][1]  # _fake_inspection slug
+def _desk_channel(dispatch):
+    """An operator-DM channel whose desk route is *dispatch*."""
+    return SimpleNamespace(chat_id="123", _dispatch_desk_continuation=dispatch)
 
 
 @pytest.mark.asyncio
@@ -1256,21 +1220,18 @@ async def test_reconcile_cb_continuation_matches_inspect_mode(
     # #1150/#1163: the post-Approve continuation follows the inspect's mode.
     # An upgrade continues with upgrade.md step 3 (specialist_upgrade) --
     # specialist_install_commit refuses an installed slug (active_present) and
-    # the upgrade recipe wires no delegation. An install keeps its literal.
-    from tools import specialist_install_inspect, engagement_var
+    # the upgrade recipe wires no delegation. An install continues with
+    # specialist_install_commit and wires the delegation. The callback reports
+    # the desk route's own answer as a bool.
+    from tools import specialist_install_inspect
 
     delivered = []
-    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
-    registry = SimpleNamespace(get=lambda eid: rec if eid == rec.id else None)
 
-    async def _deliver(r, text, *, inbound_reservation=None):
-        delivered.append((r, text))
+    async def _dispatch(*, chat_id, user_id, desk_role, request_id, text):
+        delivered.append((desk_role, text))
         return delivery_result
 
-    _wire_inspect(
-        monkeypatch, tmp_path,
-        channel=_resume_channel(registry=registry, deliver=_deliver),
-    )
+    _wire_inspect(monkeypatch, tmp_path, channel=_desk_channel(_dispatch))
     cap = _capture_reconcile(monkeypatch)
     args = {"repo": "owner/repo", "ref": "main"}
     if mode is not None:
@@ -1278,102 +1239,41 @@ async def test_reconcile_cb_continuation_matches_inspect_mode(
     if mode == "upgrade":
         args["target_slug"] = "mtg"
 
-    token = engagement_var.set(SimpleNamespace(id=rec.id))
-    try:
-        payload = _payload(await specialist_install_inspect.handler(args))
-    finally:
-        engagement_var.reset(token)
+    payload = _payload(await specialist_install_inspect.handler(args))
 
     assert payload["consent"] == "keyboard_posted", "CONSENT_POSTED"
     outcome = await cap["reconcile_cb"]()
     assert len(delivered) == 1, "ONE_CONTINUATION"
-    assert delivered[0][0] is rec, "CAPTURED_ENGAGEMENT"
+    assert delivered[0][0] == "configurator", "CONFIGURATOR_DESK"
     assert outcome is bool(delivery_result), "DELIVERY_BOOL"
 
     text = delivered[0][1]
+    assert "specialist:mtg" in text, "NAMES_THE_SLUG"
     if mode == "upgrade":
         assert "specialist_upgrade" in text, "UPGRADE_TOOL_REQUIRED"
         assert text.count("specialist_install_commit") == 0, "NO_INSTALL_COMMIT"
         assert text.count("wire delegation") == 0, "NO_DELEGATION_WIRING"
     else:
-        assert text == (
-            "The operator approved the install consent for "
-            "specialist:mtg. Continue the recipe now without "
-            "waiting for further input: call specialist_install_commit with "
-            "the staged values, then finish the recipe (wire delegation, "
-            "config_git_commit, emit_completion)."
-        ), "INSTALL_LITERAL_UNCHANGED"
+        assert "specialist_install_commit" in text, "INSTALL_COMMIT_REQUIRED"
+        assert "wire delegation" in text, "DELEGATION_WIRING"
+    assert "emit_completion" not in text, "NO_ENGAGEMENT_COMPLETION"
+
 
 @pytest.mark.asyncio
 async def test_reconcile_cb_swallows_a_delivery_failure(monkeypatch, tmp_path) -> None:
-    from tools import specialist_install_inspect, engagement_var
+    from tools import specialist_install_inspect
 
-    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
-    registry = SimpleNamespace(get=lambda eid: rec)
-
-    async def _deliver(r, text, *, inbound_reservation=None):
+    async def _dispatch(**kwargs):
         raise RuntimeError("delivery blew up")
 
-    _wire_inspect(monkeypatch, tmp_path,
-                  channel=_resume_channel(registry=registry, deliver=_deliver))
+    _wire_inspect(monkeypatch, tmp_path, channel=_desk_channel(_dispatch))
     cap = _capture_reconcile(monkeypatch)
 
-    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
-    try:
-        await specialist_install_inspect.handler({"repo": "owner/repo", "ref": "main"})
-    finally:
-        engagement_var.reset(token)
+    await specialist_install_inspect.handler({"repo": "owner/repo", "ref": "main"})
 
     # Fail-safe: reconcile_cb never propagates into the tap-callback path —
     # and #662: it reports the swallowed failure instead of a bare None.
     assert await cap["reconcile_cb"]() is False  # must not raise
-
-
-@pytest.mark.asyncio
-async def test_reconcile_cb_is_a_noop_when_the_engagement_is_gone(monkeypatch, tmp_path) -> None:
-    from tools import specialist_install_inspect, engagement_var
-
-    delivered: list = []
-    registry = SimpleNamespace(get=lambda eid: None)  # engagement TTL-expired / gone
-
-    async def _deliver(r, text, *, inbound_reservation=None):
-        delivered.append((r, text))
-
-    _wire_inspect(monkeypatch, tmp_path,
-                  channel=_resume_channel(registry=registry, deliver=_deliver))
-    cap = _capture_reconcile(monkeypatch)
-
-    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
-    try:
-        await specialist_install_inspect.handler({"repo": "owner/repo", "ref": "main"})
-    finally:
-        engagement_var.reset(token)
-
-    assert await cap["reconcile_cb"]() is False
-    assert delivered == []
-
-
-@pytest.mark.asyncio
-async def test_reconcile_cb_is_a_noop_when_no_engagement_was_captured(
-    monkeypatch, tmp_path,
-) -> None:
-    from tools import specialist_install_inspect
-
-    delivered: list = []
-    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
-    registry = SimpleNamespace(get=lambda eid: rec)
-
-    async def _deliver(r, text, *, inbound_reservation=None):
-        delivered.append((r, text))
-
-    _wire_inspect(monkeypatch, tmp_path,
-                  channel=_resume_channel(registry=registry, deliver=_deliver))
-    cap = _capture_reconcile(monkeypatch)
-
-    # engagement_var is left at its default (None) — no configurator context.
-    await specialist_install_inspect.handler({"repo": "owner/repo", "ref": "main"})
-    assert await cap["reconcile_cb"]() is False
-    assert delivered == []
 
 
 @pytest.mark.asyncio
@@ -1774,17 +1674,17 @@ async def test_commit_success_surfaces_bundled_plugins_required_env_vars(
 
 # ---------------------------------------------------------------------------
 # #662 red case (specified by the red-case reviewer at 1c8033bb; frozen once
-# accepted). A tap that lands after its requesting engagement is terminal or
-# gone must not leave the DM claiming an install. These run the PRODUCTION
-# reconcile_cb the inspect tool builds — not a stub — through the REAL consent
-# finish hook and the REAL Telegram lifecycle gate, so a fix that merely
+# accepted; re-pointed by engagement trim stage 4). A tap whose continuation
+# the configurator's desk route does not take must not leave the DM claiming
+# an install. These run the PRODUCTION reconcile_cb the inspect tool builds —
+# not a stub — through the REAL consent finish hook, so a fix that merely
 # tightens the finish hook while the production callback still exits `None`
 # cannot pass.
 # ---------------------------------------------------------------------------
 
 _662_CORRECTIVE = (
     "⚠️ Approved and saved — but the install of 'mtg' was not "
-    "started automatically. Start a new configurator engagement and re-run "
+    "started automatically. Ask the Configurator to re-run "
     "the install; the approval recorded for this exact version is reused "
     "if it still applies."
 )
@@ -1810,9 +1710,6 @@ def _capture_real_consent(monkeypatch):
 
     def _prompt(**kwargs):
         cap["reconcile_cb"] = kwargs["reconcile_cb"]
-        # #1251: read with .get so the base tree, which passes no Deny
-        # continuation, fails on the outcome rather than on a KeyError.
-        cap["deny_cb"] = kwargs.get("deny_cb")
         if "reconcile_override" in cap:
             kwargs["reconcile_cb"] = cap["reconcile_override"]
         kwargs["coordinator"] = _Coordinator()
@@ -1822,82 +1719,51 @@ def _capture_real_consent(monkeypatch):
     return cap
 
 
-def _662_channel(registry, edits):
-    """A channel carrying the REAL deliver_system_turn/_resume_and_ready, so a
-    terminal record is rejected by production code rather than by a fake."""
-    from types import MethodType
+def _662_channel(edits, ack_path, observations, *, desk_route=True):
+    """A DM channel whose desk route REFUSES the continuation (returns False),
+    recording (DM edits so far, acks so far) at the moment it is asked — the
+    ordering proof: the ack must precede reconciliation, and the sole DM edit
+    must follow it. ``desk_route=False`` is a channel with no desk route."""
+    from specialist_install_consent import SpecialistInstallAckStore
 
-    from channels.telegram import TelegramChannel
-
-    chan = SimpleNamespace(
-        chat_id="701", _engagement_registry=registry,
-        _engagement_handler_locks={}, _driver_admit_inbound=None,
-        _driver_discharge_inbound=None, _engagement_driver=None,
-        _engagement_context_rebuilder=None, _stopping=False,
-        _turn_tasks=set(), _rebuild_preambles={},
-    )
+    chan = SimpleNamespace(chat_id="701")
 
     async def _edit_dm_message(chat_id, message_id, text):
         edits.append((chat_id, message_id, text))
 
     chan.edit_dm_message = _edit_dm_message
-    chan._resume_and_ready = MethodType(TelegramChannel._resume_and_ready, chan)
-    chan.deliver_system_turn = MethodType(TelegramChannel.deliver_system_turn, chan)
-    chan._rebuild_waits_for_turn = MethodType(
-        TelegramChannel._rebuild_waits_for_turn, chan)
-    chan._turn_running_in = MethodType(TelegramChannel._turn_running_in, chan)
+    if desk_route:
+        async def _dispatch(**kwargs):
+            acked = len(SpecialistInstallAckStore(path=ack_path)._load()) \
+                if ack_path.exists() else 0
+            observations.append((len(edits), acked))
+            return False
+
+        chan._dispatch_desk_continuation = _dispatch
     return chan
 
 
-def _662_registry(edits, ack_path, observations):
-    """Registry whose every lookup records (DM edits so far, acks so far) —
-    the ordering proof: the ack must precede reconciliation, and the sole DM
-    edit must follow it."""
-    from specialist_install_consent import SpecialistInstallAckStore
-
-    rec = SimpleNamespace(id="eng-abc", topic_id=9, driver="in_casa",
-                          status="active", sdk_session_id=None)
-    state = {"present": True}
-
-    def _get(eid):
-        acked = len(SpecialistInstallAckStore(path=ack_path)._load()) \
-            if ack_path.exists() else 0
-        observations.append((len(edits), acked))
-        if not state["present"] or eid != "eng-abc":
-            return None
-        return rec
-
-    return SimpleNamespace(get=_get), rec, state
-
-
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tap_state", ["gone", "terminal"])
+@pytest.mark.parametrize("tap_state", ["refused", "no_desk_route"])
 async def test_662_terminal_or_gone_engagement_uses_the_production_outcome(
     monkeypatch, tmp_path, tap_state,
 ) -> None:
-    from tools import specialist_install_inspect, engagement_var
+    """Engagement trim stage 4: the requester is no longer an engagement; the
+    continuation the tap owes is a configurator desk turn. When the desk route
+    does not take it (refuses, or the channel has none), the approval stays
+    recorded and the single DM edit is the corrective one."""
+    from tools import specialist_install_inspect
 
     edits: list = []
     observations: list = []
     ack_path = tmp_path / "acks.json"
-    registry, rec, state = _662_registry(edits, ack_path, observations)
-    _wire_inspect(monkeypatch, tmp_path,
-                  channel=_662_channel(registry, edits))
+    _wire_inspect(monkeypatch, tmp_path, channel=_662_channel(
+        edits, ack_path, observations, desk_route=tap_state == "refused"))
     cap = _capture_real_consent(monkeypatch)
 
-    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
-    try:
-        payload = _payload(await specialist_install_inspect.handler(
-            {"repo": "owner/repo", "ref": "main"}))
-    finally:
-        engagement_var.reset(token)
+    payload = _payload(await specialist_install_inspect.handler(
+        {"repo": "owner/repo", "ref": "main"}))
     assert payload["consent"] == "keyboard_posted"
-
-    # The tap lands AFTER the requesting engagement is gone / terminal.
-    if tap_state == "gone":
-        state["present"] = False
-    else:
-        rec.status = "completed"
 
     req = SimpleNamespace(meta={})
     cap["on_commit_sync"](0, req.meta)
@@ -1906,85 +1772,35 @@ async def test_662_terminal_or_gone_engagement_uses_the_production_outcome(
 
     from specialist_install_consent import SpecialistInstallAckStore
     ack_count = len(SpecialistInstallAckStore(path=ack_path)._load())
-    actual = (ack_count, observations[0], len(edits), edits)
-    assert actual == (1, (0, 1), 1, [(701, 88, _662_CORRECTIVE)]), (
+    expected_obs = [(0, 1)] if tap_state == "refused" else []
+    actual = (ack_count, observations, len(edits), edits)
+    assert actual == (1, expected_obs, 1, [(701, 88, _662_CORRECTIVE)]), (
         f"approval facts: {actual!r}")
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tap_state", ["gone", "terminal"])
+@pytest.mark.parametrize("tap_state", ["refused", "no_desk_route"])
 async def test_662_production_reconcile_cb_reports_a_literal_false(
     monkeypatch, tmp_path, tap_state,
 ) -> None:
     """The half a finish-hook truthiness patch cannot fake: the PRODUCTION
     callback must return the literal `False`, not a bare `None`."""
-    from tools import specialist_install_inspect, engagement_var
+    from tools import specialist_install_inspect
 
     edits: list = []
     observations: list = []
     ack_path = tmp_path / "acks.json"
-    registry, rec, state = _662_registry(edits, ack_path, observations)
-    _wire_inspect(monkeypatch, tmp_path,
-                  channel=_662_channel(registry, edits))
+    _wire_inspect(monkeypatch, tmp_path, channel=_662_channel(
+        edits, ack_path, observations, desk_route=tap_state == "refused"))
     cap = _capture_real_consent(monkeypatch)
 
-    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
-    try:
-        await specialist_install_inspect.handler(
-            {"repo": "owner/repo", "ref": "main"})
-    finally:
-        engagement_var.reset(token)
-
-    if tap_state == "gone":
-        state["present"] = False
-    else:
-        rec.status = "completed"
+    await specialist_install_inspect.handler(
+        {"repo": "owner/repo", "ref": "main"})
 
     result = await cap["reconcile_cb"]()
     actual = (len(observations), [result])
-    assert actual == (1 if tap_state == "gone" else 2, [False]), (
+    assert actual == (1 if tap_state == "refused" else 0, [False]), (
         f"reconciliation facts: {actual!r}")
-
-
-@pytest.mark.asyncio
-async def test_662_a_handed_off_turn_is_not_reported_as_a_failure(
-    monkeypatch, tmp_path,
-) -> None:
-    """Diff review round 5: the record can go terminal AFTER the tap and still
-    have its turn handed off — `_resume_and_ready` re-resolves, passes, and
-    only then awaits `update_user_turn`, where a queued terminal transition can
-    win the registry lock before `create_task`. A status sample taken after the
-    seam would call that real hand-off a failure and tell the operator to start
-    over. The sample is therefore taken BEFORE the seam, which is also the
-    question INV-SPEC-010 actually asks: was the engagement live at tap time?"""
-    from tools import specialist_install_inspect, engagement_var
-
-    delivered: list = []
-    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
-
-    async def _deliver(r, text, *, inbound_reservation=None):
-        # The seam hands the turn off, and the engagement terminalises inside
-        # it — exactly the window `update_user_turn` opens.
-        delivered.append((r, text))
-        r.status = "completed"
-        # C1/#663: the real seam returns True HERE — it returns as soon as the
-        # delivery task exists, and the terminal landed after that. Reporting
-        # the hand-off is what keeps this case from being called a failure.
-        return True
-
-    _wire_inspect(monkeypatch, tmp_path, channel=_resume_channel(
-        registry=SimpleNamespace(get=lambda eid: rec), deliver=_deliver))
-    cap = _capture_reconcile(monkeypatch)
-
-    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
-    try:
-        await specialist_install_inspect.handler(
-            {"repo": "owner/repo", "ref": "main"})
-    finally:
-        engagement_var.reset(token)
-
-    actual = (await cap["reconcile_cb"](), len(delivered), rec.status)
-    assert actual == (True, 1, "completed"), f"hand-off facts: {actual!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -2697,9 +2513,9 @@ async def test_inspect_ok_payload_reports_the_resolved_ref(monkeypatch, tmp_path
 
 # ---------------------------------------------------------------------------
 # #1225: the consent keyboard and its finish edits name an upgrade or a
-# same-version settings change as an UPDATE, never an install. #1251: a Deny
-# tells the requesting engagement. Both through the REAL inspect tool and the
-# REAL consent prompt; only the coordinator is a capture.
+# same-version settings change as an UPDATE, never an install. Through the
+# REAL inspect tool and the REAL consent prompt; only the coordinator is a
+# capture.
 # ---------------------------------------------------------------------------
 
 _C_INSTALL_KEYBOARD = (
@@ -2737,12 +2553,12 @@ _C_FINISH = {
                       "install to be prompted again",
         "raised": "⚠️ Approved and saved — but the install of 'mtg' hit an "
                   "internal error and its automatic start could not be "
-                  "confirmed. Check the configurator topic; re-running the "
+                  "confirmed. Ask the Configurator how it went; re-running the "
                   "install is safe either way, and the approval recorded for "
                   "this exact version is reused if it still applies.",
         "false": "⚠️ Approved and saved — but the install of 'mtg' was not "
-                 "started automatically. Start a new configurator engagement "
-                 "and re-run the install; the approval recorded for this exact "
+                 "started automatically. Ask the Configurator to re-run "
+                 "the install; the approval recorded for this exact "
                  "version is reused if it still applies.",
         "deny": "❌ Denied — 'mtg' was not installed",
     },
@@ -2757,55 +2573,34 @@ _C_FINISH = {
                       "update to be prompted again",
         "raised": "⚠️ Approved and saved — but the update of 'mtg' hit an "
                   "internal error and its automatic start could not be "
-                  "confirmed. Check the configurator topic; re-running the "
+                  "confirmed. Ask the Configurator how it went; re-running the "
                   "update is safe either way, and the approval recorded for "
                   "this exact version is reused if it still applies.",
         "false": "⚠️ Approved and saved — but the update of 'mtg' was not "
-                 "started automatically. Start a new configurator engagement "
-                 "and re-run the update; the approval recorded for this exact "
+                 "started automatically. Ask the Configurator to re-run "
+                 "the update; the approval recorded for this exact "
                  "version is reused if it still applies.",
         "deny": "❌ Denied — 'mtg' was not updated",
     },
 }
 
 
-class _CLease:
-    """A spy for the requesting engagement's inbound reservation."""
-
-    def __init__(self):
-        self.takes = 0
-        self.releases = 0
-
-    def take(self) -> bool:
-        self.takes += 1
-        return True
-
-    def release(self) -> None:
-        self.releases += 1
-
-
-def _c_channel(*, rec=None, deliver_result=True, lease=None):
+def _c_channel(*, deliver_result=True):
+    """An operator-DM channel whose configurator desk route answers
+    *deliver_result*; returns it, its card edits and its desk dispatches."""
     from unittest.mock import AsyncMock
 
     edits: list = []
-    factory_calls: list = []
     chan = SimpleNamespace(
         chat_id="701",
-        _engagement_registry=SimpleNamespace(
-            get=lambda eid: rec if rec is not None and eid == rec.id else None),
-        deliver_system_turn=AsyncMock(return_value=deliver_result),
+        _dispatch_desk_continuation=AsyncMock(return_value=deliver_result),
     )
 
     async def _edit(chat_id, message_id, text):
         edits.append((chat_id, message_id, text))
 
     chan.edit_dm_message = _edit
-    if lease is not None:
-        def _factory(eid):
-            factory_calls.append(eid)
-            return lease
-        chan.engagement_inbound_reservation = _factory
-    return chan, edits, factory_calls
+    return chan, edits, chan._dispatch_desk_continuation
 
 
 def _c_args(mode):
@@ -2878,10 +2673,9 @@ async def test_update_keyboard_keeps_inspection_data_and_is_no_longer(
 
 
 async def _c_finish_edit(monkeypatch, tmp_path, mode, branch):
-    from tools import specialist_install_inspect, engagement_var
+    from tools import specialist_install_inspect
 
-    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
-    chan, edits, _ = _c_channel(rec=rec, deliver_result=False, lease=_CLease())
+    chan, edits, _ = _c_channel(deliver_result=False)
     _wire_inspect(monkeypatch, tmp_path, channel=chan)
     cap = _capture_real_consent(monkeypatch)
     if branch == "raised":
@@ -2889,11 +2683,7 @@ async def _c_finish_edit(monkeypatch, tmp_path, mode, branch):
             raise RuntimeError("contract violation")
         cap["reconcile_override"] = _raising
 
-    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
-    try:
-        await specialist_install_inspect.handler(_c_args(mode))
-    finally:
-        engagement_var.reset(token)
+    await specialist_install_inspect.handler(_c_args(mode))
 
     req = SimpleNamespace(meta={})
     outcome = {
@@ -2958,239 +2748,77 @@ async def test_upgrade_inspect_reuses_install_consent_identity(
         f"identity facts: {facts!r}")
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("mode", [None, "install", "upgrade"])
-async def test_inspect_deny_hands_off_same_reservation(
-    monkeypatch, tmp_path, mode,
-) -> None:
-    """#1251: a Deny takes the requesting engagement's reservation at the tap
-    commit, records no ack, and hands the engagement exactly one continuation
-    through ``deliver_system_turn`` carrying that same reservation. An update's
-    continuation never says "install"."""
-    from tools import specialist_install_inspect, engagement_var
-
-    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
-    lease = _CLease()
-    chan, edits, factory_calls = _c_channel(rec=rec, lease=lease)
-    _wire_inspect(monkeypatch, tmp_path, channel=chan)
-    cap = _capture_real_consent(monkeypatch)
-
-    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
-    try:
-        payload = _payload(await specialist_install_inspect.handler(_c_args(mode)))
-    finally:
-        engagement_var.reset(token)
-    assert payload["consent"] == "keyboard_posted"
-
-    deliver = chan.deliver_system_turn
-    req = SimpleNamespace(meta={})
-    cap["on_commit_sync"](1, req.meta)
-    at_commit = (len(factory_calls), lease.takes, deliver.await_count,
-                 _c_acks(tmp_path), req.meta.get("acked", False))
-    assert at_commit == (1, 1, 0, 0, False), f"tap-commit facts: {at_commit!r}"
-
-    await cap["finish_factory"](88, req)({"outcome": "answered", "option_index": 1})
-    after = (deliver.call_count, deliver.await_count, _c_acks(tmp_path), len(edits))
-    assert after == (1, 1, 0, 1), f"finish facts: {after!r}"
-
-    call = deliver.await_args
-    text = call.args[1]
-    facts = (call.args[0] is rec, call.kwargs.get("inbound_reservation") is lease,
-             "denied" in text, "specialist:mtg" in text)
-    assert facts == (True, True, True, True), f"hand-off facts: {facts!r} {text!r}"
-    if mode == "upgrade":
-        assert text.lower().count("install") == 0, f"update text says install: {text!r}"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("mode", [None, "upgrade"])
-async def test_inspect_approve_hands_off_same_reservation(
-    monkeypatch, tmp_path, mode,
-) -> None:
-    """#1261: an Approve on the REAL keyboard takes the requesting engagement's
-    reservation once at the tap commit, and the finish hook's one continuation
-    through ``deliver_system_turn`` carries that SAME reservation, so the seam
-    releases it in the step that admits the ticket rather than leaving it held
-    through the approval edit. One callback serves install and upgrade.
-
-    Pre-fix: the Approve call passes no ``inbound_reservation`` keyword."""
-    from tools import specialist_install_inspect, engagement_var
-
-    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
-    lease = _CLease()
-    chan, edits, factory_calls = _c_channel(rec=rec, lease=lease)
-    _wire_inspect(monkeypatch, tmp_path, channel=chan)
-    cap = _capture_real_consent(monkeypatch)
-
-    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
-    try:
-        payload = _payload(await specialist_install_inspect.handler(_c_args(mode)))
-    finally:
-        engagement_var.reset(token)
-    assert payload["consent"] == "keyboard_posted"
-
-    deliver = chan.deliver_system_turn
-    req = SimpleNamespace(meta={})
-    cap["on_commit_sync"](0, req.meta)
-    at_commit = (len(factory_calls), lease.takes, deliver.await_count)
-    assert at_commit == (1, 1, 0), f"tap-commit facts: {at_commit!r}"
-
-    await cap["finish_factory"](88, req)({"outcome": "answered", "option_index": 0})
-    call = deliver.await_args
-    facts = (deliver.await_count, call.args[0] is rec,
-             call.kwargs.get("inbound_reservation") is lease, len(edits),
-             edits[-1][2].startswith("✅ Approved — requested"))
-    assert facts == (1, True, True, 1, True), f"approve hand-off facts: {facts!r}"
-
-
 # ---------------------------------------------------------------------------
-# #1445: an expired consent tells the requesting engagement, so it can conclude
-# instead of staying open (and reading as "still running") with nothing left to
-# wait for. Through the REAL inspect tool and the REAL consent prompt.
+# Engagement trim stage 4 (D2): only an Approve continues the configurator.
+# Deny, expiry, withdrawal and cancellation show on the card only. Through the
+# REAL inspect tool and the REAL consent prompt.
 # ---------------------------------------------------------------------------
 
-async def _c_retire(monkeypatch, tmp_path, mode, outcome):
-    from tools import specialist_install_inspect, engagement_var
+async def _c_retire(monkeypatch, tmp_path, mode, outcome, *, commit_index=None):
+    from tools import specialist_install_inspect
 
-    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
-    lease = _CLease()
-    chan, edits, _ = _c_channel(rec=rec, lease=lease)
+    chan, edits, dispatch = _c_channel()
     _wire_inspect(monkeypatch, tmp_path, channel=chan)
     cap = _capture_real_consent(monkeypatch)
 
-    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
-    try:
-        payload = _payload(await specialist_install_inspect.handler(_c_args(mode)))
-    finally:
-        engagement_var.reset(token)
+    payload = _payload(await specialist_install_inspect.handler(_c_args(mode)))
     assert payload["consent"] == "keyboard_posted"
 
-    await cap["finish_factory"](88, SimpleNamespace(meta={}))(outcome)
-    return rec, lease, chan, edits
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("mode", [None, "install", "upgrade"])
-async def test_inspect_expiry_tells_the_engagement(monkeypatch, tmp_path, mode) -> None:
-    """#1445: when the card expires unanswered, the requesting engagement gets
-    exactly one continuation through ``deliver_system_turn``, after the card's
-    unchanged expiry edit. It says the consent expired and nothing changed,
-    asks for a cancelled completion, and names the repository and ref a retry
-    re-inspects. No reservation rides on it (there was no tap), no ack is
-    recorded, and an update's text never says "install".
-
-    Pre-fix: the expiry edits the card and hands nothing to the engagement."""
-    rec, lease, chan, edits = await _c_retire(
-        monkeypatch, tmp_path, mode, {"outcome": "no_answer"})
-
-    deliver = chan.deliver_system_turn
-    expected_edit = _C_FINISH["upgrade" if mode == "upgrade" else "install"]["no_answer"]
-    counts = (deliver.await_count, lease.takes, _c_acks(tmp_path), edits)
-    assert counts == (1, 0, 0, [(701, 88, expected_edit)]), f"expiry facts: {counts!r}"
-
-    call = deliver.await_args
-    text = call.args[1]
-    facts = (call.args[0] is rec, call.kwargs.get("inbound_reservation"),
-             "expired" in text, "specialist:mtg" in text, "Nothing was" in text,
-             '"cancelled"' in text, "owner/repo" in text, "main" in text)
-    assert facts == (True, None, True, True, True, True, True, True), (
-        f"hand-off facts: {facts!r} {text!r}")
-    if mode == "upgrade":
-        assert text.lower().count("install") == 0, f"update text says install: {text!r}"
+    req = SimpleNamespace(meta={})
+    if commit_index is not None:
+        cap["on_commit_sync"](commit_index, req.meta)
+    await cap["finish_factory"](88, req)(outcome)
+    return dispatch, edits
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", [
+    {"outcome": "no_answer"},
     {"outcome": "cancelled", "reason": "challenge_cancelled"},
     {"outcome": "cancelled", "reason": "engagement_ended"},
     {"outcome": "cancelled", "reason": "new_session"},
     {"outcome": "cancelled", "reason": "casa_shutdown"},
+    {"outcome": "answered", "option_index": 1},
 ])
 async def test_inspect_withdrawal_tells_the_engagement_nothing(
     monkeypatch, tmp_path, outcome,
 ) -> None:
-    """#1445 control: only an expiry is told. A withdrawal or cancellation
-    edits the card as before and hands the engagement nothing."""
-    _rec, _lease, chan, edits = await _c_retire(monkeypatch, tmp_path, "upgrade", outcome)
-    facts = (chan.deliver_system_turn.await_count, len(edits))
-    assert facts == (0, 1), f"withdrawal facts: {facts!r}"
-
-
-@pytest.mark.asyncio
-async def test_inspect_expiry_hand_off_failure_is_contained(monkeypatch, tmp_path) -> None:
-    """#1445: the expiry continuation keeps the tap-callback never-raise
-    contract — a seam that raises leaves the expiry edit made and the finish
-    hook returning normally."""
-    from tools import specialist_install_inspect, engagement_var
-
-    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
-    chan, edits, _ = _c_channel(rec=rec, lease=_CLease())
-    chan.deliver_system_turn.side_effect = RuntimeError("seam down")
-    _wire_inspect(monkeypatch, tmp_path, channel=chan)
-    cap = _capture_real_consent(monkeypatch)
-    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
-    try:
-        await specialist_install_inspect.handler(_c_args("upgrade"))
-    finally:
-        engagement_var.reset(token)
-
-    await cap["finish_factory"](88, SimpleNamespace(meta={}))({"outcome": "no_answer"})
-    facts = (chan.deliver_system_turn.await_count, len(edits))
-    assert facts == (1, 1), f"contained facts: {facts!r}"
-
-
-@pytest.mark.asyncio
-async def test_inspect_expiry_tells_the_engagement_even_if_the_edit_raises(
-    monkeypatch, tmp_path,
-) -> None:
-    """#1445 (design round d2): the expiry continuation does not depend on the
-    card's retirement edit returning."""
-    from tools import specialist_install_inspect, engagement_var
-
-    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
-    chan, _edits, _ = _c_channel(rec=rec, lease=_CLease())
-
-    async def _raising_edit(chat_id, message_id, text):
-        raise RuntimeError("edit failed")
-
-    chan.edit_dm_message = _raising_edit
-    _wire_inspect(monkeypatch, tmp_path, channel=chan)
-    cap = _capture_real_consent(monkeypatch)
-    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
-    try:
-        await specialist_install_inspect.handler(_c_args("upgrade"))
-    finally:
-        engagement_var.reset(token)
-
-    with pytest.raises(RuntimeError):
-        await cap["finish_factory"](88, SimpleNamespace(meta={}))({"outcome": "no_answer"})
-    assert chan.deliver_system_turn.await_count == 1
+    """D2: an expiry, a Deny, a withdrawal or a cancellation edits the card
+    and continues nobody — the configurator's desk is not dispatched and no
+    approval is recorded."""
+    commit_index = outcome.get("option_index")
+    dispatch, edits = await _c_retire(
+        monkeypatch, tmp_path, "upgrade", outcome, commit_index=commit_index)
+    facts = (dispatch.await_count, len(edits), _c_acks(tmp_path))
+    assert facts == (0, 1, 0), f"withdrawal facts: {facts!r}"
 
 
 @pytest.mark.asyncio
 async def test_each_requesting_engagement_gets_its_own_card(monkeypatch, tmp_path) -> None:
     """#1445 (design round d1): the coordinator dedups by key, so a key without
-    the requester let a second engagement's inspect share the first one's card
-    and its callbacks — at expiry only the first was told. The key now names the
-    requester; the approval identity does not."""
-    from tools import specialist_install_inspect, engagement_var
+    the requester let a second run's inspect share the first one's card and
+    its callbacks. The key names the requesting configurator run (its
+    delegation id, engagement trim stage 4); the approval identity does not."""
+    import agent as agent_mod
+    from tools import specialist_install_inspect
 
     chan, _edits, _ = _c_channel()
     _wire_inspect(monkeypatch, tmp_path, channel=chan)
     cap = _capture_real_consent(monkeypatch)
 
     keys = []
-    for eid in ("eng-a", "eng-b", "eng-b"):
-        token = engagement_var.set(SimpleNamespace(id=eid))
+    for run in ("deleg-a", "deleg-b", "deleg-b"):
+        token = agent_mod.origin_var.set(
+            {"execution_role": "configurator", "_delegation_id": run})
         try:
             await specialist_install_inspect.handler(_c_args("upgrade"))
         finally:
-            engagement_var.reset(token)
+            agent_mod.origin_var.reset(token)
         keys.append(cap["key"])
 
     facts = (keys[0] == keys[1], keys[1] == keys[2],
              len({k.identity for k in keys}), keys[0].requester, keys[1].requester)
-    assert facts == (False, True, 1, "eng-a", "eng-b"), f"key facts: {facts!r}"
+    assert facts == (False, True, 1, "deleg-a", "deleg-b"), f"key facts: {facts!r}"
 
 
 def test_consent_reprompt_names_the_retry_for_an_expired_install_consent() -> None:
@@ -3248,3 +2876,55 @@ async def test_the_librarys_activation_error_reaches_the_payload(
         assert "last_activation_error" not in payload
     else:
         assert payload["last_activation_error"] == error
+
+
+# ---------------------------------------------------------------------------
+# Engagement trim, stage 4 (D2): the configurator is a delegated run, not an
+# engagement. An Approve tap continues it by itself through its desk in the
+# operator's DM: one desk turn whose text carries the staged values, because
+# the continuation starts a fresh session. Deny and expiry show on the card
+# only.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["install", "upgrade"])
+async def test_approve_continues_the_configurator_through_its_desk(
+    monkeypatch, tmp_path, mode,
+) -> None:
+    import specialist_install_consent
+    from tools import specialist_install_inspect
+
+    dispatched: list = []
+
+    async def _dispatch(*, chat_id, user_id, desk_role, request_id, text):
+        dispatched.append({"chat_id": chat_id, "user_id": user_id,
+                           "desk_role": desk_role, "text": text})
+        return True
+
+    channel = SimpleNamespace(chat_id="123", _dispatch_desk_continuation=_dispatch)
+    fake, _ = _wire_inspect(monkeypatch, tmp_path, channel=channel)
+    cap: dict = {}
+
+    def _prompt(**kwargs):
+        cap.update(kwargs)
+        return _Handle(settled="posted")
+
+    monkeypatch.setattr(
+        specialist_install_consent, "prompt_specialist_install_consent", _prompt)
+    payload = _payload(await specialist_install_inspect.handler(
+        {"repo": "owner/repo", "ref": "main", "mode": mode}))
+    assert payload["consent"] == "keyboard_posted"
+    assert cap.get("deny_cb") is None and cap.get("expire_cb") is None
+
+    assert await cap["reconcile_cb"]() is True
+    assert len(dispatched) == 1
+    call = dispatched[0]
+    assert call["desk_role"] == "configurator"
+    assert call["chat_id"] == 123 and call["user_id"] == 123
+    text = call["text"]
+    for value in (fake.slug, fake.component_id, fake.version, fake.root_digest,
+                  str(fake.staged_dir), fake.receipt_id):
+        assert value in text
+    assert ("specialist_upgrade" if mode == "upgrade" else "specialist_install_commit") in text
+    assert "emit_completion" not in text

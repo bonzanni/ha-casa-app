@@ -471,8 +471,8 @@ def prompt_specialist_install_consent(
                         chat_id, message_id,
                         f"⚠️ Approved and saved — but the {noun} of "
                         f"{inspection.slug!r} hit an internal error and its "
-                        "automatic start could not be confirmed. Check the "
-                        f"configurator topic; re-running the {noun} is safe "
+                        "automatic start could not be confirmed. Ask the "
+                        f"Configurator how it went; re-running the {noun} is safe "
                         "either way, and the approval recorded for this exact "
                         "version is reused if it still applies.",
                     )
@@ -481,7 +481,7 @@ def prompt_specialist_install_consent(
                         chat_id, message_id,
                         f"⚠️ Approved and saved — but the {noun} of "
                         f"{inspection.slug!r} was not started automatically. "
-                        "Start a new configurator engagement and re-run the "
+                        "Ask the Configurator to re-run the "
                         f"{noun}; the approval recorded for this exact version "
                         "is reused if it still applies.",
                     )

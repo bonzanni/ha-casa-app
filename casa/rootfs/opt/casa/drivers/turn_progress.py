@@ -1,13 +1,14 @@
-"""#1350: one step log per in-process executor turn (a configurator topic).
+"""#1350: one step log per configurator run, in the operator's DM (D6).
 
-A configurator turn runs several tools between the words it writes, and the
-topic used to sit silent for 30–55 s at a stretch. This line records the
-turn's steps as they start and is closed by the same turn:
+A configurator run uses several tools between the words it writes, and the
+chat used to sit silent for 30–55 s at a stretch. This line records the
+run's steps as they start and is closed by the same run:
 
 - the first tool use posts ``🔧 This turn so far: 1 step — latest: <activity> (at 0s)``;
 - later steps edit it to the newest count, activity and time;
 - the turn's end edits it once more to ``☑ This turn: N steps in <elapsed>``,
-  or to ``✖ This turn stopped after N steps`` when the turn raised.
+  or to ``✖ This turn stopped after N steps`` when the turn raised — or, with
+  a ``delete`` callable (the configurator's line), deletes it.
 
 Every text states something that has already happened when it is written, so
 it stays true whatever follows: a close that fails or never runs leaves a
@@ -132,12 +133,15 @@ def _steps(n: int) -> str:
 
 class TurnProgressLine:
     """The progress line of one turn. ``send(text)`` posts it and returns the
-    message id (or None); ``edit(message_id, text)`` edits it."""
+    message id (or None); ``edit(message_id, text)`` edits it; with
+    ``delete(message_id)`` the closed line is deleted rather than edited to
+    its closing text (the configurator's line in the DM, D6)."""
 
     def __init__(
         self, *,
         send: Callable[[str], Awaitable[int | None]],
         edit: Callable[[int, str], Awaitable[bool]],
+        delete: "Callable[[int], Awaitable[bool]] | None" = None,
         now: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = _default_sleep,
         spacing_s: float = _SPACING_S,
@@ -145,6 +149,7 @@ class TurnProgressLine:
     ) -> None:
         self._send = send
         self._edit = edit
+        self._delete = delete
         self._now = now
         self._sleep = sleep
         self._spacing_s = spacing_s
@@ -235,6 +240,15 @@ class TurnProgressLine:
             wait = self._spacing_s - (self._now() - self._last_write)
             if wait > 0:
                 await self._sleep(wait)
+        if self._delete is not None:
+            # D6: a line with a delete goes away instead of being closed
+            try:
+                await asyncio.wait_for(self._delete(self._message_id), self._io_timeout_s)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.info("turn progress line delete failed: %s", type(exc).__name__)
+            return
         if ok:
             text = (f"☑ This turn: {_steps(self._count)} in "
                     f"{format_elapsed(self._elapsed_at_end)}")

@@ -79,6 +79,10 @@ def test_no_shipped_delegates_entry_names_an_unshipped_agent() -> None:
     yaml = pytest.importorskip("yaml")
     shipped = _shipped_resident_roles(yaml)
     assert shipped, "no shipped residents found — the derivation is broken"
+    # Engagement trim stage 4: the configurator ships with the image too, as
+    # a delegate (its role artifact under defaults/roles/executor/).
+    import agent_loader
+    shipped = shipped | {agent_loader.load_configurator().role}
 
     offenders: list[str] = []
     for path in sorted((DEFAULTS_ROOT / "agents").glob("*/delegates.yaml")):

@@ -198,7 +198,7 @@ class TestEmitCompletionValidation:
 
     async def _rec(self, reg, tmp_path):
         return await reg.create(
-            kind="executor", role_or_type="configurator", driver="in_casa",
+            kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram"},
             topic_id=42,
         )
@@ -384,7 +384,7 @@ class TestCompletionInboundGate:
         from tools import init_tools
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
-            kind="executor", role_or_type="probe-exec",
+            kind="specialist", role_or_type="probe-exec",
             driver="in_casa", task="t",
             origin={"role": "assistant", "channel": "telegram"}, topic_id=42,
         )
@@ -559,7 +559,7 @@ class TestReservationDisclosure:
         from tools import init_tools
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
-            kind="executor", role_or_type="probe-exec",
+            kind="specialist", role_or_type="probe-exec",
             driver="in_casa", task="t",
             origin={"role": "assistant", "channel": "telegram"}, topic_id=42,
         )
@@ -756,13 +756,14 @@ class TestEmitCompletionCancellation:
     suspended awaiting teardown in production — so the case fails identically
     on CPython 3.11 and 3.12 (``asyncio.wait_for`` topology is not involved).
 
-    Invariant (INV-ENG-010, docs/architecture/engagement-finalization.md; H-1
-    contract at the deferred-restart drain; issue #632): once the terminal
-    transition is won, the DelegationComplete bus notification, both retains,
-    the deferred Supervisor restart POST (strictly after retains are
-    gathered), the finalized log and the deferred-marker drain must all still
-    happen even though the host task ends cancelled. Specified externally
-    (redcase-specify r2) and accepted externally; do not modify.
+    Invariant (INV-ENG-010, docs/architecture/engagement-finalization.md;
+    issue #632): once the terminal transition is won, the DelegationComplete
+    bus notification, the summary retain and the finalized log must all
+    still happen even though the host task ends cancelled. Specified
+    externally (redcase-specify r2) and accepted externally. (The
+    configurator's deferred Supervisor restart and its second, executor-type
+    retain, which this case also pinned, left with the configurator's
+    engagement.)
     """
 
     async def test_in_casa_teardown_cannot_cancel_finalize_tail(
@@ -774,7 +775,7 @@ class TestEmitCompletionCancellation:
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
-            kind="executor", role_or_type="configurator", driver="in_casa",
+            kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram"},
             topic_id=None,
         )
@@ -811,8 +812,6 @@ class TestEmitCompletionCancellation:
             events.append("capture")
             return True
         monkeypatch.setattr(tools_mod, "_capture_summary", _capture)
-
-        tools_mod._ENGAGEMENTS_DEFERRED_HARD_RELOAD.add(rec.id)
 
         async def _post():
             events.append("post")
@@ -853,17 +852,10 @@ class TestEmitCompletionCancellation:
         assert _Driver.cancel_calls == 1
         assert bus.notify.await_count == 1
         assert events.count("notify") == 1
-        assert events.count("capture") == 2
-        assert events.count("post") == 1
+        assert events.count("capture") == 1
+        assert events.count("post") == 0          # no restart on this path
         assert events.count("final-log") == 1
-        assert rec.id not in tools_mod._ENGAGEMENTS_DEFERRED_HARD_RELOAD
-        assert events.index("cancel") < events.index("notify")
-        assert events.index("notify") < min(
-            i for i, e in enumerate(events) if e == "capture")
-        assert max(
-            i for i, e in enumerate(events) if e == "capture"
-        ) < events.index("post")
-        assert events.index("post") < events.index("final-log")
+        assert events == ["cancel", "notify", "capture", "final-log"], events
 
 
 class TestFinalizeTailObservability:
@@ -879,7 +871,7 @@ class TestFinalizeTailObservability:
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
-            kind="executor", role_or_type="configurator", driver="in_casa",
+            kind="specialist", role_or_type="finance", driver="in_casa",
             task="pay rent", origin={
                 "role": "assistant", "channel": "telegram",
                 "_origin_clearance": "private",
@@ -1074,7 +1066,7 @@ class TestOneFailingAccessorCostsOnlyItsOwnInput:
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
-            kind="executor", role_or_type="probe-exec", driver="in_casa",
+            kind="specialist", role_or_type="probe-exec", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram"},
             topic_id=42,
         )

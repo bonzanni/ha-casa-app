@@ -383,7 +383,7 @@ def _validate_doc(raw: object) -> tuple[list[dict], list[PluginIssue], bool]:
                 # EMPTY on purpose, and this is what keeps the worker
                 # launchable. `_resolve_from` carries an entry issue into a
                 # SPECIFIC target's result only when the target is in this set,
-                # and `_engage_executor_impl` refuses a launch on ANY issue in
+                # and a launch is refused on ANY issue in
                 # that result. The field is the set of resolutions this issue
                 # makes incomplete, which for a report-only row is none: every
                 # target the entry still serves resolves fully.

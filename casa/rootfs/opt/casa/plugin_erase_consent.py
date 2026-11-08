@@ -8,8 +8,8 @@ The tap IS the authorization: an Erase tap records a single-use choice grant,
 of the kind tapped, that ``plugin_remove`` / ``specialist_uninstall`` consume
 before any eraser runs, so the model can never assert "erase" — or pick which
 eraser — on the operator's behalf. Keep and Cancel record nothing (keeping
-the data is today's removal). Every tap continues the configurator engagement
-through the caller's callback."""
+the data is today's removal). Every tap continues the configurator, on its
+desk in the operator's DM, through the caller's callback."""
 from __future__ import annotations
 
 import logging
@@ -115,11 +115,11 @@ def render_erase_choice(what: str,
 
 
 _EDITS = {
-    KEEP: "Keeping the data — the uninstall continues in the configurator topic.",
+    KEEP: "Keeping the data — the Configurator carries on with the uninstall.",
     ERASE: "Erase everything — the plugin's eraser runs first; the "
-           "configurator topic reports what it says.",
+           "Configurator tells you what it says.",
     ERASE_DATA_ONLY: "Erase data, keep sign-ins — the plugin's eraser runs "
-                     "first; the configurator topic reports what it says.",
+                     "first; the Configurator tells you what it says.",
     CANCEL: "Cancelled — nothing was removed.",
 }
 

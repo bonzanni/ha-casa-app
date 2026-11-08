@@ -44,10 +44,11 @@ decorated tools with their schemas, and MCP validation there rejects a missing r
 argument or a bad enum before the handler runs — code and tests rely on it.
 
 **A grant can be narrower inside the tool.** Some tools check the caller's role
-themselves, past the grant: `cleanup_engagement_topics` is granted to the configurator and
-the assistant, and its immediate `all_terminal` purge runs only for those two roles, read as
-the engagement's own role when one is bound, so an executor the assistant engaged does not
-pass as her. The assistant's doctrine keeps that purge to a Telegram text conversation and puts a dry
+themselves, past the grant, and read the EXECUTING role (`tools.py::_effective_caller_role`):
+the role Casa stamps on a delegated run or a desk turn, else a bound engagement's, else the
+origin's. `cleanup_engagement_topics`'s immediate `all_terminal` purge runs only for the
+assistant, so an agent she delegated to does not pass as her; the configurator's privileged
+tools are [`configurator.md`](configurator.md)'s INV-CFG-017. The assistant's doctrine keeps that purge to a Telegram text conversation and puts a dry
 run, the count and the operator's confirmation in front of it; the tool itself does not.
 
 **One table is the whole media surface, and a kind is not a file type.** The
@@ -86,23 +87,23 @@ tools, `list_vault_items` and `get_item_fields`, return an item's op id and the 
 matched, and per field the op id, a role from a closed set and a validated type — never a
 title, a label, a section, a value, a reference or a note — through one projection shared
 with the exploration `plugin_add` performs. Their `vault` argument is optional and
-falls back to the configured default vault, which every executor engagement's world-state
-block names (`Default vault:`, beside the real `Addon version:`), so the configurator can
+falls back to the configured default vault, which the world-state block of every
+configurator run names (`Default vault:`, beside the real `Addon version:`), so the configurator can
 omit it or name it; the search key stays required by schema, so the whole vault is never
 enumerated. A failing `op` call yields a fixed classification and the exit code, never the
 CLI's own text, because whatever `op` prints on failure would otherwise reach the
 configurator's transcript and, from there, the chat. The contract is
 [`architecture/plugin-secret-exploration.md`](plugin-secret-exploration.md)'s.
-The same schema discipline holds for two tools the recipes call by literal: `casa_reload`
-requires only `scope`, and `emit_completion` nothing at all, because the recipes' literal
-calls (`casa_reload(scope="plugin_env")`, `emit_completion(status=..., text=...)`) omit the
+The same schema discipline holds for tools called by literal: `casa_reload` requires only
+`scope`, and `emit_completion` nothing at all, because a literal call
+(`casa_reload(scope="plugin_env")`, `emit_completion(status=..., text=...)`) omits the
 rest, and the shorthand declaration had made every key required — a call the validator
 refused before the handler ran.
 Where a scope needs a `role`, the handler canonicalises the argument before dispatch:
 the value is the agent's directory name (`assistant`, a specialist's slug), and the
 tier-prefixed forms every plugin surface uses for the same role — `resident:assistant`,
 `specialist:<slug>`, the shape of `plugin_add`'s `targets` and of its `reloaded:` list —
-are accepted with the prefix stripped (`tools.py::_reload_role_arg`), so an executor can
+are accepted with the prefix stripped (`tools.py::_reload_role_arg`), so the configurator can
 hand back exactly what it just read; a bare prefix is still `role_required`, and any
 other prefix is the role as given. The same canonicalisation applies to
 `casa_reload_triggers`.
@@ -120,9 +121,8 @@ caption the channel refuses reports `kind_error: refused`, never a down channel;
 `set_reminder` stores the resolved note as the entry's `output_note` with the prompt
 unchanged and reports it as `note`; `list_inbound_files` arms the obligation from the files
 it lists; `delegate_to_agent` resolves the brief's note at every launch and reports it as
-`casa_note` on either pending result; `delegate_to_agent`'s async result and
-`engage_executor`'s `pending` carry `note` when Casa posted its hand-off line in the
-operator's chat, and a synchronous wait that degraded to pending adds such a note to its
+`casa_note` on either pending result; `delegate_to_agent`'s async result
+carries `note` when Casa posted its hand-off line in the operator's chat, and a synchronous wait that degraded to pending adds such a note to its
 own once that send has posted the line ([`delegation.md`](delegation.md)); and
 `wipe_memory`'s consent keyboard is Casa's own text. The rules are INV-OUT-002 to
 INV-OUT-005 in [`output-boundary.md`](output-boundary.md). Each call of `send_message`,
@@ -173,11 +173,11 @@ The commit reads back the paths it changed and hands them to
 `reload.py::commit_reload_scopes`: a live resident's trigger inputs alone reload its
 `triggers`, any other file of it its `agent`; a resident or specialist that appears or goes,
 or a specialist's link, `agents`; an edit inside a present specialist its `agent`;
-`policies/` `policies`; an executor's definition `executors`; a mix of kinds, an unknown path
-or unreadable paths one `full`. Nothing reloads for a plugins-only commit (the plugin tools
-reload and commit their own change), a resident's staged binding under `bindings/` (only a
-restart activates it, INV-CFG-003), an executor's prompt or doctrine (read at its next
-session), or a leftover `observer.yaml` (read by nothing). Each runs through
+`policies/` `policies`; a mix of kinds, an unknown path or unreadable paths one `full`.
+Nothing reloads for a plugins-only commit (the plugin tools reload and commit their own
+change), a resident's staged binding under `bindings/` (only a restart activates it,
+INV-CFG-003), or anything left under `agents/executors/` (read by nothing: the configurator
+ships with Casa, [`configurator.md`](configurator.md)). Each runs through
 `tools.py::_run_reload`, as `casa_reload` does (INV-CFG-011). Two commits reload twice,
 and a cancelled task's commits stay live: nothing reads the caller's engagement.
 
@@ -242,7 +242,7 @@ before the delivery await so parallel calls cannot overrun it. Attempts count; f
 uncertain deliveries are not refunded (a refund path would let delivery errors mint
 budget). Over budget is its own typed refusal telling the agent to reference remaining
 artifacts in its result text; a specialist-classified call with *no* quota key is refused
-rather than passed unmetered. Residents and executor engagements are unmetered. The
+rather than passed unmetered. Residents are unmetered, and the configurator holds no `send_media`. The
 counters are in-memory: a restart refills them — this is a quota, not an authorization.
 
 **A delegated specialist run ends without completing its turn.** The runner records the
@@ -338,4 +338,5 @@ that distinction is the contract.
 - [`architecture/plugin-mutation-tools.md`](../architecture/plugin-mutation-tools.md)
 - [`architecture/tool-questions.md`](../architecture/tool-questions.md)
 - [`architecture/configuration.md`](../architecture/configuration.md)
+- [`architecture/configurator.md`](../architecture/configurator.md)
 <!-- END SOURCEMAP -->

@@ -1074,12 +1074,13 @@ class TestRuntimeYamlGrants:
             assert ASK_TOOL in _allowed(rt), f"{rt} missing {ASK_TOOL}"
 
     def test_no_executor_definition_grants_ask_user(self):
-        executor_defs = list((AGENTS / "executors").glob("*/definition.yaml"))
-        assert executor_defs, "expected at least one executor definition.yaml"
-        for defn in executor_defs:
-            assert ASK_TOOL not in _allowed(defn), (
-                f"{defn} must NOT grant {ASK_TOOL} (no executor definition.yaml, per plan)"
-            )
+        """No executor is granted ask_user. Engagement trim stage 4: the only
+        executor, the configurator, ships as an image-owned role artifact."""
+        import agent_loader
+        allowed = agent_loader.load_configurator().tools.allowed
+        assert allowed, "expected the configurator to carry a tool list"
+        assert ASK_TOOL not in allowed, (
+            f"the configurator must NOT grant {ASK_TOOL} (per plan)")
 
     def test_butler_not_required_voice_only_channel(self):
         """butler is voice-only (ha_voice) — ask_user's provenance gate can

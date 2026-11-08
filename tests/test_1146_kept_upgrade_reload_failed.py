@@ -189,7 +189,7 @@ async def h(tmp_path, monkeypatch):
     trigger_registry.callback_overlay_unavailable.return_value = False
     runtime = CasaRuntime(
         agents=_CountingAgents({ROLE: old}), role_configs={}, specialist_registry=registry,
-        executor_registry=MagicMock(), engagement_registry=MagicMock(),
+        engagement_registry=MagicMock(),
         agent_registry=AgentRegistry.build(residents={}, specialists=registry.all_configs()),
         trigger_registry=trigger_registry, mcp_registry=MagicMock(),
         session_registry=MagicMock(), channel_manager=MagicMock(),

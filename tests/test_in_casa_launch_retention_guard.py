@@ -42,7 +42,7 @@ async def test_mid_tool_loop_cutoff_never_completes_or_retains(
     import tools as tools_mod
 
     probe = _Probe()
-    engage_executor, registry, _channel, _driver = _build(
+    launcher, registry, _channel, _driver = _build(
         tmp_path, monkeypatch, probe, ScriptedCutoffClient,
     )
 
@@ -66,7 +66,7 @@ async def test_mid_tool_loop_cutoff_never_completes_or_retains(
 
     monkeypatch.setattr(tools_mod, "_finalize_engagement", spy_finalize)
 
-    envelope = await _launch(engage_executor)
+    envelope = await _launch(launcher)
 
     payload = json.loads(envelope["content"][0]["text"])
     assert payload["status"] == "pending", payload   # §2.A: detached owner

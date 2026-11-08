@@ -354,12 +354,12 @@ async def test_closed_engagement_confirms(reg, plug):
 def _capture_continuations(monkeypatch, tm) -> list:
     delivered: list = []
 
-    def deliverer(channel, eng, *, inbound_reservation=None):
+    def deliverer(channel, chat_id, operator_id, *, what):
         async def deliver(text):
             delivered.append(text)
             return True
         return deliver
-    monkeypatch.setattr(tm, "_engagement_deliverer", deliverer)
+    monkeypatch.setattr(tm, "_configurator_deliverer", deliverer)
     return delivered
 
 

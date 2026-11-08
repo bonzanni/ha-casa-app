@@ -73,7 +73,7 @@ class TextlessCompleteClient(ScriptedCutoffClient):
 def _record(rec_id: str, **overrides):
     from engagement_registry import EngagementRecord
     base = dict(
-        id=rec_id, kind="executor", role_or_type="configurator",
+        id=rec_id, kind="specialist", role_or_type="finance",
         driver="in_casa", status="active", topic_id=42, started_at=0.0,
         last_user_turn_ts=0.0, completed_at=None,
         sdk_session_id=None, origin={}, task="t",
@@ -132,10 +132,10 @@ class TestTheOtherArm:
         evidence anything happened.
         """
         probe = _Probe()
-        engage_executor, registry, channel, _d = _build(
+        launcher, registry, channel, _d = _build(
             tmp_path, monkeypatch, probe, TextlessCompleteClient,
         )
-        envelope = await _launch(engage_executor)
+        envelope = await _launch(launcher)
         payload = await _payload(envelope)
         assert payload["status"] == "pending", payload     # §2.A
         await _drain_owner()
@@ -444,7 +444,7 @@ class TestEveryBoundIsRealAndEveryCountIsOne:
         import tools as tools_mod
         monkeypatch.setattr(tools_mod, "_TOPIC_OP_TIMEOUT_S", 0.05)
         probe = _Probe()
-        engage_executor, registry, channel, _d = _build(
+        launcher, registry, channel, _d = _build(
             tmp_path, monkeypatch, probe, ScriptedCutoffClient,
         )
         wedged = asyncio.Event()
@@ -455,7 +455,7 @@ class TestEveryBoundIsRealAndEveryCountIsOne:
 
         channel._post_engagement_notice = AsyncMock(side_effect=_hang)
 
-        envelope = await _launch(engage_executor)
+        envelope = await _launch(launcher)
         assert (await _payload(envelope))["status"] == "pending"   # §2.A
         await asyncio.wait_for(_drain_owner(), 15)
 
@@ -471,7 +471,7 @@ class TestEveryBoundIsRealAndEveryCountIsOne:
         import tools as tools_mod
         monkeypatch.setattr(tools_mod, "_TOPIC_OP_TIMEOUT_S", 0.05)
         probe = _Probe()
-        engage_executor, _registry, channel, _d = _build(
+        launcher, _registry, channel, _d = _build(
             tmp_path, monkeypatch, probe, ScriptedCutoffClient,
         )
         wedged = asyncio.Event()
@@ -481,7 +481,7 @@ class TestEveryBoundIsRealAndEveryCountIsOne:
 
         channel.update_topic_state = AsyncMock(side_effect=_hang)
 
-        envelope = await _launch(engage_executor)
+        envelope = await _launch(launcher)
         assert (await _payload(envelope))["status"] == "pending"   # §2.A
         await asyncio.wait_for(_drain_owner(), 15)
 
@@ -494,7 +494,7 @@ class TestEveryBoundIsRealAndEveryCountIsOne:
         import tools as tools_mod
         monkeypatch.setattr(tools_mod, "_TOPIC_OP_TIMEOUT_S", 0.05)
         probe = _Probe()
-        engage_executor, _registry, channel, _d = _build(
+        launcher, _registry, channel, _d = _build(
             tmp_path, monkeypatch, probe, ScriptedCutoffClient,
         )
         wedged = asyncio.Event()
@@ -504,7 +504,7 @@ class TestEveryBoundIsRealAndEveryCountIsOne:
 
         channel.close_topic = AsyncMock(side_effect=_hang)
 
-        envelope = await _launch(engage_executor)
+        envelope = await _launch(launcher)
         assert (await _payload(envelope))["status"] == "pending"   # §2.A
         await asyncio.wait_for(_drain_owner(), 15)
 
@@ -517,7 +517,7 @@ class TestEveryBoundIsRealAndEveryCountIsOne:
         import tools as tools_mod
         monkeypatch.setattr(tools_mod, "_DRIVER_CANCEL_TIMEOUT_S", 0.05)
         probe = _Probe()
-        engage_executor, registry, channel, driver = _build(
+        launcher, registry, channel, driver = _build(
             tmp_path, monkeypatch, probe, ScriptedCutoffClient,
         )
         wedged = asyncio.Event()
@@ -528,7 +528,7 @@ class TestEveryBoundIsRealAndEveryCountIsOne:
 
         monkeypatch.setattr(driver, "cancel", _hang)
 
-        envelope = await _launch(engage_executor)
+        envelope = await _launch(launcher)
         assert (await _payload(envelope))["status"] == "pending"   # §2.A
         await asyncio.wait_for(_drain_owner(), 15)
 
@@ -557,7 +557,7 @@ class TestTheStrictTransitionIsTheAuthority:
         ended client instead of resuming from the persisted session id.
         """
         probe = _Probe()
-        engage_executor, registry, channel, driver = _build(
+        launcher, registry, channel, driver = _build(
             tmp_path, monkeypatch, probe, ScriptedCutoffClient,
         )
 
@@ -572,7 +572,7 @@ class TestTheStrictTransitionIsTheAuthority:
 
         monkeypatch.setattr(registry, "_write_tombstone", _boom_on_terminal)
 
-        envelope = await _launch(engage_executor)
+        envelope = await _launch(launcher)
         payload = await _payload(envelope)
         assert payload["status"] == "pending", payload     # §2.A
         await _drain_owner()
@@ -602,7 +602,7 @@ class TestTheStrictTransitionIsTheAuthority:
         tell the engager exactly what a successful launch is told.
         """
         probe = _Probe()
-        engage_executor, registry, channel, _d = _build(
+        launcher, registry, channel, _d = _build(
             tmp_path, monkeypatch, probe, ScriptedCutoffClient,
         )
         real_create = registry.create
@@ -616,7 +616,7 @@ class TestTheStrictTransitionIsTheAuthority:
 
         monkeypatch.setattr(registry, "create", create_then_terminalize)
 
-        envelope = await _launch(engage_executor)
+        envelope = await _launch(launcher)
         payload = await _payload(envelope)
 
         assert payload["status"] == "pending", payload
@@ -642,7 +642,7 @@ class TestCancellationHasAnOwner:
         """
         import tools as tools_mod
         probe = _Probe()
-        engage_executor, registry, channel, _d = _build(
+        launcher, registry, channel, _d = _build(
             tmp_path, monkeypatch, probe, ScriptedCutoffClient,
         )
         entered = asyncio.Event()
@@ -660,7 +660,7 @@ class TestCancellationHasAnOwner:
         # already returned `pending`. The launcher that must not take the
         # reporter down with it is now the owner: cancel THAT while the
         # reporter is inside its notice.
-        await _launch(engage_executor)
+        await _launch(launcher)
         await entered.wait()
         owner = next(iter(tools_mod._LAUNCH_TURN_TASKS))
         owner.cancel()
@@ -675,8 +675,7 @@ class TestCancellationHasAnOwner:
         # six `os.fsync` calls. `_abort_launch_on_cancel` is synchronous, so
         # every reporter is anchored in `_LAUNCH_DEATH_TASKS` before the
         # cancelled launcher re-raises; snapshot the set (its own done-callback
-        # mutates it) and await the tasks themselves. Same idiom as the
-        # `_ABORT_BG_TASKS` drains in `test_engage_executor_tool.py`. Plain
+        # mutates it) and await the tasks themselves. Plain
         # `gather`: `_report_launch_death` promises never to raise, so a raise
         # must red this test rather than become a successful drain.
         pending = list(tools_mod._LAUNCH_DEATH_TASKS)
@@ -711,7 +710,7 @@ class TestCancellationHasAnOwner:
         """
         import tools as tools_mod
         probe = _Probe()
-        engage_executor, registry, channel, driver = _build(
+        launcher, registry, channel, driver = _build(
             tmp_path, monkeypatch, probe, ScriptedCutoffClient,
         )
         entered = asyncio.Event()
@@ -732,7 +731,7 @@ class TestCancellationHasAnOwner:
         # the driver is starting is cancelled there.
         monkeypatch.setattr(driver, "open", _hang)
 
-        task = asyncio.ensure_future(_launch(engage_executor))
+        task = asyncio.ensure_future(_launch(launcher))
         await entered.wait()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -773,7 +772,7 @@ class TestTheBoundaries:
         out-of-funnel terminal writer inherits the obligation.
         """
         probe = _Probe()
-        engage_executor, registry, channel, driver = _build(
+        launcher, registry, channel, driver = _build(
             tmp_path, monkeypatch, probe, ScriptedCutoffClient,
         )
         real_run = driver.run_launch_turn
@@ -786,7 +785,7 @@ class TestTheBoundaries:
         # §2.A: the launch TURN is the owner's `run_launch_turn`, not `start`.
         monkeypatch.setattr(driver, "run_launch_turn", run_then_admit)
 
-        envelope = await _launch(engage_executor)
+        envelope = await _launch(launcher)
         assert (await _payload(envelope))["status"] == "pending"
         await _drain_owner()
 
@@ -807,7 +806,7 @@ class TestTheBoundaries:
         reservations is an upper bound, said as one.
         """
         probe = _Probe()
-        engage_executor, registry, channel, driver = _build(
+        launcher, registry, channel, driver = _build(
             tmp_path, monkeypatch, probe, ScriptedCutoffClient,
         )
         monkeypatch.setattr(
@@ -817,7 +816,7 @@ class TestTheBoundaries:
             driver, "inbound_reservations", lambda eng_id: 5,
             raising=False)
 
-        envelope = await _launch(engage_executor)
+        envelope = await _launch(launcher)
         assert (await _payload(envelope))["status"] == "pending"   # §2.A
         await _drain_owner()
 
@@ -830,7 +829,7 @@ class TestTheBoundaries:
 
 
 class TextBearingCutoffClient(ScriptedCutoffClient):
-    """The production shape in full: the executor narrates, calls tools, gets
+    """The production shape in full: the agent narrates, calls tools, gets
     results — and THEN the stream dies. Text WAS written, so `no_visible_output`
     cannot catch it; only the missing ResultMessage can.
 
@@ -864,27 +863,25 @@ class TestTheMissingResultArmOnItsOwn:
         """MUTATION: drop the `missing_result_message` arm → this fails, and
         it is the ONLY test that does.
 
-        This is the reported production shape: the executor said what it was
+        This is the reported production shape: the agent said what it was
         doing, ran its tool, and then its turn died. The posted text is not a
         report — the work stopped mid-flight and nobody owns the outcome — so
         the record must not stay `active` behind a dead transport.
         """
         probe = _Probe()
-        engage_executor, registry, channel, driver = _build(
+        launcher, registry, channel, driver = _build(
             tmp_path, monkeypatch, probe, TextBearingCutoffClient,
         )
-        envelope = await _launch(engage_executor)
+        envelope = await _launch(launcher)
         payload = await _payload(envelope)
         assert payload["status"] == "pending", payload     # §2.A
         await _drain_owner()
 
-        # The turn wrote text, so `no_visible_output` cannot fire. An
-        # executor's topic posts only the text after the turn's last call,
-        # and this turn wrote none there: nothing was streamed or finalized.
+        # Text really did reach the topic, so `no_visible_output` cannot fire.
         assert TextBearingCutoffClient.frames_yielded == 3
         assert TextBearingCutoffClient.result_messages_yielded == 0
-        assert probe.finalize_count == 0
-        assert probe.emit_count == 0
+        assert probe.finalize_count == 1
+        assert probe.emit_count >= 1
 
         created_id = next(iter(registry._records))
         rec = registry.get(created_id)
@@ -1609,7 +1606,7 @@ class TestTheSettledStatusReadIsBoundedAndProduction:
         reg = EngagementRegistry(
             tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
-            "executor", "configurator", "in_casa", "t",
+            "specialist", "finance", "in_casa", "t",
             {"role": "assistant", "channel": "telegram"}, topic_id=901)
 
         inside = asyncio.Event()
@@ -1867,7 +1864,7 @@ class TestC4LaunchDeathQuotesAReservation:
         self, tmp_path, monkeypatch,
     ):
         probe = _Probe()
-        engage_executor, registry, channel, driver = _build(
+        launcher, registry, channel, driver = _build(
             tmp_path, monkeypatch, probe, ScriptedCutoffClient,
         )
         monkeypatch.setattr(
@@ -1879,7 +1876,7 @@ class TestC4LaunchDeathQuotesAReservation:
             driver, "inbound_reservation_texts",
             lambda eng_id: ["did you also restart the relay?"], raising=False)
 
-        envelope = await _launch(engage_executor)
+        envelope = await _launch(launcher)
         assert (await _payload(envelope))["status"] == "pending"   # §2.A
         await _drain_owner()
 

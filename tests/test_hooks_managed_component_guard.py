@@ -18,9 +18,11 @@ import yaml
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
-_EXECUTORS_DIR = (
+# Engagement trim stage 4: the configurator's hooks ship in its role artifact
+# (``hooks.pre_tool_use``), not in a config-editable hooks.yaml.
+_ROLES_EXECUTOR_DIR = (
     Path(__file__).resolve().parents[1]
-    / "casa/rootfs/opt/casa/defaults/agents/executors"
+    / "casa/rootfs/opt/casa/defaults/roles/executor"
 )
 
 
@@ -282,18 +284,19 @@ async def test_factory_rejects_params():
 
 
 # ------------------------------------------------------------------
-# Shipped hooks.yaml wiring — the policy must be declared in, and built
-# from, the shipped executor hooks.yaml
+# Shipped hooks wiring — the policy must be declared in, and built from, the
+# hooks the shipped configurator role artifact carries
 # ------------------------------------------------------------------
 
 
 def _shipped_hooks_yaml(executor: str) -> dict:
-    return yaml.safe_load(
-        (_EXECUTORS_DIR / executor / "hooks.yaml").read_text(encoding="utf-8"))
+    role = yaml.safe_load(
+        (_ROLES_EXECUTOR_DIR / executor / "role.yaml").read_text(encoding="utf-8"))
+    return {"pre_tool_use": role["hooks"]["pre_tool_use"]}
 
 
 async def test_shipped_yaml_declares_policy_for_both_executors():
-    """The shipped executor hooks.yaml carries the policy, and
+    """The shipped configurator's hooks carry the policy, and
     build_policy_callbacks_from_hooks_yaml (the agent loader's load-time
     constructibility check) materializes it under its canonical matcher."""
     from hooks import build_policy_callbacks_from_hooks_yaml
@@ -308,8 +311,8 @@ async def test_shipped_yaml_declares_policy_for_both_executors():
 
 
 async def test_shipped_configurator_yaml_resolves_on_sdk_path():
-    """resolve_hooks (SDK path) accepts the shipped configurator hooks.yaml
-    and the resolved stack denies a specialist hand-write."""
+    """resolve_hooks (SDK path) accepts the shipped configurator hooks and
+    the resolved stack denies a specialist hand-write."""
     from config import HooksConfig
     from hooks import resolve_hooks
 
@@ -657,12 +660,11 @@ async def test_managed_source_read_shapes_pass(cmd):
 
 
 # ------------------------------------------------------------------
-# Round-4 (Terra P0): managed_component_guard is CODE-MANDATORY for
-# executor sessions. definition.yaml's `hooks_file:` is a config-editable
-# pointer (executor/edit-definition is a legitimate recipe); repointing it
-# at a hollow yaml must not shed the guard on the next session. The
-# executor options builder (tools._build_executor_options) is where Casa
-# appends it.
+# Round-4 (Terra P0), re-pointed by engagement trim stage 4: the configurator
+# session Casa builds carries managed_component_guard. Its hooks ship with the
+# image (the role artifact's ``hooks.pre_tool_use``) and nothing in /config can
+# repoint or hollow them, so the guard is listed once and run as written; the
+# session is built through ``tools._build_specialist_options``.
 # ------------------------------------------------------------------
 
 
@@ -672,141 +674,36 @@ _SPECIALIST_WRITE = {
 }
 
 
-async def _stack_denies_managed(opts) -> bool:
-    """Invoke every PreToolUse callback in built ClaudeAgentOptions against
-    a specialist hand-write; True iff any returns a managed deny."""
+async def _managed_denies(opts) -> int:
+    """How many PreToolUse callbacks in built ClaudeAgentOptions return a
+    managed deny for a specialist hand-write."""
+    n = 0
     for matcher in opts.hooks["PreToolUse"]:
         for cb in matcher.hooks:
             out = await cb(dict(_SPECIALIST_WRITE), None, {})
             if out and _decision(out) == "deny" \
                     and "managed_component_guard" in _reason(out):
-                return True
-    return False
+                n += 1
+    return n
+
+
+async def _stack_denies_managed(opts) -> bool:
+    return await _managed_denies(opts) > 0
 
 
 class TestGuardIsCodeMandatoryInCasa:
-    def _defn(self, hooks_path):
-        # Task 4 (#360): _build_executor_options now reads
-        # defn.hooks_document (the load-time snapshot) instead of
-        # re-reading hooks_path — populate it here exactly as
-        # agent_loader.read_hooks_document would have, for these
-        # well-formed (no ${VAR}) fixture files.
-        from types import SimpleNamespace
-        hooks_document: dict = {}
-        if hooks_path:
-            hooks_document = yaml.safe_load(
-                Path(hooks_path).read_text(encoding="utf-8")) or {}
-        return SimpleNamespace(
-            hooks_path=hooks_path, hooks_document=hooks_document,
-            mcp_server_names=[], tools_allowed=["Read"],
-            model="sonnet", permission_mode="acceptEdits",
-            tools_disallowed=[], driver="in_casa",
-        )
-
-    def _build(self, hooks_path):
+    def _build(self, monkeypatch):
+        import agent_loader
         import tools
-        return tools._build_executor_options(
-            self._defn(hooks_path), executor_type="configurator",
-            plugin_paths=[],
-        )
+        monkeypatch.setattr(tools, "_mcp_registry", None, raising=False)
+        monkeypatch.setattr(tools, "_agent_registry", None, raising=False)
+        return tools._build_specialist_options(agent_loader.load_configurator())
 
-    async def test_yaml_without_guard_still_denies(self, tmp_path):
-        """(a) hooks.yaml exists but does NOT declare the policy."""
-        p = tmp_path / "hooks.yaml"
-        p.write_text(
-            "pre_tool_use:\n"
-            "  - policy: path_scope\n"
-            "    writable: [/config]\n"
-            "    readable: [/config]\n",
-            encoding="utf-8")
-        assert await _stack_denies_managed(self._build(str(p)))
-
-    async def test_hollow_hooks_yaml_still_denies(self, tmp_path):
-        """(b) the Terra regression: hooks_file repointed at a hollow yaml."""
-        p = tmp_path / "hollow.yaml"
-        p.write_text("pre_tool_use: []\n", encoding="utf-8")
-        assert await _stack_denies_managed(self._build(str(p)))
-
-    async def test_missing_hooks_file_still_denies(self):
-        """(b') hooks_file pointing nowhere (defn.hooks_path unusable)."""
-        assert await _stack_denies_managed(self._build(None))
-
-    async def test_post_load_hooks_yaml_mutation_does_not_widen_path_scope(
-        self, tmp_path,
-    ):
-        """TOCTOU red case (#360, Sol r2): _build_executor_options must
-        derive hooks from ``defn.hooks_document`` (the load-time snapshot),
-        never by re-reading ``defn.hooks_path`` at build time. Pin a
-        deny-everything path_scope snapshot, then widen the ON-DISK file
-        afterward (as a config-editable hooks_file: repoint would) — the
-        in-casa configurator must still enforce the narrow snapshot."""
-        from types import SimpleNamespace
-        import tools
-
-        p = tmp_path / "hooks.yaml"
-        narrow_snapshot = {
-            "pre_tool_use": [
-                {"policy": "path_scope", "writable": [], "readable": []},
-            ],
-        }
-        p.write_text(
-            "pre_tool_use:\n"
-            "  - policy: path_scope\n"
-            "    writable: []\n"
-            "    readable: []\n",
-            encoding="utf-8",
-        )
-        defn = SimpleNamespace(
-            hooks_path=str(p), hooks_document=narrow_snapshot,
-            mcp_server_names=[], tools_allowed=["Read"],
-            model="sonnet", permission_mode="acceptEdits",
-            tools_disallowed=[], driver="in_casa",
-        )
-
-        # Post-load mutation: the file now grants broad write access.
-        p.write_text(
-            "pre_tool_use:\n"
-            "  - policy: path_scope\n"
-            "    writable: ['/']\n"
-            "    readable: ['/']\n",
-            encoding="utf-8",
-        )
-
-        opts = tools._build_executor_options(
-            defn, executor_type="configurator", plugin_paths=[],
-        )
-        write_call = {
-            "tool_name": "Write",
-            "tool_input": {"file_path": "/config/anything.yaml"},
-        }
-        denied = False
-        for matcher in opts.hooks["PreToolUse"]:
-            for cb in matcher.hooks:
-                out = await cb(dict(write_call), None, {})
-                if out and _decision(out) == "deny":
-                    denied = True
-        assert denied, (
-            "path_scope must enforce the load-time snapshot (empty "
-            "writable), not the post-load widened on-disk file"
-        )
-
-    async def test_declared_guard_not_double_appended(self):
-        """(3) The shipped yaml declares the policy — the code-side append
-        dedupes on the declared name, so the stack is yaml entries + the
-        settings guard only (and still denies)."""
-        import yaml as yaml_mod
-        shipped = _EXECUTORS_DIR / "configurator" / "hooks.yaml"
-        n_declared = len(
-            yaml_mod.safe_load(shipped.read_text(encoding="utf-8"))
-            ["pre_tool_use"])
-        opts = self._build(str(shipped))
-        # + 4 = agent_home_settings_guard, trigger_file_write_guard (#403),
-        # response_shape_write_guard (#610) and resident_prompt_write_guard
-        # (#631) — all code-mandatory and none declared in the shipped yaml;
-        # NO second managed guard, which is what this test is about. The count
-        # moved from 3 to 4 when #631's guard became code-mandatory here; that
-        # is the evidence the wiring took effect, not a regression.
-        assert len(opts.hooks["PreToolUse"]) == n_declared + 4
+    async def test_declared_guard_not_double_appended(self, monkeypatch):
+        """The shipped configurator declares the policy once, and the session
+        Casa builds for it carries it exactly once — and denies."""
+        opts = self._build(monkeypatch)
+        assert await _managed_denies(opts) == 1
         assert await _stack_denies_managed(opts)
 
 

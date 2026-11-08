@@ -1,7 +1,8 @@
 """§3.9 tier-aware verify_plugin_state: desired (registry) vs active (running)
 agreement. Verification can never report active agreement while a running
 consumer executes different code (FR3); dormant targets report configured
-readiness; executors also need their plugin MCP namespaces authorized."""
+readiness; an `executor:` target is always dormant (no executor loads
+plugins since engagement trim stage 4)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -49,9 +50,8 @@ class _Agent:
         self._plugin_resolution = object() if resolved else None
 
 
-def _runtime(agents=None, executor_registry=None):
-    return SimpleNamespace(agents=agents or {},
-                           executor_registry=executor_registry)
+def _runtime(agents=None):
+    return SimpleNamespace(agents=agents or {})
 
 
 def test_verify_dormant_ready(tmp_path):
@@ -229,96 +229,30 @@ def test_verify_reload_required_is_never_green(tmp_path, monkeypatch):
     assert _verify(tmp_path)["ready"] is True
 
 
-def test_verify_authorization_missing_vs_authorized(tmp_path, monkeypatch):
-    import agent as agent_mod
-    store = tmp_path / "store"
-    # #923: attached to a worker ⇒ bundled (an operator-installed plugin gets
-    # no worker target row at all, which is a different test).
-    e = entry("probe", ["executor:plugin-developer"], source_type="bundled")
-    mk_artifact(store, "probe", e["artifact_id"],
-                mcp_servers={"probe": {}})               # grant mcp__plugin_probe_probe
-    mk_registry(tmp_path, [e])
-
-    class _ExecReg:
-        def __init__(self, allowed):
-            self._allowed = allowed
-
-        def is_disabled(self, t):
-            return False
-
-        def get(self, t):
-            return SimpleNamespace(tools_allowed=self._allowed)
-
-    # Missing the namespace → authorization_missing, not ready.
-    monkeypatch.setattr(agent_mod, "active_runtime",
-                        _runtime(executor_registry=_ExecReg(["Read"])),
-                        raising=False)
-    r = _verify(tmp_path)
-    assert r["ready"] is False
-    row = r["targets"][0]
-    assert row["reasons"] == ["authorization_missing"]
-    assert row["authorization"]["missing"] == ["mcp__plugin_probe_probe"]
-
-    # Namespace granted → ready.
-    monkeypatch.setattr(
-        agent_mod, "active_runtime",
-        _runtime(executor_registry=_ExecReg(["mcp__plugin_probe_probe"])),
-        raising=False)
-    assert _verify(tmp_path)["ready"] is True
-
-
 def test_verify_disabled_executor_target_not_authorization_missing(
         tmp_path, monkeypatch):
-    """v0.71.1: a plugin assigned to a DISABLED executor must NOT report
-    authorization_missing. plugin-developer ships enabled:false, so the registry
-    excludes it from get() → verify read empty tools.allowed and flagged every
-    derived grant missing → a false operator health DM on every boot, even though
-    the executor's config carries the grant and works once enabled."""
+    """v0.71.1, re-pointed by engagement trim stage 4: a plugin assigned to an
+    executor must NOT report authorization_missing — a false operator health
+    DM on every boot. No executor loads plugins any more (the configurator is
+    a delegated run with none), so an ``executor:`` target is dormant, ready,
+    and carries no authorization row, whatever the runtime holds."""
     import agent as agent_mod
     store = tmp_path / "store"
     # #923: attached to a worker ⇒ bundled (an operator-installed plugin gets
     # no worker target row at all, which is a different test).
     e = entry("probe", ["executor:plugin-developer"], source_type="bundled")
     mk_artifact(store, "probe", e["artifact_id"],
-                mcp_servers={"probe": {}})               # grant mcp__plugin_probe_probe
+                mcp_servers={"probe": {}})               # would grant mcp__plugin_probe_probe
     mk_registry(tmp_path, [e])
+    monkeypatch.setattr(agent_mod, "active_runtime", _runtime(), raising=False)
 
-    class _DisabledExecReg:
-        def __init__(self, allowed):
-            self._defn = SimpleNamespace(tools_allowed=allowed)
-
-        def is_disabled(self, t):
-            return t == "plugin-developer"
-
-        def get(self, t):
-            return None                                  # disabled → absent
-
-        def definition_any(self, t):
-            return self._defn
-
-    # Disabled executor whose config DOES carry the grant → dormant, ready, no alarm.
-    monkeypatch.setattr(
-        agent_mod, "active_runtime",
-        _runtime(executor_registry=_DisabledExecReg(["mcp__plugin_probe_probe"])),
-        raising=False)
     r = _verify(tmp_path)
     row = r["targets"][0]
-    assert row["state"] == "disabled"
+    assert row["target"] == "executor:plugin-developer"
+    assert row["state"] == "dormant"
     assert row["ready"] is True and row["reasons"] == []
-    assert row["authorization"]["missing"] == []
+    assert "authorization" not in row
     assert r["ready"] is True                            # top-level: no health issue
-
-    # Even when the disabled executor's config LACKS the grant, a dormant target
-    # is not flagged not-ready — it is re-checked when the operator enables it.
-    monkeypatch.setattr(
-        agent_mod, "active_runtime",
-        _runtime(executor_registry=_DisabledExecReg(["Read"])),
-        raising=False)
-    r2 = _verify(tmp_path)
-    row2 = r2["targets"][0]
-    assert row2["state"] == "disabled" and row2["ready"] is True
-    assert row2["reasons"] == []
-    assert row2["authorization"]["missing"] == ["mcp__plugin_probe_probe"]
 
 
 def test_verify_running_engagement_on_previous_artifact_is_informational(

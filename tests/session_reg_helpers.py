@@ -54,7 +54,7 @@ def align_prompt_surface(registry, agent, channel: str, scope_id) -> str:
     prompt-surface digest THIS agent renders, and return it.
 
     ``_resume_decision`` retires a session whose stored structural surface
-    (``<delegates>``/``<jobs>``/``<executors>``) no longer matches what would be
+    (``<delegates>``/``<jobs>``) no longer matches what would be
     rendered now, because the CLI pins a session's system prompt at creation and
     a resumed session cannot be corrected in place. An entry that never recorded
     a digest — every entry written before the gate, and every bare
@@ -76,7 +76,6 @@ def align_prompt_surface(registry, agent, channel: str, scope_id) -> str:
         agent.config.role, agent.config.delegates, agent._agent_registry,
         live_names=_live_agent_directory(),
         allowed_tools=agent.config.tools.allowed,
-        executors=agent.config.executors,
         reader=clearance_for_origin(None, None, channel),
     ).digest
     key = build_scoped_session_key(channel, agent.config.role, scope_id)

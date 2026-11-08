@@ -136,7 +136,6 @@ class TestEngagementEndRetiresItsChallenges:
             self, env, tmp_path, monkeypatch, end):
         broker, coord, channel = env
         monkeypatch.setattr(tools_mod, "CHALLENGES", coord)
-        monkeypatch.setattr(tools_mod, "_PLUGIN_INSTALLERS", {})
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         reg.set_terminal_observer(tools_mod._on_engagement_terminal)
         rec = await reg.create(kind="specialist", role_or_type="finance",
@@ -171,7 +170,6 @@ class TestEngagementEndRetiresItsChallenges:
         commit between the transition returning and the keyboard retiring."""
         broker, coord, channel = env
         monkeypatch.setattr(tools_mod, "CHALLENGES", coord)
-        monkeypatch.setattr(tools_mod, "_PLUGIN_INSTALLERS", {})
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         reg.set_terminal_observer(tools_mod._on_engagement_terminal)
         rec = await reg.create(kind="specialist", role_or_type="finance",

@@ -158,8 +158,8 @@ def prompt_persona_install_consent(
                         chat_id, message_id,
                         f"⚠️ Approved and saved — but the install of "
                         f"{inspection.persona_id!r} hit an internal error and "
-                        "its automatic start could not be confirmed. Check the "
-                        "configurator topic; re-running the install is safe "
+                        "its automatic start could not be confirmed. Ask the "
+                        "Configurator how it went; re-running the install is safe "
                         "either way, and the approval recorded for this exact "
                         "version is reused if it still applies.")
                 else:
@@ -167,8 +167,8 @@ def prompt_persona_install_consent(
                         chat_id, message_id,
                         f"⚠️ Approved and saved — but the install of "
                         f"{inspection.persona_id!r} was not started "
-                        "automatically. Start a new configurator engagement "
-                        "and re-run the install; the approval recorded for "
+                        "automatically. Ask the Configurator to re-run the "
+                        "install; the approval recorded for "
                         "this exact version is reused if it still applies.")
             else:
                 await channel.edit_dm_message(

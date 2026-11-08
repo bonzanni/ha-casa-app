@@ -148,9 +148,9 @@ class TestAgentConfigNewFields:
 
 class TestAgentConfigRoleArtifactRequired:
     """Personality Phase A, Task 6, Step 7: role_artifact is now a required
-    kw_only constructor field with no default on both AgentConfig and
-    ExecutorDefinition — fixes defect #5 (a role-artifact-less agent could
-    silently boot with stale legacy runtime.yaml model resolution)."""
+    kw_only constructor field with no default on AgentConfig — fixes defect
+    #5 (a role-artifact-less agent could silently boot with stale legacy
+    runtime.yaml model resolution)."""
 
     def test_agent_config_role_artifact_is_required(self) -> None:
         from config import AgentConfig
@@ -158,48 +158,3 @@ class TestAgentConfigRoleArtifactRequired:
         assert field_.default is dataclasses.MISSING
         assert field_.default_factory is dataclasses.MISSING  # type: ignore[comparison-overlap]
         assert field_.kw_only is True
-
-    def test_executor_definition_role_artifact_is_required(self) -> None:
-        from config import ExecutorDefinition
-        field_ = next(f for f in dataclasses.fields(ExecutorDefinition) if f.name == "role_artifact")
-        assert field_.default is dataclasses.MISSING
-        assert field_.kw_only is True
-
-
-class TestExecutorDefinition:
-    def test_minimal_fields(self):
-        from config import ExecutorDefinition
-        d = ExecutorDefinition(
-            role_artifact=STUB_ROLE_ARTIFACT,
-            type="configurator",
-            description="Configure Casa.",
-            model="claude-sonnet-4-6",
-            driver="in_casa",
-        )
-        assert d.type == "configurator"
-        assert d.enabled is True
-        assert d.idle_reminder_days == 7
-        assert d.tools_allowed == []
-        assert d.permission_mode == "acceptEdits"
-
-    def test_full_fields(self):
-        from config import ExecutorDefinition
-        d = ExecutorDefinition(
-            role_artifact=STUB_ROLE_ARTIFACT,
-            type="configurator",
-            description="Configure Casa.",
-            model="claude-sonnet-4-6",
-            driver="in_casa",
-            enabled=True,
-            tools_allowed=["Read", "Write"],
-            tools_disallowed=[],
-            permission_mode="acceptEdits",
-            mcp_server_names=["casa-framework"],
-            idle_reminder_days=14,
-            prompt_template_path="/x/prompt.md",
-            hooks_path="/x/hooks.yaml",
-            observer_policy_path="/x/observer.yaml",
-            doctrine_dir="/x/doctrine",
-        )
-        assert d.idle_reminder_days == 14
-        assert d.mcp_server_names == ["casa-framework"]

@@ -19,7 +19,7 @@ _SUCCESS = (
 )
 _CORRECTIVE = (
     "⚠️ Approved and saved — but the install of 'judge' was not "
-    "started automatically. Start a new configurator engagement and re-run "
+    "started automatically. Ask the Configurator to re-run "
     "the install; the approval recorded for this exact version is reused "
     "if it still applies."
 )
@@ -34,8 +34,8 @@ def _inspection() -> SimpleNamespace:
 
 _UNCERTAIN = (
     "⚠️ Approved and saved — but the install of 'judge' hit an internal error "
-    "and its automatic start could not be confirmed. Check the configurator "
-    "topic; re-running the install is safe either way, and the approval "
+    "and its automatic start could not be confirmed. Ask the Configurator "
+    "how it went; re-running the install is safe either way, and the approval "
     "recorded for this exact version is reused if it still applies."
 )
 
