@@ -237,6 +237,18 @@ def record_installing(names) -> None:
             _held.installing.add(name)
 
 
+def record_step_line(chat_id: int, message_id: int) -> None:
+    """Name the held run's step line in the lease record, so the boot after a
+    stop that cut the run off can delete it."""
+    if _held is None:
+        return
+    _held.record["step_line"] = [int(chat_id), int(message_id)]
+    try:
+        _write(_held.record)
+    except OSError:
+        logger.warning("configurator lease file not updated", exc_info=True)
+
+
 def installing() -> set:
     return set(_held.installing) if _held is not None else set()
 
@@ -270,11 +282,21 @@ def claim_interrupted() -> "dict | None":
 
 
 async def announce_interrupted(record: "dict | None", *, recovered_ids,
-                               notify: Callable[[str], Awaitable[Any]]) -> None:
-    """Tell the operator once, unless the job registry already announces the
-    same run (a delegation Ellen started has its own restart notice)."""
+                               notify: Callable[[str], Awaitable[Any]],
+                               delete: "Callable[[int, int], Awaitable[Any]] | None" = None
+                               ) -> None:
+    """Delete the interrupted run's step line, then tell the operator once,
+    unless the job registry already announces the same run (a delegation
+    Ellen started has its own restart notice)."""
     if not record:
         return
+    line = record.get("step_line")
+    if (delete is not None and isinstance(line, list) and len(line) == 2
+            and all(isinstance(v, int) and not isinstance(v, bool) for v in line)):
+        try:
+            await delete(line[0], line[1])
+        except Exception as exc:  # noqa: BLE001 — logged, not retried
+            logger.info("interrupted step line not deleted: %s", type(exc).__name__)
     if record.get("run_key") and record["run_key"] in set(recovered_ids or ()):
         return
     try:

@@ -460,6 +460,47 @@ async def test_a_shutdown_cancel_the_runner_swallows_still_keeps_the_lease_file(
     assert json.loads(lease_file.read_text())["task"] == "apply persona Ada"
 
 
+async def test_an_interrupted_runs_step_line_is_deleted_at_boot(lease_file, monkeypatch):
+    """The step line of a run Casa's stop cut off is named in the lease record
+    and deleted by the next boot, as the interruption is told."""
+    import configurator_run
+    import tools
+    deleted: list = []
+
+    class _DM:
+        chat_id = "123"
+
+        async def send_step_line(self, chat_id, text):
+            return 77
+
+        async def edit_dm_message(self, chat_id, message_id, text, buttons=None):
+            return True
+
+        async def delete_dm_message(self, chat_id, message_id):
+            deleted.append((chat_id, message_id))
+            return True
+
+    dm = _DM()
+    monkeypatch.setattr(tools, "_channel_manager", SimpleNamespace(get=lambda name: dm))
+    lease = await configurator_run.acquire(run_key="turn-9", via="desk", task="full audit")
+    line = tools._configurator_step_line(_configurator_cfg(), {})
+    line.step("reading files")
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert json.loads(lease_file.read_text()).get("step_line") == [123, 77]
+    lease.release(keep_file=True)            # Casa stopped mid-run
+
+    record = configurator_run.claim_interrupted()
+    sent: list = []
+
+    async def _notify(text):
+        sent.append(text)
+
+    await configurator_run.announce_interrupted(
+        record, recovered_ids=set(), notify=_notify, delete=dm.delete_dm_message)
+    assert len(sent) == 1 and deleted == [(123, 77)]
+
+
 async def test_the_boot_notice_is_skipped_when_the_job_registry_announces_the_run(lease_file):
     import configurator_run
     sent: list = []

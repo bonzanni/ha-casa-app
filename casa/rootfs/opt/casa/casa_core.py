@@ -3660,7 +3660,9 @@ async def main() -> None:
         interrupted_configurator,
         recovered_ids={getattr(j, "id", None)
                        for j in recovered_jobs or ()},
-        notify=lambda text: operator_notify(channel_manager, text))
+        notify=lambda text: operator_notify(channel_manager, text),
+        delete=getattr(channel_manager.get("telegram") if channel_manager else None,
+                       "delete_dm_message", None))
 
     # 13b'. #766: and every ENGAGEMENT outcome that still owes its engager a
     # telling. Beside the delegation replay for the same reason it sits here:

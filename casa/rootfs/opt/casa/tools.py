@@ -3852,9 +3852,18 @@ def _configurator_step_line(cfg: Any, origin: dict) -> Any:
     if send is None or delete is None or edit is None or op is None:
         return None
     chat_id = op[0]
+    import configurator_run
     from drivers.turn_progress import TurnProgressLine
+
+    async def _send(text: str) -> "int | None":
+        mid = await send(chat_id, text)
+        if mid is not None:
+            # a stop that cuts the run off leaves the line; the boot deletes it
+            configurator_run.record_step_line(chat_id, mid)
+        return mid
+
     return TurnProgressLine(
-        send=lambda text: send(chat_id, text),
+        send=_send,
         edit=lambda mid, text: edit(chat_id, mid, text),
         delete=lambda mid: delete(chat_id, mid))
 

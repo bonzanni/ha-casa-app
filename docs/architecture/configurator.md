@@ -100,7 +100,8 @@ bundle transactions are waited for.
 recovery and removes the file before any run can start, so a stale record never blocks one;
 `announce_interrupted` sends `Casa restarted while the Configurator was working on «task».
 Nothing was replayed; ask again if it is still needed.` after the recovered-delegation
-notices. A delegation the assistant started is a job the registry recovers and announces
+notices, and first deletes the run's step line, which the record names once the line is
+posted (`configurator_run.record_step_line`). A delegation the assistant started is a job the registry recovers and announces
 itself, which is why its id suppresses the second notice; a desk turn has no job row and is
 announced here. A cancel outside a stop removes the file; inside one the file stays
 however the run ended, since a runner that returns normally from the stop's cancellation was
