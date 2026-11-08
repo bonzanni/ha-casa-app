@@ -193,7 +193,11 @@ class TestDepthRecordFallback:
         assert payload["kind"] == "delegation_depth_exceeded"
 
 
-class TestInteractiveSpawn:
+class TestJobEngagementSpawn:
+    """A specialist-hosted job runs as an engagement of its specialist: the
+    launch owner stamps the child's depth and, in agent context, holds an
+    agent-spawn token on the record."""
+
     def _alex_cfg(self):
         cfg = AgentConfig(role_artifact=STUB_ROLE_ARTIFACT, role="finance")
         cfg.character = CharacterConfig(name="Alex", archetype="finance",
@@ -209,11 +213,12 @@ class TestInteractiveSpawn:
         cfg.system_prompt = "You are Alex."
         return cfg
 
-    async def test_interactive_child_stamps_depth_and_transfers_token(
+    async def test_a_job_child_stamps_depth_and_transfers_token(
             self, tmp_path):
         import agent as agent_mod
         from engagement_registry import EngagementRegistry
-        from tools import delegate_to_agent, init_tools
+        from tools import init_tools
+        from test_delegate_to_agent_interactive import launch_job
 
         lim = AgentSpawnLimiter(max_spawns=3)
         reg = EngagementRegistry(
@@ -239,14 +244,7 @@ class TestInteractiveSpawn:
         driver.start = AsyncMock()
         agent_mod.active_engagement_driver = driver
 
-        token = agent_mod.origin_var.set(dict(_AGENT_ORIGIN))  # agent context
-        try:
-            res = await delegate_to_agent.handler({
-                "agent": "finance", "task": "Plan Q2", "context": "",
-                "mode": "interactive",
-            })
-        finally:
-            agent_mod.origin_var.reset(token)
+        res = await launch_job("Plan Q2", origin=dict(_AGENT_ORIGIN))  # agent context
         payload = json.loads(res["content"][0]["text"])
         assert payload["status"] == "pending"
         rec = reg.by_topic_id(555)
@@ -259,11 +257,12 @@ class TestInteractiveSpawn:
         await reg.mark_cancelled(rec.id)
         assert lim.occupancy == 0
 
-    async def test_interactive_operator_child_stamps_depth_without_marker(
+    async def test_an_operator_job_child_stamps_depth_without_marker(
             self, tmp_path):
         import agent as agent_mod
         from engagement_registry import EngagementRegistry
-        from tools import delegate_to_agent, init_tools
+        from tools import init_tools
+        from test_delegate_to_agent_interactive import launch_job
 
         lim = AgentSpawnLimiter(max_spawns=3)
         reg = EngagementRegistry(
@@ -289,19 +288,11 @@ class TestInteractiveSpawn:
         driver.start = AsyncMock()
         agent_mod.active_engagement_driver = driver
 
-        token = agent_mod.origin_var.set(
-            {**_AGENT_ORIGIN, "_operator_turn": True})
-        try:
-            res = await delegate_to_agent.handler({
-                "agent": "finance", "task": "Plan Q2", "context": "",
-                "mode": "interactive",
-            })
-        finally:
-            agent_mod.origin_var.reset(token)
+        res = await launch_job("Plan Q2", origin={**_AGENT_ORIGIN, "_operator_turn": True})
         payload = json.loads(res["content"][0]["text"])
         assert payload["status"] == "pending"
         rec = reg.by_topic_id(556)
-        # Depth stamps for EVERY interactive child (operator included) so the
+        # Depth stamps for EVERY job child (operator included) so the
         # child cannot delegate onward; the spawn marker/occupancy is
         # agent-context-only.
         assert rec.origin["delegation_depth"] == 1

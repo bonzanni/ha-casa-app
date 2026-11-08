@@ -150,9 +150,9 @@ class TestDelegationACL:
                                     "caller_role": "assistant"})
         assert p["kind"] == "delegation_not_declared"
 
-    @pytest.mark.parametrize("mode", ["sync", "async", "interactive"])
+    @pytest.mark.parametrize("mode", ["sync", "async"])
     async def test_denial_uniform_across_modes(self, monkeypatch, mode):
-        # The ACL denies before the mode/interactive branch, so an undeclared
+        # The ACL denies before any mode-specific gate, so an undeclared
         # target is refused identically regardless of requested mode.
         _init({"concierge": _cfg("concierge", ["mtg"]), "assistant": _cfg("assistant", ["finance"])})
         p = await _call("assistant", role="concierge", mode=mode, monkeypatch=monkeypatch)

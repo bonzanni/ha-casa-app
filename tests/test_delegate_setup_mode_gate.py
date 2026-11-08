@@ -1,5 +1,6 @@
 """#1015: a turn carrying Casa's ``plugin_setup`` marker can delegate only in
-``sync`` mode, so no engagement is ever created from it (INV-PLUG-027).
+``sync`` mode, so no async delegation or job engagement is ever created from
+it (INV-PLUG-027).
 
 The gate sits in ``_prelaunch`` before target resolution, engagement creation
 or any topic; an error result there is not a non-error delegation, so the
@@ -90,11 +91,18 @@ async def _delegate(tm, origin, mode):
     return json.loads(res["content"][0]["text"]), res.get("is_error")
 
 
-@pytest.mark.parametrize("mode", ["interactive", "async"])
+@pytest.mark.parametrize("mode", ["async", "job"])
 async def test_a_non_sync_delegation_on_a_setup_turn_is_an_error_before_any_side_effect(
         monkeypatch, mode):
+    """``job``: a specialist-hosted job's launch, whose prelaunch runs the
+    same gate (the job start stamps the plugin pin first)."""
     tm, tch, eng_reg = _wire(monkeypatch)
-    payload, is_error = await _delegate(tm, _origin(setup=True), mode)
+    if mode == "job":
+        from test_delegate_to_agent_interactive import launch_job
+        res = await launch_job("run the setup tool", origin=_origin(setup=True))
+        payload, is_error = json.loads(res["content"][0]["text"]), res.get("is_error")
+    else:
+        payload, is_error = await _delegate(tm, _origin(setup=True), mode)
     assert payload["status"] == "error" and is_error is True
     assert payload["kind"] == "mode_unsupported_on_setup_turn"
     assert "sync" in payload["message"]
@@ -109,25 +117,22 @@ async def test_a_sync_delegation_on_a_setup_turn_proceeds(monkeypatch):
     assert payload["status"] == "ok" and not is_error
 
 
-@pytest.mark.parametrize("mode", ["sync", "async", "interactive"])
+@pytest.mark.parametrize("mode", ["sync", "async"])
 async def test_an_ordinary_dm_turn_is_unaffected(monkeypatch, mode):
     tm, tch, _eng_reg = _wire(monkeypatch)
     payload, _ = await _delegate(tm, _origin(setup=False), mode)
     assert payload.get("kind") != "mode_unsupported_on_setup_turn"
     if mode == "sync":
         assert payload["status"] == "ok"
-    elif mode == "async":
-        assert payload["status"] == "pending"
     else:
-        # the gate did not fire: the interactive branch reached its topic
-        assert tch.open_engagement_topic.await_count == 1
+        assert payload["status"] == "pending"
 
 
 async def test_a_courier_turn_whose_delegation_hit_the_gate_returns_the_row_to_pending(
         tmp_path, wired, monkeypatch):
     """Through the REAL reporter: a courier turn whose only delegation
     returned the gate's error leaves the row pending with one retry counted
-    and one save — never consumed (the interactive-courier reproduction,
+    and one save — never consumed (the original courier reproduction,
     inverted)."""
     ep = await _courier_dispatched(wired)
     assert ep["courier_target"] == "finance"
@@ -136,11 +141,11 @@ async def test_a_courier_turn_whose_delegation_hit_the_gate_returns_the_row_to_p
     monkeypatch.setattr(pse, "_save", lambda data: (saves.append(1), real_save(data))[1])
     agent = _make_agent(tmp_path)
     error = json.dumps({"status": "error", "kind": "mode_unsupported_on_setup_turn",
-                        "message": "mode='interactive' is not supported on a plugin-setup turn"})
+                        "message": "mode='async' is not supported on a plugin-setup turn"})
     ScriptedToolClient.reset([
         _mk_init("sid-c", [_COURIER, "Read"]),
         _mk_tool_use("t1", _COURIER, {"agent": "finance", "task": "t", "context": "",
-                                      "mode": "interactive"}),
+                                      "mode": "async"}),
         _mk_tool_result("t1", is_error=True, text=error),
         _mk_assistant("The delegation was refused."),
         _mk_result("sid-c"),

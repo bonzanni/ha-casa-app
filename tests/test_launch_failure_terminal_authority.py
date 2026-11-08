@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -253,7 +254,7 @@ def _start_effect(arm: str):
 
 
 # --------------------------------------------------------------------------
-# delegate_to_agent interactive arms — the other four
+# a specialist-hosted job's engagement launch arms — the other four
 # --------------------------------------------------------------------------
 
 def _assistant_cfg():
@@ -278,10 +279,11 @@ def _finance_cfg():
     return cfg
 
 
-def _build_delegate(tmp_path, monkeypatch, effects, *, arm):
+def _build_job(tmp_path, monkeypatch, effects, *, arm):
     import agent as agent_mod
     from engagement_registry import EngagementRegistry
-    from tools import delegate_to_agent, init_tools
+    import tools
+    from tools import init_tools
 
     tombstone = tmp_path / "engagements.json"
     registry = EngagementRegistry(tombstone_path=str(tombstone))
@@ -306,7 +308,18 @@ def _build_delegate(tmp_path, monkeypatch, effects, *, arm):
         trigger_registry=MagicMock(), engagement_registry=registry,
         agent_role_map={"assistant": _assistant_cfg()},
     )
-    return delegate_to_agent, registry, tombstone, channel
+
+    async def _launch(args):
+        # as ``_start_job_on_host`` hands a specialist-hosted job over
+        import background_jobs as jobs
+        job = jobs.JobDecl("finplan:plan", "finplan", "plan", "finplan:plan",
+                           args["task"], None, None, None)
+        origin = dict(agent_mod.origin_var.get())
+        origin["plugin_job"] = {"plugin": job.plugin}
+        return await tools._launch_interactive_engagement(
+            args["agent"], args["task"], args["context"], origin, job=job)
+
+    return SimpleNamespace(handler=_launch), registry, tombstone, channel
 
 
 # --------------------------------------------------------------------------
@@ -315,13 +328,13 @@ def _build_delegate(tmp_path, monkeypatch, effects, *, arm):
 
 #: (case id, handler family, arm key, the kind the caller MUST still be told)
 ARMS = [
-    ("delegate_no_driver",           "delegate", "no_driver",
+    ("job_no_driver",           "job", "no_driver",
      "no_driver"),
-    ("delegate_stale",               "delegate", "clearance_changed_during_launch",
+    ("job_stale",               "job", "clearance_changed_during_launch",
      "clearance_changed_during_launch"),
-    ("delegate_api_error",           "delegate", "api_error",
+    ("job_api_error",           "job", "api_error",
      "rate_limit"),
-    ("delegate_start_failed",        "delegate", "start_failed",
+    ("job_start_failed",        "job", "start_failed",
      "driver_start_failed"),
     ("executor_plugin_superseded",   "executor", "plugin_superseded",
      "plugin_superseded"),
@@ -342,11 +355,10 @@ async def _run(family, tmp_path, monkeypatch, effects, *, arm, sabotage=None):
     """Drive one launch-failure arm end to end and return its payload."""
     import agent as agent_mod
 
-    if family == "delegate":
-        handler, registry, tombstone, channel = _build_delegate(
+    if family == "job":
+        handler, registry, tombstone, channel = _build_job(
             tmp_path, monkeypatch, effects, arm=arm)
-        args = {"agent": "finance", "task": "Plan Q2", "context": "",
-                "mode": "interactive"}
+        args = {"agent": "finance", "task": "Plan Q2", "context": ""}
     else:
         handler, registry, tombstone, channel = _build_executor(
             tmp_path, monkeypatch, effects, arm=arm)

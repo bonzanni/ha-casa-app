@@ -1,13 +1,11 @@
 """#1277 regressions beside the starter-line red case: what the change must
 NOT alter. Green before the fix and after it; they carry no red-case receipt.
 
-- a non-job engagement's prompt gains no starter line;
 - the arm-B marker is read only to record who started a job: the spawn cap,
   desk routing and the turn's transport read the same with or without it.
 """
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -16,32 +14,9 @@ import agent
 import tools
 
 try:
-    from tests.test_job_starter_line import (  # noqa: F401
-        ANSWER_KEY, CONTEXT, LABEL, TASK, LaunchClient, _origin, runtime, starter_lines)
+    from tests.test_job_starter_line import ANSWER_KEY, LABEL
 except ImportError:
-    from test_job_starter_line import (  # noqa: F401
-        ANSWER_KEY, CONTEXT, LABEL, TASK, LaunchClient, _origin, runtime, starter_lines)
-
-
-class TestNonJobPrompt:
-    @pytest.mark.asyncio
-    async def test_a_non_job_engagement_prompt_has_no_line(self, runtime):
-        before = len(LaunchClient.instances)
-        token = agent.origin_var.set(_origin(_operator_turn=True))
-        try:
-            envelope = await tools.delegate_to_agent.handler(
-                {"agent": "finance", "task": TASK, "context": CONTEXT, "mode": "interactive"})
-        finally:
-            agent.origin_var.reset(token)
-        reply = json.loads(envelope["content"][0]["text"])
-        assert reply["status"] == "pending", reply
-        await tools.drain_launch_turns()
-        assert len(LaunchClient.instances) == before + 1
-        prompt = LaunchClient.instances[-1].prompts[0]
-        assert prompt.startswith("You are engaged with the user in a Telegram forum topic.\n")
-        assert starter_lines(prompt) == []
-        rec = runtime.registry.get(reply["engagement_id"])
-        assert "job" not in rec.origin
+    from test_job_starter_line import ANSWER_KEY, LABEL
 
 
 class TestConsumersUnchanged:

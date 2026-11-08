@@ -1,65 +1,27 @@
-"""#1411: an interactive engagement is a conversation the person keeps writing
-in, and its completion notice says the engagement has ended.
+"""#1411: ``emit_completion`` says it closes the engagement's topic, and an
+engagement's completion notice says the engagement has ended, so the resident
+never relays a summary that calls a closed topic open.
 
-Live (casa-test, v0.344.79) the specialist read "open a chat and wait" as a
-task its first reply finished, called ``emit_completion`` at once, and its
-summary said the topic "will stay open" — which the resident relayed. The
-measured fix is in what the models read (``test-local/eval/
-specialist_engagement_open.py``); these tests pin that the production paths
-carry it.
+Live (casa-test, v0.344.79) a specialist's summary said the topic "will stay
+open" — which the resident relayed. These tests pin that the production paths
+carry the correction.
 """
 from __future__ import annotations
 
-import json
 from unittest.mock import Mock
 
-import pytest
 
 import agent
 import tools
 from bus import BusMessage, MessageType
 from specialist_registry import DelegationComplete
 
-try:
-    from tests.test_job_starter_line import (  # noqa: F401
-        CONTEXT, TASK, LaunchClient, _origin, runtime)
-except ImportError:
-    from test_job_starter_line import (  # noqa: F401
-        CONTEXT, TASK, LaunchClient, _origin, runtime)
-
 CLOSED = ("This was an engagement, and it has ended: the person can no longer "
           "talk with the specialist in its topic.")
 
 
-def test_the_launch_prompt_says_the_topic_stays_open_and_what_ends_it():
-    prompt = tools.engagement_launch_prompt("Chat about groceries", "", "Ellen")
-    assert "Task: Chat about groceries\n" in prompt
-    assert "Context from Ellen:\n(none)\n" in prompt
-    assert "stays open" in prompt
-    assert "closes the topic" in prompt
-    assert "emit_completion(text=..." in prompt
-
-
 def test_emit_completion_says_it_closes_the_topic():
     assert "Casa closes its topic" in tools.emit_completion.description
-
-
-@pytest.mark.asyncio
-async def test_an_interactive_launch_sends_that_prompt(runtime):
-    before = len(LaunchClient.instances)
-    token = agent.origin_var.set(_origin(_operator_turn=True))
-    try:
-        envelope = await tools.delegate_to_agent.handler(
-            {"agent": "finance", "task": TASK, "context": CONTEXT, "mode": "interactive"})
-    finally:
-        agent.origin_var.reset(token)
-    reply = json.loads(envelope["content"][0]["text"])
-    assert reply["status"] == "pending", reply
-    await tools.drain_launch_turns()
-    assert len(LaunchClient.instances) == before + 1
-    prompt = LaunchClient.instances[-1].prompts[0]
-    assert prompt == tools.engagement_launch_prompt(
-        TASK, CONTEXT, tools.persona_name("assistant"))
 
 
 def _body(context: dict) -> str:

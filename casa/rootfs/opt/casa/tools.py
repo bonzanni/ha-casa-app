@@ -3995,7 +3995,20 @@ def validate_voice_handoff_static(
 # against the CLOSED SET of values Casa itself defines and reported as
 # `<other>` when it isn't one (Sol review, Blocking). The diagnosis never
 # depends on the raw value: the booleans beside it carry the signal.
-_KNOWN_MODES = frozenset({"sync", "async", "interactive"})
+_KNOWN_MODES = frozenset({"sync", "async"})
+# Interactive specialist engagements are retired in favour of the desk. The
+# value stays in the tool schema's enum only so that a stale call — a model's,
+# or one a stored scheduled prompt still asks for — reaches the handler's typed
+# refusal instead of the SDK's bare validation error, which names no
+# alternative.
+_RETIRED_MODE = "interactive"
+_INTERACTIVE_RETIRED_MESSAGE = (
+    "mode='interactive' is retired: Casa no longer opens a topic for a "
+    "conversation with a specialist. Delegate the request with mode='sync' "
+    "(mode='async' for long work) and pass the answer on; the person carries "
+    "on with the specialist directly by replying to its message in their "
+    "chat. A job the specialist owns is still started by asking it in "
+    "mode='sync'.")
 _KNOWN_TRANSPORTS = frozenset({"sse", "ws"})
 _OTHER_TOKEN = "<other>"
 
@@ -5332,7 +5345,7 @@ def _attach_completion_callback(
 
 
 async def wait_for_delegation_slot(chat_id: int, role: str, timeout: float) -> bool:
-    """#1049: wait until a non-interactive delegation to *role* from *chat_id*
+    """#1049: wait until a delegation to *role* from *chat_id*
     would not be refused ``busy`` by the per-scope cap — the scope computed by
     the one function ``_prelaunch`` uses. ``True`` with no limiter wired."""
     if _specialist_limiter is None:
@@ -5463,28 +5476,6 @@ def persona_name(role: str | None = None) -> str:
     not exist. ``"the assistant"`` when no persona is configured (e.g. text
     built at import time, before any role is registered)."""
     return _persona_name_for_role(role or "assistant") or "the assistant"
-
-
-def engagement_launch_prompt(task_text: str, context_text: str, engager: str) -> str:
-    """#1411: the first message of a specialist's interactive engagement.
-
-    The topic is a conversation the person keeps writing in, and
-    ``emit_completion`` ends it and closes the topic. Without saying so, a
-    specialist read "open a chat and wait" as a task finished by its first
-    reply and closed the topic at once (casa-test, twice)."""
-    return (
-        f"You are engaged with the user in a Telegram forum topic.\n"
-        f"Task: {task_text}\n\n"
-        f"Context from {engager}:\n"
-        f"{context_text or '(none)'}\n\n"
-        "The topic is a conversation: after each reply of yours it stays open "
-        "and the user writes to you there. Calling emit_completion ends the "
-        "engagement and closes the topic, so the user can no longer write in "
-        "it. Call it only when the work the task asks for is done, or the "
-        "user says they are finished, never while the user is expected to "
-        "keep talking with you. Then call emit_completion(text=..., "
-        "artifacts=..., next_steps=..., status='ok')."
-    )
 
 
 def _declared_name_candidates(name: str, declared) -> list[str]:
@@ -5656,28 +5647,6 @@ def _log_delegation_denial(caller_role: str, agent_name: str,
     )
 
 
-def _continues_its_own_work(cfg, resolution=None) -> bool:
-    """Whether a plugin resolved for *cfg* (*resolution*, else resolved now)
-    declares ``casa.driverSweep``: its runs outlive a turn and are carried on
-    by continuation turns of *cfg* (``plugin_continuations``). A resolution or
-    declaration that cannot be read answers False, as the sweep then sweeps
-    nothing."""
-    from plugin_store import manifest_driver_sweep
-    try:
-        plugins = (resolution if resolution is not None
-                   else _delegated_resolution(cfg)).plugins
-    except Exception:  # noqa: BLE001
-        return False
-    for rp in plugins:
-        manifest = rp.manifest if isinstance(getattr(rp, "manifest", None), dict) else {}
-        try:
-            if manifest_driver_sweep(manifest):
-                return True
-        except Exception:  # noqa: BLE001 — an invalid declaration sweeps nothing
-            continue
-    return False
-
-
 async def _requires_gate(agent_name: str, cfg) -> tuple[Any, "dict | None"]:
     """The A5 requires gate, shared by ``_prelaunch`` and ``hand_off``:
     ``(resolution, None)`` — ``resolution`` ``None`` when ``cfg`` declares no
@@ -5753,7 +5722,9 @@ async def _prelaunch(
     task_text: str = "", context_text: str = "",
     internal_context: bool = False, skip_permit: bool = False,
 ) -> tuple[str, Any, Any, "specialist_limits.Permit | None", dict | None]:
-    """The single unified prelaunch pipeline for delegate_to_agent (spec A4).
+    """The single unified prelaunch pipeline for delegate_to_agent (spec A4)
+    and for a specialist-hosted background job's launch, whose mode here is
+    ``"interactive"`` (the engagement the job runs as).
 
     Runs EVERY pre-launch gate, in this order, so no gate is bypassable by
     another and no side effect (topic, engagement/delegation record, task,
@@ -5761,10 +5732,9 @@ async def _prelaunch(
 
         ACL (Task 1) -> not-initialized -> input-size bounds (Task 6) ->
         depth cap -> mode gate (voice; setup turns sync-only, #1015) ->
-        target resolution ->
-        resident-interactive-compat -> requires (Task 5) ->
-        continued-work-interactive ->
-        concurrency (Task 6, spec §4.6) -> progress -> launch
+        target resolution -> requires (Task 5) ->
+        concurrency (Task 6, spec §4.6; one open engagement per specialist
+        for a job) -> progress -> launch
 
     The input-size bounds run AFTER the ACL (so an unauthorized caller is
     denied ``delegation_not_declared`` regardless of payload size, and no
@@ -5772,11 +5742,11 @@ async def _prelaunch(
     BEFORE target resolution / concurrency / progress (so an oversized
     payload never resolves plugins, acquires a slot, or speaks).
 
-    The mode gate deliberately precedes both target resolution AND the
-    resident-interactive-compat check. On voice, interactive is always
-    denied as ``mode_unsupported_on_voice``; async without a trusted capable
-    route is denied as ``background_delivery_unavailable``. Those denials
-    stay independent of what (or whether) the target resolves to.
+    The mode gate deliberately precedes target resolution. On voice, a job
+    launch is always denied as ``mode_unsupported_on_voice``; async without a
+    trusted capable route is denied as ``background_delivery_unavailable``.
+    Those denials stay independent of what (or whether) the target resolves
+    to.
 
     Returns ``(cfg, resolution, permit, error)``:
     - ``error`` is a terminal tool-result dict the caller returns
@@ -5796,15 +5766,15 @@ async def _prelaunch(
       Callers with a non-``None`` resolution MUST reuse it verbatim
       (``_build_specialist_options(cfg, resolution=resolution)``) rather
       than re-resolving, so the gate's decision and what actually launches
-      never drift. The one exception is the interactive engagement launch,
+      never drift. The one exception is a job's engagement launch,
       whose session is built after the topic await: it keeps every plugin
       this resolution admitted and may only ADD plugins assigned since
       (#1179, ``_with_late_assignments``) — never drop or re-check one. The
       caller (``delegate_to_agent``) owns the permit's lifetime from here.
       Legacy sync/non-voice async tasks use ``_permit_release_callback``;
       accepted async voice jobs transfer the permit to ``JobRegistry`` at
-      ``bind_task``; interactive hands it to ``rec.permit`` for release by an
-      ``EngagementRegistry`` terminal transition (or
+      ``bind_task``; a job's launch hands it to ``rec.permit`` for release by
+      an ``EngagementRegistry`` terminal transition (or
       ``_finalize_engagement``).
     """
     channel = str((origin or {}).get("channel", ""))
@@ -5973,8 +5943,9 @@ async def _prelaunch(
             ),
         })
 
-    # A4 mode gate — BEFORE target resolution and resident-compat. Voice
-    # interactive remains unsupported. Async is accepted only when ingress
+    # A4 mode gate — BEFORE target resolution. A job's engagement needs a
+    # text channel (a scheduled fire on a voice trigger reaches here; the
+    # start_job tool refuses voice itself). Async is accepted only when ingress
     # bound a current acknowledged delivery route on the server-owned WS
     # connection; SSE and route-shaped tool/context spoofing fail here before
     # requires/concurrency/progress or any launch side effect.
@@ -5983,20 +5954,20 @@ async def _prelaunch(
             "status": "error",
             "kind": "mode_unsupported_on_voice",
             "message": (
-                f"mode={mode!r} is not supported on the voice channel — "
-                "interactive engagements require a text channel."
+                "A background job cannot start on the voice channel — it "
+                "needs a text channel."
             ),
         })
     if (channel == "voice" and mode == "async"
             and not deferred_delivery_available(origin)):
         return None, None, None, None, _background_delivery_unavailable_result(origin)
     # #1015: a Casa-dispatched plugin-setup turn may delegate only in sync
-    # mode. An interactive launch returns a non-error "pending" result that
-    # the courier's outcome report would count as a delegation that went
-    # through, while the engagement's own turns can never carry the setup
-    # identity (the marker is refused on the engagement branch); an error
-    # result here, BEFORE any record or topic exists, returns the courier
-    # row to pending under its bounded budget instead of consuming it.
+    # mode. An async delegation or a job launch returns a non-error "pending"
+    # result that the courier's outcome report would count as a delegation
+    # that went through, while a later turn can never carry the setup
+    # identity; an error result here, BEFORE any record or topic exists,
+    # returns the courier row to pending under its bounded budget instead of
+    # consuming it.
     from provenance import CASA_PLUGIN_TURN_TARGETS
     if (mode != "sync" and (origin or {}).get("synthetic")
             in CASA_PLUGIN_TURN_TARGETS):
@@ -6023,46 +5994,9 @@ async def _prelaunch(
             "message": f"No enabled agent named {agent_name!r}",
         })
 
-    # Resident-interactive-compat — AFTER the mode gate, so a voice
-    # interactive delegation to a declared resident still surfaces the
-    # voice mode denial (not this one).
-    is_resident = bool(getattr(cfg, "channels", []))
-    if mode == "interactive" and is_resident:
-        return None, None, None, None, _result({
-            "status": "error",
-            "kind": "interactive_not_supported",
-            "message": (
-                f"Cannot open a Telegram engagement for resident "
-                f"{agent_name!r} — residents already own their own channels."
-            ),
-        })
-
     resolution, _requires_error = await _requires_gate(agent_name, cfg)
     if _requires_error is not None:
         return None, None, None, None, _requires_error
-
-    # A specialist whose plugin's work outlives a turn (it declares
-    # ``casa.driverSweep``) is carried on by continuation turns of its own,
-    # whose answers reach the resident's DM, and it asks the person itself
-    # with its own cards — so it is never engaged in a topic. Read from the
-    # declaration, never from a role name — the requires gate's resolution
-    # when it took one. A job launch (the job start stamps ``plugin_job``
-    # first, for the resident's start and the specialist's own alike) is not
-    # a delegation and is not refused here.
-    if (mode == "interactive" and "plugin_job" not in (origin or {})
-            and await asyncio.to_thread(_continues_its_own_work, cfg, resolution)):
-        _name = _display_name_for_role(agent_name)
-        return None, None, None, None, _result({
-            "status": "error",
-            "kind": "interactive_not_supported",
-            "message": (
-                f"{_name} is not engaged in a topic: its work outlives one turn "
-                f"and is carried on in its own later turns, and {_name} asks the "
-                "person itself, with its own cards in this chat, whenever it "
-                "needs them. Delegate the whole task once with mode='sync', also "
-                "when the person asked to be asked first."
-            ),
-        })
 
     # Task 6 concurrency gate (spec §4.6): AFTER requires, BEFORE progress —
     # a denied gate must never speak the "checking" line, and a delegation
@@ -7121,24 +7055,17 @@ async def _start_voice_async_job(
     })
 
 
-async def _launch_specialist_engagement(
-    agent_name: str, task_text: str, context_text: str, origin: dict,
-    *, job: background_jobs.JobDecl | None = None,
-) -> dict:
-    """Specialist-facing entry point; ordinary delegation keeps its gates."""
-    return await _launch_interactive_engagement(
-        agent_name, task_text, context_text, origin, job=job)
-
-
 async def _launch_interactive_engagement(
     agent_name: str, task_text: str, context_text: str, origin: dict,
-    *, job: background_jobs.JobDecl | None = None,
+    *, job: background_jobs.JobDecl,
     plugin_host: background_jobs.JobHost | None = None,
     self_host: bool = False,
 ) -> dict:
-    """One launch owner for specialists and resident-hosted plugin workers.
-    ``self_host`` (S7a): a specialist starting its own job — the prelaunch
-    skips the ACL and the depth cap, and the record is stamped at depth 1."""
+    """One launch owner for background jobs, hosted on a specialist or run
+    by a resident's plugin worker (``plugin_host``): the job runs as an
+    engagement in its own topic. ``self_host`` (S7a): a specialist starting
+    its own job — the prelaunch skips the ACL and the depth cap, and the
+    record is stamped at depth 1."""
     import agent as agent_mod
 
     if plugin_host is None:
@@ -7190,19 +7117,17 @@ async def _launch_interactive_engagement(
     owned = permit
     spawn_owned = None
     casa_grants = SPECIALIST_CASA_GRANTS
-    turns_per_batch = cfg.tools.max_turns
-    if job is not None:
-        # #1277: who started the job, evaluated once, here, from the launching
-        # origin; both renderers read it from the record, never from markers.
-        origin["job"] = background_jobs.initial_job_state(
-            job, started_by=background_jobs.job_started_by(origin))
-        if job.session == "fresh":
-            # INV-BGJOB-005: every later turn of a fresh job re-states the
-            # launch context verbatim (already bounded by _MAX_CONTEXT_CHARS).
-            # Clearance-governed: lower_origin_clearance drops it.
-            origin["job"]["brief_context"] = context_text
-        casa_grants += background_jobs.JOB_CASA_GRANTS
-        turns_per_batch = job.turns_per_batch or cfg.tools.max_turns
+    # #1277: who started the job, evaluated once, here, from the launching
+    # origin; both renderers read it from the record, never from markers.
+    origin["job"] = background_jobs.initial_job_state(
+        job, started_by=background_jobs.job_started_by(origin))
+    if job.session == "fresh":
+        # INV-BGJOB-005: every later turn of a fresh job re-states the
+        # launch context verbatim (already bounded by _MAX_CONTEXT_CHARS).
+        # Clearance-governed: lower_origin_clearance drops it.
+        origin["job"]["brief_context"] = context_text
+    casa_grants += background_jobs.JOB_CASA_GRANTS
+    turns_per_batch = job.turns_per_batch or cfg.tools.max_turns
     if plugin_host is not None:
         casa_grants = background_jobs.PLUGIN_JOB_CASA_GRANTS
         origin["job"]["turns_per_batch"] = turns_per_batch
@@ -7266,7 +7191,7 @@ async def _launch_interactive_engagement(
         from channels.state_emoji import (
             STATE_EMOJI, compose_topic_title, concise_task,
         )
-        first_line = (job.title if job else task_text or "").splitlines()[0]
+        first_line = ((job.title or "").splitlines() or [""])[0]
         if plugin_host is not None:
             first_line = f"{_display_name_for_role(agent_name)} · {first_line}"
         short_task = concise_task(first_line) or "engagement"
@@ -7276,7 +7201,7 @@ async def _launch_interactive_engagement(
         topic_id = None
         # #1301: a quiet scheduled run opens no topic; every topic post of a
         # record without one is skipped, and its turns' words are withheld.
-        if not (job is not None and origin["job"].get("quiet") is True):
+        if origin["job"].get("quiet") is not True:
             try:
                 topic_id = await channel.open_engagement_topic(
                     name=topic_name,
@@ -7439,7 +7364,7 @@ async def _launch_interactive_engagement(
                     options = await asyncio.to_thread(
                         _build_specialist_options, cfg, resolution=_spec_res,
                         extra_casa_tools=casa_grants, plan_out=_applied_plans,
-                        **({"max_turns": turns_per_batch} if job is not None else {}),
+                        max_turns=turns_per_batch,
                     )
             except Exception as exc:
                 _abort = await _abort_launch_inline(
@@ -7469,13 +7394,9 @@ async def _launch_interactive_engagement(
                 return _result({"status": "error", "kind": "profile_persist_failed",
                                 "message": str(exc)})
 
-            prompt = engagement_launch_prompt(
-                task_text, context_text, persona_name(origin.get('role')))
-
-            if job is not None:
-                prompt = background_jobs.launch_prompt(
-                    job, task_text, context_text, turns_per_batch,
-                    job_id=rec.id, started_by=rec.origin["job"].get("started_by"))
+            prompt = background_jobs.launch_prompt(
+                job, task_text, context_text, turns_per_batch,
+                job_id=rec.id, started_by=rec.origin["job"].get("started_by"))
 
             driver = getattr(agent_mod, "active_engagement_driver", None)
             if driver is None:
@@ -7858,7 +7779,13 @@ async def start_job(args: dict) -> dict:
          "task": {"type": "string"},
          "context": {"type": "string"},
          "mode": {"type": "string",
-                  "enum": ["sync", "async", "interactive"]},
+                  "enum": ["sync", "async", "interactive"],
+                  "description": (
+                      "'sync' waits for the answer; 'async' returns at once "
+                      "and the answer arrives later. 'interactive' is retired "
+                      "and always refused: to let the person talk with a "
+                      "specialist, delegate their words in 'sync' mode; they "
+                      "reply to its answer in their chat to carry on.")},
      },
      "required": ["agent", "task", "context", "mode"]},
 )
@@ -7872,6 +7799,10 @@ async def delegate_to_agent(args: dict) -> dict:
 
     Async mode (``mode="async"``): skip the wait, attach callback,
     return ``pending`` immediately.
+
+    ``mode="interactive"`` is retired and refused (``interactive_retired``)
+    before any gate; a specialist's background job still runs as an
+    engagement in its own topic, through ``start_job``.
     """
     # Import lazily — matches the `agent.py` origin_var ContextVar.
     import agent as agent_mod
@@ -7912,6 +7843,14 @@ async def delegate_to_agent(args: dict) -> dict:
     agent_name = _canonical_delegate_target(agent_name, origin)
 
     _requested_mode = args.get("mode", "sync") or "sync"
+    if _requested_mode == _RETIRED_MODE:
+        # Refused before every gate and every side effect, never coerced: a
+        # call coerced to 'sync' would run a task the caller meant as a
+        # conversation. The target is not named (no ACL has run yet).
+        logger.info("delegate_to_agent: retired mode 'interactive' refused; agent=%s",
+                    _known_role(agent_name))
+        return _result({"status": "error", "kind": "interactive_retired",
+                        "message": _INTERACTIVE_RETIRED_MESSAGE})
     mode = (_requested_mode
             if isinstance(_requested_mode, str) and _requested_mode in _KNOWN_MODES
             else "sync")
@@ -7942,23 +7881,18 @@ async def delegate_to_agent(args: dict) -> dict:
                 ),
             })
 
-    if mode == "interactive":
-        return await _launch_specialist_engagement(
-            agent_name, task_text, context_text, origin)
-
     # A4: THE unified prelaunch pipeline — one call that runs EVERY
     # pre-launch gate (ACL, not-initialized, input-size bounds, depth, mode,
-    # target resolution, resident-compat, requires-seam, concurrency,
-    # progress) in a fixed order, so no gate is bypassable by another and NO
-    # side effect (topic, engagement/delegation record, task, driver start,
-    # progress emission) can precede a clean return. It dominates both the
-    # interactive branch and the sync/async path below. The input-size bounds
+    # target resolution, requires-seam, concurrency, progress) in a fixed
+    # order, so no gate is bypassable by another and NO side effect
+    # (delegation record, task, progress emission) can precede a clean
+    # return. The input-size bounds
     # live INSIDE _prelaunch (after the ACL) so an unauthorized caller is
     # denied `delegation_not_declared` regardless of payload size and no
     # telemetry is ever keyed on a caller-supplied target pre-auth. `permit`
     # (Task 6, spec §4.6) is the concurrency slot this delegation now owns —
-    # the caller owns its lifetime from here: sync/async releases via the
-    # task done-callback; interactive hands it to the engagement record.
+    # the caller owns its lifetime from here: it is released via the task
+    # done-callback.
     try:
         # #433: `agent_name` is REBOUND to the canonical role id — the ACL
         # accepts a persona display name, and every downstream record,
@@ -7994,15 +7928,10 @@ async def delegate_to_agent(args: dict) -> dict:
     # would miss), and every early error return. At each true ownership
     # transfer the body sets `owned = None`: for sync/async the moment the
     # task's `_permit_release_callback` done-callback is attached (which then
-    # becomes the sole release); for interactive after `driver.start()`
-    # succeeds (the engagement record's permit is then released by an
-    # `EngagementRegistry` terminal transition). Every release is idempotent,
-    # so an overlapping release on the SAME permit is a safe no-op.
+    # becomes the sole release), or an accepted voice job's hand-off.
+    # Every release is idempotent, so an overlapping release on the SAME
+    # permit is a safe no-op.
     owned = permit
-    # #283: lexical guard for the agent-spawn reservation (interactive
-    # branch only) — released by the same finally as `owned` on any exit
-    # before its transfer to the record at create() (design r4).
-    spawn_owned = None
     _desk_reservation = None  # S4 §4: the desk queue place, until transferred
     try:
         is_voice = str(origin.get("channel", "")) == "voice"
@@ -8215,8 +8144,8 @@ async def delegate_to_agent(args: dict) -> dict:
 
         # mode == "sync"
         if voice_wait_s is not None:
-            # A4: voice never degrades to `pending` (async/interactive are
-            # already rejected in _prelaunch) — there is no follow-up channel
+            # A4: voice never degrades to `pending` (async without a capable
+            # route is already rejected in _prelaunch) — there is no follow-up channel
             # to deliver a LATER completion notification on. Wait only up to
             # the budget computed above (deadline − reserve, capped at 60s); on
             # expiry cancel + bounded teardown + speak the typed error.
@@ -8502,10 +8431,6 @@ async def delegate_to_agent(args: dict) -> dict:
     finally:
         if owned is not None:
             owned.release()
-        # #283: the spawn reservation, when still lexically owned (never
-        # transferred to a created record). Idempotent.
-        if spawn_owned is not None:
-            spawn_owned.release()
         # S4 §4: the desk queue place, when still lexically owned (never
         # transferred to a created task — a cancel during registration).
         if _desk_reservation is not None:
@@ -12372,7 +12297,7 @@ async def _finalize_engagement_funnel(
     # have one) unconditionally, before any of the best-effort side effects
     # below that might raise. Idempotent — safe even if something else
     # already released it via the pre-finalize failure paths in
-    # delegate_to_agent's interactive branch (which also null it out).
+    # the job launch owner, ``_launch_interactive_engagement`` (which also null it out).
     if engagement.permit is not None:
         engagement.permit.release()
 

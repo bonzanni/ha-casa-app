@@ -4,7 +4,7 @@
 # Verifies the casa_core wiring (v0.15.0 Tasks 5/7/11) actually populates
 # tools._agent_role_map and tools._agent_registry at boot, and that
 # delegate_to_agent resolves a resident target end-to-end in the running
-# container. Negative path: mode=interactive on a resident is rejected.
+# container. Negative path: the retired mode=interactive is refused.
 #
 # Tier 2 (functional) per the v0.14.11+ tiering model. Runs under the
 # tier2-functional job in .github/workflows/qa.yml on push+PR.
@@ -55,7 +55,7 @@ run_harness() {
 }
 
 # ---------------------------------------------------------------------------
-# DE-1 — Registry wiring + sync delegation + interactive-rejection.
+# DE-1 — Registry wiring + sync delegation + retired-interactive refusal.
 #
 # The harness initialises tools itself (via init_tools) by loading agents from
 # /config/agents — the same directory that casa_core uses at
@@ -68,10 +68,11 @@ run_harness() {
 #   3. After init_tools, delegate_to_agent(mode=sync) with a monkey-patched
 #      _run_delegated_agent returns status=ok, agent=butler, and the expected
 #      text.
-#   4. delegate_to_agent(mode=interactive) on a resident target is rejected with
-#      kind=interactive_not_supported (Task 8 behavior).
+#   4. delegate_to_agent(mode=interactive) is refused with
+#      kind=interactive_retired (interactive specialist engagements are
+#      retired in favour of the desk).
 # ---------------------------------------------------------------------------
-log "DE-1: merged-role-map wiring + sync delegation + interactive-rejection"
+log "DE-1: merged-role-map wiring + sync delegation + retired-interactive refusal"
 
 read -r -d '' DE1_PY <<'PY' || true
 import asyncio, json, sys
@@ -195,12 +196,7 @@ async def main():
         f"sync E-block output_format drifted: {observed_output_formats!r}"
     print("HARNESS: sync delegation OK", file=sys.stderr)
 
-    # --- 6b. Interactive mode on a resident is rejected (Task 8) ---
-    # butler has channels=[...] so is_resident=True.
-    butler_cfg = tools._agent_role_map["butler"]
-    assert getattr(butler_cfg, "channels", []), \
-        "butler has no channels — is_resident check will not trigger"
-
+    # --- 6b. The retired interactive mode is refused, naming the alternative ---
     res2 = await tools.delegate_to_agent({
         "agent": "butler",
         "task": "x",
@@ -210,9 +206,11 @@ async def main():
     payload2 = json.loads(res2["content"][0]["text"])
     assert payload2["status"] == "error", \
         f"interactive mode not rejected: {payload2!r}"
-    assert payload2["kind"] == "interactive_not_supported", \
-        f"wrong kind for interactive rejection: {payload2!r}"
-    print("HARNESS: interactive-rejection OK", file=sys.stderr)
+    assert payload2["kind"] == "interactive_retired", \
+        f"wrong kind for interactive refusal: {payload2!r}"
+    assert "mode='sync'" in payload2["message"], \
+        f"refusal does not name the alternative: {payload2!r}"
+    print("HARNESS: interactive-refusal OK", file=sys.stderr)
 
 asyncio.run(main())
 agent_mod.origin_var.reset(token)
@@ -220,6 +218,6 @@ print("OK")
 PY
 
 run_harness "DE-1" "$DE1_PY"
-pass "DE-1 merged-role-map + sync delegation + interactive-reject all green"
+pass "DE-1 merged-role-map + sync delegation + interactive-refusal all green"
 
 stop_container "$NAME"

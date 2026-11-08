@@ -161,15 +161,8 @@ async def test_launch_withheld_profiled_plugin_stays_profiled_after_unassign(
         return opts
 
     monkeypatch.setattr(tools_mod, "_build_specialist_options", build_after_the_secret_went)
-    token = agent_mod.origin_var.set({
-        "role": "assistant", "channel": "telegram", "chat_id": "c1", "cid": "x",
-        "user_text": "hi", "scope": "business"})
-    try:
-        res = await tools_mod.delegate_to_agent.handler({
-            "agent": "finance", "task": "Plan Q2", "context": "",
-            "mode": "interactive"})
-    finally:
-        agent_mod.origin_var.reset(token)
+    from test_delegate_to_agent_interactive import launch_job
+    res = await launch_job("Plan Q2")
     assert json.loads(res["content"][0]["text"])["status"] == "pending", res
     assert len(built) == 1 and built[0].plugins == [], "the builder withheld gmail"
     rec = reg.by_topic_id(1186)

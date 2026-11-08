@@ -99,28 +99,17 @@ class TestPrelaunchOrdering:
         assert payload["status"] == "ok"
         assert trace == ["progress", "record", "task"]
 
-    async def test_interactive_denied_by_prelaunch_creates_no_topic(
+    async def test_a_job_launch_denied_by_prelaunch_creates_no_topic(
         self, monkeypatch,
     ):
-        """Interactive obeys the SAME gate order: a denial raised inside
-        _prelaunch fires strictly before the interactive branch's topic/
-        engagement side effects.
-
-        NOTE: the brief's own sketch for this test used a `requires`-gate
-        denial (``dependency_unavailable``), but the requires gate is
-        explicitly Task 5's insertion seam into ``_prelaunch`` (left as
-        ``resolution = None`` here per the brief's own instruction not to
-        implement requires/concurrency in this task). This test instead
-        drives the mode gate — the ONE _prelaunch gate that IS implemented
-        in Task 4 — to prove the identical ordering property for the
-        interactive branch: a `_prelaunch` denial must create no topic and
-        no engagement record, AND must not have emitted the progress line
-        (progress is the LAST step in _prelaunch, after every gate). The
-        interactive path itself never emits progress (progress is voice-
-        only, and voice rejects interactive), so the `progress < record <
-        task` sentinel is exercised for the sync path above; Task 5 will
-        add the real requires-denial sentinel for interactive.
+        """A specialist-hosted job's engagement launch obeys the SAME gate
+        order: a denial raised inside _prelaunch — here the mode gate, which
+        refuses a job on the voice channel (a scheduled fire on a voice
+        trigger reaches it) — fires strictly before the launch owner's topic
+        and engagement side effects, and before the progress line (the LAST
+        step in _prelaunch, after every gate).
         """
+        from test_delegate_to_agent_interactive import launch_job
         import agent as agent_mod
         import tools as tm
 
@@ -148,19 +137,12 @@ class TestPrelaunchOrdering:
         async def _progress_sink(text: str) -> None:
             progress_calls.append(text)
 
-        token = agent_mod.origin_var.set({
+        res = await launch_job("t", origin={
             "role": "assistant", "execution_role": "assistant",
             "channel": "voice", "chat_id": "c1", "cid": "t", "user_text": "hi",
             "voice_deadline": asyncio.get_running_loop().time() + 20.0,
             "_progress_sink": _progress_sink,
         })
-        try:
-            res = await tm.delegate_to_agent.handler({
-                "agent": "finance", "task": "t", "context": "",
-                "mode": "interactive",
-            })
-        finally:
-            agent_mod.origin_var.reset(token)
 
         payload = json.loads(res["content"][0]["text"])
         assert payload["kind"] == "mode_unsupported_on_voice"

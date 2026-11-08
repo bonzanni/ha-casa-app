@@ -70,10 +70,10 @@ run_harness() {
 }
 
 # ---------------------------------------------------------------------------
-# E-1 — Tier 2 interactive open: channel.open_engagement_topic creates a
+# E-1 — Engagement topic open (a specialist job's): channel.open_engagement_topic creates a
 # forum topic in the mock-TG supergroup and the registry records it.
 # ---------------------------------------------------------------------------
-log "E-1: delegate_to_specialist(mode=interactive) opens a topic"
+log "E-1: an engagement opens a topic"
 curl -s -X POST "http://localhost:${MOCK_PORT}/_reset" >/dev/null
 
 read -r -d '' E1_PY <<'PY' || true
@@ -117,7 +117,7 @@ run_harness "E-1" "$E1_PY"
 TOPICS=$(curl -s "http://localhost:${MOCK_PORT}/_inspect" \
     | python3 -c 'import sys,json;print(len(json.load(sys.stdin).get("topics",{})))')
 [ "$TOPICS" -ge 1 ] || fail "E-1: expected ≥1 topic in mock TG, got $TOPICS"
-pass "E-1 interactive-mode opens topic (mock TG topics=$TOPICS)"
+pass "E-1 engagement opens topic (mock TG topics=$TOPICS)"
 
 # ---------------------------------------------------------------------------
 # E-2 — User turn routed: a user message inside an engagement topic reaches

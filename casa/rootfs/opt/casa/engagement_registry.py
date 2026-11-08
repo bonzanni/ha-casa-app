@@ -1,4 +1,4 @@
-"""Engagement primitive — Tier 2 Specialist interactive mode + (Plan 3+) Tier 3 Executors.
+"""Engagement primitive — Tier 2 Specialists' background jobs + Tier 3 Executors.
 
 Symmetric with :mod:`specialist_registry`. Owns:
 - EngagementRecord (one in-flight engagement)
@@ -152,8 +152,9 @@ def _restore_origin_field(rec: "EngagementRecord", key: str, snapped: Any) -> No
 class EngagementRecord:
     """One in-flight engagement.
 
-    ``kind`` = "specialist" for Tier 2 interactive mode; "executor" for Tier 3
-    (Plan 3+). ``role_or_type`` is the specialist role (e.g. "finance") or the
+    ``kind`` = "specialist" for a specialist's background job (or an interactive
+    conversation an older install left open); "executor" for Tier 3; "plugin"
+    for a resident-hosted plugin job. ``role_or_type`` is the specialist role (e.g. "finance") or the
     executor type (e.g. "configurator").
 
     ``status`` transitions:
