@@ -218,8 +218,8 @@ actually talk to the fleet.
 
 ### 4. Enable engagements
 
-Longer-running work — the configurator, interactive specialist
-sessions — happens in dedicated topics inside a Telegram forum supergroup:
+Longer-running work — the configurator, a specialist's background
+jobs — happens in dedicated topics inside a Telegram forum supergroup:
 
 1. Create a new Telegram group (separate from your 1:1 chat with the bot) and enable
    **Topics** in its settings — that makes it a forum supergroup.
