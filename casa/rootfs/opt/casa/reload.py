@@ -2668,14 +2668,18 @@ register_handler("full", reload_full)
 
 # One row per kind of committed path, first match wins; a path no row matches
 # asks for `full`. A kind of None asks for nothing: the plugin tools activate
-# their own registry change (and commit it themselves), and an executor's
-# prompt, observer policy and doctrine are read when its next session starts.
+# their own registry change (and commit it themselves); `bindings/` holds the
+# residents' staged persona bindings, which only a restart activates — an
+# in-process reload refuses them with `restart_required` (INV-CFG-003); and an
+# executor's prompt, observer policy and doctrine are read when its next
+# session starts.
 # `unit` is the resident's or specialist's directory name. A specialist's link
 # (`agents/specialists/<slug>`) changes on install, upgrade, rollback and
 # uninstall; its content lives in `.<slug>.material-<hex>/`.
 _COMMIT_RELOAD_ROWS: "tuple[tuple[re.Pattern[str], str | None], ...]" = tuple(
     (re.compile(pattern), kind) for pattern, kind in (
         (r"plugins/registry\.json", None),
+        (r"bindings/.+", None),
         (r"policies/.+", "policies"),
         (r"agents/executors/[^/]+/(?:prompt\.md|observer\.yaml|doctrine/.+)", None),
         (r"agents/executors/[^/]+/.+", "executors"),

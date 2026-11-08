@@ -95,8 +95,11 @@ _TABLE = [
     (["plugins/registry.json"], []),
     (["plugins/registry.json",
       "agents/assistant/character.yaml"], [("agent", "assistant")]),
+    # a resident's staged persona binding: only a restart activates it
+    (["bindings/resident-assistant/desired.yaml"], []),
+    (["bindings/resident-assistant/desired.yaml",
+      "agents/assistant/character.yaml"], [("agent", "assistant")]),
     # full
-    (["bindings/resident-assistant/desired.yaml"], [("full", None)]),
     (["schema/probe.v1.json"], [("full", None)]),
     ([], [("full", None)]),                                         # paths unreadable
     ([".gitignore"], [("full", None)]),
@@ -342,7 +345,6 @@ async def test_policies_edit_reloads_policies(world):
 
 @pytest.mark.parametrize("scope, path, fenced", [
     ("executors", "agents/executors/probe/definition.yaml", True),
-    ("full", "bindings/resident-assistant/desired.yaml", True),
     ("full", "schema/probe.v1.json", True),
     ("agents", "agents/newbie/character.yaml", False),     # a resident not live yet
 ])

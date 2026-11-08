@@ -40,8 +40,10 @@
     - casa/rootfs/opt/casa/tools.py::_run_reload
     - casa/rootfs/opt/casa/reload.py::commit_reload_scopes
     - casa/rootfs/opt/casa/config_git.py::changed_paths
+    - casa/rootfs/opt/casa/tools.py::_reload_after_untracked_write
   tests:
     - tests/test_config_git_commit_reload.py
+    - tests/test_1095_change_load_timing.py
     - tests/test_config_git_commit_tool.py
     - tests/test_plugin_persist_commit_real_repo.py
     - tests/test_configurator_doctrine_commit_reloads.py

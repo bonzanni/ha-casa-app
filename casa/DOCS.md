@@ -1011,7 +1011,7 @@ without a restart, so each change is live as soon as it is committed — a task
 that commits twice reloads twice, and a task you cancel keeps whatever it had
 already committed. The reload is as narrow as the change: one agent's triggers,
 one agent, the specialists, the executors or the policies; a commit that changes
-more than one of those, or the bindings, reloads everything. If a reload fails,
+more than one of those reloads everything. If a reload fails,
 the configurator tells you what is not live yet.
 
 - An executor's prompt and doctrine edits reload nothing: they take effect on
@@ -1736,8 +1736,7 @@ instructions say to show you before asking you to confirm; of each one it says:
 
 Saying no changes nothing. New conversations get the new setup once Casa has
 loaded it: an upgrade or a rollback that completes loads it during the change,
-and a persona is loaded by the reload of the configurator's commit right after
-applying it. An **uninstall** asks the same
+and applying a persona reloads the specialist right away. An **uninstall** asks the same
 way, and once the specialist is removed Casa closes the conversations still
 open, telling each topic why. A specialist you **disable**
 (its `enabled: false`) cannot be confirmed beforehand: Casa closes its open

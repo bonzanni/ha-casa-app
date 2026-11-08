@@ -33,16 +33,20 @@ The table is `reload.py::commit_reload_scopes`: a live resident's trigger inputs
 `agent`; a resident or specialist that appears or goes, or a specialist's link (install,
 upgrade, rollback, uninstall), `agents`; an edit inside a present specialist its `agent`;
 `policies/` `policies`; an executor's definition `executors`. One kind runs as it is, once per
-role; two kinds, a path the table does not know (`bindings/`, `schema/`), or paths that could
-not be read collapse to one `full`. A plugins-only commit reloads nothing — the plugin tools
-activate their change and commit the registry themselves — and neither does an executor's
-prompt, observer policy or doctrine, read when its next session starts. Each reload runs
+role; two kinds, a path the table does not know (`schema/`), or paths that could not be read
+collapse to one `full`. A plugins-only commit reloads nothing — the plugin tools activate
+their change and commit the registry themselves — and neither does a resident's staged
+persona binding under `bindings/`, which only a restart activates (INV-CFG-003), nor an
+executor's prompt, observer policy or doctrine, read when its next session starts. Each reload runs
 through `tools.py::_run_reload`, the helper `casa_reload` and `casa_reload_triggers` use, so
 the commit takes the plugin-tools fence exactly where they do (INV-CFG-011) and refreshes
 plugin health after it.
 
-What it does not cover: commits made without the tool — boot's re-bind commit, and the
-registry or trigger-file commits Casa makes for its own writes — reload nothing through it; a
+What it does not cover: writes the repository does not track, which no commit can see — a
+specialist's instance tuple, which `persona_apply` and the specialist bundle tools reload
+themselves, and `plugin-env.conf`, whose `plugin_env` reload the configurator calls; commits
+made without the tool — boot's re-bind commit, and the registry or trigger-file commits Casa
+makes for its own writes — reload nothing through it; a
 hand edit of the plugin registry stays inert until a `full` reload; and a failure the reload
 treats as best effort and does not report is not seen. A resident whose staged persona awaits
 its restart answers every reload of it with `restart_required`, so a `full` stops at that
@@ -75,9 +79,11 @@ one.
 - `casa/rootfs/opt/casa/tools.py::_run_reload`
 - `casa/rootfs/opt/casa/reload.py::commit_reload_scopes`
 - `casa/rootfs/opt/casa/config_git.py::changed_paths`
+- `casa/rootfs/opt/casa/tools.py::_reload_after_untracked_write`
 
 **Tests**
 - `tests/test_config_git_commit_reload.py`
+- `tests/test_1095_change_load_timing.py`
 - `tests/test_config_git_commit_tool.py`
 - `tests/test_plugin_persist_commit_real_repo.py`
 - `tests/test_configurator_doctrine_commit_reloads.py`

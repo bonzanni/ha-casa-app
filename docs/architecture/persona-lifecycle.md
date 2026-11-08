@@ -168,8 +168,8 @@ What it does not cover: a staged binding is not a promise the next boot will run
 stops compiling before then — its bytes changed under the pinned version, say —
 reconciliation discards it and retains the last-known-good, exactly as INV-PERS-003
 describes. It also says nothing about specialists: a specialist's persona is committed at
-apply and new conversations get it once the specialist is reloaded — the apply recipe runs
-`casa_reload(scope="agents")` — while a conversation already open keeps its personality
+apply and new conversations get it once the specialist is reloaded — `persona_apply`
+reloads it itself (INV-TOOL-014) — while a conversation already open keeps its personality
 (INV-SPEC-022 warns before the apply).
 
 **INV-PERS-018**: Every entry point that stages a persona binding for a resident tells the operator what the promoting restart costs — the same notice in its result envelope and in its own description — and the apply recipe states it at the step that orders the restart.

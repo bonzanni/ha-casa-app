@@ -42,11 +42,13 @@
    something on voice is a reason to WAIT before restarting, and the operator can only
    weigh that if you pass the notice on.
 6. `config_git_commit`, then `emit_completion` (see `completion.md`). For a specialist
-   (`restart_required: false`) the commit's reload makes the persona live: every NEW conversation
-   with the specialist uses it (a conversation already open keeps its personality, as the step-2
-   warning said). For a resident the commit's reload leaves the served binding as it is and
-   reports `restart_required`: that is the guard in step 5 speaking, not a failure of yours, and
-   the restart stays the operator's decision as step 5 says.
+   (`restart_required: false`) `persona_apply` has already reloaded it — the override lives where
+   no commit can see it — and its reply carries that `reload`: from then on every NEW conversation
+   with the specialist uses the persona (a conversation already open keeps its personality, as
+   the step-2 warning said). A `warning` beside the reload means it is not live yet: say so, and
+   retry with `casa_reload(scope="agent", role="<slug>")`. For a resident the commit records the
+   staged binding and reloads nothing: only the restart in step 5 activates it, and that stays
+   the operator's decision.
    - SPECIALIST only — the way back. A specialist's FIRST override rotated its
      component-default binding into the retained prior tuple, and `specialist_rollback`
      restores it: follow `recipes/specialist/rollback.md` (it carries the owned-plugin-set
@@ -58,10 +60,8 @@
 
 ## Common mistakes
 
-- Treating `ok: true` for a specialist target as live before the commit — the binding is on disk
-  but the live registry keeps running the old compiled bundle until the commit's reload runs. Even
-  after it, only NEW conversations get the persona; never tell the operator an open conversation
-  switched.
+- Telling the operator an open conversation switched — only NEW conversations get a specialist's
+  persona, even after the reload `persona_apply` ran.
 - Forgetting that a resident swap is restart-to-swap, never hot-swapped — do not tell the operator
   the resident's voice changed until AFTER `casa_restart_supervised` actually runs.
 - Reporting a staged resident binding as though the restart were free. When it does

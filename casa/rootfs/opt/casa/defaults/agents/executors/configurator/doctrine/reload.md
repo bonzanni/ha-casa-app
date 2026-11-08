@@ -20,7 +20,8 @@ restart, use `casa_restart_supervised` (rare).
 | An executor's `definition.yaml`, or creating or deleting an executor | `executors` |
 | An executor's `prompt.md`, `observer.yaml` or `doctrine/*` | none — effective on that executor's next COLD session; a warm client is reused without rebuilding its options, so do not promise "next turn" |
 | `plugins/registry.json` alone | none — the `plugin_*` tools activate their change and commit the registry themselves; a `plugin_update` returning `unchanged:true` changed nothing |
-| `bindings/`, `schema/`, or any other path | `full` |
+| A resident's staged persona binding under `bindings/` | none — only a restart activates it (see `recipes/persona/apply.md`) |
+| `schema/`, or any other path | `full` |
 | Changes of more than one kind in one commit (say a specialist install and the resident `delegates.yaml` that wires it) | one `full` |
 
 What you cannot change, whatever you commit:
@@ -35,6 +36,23 @@ and reports `teardown_disabled_specialist`. The teardown also closes the special
 open conversations (each topic is told; a close that failed is reported as
 `teardown_incomplete_close_engagements`, the operator is told, and the next `agents`
 reload retries it) — say so before flipping the flag.
+
+## Changes no commit can see
+
+Some writes land outside what the config repository tracks, so a commit sees nothing
+of them. Each is made live by the tool that writes it, or by the one reload you call:
+
+- `persona_apply` on a specialist — its override lives in the specialist's instance
+  files; the tool reloads the specialist itself and returns that `reload`.
+- `specialist_install_commit`, `specialist_upgrade`, `specialist_rollback`,
+  `specialist_uninstall` — they reload the specialist themselves; the commit after them
+  records the link they rewrote.
+- `plugin_add` / `plugin_update` / `plugin_assign` / `plugin_unassign` / `plugin_remove` —
+  they reload, verify and commit their own change.
+- `set_plugin_env_reference` / `remove_plugin_env_reference` — `plugin-env.conf` is
+  gitignored: call `casa_reload(scope="plugin_env")` yourself (`recipes/plugin/secrets.md`).
+- `persona_install_commit`, `persona_remove`, `persona_prune` — the persona library is
+  not tracked, and nothing loads a persona until it is applied: no reload.
 
 ## Reading the commit's reloads
 

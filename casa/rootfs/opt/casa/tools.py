@@ -19177,9 +19177,9 @@ RESIDENT_CONVERSATION_RESET_NOTICE = (
     "surfaces first: one that exceeds an admission ceiling is refused with nothing written "
     "(ok:false, kind:incompatible). For a RESIDENT the accepted binding is STAGED, not "
     "activated — it takes effect on that resident's next restart. For a specialist it is "
-    "written now and loaded when you commit it (config_git_commit reloads it): new "
-    "conversations with it use it from then on; a conversation already open with it keeps "
-    "its personality." + _ORDINARY_CHANGE_TOOL_NOTE
+    "committed and loaded now — this tool reloads the specialist itself (its reply carries "
+    "the reload) — so new conversations with it use it from then on; a conversation already "
+    "open with it keeps its personality." + _ORDINARY_CHANGE_TOOL_NOTE
     + " FOR A RESIDENT, say this when you report the staging: "
     + RESIDENT_CONVERSATION_RESET_NOTICE,
     {"type": "object", "properties": {
@@ -19268,7 +19268,7 @@ async def persona_apply(args: dict) -> dict:
         # describes something that has not happened yet, which is what the
         # tool description and recipes/persona/apply.md have always claimed. A
         # specialist is committed active and reports restart_required: false,
-        # activated by the reload of the configurator's commit.
+        # and this tool reloads it below (its tuple is never committed).
         # #931: the staging result carries what the promoting restart COSTS,
         # not only that one is required. `restart_required` told the operator
         # when the binding takes effect and never what taking effect does to
@@ -19327,9 +19327,36 @@ async def persona_apply(args: dict) -> dict:
         refusal, ack, seen = _ordinary_change_gate("persona_apply", slot, args)
         if refusal is not None:
             return _result(refusal)
-        return _result(_after_ordinary_change(await _materialize_and_apply(
+        out = _after_ordinary_change(await _materialize_and_apply(
             role_dirs[slot] / "role", Path("/config/specialists") / slot, bundle=True),
-            slot, ack, seen))
+            slot, ack, seen)
+    if isinstance(out, dict) and out.get("ok") is True:
+        out.update(await _reload_after_untracked_write("agent", slot))
+    return _result(out)
+
+
+async def _reload_after_untracked_write(scope: str, role: "str | None") -> dict:
+    """The reload for a change the config repository cannot see. A specialist's
+    instance tuple lives under ``specialists/``, which is never tracked, so no
+    ``config_git_commit`` reloads it (INV-TOOL-014): the tool that wrote it
+    reloads it here, the way the bundle handlers reload theirs. Called with no
+    plugin lock held — the reload's health refresh takes the plugin guard.
+    Returns ``{"reload": <envelope>}``, plus a ``warning`` when the reload did
+    not fully succeed."""
+    import agent as agent_mod
+    runtime = getattr(agent_mod, "active_runtime", None)
+    if runtime is None:
+        envelope = {"status": "error", "kind": "not_initialized",
+                    "message": "CasaRuntime not bound - boot ordering bug"}
+    else:
+        envelope = await _run_reload(scope, runtime=runtime, role=role)
+    out: dict = {"reload": envelope}
+    if envelope.get("status") != "ok" or envelope.get("failures"):
+        out["warning"] = (
+            "The change is saved, but its reload did not fully succeed, so it is "
+            "not live yet. Read the reload's kind, message and failures and tell "
+            "the operator plainly; retry with casa_reload and the scope shown.")
+    return out
 
 
 def _find_entry(data, name: str) -> dict | None:

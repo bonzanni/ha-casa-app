@@ -191,8 +191,8 @@ commit out of `emit_completion`'s `artifacts` rather than reporting a blank
 `sha`.
 
 If you arrived here from the install flow, batch — call
-`casa_reload(scope='plugin_env')` first, then `casa_reload(scope='agent', role=<role>)`
-per target role at the end of the install.
+`casa_reload(scope='plugin_env')` once after the last reference; the install's own commit
+then reloads the roles.
 
 ## Common mistakes
 
