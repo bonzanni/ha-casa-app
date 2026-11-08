@@ -3648,9 +3648,9 @@ class TelegramChannel(Channel):
         for that turn to end, then run ``_resume_and_ready`` under the topic
         lock (its rebuild branch tears the old session down and opens the
         fresh one). True: deliver. Otherwise this step has settled the turn,
-        mirroring ``handle_update``'s pre-hand-off paths: a False result
-        already told the operator (or the record is terminal) and the ticket
-        is discharged with no second telling; an exception gets the one
+        mirroring the seams' pre-hand-off paths: a False result for a message
+        from the direct chat (``notice_target``) draws that message's one
+        notice, any other is discharged with no telling; an exception gets the one
         bounded lost-inbound telling. Never the job finalizer — nothing was
         sent, so no batch failed."""
         try:
@@ -3671,6 +3671,12 @@ class TelegramChannel(Channel):
             return False
         if ready:
             return True
+        if notice_target is not None:
+            # A message from the operator's direct chat that the job will not
+            # take up — it ended, or could not be resumed, while this task
+            # waited — is told once, here, by the ticket's holder.
+            await self._settle_lost_inbound(rec, inbound_token, notice_target)
+            return False
         if (inbound_token is not None
                 and self._driver_discharge_inbound is not None):
             try:
@@ -4043,6 +4049,16 @@ class TelegramChannel(Channel):
                 except Exception:  # noqa: BLE001
                     logger.debug("inbound discharge failed", exc_info=True)
 
+    def engagement_continuation_tells_its_loss(self, engagement_id: str) -> bool:
+        """Whether a continuation into *engagement_id* that the job never
+        takes up is told by this channel's delivery seam itself — the record
+        resolves and the admission seam that gives its message a ticket is
+        wired. The approval card then shows no failure line of its own, so
+        the operator is told once."""
+        reg = self._engagement_registry
+        return (reg is not None and self._driver_admit_inbound is not None
+                and reg.get(str(engagement_id or "")) is not None)
+
     async def _end_quiet_run(self, rec) -> bool:
         """An operator's reply or tap into a quiet scheduled run ends its
         quietness before the turn is delivered, so the run's end is told like
@@ -4054,8 +4070,12 @@ class TelegramChannel(Channel):
         if reg is None:
             return True
         latest = reg.get(rec.id) or rec
-        if not background_jobs.is_quiet_run(latest):
+        if not background_jobs.was_quiet_run(latest):
             return True
+        # Entered even when the stamp already reads not-quiet: another
+        # promotion may have cleared it in memory with its write still in
+        # flight. The registry's lock-held check waits for that write and
+        # promotes again if it rolled back.
         return await reg.promote_from_quiet(rec.id)
 
     async def deliver_operator_reply(
@@ -4400,12 +4420,15 @@ class TelegramChannel(Channel):
             if not self._job_tap_allowed(cq, rec):
                 toast = "not for you"
                 return
-            if engagement_id in self._job_cancels or reg.terminal_pending(engagement_id):
+            if engagement_id in self._job_cancels:
                 toast = "already finishing"
                 return
-            if rec.status not in ("active", "idle"):
+            if not reg.counts_as_live(engagement_id):
                 toast = "already finished"
                 return
+            # A record whose other terminal write is still pending is
+            # cancelled too: the funnel's transition waits for that write,
+            # wins after a rollback, and ends harmlessly after a commit.
             self._job_cancels.add(engagement_id)
             start = True
             toast = "Cancelling…"
@@ -4424,9 +4447,10 @@ class TelegramChannel(Channel):
         task.add_done_callback(self._turn_tasks.discard)
 
     async def _run_job_cancel(self, rec, chat_id: int, message_id: int) -> None:
-        """The cancel funnel for a Cancel tap. A won transition is told by the
+        """The cancel funnel for a Cancel tap. Its transition waits out any
+        other terminal write still pending. A won transition is told by the
         terminal notification and its keyboards are retired by the terminal
-        observer; a lost one needs nothing more. A write that rolled back
+        observer; one lost to another outcome needs nothing more. A write that rolled back
         leaves the record live and the button in place, and draws one line in
         reply to the tapped message."""
         try:

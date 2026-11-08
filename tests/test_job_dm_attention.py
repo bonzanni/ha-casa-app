@@ -756,3 +756,213 @@ class TestPendingTerminalRoutesIntoTheJob:
         assert r.rec.status == "active"
         assert r.delivered and r.delivered[0].endswith("wait")
         assert r.bot.replies() == []
+
+
+# ---------------------------------------------------------------------------
+# interleavings at the edges of the seams
+# ---------------------------------------------------------------------------
+
+
+class _FailFirstWrite(_HeldWrite):
+    """Hold the first tombstone write until released, fail it, and let every
+    later write through."""
+
+    def __init__(self, reg):
+        super().__init__(reg)
+        self.fail = True
+        self.calls = 0
+
+    def _write(self, snapshot):
+        self.calls += 1
+        if self.calls > 1:
+            self.real(snapshot)
+            return
+        super()._write(snapshot)
+
+
+class TestSeamEdges:
+    async def test_a_reply_waiting_for_a_rebuild_that_loses_to_cancel_is_told_once(
+            self, tmp_path, monkeypatch):
+        """RACE: the reply is handed to a delivery task that must wait for the
+        running turn before it can ready the session; a Cancel ends the job
+        meanwhile. The task's readiness step is refused and tells the operator
+        once, in reply to their message; nothing reaches the job."""
+        r = await _rig(tmp_path, monkeypatch, scripts=[[_mk_assistant("ok")]])
+        r.reg.record_job_post(r.rec.id, 501)
+        await _drain(r)
+        monkeypatch.setattr(r.ch, "_rebuild_waits_for_turn", lambda rec: True)
+        lock = r.drv._locks[r.rec.id]
+        await lock.acquire()                     # a batch turn is running
+        try:
+            assert await r.ch._maybe_route_job_reply(
+                _reply_update("skip row 9", 501), str(CHAT)) is True
+            await asyncio.sleep(0)
+            cq = _CQ(f"v1|job_cancel|{r.rec.id}", 900)
+            await r.ch._on_inline_callback(SimpleNamespace(callback_query=cq))
+            await _wait(lambda: r.rec.status == "cancelled", "the cancel")
+        finally:
+            lock.release()
+        await _drain(r)
+        assert r.delivered == []
+        assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
+            ("The job had just ended — not delivered, please resend.", 7)]
+        assert r.drv.inbound_unread_depth(r.rec.id) == 0
+
+    async def test_a_cancel_tap_during_another_pending_terminal_write_still_cancels(
+            self, tmp_path, monkeypatch):
+        """RACE: a completion's terminal write is pending when the operator
+        taps Cancel; the write fails and rolls back. The Cancel waits for it
+        and then cancels the job — the tap is not dropped."""
+        import tools
+        r = await _rig(tmp_path, monkeypatch)
+        held = _FailFirstWrite(r.reg)
+        fin = asyncio.ensure_future(tools._finalize_engagement(
+            r.rec, outcome="completed", text="done", next_steps=[], driver=r.drv))
+        await _wait(held.started.is_set, "the completion write")
+        cq = _CQ(f"v1|job_cancel|{r.rec.id}", 900)
+        await r.ch._on_inline_callback(SimpleNamespace(callback_query=cq))
+        held.release.set()
+        assert await fin is tools.FinalizeResult.PERSIST_FAILED
+        await _drain(r)
+        held.restore()
+        assert cq.answers == ["Cancelling…"]
+        assert r.rec.status == "cancelled"
+        assert r.bus.notify.await_count == 1
+        assert r.bot.replies() == []
+
+    async def test_a_cancel_tap_losing_to_a_committed_completion_ends_quietly(
+            self, tmp_path, monkeypatch):
+        import tools
+        r = await _rig(tmp_path, monkeypatch)
+        held = _HeldWrite(r.reg)
+        fin = asyncio.ensure_future(tools._finalize_engagement(
+            r.rec, outcome="completed", text="done", next_steps=[], driver=r.drv))
+        await _wait(held.started.is_set, "the completion write")
+        cq = _CQ(f"v1|job_cancel|{r.rec.id}", 900)
+        await r.ch._on_inline_callback(SimpleNamespace(callback_query=cq))
+        held.release.set()
+        assert await fin is tools.FinalizeResult.FINALIZED
+        await _drain(r)
+        held.restore()
+        assert r.rec.status == "completed"
+        assert r.bus.notify.await_count == 1         # the completion's telling
+        assert r.bot.replies() == []
+        assert r.rec.id not in r.ch._job_cancels
+
+    async def test_a_question_asked_while_a_promotion_write_fails_keeps_the_run_told(
+            self, tmp_path, monkeypatch):
+        """RACE: a reply's promotion has cleared a quiet run's stamp in memory
+        and its write is in flight when the job asks; the write fails and
+        rolls the stamp back. The question's own promotion waits for that
+        outcome and promotes again, so the run that asked is told at its
+        end."""
+        import tools
+        r = await _rig(tmp_path, monkeypatch, quiet=True)
+        r.reg.record_job_post(r.rec.id, 501)
+        await _drain(r)
+        held = _FailFirstWrite(r.reg)
+        reply = asyncio.ensure_future(r.ch._maybe_route_job_reply(
+            _reply_update("one more thing", 501), str(CHAT)))
+        await _wait(held.started.is_set, "the reply's promotion write")
+        assert r.rec.origin["job"]["quiet"] is False      # provisional
+        ask = asyncio.ensure_future(_ask(r))
+        await asyncio.sleep(0.01)
+        held.release.set()
+        assert await reply is True
+        out = await ask
+        held.restore()
+        await _drain(r)
+        assert out["status"] == "asked"
+        assert r.rec.origin["job"]["quiet"] is False
+        # the reply whose promotion failed was told once; the question posted
+        assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
+            ("Your message could not be delivered — please resend it.", 7)]
+        questions = [m for m in r.bot.sent if "Which account?" in m["text"]]
+        assert len(questions) == 1
+        await tools._finalize_engagement(
+            r.rec, outcome="completed", text="done", next_steps=[], driver=r.drv)
+        assert r.rec.terminal_notification_pending is True
+        assert r.bus.notify.await_count == 1
+
+
+    async def test_a_reply_arriving_while_a_question_promotion_write_fails_keeps_the_run_told(
+            self, tmp_path, monkeypatch):
+        """RACE, the other way round: the job's question cleared the stamp in
+        memory and its write fails; a reply that arrived meanwhile waits for
+        that outcome and promotes again, so the run it reached is told at its
+        end."""
+        import tools
+        r = await _rig(tmp_path, monkeypatch, quiet=True,
+                       scripts=[[_mk_assistant("ok")]])
+        r.reg.record_job_post(r.rec.id, 501)
+        await _drain(r)
+        held = _FailFirstWrite(r.reg)
+        ask = asyncio.ensure_future(_ask(r))
+        await _wait(held.started.is_set, "the question's promotion write")
+        assert r.rec.origin["job"]["quiet"] is False      # provisional
+        reply = asyncio.ensure_future(r.ch._maybe_route_job_reply(
+            _reply_update("one more thing", 501), str(CHAT)))
+        await asyncio.sleep(0.01)
+        held.release.set()
+        assert (await ask)["kind"] == "not_asked"
+        assert await reply is True
+        held.restore()
+        await _drain(r)
+        assert r.delivered and r.delivered[0].endswith("one more thing")
+        assert r.rec.origin["job"]["quiet"] is False
+        await tools._finalize_engagement(
+            r.rec, outcome="completed", text="done", next_steps=[], driver=r.drv)
+        assert r.rec.terminal_notification_pending is True
+        assert r.bus.notify.await_count == 1
+
+
+class TestApprovalLostToTermination:
+    async def test_an_approval_continuation_refused_by_an_ended_job_is_told_once(
+            self, tmp_path, monkeypatch):
+        """RACE: the approval tap commits, then the job ends before the
+        card's finish hook dispatches the continuation. The seam tells the
+        operator once, in reply to the card; the card shows no second
+        failure line."""
+        import authz_grants
+        import tools
+        import verdict_broker
+        from authz_grants import ChallengeCoordinator, GrantKey, GrantStore, canonical_args_hash
+        broker = verdict_broker.VerdictBroker()
+        monkeypatch.setattr(verdict_broker, "BROKER", broker)
+        monkeypatch.setattr(authz_grants, "_AWAITING_APPROVAL", {})
+        r = await _rig(tmp_path, monkeypatch)
+        coord = ChallengeCoordinator()
+        monkeypatch.setattr(tools, "CHALLENGES", coord)
+        key = GrantKey(operator_id=OPERATOR, chat_id=CHAT, enforcement_role="finance",
+                       artifact_id="a1", tool_name="purge",
+                       args_hash=canonical_args_hash({"x": 1}), engagement_id=r.rec.id)
+        handle = coord.get_or_create(
+            key, chat_id=CHAT, operator_id=OPERATOR, target_role="finance",
+            tool_name="purge", canonical_json='{"x":1}', enforcement_role="finance",
+            channel=r.ch, grants=GrantStore(), engagement_id=r.rec.id)
+        assert await handle.settled_post() == "posted"
+        card = r.bot.sent[-1]["message_id"]
+        gate = asyncio.Event()
+        real_edit = r.bot.edit_message_text
+
+        async def held_edit(*a, **kw):
+            await gate.wait()
+            return await real_edit(*a, **kw)
+        r.bot.edit_message_text = held_edit
+        ch = coord._entries[key]
+        claim = broker.claim(namespace="resident_ask", scope=ch.scope,
+                             request_id=ch.rid, option_index=0, actor_id=OPERATOR)
+        assert broker.commit(claim) is True
+        ch.req.meta["on_commit_sync"](0)
+        # The finish hook is waiting on the approval edit; the job ends.
+        await r.reg.try_transition_terminal(r.rec.id, "cancelled", strict=True)
+        gate.set()
+        await broker.drain_hooks()
+        await _drain(r)
+        assert r.delivered == []
+        assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
+            ("The job had already ended; your answer wasn't used.", card)]
+        edits = [e["text"] for e in r.bot.edits if e["message_id"] == card]
+        assert edits and edits[0].startswith("✅ Approved")
+        assert not any("could not be resumed" in e for e in edits), edits
+        assert r.drv.inbound_reservations(r.rec.id) == 0

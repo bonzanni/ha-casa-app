@@ -444,6 +444,16 @@ def is_quiet_run(rec: Any) -> bool:
     return is_quiet_origin(getattr(rec, "origin", None))
 
 
+def was_quiet_run(rec: Any) -> bool:
+    """Whether *rec* carries a quiet stamp at all — a quiet run, or one whose
+    quietness an interaction ended (or is ending: a promotion clears the stamp
+    in memory before its write settles, and rolls it back if the write
+    fails). An interaction with such a run goes through the registry's
+    promotion, which decides under its lock."""
+    job = (getattr(rec, "origin", None) or {}).get("job")
+    return isinstance(job, dict) and "quiet" in job
+
+
 def is_quiet_origin(origin: Any) -> bool:
     """``is_quiet_run`` over a record's origin (or a frozen copy of it)."""
     job = origin.get("job") if isinstance(origin, dict) else None

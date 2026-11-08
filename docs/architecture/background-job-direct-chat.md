@@ -84,7 +84,9 @@ The payloads are `v1|job_q|<eid>|<qid>|<n>` (at most 53 bytes) and `v1|job_cance
 seam; the question post is the turn's notice target. A second tap, or a tap and a typed reply,
 is a second answer. A Cancel tap on a live record answers "Cancelling…" and runs the cancel
 funnel on a task of its own; a second tap while it runs answers "already finishing", one on an
-ended job "already finished". When the funnel's write rolls back, the record stays live, the
+ended job "already finished". A tap while another terminal write of the job is still pending —
+a completion's, say — is a cancellation like any other: its transition waits for that write,
+cancels the job if it rolled back, and ends with nothing more if it committed. When the funnel's write rolls back, the record stays live, the
 button stays, and one line in reply to the tapped message asks to tap again.
 
 **INV-BGJOB-014**: Every in-process terminal winner retires the job's direct-chat keyboards through the registry's terminal observer, which takes them off the record in one synchronous step before the record leaves the pending-terminal set; a keyboard post that lands after the terminal write settled is retired by its filer; and at boot every terminal record still carrying keyboard posts has them retired once.

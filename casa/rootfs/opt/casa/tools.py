@@ -11869,8 +11869,10 @@ async def ask_operator(args: dict) -> dict:
         return _result({"status": "error", "kind": "unsupported_origin",
                         "message": _NO_SCOPE_MESSAGE})
     # A quiet run that asks stops being quiet, durably, before it asks — so
-    # its end is told like any job's.
-    if (background_jobs.is_quiet_run(rec)
+    # its end is told like any job's. Entered for any run carrying the stamp:
+    # one another promotion cleared in memory may still roll back, and the
+    # registry decides under its lock.
+    if (background_jobs.was_quiet_run(rec)
             and not await _engagement_registry.promote_from_quiet(rec.id)):
         return _result({"status": "error", "kind": "not_asked",
                         "message": "the question could not be recorded; ask again"})

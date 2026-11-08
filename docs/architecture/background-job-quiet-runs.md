@@ -41,7 +41,10 @@ writer, rolling it back when the write fails, and the interaction is then refuse
 returns an error, the reply or tap gets its one notice. The lock also waits out a pending
 terminal write: a completion that commits wins, so the promotion is refused and the end stays
 told to no one (a terminal job receives nothing); one that rolls back lets the promotion go
-through. Whether the end is told is decided inside the terminal transition, from the stamp as
+through. An interaction with a run whose stamp another promotion has already cleared in memory
+still goes through the promotion: it waits for that write and promotes again if the write rolled
+back, so a question or reply never reaches a run that then goes quiet again. Whether the end is
+told is decided inside the terminal transition, from the stamp as
 the transition commits it, so a promotion that commits first is always seen. Promoted, the run
 is told at its end like any job, and a cut-off reply turn is no longer skipped as quiet. Its
 turns' words are still withheld: it has no topic.
