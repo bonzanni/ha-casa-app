@@ -41,8 +41,8 @@ from when it was active.
    the same survival applies — no plugin data was deleted and nothing was
    revoked at the provider. Run `plugin_list()` to see which entries are
    gone.
-3. `config_git_commit`, `casa_reload(scope="agents")`, `emit_completion` (canonical
-   commit -> reload -> emit order — see `completion.md`).
+3. `config_git_commit` (it reloads `agents`, which loads the restored version), then
+   `emit_completion` — see `completion.md`.
 
 ## Common mistakes
 
@@ -51,8 +51,8 @@ from when it was active.
   set with it); it is not a version history. A second call after a successful rollback
   swaps them back again, re-applying what the first call undid; `kind: "no_prior_tuple"` is
   returned only when nothing was ever retained.
-- Forgetting `casa_reload(scope="agents")` — same as every other install/upgrade path, the committed
-  tuple is not live until reload runs, and even then only for new conversations: an open one keeps
+- Skipping the commit — same as every other install/upgrade path, the restored tuple is not live
+  until the commit's reload runs, and even then only for new conversations: an open one keeps
   its personality and plugin versions.
 - Trying to `plugin_add`/`plugin_remove` the bundled plugin set yourself to "help" a rollback along
   — the owned-set swap is atomic and part of `specialist_rollback` itself; a manual edit first is

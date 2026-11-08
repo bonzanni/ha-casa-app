@@ -3,7 +3,7 @@
 ## Ask the user
 
 1. **Which trigger?** Confirm by name.
-2. **Confirm:** stops firing immediately after reload.
+2. **Confirm:** stops firing as soon as the removal is committed.
 
 ## Remove the trigger — `config_trigger_delete`, never a hand edit
 
@@ -32,15 +32,14 @@ result's `prompt_file` says what happened:
   leftover; any other kept file is one you cannot delete, so name it to the
   operator in your completion.
 
-## Reload — MANDATORY before emit_completion
+## Commit — MANDATORY before emit_completion
 
-**Soft** - casa_reload_triggers(role). Canonical order:
+The commit reloads the role's triggers. Canonical order:
 
     config_git_commit(message="remove <trigger-name> from <role>")
-    casa_reload_triggers(role="<role>")
     emit_completion(status="ok", text="I removed <role>'s <trigger-name>.", artifacts=[<the commit>])
 
-Skipping the reload leaves the deleted trigger still registered in the
+Skipping the commit leaves the deleted trigger still registered in the
 live scheduler — it keeps firing until the next addon restart. See
 completion.md.
 

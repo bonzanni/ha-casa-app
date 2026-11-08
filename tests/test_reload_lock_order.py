@@ -21,11 +21,12 @@ from pathlib import Path
 
 import pytest
 
-# The two production reload entry points. Both classify through
+# The production reload entry points. All classify through
 # tools._plugin_tools_reload_guard, which is the point: this list is what a
-# third entry point would have to be added to, deliberately.
+# new entry point would have to be added to, deliberately. `_run_reload` is
+# the one the reload tools and config_git_commit share (INV-TOOL-014).
 GUARDED_ENTRY_POINTS = {
-    ("tools.py", "casa_reload"),
+    ("tools.py", "_run_reload"),
     ("internal_handlers.py", "build_admin_reload_handler"),
     # #1067: the plugin_env reload after an Erase everything cleared a removed
     # plugin's references — entered through the same fence, after the removal

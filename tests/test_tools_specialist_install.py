@@ -1301,7 +1301,7 @@ async def test_reconcile_cb_continuation_matches_inspect_mode(
             "specialist:mtg. Continue the recipe now without "
             "waiting for further input: call specialist_install_commit with "
             "the staged values, then finish the recipe (wire delegation, "
-            "config_git_commit, casa_reload, emit_completion)."
+            "config_git_commit, emit_completion)."
         ), "INSTALL_LITERAL_UNCHANGED"
 
 @pytest.mark.asyncio

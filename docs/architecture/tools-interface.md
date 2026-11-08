@@ -95,11 +95,11 @@ enumerated. A failing `op` call yields a fixed classification and the exit code,
 CLI's own text, because whatever `op` prints on failure would otherwise reach the
 configurator's transcript and, from there, the chat. The contract is
 [`architecture/plugin-secret-exploration.md`](plugin-secret-exploration.md)'s.
-The same schema discipline holds for the two tools every recipe's canonical order ends
-with: `casa_reload` requires only `scope`, and `emit_completion` nothing at all, because the
-recipes' literal calls (`casa_reload(scope="plugin_env")`, `emit_completion(status=..., text=...)`)
-omit the rest, and the shorthand declaration had made every key required — a call the
-validator refused before the handler ran.
+The same schema discipline holds for two tools the recipes call by literal: `casa_reload`
+requires only `scope`, and `emit_completion` nothing at all, because the recipes' literal
+calls (`casa_reload(scope="plugin_env")`, `emit_completion(status=..., text=...)`) omit the
+rest, and the shorthand declaration had made every key required — a call the validator
+refused before the handler ran.
 Where a scope needs a `role`, the handler canonicalises the argument before dispatch:
 the value is the agent's directory name (`assistant`, a specialist's slug), and the
 tier-prefixed forms every plugin surface uses for the same role — `resident:assistant`,

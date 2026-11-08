@@ -12,9 +12,9 @@ Use for any structural change to an executor's definition file —
    accepts these `permission_mode` values: `acceptEdits`, `auto`,
    `bypassPermissions`, `default`, `dontAsk`, `plan` (CC CLI 2.1.119
    parity per v0.37.1 B-1).
-3. `config_git_commit(message="edit executor <type>: <field>")`.
-4. `casa_reload(scope='executors')`.
-5. `emit_completion(text="...", status="ok")`.
+3. `config_git_commit(message="edit executor <type>: <field>")` — it
+   reloads the executors.
+4. `emit_completion(text="...", status="ok")`.
 
 ## What you must NOT do
 
@@ -31,8 +31,8 @@ Use for any structural change to an executor's definition file —
 
 If your edit accidentally produces a schema-invalid YAML, only
 this one executor fails to load; siblings remain available. The
-reload result will include the failure in its log:
+commit's reload reports it under `failures` (and the log has it):
 `Executors: loaded=[...] failed=['<type>: <reason>'] disabled=[...]`.
 
 Recovery: read the registry's error message, fix the typo, repeat
-steps 3-4.
+step 3.

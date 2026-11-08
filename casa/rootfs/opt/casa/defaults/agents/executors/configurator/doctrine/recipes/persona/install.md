@@ -31,8 +31,8 @@ does not apply it to anything by itself; see `recipes/persona/apply.md` for that
    continues automatically — a synthetic resume turn carries this recipe forward — so you do NOT
    ask for a second message by default; only if that automatic resume fails to deliver would the
    operator need to send any message in the topic to continue. After Deny a resume turn normally
-   tells you the operator refused: nothing was installed, so do not call `persona_install_commit`, commit or
-   reload — conclude with `emit_completion(status="cancelled", text=...)` saying the operator
+   tells you the operator refused: nothing was installed, so do not call `persona_install_commit` or
+   commit — conclude with `emit_completion(status="cancelled", text=...)` saying the operator
    refused the install.
    If nobody answers within the card's 10 minutes it expires, and a resume turn tells you so:
    nothing changed — conclude cancelled as that turn says, telling the operator they can ask again

@@ -9,11 +9,10 @@ doctrine, and registered MCP servers for a future re-enable).
 1. Read `agents/executors/<type>/definition.yaml` to confirm
    `enabled: true`.
 2. Edit: flip `enabled: true` → `enabled: false`.
-3. `config_git_commit(message="disable executor: <type>")`.
-4. `casa_reload(scope='executors')`. The executor disappears from
-   Ellen's `<executors>` registry and `engage_executor` returns
-   `unknown_executor`.
-5. `emit_completion(text="...", status="ok")`.
+3. `config_git_commit(message="disable executor: <type>")`. Its
+   `executors` reload takes the executor out of Ellen's `<executors>`
+   registry, and `engage_executor` returns `unknown_executor`.
+4. `emit_completion(text="...", status="ok")`.
 
 ## Effects
 
@@ -21,7 +20,7 @@ doctrine, and registered MCP servers for a future re-enable).
   ExecutorRegistry tracks types, not running engagements. The
   registry update only affects FUTURE `engage_executor` calls.
 - Bundled doctrine, hooks, plugins remain on disk; re-enabling is
-  a single flip + reload.
+  a single flip + commit.
 - Disabling does NOT stop the executor's s6 service tree on the
   next boot — the boot path checks `enabled: false` and skips the
   service.

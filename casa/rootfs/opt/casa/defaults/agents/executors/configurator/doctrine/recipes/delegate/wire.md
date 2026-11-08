@@ -32,14 +32,13 @@ In agents/<resident-role>/runtime.yaml::tools.allowed, ensure mcp__casa-framewor
 **As a SUBROUTINE of a larger recipe** (e.g. `specialist/install.md` step 6
 sends you here to wire the just-installed specialist): do ONLY the
 `delegates.yaml` edit and the tools-allowed check above, then RETURN to the
-calling recipe. Do NOT commit, reload, or `emit_completion` here — the caller
-performs a SINGLE commit + reload + `emit_completion` for the whole operation.
+calling recipe. Do NOT commit or `emit_completion` here — the caller
+performs a SINGLE commit + `emit_completion` for the whole operation.
 Calling `emit_completion` here would terminate the engagement mid-install.
 
 **As a STANDALONE request** (the user directly asked to wire X into Y's
 delegates and nothing else): `delegates.yaml` is part of the resident's
-AgentConfig — use the `agent` scope for that role. Canonical order:
+AgentConfig, and the commit reloads that resident. Canonical order:
 
     config_git_commit(message="wire <target> into <resident>'s delegates")
-    casa_reload(scope="agent", role="<resident>")
     emit_completion(status="ok", text="I added <target> to <resident>'s helpers.", artifacts=[<the commit>])

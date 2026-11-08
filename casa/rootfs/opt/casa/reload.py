@@ -20,6 +20,7 @@ import asyncio
 import contextvars
 import hashlib
 import logging
+import re
 import threading
 import time
 from collections import deque
@@ -328,7 +329,8 @@ def register_handler(scope: str, fn: HandlerFn) -> None:
 # resident, specialist or executor whose own files did not take effect, and is
 # None when the failure cannot be pinned on one unit (a collection-level scan
 # failure, a map refresh, a cascade that failed for a shared input). This module
-# only REPORTS; what a failure keeps owed is tools.py's (INV-TOOL-012).
+# only REPORTS; the caller relays the list (config_git_commit's reply names a
+# commit's reload that reported one, INV-TOOL-014).
 _RELOAD_FAILURES: contextvars.ContextVar["list[dict] | None"] = (
     contextvars.ContextVar("casa_reload_failures", default=None))
 
@@ -827,10 +829,6 @@ async def _reload_triggers_locked(runtime: Any, *, role: str) -> list[str]:
         _refresh_personality_maps(
             runtime, secret_actions, context=f"triggers role={role}")
 
-    # #1086: no handler discharges the G-2 reload obligation — the
-    # configurator's own casa_reload / casa_reload_triggers do, for the paths
-    # their scope covers (tools._reload_scope_covers); a reload a tool runs
-    # internally, or a cascade composes, discharges nothing.
     return ["reregister_triggers", *secret_actions]
 
 
@@ -1703,9 +1701,6 @@ async def reload_agent(runtime: Any, *, role: str | None = None) -> list[str]:
             f"triggers unless the error below names job(s) that remain "
             f"live: {exc}",
         ) from exc
-
-    # #1086: the G-2 reload obligation is not discharged here (see
-    # reload_triggers' tail).
 
     # #423 r2: a setup episode held on "waiting for target agent reload"
     # becomes dispatchable now — the wake arrives via the trigger
@@ -2665,3 +2660,85 @@ async def reload_full(
 
 
 register_handler("full", reload_full)
+
+
+# ---------------------------------------------------------------------------
+# What a configuration commit reloads (INV-TOOL-014)
+# ---------------------------------------------------------------------------
+
+# One row per kind of committed path, first match wins; a path no row matches
+# asks for `full`. A kind of None asks for nothing: the plugin tools activate
+# their own registry change (and commit it themselves); `bindings/` holds the
+# residents' staged persona bindings, which only a restart activates — an
+# in-process reload refuses them with `restart_required` (INV-CFG-003); and an
+# executor's prompt, observer policy and doctrine are read when its next
+# session starts.
+# `unit` is the resident's or specialist's directory name. A specialist's link
+# (`agents/specialists/<slug>`) changes on install, upgrade, rollback and
+# uninstall; its content lives in `.<slug>.material-<hex>/`.
+_COMMIT_RELOAD_ROWS: "tuple[tuple[re.Pattern[str], str | None], ...]" = tuple(
+    (re.compile(pattern), kind) for pattern, kind in (
+        (r"plugins/registry\.json", None),
+        (r"bindings/.+", None),
+        (r"policies/.+", "policies"),
+        (r"agents/executors/[^/]+/(?:prompt\.md|observer\.yaml|doctrine/.+)", None),
+        (r"agents/executors/[^/]+/.+", "executors"),
+        (r"agents/specialists/(?P<unit>[^./][^/]*)", "specialist_link"),
+        (r"agents/specialists/\.(?P<unit>[^/]+?)\.(?:material|link|prior)"
+         r"-[0-9a-f]{32}(?:/.+)?", "specialist"),
+        (r"agents/specialists/(?P<unit>[^./][^/]*)/.+", "specialist"),
+        (r"agents/(?P<unit>(?!specialists/|executors/)[^/]+)/"
+         r"(?:triggers\.yaml|prompts/(?!system\.md$)[^/]+\.md)", "triggers"),
+        (r"agents/(?P<unit>(?!specialists/|executors/)[^/]+)/.+", "agent"),
+    ))
+
+
+def commit_reload_scopes(
+    paths: "list[str]", *, runtime: Any,
+) -> "list[tuple[str, str | None]]":
+    """The reloads that make a commit's changed ``paths`` live, as
+    ``(scope, role)`` pairs in the order to run them; ``[]`` when nothing needs
+    reloading. An empty ``paths`` is a commit whose paths could not be read, and
+    asks for ``full``.
+
+    Per unit: a live resident's trigger inputs alone → ``triggers``, any other
+    file of it → ``agent``; a resident that is not live yet, or whose directory
+    is gone → ``agents``. A specialist whose link changed or whose directory is
+    gone → ``agents``; an edit inside a present one → ``agent``. Then one kind
+    runs as it is (one call per role), and two kinds, or any path no row knows,
+    collapse to a single ``full`` — the order-free catch-all."""
+    if not paths:
+        return [("full", None)]
+    residents: dict[str, set[str]] = {}
+    specialists: dict[str, set[str]] = {}
+    wanted: set[tuple[str, "str | None"]] = set()
+    for path in paths:
+        for pattern, kind in _COMMIT_RELOAD_ROWS:
+            m = pattern.fullmatch(path)
+            if m is None:
+                continue
+            unit = m.groupdict().get("unit")
+            if kind in ("triggers", "agent"):
+                residents.setdefault(unit, set()).add(kind)
+            elif kind in ("specialist", "specialist_link"):
+                specialists.setdefault(unit, set()).add(kind)
+            elif kind is not None:
+                wanted.add((kind, None))
+            break
+        else:
+            return [("full", None)]
+    for unit, kinds in residents.items():
+        if (unit not in runtime.role_configs
+                or not os.path.isdir(os.path.join(runtime.agents_dir, unit))):
+            wanted.add(("agents", None))
+        else:
+            wanted.add(("agent" if "agent" in kinds else "triggers", unit))
+    for unit, kinds in specialists.items():
+        if ("specialist_link" in kinds or not os.path.isdir(
+                os.path.join(runtime.agents_dir, "specialists", unit))):
+            wanted.add(("agents", None))
+        else:
+            wanted.add(("agent", unit))
+    if len({scope for scope, _ in wanted}) > 1:
+        return [("full", None)]
+    return sorted(wanted, key=lambda w: (w[0], w[1] or ""))
