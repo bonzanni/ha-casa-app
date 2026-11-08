@@ -70,13 +70,10 @@ that same lock so a concurrent reconcile cannot re-materialize what the rollback
 removed. Agents keep a small first-publication lock for their plugin-resolution
 snapshot — it does not serialize turns. The Telegram channel re-imposes ordering per scope
 above the bus: a per-topic handler lock for engagement topics and a per-chat lock
-serializing `/new` with same-chat enqueue (both documented in the Telegram map). Three
+serializing `/new` with same-chat enqueue (both documented in the Telegram map). Two
 cross-*thread* locks exist: plugin health's report lock, because its writers run both on
-the loop and in the thread offload; the s6 compile-worker lock, which serializes the
-compile/swap/reap worker threads themselves — a cancelled compile abandons its worker
-mid-run, and the successor's worker must queue behind the abandoned one rather than race
-it; and the route-lifecycle lock in the reload module, which makes a role's trigger
-re-registration, its webhook-secret retirement and the mint that follows one operation
+the loop and in the thread offload; and the route-lifecycle lock in the reload module,
+which makes a role's trigger re-registration, its webhook-secret retirement and the mint that follows one operation
 across every role and scope (the mint's own re-entrant lock nests inside it). That last
 one is held only in a worker thread that never awaits a loop lock, so it creates no
 ordering with the reload locks or the plugin-mutation lock; what it guards is documented

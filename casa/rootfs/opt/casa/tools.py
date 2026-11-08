@@ -12935,13 +12935,10 @@ async def _finalize_engagement_tail(
     # 3. Tear down driver client
     if driver is not None:
         try:
-            # #599 (Sol, design round 3): bound the WHOLE teardown, not just
-            # its ``stop_service``. ``cancel`` waits on ``_compile_lock``, then
-            # on ``s6-rc -d change``, the logger stop and a recompile — none of
-            # them bounded, all of them ahead of the bus notification and the
-            # retains below. The uid is already dead by here (the ladder ran at
-            # the commit), so a timeout costs only a leftover service source
-            # dir, which the orphan sweep already owns.
+            # #599: bound the teardown. The in_casa driver's ``cancel`` closes
+            # the engagement's SDK client, an unbounded await that sits ahead
+            # of the bus notification and the retains below; a timeout costs
+            # only a client left to close on its own.
             await asyncio.wait_for(
                 driver.cancel(engagement), _DRIVER_CANCEL_TIMEOUT_S)
         except asyncio.TimeoutError:
