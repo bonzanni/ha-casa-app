@@ -84,7 +84,7 @@ What it does not cover: work a run left behind that outlives its task, such as a
 tool's worker thread still running after its handler was cancelled; only plugin erasers and
 bundle transactions are waited for.
 
-**INV-CFG-015**: A configurator run cancelled while Casa is stopping leaves its lease record on disk; the next boot removes that record and, once the channels are up, tells the operator once which task was interrupted, unless the job registry's restart recovery announces the same delegation; nothing of the run is replayed.
+**INV-CFG-015**: A configurator run that ends while Casa is stopping, whether cancelled or returning after it swallowed the cancellation, leaves its lease record on disk; the next boot removes that record and, once the channels are up, tells the operator once which task was interrupted, unless the job registry's restart recovery announces the same delegation; nothing of the run is replayed.
 
 `configurator_run.claim_interrupted` runs in `casa_core.main` after the job registry's
 recovery and removes the file before any run can start, so a stale record never blocks one;
@@ -92,7 +92,9 @@ recovery and removes the file before any run can start, so a stale record never 
 Nothing was replayed; ask again if it is still needed.` after the recovered-delegation
 notices. A delegation the assistant started is a job the registry recovers and announces
 itself, which is why its id suppresses the second notice; a desk turn has no job row and is
-announced here. A cancel outside a stop removes the file. An unreadable or malformed record
+announced here. A cancel outside a stop removes the file; inside one the file stays
+however the run ended, since a runner that returns normally from the stop's cancellation was
+interrupted all the same. An unreadable or malformed record
 counts as one, announced with the task `a configuration task`.
 
 **INV-CFG-016**: A `casa_restart_supervised` call inside a delegated run restarts nothing: it records the need and returns `deferred`; after that run's answer Casa posts one Restart now button, spent on its first tap, which asks the Supervisor for the restart, and a button that expires is edited to say so.

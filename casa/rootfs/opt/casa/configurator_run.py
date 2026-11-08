@@ -10,8 +10,8 @@ bound, for plugin erasures still running (``tools._ERASE_TASKS``) and for
 specialist-bundle transactions that outlived a cancelled run
 (``tools._BUNDLE_MUTATION_TASKS``): both still write what the run would read.
 
-The lease is persisted at ``LEASE_PATH`` while held. A shutdown that cancels a
-run keeps the file, so the next boot finds it, removes it, and tells the
+The lease is persisted at ``LEASE_PATH`` while held. A run that ends while Casa
+is stopping keeps the file, however it ended, so the next boot finds it, removes it, and tells the
 operator once which task was interrupted (``claim_interrupted`` and
 ``announce_interrupted``); nothing is replayed.
 
@@ -179,14 +179,15 @@ def _release(lease: Lease, *, keep_file: bool) -> None:
 
 
 def release_when_done(lease: Lease, inner: asyncio.Task) -> None:
-    """Release *lease* when the run's inner task has really ended. A run the
-    graceful stop cancelled keeps the file for the next boot's notice."""
+    """Release *lease* when the run's inner task has really ended. A run that
+    ends while Casa is stopping keeps the file for the next boot's notice,
+    however it ended: a runner may turn the stop's cancellation into a normal
+    return, and that run was interrupted all the same."""
     lease.watched = True
 
-    def _done(task: asyncio.Task) -> None:
+    def _done(_task: asyncio.Task) -> None:
         import agent as agent_mod
-        ended_ok = not task.cancelled() and task.exception() is None
-        _release(lease, keep_file=agent_mod.process_stopping() and not ended_ok)
+        _release(lease, keep_file=agent_mod.process_stopping())
     inner.add_done_callback(_done)
 
 

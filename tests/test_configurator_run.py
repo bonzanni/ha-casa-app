@@ -363,6 +363,42 @@ async def test_a_cancel_outside_shutdown_releases_the_file(lease_file, monkeypat
     assert not lease_file.exists()
 
 
+async def test_a_shutdown_cancel_the_runner_swallows_still_keeps_the_lease_file(
+        lease_file, monkeypatch):
+    """A run that turns the shutdown's cancellation into a normal return was
+    still interrupted: the file stays for the next boot's notice."""
+    import agent as agent_mod
+    import configurator_run
+    import tools
+    started = asyncio.Event()
+
+    async def _swallowing(cfg, task_text, context_text, *, resolution=None,
+                          output_format=None, tool_counts=None):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            pass
+        return SimpleNamespace(text="partial", run_aborted=False)
+
+    monkeypatch.setattr(tools, "_run_delegated_agent", _swallowing)
+    monkeypatch.setattr(agent_mod, "process_stopping", lambda: True)
+    tok = agent_mod.origin_var.set(_origin(execution_role="configurator",
+                                           _delegation_id="d"))
+    try:
+        run = asyncio.create_task(
+            tools._run_delegated_agent_bounded(_configurator_cfg(), "apply persona Ada", ""))
+    finally:
+        agent_mod.origin_var.reset(tok)
+    await asyncio.wait_for(started.wait(), 5)
+    run.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    assert configurator_run.holder() is None
+    assert lease_file.exists()
+    assert json.loads(lease_file.read_text())["task"] == "apply persona Ada"
+
+
 async def test_the_boot_notice_is_skipped_when_the_job_registry_announces_the_run(lease_file):
     import configurator_run
     sent: list = []
