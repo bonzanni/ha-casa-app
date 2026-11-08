@@ -86,7 +86,7 @@ async def main() -> int:
     import casa_core
     import private_state
     import tools
-    from engagement_quiesce import live_pids_for_uid
+    from uid_kill import live_pids_for_uid
     from engagement_registry import EngagementRegistry
     from engagement_uids import UID_BASE, UidAllocator
     from executor_registry import ExecutorRegistry

@@ -19,6 +19,9 @@ import threading
 import uuid
 from pathlib import Path
 
+# ``trusted_path`` is re-exported for the setpriv preflights that read it here.
+from trusted_path import _trusted_env, trusted_path  # noqa: F401
+
 logger = logging.getLogger(__name__)
 
 # Constants — can be overridden in tests via monkeypatch.
@@ -52,44 +55,9 @@ LIVE_DB_SYMLINK = "/run/s6-rc/compiled"
 # tmp scandir root (monkeypatch), same pattern as ENGAGEMENT_SOURCES_ROOT.
 SERVICE_SCANDIR_ROOT = "/run/service"
 
-# #987: the directory plugin ``verify_bin`` executables are published into.
-# ``setup-configs.sh`` prepends it to the PATH of every s6 service, casa-core
-# included, ahead of the whole image PATH — so a bare ``s6-rc`` resolved there
-# runs whatever a plugin published under that name. Every program this module
-# runs is resolved, and runs, under ``_trusted_env()`` instead.
-PLUGIN_TOOLS_BIN = "/config/tools/bin"
-
-
-def _trusted_env() -> dict[str, str]:
-    """``os.environ`` with every PATH entry that names the plugin tools
-    directory removed, the rest kept in order. Entries are compared by
-    ``realpath``, so another spelling of the same directory (``//config/...``,
-    a trailing slash, a symlink to it) is removed too. An empty or relative
-    entry is removed as well (#1248): it means the current directory, which
-    can be the tools directory, and the image PATH never has one. The
-    engagement scripts' root phase filters its PATH by the same rule
-    (``drivers.workspace._root_path_fragment``). Passed as ``env=``:
-    CPython's POSIX ``subprocess`` resolves a bare program name against the
-    PATH of the env it is given, and the program inherits that env, so what
-    s6-rc in turn runs by name is resolved the same way. No absolute program
-    path is hard-coded: the image PATH stays the source of truth across base
-    bumps (#925)."""
-    env = dict(os.environ)
-    path = env.get("PATH")
-    if path is None:
-        return env
-    tools = os.path.realpath(PLUGIN_TOOLS_BIN)
-    env["PATH"] = os.pathsep.join(
-        entry for entry in path.split(os.pathsep)
-        if os.path.isabs(entry) and os.path.realpath(entry) != tools)
-    return env
-
-
-def trusted_path() -> str | None:
-    """The PATH ``_trusted_env`` hands a program (``None`` when there is no
-    PATH at all). Both ``setpriv`` preflights resolve ``setpriv`` on it, as
-    the engagement run script's root phase does (#1248)."""
-    return _trusted_env().get("PATH")
+# #987: the plugin tools directory and the PATH rule that keeps its executables
+# from running as an s6 program live in ``trusted_path``. Every program this
+# module runs is resolved, and runs, under ``_trusted_env()``.
 
 
 def _run(argv: list[str], **kwargs) -> subprocess.CompletedProcess:

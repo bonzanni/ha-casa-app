@@ -142,6 +142,8 @@ is what the host renders.
 **Source**
 - `casa/rootfs/opt/casa/casa_core.py::main`
 - `casa/rootfs/opt/casa/runtime.py::CasaRuntime`
+- `casa/rootfs/opt/casa/trusted_path.py::trusted_path`
+- `casa/rootfs/opt/casa/trusted_path.py::_root_path_fragment`
 - `casa/config.yaml::options`
 
 **Tests**

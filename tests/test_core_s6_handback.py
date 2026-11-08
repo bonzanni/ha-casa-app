@@ -12,7 +12,7 @@ replacement count instead of passing.
   directory first, and no `_casa_cli_path`.
 - svc-ttyd's disabled branch, `install` and the finish scripts stay filtered.
 - the wrapper's filter is `_root_path_fragment()`'s, once, and agrees with
-  `drivers.s6_rc._trusted_env()` on #1248's ten PATH spellings.
+  `trusted_path._trusted_env()` on #1248's ten PATH spellings.
 - setup-configs.sh publishes the same container PATH as before the filter.
 - the wrapper execs: the service is the process s6-supervise started.
 """
@@ -24,7 +24,8 @@ from pathlib import Path
 import pytest
 
 from drivers import s6_rc
-from drivers.workspace import _root_path_fragment
+import trusted_path
+from trusted_path import _root_path_fragment
 from test_core_s6_interpreter import (
     DEFAULT_BLOCK, OVERLAY, WRAPPER, Chain, _populate, _stub, _write_exec)
 from test_core_s6_interpreter import pytestmark  # noqa: F401 — same host needs
@@ -99,7 +100,7 @@ class Body(Chain):
 @pytest.fixture
 def body(tmp_path, monkeypatch):
     b = Body(tmp_path)
-    monkeypatch.setattr(s6_rc, "PLUGIN_TOOLS_BIN", str(b.tools))
+    monkeypatch.setattr(trusted_path, "PLUGIN_TOOLS_BIN", str(b.tools))
     return b
 
 
@@ -198,7 +199,7 @@ def _probe(chain: Chain) -> Path:
 @pytest.mark.parametrize("case", _CASES)
 def test_wrapper_filter_and_trusted_path_agree(tmp_path, monkeypatch, case):
     chain = Chain(tmp_path)
-    monkeypatch.setattr(s6_rc, "PLUGIN_TOOLS_BIN", str(chain.tools))
+    monkeypatch.setattr(trusted_path, "PLUGIN_TOOLS_BIN", str(chain.tools))
     ws = tmp_path / "ws"
     _populate(ws, "cwd", chain.log, chain.launcher)
     _populate(ws / "rel", "rel", chain.log, chain.launcher)
@@ -215,7 +216,7 @@ def test_wrapper_filter_and_trusted_path_agree(tmp_path, monkeypatch, case):
     assert [ln for ln in chain.lines() if ln.startswith("body ")] == [f"body PATH={expected}"]
     monkeypatch.setenv("PATH", path)
     monkeypatch.chdir(ws)
-    assert s6_rc._trusted_env()["PATH"] == expected
+    assert trusted_path._trusted_env()["PATH"] == expected
 
 
 def test_wrapper_filter_with_a_space_in_the_tools_path(tmp_path, monkeypatch):
@@ -223,7 +224,7 @@ def test_wrapper_filter_with_a_space_in_the_tools_path(tmp_path, monkeypatch):
     chain.tools = tmp_path / "x y" / "tools"
     _populate(chain.tools, "shadow", chain.log, chain.launcher)
     chain.path = f"{chain.tools}:{chain.trusted}:/usr/bin:/bin"
-    monkeypatch.setattr(s6_rc, "PLUGIN_TOOLS_BIN", str(chain.tools))
+    monkeypatch.setattr(trusted_path, "PLUGIN_TOOLS_BIN", str(chain.tools))
     assert "'" in _root_path_fragment()          # rendered shell-quoted
 
     r = subprocess.run(["/bin/sh", "-c", 'exec "$@"', "with-contenv-probe",
@@ -254,7 +255,7 @@ def test_wrapper_with_no_trusted_entry_runs_nothing(chain):
 @pytest.fixture
 def chain(tmp_path, monkeypatch):
     c = Chain(tmp_path)
-    monkeypatch.setattr(s6_rc, "PLUGIN_TOOLS_BIN", str(c.tools))
+    monkeypatch.setattr(trusted_path, "PLUGIN_TOOLS_BIN", str(c.tools))
     return c
 
 

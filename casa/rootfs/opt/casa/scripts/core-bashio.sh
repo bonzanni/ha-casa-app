@@ -6,7 +6,7 @@
 # s6 service, and a plugin publishes executables there under any name. So
 # before bash, bashio or anything the bashio library and the script body run by
 # bare name is looked up, this drops that directory from PATH, by the rule the
-# engagement scripts use: the block below is drivers/workspace.py's
+# engagement scripts use: the block below is trusted_path.py's
 # _root_path_fragment() byte for byte (tests/test_core_s6_interpreter.py pins
 # that). It refuses with exit 111 if nothing is left.
 #

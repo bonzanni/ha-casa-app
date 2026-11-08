@@ -6,10 +6,11 @@ Every test drives the ladder with an injected ``sleep``/``monotonic`` and a fake
 """
 import pytest
 
-from engagement_quiesce import (
-    QuiesceResult, kill_uid_until_empty, live_pids_for_uid, quiesce_engagement,
+from engagement_quiesce import quiesce_engagement
+from engagement_uids import UNALLOCATED_UID
+from uid_kill import (
+    UID_BASE, QuiesceResult, kill_uid_until_empty, live_pids_for_uid,
 )
-from engagement_uids import UID_BASE, UNALLOCATED_UID
 
 UID = UID_BASE + 7
 
@@ -364,3 +365,20 @@ async def test_an_unallocated_uid_is_reported_not_signalled(tmp_path):
 def test_result_is_falsy_unless_extinct():
     assert not QuiesceResult(extinct=False, reason="x")
     assert QuiesceResult(extinct=True)
+
+
+def test_the_ladder_and_the_latch_share_one_unset_sentinel():
+    """``quiesce_engagement`` passes its ``_UNSET`` pidfd defaults straight into
+    ``kill_uid_until_empty``, which compares them with ``uid_kill._UNSET`` by
+    identity. A second sentinel would be called as a pidfd primitive and raise
+    ``TypeError`` out of a ladder that must never raise; no ladder test above
+    reaches that call with the defaults, so pin the identity itself."""
+    import inspect
+
+    import engagement_quiesce
+    import uid_kill
+
+    assert engagement_quiesce._UNSET is uid_kill._UNSET
+    params = inspect.signature(quiesce_engagement).parameters
+    for name in ("pidfd_open", "pidfd_send"):
+        assert params[name].default is uid_kill._UNSET

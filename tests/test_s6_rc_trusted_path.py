@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+import trusted_path
 from drivers import s6_rc
 
 PROGRAMS = ("s6-rc-compile", "s6-rc-update", "s6-rc", "s6-svc", "s6-svstat")
@@ -47,8 +48,6 @@ def _stub(directory: Path, name: str, tag: str, log: Path, out: str = "") -> Non
 
 @pytest.fixture
 def dirs(tmp_path, monkeypatch):
-    # raising=False: on a tree without the fix the end-to-end case still runs
-    # and reports the shadow, rather than erroring on a missing attribute.
     trusted, tools = tmp_path / "trusted", tmp_path / "tools"
     trusted.mkdir()
     tools.mkdir()
@@ -57,7 +56,7 @@ def dirs(tmp_path, monkeypatch):
     for name in PROGRAMS + ("child-prog",):
         _stub(trusted, name, "real", log, out="true true 4242")
         _stub(tools, name, "shadow", log, out="true true 4242")
-    monkeypatch.setattr(s6_rc, "PLUGIN_TOOLS_BIN", str(tools), raising=False)
+    monkeypatch.setattr(trusted_path, "PLUGIN_TOOLS_BIN", str(tools))
     return trusted, tools, log
 
 

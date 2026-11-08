@@ -117,6 +117,10 @@
   doc: architecture/engagement-containment.md
 - item: casa/rootfs/opt/casa/engagement_uids.py
   doc: architecture/engagement-containment.md
+- item: casa/rootfs/opt/casa/uid_kill.py
+  doc: architecture/engagement-containment.md
+- item: casa/rootfs/opt/casa/trusted_path.py
+  doc: architecture/overview.md
 - item: casa/rootfs/opt/casa/safe_fs.py
   doc: architecture/engagement-workspace-access.md
 - item: casa/rootfs/opt/casa/event_acks.py

@@ -9,7 +9,7 @@ there (`cat`, `mkdir`, `s6-log`, `setpriv`, ringlog's `bash`…) was what ran.
 
 These tests run the REAL rendered scripts with the REAL bash/dash, against
 real executables in directories that stand in for the plugin tools directory
-(`tools/`, injected through `s6_rc.PLUGIN_TOOLS_BIN`) and for the image PATH
+(`tools/`, injected through `trusted_path.PLUGIN_TOOLS_BIN`) and for the image PATH
 (`trusted/`). Every stub records one line and then forwards to the host's own
 program, so choosing the wrong one shows up as a COUNT, never as a later
 failure. The with-contenv interpreter lookup itself happens before any script
@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 
+import trusted_path as trusted_path_mod
 from drivers import s6_rc
 from drivers.workspace import cli_model_flags, render_log_run_script, render_run_script
 
@@ -123,7 +124,7 @@ def world(tmp_path, monkeypatch):
     _populate(tools, "shadow", log)
     _populate(trusted, "trusted", log)
     _recorder(trusted, "claude", "trusted", log)
-    monkeypatch.setattr(s6_rc, "PLUGIN_TOOLS_BIN", str(tools))
+    monkeypatch.setattr(trusted_path_mod, "PLUGIN_TOOLS_BIN", str(tools))
     return tmp_path, tools, trusted, log
 
 
@@ -242,7 +243,7 @@ def _setpriv_only_in_tools(tmp_path: Path, monkeypatch, *, also_trusted: bool):
     _fake_setpriv(tools, "shadow", log)
     if also_trusted:
         _fake_setpriv(trusted, "trusted", log)
-    monkeypatch.setattr(s6_rc, "PLUGIN_TOOLS_BIN", str(tools))
+    monkeypatch.setattr(trusted_path_mod, "PLUGIN_TOOLS_BIN", str(tools))
     monkeypatch.setenv("PATH", f"{tools}:{trusted}")
 
 

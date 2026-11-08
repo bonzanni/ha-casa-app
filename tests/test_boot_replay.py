@@ -3318,7 +3318,8 @@ async def test_boot_setpriv_gate_ignores_a_setpriv_only_in_the_tools_dir(
         sp = d / "setpriv"
         sp.write_text("#!/bin/sh\nexit 0\n")
         sp.chmod(sp.stat().st_mode | _stat.S_IXUSR | _stat.S_IXGRP | _stat.S_IXOTH)
-    monkeypatch.setattr(s6_rc, "PLUGIN_TOOLS_BIN", str(tools))
+    import trusted_path
+    monkeypatch.setattr(trusted_path, "PLUGIN_TOOLS_BIN", str(tools))
     monkeypatch.setenv("PATH", f"{tools}:{trusted}")
 
     svc_root = tmp_path / "svc"; svc_root.mkdir()

@@ -28,8 +28,8 @@ from typing import Iterable
 
 from atomic_io import atomic_write_json
 import private_state
+from uid_kill import UID_BASE
 
-UID_BASE = 200000
 UNALLOCATED_UID = -1
 
 

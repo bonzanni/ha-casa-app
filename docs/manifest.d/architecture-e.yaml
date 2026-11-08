@@ -66,8 +66,8 @@
     - casa/rootfs/opt/casa/engagement_uids.py::UidAllocator
     - casa/rootfs/opt/casa/engagement_uids.py::UidAllocator.reconstruct
     - casa/rootfs/opt/casa/engagement_quiesce.py::quiesce_engagement
-    - casa/rootfs/opt/casa/engagement_quiesce.py::kill_uid_until_empty
-    - casa/rootfs/opt/casa/engagement_quiesce.py::live_pids_for_uid
+    - casa/rootfs/opt/casa/uid_kill.py::kill_uid_until_empty
+    - casa/rootfs/opt/casa/uid_kill.py::live_pids_for_uid
     - casa/rootfs/opt/casa/drivers/s6_rc.py::latch_down
     - casa/rootfs/opt/casa/drivers/s6_rc.py::wanted_down
     - casa/rootfs/opt/casa/drivers/s6_rc.py::_run
