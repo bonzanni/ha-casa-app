@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.350.0] - 2026-11-08
+
+### Removed
+
+- **The observer is gone.** Ellen no longer adds her own remarks about a running engagement, engagements no longer send idle reminders, and the `/silent` command is gone. An engagement left idle for a day is still put to sleep as before.
+- **Interactive conversations with a specialist in their own topic are gone.** To talk with a specialist yourself, ask Ellen: she passes your words on and its answer back, and you carry on with it directly by replying to its message in your chat. Specialist background jobs work as before.
+- Executors no longer keep a memory archive between engagements.
+
+### Upgrade notes
+
+- **Not backward compatible.** An engagement opened in its own topic for a conversation with a specialist before this update is not resumed: end it with `/complete` or `/cancel` in its topic. Settings for the removed observer, idle reminders and executor memory in your configuration are accepted and ignored.
+
 ## [0.349.1] - 2026-11-08
 
 ### Fixed
