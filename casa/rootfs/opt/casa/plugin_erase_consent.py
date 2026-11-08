@@ -128,7 +128,6 @@ def prompt_erase_choice(
     *, coordinator: Any, channel: Any, key: EraseChoiceKey, text: str,
     continue_cb: "Callable[[int], Awaitable[bool]]",
     grants: "ChoiceGrants | None" = None,
-    inbound_reservation: Any | None = None,
     choices: "tuple[int, ...]" = (KEEP, ERASE, CANCEL),
 ) -> Any:
     """Post the question with *choices* as its buttons, in order; every
@@ -146,18 +145,9 @@ def prompt_erase_choice(
         choice = _choice(idx)
         if choice in (ERASE, ERASE_DATA_ONLY):
             grants.mint(key, choice)
-        if inbound_reservation is not None:
-            inbound_reservation.take()
 
     def _finish_factory(message_id: int, req: Any) -> Callable[[dict], Any]:
         async def _finish(outcome: dict) -> None:
-            try:
-                await _finish_inner(outcome)
-            finally:
-                if inbound_reservation is not None:
-                    inbound_reservation.release()
-
-        async def _finish_inner(outcome: dict) -> None:
             o = outcome.get("outcome") if isinstance(outcome, dict) else None
             if o != "answered":
                 await channel.edit_dm_message(

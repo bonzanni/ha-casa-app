@@ -324,24 +324,13 @@ def prompt_specialist_install_consent(
     *, coordinator: Any, channel: Any, chat_id: int, operator_id: int, inspection: Any,
     acks: "SpecialistInstallAckStore",
     reconcile_cb: "Callable[[], Awaitable[bool]] | None" = None,
-    inbound_reservation: Any | None = None,
     mode: str = "install",
-    deny_cb: "Callable[[], Awaitable[bool]] | None" = None,
-    expire_cb: "Callable[[], Awaitable[bool]] | None" = None,
     requester: str = "",
 ) -> Any:
-    # #1445: ``expire_cb`` tells the requesting engagement that the card
-    # expired unanswered, as ``deny_cb`` does after a Deny; ``requester`` keys
-    # the card to that engagement (see SpecialistInstallConsentKey).
+    # #1445: ``requester`` keys the card to the run that asked (see
+    # SpecialistInstallConsentKey).
     # #1225: ``mode`` is the inspect's own ("install" | "upgrade") and changes
     # wording only — it never enters the identity or the key below.
-    # #1251: ``deny_cb`` hands the requesting engagement a continuation after
-    # a Deny, as ``reconcile_cb`` does after an Approve.
-    # #663: ``inbound_reservation`` is the requesting engagement's SYNCHRONOUS
-    # ingress lease, built by the caller (which is the only party that knows
-    # the engagement) and taken at the tap-commit below. This module stays
-    # ignorant of engagements: it holds a duck-typed object with ``take()`` and
-    # ``release()`` and nothing else.
     # Task 7: thread `receipt_digest` (Task 8's bundled-plugin receipt digest)
     # into the identity so a bundled-plugin closure change forces
     # re-approval.
@@ -366,63 +355,22 @@ def prompt_specialist_install_consent(
                         component_checksum=inspection.root_digest, slug=inspection.slug,
                         receipt_digest=receipt_digest)
             meta["acked"] = True
-            # #663: AFTER the ack, never before it — this step must not
-            # reorder around the authoritative record write. This is the one
-            # synchronous instant inside the window (the Telegram callback
-            # runs it with no await after ``BROKER.commit``), so the
-            # reservation exists before the finish hook's task has even been
-            # scheduled.
-            if inbound_reservation is not None:
-                inbound_reservation.take()
-        elif idx == 1 and deny_cb is not None and inbound_reservation is not None:
-            # #1251: a Deny that dispatches a continuation reserves at the same
-            # instant and for the same reason; it records no ack. Without a
-            # Deny continuation there is nothing to hand the reservation to.
-            inbound_reservation.take()
 
     def _finish_factory(message_id: int, req: Any) -> Callable[[dict], Any]:
         async def _finish(outcome: dict) -> None:
-            # #663: the reservation's release-guarantee. Wrapping the WHOLE
-            # body is what covers every arm that never reaches the delivery
-            # seam — deny, expiry, an unrecorded ack, a raising body,
-            # cancellation, a channel that is down. On the ordinary approve
-            # path the seam has already released it and this is a no-op; the
-            # lease is idempotent precisely so both owners can call it. An
-            # unreleased reservation would make a successful completion
-            # permanently impossible under INV-ENG-003.
-            try:
-                await _finish_inner(outcome)
-            finally:
-                if inbound_reservation is not None:
-                    inbound_reservation.release()
-
-        async def _finish_inner(outcome: dict) -> None:
             o = outcome.get("outcome") if isinstance(outcome, dict) else None
             if o != "answered":
                 import ask_retirement
 
                 reason = outcome.get("reason") if isinstance(outcome, dict) else None
-                try:
-                    # #933: the reason the broker delivered names the cause;
-                    # a withdrawal is not an expiry.
-                    await channel.edit_dm_message(
-                        chat_id, message_id,
-                        ask_retirement.retirement_headline(
-                            f"{noun} consent for {inspection.slug!r}",
-                            o, reason, consequence=f"nothing was {done}"),
-                    )
-                finally:
-                    # #1445: an expiry tells the requesting engagement, so it
-                    # concludes instead of waiting for a tap that can no
-                    # longer come. A withdrawal or cancellation does not.
-                    if expire_cb is not None and ask_retirement.is_expiry(o, reason):
-                        try:
-                            await expire_cb()
-                        except Exception:  # noqa: BLE001 — never-raise
-                            # contract, as for deny_cb.
-                            logger.exception(
-                                "post-expiry specialist install continuation "
-                                "raised (slug=%s)", inspection.slug)
+                # #933: the reason the broker delivered names the cause; a
+                # withdrawal is not an expiry.
+                await channel.edit_dm_message(
+                    chat_id, message_id,
+                    ask_retirement.retirement_headline(
+                        f"{noun} consent for {inspection.slug!r}",
+                        o, reason, consequence=f"nothing was {done}"),
+                )
                 return
             if outcome.get("option_index") == 0:
                 if not req.meta.get("acked"):
@@ -489,18 +437,6 @@ def prompt_specialist_install_consent(
                 await channel.edit_dm_message(
                     chat_id, message_id, f"❌ Denied — {inspection.slug!r} was not {done}",
                 )
-                # #1251: then tell the requesting engagement, as authz does
-                # after its Deny edit. The edit is not chosen from the
-                # hand-off: it states what is true either way, and a hand-off
-                # that fails leaves the engagement as it was before this fix.
-                if deny_cb is not None:
-                    try:
-                        await deny_cb()
-                    except Exception:  # noqa: BLE001 — never-raise contract,
-                        # as for reconcile_cb; CancelledError stays control flow.
-                        logger.exception(
-                            "post-deny specialist install continuation raised "
-                            "(slug=%s)", inspection.slug)
 
         return _finish
 

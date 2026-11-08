@@ -250,7 +250,6 @@ by default. Write access is a separate, deliberate addition
 - `casa/rootfs/opt/casa/sensitivity.py::clearance_for_origin`
 - `casa/rootfs/opt/casa/channel_trust.py`
 - `casa/rootfs/opt/casa/tools.py::_origin_clearance_markers`
-- `casa/rootfs/opt/casa/tools.py::inherit_origin_markers`
 - `casa/rootfs/opt/casa/tools.py::_engagement_rebuild_fence`
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.lower_origin_clearance`
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.clear_context_rebuild_pending`

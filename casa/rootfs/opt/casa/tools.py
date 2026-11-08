@@ -2549,31 +2549,6 @@ def _engagement_rebuild_fence() -> dict | None:
     }
 
 
-def inherit_origin_markers(origin: dict) -> dict:
-    """Stamp the effective origin markers onto an engagement's origin dict.
-
-    #336 (Terra, review r3): an engagement that spawns a NESTED engagement
-    calls a launch tool over the internal socket, where the ambient
-    origin carries no route — so the child record would persist no markers and
-    its own reads would fall back to the channel default (private on
-    telegram), laundering a low-clearance parent into a high-clearance child.
-    Inheriting the parent's effective markers means clearance cannot be gained
-    by nesting.
-
-    Returns *origin* (mutated in place — it is already a per-call snapshot
-    copy, never the shared ContextVar holder). An origin that carries its own
-    route is left untouched: a resident turn creating an engagement is the
-    authority on its own clearance.
-    """
-    if "_origin_route" in origin:
-        return origin
-    route, clearance = _origin_clearance_markers(origin)
-    if route is not None:
-        origin["_origin_route"] = route
-        origin["_origin_clearance"] = clearance
-    return origin
-
-
 def _effective_delegation_depth(origin: dict) -> int:
     """The delegation depth an anti-chaining decision must use (#283).
 

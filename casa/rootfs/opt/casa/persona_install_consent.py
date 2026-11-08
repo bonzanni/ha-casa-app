@@ -39,16 +39,9 @@ def prompt_persona_install_consent(
     *, coordinator: Any, channel: Any, chat_id: int, operator_id: int, inspection: Any,
     acks: "PersonaInstallAckStore",
     reconcile_cb: "Callable[[], Awaitable[bool]] | None" = None,
-    inbound_reservation: Any | None = None,
-    deny_cb: "Callable[[], Awaitable[bool]] | None" = None,
-    expire_cb: "Callable[[], Awaitable[bool]] | None" = None,
     requester: str = "",
 ) -> Any:
-    # #1251: ``deny_cb`` — see the specialist sibling. #1445: so are
-    # ``expire_cb`` and ``requester``.
-    # #663: sibling of specialist_install_consent — the requesting
-    # engagement's SYNCHRONOUS ingress lease, duck-typed (``take`` /
-    # ``release``) so this module stays ignorant of engagements.
+    # #1445: ``requester`` — see the specialist sibling.
     identity = persona_install_consent_identity(
         persona_id=inspection.persona_id, version=inspection.version, checksum=inspection.checksum)
     key = PersonaInstallConsentKey(persona_id=inspection.persona_id, identity=identity,
@@ -70,52 +63,22 @@ def prompt_persona_install_consent(
                 identity=identity, persona_id=inspection.persona_id,
                 version=inspection.version, checksum=inspection.checksum,
                 expect_generations=generations)
-            # #663: AFTER ``acks.record`` and after its RETURN VALUE has been
-            # consumed — #543's revocation generations decide whether anything
-            # was written at all, and this step must not reorder around that.
-            if inbound_reservation is not None:
-                inbound_reservation.take()
-        elif idx == 1 and deny_cb is not None and inbound_reservation is not None:
-            # #1251: a Deny that dispatches a continuation reserves too, and
-            # records nothing — see the specialist sibling.
-            inbound_reservation.take()
 
     def _finish_factory(message_id: int, req: Any) -> Callable[[dict], Any]:
         async def _finish(outcome: dict) -> None:
-            # #663: release-guarantee — see the specialist sibling. The whole
-            # body is wrapped so every arm that never reaches the delivery
-            # seam still disposes of the reservation; the lease is idempotent
-            # because the seam releases it too on the ordinary path.
-            try:
-                await _finish_inner(outcome)
-            finally:
-                if inbound_reservation is not None:
-                    inbound_reservation.release()
-
-        async def _finish_inner(outcome: dict) -> None:
             o = outcome.get("outcome") if isinstance(outcome, dict) else None
             if o != "answered":
                 import ask_retirement
 
                 reason = outcome.get("reason") if isinstance(outcome, dict) else None
-                try:
-                    # #933: the reason the broker delivered names the cause;
-                    # a withdrawal is not an expiry.
-                    await channel.edit_dm_message(
-                        chat_id, message_id,
-                        ask_retirement.retirement_headline(
-                            f"persona install consent for {inspection.persona_id!r}",
-                            o, reason, consequence="nothing was installed"),
-                    )
-                finally:
-                    # #1445: see the specialist sibling.
-                    if expire_cb is not None and ask_retirement.is_expiry(o, reason):
-                        try:
-                            await expire_cb()
-                        except Exception:  # noqa: BLE001 — never-raise contract
-                            logger.exception(
-                                "post-expiry persona install continuation "
-                                "raised (persona_id=%s)", inspection.persona_id)
+                # #933: the reason the broker delivered names the cause; a
+                # withdrawal is not an expiry.
+                await channel.edit_dm_message(
+                    chat_id, message_id,
+                    ask_retirement.retirement_headline(
+                        f"persona install consent for {inspection.persona_id!r}",
+                        o, reason, consequence="nothing was installed"),
+                )
                 return
             if outcome.get("option_index") == 0:
                 if not req.meta.get("acked"):
@@ -173,16 +136,6 @@ def prompt_persona_install_consent(
             else:
                 await channel.edit_dm_message(
                     chat_id, message_id, f"❌ Denied — {inspection.persona_id!r} was not installed")
-                # #1251: then tell the requesting engagement — see the
-                # specialist sibling.
-                if deny_cb is not None:
-                    try:
-                        await deny_cb()
-                    except Exception:  # noqa: BLE001 — never-raise contract;
-                        # CancelledError stays control flow.
-                        logger.exception(
-                            "post-deny persona install continuation raised "
-                            "(persona_id=%s)", inspection.persona_id)
 
         return _finish
 

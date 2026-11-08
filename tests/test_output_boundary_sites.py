@@ -91,9 +91,9 @@ EDIT_DM_MESSAGE_CALLERS = {
     ("channels/telegram.py", "_edit_proposal_message"): {"status"},
     ("callback_consent.py", "_finish"): {"plugin"},                # consent bodies are plugin-authored
     ("event_consent.py", "_finish"): {"plugin"},
-    ("persona_install_consent.py", "_finish_inner"): {"plugin"},
-    ("plugin_erase_consent.py", "_finish_inner"): {"status"},      # #1046: fixed Keep/Erase/Cancel/expired statuses
-    ("specialist_install_consent.py", "_finish_inner"): {"plugin"},
+    ("persona_install_consent.py", "_finish"): {"plugin"},
+    ("plugin_erase_consent.py", "_finish"): {"status"},      # #1046: fixed Keep/Erase/Cancel/expired statuses
+    ("specialist_install_consent.py", "_finish"): {"plugin"},
     ("trigger_consent.py", "_finish"): {"plugin"},
     ("operator_calls.py", "_finish"): {"plugin"},                  # browser executor: a plugin's question, ☑ label / retired
     ("plugin_stop.py", "settle_run_card"): {"status"},             # the Stop: the card's stored text + ☑ Stopped / Ended / Stop asked
