@@ -129,9 +129,9 @@ The inventory is the only thing that decides which paths are private; it names e
 mode, and what is exposed if the entry regresses. Individual files are tightened under the
 private root, which itself stays traversable; directories are tightened at the top only,
 because without execute permission for others nothing beneath is reachable by name, so the
-pass never recurses. Repair runs after boot replay has confirmed every existing engagement
-service down, so nothing privilege-dropped is alive while modes move, and before that
-function's fast-path return, so a boot with no records still repairs. Repair, not the write
+pass never recurses. Repair runs once on every boot, from the application's start-up and
+before boot replay, so it does not depend on there being anything to replay, and it finishes
+before replay or any channel can start a privilege-dropped engagement. Repair, not the write
 sites, is what fixes an already-deployed install — its files already exist world-readable, and
 an atomic write with no explicit mode preserves an existing file's mode, so a store whose next
 write is days away would otherwise stay exposed. The credential subset is re-read from the
@@ -233,6 +233,7 @@ the code writes.
 - `casa/rootfs/opt/casa/config_git.py::init_repo`
 - `casa/rootfs/opt/casa/private_state.py::enforce`
 - `casa/rootfs/opt/casa/private_state.py::credential_modes_ok`
+- `casa/rootfs/opt/casa/casa_core.py::_repair_private_state`
 
 **Tests**
 - `tests/test_atomic_io.py`

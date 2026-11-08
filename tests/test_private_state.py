@@ -16,8 +16,11 @@ signal at all.
 """
 from __future__ import annotations
 
+import ast
+import inspect
 import os
 import stat
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -301,3 +304,78 @@ def test_credential_modes_ok_ignores_group_only_readability_of_private_files(
     world-readable is an ERROR in the log, not a refusal to run."""
     _touch(tmp_path, "/data/topic-ledger.json", 0o644)
     assert private_state.credential_modes_ok(root=str(tmp_path)) == []
+
+
+# ---------------------------------------------------------------------------
+# The boot call site — once per boot, from main(), independent of boot replay.
+# ---------------------------------------------------------------------------
+
+
+def _called_name(node) -> str:
+    fn = getattr(node, "func", None)
+    if isinstance(fn, ast.Name):
+        return fn.id
+    if isinstance(fn, ast.Attribute):
+        return fn.attr
+    return ""
+
+
+def _function_body(func) -> list:
+    return ast.parse(textwrap.dedent(inspect.getsource(func))).body[0].body
+
+
+def test_main_repairs_private_state_on_every_boot_before_replay() -> None:
+    """INV-STATE-005 promises the repair on EVERY boot. It used to live inside
+    boot replay, so a replay that raised early, or a tree without replay,
+    silently skipped it. Pinned structurally, as the other boot-order pins in
+    this suite are: a TOP-LEVEL, unguarded call statement in ``main``'s own body
+    (not inside an ``if``/``try``/``with``/loop, which a mutation could make
+    dead), placed before the statement that runs boot replay."""
+    import casa_core
+
+    body = _function_body(casa_core.main)
+    repair = [
+        i for i, stmt in enumerate(body)
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+        and _called_name(stmt.value) == "_repair_private_state"
+    ]
+    assert len(repair) == 1, "main() must call _repair_private_state() once"
+    replay = [
+        i for i, stmt in enumerate(body)
+        if any(_called_name(n) == "replay_undergoing_engagements"
+               for n in ast.walk(stmt))
+    ]
+    assert replay and repair[0] < replay[0]
+
+
+def test_boot_replay_no_longer_runs_the_repair() -> None:
+    """Exactly once per boot: with ``main`` calling it, replay must not."""
+    import casa_core
+
+    names = {
+        _called_name(n)
+        for stmt in _function_body(casa_core.replay_undergoing_engagements)
+        for n in ast.walk(stmt)
+    }
+    assert "enforce" not in names
+    assert "_repair_private_state" not in names
+
+
+def test_the_boot_repair_runs_enforce_and_never_raises(monkeypatch) -> None:
+    import casa_core
+
+    calls: list[int] = []
+
+    def fake_enforce(**_kw):
+        calls.append(1)
+        return private_state.Report()
+
+    monkeypatch.setattr(private_state, "enforce", fake_enforce)
+    casa_core._repair_private_state()
+    assert calls == [1]
+
+    def boom(**_kw):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(private_state, "enforce", boom)
+    casa_core._repair_private_state()          # logged, not raised

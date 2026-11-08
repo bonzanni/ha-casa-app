@@ -5,19 +5,16 @@ now stored/rendered VERBATIM, exactly as the agent supplied them. Doctrine
 pre-labelled prose.
 
 Pure-function coverage of ``_validate_ask_args`` (verbatim pass-through +
-structural checks) and ``render_ask_body`` / ``_canonical_question``
-(verbatim rendering). Handler-level anchor-acceptance tests (inline
-"(a) … (b) …" no longer refused) live in ``test_ask_gates.py`` where a real
-driver/broker is needed.
+structural checks) and ``render_ask_body`` (verbatim rendering; the
+``_canonical_question`` cases live in ``test_option_labels.py``).
+Handler-level anchor-acceptance tests (inline "(a) … (b) …" no longer
+refused) live in ``test_ask_gates.py`` where a real driver/broker is needed.
 """
 
 from __future__ import annotations
 
-from channels.channel_handlers import (
-    _canonical_question,
-    _validate_ask_args,
-    render_ask_body,
-)
+from channels.channel_handlers import _validate_ask_args
+from channels.telegram import render_ask_body
 
 
 def _body(options, *, question="Pick:", **over):
@@ -223,26 +220,3 @@ class TestCapsRemovedD1:
     def test_blank_full_label_dict_still_rejected(self):
         assert _validate_ask_args(
             _body([{"label": "   ", "short": "ok"}, "B"])) is None
-
-
-# ---------------------------------------------------------------------------
-# D4 (Sol r5-4) · _canonical_question — no more Q<digits>: strip
-# ---------------------------------------------------------------------------
-
-
-class TestCanonicalQuestionVerbatim:
-    def test_agent_q_prefix_preserved_verbatim(self):
-        # Task B1 brief: "Q7: which flavor?" is preserved verbatim and
-        # rendered "Q<n>: Q7: which flavor?" — Casa prepends its own prefix,
-        # the agent's text is untouched.
-        assert _canonical_question("Q7: which flavor?", 3) == "Q3: Q7: which flavor?"
-
-    def test_lowercase_q_prefix_preserved_verbatim(self):
-        assert _canonical_question("q2: another one?", 5) == "Q5: q2: another one?"
-
-    def test_plain_question_unaffected(self):
-        assert _canonical_question("What database name?", 1) == "Q1: What database name?"
-
-    def test_render_ask_body_uses_verbatim_question(self):
-        rendered = render_ask_body(3, "Q7: which flavor?", ["A", "B"])
-        assert rendered.startswith("Q3: Q7: which flavor?")

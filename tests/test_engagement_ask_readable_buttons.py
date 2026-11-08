@@ -44,90 +44,20 @@ from unittest.mock import AsyncMock, MagicMock
 import agent as agent_mod
 import verdict_broker
 from verdict_broker import VerdictBroker
-from channels.channel_handlers import (
-    _ask_settle_text,
-    render_ask_body,
-)
+from channels.channel_handlers import _ask_settle_text
+from channels.telegram import render_ask_body
 
 # ``asyncio_mode = auto`` (pytest.ini) auto-detects the async tests here; no
 # module-level asyncio mark (this file mixes sync helper tests + async ones).
 
 
 # ---------------------------------------------------------------------------
-# render_ask_body — the single canonical body
+# The own-word settle (render_ask_body's own cases are in test_option_labels.py)
 # ---------------------------------------------------------------------------
 
 
-class TestRenderAskBody:
-    def test_numbered_verbatim_options_below_question(self) -> None:
-        body = render_ask_body(
-            3, "Which account?", ["Personal Gmail", "Work Outlook"])
-        assert body == (
-            "Q3: Which account?\n\n1. Personal Gmail\n2. Work Outlook")
-
-    def test_every_full_option_appears_verbatim(self) -> None:
-        options = [
-            "Set up a brand new dedicated work account",
-            "Reuse the existing personal address for now",
-            "Ask the finance team which alias to use",
-        ]
-        body = render_ask_body(2, "How should I proceed?", options)
-        # Header carries the canonical durable number.
-        assert body.startswith("Q2: How should I proceed?\n\n")
-        # EVERY option is present verbatim, 1-based numbered, in order.
-        for i, opt in enumerate(options):
-            assert f"{i + 1}. {opt}" in body
-        assert body.splitlines()[2:] == [
-            "1. " + options[0], "2. " + options[1], "3. " + options[2]]
-
-    def test_prepends_qnumber_verbatim(self) -> None:
-        # v0.85.0 (round 4, D4): the agent-authored "Q7:" prefix is preserved
-        # VERBATIM; Casa only PREPENDS the allocated durable number (parity
-        # with _canonical_question).
-        body = render_ask_body(1, "Q7: Which DB?", ["A", "B"])
-        assert body == "Q1: Q7: Which DB?\n\n1. A\n2. B"
-
-    def test_anchor_no_option_list(self) -> None:
-        # Free-text anchor (options == []) renders the numbered question ALONE.
-        assert render_ask_body(4, "What's the DB name?", []) == (
-            "Q4: What's the DB name?")
-
-    def test_no_number_uses_bare_question(self) -> None:
-        assert render_ask_body(None, "Proceed?", ["A", "B"]) == (
-            "Proceed?\n\n1. A\n2. B")
-
-    def test_own_word_buttons_leave_out_the_list(self) -> None:
-        # #1392: buttons that read "Delete" / "Keep" already carry every
-        # option in full — the body is the question alone.
-        assert render_ask_body(
-            None, "Delete both?", ["Delete", "Keep"], ["Delete", "Keep"],
-        ) == "Delete both?"
-        assert render_ask_body(
-            2, "Tea or coffee?", ["Tea", "Coffee"], ["Tea", "Coffee"],
-        ) == "Q2: Tea or coffee?"
-
-    def test_list_stays_when_a_button_does_not_show_the_words(self) -> None:
-        # #1392: the "Option n" floor and "n · <short>" captions both need the
-        # numbered full options under the question.
-        options = ["Delete", "Keep"]
-        listed = "Delete both?\n\n1. Delete\n2. Keep"
-        for captions in (["Option 1", "Option 2"], ["1 · Del", "2 · Keep"],
-                         None):
-            assert render_ask_body(
-                None, "Delete both?", options, captions) == listed
-
-    def test_resolved_captions_decide_the_list(self) -> None:
-        # The SAME resolver the keyboards use decides the body: words that fit
-        # drop the list; one option over the button fit floors every button
-        # and brings the list back.
-        from channels.telegram import _ASK_BUTTON_WORDS_FIT, short_option_labels
-        short = ["Delete", "Keep"]
-        assert render_ask_body(
-            None, "Q?", short, short_option_labels(short)) == "Q?"
-        long_ = ["Delete", "K" * (_ASK_BUTTON_WORDS_FIT + 1)]
-        assert render_ask_body(
-            None, "Q?", long_, short_option_labels(long_)
-        ) == f"Q?\n\n1. Delete\n2. {long_[1]}"
+class TestOwnWordSettle:
+    """#1392: the settle copy when the buttons show the options' own words."""
 
     def test_own_word_settle_names_the_chosen_words(self) -> None:
         # #1392: with no list to point a position at, the answered settle
@@ -149,12 +79,6 @@ class TestRenderAskBody:
         assert "\n✅ Tea" in single
         multi = ask_lifecycle_suffixes(1, opts, True, words=True)
         assert "\n✅ Tea, A much longer coffee option" in multi
-
-    def test_body_stays_well_under_telegram_limit_at_caps(self) -> None:
-        # Worst case at _validate_ask_args caps (question 1024, 8 options × 48)
-        # is far below Telegram's 4096 — no truncation path needed (Sol r1-5).
-        body = render_ask_body(999, "q" * 1024, ["o" * 48 for _ in range(8)])
-        assert len(body) < 4096
 
 
 # ---------------------------------------------------------------------------

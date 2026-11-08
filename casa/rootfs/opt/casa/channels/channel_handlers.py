@@ -28,6 +28,9 @@ from typing import Any, Awaitable, Callable
 from aiohttp import web
 from telegram.error import BadRequest
 
+# The ask-body renderer lives in ``channels.telegram`` beside the button-label
+# resolver; the resident ``ask_user`` and ``wipe_memory`` DM asks use it too.
+from channels.telegram import buttons_show_options, render_ask_body
 from settle_gate import confirmed_settle_edit
 from text_util import utf16_len
 
@@ -1201,70 +1204,6 @@ def _validate_ask_args(
         return None
     timeout_s = min(max(timeout_s, _ASK_MIN_TIMEOUT_S), _ASK_MAX_TIMEOUT_S)
     return question, labels, timeout_s, shorts
-
-
-def _canonical_question(question: str, number: int) -> str:
-    """v0.79.0 §4 — the DISPLAYED question prefix is ALWAYS the allocated
-    durable number: ``Q<number>: `` is PREPENDED to the question. v0.85.0
-    (round 4, D4): the old leading ``Q<digits>:`` strip is REMOVED — the
-    agent's question text is preserved VERBATIM (an agent-authored
-    ``"Q7: which flavor?"`` renders ``"Q<n>: Q7: which flavor?"``); doctrine,
-    not a regex, tells the agent not to self-number."""
-    return f"Q{number}: {question}"
-
-
-def buttons_show_options(options: list, captions: "list | None") -> bool:
-    """#1392: True when the buttons are the options' own words verbatim
-    (``captions`` is what the keyboard shows; ``None`` means no keyboard is
-    known). Then the numbered list under the question only repeats them."""
-    return bool(options) and captions is not None and (
-        [str(c) for c in captions] == [str(o) for o in options])
-
-
-def render_ask_body(
-    number: "int | None", question: str, options: list,
-    captions: "list | None" = None,
-) -> str:
-    """v0.81.0 (W-R3, Sol r1-5) — the SINGLE canonical rendered ask body.
-
-    Used IDENTICALLY by all four ask consumers so they can never disagree:
-    the initial keyboard post, the finish-hook settlement base, the persisted
-    ``open_questions[].text``, and boot reconciliation. If the displayed
-    message and the persisted text ever diverged, a tap/reconcile would drop
-    the option list — this one source prevents that bug.
-
-    Format::
-
-        Q<n>: <question>
-
-        1. <opt0>
-        2. <opt1>
-        …
-
-    EVERY option is rendered VERBATIM (no truncation, no ellipsis), 1-based
-    numbered. A free-text anchor (``options == []``) renders the numbered
-    question ALONE — no option list. ``number`` may be ``None`` (no durable
-    number allocated / degraded boot), in which case the bare question is used
-    without the ``Q<n>:`` prefix.
-
-    v0.84.0 (round 4, D1): the LENGTH caps this docstring used to lean on for a
-    "no overflow path" claim are gone (``_validate_ask_args`` no longer bounds
-    question/label length; only option COUNT stays capped at
-    ``_ASK_MAX_OPTIONS``). The real Telegram 4096-char body limit is now
-    enforced by a dedicated per-ask render-and-measure lifecycle validator
-    (Task A3, spec §D1 bullet 2) rather than by an invented length heuristic
-    here — this function never truncates.
-
-    #1392: when ``captions`` (the button captions the keyboard shows) are the
-    options' own words verbatim, the list is left out — the buttons already
-    carry every option in full. The list stays whenever a button shows a
-    ``short`` or the ``Option n`` floor, and when no captions are passed.
-    """
-    base = _canonical_question(question, number) if number else question
-    if not options or buttons_show_options(options, captions):
-        return base
-    numbered = "\n".join(f"{i + 1}. {opt}" for i, opt in enumerate(options))
-    return f"{base}\n\n{numbered}"
 
 
 def _positional_settle_suffix(indices: list[int]) -> str:

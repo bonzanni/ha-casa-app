@@ -48,10 +48,8 @@ from broker_helpers import deliver
 import agent as agent_mod
 import verdict_broker
 from verdict_broker import VerdictBroker
-from channels.channel_handlers import (
-    _ASK_BODY_LIMIT,
-    render_ask_body,
-)
+from channels.channel_handlers import _ASK_BODY_LIMIT
+from channels.telegram import render_ask_body
 from drivers.claude_code_driver import ask_lifecycle_suffixes
 
 # ``ask_lifecycle_suffixes`` never interpolates the number (D1 — no suffix form
@@ -215,8 +213,7 @@ def _make_ask_handler(tmp_path, monkeypatch):
 def _measure(options: list, multi: bool) -> "tuple[list, bool]":
     """#1392: the captions the handler resolves, and whether they are the
     options' own words (body without list, settle with the chosen words)."""
-    from channels.channel_handlers import buttons_show_options
-    from channels.telegram import resolve_button_labels
+    from channels.telegram import buttons_show_options, resolve_button_labels
     captions = resolve_button_labels(list(options), multi)
     return captions, buttons_show_options(options, captions)
 

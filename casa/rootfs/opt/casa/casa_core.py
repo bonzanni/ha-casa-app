@@ -529,6 +529,36 @@ def read_followup_incomplete(engagement_driver, rec, token) -> str:
     return fn(rec.id, token) if callable(fn) else ""
 
 
+def _repair_private_state() -> None:
+    """Private-state mode repair — GHSA-569r-7crq-xr43, INV-STATE-005.
+
+    ``main()`` calls this once on every boot, before boot replay and before any
+    channel or agent starts, so nothing that could start a privilege-dropped
+    engagement runs ahead of it. It used to run inside boot replay, after the
+    engagement services were confirmed down; it moved out so the repair does not
+    depend on replay at all (a replay that raised before its step 0a skipped
+    it). Tightening a mode earlier is never weaker: a still-running engagement
+    could read the file before the repair either way, and replay's credential
+    gate re-reads the modes from the filesystem after this.
+
+    This pass, not the write sites, is what repairs an already-deployed
+    install: every affected file already exists at 0644 and atomic_io
+    preserves an existing file's mode, so a file whose next write is days away
+    would otherwise stay exposed. Never raises: ``enforce`` reports instead of
+    raising, and anything unexpected is logged rather than allowed to stop boot.
+    """
+    try:
+        report = private_state.enforce()
+    except Exception as exc:  # noqa: BLE001 — a repair failure must not stop boot
+        logger.error("private-state: the boot repair pass failed: %s", exc)
+        return
+    if report.changed:
+        logger.info(
+            "private-state: repaired %d path mode(s) on this boot",
+            len(report.changed),
+        )
+
+
 async def replay_undergoing_engagements(
     *, registry, driver, executor_registry=None,
     engagements_root: str = "/data/engagements",
@@ -819,26 +849,9 @@ async def replay_undergoing_engagements(
                         "failed) for %s failed: %s", _svc_eid[:8], exc,
                     )
 
-        # 0a. Private-state mode repair — GHSA-569r-7crq-xr43. Placed HERE, and
-        # not earlier in boot, because ordering is the whole point: step 0 above
-        # has just driven every existing engagement service to a CONFIRMED down,
-        # so at this instant no uid-dropped process exists and the repair cannot
-        # race a reader. (Running it before replay would leave a real interval —
-        # a casa-main-only respawn leaves the previous generation's engagement
-        # longrun wanted-up and running until step 0 downs it.) It is also before
-        # the compile lock's fast-path return below, so it runs on EVERY boot,
-        # including one with zero records.
-        #
-        # This pass, not the write sites, is what repairs an already-deployed
-        # install: every affected file already exists at 0644 and atomic_io
-        # preserves an existing file's mode, so a file whose next write is days
-        # away would otherwise stay exposed.
-        _ps_report = private_state.enforce()
-        if _ps_report.changed:
-            logger.info(
-                "private-state: repaired %d path mode(s) on this boot",
-                len(_ps_report.changed),
-            )
+        # 0a. The private-state mode repair (GHSA-569r-7crq-xr43) used to run
+        # here; ``main()`` now runs it once per boot, just before this function
+        # (``_repair_private_state``), so it no longer depends on boot replay.
 
         # 0c. Credential-exposure gate — the same shape as 0b below. A
         # credential-class repair that FAILED means Casa cannot honour the
@@ -5015,6 +5028,10 @@ async def main() -> None:
     runtime.claude_code_driver = claude_code_driver
     # Stash runtime on agent module so reload handlers and tools find it.
     agent_mod.active_runtime = runtime
+
+    # INV-STATE-005: the private-state mode repair, once per boot, before boot
+    # replay and before any channel or agent starts.
+    _repair_private_state()
 
     # Plan 4a: boot replay for claude_code engagements.
     # v0.83.0 (§A3(b), Sol r9-2/r10-3): the open-question reconcilers are

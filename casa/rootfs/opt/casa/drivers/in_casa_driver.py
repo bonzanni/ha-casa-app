@@ -1582,7 +1582,7 @@ class InCasaDriver(DriverProtocol):
                                     if (progress is not None and getattr(
                                             sdk_msg, "parent_tool_use_id",
                                             None) is None):
-                                        from drivers.summary_controller import (
+                                        from drivers.turn_progress import (
                                             activity_for_tool,
                                         )
                                         progress.step(activity_for_tool(

@@ -1755,8 +1755,7 @@ async def ask_user(args: dict) -> dict:
                         "message": "channel not available"})
 
     from verdict_broker import BROKER
-    from channels.channel_handlers import render_ask_body
-    from channels.telegram import short_option_labels
+    from channels.telegram import render_ask_body, short_option_labels
 
     rid = uuid.uuid4().hex
     target_role = origin.get("role")
@@ -2338,8 +2337,7 @@ async def wipe_memory(args: dict) -> dict:
     chat_id, operator_id = op
 
     from verdict_broker import BROKER
-    from channels.channel_handlers import render_ask_body
-    from channels.telegram import short_option_labels
+    from channels.telegram import render_ask_body, short_option_labels
 
     rid = uuid.uuid4().hex
     options = ["Approve — wipe everything", "Cancel"]

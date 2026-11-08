@@ -22,9 +22,7 @@ from drivers.summary_controller import (
     STATUS_WAITING_REPLY,
     STATUS_WORKING,
     SummaryController,
-    activity_for_tool,
     extract_plan,
-    format_elapsed,
     render_summary,
     sanitize_plan_subject,
 )
@@ -100,57 +98,8 @@ def _make(
 
 
 # ---------------------------------------------------------------------------
-# Pure helpers — activity mapping, plan, elapsed, layout.
+# Pure helpers — plan, layout.
 # ---------------------------------------------------------------------------
-
-
-class TestActivityMapping:
-    @pytest.mark.parametrize(
-        "tool,expected",
-        [
-            ("Read", "reading files"),
-            ("Glob", "reading files"),
-            ("Grep", "reading files"),
-            ("Write", "editing files"),
-            ("Edit", "editing files"),
-            ("NotebookEdit", "editing files"),
-            ("Bash", "running commands"),
-            ("Task", "planning"),
-            ("TaskOutput", "planning"),
-            ("TodoWrite", "planning"),
-            ("WebFetch", "researching"),
-            ("WebSearch", "researching"),
-            ("mcp__ha-control__call_service", "using ha-control tools"),
-            ("mcp__casa-framework__emit_completion", "wrapping up"),
-            # #1350: Casa's own tools in the operator's words
-            ("mcp__casa-framework__plugin_update", "updating plugins"),
-            ("mcp__casa-framework__plugin_list", "updating plugins"),
-            ("mcp__casa-framework__config_git_commit", "committing the change"),
-            ("mcp__casa-framework__casa_reload", "reloading Casa"),
-            ("mcp__casa-framework__casa_reload_triggers", "reloading Casa"),
-            ("mcp__casa-framework__casa_restart_supervised", "reloading Casa"),
-            ("mcp__casa-framework__specialist_upgrade", "managing specialists"),
-            ("mcp__casa-framework__persona_apply", "managing personas"),
-            ("mcp__casa-framework__resident_persona_swap", "managing personas"),
-            ("mcp__casa-framework__list_vault_items", "wiring secrets"),
-            ("mcp__casa-framework__get_item_fields", "wiring secrets"),
-            ("mcp__casa-framework__set_plugin_env_reference", "wiring secrets"),
-            ("mcp__casa-framework__remove_plugin_env_reference", "wiring secrets"),
-            ("mcp__casa-framework__config_trigger_upsert", "updating triggers"),
-            ("mcp__casa-framework__query_engager", "using casa-framework tools"),
-            ("SomethingElse", "working"),
-            ("", "working"),
-        ],
-    )
-    def test_coarse_mapping(self, tool, expected):
-        assert activity_for_tool(tool) == expected
-
-    def test_mcp_server_name_capped_at_32(self):
-        # P1-B r4: the mcp server substring is capped at 32 chars AT SOURCE so
-        # the status line cannot blow the 4096 wire bound.
-        long = "s" * 100
-        out = activity_for_tool(f"mcp__{long}__do")
-        assert out == "using " + "s" * 32 + " tools"
 
 
 class TestPlanSanitization:
@@ -354,23 +303,6 @@ class TestTodoWindowExtraction:
         assert plan["total"] == 0
         assert plan["items"] == []
         assert plan["is_todo"] is True
-
-
-class TestElapsedFormat:
-    @pytest.mark.parametrize(
-        "seconds,expected",
-        [
-            (0, "0s"),
-            (5, "5s"),
-            (59, "59s"),
-            (60, "1m 00s"),
-            (150, "2m 30s"),
-            (3600, "1h 00m"),
-            (3660, "1h 01m"),
-        ],
-    )
-    def test_format(self, seconds, expected):
-        assert format_elapsed(seconds) == expected
 
 
 class TestLayoutExact:
