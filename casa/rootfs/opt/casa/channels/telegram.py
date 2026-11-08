@@ -3391,7 +3391,7 @@ class TelegramChannel(Channel):
                 await _finalize_engagement(
                     latest, outcome="error",
                     text=f"a batch failed: {kind}",
-                    artifacts=[], next_steps=[], driver=self._engagement_driver)
+                    next_steps=[], driver=self._engagement_driver)
             return
         finally:
             background_jobs.turn_owner_finished(rec.id)
@@ -3585,7 +3585,7 @@ class TelegramChannel(Channel):
                     from tools import _finalize_engagement
                     await _finalize_engagement(
                         rec, outcome="error", text="no sdk_session_id to resume with",
-                        artifacts=[], next_steps=[], driver=drv)
+                        next_steps=[], driver=drv)
                     return False
                 if reg is not None:
                     await reg.mark_error(

@@ -238,7 +238,7 @@ async def test_a_finished_engagements_notice_carries_the_echo_after_its_text(tmp
                engagement_registry=reg)
     fresh_ledger.record(rec.id, _event(pages=None, media_kind="document"))
     await _finalize_engagement(rec, outcome="completed", text="all good",
-                               artifacts=[], next_steps=[], driver=None)
+                               next_steps=[], driver=None)
     assert bus.notify.await_count == 1
     complete = bus.notify.await_args.args[0].content
     assert complete.text == "all good\n\n📊 Finance posted a document to your chat." + "\n" + tools_mod.POST_ECHO_SILENCE_NOTE

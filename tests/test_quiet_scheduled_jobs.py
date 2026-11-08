@@ -204,7 +204,7 @@ async def test_a_completed_quiet_run_is_told_nowhere_and_a_failed_one_is_told(
     monkeypatch.setattr(tools, "send_engagement_outcome", send)
     rec = await _launch(runtime, QUIET, scheduled=True)
     await tools._finalize_engagement(rec, outcome=outcome, text="nothing new",
-                                     artifacts=[], next_steps=[], driver=runtime.driver)
+                                     next_steps=[], driver=runtime.driver)
     rec = runtime.registry.get(rec.id)
     assert rec.status == outcome
     if outcome == "completed":
@@ -224,7 +224,7 @@ async def test_a_completed_run_that_is_not_quiet_is_still_told(runtime, monkeypa
     monkeypatch.setattr(tools, "send_engagement_outcome", send)
     rec = await _launch(runtime, DECL, scheduled=True)
     await tools._finalize_engagement(rec, outcome="completed", text="done",
-                                     artifacts=[], next_steps=[], driver=runtime.driver)
+                                     next_steps=[], driver=runtime.driver)
     assert [c.status for c in told] == ["ok"]
 
 
@@ -249,7 +249,7 @@ async def test_a_quiet_runs_completed_end_is_logged_as_deliberately_untold(
     monkeypatch.setattr(tools, "send_engagement_outcome", send)
     rec = await _launch(runtime, QUIET, scheduled=True)
     await tools._finalize_engagement(rec, outcome=outcome, text="nothing new",
-                                     artifacts=[], next_steps=[], driver=runtime.driver)
+                                     next_steps=[], driver=runtime.driver)
     runtime.channel._driver_turn_incomplete = lambda r, t: "followup_missing_result"
     caplog.clear()
     with caplog.at_level("DEBUG", logger="channels.telegram"):

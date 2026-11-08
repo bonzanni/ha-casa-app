@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-02
+last_reviewed: 2026-11-08
 ---
 
 # Transcript reaping: a finished engagement's and a delegation's CLI transcripts
@@ -27,13 +27,15 @@ unconfirmed run.** The invariant below states what that selects, and its gaps.
 **INV-ENG-027**: Once an `in_casa` engagement's terminal status is on disk and `TRANSCRIPT_RETENTION_DAYS` have passed since its `completed_at`, a pass run at scheduler start and every six hours deletes its CLI transcripts — a plugin job's whole per-engagement project folder, or, for a specialist or executor, each session the record names (its current session, every session its background job lists, and every session a clearance downgrade retired from it) in that record's own project folder — each only where the run-confirmation gate passes, and a plugin job's working folder `/data/engagements/<id>` at once, and selects nothing else. A pass that cannot import the SDK's folder lookup deletes no transcript.
 
 **The gate** is `memory/transcript_runs.py`'s, asked at each delete and never copied:
-nothing in a folder is deleted while a run registered in that folder is unconfirmed. The
-finalize registers its summary run, one row naming the engagement's folder, before the
-terminal flip that makes the record eligible here (`tools.py::_register_summary_run`). A
-crash between the flip and the summaries' capture therefore keeps every transcript in that
-folder — a sibling engagement's in a shared folder too — until a wipe, counted unresolved
-(INV-MEM-031, in [`architecture/memory-lifecycle.md`](memory-lifecycle.md)). After a delete
-the rows that named it are removed. The pass reads no transcript.
+nothing in a folder is deleted while a run registered in that folder is unconfirmed. Each
+turn of a memory-writing specialist's engagement registers its run, naming the
+engagement's folder, before its first capture
+(`drivers/in_casa_driver.py::_EngagementCapture.register`). A crash before that turn's
+captures are durable therefore keeps every transcript in that folder — a sibling
+engagement's in a shared folder too — until a wipe, counted unresolved (INV-MEM-031, in
+[`architecture/memory-lifecycle.md`](memory-lifecycle.md)). The end of an engagement
+captures nothing and registers no run. After a delete the rows that named it are removed.
+The pass reads no transcript.
 
 Casa owns transcript deletion: the CLI's own cleanup never fires for an `in_casa` launch, since
 no SDK launch loads user settings or passes `cleanupPeriodDays` (INV-MEM-021, in

@@ -8,8 +8,8 @@ durable; after that it follows retention (:func:`retention`).
 **A run's row.** ``transcript_runs`` holds ids and times, never content. Every
 run that can capture registers a row before its first capture
 (:meth:`Run.start`): an eligible resident turn (``resident``), an engagement
-turn of a memory-writing specialist (``engagement``), every delegated run
-(``delegation``) and an engagement's finalize summaries (``summary``). The row
+turn of a memory-writing specialist (``engagement``) and every delegated run
+(``delegation``). The row
 carries this process's :data:`BOOT_ID`, the run's working directory (the key
 every deleter resolves the transcript folder from) and, once known, its SDK
 session (:meth:`Run.name`), named before the run's first capture from that
@@ -60,8 +60,7 @@ logger = logging.getLogger(__name__)
 RESIDENT = "resident"
 ENGAGEMENT = "engagement"
 DELEGATION = "delegation"
-SUMMARY = "summary"
-KINDS = (RESIDENT, ENGAGEMENT, DELEGATION, SUMMARY)
+KINDS = (RESIDENT, ENGAGEMENT, DELEGATION)
 
 #: This process's id. A row left unconfirmed under another id is unresolved:
 #: no run outlives the process that started it.
@@ -219,7 +218,7 @@ def prune_confirmed(store: MemoryStore, *, now: datetime) -> int:
     """Drop confirmed rows other than delegated ones once their retention
     has passed. A confirmed row blocks nothing; this only bounds the table
     for sessions no deleter reaches (a resident session a later one
-    replaced, a summary in a shared folder)."""
+    replaced)."""
     cutoff = (now - retention()).isoformat(timespec="microseconds")
     with store.transaction(write=True) as conn:
         cur = conn.execute(

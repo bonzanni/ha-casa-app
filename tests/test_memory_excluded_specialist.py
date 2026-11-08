@@ -1,7 +1,7 @@
 """INV-MEM-032, the capture half: an excluded specialist's output — a loaded
 specialist whose ``memory.token_budget`` is 0, or a role no longer loaded — is
-never stored in ``events`` or ``engagement_summaries``, through every path its
-output reaches a capture seam; the resident's own words around it are.
+never stored in ``events``, through every path its output reaches a capture
+seam; the resident's own words around it are.
 
 The notices and relays are the real producers
 (``Agent._synthesize_delegation_turn``, ``plugin_continuations``), and every
@@ -22,7 +22,7 @@ import tools
 from bus import BusMessage, MessageType
 from test_agent_process import FakeClient, _make_agent
 from test_memory_capture import captured_events
-from test_memory_capture import mem, summaries  # noqa: F401 — fixture
+from test_memory_capture import mem  # noqa: F401 — fixture
 from test_no_retain_specialist import _cfg, _notice
 from test_plugin_continuations import _binding
 
@@ -52,8 +52,7 @@ async def events(store) -> list[dict]:
 
 
 async def _stored_text(store) -> list[str]:
-    return ([e["text"] for e in await events(store)]
-            + [s["text"] for s in summaries(store)])
+    return [e["text"] for e in await events(store)]
 
 
 async def _assert_no_canary(store) -> None:
@@ -188,17 +187,18 @@ async def _finalize(tmp_path, monkeypatch, roles, role, text):
     driver = MagicMock()
     driver.cancel = AsyncMock()
     await tools._finalize_engagement(rec, outcome="completed", text=text,
-                                     artifacts=[], next_steps=[], driver=driver)
+                                     next_steps=[], driver=driver)
 
 
-async def test_an_excluded_engagement_leaves_no_summary(roles, mem, tmp_path,
-                                                        monkeypatch):
+async def test_a_finalized_engagement_captures_nothing(roles, mem, tmp_path,
+                                                       monkeypatch):
+    """The end of an engagement writes nothing into memory, of an excluded
+    specialist or of one that keeps memory: the summary is told to the
+    requester and stored nowhere. Red case: a finalize that captures its
+    summary text."""
     await _finalize(tmp_path, monkeypatch, roles, "browser", EXCLUDED_ANSWER)
-    assert summaries(mem) == []
     await _finalize(tmp_path, monkeypatch, roles, "finance", "Q3 is complete")
-    rows = summaries(mem)
-    assert [(r["role"], r["tier"]) for r in rows] == [("finance", "private")]
-    assert "Q3 is complete" in rows[0]["text"]
+    assert await events(mem) == []
     await _assert_no_canary(mem)
 
 

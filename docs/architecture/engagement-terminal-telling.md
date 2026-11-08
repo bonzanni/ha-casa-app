@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-06
+last_reviewed: 2026-11-08
 ---
 
 # Engagement terminal telling
@@ -133,8 +133,8 @@ still accepts messages, each answered with a refusal, so anything typed there is
 it. The withheld MARK carries the whole signal, and the disclosure names the retention
 deadline. The close is bounded like every other topic operation here, because it is the one
 thing standing between an already-terminal record and its tail: a close that never returned
-would strand the driver teardown, the notification and the summary captures, and with them any
-follow-up turn waiting on the teardown to end its stream.
+would strand the driver teardown and the notification, and with them any follow-up turn
+waiting on the teardown to end its stream.
 
 Three things this invariant does *not* do. It does not re-open a completed record because a
 channel failed — the work did complete, and reverting the transition would restore tool

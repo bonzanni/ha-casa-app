@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-02
+last_reviewed: 2026-11-08
 ---
 
 # Memory export and restore: a verified copy of the store, and replacing memory with one
@@ -23,7 +23,7 @@ registry row whose export rule is `drain`: a drain that fails fails the export a
 is published, so no export ever carries a spool. Then, in one read transaction, every row
 whose export rule is `yes` writes one `<table>.jsonl` per table, one JSON object per row in
 `rowid` order (`events`, `correction_marks`, `objects`, `revisions`, `dispositions`,
-`jobs`, `engagement_summaries`), plus `ledger.md`, the `private` ledger as text, and
+`jobs`), plus `ledger.md`, the `private` ledger as text, and
 a format note (FORMAT.md) describing the files. `manifest.json` comes last: the format and schema
 versions, the row count of every exported table, events by tier and current objects by
 ledger, the **obligations** — per ledger the events still pending and the pending
@@ -144,8 +144,10 @@ it was.
 (a record of runs, for example) needs nothing here: it is left out of the export, created
 empty in the built store and wiped. One with export `yes` is exported and loaded by the
 same loops; a restore rule the build or the install does not know stops the step rather
-than being skipped. **A new schema version** is migrated after the automatic export; it
-decides there whether that export should drain first.
+than being skipped. **A removed table** goes with its registry row, so an export taken
+before the removal still holds it and its restore is refused (a table with no restore
+rule). **A new schema version** is migrated after the automatic export; it decides there
+whether that export should drain first.
 
 ## Source & test map
 

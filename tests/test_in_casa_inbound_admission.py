@@ -550,7 +550,7 @@ class TestUngatedDisclosure:
         try:
             drv.admit_inbound(rec.id, "approval resume that died")
             fin = await _finalize_engagement(
-                rec, outcome="cancelled", text="", artifacts=[],
+                rec, outcome="cancelled", text="",
                 next_steps=[], driver=drv)
             assert bool(fin) is True
             posted = "".join(
@@ -591,7 +591,7 @@ class TestUngatedDisclosure:
             for i in range(9):
                 drv.admit_inbound(rec.id, f"msg-{i} " + "x" * 395)
             fin = await _finalize_engagement(
-                rec, outcome="cancelled", text="", artifacts=[],
+                rec, outcome="cancelled", text="",
                 next_steps=[], driver=drv)
             assert bool(fin) is True
             posted = "".join(

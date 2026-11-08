@@ -121,8 +121,8 @@ def _named_sids(rec) -> tuple[str, ...]:
 
 def transcript_cwd(rec) -> str | None:
     """The working directory *rec*'s sessions ran in: the key its transcript
-    folder is resolved from, and the directory its runs and its finalize
-    summary are registered under. The cwd persisted at the engagement's first
+    folder is resolved from, and the directory its runs are registered
+    under. The cwd persisted at the engagement's first
     open wins over anything derived from the current configuration, which a
     reload can change. ``None`` for an uninstalled specialist with no
     persisted cwd."""

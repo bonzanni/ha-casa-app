@@ -38,8 +38,8 @@ from test_agent_process import (
 )
 from test_memory_capture import _operator_msg, mem  # noqa: F401
 from transcript_runs_support import (
-    CODE_ROOT, after_retention, events, kill_child, project, rows, summaries,
-    unresolved, write_transcript,
+    CODE_ROOT, after_retention, events, kill_child, project, rows, unresolved,
+    write_transcript,
 )
 
 pytestmark = [pytest.mark.asyncio]
@@ -373,118 +373,17 @@ async def _engagement_turn(kind="specialist", sid=None, script=None):
     return rec, sid
 
 
-# --- the finalize summaries -------------------------------------------------------
-
-#: A finalize through the real ``tools._finalize_engagement``: the terminal
-#: flip is durable, then ``stop()`` before the first summary's receipt.
-SUMMARY_CHILD = r"""
-import json
-from unittest.mock import AsyncMock, MagicMock
-import agent as agent_mod
-import tools
-from engagement_registry import EngagementRegistry
-from memory import capture as cap
-tombstone, cwd, sid = sys.argv[5:8]
-tools.EXECUTOR_CWD = cwd
-real_record = cap.record
-
-async def record(item):
-    if isinstance(item, cap.Summary):
-        stop()
-    return await real_record(item)
-cap.record = record
-
-async def main():
-    reg = EngagementRegistry(tombstone_path=tombstone)
-    rec = await reg.create(
-        kind="executor", role_or_type="configurator", driver="in_casa",
-        task="t", origin=json.loads(sys.argv[8]), topic_id=None)
-    await reg.persist_session_id(rec.id, sid)
-    open(os.path.join(os.path.dirname(marker), "engagement-id"), "w").write(rec.id)
-    tools.init_tools(channel_manager=MagicMock(), bus=MagicMock(notify=AsyncMock()),
-                     specialist_registry=MagicMock(), mcp_registry=MagicMock(),
-                     trigger_registry=MagicMock(), engagement_registry=reg)
-    await tools._finalize_engagement(
-        rec, outcome="completed", text="done", artifacts=[], next_steps=[],
-        driver=MagicMock(cancel=AsyncMock()))
-asyncio.run(main())
-"""
-
-
-async def test_a_summary_row_blocks_until_its_summaries_are_captured(
-        home, monkeypatch):
-    """A real SIGKILL after the terminal flip and before the summary's
-    receipt leaves the summary in no table and the ``summary`` row
-    unresolved. Every transcript in the engagement's folder — its own and a
-    sibling engagement's in the same shared folder — survives every reaper
-    pass. Red case: a summary with no row lets the reaper delete them."""
-    from engagement_registry import EngagementRegistry
-    from engagement_transcript_reaper import reap_engagement_transcripts
-
-    cwd = str(home.tmp / "executor-cwd")
-    monkeypatch.setattr(tools, "EXECUTOR_CWD", cwd)
-    tombstone, sid = home.tmp / "engagements.json", str(uuid.uuid4())
-    kill_child(SUMMARY_CHILD, home.store, home.tmp, str(tombstone),
-               cwd, sid, json.dumps(ORIGIN),
-               env={"CLAUDE_CONFIG_DIR": os.environ["CLAUDE_CONFIG_DIR"]})
-
-    assert [r["status"] for r in json.loads(tombstone.read_text())] == ["completed"]
-    assert summaries(home.store) == []
-    (row,) = rows(home.store)
-    assert (row["kind"], row["directory"], row["session_id"],
-            row["confirmed_at"]) == ("summary", cwd, None, None)
-    assert unresolved(home.store) == 1
-
-    reg = EngagementRegistry(tombstone_path=str(tombstone))
-    await reg.load()
-    sibling = await reg.create(
-        kind="executor", role_or_type="configurator", driver="in_casa",
-        task="t", origin=dict(ORIGIN), topic_id=None)
-    other = str(uuid.uuid4())
-    await reg.persist_session_id(sibling.id, other)
-    await reg.mark_completed(sibling.id, time.time())
-    mine, theirs = write_transcript(cwd, sid), write_transcript(cwd, other)
-    for _ in range(2):
-        await reap_engagement_transcripts(reg, now=time.time() + 400 * 86400)
-        await asyncio.to_thread(transcript_runs.retention_pass, home.store,
-                                now=after_retention())
-    assert mine.exists() and theirs.exists()
-
-
-async def test_a_lost_terminal_flip_confirms_its_summary_row(home, monkeypatch):
-    from engagement_registry import EngagementRegistry
-    from tools import FinalizeResult, _finalize_engagement, init_tools
-
-    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"))
-    rec = await reg.create(kind="executor", role_or_type="configurator",
-                           driver="in_casa", task="t", origin=dict(ORIGIN),
-                           topic_id=None)
-    await reg.mark_completed(rec.id, time.time())
-    init_tools(channel_manager=MagicMock(), bus=MagicMock(notify=AsyncMock()),
-               specialist_registry=MagicMock(), mcp_registry=MagicMock(),
-               trigger_registry=MagicMock(), engagement_registry=reg)
-    result = await _finalize_engagement(
-        rec, outcome="completed", text="done", artifacts=[], next_steps=[],
-        driver=MagicMock(cancel=AsyncMock()))
-    await transcript_runs.settle()
-    assert result is FinalizeResult.ALREADY_TERMINAL
-    (row,) = rows(home.store)
-    assert row["kind"] == "summary" and row["confirmed_at"] is not None
-    assert summaries(home.store) == []
-
-
 # --- every capture path has its row ------------------------------------------------
 
 #: Every function outside ``memory/`` that hands an item to capture, and so
-#: every capture path: the resident turn's
-#: opening and messages, the engagement turn's operator text and answers,
-#: the delegated request and answer, the finalize summaries.
+#: every capture path: the resident turn's opening and messages, the
+#: engagement turn's operator text and answers, the delegated request and
+#: answer.
 CAPTURE_PATHS = {
     "agent.py::_TurnCapture._opening",
     "agent.py::_TurnCapture._message",
     "drivers/in_casa_driver.py::_EngagementCapture._kept",
     "tools.py::_capture_delegated",
-    "tools.py::_capture_summary",
 }
 
 
@@ -548,10 +447,10 @@ async def test_the_capture_path_list_is_complete():
 
 async def test_every_run_kind_registers_before_its_first_capture(
         home, monkeypatch):
-    """A resident turn, an engagement turn, a delegated run and a finalize
-    each find their row present, unconfirmed and of their kind at every
-    capture call. Red case: a delegated request captured before its run is
-    registered.
+    """A resident turn, an engagement turn and a delegated run each find
+    their row present, unconfirmed and of their kind at every capture call,
+    and an engagement's finalize captures nothing and registers no run. Red
+    case: a delegated request captured before its run is registered.
     """
     from test_delegated_transcript_retention import _Harness
     seen = []
@@ -560,7 +459,7 @@ async def test_every_run_kind_registers_before_its_first_capture(
     async def record(item):
         open_kinds = {r["kind"] for r in rows(home.store)
                       if r["confirmed_at"] is None}
-        seen.append((getattr(item, "eligibility", "summary"), open_kinds))
+        seen.append((item.eligibility, open_kinds))
         return await real(item)
     monkeypatch.setattr(capture, "record", record)
 
@@ -588,7 +487,7 @@ async def test_every_run_kind_registers_before_its_first_capture(
                      specialist_registry=MagicMock(), mcp_registry=MagicMock(),
                      trigger_registry=MagicMock(), engagement_registry=reg)
     await tools._finalize_engagement(
-        rec, outcome="completed", text="done", artifacts=[], next_steps=[],
+        rec, outcome="completed", text="done", next_steps=[],
         driver=MagicMock(cancel=AsyncMock()))
     await transcript_runs.settle()
 
@@ -596,16 +495,14 @@ async def test_every_run_kind_registers_before_its_first_capture(
         "write_trusted_turn": "resident", "resident_message": "resident",
         "engagement_turn": "engagement", "engagement_answer": "engagement",
         "delegated_request": "delegation", "delegated_answer": "delegation",
-        "summary": "summary",
     }
-    # One finalize summary: the per-executor-type second summary went in
-    # v0.351.0.
     assert [e for e, _k in seen] == [
         "write_trusted_turn", "resident_message", "engagement_turn",
-        "engagement_answer", "delegated_request", "delegated_answer",
-        "summary"]
+        "engagement_answer", "delegated_request", "delegated_answer"]
     for eligibility, open_kinds in seen:
         assert open_kinds == {expected[eligibility]}, (eligibility, open_kinds)
+    assert sorted(r["kind"] for r in rows(home.store)) == [
+        "delegation", "engagement", "resident"]
     assert all(r["confirmed_at"] is not None for r in rows(home.store))
 
 
@@ -617,106 +514,7 @@ def _delegated_cfg(home):
     return cfg
 
 
-async def test_a_summary_run_is_one_row_holding_its_folder(home):
-    """Whatever sessions the record names, the finalize's summary run is one
-    row naming the engagement's folder; until it is confirmed it holds every
-    transcript there, and close confirms it."""
-    from engagement_registry import JOB_SIDS_KEY, EngagementRegistry
-    a, b, sibling = (str(uuid.uuid4()) for _ in range(3))
-    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"))
-    rec = await reg.create(
-        kind="executor", role_or_type="configurator", driver="in_casa", task="t",
-        origin=dict(ORIGIN, job={JOB_SIDS_KEY: [a, b]}), topic_id=None)
-    await reg.persist_session_id(rec.id, b)
-    run = await tools._register_summary_run(rec, allowed=True)
-    (row,) = rows(home.store)
-    assert (row["kind"], row["directory"], row["session_id"]) == (
-        "summary", tools.EXECUTOR_CWD, None)
-    for s in (a, b, sibling):
-        assert transcript_runs.blocks_deletion(
-            home.store, directory=tools.EXECUTOR_CWD, session_id=s)
-    run.close()
-    await transcript_runs.settle()
-    assert rows(home.store)[0]["confirmed_at"] is not None
-    assert not transcript_runs.blocks_deletion(
-        home.store, directory=tools.EXECUTOR_CWD, session_id=sibling)
-
-
-@pytest.mark.parametrize("before,during", [(False, True), (True, False)])
-async def test_a_reload_during_finalize_never_captures_an_uncovered_summary(
-        home, monkeypatch, before, during):
-    """Whether the summary is written is decided once, before the terminal
-    flip, and both the summary run's registration and the capture read that
-    decision: a memory setting changed during the teardown (a reload) never
-    yields a summary no run covers, nor a registered run with nothing
-    owed. Red case: the tail reading the setting again."""
-    import delegated_memory
-    from engagement_registry import EngagementRegistry
-    from tools import _finalize_engagement, init_tools
-
-    setting = {"writes": before}
-    monkeypatch.setattr(delegated_memory, "role_writes_memory",
-                        lambda role: setting["writes"])
-
-    async def cancel(engagement):
-        setting["writes"] = during           # the reload lands in the teardown
-    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"))
-    rec = await reg.create(kind="specialist", role_or_type="finance",
-                           driver="in_casa", task="t", origin=dict(ORIGIN),
-                           topic_id=None)
-    init_tools(channel_manager=MagicMock(), bus=MagicMock(notify=AsyncMock()),
-               specialist_registry=MagicMock(), mcp_registry=MagicMock(),
-               trigger_registry=MagicMock(), engagement_registry=reg)
-    await _finalize_engagement(
-        rec, outcome="completed", text="done", artifacts=[], next_steps=[],
-        driver=MagicMock(cancel=cancel))
-    await transcript_runs.settle()
-    assert setting["writes"] is during
-    if before:
-        (row,) = rows(home.store)
-        assert row["kind"] == "summary" and row["confirmed_at"] is not None
-        assert len(summaries(home.store)) == 1
-    else:
-        assert rows(home.store) == [] and summaries(home.store) == []
-
-
-async def test_a_finalize_cancelled_before_its_tail_confirms_its_summary_row(
-        home, monkeypatch):
-    """The flip lands, then the finalize is cancelled while it waits on the
-    driver's teardown (before any summary capture): no capture is
-    outstanding, so the summary run is confirmed rather than left holding its
-    folder. Red case: a row whose cleanup started only with the captures."""
-    from engagement_registry import EngagementRegistry
-    from tools import _finalize_engagement, init_tools
-
-    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"))
-    rec = await reg.create(kind="executor", role_or_type="configurator",
-                           driver="in_casa", task="t", origin=dict(ORIGIN),
-                           topic_id=None)
-    init_tools(channel_manager=MagicMock(), bus=MagicMock(notify=AsyncMock()),
-               specialist_registry=MagicMock(), mcp_registry=MagicMock(),
-               trigger_registry=MagicMock(), engagement_registry=reg)
-    waiting = asyncio.Event()
-
-    async def cancel(engagement):
-        waiting.set()
-        await asyncio.Event().wait()
-    driver = MagicMock(cancel=cancel)
-    task = asyncio.create_task(_finalize_engagement(
-        rec, outcome="completed", text="done", artifacts=[], next_steps=[],
-        driver=driver))
-    await asyncio.wait_for(waiting.wait(), 5)
-    assert reg.get(rec.id).status == "completed"      # the flip landed
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    await transcript_runs.settle()
-    (row,) = rows(home.store)
-    assert row["kind"] == "summary" and row["confirmed_at"] is not None
-    assert summaries(home.store) == []
-
-
-@pytest.mark.parametrize("path", ["resident", "engagement", "delegation", "summary"])
+@pytest.mark.parametrize("path", ["resident", "engagement", "delegation"])
 async def test_a_run_cancelled_during_its_registration_confirms_its_row(
         home, monkeypatch, path):
     """The registration insert commits, then the run is cancelled before
@@ -726,7 +524,6 @@ async def test_a_run_cancelled_during_its_registration_confirms_its_row(
     import threading
     import time as _time
 
-    from engagement_registry import EngagementRegistry
     from test_delegated_transcript_retention import _Harness
 
     committed = threading.Event()
@@ -764,23 +561,10 @@ async def test_a_run_cancelled_during_its_registration_confirms_its_row(
         coro = drv.send_user_turn(rec, "m", tg_message_id=55,
                                   inbound_token=ticket)
         cm = None
-    elif path == "delegation":
+    else:
         cfg = _delegated_cfg(home)
         monkeypatch.setattr(tools, "ClaudeSDKClient", _Harness().client_cls())
         coro = tools._run_delegated_agent(cfg, "task", "")
-        cm = None
-    else:
-        reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"))
-        rec = await reg.create(kind="executor", role_or_type="configurator",
-                               driver="in_casa", task="t", origin=dict(ORIGIN),
-                               topic_id=None)
-        tools.init_tools(channel_manager=MagicMock(),
-                         bus=MagicMock(notify=AsyncMock()),
-                         specialist_registry=MagicMock(), mcp_registry=MagicMock(),
-                         trigger_registry=MagicMock(), engagement_registry=reg)
-        coro = tools._finalize_engagement(
-            rec, outcome="completed", text="done", artifacts=[], next_steps=[],
-            driver=MagicMock(cancel=AsyncMock()))
         cm = None
     if path == "delegation":
         task = asyncio.create_task(_with_origin_task(coro))

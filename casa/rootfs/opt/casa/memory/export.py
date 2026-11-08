@@ -211,7 +211,6 @@ transaction. `manifest.json` describes it and is written last.
     earlier state, with the commit that made it.
   - `dispositions` and `jobs`: what the memory writer did with each event,
     and its jobs.
-  - `engagement_summaries`: summaries of finished engagements.
 - `ledger.md`: the private ledger as text, for reading.
 - `manifest.json`: the format and schema versions, the row count of every
   table, events by tier and current entries by ledger, what the store still

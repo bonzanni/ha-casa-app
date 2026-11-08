@@ -33,7 +33,7 @@ class TestEmitCompletionHandler:
         token = engagement_var.set(rec)
         try:
             res = await emit_completion.handler({
-                "text": "done", "artifacts": ["sha1"], "next_steps": [], "status": "ok",
+                "text": "done", "next_steps": [], "status": "ok",
             })
         finally:
             engagement_var.reset(token)
@@ -237,16 +237,6 @@ class TestEmitCompletionValidation:
         assert payload["status"] == "acknowledged"
         assert rec.status == "error"
 
-    async def test_string_artifacts_wrapped_not_exploded(self, tmp_path):
-        """list("sha123") == ['s','h','a','1','2','3'] — the old coercion."""
-        reg, tch, bus = _wire_engagement(tmp_path)
-        rec = await self._rec(reg, tmp_path)
-        payload = await self._emit(
-            reg, rec, {"text": "done", "status": "ok", "artifacts": "sha123"})
-        assert payload["status"] == "acknowledged"
-        complete = bus.notify.await_args_list[0].args[0].content
-        assert complete.origin is not None  # sanity: DelegationComplete shape
-
     async def test_non_list_next_steps_is_tool_error(self, tmp_path):
         reg, tch, bus = _wire_engagement(tmp_path)
         rec = await self._rec(reg, tmp_path)
@@ -312,7 +302,7 @@ class TestFinalizeResultMapping:
         token = engagement_var.set(rec)
         try:
             res = await emit_completion.handler({
-                "text": "done", "artifacts": [], "next_steps": [],
+                "text": "done", "next_steps": [],
                 "status": "ok"})
         finally:
             engagement_var.reset(token)
@@ -406,7 +396,7 @@ class TestCompletionInboundGate:
         token = engagement_var.set(rec)
         try:
             res = await emit_completion.handler({
-                "text": "done", "artifacts": [], "next_steps": [],
+                "text": "done", "next_steps": [],
                 "status": status})
         finally:
             engagement_var.reset(token)
@@ -758,12 +748,8 @@ class TestEmitCompletionCancellation:
 
     Invariant (INV-ENG-010, docs/architecture/engagement-finalization.md;
     issue #632): once the terminal transition is won, the DelegationComplete
-    bus notification, the summary retain and the finalized log must all
-    still happen even though the host task ends cancelled. Specified
-    externally (redcase-specify r2) and accepted externally. (The
-    configurator's deferred Supervisor restart and its second, executor-type
-    retain, which this case also pinned, left with the configurator's
-    engagement.)
+    bus notification and the finalized log must both still happen even
+    though the host task ends cancelled.
     """
 
     async def test_in_casa_teardown_cannot_cancel_finalize_tail(
@@ -808,11 +794,6 @@ class TestEmitCompletionCancellation:
         monkeypatch.setattr(agent_mod, "active_engagement_driver", driver,
                             raising=False)
 
-        async def _capture(frozen, text, *, allowed):
-            events.append("capture")
-            return True
-        monkeypatch.setattr(tools_mod, "_capture_summary", _capture)
-
         async def _post():
             events.append("post")
             return {"status": "ok"}
@@ -832,7 +813,7 @@ class TestEmitCompletionCancellation:
         try:
             host_task = asyncio.get_running_loop().create_task(
                 emit_completion.handler({
-                    "text": "done", "artifacts": [], "next_steps": [],
+                    "text": "done", "next_steps": [],
                     "status": "ok",
                 }))
         finally:
@@ -852,10 +833,9 @@ class TestEmitCompletionCancellation:
         assert _Driver.cancel_calls == 1
         assert bus.notify.await_count == 1
         assert events.count("notify") == 1
-        assert events.count("capture") == 1
         assert events.count("post") == 0          # no restart on this path
         assert events.count("final-log") == 1
-        assert events == ["cancel", "notify", "capture", "final-log"], events
+        assert events == ["cancel", "notify", "final-log"], events
 
 
 class TestFinalizeTailObservability:
@@ -951,11 +931,10 @@ class TestFinalizeTailObservability:
 
     async def test_payloads_carry_the_values_frozen_at_the_flip(
             self, tmp_path, monkeypatch):
-        """Terra seam F3: a post-terminal ``lower_origin_clearance`` (real
-        mutator — no terminal refusal) lands during the funnel's post-flip
-        driver-teardown await; the DelegationComplete must still carry the
-        flip-time origin and the captured summary the flip-time task."""
-        import tools as tools_mod
+        """A post-terminal ``lower_origin_clearance`` (real mutator — no
+        terminal refusal) lands during the funnel's post-flip driver-teardown
+        await; the DelegationComplete must still carry the flip-time
+        origin."""
         seen: dict = {}
 
         async def _notify(msg):
@@ -970,13 +949,6 @@ class TestFinalizeTailObservability:
                 await reg_box["reg"].lower_origin_clearance(
                     rec_box["rec"].id, "public")
 
-        captured: list[str] = []
-
-        async def _capture(frozen, text, *, allowed):
-            captured.append(text)
-            return True
-        monkeypatch.setattr(tools_mod, "_capture_summary", _capture)
-
         tools_mod_, reg, rec, bus, host = await self._launch(
             tmp_path, monkeypatch, driver=_Driver(), notify=_notify)
         # _launch built reg/rec before quiesce could reference them:
@@ -987,11 +959,8 @@ class TestFinalizeTailObservability:
         # The real mutator DID fire post-flip:
         assert rec.origin["_origin_clearance"] == "public"
         assert rec.task != "pay rent"
-        # ...and the completion payloads carry the flip-time values:
+        # ...and the completion payload carries the flip-time origin:
         assert seen["origin"]["_origin_clearance"] == "private"
-        tasks = [json.loads(t)["task"] for t in captured
-                 if json.loads(t)["kind"] == "engagement_summary"]
-        assert tasks == ["pay rent"]
 
 class _AccessorProbe:
     """A duck driver exposing exactly the six inbound accessors the in_casa
@@ -1095,7 +1064,7 @@ class TestOneFailingAccessorCostsOnlyItsOwnInput:
         from tools import _finalize_engagement
 
         return await _finalize_engagement(
-            rec, outcome=outcome, text="done", artifacts=[], next_steps=[],
+            rec, outcome=outcome, text="done", next_steps=[],
             driver=drv, inbound_gate=gate)
 
     # ---- red cases ----------------------------------------------------

@@ -55,7 +55,7 @@ async def test_outcome_error_emits_warning_with_reason(tmp_path, caplog):
         await _finalize_engagement(
             rec, outcome="error",
             text="schema validation failed: extra key TRAIT",
-            artifacts=[], next_steps=[],
+            next_steps=[],
             driver=None,
         )
 
@@ -105,7 +105,7 @@ async def test_outcome_error_handles_empty_text(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="tools"):
         await _finalize_engagement(
             rec, outcome="error", text="",
-            artifacts=[], next_steps=[],
+            next_steps=[],
             driver=None,
         )
 
@@ -153,7 +153,7 @@ async def test_completed_engagement_posts_the_plain_summary(
 
     await _finalize_engagement(
         rec, outcome="completed", text="all done",
-        artifacts=[], next_steps=[], driver=None,
+        next_steps=[], driver=None,
     )
 
     tch.send_response_to_topic.assert_awaited_once()  # v0.109.0 rich summary
@@ -181,7 +181,7 @@ async def test_outcome_completed_stays_at_info_level(tmp_path, caplog):
     with caplog.at_level(logging.INFO, logger="tools"):
         await _finalize_engagement(
             rec, outcome="completed", text="all good",
-            artifacts=[], next_steps=[],
+            next_steps=[],
             driver=None,
         )
 

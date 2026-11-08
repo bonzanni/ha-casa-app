@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-02
+last_reviewed: 2026-11-08
 ---
 
 # Memory store: `memory.db`, its connection owner, and the registry of everything that holds memory
@@ -174,9 +174,10 @@ the exception propagates.
 
 ## Extension points
 
-**A new table** goes into a new schema version in `memory/schema.py` (a released version's
-statements never change) and into a registry row in the same change; the store pin fails
-otherwise.
+**A new table** goes into a new schema version in `memory/schema.py` and into a registry row
+in the same change; the store pin fails otherwise. **A table no code reads any more** is
+removed from its version in place, with its registry row: a store created earlier keeps
+it, unread and unexported, until a wipe or a restore replaces the file.
 
 **A new file or directory under `/data/memory`**, or a new place outside it that holds
 memory-derived text, gets a registry row with all three rules; a producer writing under

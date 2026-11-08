@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-04
+last_reviewed: 2026-11-08
 ---
 
 # Memory capture: what is kept as it happens, and what is kept out
@@ -40,9 +40,6 @@ awaits the append, so every capture a turn made has returned by the time the tur
   each message the specialist writes, before it is streamed and whatever the stream's
   output bound clips. The operator's message is captured before the delivery fence, whose
   window must not await. Plugin jobs are not memory-writing specialists.
-- **A finalized engagement's summary** into the store's
-  `engagement_summaries`, awaited by the finalize tail, under the specialist's own memory
-  switch (below).
 - **Casa's line that a specialist which keeps no memory posted to the operator's chat**, in
   the Telegram channel's `_record_post`, where every message Casa sends on a specialist's
   behalf lands: a plugin's link, message, page, proposal or file, a desk reply, a stored-call
@@ -110,7 +107,7 @@ the run's evidence is read, and a blank request beside a withheld answer capture
 **INV-MEM-005**: Only write-trusted channels capture into memory.
 
 Enforced by the channel write-policy check (`channel_policy.writes_to_bank`), read by every
-capture seam: a turn, a delegation or a summary whose channel is not write-trusted captures
+capture seam: a turn or a delegation whose channel is not write-trusted captures
 nothing (`memory.eligibility.admit`).
 
 What it does not cover: `memory.capture.record` itself enforces nothing. A future seam that
@@ -156,7 +153,7 @@ answer only while that answer is owed to its creator, and drops it on delivery
 (INV-JOB-015). One rule, two purposes — memory keeps what happened, the row keeps what has
 not yet been said.
 
-**INV-MEM-032**: No row of the memory store's `events` or `engagement_summaries` holds output authored by a specialist that writes no memory — a loaded specialist whose `memory.token_budget` is 0, or a role no longer loaded — whether it would arrive as its delegated answer, Casa's notice carrying it, a hand-off or relay task it wrote, its engagement topic turns or its engagement summary; the resident's own words relaying it are captured.
+**INV-MEM-032**: No row of the memory store's `events` holds output authored by a specialist that writes no memory — a loaded specialist whose `memory.token_budget` is 0, or a role no longer loaded — whether it would arrive as its delegated answer, Casa's notice carrying it, a hand-off or relay task it wrote, or its engagement topic turns; the resident's own words relaying it are captured.
 
 The switch is the specialist's own declaration: a role that reads no memory writes none,
 and a role Casa no longer has loaded — whose switch it cannot read — writes none either
@@ -165,8 +162,8 @@ and a role Casa no longer has loaded — whose switch it cannot read — writes 
 notice header: the opening of a resident turn that is Casa's notice naming such
 a role is not captured, while the resident's reply in that turn is; a delegated run of such
 a role captures neither side; a request is captured only with the chain's resident shape;
-an engagement of such a specialist captures no topic turn of its own and leaves no summary,
-and the requester is still told; the operator's own messages in its topic are his
+an engagement of such a specialist captures no topic turn of its own, and the requester is
+still told; the operator's own messages in its topic are his
 (INV-MEM-044). A delegated run's task is captured only as a resident's own words:
 a chain of at most the resident and one specialist (`len(_handoff_chain) <= 2`) on a turn
 Casa did not compose (`synthetic != "continuation"`).
@@ -220,8 +217,8 @@ both. Pinned through the real `handle_update` over a real channel and a real `in
 whose specialist answers with a canary, against a real store: the canary reaches no row.
 
 What it does not cover: the operator's messages in a plugin job's topic, and
-the rest of the engagement: the specialist's turns, its summary, Casa's cards in the topic and
-the taps answering them stay out. A topic message is not marked for `correct_memory`. The write
+the rest of the engagement: the specialist's turns, Casa's cards in the topic and the taps
+answering them stay out. A topic message is not marked for `correct_memory`. The write
 is detached: a crash between the hand-off and the write loses his words, never the turn.
 
 ## Failure behavior
@@ -254,12 +251,12 @@ deletes them. A line a
 crash tore part-way is skipped by the drain — it was never fsynced, so it never had a
 receipt — and the next spool write starts on a fresh line so it is never glued to one.
 
-**A seam's capture raises.** It is logged and swallowed: capture never fails a turn, a
-delegation or a finalize. A cancellation is the caller's own and propagates.
+**A seam's capture raises.** It is logged and swallowed: capture never fails a turn or a
+delegation. A cancellation is the caller's own and propagates.
 
 ## Extension points
 
-**A new capture seam** builds its item with `memory.capture.event` (or `summary`), decides
+**A new capture seam** builds its item with `memory.capture.event`, decides
 it with `memory.eligibility.admit` from the predicates Casa already has, keys it only
 through `memory.occurrence`, and awaits `memory.capture.record` at the seam — before
 anything relies on the words being remembered.
@@ -282,7 +279,6 @@ that writes it ([`memory-store.md`](memory-store.md)).
 - `casa/rootfs/opt/casa/agent.py::_TurnCapture`
 - `casa/rootfs/opt/casa/tools.py::_run_delegated_agent`
 - `casa/rootfs/opt/casa/tools.py::_capture_delegated`
-- `casa/rootfs/opt/casa/tools.py::_capture_summary`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::_EngagementCapture`
 - `casa/rootfs/opt/casa/channel_policy.py::writes_to_bank`
 - `casa/rootfs/opt/casa/delegated_memory.py::role_writes_memory`

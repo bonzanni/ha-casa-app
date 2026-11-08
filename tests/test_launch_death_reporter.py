@@ -1220,7 +1220,7 @@ class TestTheFollowUpTurnHasAFailureOwner:
             from tools import _finalize_engagement
             await drv.send_user_turn(r, text, inbound_token=inbound_token)
             await _finalize_engagement(
-                r, outcome=terminal, text="done", artifacts=[],
+                r, outcome=terminal, text="done",
                 next_steps=[], driver=None)
             return None
         ch._driver_send_user_turn = _deliver_then_finalize
@@ -1395,7 +1395,7 @@ class TestTerminalStatusIsNotProofOfATelling:
             from tools import _finalize_engagement
             await drv.send_user_turn(r, text, inbound_token=inbound_token)
             await _finalize_engagement(
-                r, outcome=outcome, text="done", artifacts=[], next_steps=[],
+                r, outcome=outcome, text="done", next_steps=[],
                 driver=None)
             return None
         ch._driver_send_user_turn = _deliver_then_finalize

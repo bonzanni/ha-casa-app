@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-06
+last_reviewed: 2026-11-08
 ---
 
 # Engagement launch failure and restart
@@ -127,11 +127,11 @@ walk, was told live and is not walked; only if that telling is never delivered d
 boot replay it.
 
 What such a notice can say is bounded by what the tombstone keeps, which is less than the live
-path has. There is no completion text, no artifacts and no next steps on the record — no such
+path has. There is no completion text and no next steps on the record — no such
 fields exist — so the replay reports the FACT of the outcome and says plainly that the notice
 does not carry the report. It does not say the report is GONE, which would be a claim about
-storage this path cannot make: a finished engagement's structured summary may well have been
-captured into memory. It never reconstructs an answer from the task. It does say that it is a replay: the notice tells the resident this is an
+storage this path cannot make: a finished engagement's completion text may well still stand
+in its closed topic. It never reconstructs an answer from the task. It does say that it is a replay: the notice tells the resident this is an
 earlier outcome reached before the restart, whose announcement was never confirmed, and gives
 the time the record went terminal, or says that time is unknown (INV-ENG-018).
 

@@ -363,7 +363,7 @@ class TestInCasaCompletionInboundGate:
         token = engagement_var.set(rec)
         try:
             res = await emit_completion.handler({
-                "text": "done", "artifacts": [], "next_steps": [],
+                "text": "done", "next_steps": [],
                 "status": "ok"})
         finally:
             engagement_var.reset(token)

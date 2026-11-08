@@ -393,7 +393,7 @@ async def _emit_ok(rec):
     token = engagement_var.set(rec)
     try:
         res = await emit_completion.handler({
-            "text": "done", "artifacts": [], "next_steps": [],
+            "text": "done", "next_steps": [],
             "status": "ok"})
     finally:
         engagement_var.reset(token)
@@ -428,13 +428,11 @@ class TestACompletionRacingTheContinuationIsRefused:
 
     async def test_a_reservation_born_during_finalize_is_vetoed_by_the_hook(
             self, tmp_path, fake_telegram_bot, monkeypatch):
-        """The window itself. ``_finalize_engagement`` awaits the summary
-        run's registration BEFORE ``try_transition_terminal`` runs its
-        terminal hook, so a tap committing there is admitted AFTER
-        ``emit_completion``'s pre-check read zero — the exact interleaving the
-        dossier reproduced. The refusal
-        must carry the TERMINAL HOOK's copy, not the pre-check's, proving the
-        veto fired inside the transition's critical section.
+        """The window itself: a tap committing after ``emit_completion``'s
+        pre-check read zero and before ``try_transition_terminal`` runs its
+        terminal hook is admitted past the pre-check. The refusal must carry
+        the TERMINAL HOOK's copy, not the pre-check's, proving the veto fired
+        inside the transition's critical section.
 
         Pre-fix: the pre-check reads zero, the hook reads zero, the completion
         commits, and the approved continuation is dropped.
@@ -445,15 +443,14 @@ class TestACompletionRacingTheContinuationIsRefused:
         try:
             coord = _authz_challenge(ch, rec.id)
 
-            import tools
-            real_register = tools._register_summary_run
+            real_transition = reg.try_transition_terminal
 
-            async def _register(engagement, **kw):
+            async def _transition(*a, **kw):
                 # The operator's tap lands HERE — after the handler pre-check
                 # read (0, 0, 0), before the terminal hook re-reads.
                 coord.on_commit_sync(0, {})
-                return await real_register(engagement, **kw)
-            monkeypatch.setattr(tools, "_register_summary_run", _register)
+                return await real_transition(*a, **kw)
+            monkeypatch.setattr(reg, "try_transition_terminal", _transition)
 
             payload = await _emit_ok(rec)
             facts = (payload.get("status"), payload.get("kind"),

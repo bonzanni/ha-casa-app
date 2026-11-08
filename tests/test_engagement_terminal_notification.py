@@ -174,7 +174,7 @@ class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
         )
 
         result = await _finalize_engagement(
-            rec, outcome="completed", text="the answer", artifacts=[],
+            rec, outcome="completed", text="the answer",
             next_steps=[], driver=_driver_double(),
         )
 
@@ -257,7 +257,7 @@ class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
         reg._write_tombstone = _write
 
         result = await _finalize_engagement(
-            rec, outcome="completed", text="the answer", artifacts=[],
+            rec, outcome="completed", text="the answer",
             next_steps=[], driver=_driver_double(),
         )
 
@@ -281,7 +281,7 @@ class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
             task="t", origin=_origin(), topic_id=None,
         )
         await _finalize_engagement(
-            rec, outcome="completed", text="x", artifacts=[], next_steps=[],
+            rec, outcome="completed", text="x", next_steps=[],
             driver=_driver_double())
 
         # Age the file back to what a pre-upgrade Casa wrote.
@@ -337,7 +337,7 @@ class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
             task="t6", origin=_origin(), topic_id=None)
 
         await _finalize_engagement(
-            funnel, outcome="error", text="it broke", artifacts=[],
+            funnel, outcome="error", text="it broke",
             next_steps=[], driver=_driver_double())
         await _report_launch_death(
             None, reported, None, kind="launch_turn_incomplete",
@@ -382,7 +382,7 @@ class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
 
         for rec in (owing, settled):
             await _finalize_engagement(
-                rec, outcome="completed", text="x", artifacts=[],
+                rec, outcome="completed", text="x",
                 next_steps=[], driver=_driver_double())
         await reg.ack_terminal_notification(settled.id)
 

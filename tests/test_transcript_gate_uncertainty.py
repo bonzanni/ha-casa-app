@@ -2,8 +2,7 @@
 
 Which session an unconfirmed ``transcript_runs`` row names is no evidence:
 a resumed run may not have named its session yet, a naming write may have
-failed, a run may have moved from one session to another, and a finalize's
-engagement may publish a session after its row was registered. So the gate
+failed, and a run may have moved from one session to another. So the gate
 asks one thing: is any row in this directory unconfirmed.
 
 Each sequence below ends with a deleter that resolves by session, and is red
@@ -260,73 +259,6 @@ async def test_a_failed_naming_keeps_the_engagement_transcript(home, monkeypatch
     assert path.exists()
 
 
-# --- a finalize whose engagement publishes a session after its row --------------
-
-LATE_SESSION_FINALIZE_CHILD = r"""
-from unittest.mock import AsyncMock, MagicMock
-import agent as agent_mod
-import tools
-from engagement_registry import EngagementRegistry
-from memory import capture as cap
-tombstone, cwd, sid = sys.argv[5:8]
-tools.EXECUTOR_CWD = cwd
-real_register = tools._register_summary_run
-real_record = cap.record
-
-async def record(item):
-    if isinstance(item, cap.Summary):
-        stop()
-    return await real_record(item)
-cap.record = record
-
-async def main():
-    reg = EngagementRegistry(tombstone_path=tombstone)
-    rec = await reg.create(kind="executor", role_or_type="configurator",
-                           driver="in_casa", task="t",
-                           origin=json.loads(sys.argv[8]), topic_id=None)
-
-    async def register(engagement, **kw):
-        run = await real_register(engagement, **kw)
-        # the driver publishes its first session after the row's snapshot
-        await reg.persist_session_id(rec.id, sid)
-        return run
-    tools._register_summary_run = register
-    tools.init_tools(channel_manager=MagicMock(), bus=MagicMock(notify=AsyncMock()),
-                     specialist_registry=MagicMock(), mcp_registry=MagicMock(),
-                     trigger_registry=MagicMock(), engagement_registry=reg)
-    await tools._finalize_engagement(
-        rec, outcome="completed", text="done", artifacts=[], next_steps=[],
-        driver=MagicMock(cancel=AsyncMock()))
-import json
-asyncio.run(main())
-"""
-
-
-async def test_a_session_published_after_the_summary_row_is_kept(home, monkeypatch):
-    """The summary run is registered while the engagement names no session;
-    its first session is published after that, the flip lands, and the
-    finalize is killed before the summary's receipt. The folder row holds
-    the folder, so the real reaper keeps that session's transcript. Red
-    case: a folder-only row ignored per session."""
-    from engagement_registry import EngagementRegistry
-    from engagement_transcript_reaper import reap_engagement_transcripts
-
-    sid, cwd = str(uuid.uuid4()), str(home.tmp / "executor-cwd")
-    tombstone = home.tmp / "engagements.json"
-    monkeypatch.setattr(tools, "EXECUTOR_CWD", cwd)
-    kill_child(LATE_SESSION_FINALIZE_CHILD, home.store, home.tmp,
-               str(tombstone), cwd, sid, json.dumps(ORIGIN), env=_env())
-    assert [(r["kind"], r["directory"], r["session_id"], r["confirmed_at"])
-            for r in rows(home.store)] == [("summary", cwd, None, None)]
-    reg = EngagementRegistry(tombstone_path=str(tombstone))
-    await reg.load()
-    (rec,) = reg.terminal_records()
-    assert rec.sdk_session_id == sid
-    path = write_transcript(cwd, sid)
-    await reap_engagement_transcripts(reg, now=time.time() + 400 * 86400)
-    assert path.exists()
-
-
 # --- an unnamed row in a shared folder ---------------------------------------------
 
 async def test_an_unnamed_row_holds_a_shared_folder_until_it_is_confirmed(
@@ -427,7 +359,7 @@ async def test_a_run_that_moved_to_a_session_it_could_not_name_keeps_it(home):
 async def test_a_cwd_reload_never_moves_where_an_engagement_is_held(
         home, monkeypatch):
     """A specialist engagement opens in folder A; a configuration reload
-    then points the specialist at B before the finalize. The summary run
+    then points the specialist at B before its next turn. That turn's run
     registers A (the cwd persisted at the first open), and with the
     configuration back at A the real reaper keeps A's transcript while that
     run is unconfirmed. Red case: the folder read from the configuration at
@@ -435,7 +367,7 @@ async def test_a_cwd_reload_never_moves_where_an_engagement_is_held(
     from claude_agent_sdk import ClaudeAgentOptions
 
     import drivers.in_casa_driver as drv_mod
-    from drivers.in_casa_driver import InCasaDriver
+    from drivers.in_casa_driver import InCasaDriver, _EngagementCapture
     from engagement_registry import LAUNCH_CWD_KEY, EngagementRegistry
     from engagement_transcript_reaper import reap_engagement_transcripts
     from test_engagement_transcript_reaper import _specialists
@@ -463,7 +395,8 @@ async def test_a_cwd_reload_never_moves_where_an_engagement_is_held(
     assert rec.origin[LAUNCH_CWD_KEY] == a
 
     _specialists(monkeypatch, finance=SimpleNamespace(role="finance", cwd=b))
-    run = await tools._register_summary_run(rec, allowed=True)
+    turn = _EngagementCapture(rec)
+    await turn.register(sid)
     assert [r["directory"] for r in rows(home.store)] == [a]
     await reg.mark_completed(rec.id, time.time())
     _specialists(monkeypatch, finance=SimpleNamespace(role="finance", cwd=a))
@@ -472,7 +405,7 @@ async def test_a_cwd_reload_never_moves_where_an_engagement_is_held(
     path = write_transcript(a, sid)
     await reap_engagement_transcripts(reloaded, now=time.time() + 400 * 86400)
     assert path.exists()
-    run.close()
+    turn.run.close()
 
 
 async def test_a_held_session_keeps_its_pointer_and_goes_on_a_later_sweep(home):

@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-02
+last_reviewed: 2026-11-08
 ---
 
 # Memory wipe: consent, the restart, and the container-start step that erases the registry
@@ -148,7 +148,8 @@ are measured on a test install, not here.
 
 **INV-MEM-038**: The wipe executes only on consent at one of its doors, and erases exactly the registry: every row's path and declared staging pattern ends empty or reset.
 
-Pinned by canaries in every row — the store's tables, the spool and its drain snapshot, an
+Pinned by canaries in every row — the store's tables, and a table an earlier schema created
+that this one no longer declares (the file goes whole), the spool and its drain snapshot, an
 in-progress export, a transcript of every role, the session pointers, an explanation record,
 and a staging file each producer's atomic helper leaves when a real process is killed before its rename —
 plus one captured after consent, all at 0 bytes after the step, with kept items

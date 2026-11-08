@@ -6,16 +6,11 @@ reporting helper to ``outcome="completed"``, or routing it through
 ``test_in_casa_launch_terminal_artifact.py`` still passes.
 
 Why it matters, stated as the outcome it protects: ``_finalize_engagement``
-captures an engagement summary into memory on every outcome, a store with no
-other copy. A launch death recorded as ``completed`` with empty text would
-write a FALSE SUCCESS there — silent corruption, top of the H2 band — turning
-an H3 fix into an H2 regression.
+announces the outcome to the party that asked for the work. A launch death
+recorded as ``completed`` with empty text would tell it of a success that
+never happened, and the record would keep that false status.
 A green suite is not evidence of its absence, which is why the counts below
 are asserted rather than the statuses.
-
-Pre-run terminus: casa/rootfs/opt/casa/tools.py:7434-7437@03abe710 — a
-launch-time failure is deliberately kept OUT of ``_finalize_engagement``
-precisely to avoid "spurious memory retention".
 """
 
 from __future__ import annotations
@@ -88,5 +83,5 @@ async def test_mid_tool_loop_cutoff_never_completes_or_retains(
     assert matching[0]["status"] == "error"
     assert matching[0]["origin"]["error_kind"] == "launch_turn_incomplete"
 
-    # Nothing reached the funnel, which is the one writer of the summary.
+    # Nothing reached the funnel, which announces the outcome as told.
     assert finalize_calls == []

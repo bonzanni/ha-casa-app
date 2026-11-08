@@ -130,20 +130,7 @@ class Event:
     provenance: str = "captured"
 
 
-@dataclass(frozen=True)
-class Summary:
-    """One row of ``engagement_summaries``."""
-
-    source_key: str
-    role: str
-    procedural_epoch: str
-    tier: str
-    text: str
-    engagement_id: str
-    at: str
-
-
-_TABLES: dict[type, str] = {Event: "events", Summary: "engagement_summaries"}
+_TABLES: dict[type, str] = {Event: "events"}
 _BY_TABLE = {table: cls for cls, table in _TABLES.items()}
 
 
@@ -177,17 +164,6 @@ def event(*, role: str, channel: str, speaker_kind: str, origin_kind: str,
         occurred_at=occurred_at, tz=tz, local_day=local_day, **optional)
 
 
-def summary(*, role: str, tier: str, text: str, engagement_id: str,
-            procedural_epoch: str = "") -> Summary:
-    """A :class:`Summary` stamped now, under a fresh ``event:`` key.
-    ``procedural_epoch`` is a legacy column (the executor epoch is retired);
-    Casa leaves it empty, and the field stays so spooled items replay."""
-    return Summary(
-        source_key=occurrence.event_key(), role=role,
-        procedural_epoch=procedural_epoch or "", tier=tier, text=text,
-        engagement_id=engagement_id, at=_stamp()[0])
-
-
 def origin_kind_of(*, scheduled: bool, operator_authored: bool,
                    delegated_result: bool = False,
                    callback: bool = False) -> str:
@@ -215,7 +191,7 @@ def snapshot_path(directory: str) -> str:
     return os.path.join(directory, SNAPSHOT_NAME)
 
 
-def _insert(conn: sqlite3.Connection, item: Event | Summary) -> int:
+def _insert(conn: sqlite3.Connection, item: Event) -> int:
     """Insert *item*; an item whose key is already stored adds nothing.
     Returns the number of rows added."""
     row = dataclasses.asdict(item)
@@ -232,7 +208,7 @@ def _insert(conn: sqlite3.Connection, item: Event | Summary) -> int:
     return cur.rowcount
 
 
-def append(store: MemoryStore, item: Event | Summary) -> Receipt | None:
+def append(store: MemoryStore, item: Event) -> Receipt | None:
     """Make *item* durable: store it, or spool it. Blocking; never raises.
 
     It does nothing else: draining a spool left by earlier failures is
@@ -270,7 +246,7 @@ def _fsync_dir(directory: str) -> None:
         os.close(fd)
 
 
-def _spool_line(item: Event | Summary) -> bytes:
+def _spool_line(item: Event) -> bytes:
     record = {"table": _TABLES[type(item)], "spooled_at": time.time(),
               "item": dataclasses.asdict(item)}
     return (json.dumps(record, ensure_ascii=False, separators=(",", ":"))
@@ -295,7 +271,7 @@ def _write_all(fd: int, data: bytes) -> None:
         view = view[os.write(fd, view):]
 
 
-def _spool(directory: str, item: Event | Summary) -> Receipt | None:
+def _spool(directory: str, item: Event) -> Receipt | None:
     try:
         return _spool_write(directory, _spool_line(item), item.source_key)
     except Exception:  # noqa: BLE001 — no receipt; the seam logs nothing more
@@ -327,8 +303,8 @@ def _spool_write(directory: str, line: bytes, key: str) -> Receipt:
     return Receipt(key, SPOOLED, since)
 
 
-def _parse(raw: bytes) -> tuple[list[Event | Summary], int]:
-    items: list[Event | Summary] = []
+def _parse(raw: bytes) -> tuple[list[Event], int]:
+    items: list[Event] = []
     torn = 0
     for line in raw.split(b"\n"):
         if not line.strip():
@@ -439,7 +415,7 @@ def active_store() -> MemoryStore | None:
     return store if isinstance(store, MemoryStore) else None
 
 
-def _durable_write(store: MemoryStore, item: Event | Summary
+def _durable_write(store: MemoryStore, item: Event
                    ) -> tuple[Receipt | None, bool]:
     """The item's own durable write, and whether a spool now waits for a
     store that just took a write."""
@@ -450,7 +426,7 @@ def _durable_write(store: MemoryStore, item: Event | Summary
     return receipt, waiting
 
 
-async def record(item: Event | Summary) -> Receipt | None:
+async def record(item: Event) -> Receipt | None:
     """Capture *item*; the seams await this. Awaited is only the item's own
     durable write, off the event loop; a drain it makes due and a notice it
     makes due are detached. Returns the receipt, or ``None`` when nothing is
@@ -467,7 +443,7 @@ async def record(item: Event | Summary) -> Receipt | None:
     return receipt
 
 
-def record_detached(item: Event | Summary) -> None:
+def record_detached(item: Event) -> None:
     """Capture *item* without awaiting it, for a seam on a synchronous path
     that must not wait (the channel's post landing). :func:`settle` awaits
     it like any other detached write. Never raises."""

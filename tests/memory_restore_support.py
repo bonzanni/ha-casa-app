@@ -49,8 +49,8 @@ AT = "2026-10-01T09:00:00.000000+00:00"
 def populate(store: MemoryStore, word: str = "roses") -> dict:
     """A row in every exported table: four events (one classified at
     ``family``), a ledger entry with its revision, its dispositions, a
-    committed, a running, a failed and a queued job, a correction mark and
-    an engagement summary."""
+    committed, a running, a failed and a queued job, and a correction
+    mark."""
     seqs = [put(store, f"{word} {i}") for i in range(3)]
     seqs.append(put(store, f"{word} classified", tier="family",
                     tier_status="classified"))
@@ -82,10 +82,6 @@ def populate(store: MemoryStore, word: str = "roses") -> dict:
         conn.execute(
             "INSERT INTO correction_marks (seq, mark_no, marked_at, "
             "mark_commit_no) VALUES (?, 1, ?, 1)", (seqs[1], AT))
-        conn.execute(
-            "INSERT INTO engagement_summaries (source_key, role, tier, text, "
-            "engagement_id, at) VALUES ('event:summary-1', 'finance', "
-            "'private', ?, 'e1', ?)", (f"summary of {word}", AT))
     return {"seqs": seqs}
 
 

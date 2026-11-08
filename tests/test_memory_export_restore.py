@@ -503,9 +503,9 @@ def test_an_older_export_missing_one_of_its_schemas_tables_is_refused(
     refused at the request, and at the build if staged anyway."""
     root, proc, store, _ = _setup(tmp_path)
     path = Path(_saved(export.export(store), tmp_path))     # complete, v1
-    _drop_table(path, "engagement_summaries")
+    _drop_table(path, "correction_marks")
     _v2_adds_an_exported_table(monkeypatch)                 # now it is older
-    with pytest.raises(restore.Refused, match="engagement_summaries"):
+    with pytest.raises(restore.Refused, match="correction_marks"):
         r.stage(root, str(path))
     assert r.nothing_scheduled(root)
 
@@ -515,7 +515,7 @@ def test_an_older_export_missing_one_of_its_schemas_tables_is_refused(
     monkeypatch.undo()
     _v2_adds_an_exported_table(monkeypatch)
     assert maintenance.run(root=str(root), proc_root=str(proc)) == "abandoned"
-    assert r.table_lines(store.path, "engagement_summaries") != b""
+    assert r.table_lines(store.path, "correction_marks") != b""
 
 
 def _lenient(real):
@@ -544,11 +544,11 @@ def test_the_tables_of_each_version_come_from_its_migrations(monkeypatch):
     monkeypatch.setattr(store_mod, "MIGRATIONS", {
         1: schema.V1,
         2: ("CREATE TABLE future_rows (id INTEGER PRIMARY KEY) STRICT",
-            "DROP TABLE engagement_summaries")})
+            "DROP TABLE correction_marks")})
     assert "future_rows" not in store_mod.tables_at(1)
-    assert "engagement_summaries" in store_mod.tables_at(1)
+    assert "correction_marks" in store_mod.tables_at(1)
     assert "future_rows" in store_mod.tables_at(2)
-    assert "engagement_summaries" not in store_mod.tables_at(2)
+    assert "correction_marks" not in store_mod.tables_at(2)
 
 
 def test_an_older_export_holding_a_later_table_or_a_stray_file_is_refused(

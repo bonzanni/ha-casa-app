@@ -762,7 +762,7 @@ class TestInteractiveEngagementPermitRelease:
         rec.permit = permit
 
         won = await tm._finalize_engagement(
-            rec, outcome="completed", text="done", artifacts=[],
+            rec, outcome="completed", text="done",
             next_steps=[], driver=None,
         )
         assert bool(won) is True   # FinalizeResult.FINALIZED (G4 D5)

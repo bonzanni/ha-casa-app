@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-26
+last_reviewed: 2026-11-08
 ---
 
 # Engagement finalization
@@ -72,18 +72,16 @@ error mutator reports whether it won, and only a winner cleans up).
 What it does not cover: exclusivity covers the *post-transition* side effects only; what a
 caller does before it attempts the transition is its own.
 
-**INV-ENG-010**: Once the terminal transition is won, the funnel's post-topic tail — driver teardown, the completion notification, the summary captures and the deferred restart — survives cancellation of the task that ran the funnel, and its payloads carry the record values frozen at the flip.
+**INV-ENG-010**: Once the terminal transition is won, the funnel's post-topic tail — driver teardown, the completion notification and the finalized log — survives cancellation of the task that ran the funnel, and its payloads carry the record values frozen at the flip.
 
 An `in_casa` engagement's own `emit_completion` runs inside a child task of the very SDK
 client the teardown closes, so the close cancels the funnel's host. For that caller the tail
 is detached into a Casa-owned anchored task and awaited through a shield: the handler unwinds
 cancelled — its tool result is not part of the guarantee and may be lost — while teardown,
-notification, the summary captures, the deferred restart (still strictly after the captures
-have landed)
-and the finalized log complete. Every other caller runs the same tail inline, unchanged.
-Payload inputs (origin, task, provenance) are snapshotted before the funnel's first
-post-flip await, so a post-terminal record rewrite (clearance lowering) cannot alter what
-the completion records say.
+notification and the finalized log complete. Every other caller runs the same tail inline,
+unchanged. Payload inputs (the origin, the role, the start time) are snapshotted before the
+funnel's first post-flip await, so a post-terminal record rewrite (clearance lowering)
+cannot alter what the completion notice says.
 
 **Read the scope narrowly: "post-topic" excludes the topic.** The completion post, the
 terminal mark and the close all run before the detach, on the caller's own task, and every
@@ -130,17 +128,14 @@ complete command is not gated and finalizes disclosing what it committed past �
 **One terminal path deliberately stays outside this funnel.** A launch turn that ends
 without leaving any artifact (INV-ENG-011, [`architecture/engagements.md`](engagements.md))
 is reported by the launch's owner, not finalized here, and the exclusion is what makes it
-safe. This funnel captures an engagement summary into the memory store's
-`engagement_summaries` (awaited, at the origin's tier), on *every* outcome (a zero-budget
-specialist's summary excepted, INV-MEM-032 in
-[`architecture/memory-capture.md`](memory-capture.md)); a launch death recorded as a completion with empty text would put a
-fabricated success into a store with no other copy. It also hard-codes a single completion
-error kind, which would erase the specific kind the report exists to name. So that path
-uses the strict terminal primitive directly, writes only `error`, tells the engager itself —
-over the same engagement-outcome envelope this funnel's notify step uses, with the fault's
-own kind and no result (INV-ENG-021,
-[`architecture/engagement-launch-detach.md`](engagement-launch-detach.md)) — and touches no
-retention. Nothing outside a completion or the operator's complete
+safe. This funnel tells the engager the outcome as the engagement reported it; a launch
+death recorded as a completion with empty text would tell it of a success that never
+happened. It also hard-codes a single completion error kind, which would erase the
+specific kind the report exists to name. So that path uses the strict terminal primitive
+directly, writes only `error`, and tells the engager itself, over the same
+engagement-outcome envelope this funnel's notify step uses, with the fault's own kind and
+no result (INV-ENG-021,
+[`architecture/engagement-launch-detach.md`](engagement-launch-detach.md)). Nothing outside a completion or the operator's complete
 command ever writes `completed`.
 
 Two properties of the primitive make that direct use correct rather than a shortcut, and
