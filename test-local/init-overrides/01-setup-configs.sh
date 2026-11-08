@@ -170,6 +170,6 @@ fi
 
 # v0.71.0: no seed-copy in the test override. Plugin materialization is the
 # init-plugin-store s6 oneshot (plugin_boot.py), which runs unmodified in the
-# test image (bundled artifacts baked at Dockerfile.test build time).
+# test image (since v0.349.0 the image carries no bundled plugins).
 
 echo "[INFO] Configuration setup complete (local test mode)."

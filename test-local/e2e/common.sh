@@ -181,46 +181,6 @@ assert_log_not_contains() {
     fi
 }
 
-# Build a test-only image whose `claude` on PATH is the mock CLI from
-# test-local/mock-claude-cli/claude. Used by the engagement e2e blocks when
-# CASA_USE_MOCK_CLAUDE=1.
-#
-# It must replace what `claude` RESOLVES to, not just /usr/bin/claude: npm
-# installs the real CLI at /usr/local/bin/claude (a symlink into
-# node_modules), and /usr/local/bin precedes /usr/bin on PATH — so writing
-# only /usr/bin/claude left every "mock-gated" run silently exec'ing the REAL
-# CLI, which 401s in CI with no API key. That was invisible because the one
-# mock-gated probe still running (test_mcp_restart_survival.sh) made only curl
-# calls and never spawned a CLI. The final `grep` is the fix's own guard: the
-# BUILD fails if the overlay does not take, rather than the suite passing on a
-# CLI it did not mean to run.
-build_image_with_mock_cli() {
-    local repo_root
-    repo_root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
-    local tag="$IMAGE"
-    build_image          # build the standard Casa image first
-
-    # Overlay the mock CLI on top with a tiny derivative Dockerfile.
-    local derivative
-    derivative="$(mktemp -d)"
-    cat > "$derivative/Dockerfile" <<'EOF'
-ARG BASE
-FROM ${BASE}
-COPY mock-claude /usr/bin/claude
-RUN set -e; \
-    chmod +x /usr/bin/claude; \
-    resolved="$(command -v claude)"; \
-    [ "$resolved" = /usr/bin/claude ] || ln -sf /usr/bin/claude "$resolved"; \
-    head -3 "$(command -v claude)" | grep -q 'Mock `claude` CLI'
-EOF
-    cp "$repo_root/test-local/mock-claude-cli/claude" "$derivative/mock-claude"
-    MSYS_NO_PATHCONV=1 docker build -q --build-arg "BASE=${tag}" \
-        -t "$tag" "$derivative" >/dev/null \
-        || fail "mock CLI overlay build failed (is \`claude\` still resolving to the real CLI?)"
-    rm -rf "$derivative"
-    log "Overlaid mock claude CLI on $tag"
-}
-
 # wait_for_text_in_log <container> <pattern> [timeout_s]
 # Polls `docker logs` until *pattern* (grep -E, fixed regex ok) appears.
 # Returns 0 on match, 1 on timeout. Unlike assert_log_contains this never

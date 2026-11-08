@@ -92,8 +92,7 @@ product has not shipped for months — measured, and it cost two harness runs.
 | `e2e/test_concurrency.sh` | 3 | parallel `/invoke` with simulated SDK latency |
 
 `e2e/common.sh` provides shared helpers (`build_image`, `wait_healthy`,
-`stop_container`, `assert_log_contains`, `start_mock_telegram_server`,
-`build_image_with_mock_cli`).
+`stop_container`, `assert_log_contains`, `start_mock_telegram_server`).
 
 ## CI tier contract
 

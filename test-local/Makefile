@@ -65,7 +65,7 @@ test-tier2: test-tier1
 	cd $(ROOT) && bash test-local/e2e/test_engagement_E.sh
 
 # `build` is a prerequisite here for the same reason it is on tier1 (#942):
-# without it tier3's image came only from build_image_with_mock_cli, which
+# without it tier3's image came only from the harness's own build_image, which
 # resolves nothing -- so the one tier whose two wasted runs were measured in
 # #942 was also the only tier that never refreshed its base.
 test-tier3: build
