@@ -66,9 +66,8 @@ def test_executors_yaml_lists_only_real_registered_executor_types():
     ``engagement`` as a third executor type because
     ``defaults/agents/assistant/executors.yaml`` listed it as one.
     There is no ``engagement`` executor in the registry —
-    interactive-mode delegation to a specialist is a Tier 2 primitive
-    (``delegate_to_agent(mode='interactive')``), conceptually different
-    from a Tier 3 executor type.
+    talking with a specialist is a delegation to it, conceptually
+    different from a Tier 3 executor type.
 
     This test enumerates real executor directories under
     ``defaults/agents/executors/`` and asserts every ``executor_type``
@@ -103,25 +102,27 @@ def test_executors_yaml_lists_only_real_registered_executor_types():
     )
 
 
-def test_system_prompt_teaches_sync_vs_interactive_delegation(system_md_text):
-    """F-6 (v0.32.0): the engagement-as-executor doctrine drift was fixed
-    by deleting that executors.yaml entry and folding its guidance into
-    the system prompt. Ellen still needs to know when to use
-    ``delegate_to_agent(mode='interactive')`` vs ``mode='sync'``.
+def test_system_prompt_teaches_talking_with_a_specialist(system_md_text):
+    """Interactive specialist engagements are retired in favour of the desk:
+    Ellen must not be taught to open one, and a request to talk with a
+    specialist is a sync delegation whose answer the person replies to.
 
     Anchors a small set of phrases so a future prose rewrite can't
-    silently drop the distinction.
+    silently drop the guidance.
     """
-    text = system_md_text.lower()
-    assert "mode='interactive'" in text, (
-        "system prompt must teach interactive-mode delegation."
+    text = " ".join(system_md_text.lower().split())
+    assert "mode='interactive'" not in text, (
+        "system prompt must not teach the retired interactive mode."
     )
     assert "mode='sync'" in text, (
         "system prompt must teach sync-mode delegation."
     )
+    assert "talk with a specialist" in text and "replying to its message" in text, (
+        "system prompt must say how the person talks with a specialist."
+    )
     assert "engagements supergroup" in text, (
         "system prompt must reference the Engagements supergroup as "
-        "the destination for interactive delegations."
+        "the destination for jobs and executor engagements."
     )
 
 
@@ -1275,13 +1276,27 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # assistant posted "Only one thing running, so that's the one." between its
 # two stop_work calls). One paragraph changed on `assistant:text`; the eight
 # other carriers byte-identical. No retention claim.
+# MOVED (interactive specialist engagements retired), the three `assistant:*`
+# carriers. Core's sign-in-link paragraph: with no drop-off, the person gives
+# the link to the specialist by replying to one of its messages in this chat,
+# not in an interactive delegation's topic (on every `assistant:*` carrier).
+# `assistant:text` also: a delegate's own job is asked for in `sync` mode (the
+# "never in `interactive`" clause goes); the unopened-topic paragraph says a
+# delegation opens no topic and that talking with a specialist is a `sync`
+# delegation relayed with relay_answer, carried on by replying to its message;
+# the browsing paragraph loses its "never a reason for an `interactive`
+# delegation" clause. Measured with `difflib` over base-vs-new compiled text,
+# word by word: one insert and one replace inside the sign-in paragraph on each
+# `assistant:*` carrier, and on `assistant:text` the changes inside those three
+# paragraphs and nothing else; the six other carriers byte-identical. No
+# retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
-        "9002fe26031be571558305515656c9ad9dae14df3c35507488eb3eb14a202c37",
+        "cd629245a767ddc0f9b606153725d77093167a65c4551a18d3c7f489608cb73b",
     "assistant:text":
-        "4f0d91ee0bdbc6eb01c7566e2e5fea2344074a54854f7e5ef7f56fd7f9ff0e5f",
+        "9c6a640bd84f761b3dfebc21e67788038febb5009ca89557e3061d86437376bc",
     "assistant:voice":
-        "b8b3c859f29e0f96d39e4d2ff3e291e145249aca45069752b0b63c0a6f751ae7",
+        "60569e8ecba1da03ad61a2bac8f600d124dfbd1ce0c44ddfa28e9b3eaf57ee4b",
     "butler:restricted_webhook":
         "817241ec5da254b2fef07d2d0e6c7db0073bf1965a28be8d9b6818e59bc7f60b",
     "butler:text":
@@ -1582,8 +1597,8 @@ _DROP_OFF_DOCTRINE = (
     "its sign-in step. Read a mailbox for such a link only when the operator "
     "asks, in this conversation, for that specific email. When no drop-off is "
     "declared, tell the person the step cannot be finished through you: they "
-    "can give the link to the specialist directly, in the topic of an "
-    "interactive delegation you open for it."
+    "can give the link to the specialist directly, by replying to one of its "
+    "messages in this chat."
 )
 
 _KERNEL_DROP_OFF_CLAUSE = (
@@ -1596,10 +1611,13 @@ _UNOPENED_TOPIC_DOCTRINE = (
     "Point someone to a topic in the Engagements supergroup only when a call "
     "you made returned an engagement for it and no completion has closed it "
     "since, or when a delegate's result says it started one of its own jobs, "
-    "whose topic then exists; a sync delegation otherwise opens no topic. When a step needs the person to "
-    "talk to a specialist directly and no such engagement exists, open one "
-    "with an interactive delegation to that specialist and point them there "
-    "once it returns; never refer to a topic you have not opened."
+    "whose topic then exists; a delegation otherwise opens no topic. When the "
+    "person wants to talk with a specialist themselves, or a step needs them "
+    "to, delegate their words to it in `sync` mode and pass its answer on with "
+    "relay_answer; in Telegram they carry on with it directly by replying to "
+    "its message, and if they ask how to go on with it, tell them that. There "
+    "is no separate topic for such a conversation; never refer to a topic you "
+    "have not opened."
 )
 
 
@@ -2268,9 +2286,9 @@ def test_the_topic_purge_channel_rule_reaches_every_assistant_projection():
 
 
 # ---------------------------------------------------------------------------
-# Slice 5h (phone round 7): "ask me before you submit" made the assistant open an
-# interactive topic for a browsing task, where the specialist asked in plain text and its
-# own question card never came. A browsing task is one sync delegation. Pinned on the
+# Slice 5h (phone round 7): "ask me before you submit" made the assistant open a
+# topic for a browsing task, where the specialist asked in plain text and its own
+# question card never came. A browsing task is one sync delegation. Pinned on the
 # compiled text projection (once there, nowhere else), the carrier a persona-bound
 # assistant actually reads.
 # ---------------------------------------------------------------------------
@@ -2278,8 +2296,7 @@ def test_the_topic_purge_channel_rule_reaches_every_assistant_projection():
 ASK_FIRST_IS_SYNC_SENTENCES = (
     "A browsing task is one delegation in `sync` mode, also when the person asks to be asked "
     "first (\"ask me before you submit\"): the browsing specialist asks them itself, in this "
-    "chat (a question with buttons, or a link to take over), so that is never a reason for an "
-    "`interactive` delegation.",
+    "chat (a question with buttons, or a link to take over).",
 )
 
 

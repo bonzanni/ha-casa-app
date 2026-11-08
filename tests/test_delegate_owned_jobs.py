@@ -85,8 +85,7 @@ def test_the_start_job_description_names_the_delegation_route():
 
 _OWN_JOB_SENTENCES = (
     "A job listed as a delegate's own job belongs to that delegate: ask that delegate "
-    "for it with `delegate_to_agent` in `sync` mode, never in `interactive` mode, and "
-    "it starts the job itself.",
+    "for it with `delegate_to_agent` in `sync` mode, and it starts the job itself.",
     "A delegation does run that job, its batches included, so never tell the person "
     "it cannot.",
     "Use `start_job` for such a job only when the delegation reports that it could "
@@ -130,11 +129,11 @@ def test_the_voice_projection_says_no_job_starts_on_a_call():
 
 
 def test_the_topic_rule_admits_a_delegates_reported_job_start():
-    """Astra, design round 1: 'a sync delegation opens no topic' would deny the
+    """Astra, design round 1: 'a delegation opens no topic' would deny the
     topic of a job the delegate reports it started."""
     text = _assistant_carriers()["text"]
     assert _ws("or when a delegate's result says it started one of its own jobs, "
-               "whose topic then exists; a sync delegation otherwise opens no topic."
+               "whose topic then exists; a delegation otherwise opens no topic."
                ) in text
 
 
