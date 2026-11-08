@@ -33,7 +33,10 @@ just ended — not delivered, please resend." (or "Your message could not be del
 resend it." while the job is live) for their words, and "The job had already ended; your answer
 wasn't used." (or "Your answer could not be passed to the job — please answer again.") for a
 tap. The ended form is chosen from the record's settled status. A message written in a topic is
-told in that topic. Nothing is forwarded anywhere else.
+told in that topic — including one whose delivery task waited for a running turn before it
+could ready a rebuilt session — and when the readiness step's refusal has itself just told the
+topic why (a failed context rebuild, a legacy record that could not be resumed), that line is
+the message's notice. Nothing is forwarded anywhere else.
 
 **No end-of-job list.** A terminal outcome — the finalize funnel's completion post, the
 launch-death notice — lists no inbound messages. The messages that died with the engagement are

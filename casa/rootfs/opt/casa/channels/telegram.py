@@ -750,6 +750,28 @@ driver's observation of the turn."""
 OnTokenCallback = Callable[[str], Awaitable[None]]
 
 
+class _Refusal:
+    """A falsy readiness refusal that says whether the refusing arm already
+    told the engagement's topic why (a failed context rebuild, a legacy record
+    that could not be resumed). A message from that topic then draws no second
+    notice; a message from the direct chat still gets its own."""
+
+    __slots__ = ("told",)
+
+    def __init__(self, told: bool) -> None:
+        self.told = told
+
+    def __bool__(self) -> bool:
+        return False
+
+
+_REFUSED_TOLD = _Refusal(True)
+
+
+def _refusal_told(result: Any) -> bool:
+    return getattr(result, "told", False) is True
+
+
 @dataclass(frozen=True)
 class _NoticeTarget:
     """Where an operator-triggered engagement turn's notices go: a reply to
@@ -3021,11 +3043,13 @@ class TelegramChannel(Channel):
                     # lock (and a /cancel with it). The delivery task drains
                     # the turn, then runs the readiness step itself.
                     await_rebuild = self._rebuild_waits_for_turn(rec)
-                    if not await_rebuild and not await self._resume_and_ready(
-                            rec):
+                    ready = True if await_rebuild else await self._resume_and_ready(rec)
+                    if not ready:
                         # The ticket's holder tells the one lost-message
-                        # notice; the finally's discharge is then a no-op.
-                        await self._settle_lost_inbound(rec, inbound_token)
+                        # notice — unless the refusing arm already told this
+                        # topic why; the finally's discharge then runs.
+                        if not _refusal_told(ready):
+                            await self._settle_lost_inbound(rec, inbound_token)
                         return
 
                     # M9 (v0.52.0): deliver the user turn in a tracked background
@@ -3495,7 +3519,7 @@ class TelegramChannel(Channel):
         async def _ready() -> bool:
             try:
                 return await self._ready_after_drain(
-                    rec, inbound_token, notice_target)
+                    rec, inbound_token, notice_target, batch=batch)
             except BaseException:
                 background_jobs.turn_owner_finished(rec.id)
                 raise
@@ -3545,7 +3569,7 @@ class TelegramChannel(Channel):
                 await _send()
             except SessionInvalidatedError:
                 if not await self._ready_after_drain(
-                        rec, inbound_token, notice_target):
+                        rec, inbound_token, notice_target, batch=batch):
                     return
                 try:
                     await _send()
@@ -3642,15 +3666,17 @@ class TelegramChannel(Channel):
 
     async def _ready_after_drain(
             self, rec, inbound_token,
-            notice_target: "_NoticeTarget | None" = None) -> bool:
+            notice_target: "_NoticeTarget | None" = None,
+            *, batch: int | None = None) -> bool:
         """#1166: the readiness step a delivery task runs itself when the
         session its turn is for was invalidated under a running turn — wait
         for that turn to end, then run ``_resume_and_ready`` under the topic
         lock (its rebuild branch tears the old session down and opens the
         fresh one). True: deliver. Otherwise this step has settled the turn,
-        mirroring the seams' pre-hand-off paths: a False result for a message
-        from the direct chat (``notice_target``) draws that message's one
-        notice, any other is discharged with no telling; an exception gets the one
+        mirroring the seams' pre-hand-off paths: a False result for an
+        operator's message draws that message's one notice — in reply to it
+        in the direct chat (``notice_target``), or in the topic it was written
+        in — while a batch prompt (``batch``) is discharged with no telling; an exception gets the one
         bounded lost-inbound telling. Never the job finalizer — nothing was
         sent, so no batch failed."""
         try:
@@ -3671,10 +3697,14 @@ class TelegramChannel(Channel):
             return False
         if ready:
             return True
-        if notice_target is not None:
-            # A message from the operator's direct chat that the job will not
-            # take up — it ended, or could not be resumed, while this task
-            # waited — is told once, here, by the ticket's holder.
+        if batch is None and (notice_target is not None
+                              or not _refusal_told(ready)):
+            # An operator's message the job will not take up — it ended, or
+            # could not be resumed, while this task waited — is told once,
+            # here, by the ticket's holder: in the direct chat when it came
+            # from there, otherwise in the topic, unless the refusing arm has
+            # just told the topic itself. A batch prompt is Casa's own and is
+            # discharged silently below; the job's loop owns it.
             await self._settle_lost_inbound(rec, inbound_token, notice_target)
             return False
         if (inbound_token is not None
@@ -3748,7 +3778,7 @@ class TelegramChannel(Channel):
                 await self._post_engagement_notice(
                     rec, "This engagement is re-establishing its context — "
                          "please resend in a moment.")
-                return False
+                return _REFUSED_TOLD
             if preamble:
                 self._rebuild_preambles[rec.id] = preamble
             if reg is not None:
@@ -3816,7 +3846,7 @@ class TelegramChannel(Channel):
                         # can_manage_topics — mirror the funnel's send-then-close
                         # order.
                         await self._cleanup_error_topic(rec)
-                    return False
+                    return _REFUSED_TOLD
             elif not drv.is_alive(rec):
                 # No session to resume — orphan.
                 if continuing_job:
@@ -3835,7 +3865,7 @@ class TelegramChannel(Channel):
                 )
                 # [AR-1] (v0.65.0): terminal path bypasses finalize — see above.
                 await self._cleanup_error_topic(rec)
-                return False
+                return _REFUSED_TOLD
 
         # v0.79.0 (§3): stamp the idle→active user turn so idle-suspension +
         # retention accounting see fresh activity before delivery.

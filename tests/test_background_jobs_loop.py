@@ -699,6 +699,30 @@ async def test_cancel_during_the_drain_interrupts_the_batch(harness, monkeypatch
     assert jobs.turn_owners(h.rec.id) == 0
 
 
+async def test_a_topic_steer_that_loses_to_cancel_during_the_drain_is_told_once(
+        harness, monkeypatch):
+    """RACE: a lower-clearance member's message waits for the running batch
+    before the session can be rebuilt; a /cancel ends the job meanwhile. The
+    message's delivery task — the holder of its ticket — tells the topic once,
+    in the topic's own wording, and nothing reaches the model or the direct
+    chat."""
+    h = harness
+    old, fresh, release = await _downgrade(h, monkeypatch)
+    await asyncio.wait_for(h.operator("Correction"), 2)
+    await asyncio.wait_for(h.operator("/cancel"), 2)
+    assert h.rec.status == "cancelled"
+    release.set()
+    await h.drain()
+    assert fresh.prompts == []
+    assert "Correction" not in old.prompts
+    notice = "Your message could not be delivered — please resend it."
+    assert h.topic().count(notice) == 1
+    assert [p for p in h.bot.posts
+            if notice in p.get("text", "") and p.get("message_thread_id") != 555] == []
+    assert h.driver.inbound_unread_texts(h.rec.id) == []
+    assert jobs.turn_owners(h.rec.id) == 0
+
+
 async def test_a_failed_rebuild_after_the_drain_tells_once_and_keeps_the_job(
         harness, monkeypatch):
     h = harness
@@ -720,6 +744,31 @@ async def test_a_failed_rebuild_after_the_drain_tells_once_and_keeps_the_job(
     assert "a batch failed" not in topic
     assert h.driver.inbound_unread_texts(h.rec.id) == []
     assert jobs.turn_owners(h.rec.id) == 0
+
+
+async def test_a_topic_message_refused_by_a_failed_rebuild_is_told_once(
+        harness, monkeypatch):
+    """A message written in the topic while the context rebuild keeps
+    failing: the refusing arm tells the topic it is re-establishing its
+    context, and that is the message's one notice — no lost-message line is
+    added beside it."""
+    h = harness
+
+    async def broken(rec):
+        await h.driver.invalidate_session(rec)
+        raise RuntimeError("no fresh session")
+    old, fresh, release = await _downgrade(h, monkeypatch, rebuild=broken)
+    await asyncio.wait_for(h.operator("Correction"), 2)
+    release.set()
+    await h.drain()
+    before = h.topic().count("re-establishing its context")
+    await asyncio.wait_for(h.operator("And another thing"), 2)
+    await h.drain()
+    topic = h.topic()
+    assert topic.count("re-establishing its context") == before + 1
+    assert "could not be delivered" not in topic
+    assert fresh.prompts == []
+    assert h.driver.inbound_unread_texts(h.rec.id) == []
 
 
 async def test_a_readiness_failure_after_the_drain_tells_once_and_keeps_the_job(
