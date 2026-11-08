@@ -71,7 +71,7 @@ in-flight maps do not. A record found `active` at startup is rewritten to `idle`
 live driver survived to make `active` true.
 
 **Durable is not indefinite.** A daily sweep suspends a live session after a day idle;
-terminal tombstones age out after thirty days, bounding duplicate-task protection (one whose
+terminal tombstones age out after thirty days, bounding the post-mortem record (one whose
 completion time is not a finite number has no known age and is kept, and an `in_casa` one
 only once its transcripts are reaped, per `architecture/engagement-transcript-reaping.md`).
 

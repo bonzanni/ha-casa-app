@@ -133,7 +133,7 @@ Agent context is anything that is not a positively-marked live operator turn: a 
 engagement turn, a delegated turn, or any turn without the reserved `_operator_turn`
 marker. The engagement-creating call site, the job launch owner, acquires an occupancy reservation from one
 global limiter *synchronously, before any await with external effects* — before the
-channel-setup retry, duplicate-task lookups and topic creation — so a refused spawn
+channel-setup retry and topic creation — so a refused spawn
 performs no Telegram traffic at all, and parallel calls cannot pass a shared count check
 (the reservation, not a count read, is the permit). The reservation transfers to the
 record at successful creation, rides a dedicated field distinct from the specialist
