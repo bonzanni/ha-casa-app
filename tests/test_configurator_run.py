@@ -183,9 +183,19 @@ async def _blocking_runner(started: asyncio.Event, release: asyncio.Event):
 async def test_a_second_run_from_another_origin_waits_for_the_lease(lease_file, monkeypatch):
     import agent as agent_mod
     import tools
-    started, release = asyncio.Event(), asyncio.Event()
-    monkeypatch.setattr(tools, "_run_delegated_agent",
-                        await _blocking_runner(started, release))
+    # Each run gets its own release gate: with one shared gate, releasing the
+    # first run also lets the second run straight through, and it can finish
+    # and remove the lease file before the test reads the second holder.
+    started, release, release_second = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    gates = iter([release, release_second])
+
+    async def _run(cfg, task_text, context_text, **kwargs):
+        gate = next(gates)
+        started.set()
+        await gate.wait()
+        return SimpleNamespace(text="done", run_aborted=False)
+
+    monkeypatch.setattr(tools, "_run_delegated_agent", _run)
     cfg = _configurator_cfg()
     tok = agent_mod.origin_var.set(_origin(execution_role="configurator",
                                            _delegation_id="deleg-1"))
@@ -210,6 +220,7 @@ async def test_a_second_run_from_another_origin_waits_for_the_lease(lease_file, 
     await asyncio.wait_for(started.wait(), 5)
     rec = json.loads(lease_file.read_text())
     assert rec["run_key"] == "turn-2" and rec["via"] == "desk"
+    release_second.set()
     await asyncio.wait_for(second, 5)
     assert not lease_file.exists()
 
