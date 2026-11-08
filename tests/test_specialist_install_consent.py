@@ -151,7 +151,7 @@ def test_render_message_omits_casa_tools_line_when_role_grants_none() -> None:
 # bare None (what the pre-fix production callback and deliver_system_turn both
 # return on the defect path) must not.
 _662_SUCCESS = (
-    "✅ Approved — requested an automatic configurator continuation for 'mtg'"
+    "✅ Approved — the Configurator is carrying on with 'mtg'."
 )
 _662_CORRECTIVE = (
     "⚠️ Approved and saved — but the install of 'mtg' was not "

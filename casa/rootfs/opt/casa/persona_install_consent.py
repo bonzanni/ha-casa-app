@@ -112,8 +112,8 @@ def prompt_persona_install_consent(
                 if outcome is True:
                     await channel.edit_dm_message(
                         chat_id, message_id,
-                        "✅ Approved — requested an automatic configurator "
-                        f"continuation for {inspection.persona_id!r}")
+                        f"✅ Approved — the Configurator is carrying on with "
+                        f"{inspection.persona_id!r}.")
                 elif raised:
                     # See the specialist sibling: the one branch where the
                     # outcome is unknown rather than known-negative.

@@ -15,7 +15,7 @@ import pytest
 from persona_install_consent import prompt_persona_install_consent
 
 _SUCCESS = (
-    "✅ Approved — requested an automatic configurator continuation for 'judge'"
+    "✅ Approved — the Configurator is carrying on with 'judge'."
 )
 _CORRECTIVE = (
     "⚠️ Approved and saved — but the install of 'judge' was not "

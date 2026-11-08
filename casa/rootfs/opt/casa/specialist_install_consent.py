@@ -406,8 +406,8 @@ def prompt_specialist_install_consent(
                 if outcome is True:
                     await channel.edit_dm_message(
                         chat_id, message_id,
-                        "✅ Approved — requested an automatic configurator "
-                        f"continuation for {inspection.slug!r}",
+                        f"✅ Approved — the Configurator is carrying on with "
+                        f"{inspection.slug!r}.",
                     )
                 elif raised:
                     # A raise is a CONTRACT VIOLATION (no production callback
