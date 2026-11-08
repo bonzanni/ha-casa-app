@@ -71,10 +71,10 @@ def _executor_template_files() -> list[Path]:
     """Every file an executor's prompt can actually be rendered from.
 
     Not just ``prompt.md`` (Sol + Terra, Important): ``agent_loader`` honours a
-    per-executor ``prompt_template_file``, and the Claude Code driver renders
-    ``workspace-template/CLAUDE.md.tmpl`` through the same
-    ``{executor_memory}`` substitution (`drivers/workspace.py`). Scanning one
-    filename only would let a rename walk straight past this guard.
+    per-executor ``prompt_template_file``, and every ``.tmpl`` file is scanned
+    too (the since-removed Claude Code driver rendered one through
+    the same ``{executor_memory}`` substitution). Scanning one filename only
+    would let a rename walk straight past this guard.
     """
     files: set[Path] = set()
     for defn_path in EXECUTORS_DIR.rglob("definition.yaml"):

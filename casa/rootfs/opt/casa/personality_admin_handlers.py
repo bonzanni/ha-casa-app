@@ -1,8 +1,8 @@
 """Personality Phase A, Task 14: Unix-socket-only admin routes.
 
 Five ``POST`` routes registered ONLY on the internal Unix-socket
-``AppRunner`` built by ``casa_core.start_internal_unix_runner`` (the
-svc-casa-mcp socket) — NEVER on the public port-8099 app. They back
+``AppRunner`` built by ``casa_core.start_internal_unix_runner``
+(``/run/casa/internal.sock``) — NEVER on the public port-8099 app. They back
 ``casactl persona inspect/render/diff``, ``casactl specialist status``,
 and ``casactl explain``.
 

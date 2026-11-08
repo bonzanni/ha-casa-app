@@ -121,7 +121,7 @@ predates the filter.
 
 Stated as an invariant because it is a security-relevant asymmetry that reads like an
 oversight and is not one — the executor path is constrained by its code-mandatory disallow
-clamps, guard hooks and relay instead; its declared tool list is auto-approval, not a gate.
+clamps and guard hooks instead; its declared tool list is auto-approval, not a gate.
 Verification will report an executor whose declaration lacks a needed authorisation, but
 nothing merges it automatically.
 
@@ -178,9 +178,10 @@ loadable; the agents that should carry it still need their own reload to rebuild
 registry file directly is not sufficient: nothing takes effect until a snapshot reload runs.
 
 **Which populations a plugin may be given to.** Residents and specialists take
-operator-installed plugins; executors, for now, do not. An executor's plugin set is the
-bundled set Casa seeds — the entries whose registry `source.type` is the seeded-default
-type — and the rule is stated as *not bundled* rather than as a list of names, so a source
+operator-installed plugins; executors, for now, do not. An executor's plugin set is limited
+to bundled entries — those whose registry `source.type` is the seeded-default type, which
+an earlier Casa seeded and Casa seeds none of today — and the rule is stated as *not
+bundled* rather than as a list of names, so a source
 type added later is excluded by default and a default the operator removed and re-added
 counts as theirs. The three admission tools refuse the operation with the reason stated
 and before any artifact is published, any system requirement is installed or the registry

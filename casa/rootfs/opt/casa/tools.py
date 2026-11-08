@@ -2824,23 +2824,20 @@ def _resolution_from_recorded(plugin_artifacts) -> "plugin_registry.ResolutionRe
     return ResolutionResult(registry_valid=True, plugins=plugins, issues=issues)
 
 
-# The casa-framework tools every bridge-backed engagement of a given kind is
-# granted at runtime, over and above whatever its definition lists (#458
-# follow-up / v0.166.0). Interactive specialists in particular are created with
-# an EMPTY tools_allowed and receive these only via the options builder — so
-# these are the single source the bridge grant-gate must also honor, or a
-# specialist's own query_engager is rejected. Keep the extra_casa_tools call
-# sites below referencing these constants so the gate can never drift from what
-# is actually granted.
+# The casa-framework tools every engagement of a given kind is granted at
+# runtime, over and above whatever its definition lists (#458 follow-up /
+# v0.166.0). Interactive specialists in particular are created with an EMPTY
+# tools_allowed and receive these only via the options builder. Keep the
+# extra_casa_tools call sites below referencing these constants so they never
+# drift from what is actually granted.
 SPECIALIST_CASA_GRANTS: tuple[str, ...] = (
     "mcp__casa-framework__query_engager",
     "mcp__casa-framework__emit_completion",
 )
 # `react` is deliberately NOT a launch/resume-mandatory grant: an executor gets
-# it only from its OWN definition (plugin-developer lists it), so the tools it
-# is offered and the tools the bridge grant-gate admits stay consistent.
+# it only from its OWN definition.
 
-# The two casa-framework tools EVERY bridge-backed engagement receives at
+# The two casa-framework tools EVERY engagement receives at
 # launch, both kinds, independent of its definition (query_engager to read the
 # conversation, emit_completion to end it). They are the same for specialists
 # and executors — `react` is NOT here, because it is granted only by an
@@ -3379,7 +3376,7 @@ def _build_executor_options(
     # Task 4 (#360): build from the load-time-validated snapshot
     # (ExecutorDefinition.hooks_document, Task 3) instead of re-reading
     # hooks_path here — a post-load edit to the on-disk hooks.yaml must not
-    # change what an in-casa (configurator/plugin-developer) session
+    # change what an in-casa executor session
     # enforces. hooks_document is populated for every executor ({} only
     # when there is no hooks file).
     raw = getattr(defn, "hooks_document", None) or {}
@@ -3387,8 +3384,8 @@ def _build_executor_options(
 
     resolved_hooks = resolve_hooks(hooks_cfg, default_cwd="/config")
     # Sol #5: in_casa executors run with cwd=/config (the configurator has no
-    # shell since v0.101.0, but plugin-developer keeps Bash and hooks.yaml is
-    # operator-editable) — inject the same code-side guard so a Bash write to
+    # shell since v0.101.0, but an executor definition may list Bash and
+    # hooks.yaml is operator-editable) — inject the same code-side guard so a Bash write to
     # /config/plugins or settings.json is denied regardless of yaml policy.
     from hooks import (
         agent_home_settings_guard_matcher,
@@ -3490,7 +3487,7 @@ def _build_executor_options(
     # Round-6 P0-2 belt+suspenders (Sol): an executor whose CLAMPED
     # allowlist does not carry Bash gets it hard-denied too — the Bash
     # denial then holds independent of allowlist/permission_mode machinery
-    # entirely. Harmless for plugin-developer (Bash legitimately allowed).
+    # entirely. Harmless for an executor whose allowlist carries Bash.
     if "Bash" not in allowed_tools and "Bash" not in disallowed_tools:
         disallowed_tools.append("Bash")
 
@@ -3575,10 +3572,9 @@ def build_engagement_resume_options(
                 executor_type=role,
                 plugin_paths=plugin_paths,
                 # Only the launch-mandatory grants here (query/emit). `react`
-                # comes from the executor's OWN definition (plugin-developer
-                # lists it); adding it unconditionally would offer a resumed
-                # configurator a tool the bridge grant-gate then rejects, since
-                # its record does not carry react (Sol/Terra re-review r2).
+                # comes from the executor's OWN definition; adding it
+                # unconditionally would offer a resumed configurator a tool its
+                # record does not carry (Sol/Terra re-review r2).
                 extra_casa_tools=SPECIALIST_CASA_GRANTS,
             )
     else:
@@ -14428,8 +14424,8 @@ _PLUGIN_HEALTH_PATH = "/data/plugin-health.json"
 
 # #676 (INV-TOOL-007): a removal that COMMITS says what survives it. No Casa
 # code path touches the Claude CLI's per-plugin persistent data directory
-# (CLAUDE_PLUGIN_DATA) — the plugin-developer doctrine establishes that it
-# lives on the config volume and outlives every lifecycle operation — so a
+# (CLAUDE_PLUGIN_DATA) — it lives on the config volume and outlives every
+# lifecycle operation — so a
 # stored authorization survives a remove and a same-name reinstall silently
 # re-adopts it. Casa does not derive or delete that path (a wrong derivation
 # is data loss, and deleting it still could not revoke the grant at the
@@ -16520,8 +16516,8 @@ async def plugin_add(args: dict) -> dict:
     "requirements, repoint the registry, reload + verify. A plugin already on "
     "that release returns unchanged:true: no registry change and no reload, and "
     "verify reports its current state. Version derives "
-    "from the fetched manifest. Pass expected_revision (the producer's "
-    "handed-off sha) so a tag that moved after the build aborts before "
+    "from the fetched manifest. Pass expected_revision (the sha the tag must "
+    "point at, when the operator gives one) so a tag that moved aborts before "
     "activation. A plugin Casa ships to a worker is not updated here — it is "
     "updated by updating Casa; updating any other plugin makes it the "
     "operator's, so it is no longer part of what Casa ships."

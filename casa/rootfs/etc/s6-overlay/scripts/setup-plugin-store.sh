@@ -1,8 +1,9 @@
 #!/command/with-contenv /opt/casa/scripts/core-bashio.sh
 # ==============================================================================
-# init-plugin-store: bundled-artifact import + registry seed +
-# plugin-health report. Runs AFTER init-setup-configs (config_sync)
-# and BEFORE svc-casa / svc-casa-mcp (s6 dependencies enforce this — spec 3.6).
+# init-plugin-store: bundled-artifact import (when the image carries a
+# bundle) + registry seed + plugin-health report. Runs AFTER
+# init-setup-configs (config_sync) and BEFORE svc-casa (s6 dependencies
+# enforce this — spec 3.6).
 # ALWAYS exits 0: failures become /data/plugin-health.json issues; a nonzero
 # exit here would block svc-casa.
 # ==============================================================================

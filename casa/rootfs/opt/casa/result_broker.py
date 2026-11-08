@@ -1478,8 +1478,7 @@ def _claim_and_capture(outbox, path: str, kind: str, delivered_name: str = ""):
 async def _post_operator_file(chat_id: int, path: str, kind: str, caption: str,
                               post: "PostRecord | None" = None, delivered_name: str = ""):
     """S3: claim *path* from the plugin outbox exactly as ``send_media``
-    claims it (the outbox derived from the authenticated engagement, else
-    the shared one), run the kind's policy through ``capture``, and send
+    claims it (the shared outbox), run the kind's policy through ``capture``, and send
     the bytes with the composed caption. The claim is removed on EVERY
     outcome — the file is consumed whether or not it was delivered, even
     when the claim lands after the hook's bound. A claim, name or policy

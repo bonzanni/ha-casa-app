@@ -65,10 +65,8 @@ class ExecutorRegistry:
     @property
     def _failed_types(self) -> set[str]:
         """#340 (Sol r1-1): types whose LOAD failed on the most recent
-        load() — kept so reload can tell "failed to load" apart from
-        "genuinely removed" when refreshing the HTTP hook-policy map: a
-        failed executor's live engagements must keep their old (possibly
-        tighter) callbacks rather than fall back to the broader defaults."""
+        load() — kept so a caller can tell "failed to load" apart from
+        "genuinely removed"."""
         return self._state.failed_types
 
     def load(self) -> None:
@@ -151,11 +149,8 @@ class ExecutorRegistry:
 
     def definition_any(self, type_name: str) -> ExecutorDefinition | None:
         """The definition whether the executor is ENABLED or DISABLED — for
-        verify/health AND boot resume of EXISTING engagements (Task 8): a
-        specialist disabled AFTER an engagement launched must still resume,
-        so ``replay_undergoing_engagements`` resolves a brief-bearing record's
-        executor through here, not ``get()``. A plugin assigned to a disabled
-        executor can likewise still have its tools.allowed inspected.
+        verify/health: a plugin assigned to a disabled
+        executor can still have its tools.allowed inspected.
         Engagement LAUNCH (a NEW engagement) must keep using ``get()`` (None
         for disabled) to refuse a disabled type."""
         s = self._state
@@ -171,10 +166,7 @@ class ExecutorRegistry:
 
     def list_types_any(self) -> list[str]:
         """Every loaded type, ENABLED or DISABLED — the iteration counterpart
-        of :meth:`definition_any`. #315: the HTTP hook-policy map must cover
-        disabled-but-resumable executors (boot replay resumes their existing
-        brief-bearing engagements), so its builder iterates this, not
-        ``list_types()``. Engagement LAUNCH keeps using ``list_types()``/
-        ``get()`` to refuse a disabled type."""
+        of :meth:`definition_any`. Engagement LAUNCH keeps using
+        ``list_types()``/``get()`` to refuse a disabled type."""
         s = self._state
         return sorted(set(s.defs) | set(s.disabled_defs))

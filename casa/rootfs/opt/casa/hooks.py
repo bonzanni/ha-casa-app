@@ -948,7 +948,7 @@ _PLUGINS_WRITE_RE = re.compile(
 )
 # Language-runtime write to the path (python/node/perl `open(...,'w')`, etc.).
 # Targeted at WRITE modes so a plain READ of /config/plugins/store (the
-# plugin-developer's legitimate access) is not denied. Best-effort — a
+# agent's legitimate access) is not denied. Best-effort — a
 # determined obfuscated command still needs the filesystem/privilege boundary
 # (spec integrity = content-addressing + checksum DETECTION; tracked backlog).
 _PLUGINS_CODE_WRITE_RE = re.compile(
@@ -1068,13 +1068,12 @@ def profile_guard_matcher(plan):
 # inspection, not a sandbox — obfuscated writes (source'd scripts, busybox
 # applets, git-apply, interpreters reading code from files/stdin, and
 # variable-built destinations like `d=/config; printf x > "$d/plugins/…"`)
-# need the outer boundary; filesystem-level containment for the
-# plugin-developer's shell is tracked as #216. Round-2 W1 (ratified): for
+# need the outer boundary. Round-2 W1 (ratified): for
 # the CONFIGURATOR that Bash
 # vector is now closed at the capability layer — Bash was removed from its
 # toolset (role.yaml + definition.yaml). The Bash branch below stays fully
-# intact: the plugin-developer keeps Bash, and an operator who deliberately
-# re-adds Bash to an executor still gets this guard as the inner layer.
+# intact: an operator who deliberately re-adds Bash to an executor still
+# gets this guard as the inner layer.
 #
 # Round-2 hardening (Sol+Terra adversarial review):
 #   F1  Bash commands also enforce the hooks.yaml policy-file rule.
@@ -1907,7 +1906,7 @@ def _provably_read_only(command: str) -> bool:
             # already decided, audited and tested next door: the managed
             # guard's `_MANAGED_GIT_READONLY_SUBCMDS` allowlist plus its
             # option handling. Without it `git diff -- triggers.yaml` — a normal
-            # plugin-developer action on an unrelated file — is refused with no
+            # read-only action on an unrelated file — is refused with no
             # equivalent (Terra r3-3), since a file tool cannot produce a diff.
             if _argv_managed_write(argv):
                 return False
@@ -2321,9 +2320,9 @@ def make_resident_prompt_write_guard() -> HookCallback:
     command text, and a `Bash` payload that reaches it (it cannot, in
     production) falls through to allow. The residual is exactly that: a
     shell-capable agent can still make the edit, which is inert for a
-    bundle-bound resident. No shipped resident holds `Bash` and the
-    configurator has none; the plugin-developer's shell is the shipped path,
-    and an execution boundary over that tree is a separate decision.
+    bundle-bound resident. No shipped agent holds `Bash` (the configurator
+    has none), and an execution boundary over that tree is a separate
+    decision.
     """
     async def _hook(
         input_data: dict[str, Any],
@@ -2684,13 +2683,12 @@ def build_policy_callbacks_from_hooks_yaml(
         if policy is None:
             continue
         # Sol r2-1: duplicate declarations of one policy must agree on their
-        # declared ``matcher`` (including all leaving it absent). The server
-        # cannot tell declarations apart on the wire (the request names only
-        # the POLICY), and the SDK path deliberately ignores declared
-        # matchers (they are config-editable; HOOK_POLICIES matchers are the
-        # trust anchor) — so per-declaration matcher scoping of duplicates
-        # is unenforceable and the composite would surprise (intersection
-        # under the canonical matcher). Refuse the config loudly instead:
+        # declared ``matcher`` (including all leaving it absent). The SDK
+        # path deliberately ignores declared matchers (they are
+        # config-editable; HOOK_POLICIES matchers are the trust anchor) — so
+        # per-declaration matcher scoping of duplicates is unenforceable and
+        # the composite would surprise (intersection under the canonical
+        # matcher). Refuse the config loudly instead:
         # with #312's load-time constructibility check this fail-closes the
         # executor at load/commit, not silently at enforcement time.
         if name in declared_matchers:
@@ -2712,10 +2710,9 @@ def build_policy_callbacks_from_hooks_yaml(
         callbacks.append(policy["factory"](**params))
     # #313: a policy declared MORE THAN ONCE must enforce every declaration.
     # The SDK path registers one HookMatcher per declaration and runs all of
-    # them (any deny blocks); this dict is keyed by policy name, so the old
-    # ``out[name] = ...`` was last-writer-wins — a write refused by an earlier
-    # declaration but permitted by the last one passed the HTTP path.
-    # Duplicates now compose into ONE callback that runs each declaration in
+    # them (any deny blocks); this dict is keyed by policy name, so a plain
+    # ``out[name] = ...`` would be last-writer-wins.
+    # Duplicates compose into ONE callback that runs each declaration in
     # order and returns the first non-allow result (deny/ask), restoring the
     # SDK's intersection semantics.
     out: dict[str, tuple[str, "HookCallback"]] = {

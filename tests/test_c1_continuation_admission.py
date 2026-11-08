@@ -4,9 +4,9 @@
 turn on client-map liveness alone (``is_alive`` is ``engagement.id in
 self._clients``), with no registry status fence, so a turn dispatched to a
 background delivery task reaches ``await client.query(prompt)`` on an
-engagement a racing terminal writer already finalized. INV-ENG-009's fence
-exists only for ``claude_code`` (``claude_code_driver.py``'s
-``begin_turn_delivery`` call is its single caller tree-wide).
+engagement a racing terminal writer already finalized. At the time,
+INV-ENG-009's fence existed only for the Claude Code driver, since removed (its
+``begin_turn_delivery`` call was the single caller tree-wide).
 
 **#663 — the PRE-admission window.** A broker-driven system continuation's
 admission ticket is born only inside ``deliver_system_turn``, and the in_casa
@@ -1048,10 +1048,9 @@ class TestTheFenceCoversTheDecisionNotTheDelivery:
     That limit is not closable here and must not be closed by widening the
     fence: excluding terminal transitions until the SDK write completed would
     hold a termination out across an unbounded client call, which is exactly
-    what the terminal-hook family must never do. It is the same limit the
-    claude_code half has always carried — ``begin_turn_delivery``'s own
-    docstring says it fences the first byte only and that stopping an in-flight
-    turn is ``driver.cancel``'s job. Pinned here so the documented boundary is
+    what the terminal-hook family must never do. ``begin_turn_delivery``'s own
+    docstring states the same limit: it fences the decision to deliver only,
+    and stopping an in-flight turn is ``driver.cancel``'s job. Pinned here so the documented boundary is
     a tested statement rather than prose, and so a future widening is a visible
     test change rather than a silent one.
     """

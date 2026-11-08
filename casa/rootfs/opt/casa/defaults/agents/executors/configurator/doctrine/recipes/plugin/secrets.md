@@ -224,16 +224,16 @@ names. When no setup report has named the value yet, say it is waiting for
 the plugin's setup run; never report it as something no configurator can
 do.
 
-## Optional keys NOT declared by the plugin (e.g. `context7`)
+## Optional keys NOT declared by the plugin
 
 Some plugins ship an MCP server that **works without a key** and reads an
 **optional** API key from the environment — the key is NOT declared in the
 plugin's `.mcp.json`, so `plugin_add` returns no `required_env_vars`
 and `verify_plugin_state` shows nothing unresolved. The "When to use" triggers
 above won't fire, but the operator may still want the key wired (for higher rate
-limits / reliability). **`context7`** is the canonical case: its MCP server
-(`npx @upstash/context7-mcp`) reads **`CONTEXT7_API_KEY`** from env if present
-and otherwise runs keyless (rate-limited).
+limits / reliability). For example, a plugin `pollen-report` whose MCP server
+reads **`POLLEN_REPORT_API_KEY`** from env if present and otherwise runs
+keyless (rate-limited).
 
 Wire it exactly like any other secret — the var is **global** (the `plugin` arg
 to `set_plugin_env_reference` is a label only; the line is written flat into
@@ -243,19 +243,20 @@ subprocess inherits):
     # the operator gives the reference, or you find the item and its field
     # id as above: op://<vault>/<item id>/<field id>
     set_plugin_env_reference(
-      plugin="context7",
-      var_name="CONTEXT7_API_KEY",
+      plugin="pollen-report",
+      var_name="POLLEN_REPORT_API_KEY",
       op_ref_or_value="op://<vault>/<item id>/<field id>",
     )
-    config_git_commit(message="context7: wire optional CONTEXT7_API_KEY via 1Password")
+    config_git_commit(message="pollen-report: wire optional POLLEN_REPORT_API_KEY via 1Password")
     casa_reload(scope="plugin_env")
-    emit_completion(status="ok", text="I added context7's optional API key from 1Password.")
+    emit_completion(status="ok", text="I added pollen-report's optional API key from 1Password.")
 
-**Verify differently:** because context7 declares no required env var,
+**Verify differently:** because the plugin declares no required env var,
 `verify_plugin_state` won't report it. Confirm instead that `plugin-env.conf`
-contains the `CONTEXT7_API_KEY=...` line (it does after `set_plugin_env_reference`).
-The key takes effect for the next MCP-server spawn (e.g. the next plugin-developer
-engagement). A bad/empty key does NOT break context7 — it falls back to keyless.
+contains the `POLLEN_REPORT_API_KEY=...` line (it does after `set_plugin_env_reference`).
+The key takes effect for the next MCP-server spawn (the next session of an
+agent the plugin is assigned to). A bad/empty key does NOT break such a
+plugin — it falls back to keyless.
 
 ## Remove an entry
 

@@ -961,7 +961,7 @@ class TelegramChannel(Channel):
         # open-question reconcilers await. SET at the first successful ``_rebuild``
         # (``self._app`` becomes usable) — NOT at ``start_all()`` return, since
         # Telegram deliberately survives a transient bring-up failure and lets its
-        # supervisor retry. Boot replay snapshots pre-service but its confirmed
+        # supervisor retry. A boot reconciler snapshots pre-service but its confirmed
         # settle edits must not fire against a ``None`` bot (they would fail closed
         # and the ledger would never settle). Loop-agnostic since Py3.10.
         self._ready_event: asyncio.Event = asyncio.Event()
@@ -1077,8 +1077,8 @@ class TelegramChannel(Channel):
         self._ack_bursts: dict[tuple[str, str | None], _AckBurst] = {}
         self._ack_locks: dict[str, asyncio.Lock] = {}
         # #347: per-engagement topic-STATE edit serialization (see
-        # update_topic_state) — orders the relay's awaiting/active round-trip
-        # against terminal-transition edits so a closed topic can never be
+        # update_topic_state) — orders every state repaint against
+        # terminal-transition edits so a closed topic can never be
         # repainted active.
         self._topic_state_locks: dict[str, asyncio.Lock] = {}
         # R5 (v0.89.0): NON-PERSISTENT current-inbound target for the `react`
@@ -3056,8 +3056,8 @@ class TelegramChannel(Channel):
            terminal writer that wins the flip after the read above can paint
            and close first and this notice lands below the paint, or fails
            against a closed topic. Installing that ordering needs the
-           in_casa turn-admission fence that does not exist (INV-ENG-009 is
-           claude_code-only) and is deliberately out of scope here. The
+           in_casa turn-admission fence that does not exist and is
+           deliberately out of scope here. The
            invariant is written as an attempt for that reason.
         4. **R2: terminal STATUS is not the suppression predicate — a
            CONFIRMED terminal telling is.** A seam reviewer reproduced the
@@ -4889,8 +4889,8 @@ class TelegramChannel(Channel):
         if self._engagement_registry is None:
             return
         # #347 (Sol+Terra r4): ONE per-engagement lock totally orders every
-        # state edit — all writers (the permission relay's awaiting/active
-        # round-trip AND the terminal-transition paths) go through this
+        # state edit — all writers (the active repaints AND the
+        # terminal-transition paths) go through this
         # method, so under the lock the record re-read below is authoritative
         # for the whole check→wire-edit→persist span. A terminal transition
         # marks the registry BEFORE calling here, so any ``active`` repaint

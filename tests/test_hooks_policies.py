@@ -138,7 +138,7 @@ class TestResolveHooks:
         """REVISION 3 (Terra plan-review r3, #360): resolve_hooks is the SDK
         path used by the in-casa _build_executor_options. A snapshot
         carrying the transport-only ``matcher``/``timeout`` keys on a floor
-        policy (e.g. because hook_bridge's canonical-matcher force wrote a
+        policy (e.g. because the since-removed hook bridge's canonical-matcher force wrote a
         matcher back onto every registry entry, or the yaml itself declared
         one) loads/reloads fine but previously blew up every in-casa
         executor's START with UnknownPolicyError, since the factories reject

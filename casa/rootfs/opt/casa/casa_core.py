@@ -1739,7 +1739,7 @@ _topic_permission_notified = False
 
 
 async def _sweep_engagement_topics(channel_manager: Any) -> None:
-    """Periodic topics pass — runs right after the workspace sweep [AR-8].
+    """Periodic topics pass — the ``workspace_sweep`` job [AR-8].
 
     Deletes due terminal-engagement topics recorded in the topic ledger
     through the telegram channel. When telegram is unconfigured (no
@@ -3630,8 +3630,7 @@ async def main() -> None:
     await runner.setup()
     # H1 (defense-in-depth): bind the backend to loopback only. The sole
     # remote consumer is nginx in the SAME container (proxy_pass
-    # http://127.0.0.1:8099) and in-container workspace subprocesses reach
-    # it via 127.0.0.1; nothing legitimately connects to 8099 over the
+    # http://127.0.0.1:8099); nothing legitimately connects to 8099 over the
     # hassio bridge, so 0.0.0.0 needlessly exposed it to peer containers.
     site = web.TCPSite(runner, "127.0.0.1", 8099)
     await site.start()
@@ -4113,7 +4112,7 @@ async def _shutdown_cleanup(
     # their death reports. Here, at the top, because everything a dying launch
     # needs is still up: Telegram, the bus, the drivers and the registry. Left
     # to `asyncio.run`'s final sweep instead, the launch is cancelled with no
-    # cause (its workspace destroyed) and its reporter is killed mid-notice.
+    # cause and its reporter is killed mid-notice.
     # #882: declare the graceful stop to the turn path BEFORE anything can
     # await — synchronously, so no turn can be admitted in the window between
     # entering this coroutine and the declaration. From here a turn the pool

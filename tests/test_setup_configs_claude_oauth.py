@@ -1,12 +1,11 @@
 """K-1 (v0.34.1): the claude-oauth-token block in setup-configs.sh.
 
 Pre-fix the OAuth token was only exported into svc-casa's process env
-(svc-casa/run:13). s6-rc child services launched via `with-contenv`
-(engagement subprocesses, plugin-developer + hello-driver via
-claude_code_driver) read /run/s6/container_environment/, NOT
-svc-casa's process env. Result: every claude_code_driver subprocess
-hit "Not logged in · Please run /login" and produced no useful
-output. Latently broken since v0.13.0 (~8 days).
+(svc-casa/run:13). A process launched via `with-contenv` (at the time,
+each engagement service of the since-removed Claude Code driver) reads
+/run/s6/container_environment/, NOT svc-casa's process env. Result:
+every such engagement hit "Not logged in · Please run /login" and
+produced no useful output. Latently broken since v0.13.0 (~8 days).
 
 This test asserts the new propagation block:
 - writes the token to a target file when configured

@@ -1,9 +1,10 @@
 """Declared inventory of private runtime state, and the pass that enforces it.
 
-GHSA-569r-7crq-xr43. Since v0.170.0 (containment Stage 2) each ``claude_code``
-executor engagement runs under its own non-root uid with an empty capability
-set. Root-owned runtime state was nevertheless being created world-readable, so
-that uid could read the Supervisor/HASSIO bearer tokens (and through the
+GHSA-569r-7crq-xr43. From v0.170.0 (containment Stage 2) until the Claude Code
+driver was removed, each of its executor engagements ran under its own non-root
+uid with an empty capability set. Root-owned runtime state was nevertheless
+being created world-readable, so that uid could read the Supervisor/HASSIO
+bearer tokens (and through the
 Supervisor API, transitively, every add-on's stored secrets), the global webhook
 secret, up to ~21 MB of a *sibling* engagement's stdout, and the resident
 agent's transcripts.
@@ -28,18 +29,14 @@ runs on every boot and repairs what it finds.
 ``/config/cc-home`` makes every path beneath it unreachable regardless of the
 modes inside, so the pass never recurses and never has to make a decision about
 the ~198 files in there. What it must NOT do is tighten ``/data`` or
-``/config`` themselves: the dropped uid traverses both to reach its own
-workspace and its assigned plugin artifacts.
+``/config`` themselves: a non-root process must still be able to traverse both
+to reach what it is meant to read, such as the plugin artifacts.
 
 The three ``CREDENTIAL`` entries are special only in what a *failure to repair
-them* means. :func:`credential_modes_ok` is re-checked at each point of use that
-can put a ``claude_code`` engagement on the road — the fresh-launch uid-drop
-preflight, boot replay's per-record resume, and uid allocation — rather than
-latched once at boot. A latch was the original design and was cut: it needed a
-carrier, clearing semantics, and a guarantee that every start path consulted it,
-and two review rounds each found a path it failed to cover. A ``stat`` of three
-files at the point of use cannot go stale and cannot be forgotten by a path that
-does not exist yet.
+them* means. :func:`credential_modes_ok` is the point-of-use check for them,
+rather than a latch set once at boot. It was consulted wherever a uid-dropped
+Claude Code engagement could start; that driver is gone and nothing consumes
+the check today.
 """
 from __future__ import annotations
 
@@ -52,7 +49,7 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 #: Failure to repair one of these means Casa cannot honour the guarantee this
-#: module exists for, so uid-dropped engagements refuse to start.
+#: module exists for; :func:`credential_modes_ok` reports it.
 CREDENTIAL = "credential"
 #: Confidentiality-only. A failure logs ERROR and refuses nothing.
 PRIVATE = "private"
@@ -187,7 +184,7 @@ def enforce(*, root: str = "/") -> Report:
     lazily, and a fresh install legitimately has almost none of it. A declared
     path that is a *symlink* is skipped and reported rather than followed:
     ``chmod`` resolves symlinks, and repairing "through" one would apply a
-    private mode to whatever it points at. (No engagement uid can plant such a
+    private mode to whatever it points at. (No non-root process can plant such a
     symlink today — every parent directory here is root-owned and not
     world-writable — so this is a guard against corruption and against a future
     writer, not a live race.)
@@ -241,7 +238,7 @@ def enforce(*, root: str = "/") -> Report:
     if report.credential_failures:
         logger.critical(
             "private-state: %d credential path(s) could not be made private "
-            "(%s) — uid-dropped engagements will refuse to start",
+            "(%s)",
             len(report.credential_failures),
             ", ".join(report.credential_failures),
         )
@@ -251,9 +248,8 @@ def enforce(*, root: str = "/") -> Report:
 def credential_modes_ok(*, root: str = "/") -> list[str]:
     """The offending credential paths, or ``[]`` when all are private.
 
-    Called at each point of use that can start a uid-dropped engagement, rather
-    than consulted from a boot-time latch — see the module docstring for why the
-    latch was cut. Absence is not an offence: a path that does not exist exposes
+    A point-of-use check rather than a boot-time latch; nothing consumes it
+    today (see the module docstring). Absence is not an offence: a path that does not exist exposes
     nothing, and refusing on it would break a fresh install that has not
     generated its webhook secret yet.
     """

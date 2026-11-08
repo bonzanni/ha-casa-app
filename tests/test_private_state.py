@@ -231,8 +231,8 @@ def test_enforce_does_not_treat_a_private_failure_as_a_credential_one(
 def test_config_sync_report_stays_group_and_world_readable(tmp_path: Path) -> None:
     """/data/config-sync-report.json must NOT be tightened.
 
-    The `configurator` executor is a dropped-uid claude_code engagement whose
-    path_scope hook deliberately allow-lists this one /data file
+    The `configurator` executor's path_scope hook deliberately allow-lists
+    this one /data file
     (defaults/agents/executors/configurator/hooks.yaml) because its
     reconcile-defaults recipe reads it. 0600 makes that Read return EACCES and
     the recipe fails with no runtime signal — the exact over-closure class that

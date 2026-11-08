@@ -42,7 +42,7 @@ async def test_block_bash_write_to_plugins_registry():
 
 
 async def test_allow_bash_read_of_plugins_store():
-    """Reading the store (the plugin-developer's --plugin-dir'd content) is fine."""
+    """Reading the store (loaded plugin content) is fine."""
     data = {"tool_name": "Bash",
             "tool_input": {"command": "cat /config/plugins/store/x/y/plugin.json"}}
     result = await block_dangerous_commands(data, "tid-plug-read", CTX)
@@ -796,8 +796,8 @@ class TestTriggerFileWriteGuard:
             "file_path": "/config/agents/specialists/finance/triggers.yaml"}) == {}
 
     async def test_denies_a_bash_write_form(self):
-        """Residents and the plugin-developer executor carry broad Bash, and
-        path_scope does not match Bash at all."""
+        """An agent granted Bash carries it broadly, and path_scope does not
+        match Bash at all."""
         out = await self._run("Bash", {
             "command": "printf 'x' > /config/agents/butler/triggers.yaml"})
         assert _decision(out) == "deny"
@@ -963,7 +963,7 @@ class TestTriggerFileWriteGuardBypasses:
                     "cat /config/agents/butler/triggers.yaml 2>/dev/null",
                     "head -20 agents/butler/triggers.yaml | grep name",
                     "ls -la /config/agents/butler/",
-                    # r3, Terra — plugin-developer's ordinary git workflow on an
+                    # r3, Terra — an ordinary read-only git workflow on an
                     # unrelated triggers.yaml. A file tool cannot produce a
                     # diff, so refusing this had no equivalent.
                     "git diff -- triggers.yaml",

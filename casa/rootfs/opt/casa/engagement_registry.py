@@ -477,8 +477,7 @@ class EngagementRegistry:
                 if r.status in ("active", "idle") or r.id in self._terminal_pending]
 
     def terminal_records(self) -> list[EngagementRecord]:
-        """v0.79.0 (§3): terminal records, for the boot spool-reconciliation
-        owner (drains inbound spools still holding pending receipts/notices)."""
+        """Terminal records, for the engagement transcript reaper."""
         return [
             r for r in self._records.values()
             if r.status in ("completed", "cancelled", "error")
@@ -1389,16 +1388,8 @@ class EngagementRegistry:
         """#588: may this record receive a turn right now — and if so, say so.
 
         ``True`` means "deliver"; a record found ``idle`` is flipped back to
-        ``active`` first, because a turn entering the engagement's stdin FIFO
-        IS the engagement becoming live again. The ordinary Telegram arrival
-        path already does that flip on the way in (``update_user_turn``), but a
-        turn REDELIVERED to a respawned CLI after a restart has no such caller:
-        boot reconcile rewrote the record ``active→idle`` (see ``load``), the
-        spool reverts its stale ``delivered`` envelope to ``queued`` and pumps
-        it straight into the FIFO, and nothing on that path touched the record.
-        The turn then ran against an ``idle`` record, and the bridge grant-gate
-        — which binds only ``active`` — refused every non-terminal casa tool it
-        called as ``tool_not_granted``, including tools the engagement holds.
+        ``active`` first, because a turn entering the engagement IS the
+        engagement becoming live again.
 
             terminal -> False   (the engagement is over; do not deliver)
             idle     -> True, flipped to ``active``
@@ -1406,17 +1397,14 @@ class EngagementRegistry:
             unknown  -> True    (no opinion — see below)
 
         SYNCHRONOUS BY CONTRACT — it must never become a coroutine and must
-        never await. The caller runs it between opening the FIFO for writing
-        (which succeeds only once the CLI is reading) and writing the first
-        byte, and the ABSENCE of a suspension point is the whole guarantee: no
-        other coroutine on casa-main's loop — no inbound MCP tool call, no
-        terminal transition — can run in between. Any await here (a lock, a
-        tombstone write) reopens exactly the window this closes, and would also
-        park the delivery behind unbounded registry I/O while holding the FIFO
-        writer open. Durability is therefore deferred to a background persist:
-        the grant-gate reads the in-memory record, so authority is already
-        restored, and a write that never lands costs only that another restart
-        re-idles the record — after which the same redelivery re-flips it.
+        never await. The driver runs it immediately before the call that hands
+        the turn to the engagement, and the ABSENCE of a suspension point is
+        the whole guarantee: no other coroutine on casa-main's loop — no tool
+        call, no terminal transition — can run in between. Any await here (a
+        lock, a tombstone write) reopens exactly the window this closes.
+        Durability is therefore deferred to a background persist: readers use
+        the in-memory record, and a write that never lands costs only that a
+        restart re-idles the record.
 
         Timestamps are deliberately untouched. A redelivery is not a new user
         turn; re-stamping ``last_user_turn_ts`` on every restart would postpone
@@ -1426,15 +1414,13 @@ class EngagementRegistry:
         An UNKNOWN record delivers rather than refusing: records leave
         ``_records`` only on a ``create()`` rollback, so this is unreachable for
         a live engagement, and making delivery hostage to registry knowledge
-        would risk silently dropping operator turns for no authority gain — the
-        bridge gate already fails closed for an id it cannot resolve.
+        would risk silently dropping operator turns for no authority gain.
 
         What this does NOT promise (design review r3-r5, stated so it is not
-        mistaken for more): it fences the FIRST byte only. A terminal
-        transition landing after delivery has begun cannot revoke the turn — a
-        pipe has no rollback, and closing the writer is itself an EOF the CLI
-        acts on. Stopping an in-flight turn is ``driver.cancel``'s job, which
-        the finalize path already does.
+        mistaken for more): it fences the decision to deliver only. A terminal
+        transition landing after delivery has begun cannot revoke the turn.
+        Stopping an in-flight turn is ``driver.cancel``'s job, which the
+        finalize path already does.
         """
         rec = self._records.get(engagement_id)
         if rec is None:

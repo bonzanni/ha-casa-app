@@ -8,19 +8,19 @@ is derived from the fetched manifest** — you never pass it.
 
 ## What `new_ref` must be (v0.74.0)
 
-- `new_ref` is the **producer's handed-off `ref` verbatim** — the `vX.Y.Z`
-  release tag from the plugin-developer completion. **Never** infer a tag
-  from the version, **never** reuse the registry entry's existing ref,
-  **never** substitute `master`/`main` or a bare sha when a tag was handed
-  off.
-- **No ref handed off ⇒ producer error.** Stop and surface it — do not
-  guess. The producer must re-run its release ritual and hand off
-  `ref` + `revision` + `version`.
-- **Always pass `expected_revision`** = the producer's handed-off `revision`
-  (40-hex sha). A tag that moved between the build and this pin aborts hard
+- `new_ref` is the **release tag the operator names, verbatim** (`vX.Y.Z`).
+  When the operator asks for the latest version, or names no version at
+  all, pass `new_ref="latest"`: it resolves server-side to the newest
+  published release tag, reported as `resolved_ref` — say that tag in your
+  completion. **Never** infer a tag from the version, **never**
+  reuse the registry entry's existing ref, **never** substitute
+  `master`/`main` or a bare sha — a branch or a sha is passed only when the
+  operator names it.
+- **When the operator gives the commit sha** the tag must point at, pass it
+  as `expected_revision` (40-hex sha). A tag that moved since aborts hard
   (`revision_mismatch`) before anything is installed or activated. A
   `tag_version_mismatch` means the tag doesn't match the remote
-  `plugin.json.version` — also a producer error; surface it.
+  `plugin.json.version` — an error in the plugin's release; surface it.
 
 ## Profiles
 
@@ -36,10 +36,10 @@ now on; a running session keeps the tools it was built with. State both.
 
 1. Confirm the plugin is registered: `plugin_list()` (or
    `verify_plugin_state`).
-2. Call `plugin_update(name, new_ref=<handed-off tag>,
-   expected_revision=<handed-off sha>)`.
-3. Assert the returned `revision` and `version` equal the handoff
-   (`revision` compares as lowercase 40-hex; the registry stores
+2. Call `plugin_update(name, new_ref=<tag>)`, adding
+   `expected_revision=<sha>` when the operator gave one.
+3. When you passed `expected_revision`, assert the returned `revision`
+   equals it (`revision` compares as lowercase 40-hex; the registry stores
    `git:<sha>`).
    If it returns `ok: false, kind: "open_conversations_unconfirmed"`:
    NOTHING changed — a specialist the plugin is assigned to has open
@@ -122,7 +122,7 @@ The operator hears the setup outcome in a separate message from whichever
 agent Casa dispatches to. Your completion `text` should say that setup is
 queued and that the setup tool's own result is what to go on.
 
-A plugin whose setup tool is named only in a producer handoff or a README —
+A plugin whose setup tool is named only in a message or a README —
 with no `casa.setupTool` in the manifest — has **no supported automatic
 path** before v1.0. Do not hunt for the tool name and do not invent a
 hand-back: say plainly in `text` that the plugin declares no setup hook, so
@@ -139,8 +139,8 @@ authorizing. So in `text` say only that the setup tool still needs to run and
 that its own result is what to go on.
 
 Do not promise more of that result than it carries. The setup tool's contract is
-idempotent **provisioning** — argument-free, re-runnable, `setup_`-prefixed (see
-the plugin-developer `ingress.md`) — and it is not *required* to test what it
+idempotent **provisioning** — argument-free, re-runnable, `setup_`-prefixed —
+and it is not *required* to test what it
 provisioned. Some tools may check more than that; only the tool's own output
 says. So report what it returns, and do not translate it into a verdict on the
 connection.

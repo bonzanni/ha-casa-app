@@ -1,7 +1,4 @@
-"""U3 + U13 emoji lookup tables + topic-title composition.
-
-Spec: docs/superpowers/specs/2026-05-12-e12-claude_code-channels.md §6.3, §6.9.
-"""
+"""U3 + U13 emoji lookup tables + topic-title composition."""
 
 from __future__ import annotations
 

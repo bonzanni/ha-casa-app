@@ -65,8 +65,8 @@ def _iter_strings(node):
 
 def _extract(mcp_json_path: Path | str, pattern) -> set[str]:
     # Sol CI-review: resolve servers via the ONE shared parser so secrets are
-    # extracted for BOTH the mcpServers wrapper AND the top-level shape (context7
-    # ships the latter) — otherwise a top-level plugin's required secrets would be
+    # extracted for BOTH the mcpServers wrapper AND the top-level shape (real
+    # plugins ship the latter) — otherwise a top-level plugin's required secrets would be
     # silently missed and verification could report ready without them.
     # #330's non-mapping-env tolerance is inherited: _iter_strings walks any
     # shape without raising.

@@ -912,7 +912,7 @@ async def test_bindings_route_names_all_lifecycle_tools():
     # /config or the executors dir) with the mutation hidden in the patch
     # CONTENT is the opaque-content residual (same class as script files /
     # stdin) — closed for the configurator at the capability layer (no
-    # shell), tracked for plugin-developer under #216.
+    # shell).
     "git -C /config/specialists am /tmp/series.mbox",
     "git -C /config/plugins stash pop",
     "git -C /config/bindings mv a.yaml b.yaml",

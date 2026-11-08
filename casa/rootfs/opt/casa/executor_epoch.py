@@ -42,8 +42,8 @@ def compute_procedural_epoch(defn, *, prompt_template: str) -> str:
 
     ``prompt_template`` is the text the caller JUST read from
     ``defn.prompt_template_path`` — passed in rather than re-read so the
-    epoch describes exactly the bytes the launch consumes. Doctrine and
-    workspace-template files are read here (small, image-shipped trees);
+    epoch describes exactly the bytes the launch consumes. Doctrine files are
+    read here (small, image-shipped trees);
     an unreadable file contributes its path with empty content rather than
     failing the launch — the epoch then still changes when the file appears.
     """

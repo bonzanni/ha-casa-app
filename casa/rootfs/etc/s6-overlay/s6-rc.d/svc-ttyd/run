@@ -10,13 +10,12 @@ fi
 
 # #514: ttyd is an unauthenticated, writable ROOT shell. Binding it to TCP
 # 127.0.0.1:7681 (as it once did) exposed that shell to EVERY in-container
-# identity — including a dropped-uid engagement, which reaches container
-# loopback directly, bypassing nginx/HA-ingress auth, and defeats the
-# per-engagement uid boundary entirely. Bind it to a filesystem UNIX socket
-# instead, fenced by DAC:
+# identity — including any non-root uid (then: each Claude Code engagement's),
+# which reaches container loopback directly, bypassing nginx/HA-ingress auth.
+# Bind it to a filesystem UNIX socket instead, fenced by DAC:
 #   - the socket lives in a 0700 dir owned by the nginx worker user
-#     (www-data), so an engagement (uid/gid >= 200000, groups cleared — i.e.
-#     "other") cannot even traverse to the socket path; and
+#     (www-data), so any other non-root uid ("other") cannot even traverse
+#     to the socket path; and
 #   - `-U www-data:www-data` makes libwebsockets chown+chmod the socket to
 #     www-data:www-data 0660, so only the nginx worker (and root) can connect.
 # nginx proxies /terminal/ over this socket for the authenticated operator.

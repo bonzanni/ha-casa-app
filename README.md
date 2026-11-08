@@ -139,7 +139,7 @@ the appliance a household agent should be.
 - **Yours to keep or forget** — Casa keeps an export from each of the last seven nights,
   so a Home Assistant backup carries them. Export, restore or wipe from the app's terminal;
   a wipe erases memory and those exports but keeps your reminders, triggers, settings and
-  files (bar finished engagement workspaces already past their 7-day keep period).
+  files.
 
 *Deep dive: [memory and recall](docs/architecture/memory.md)*
 

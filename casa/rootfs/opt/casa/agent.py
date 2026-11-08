@@ -3461,7 +3461,7 @@ class Agent:
             # credential. Never overrides a wired value (the helper emits
             # only unresolved vars), so this is {} on a fully-wired system.
             env={**sanitized_env_for_resolution(resolution), **_broker_env},
-            # P-5b: in-casa agents have no permission relay — fail closed on
+            # P-5b: an agent has no permission relay — fail closed on
             # ungranted tools instead of hanging on CC's prompt. New closure
             # per build is fine: the pool reuses clients, not options objects.
             can_use_tool=make_fail_closed_can_use_tool(self.config.role),
