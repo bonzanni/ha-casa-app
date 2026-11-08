@@ -1,0 +1,26 @@
+# Manifest shard: the specialist desk-reply document (split from specialist-desk.md at the
+# 25 KB document ceiling; born in its own shard: the S shard stands just under the index ceiling).
+- doc: architecture/specialist-desk-reply.md
+  summary: A specialist desk turn's reply — the labelled, admitted reply of the specialist's own words, the closing-silence and sentinel rules, the one notice a turn with no proven outcome ends in, the one emitter every line goes through, the resident's body-free echo, and the approval continuation that returns to the desk.
+  when_changing: the desk turn's reply or its notices, what counts as a desk turn's proven outcome, the lines a desk turn records, the resident's front-desk echo, or an approval continuation's destination
+  covers:
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._dispatch_desk_continuation
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.deliver_desk_notice
+    - casa/rootfs/opt/casa/output_boundary.py::TurnScope.for_desk
+    - casa/rootfs/opt/casa/output_boundary.py::without_sentinels
+    - casa/rootfs/opt/casa/specialist_desk.py::bounded_line
+    - casa/rootfs/opt/casa/specialist_desk.py::turn_outcomes
+    - casa/rootfs/opt/casa/specialist_desk.py::record_echo
+    - casa/rootfs/opt/casa/specialist_desk.py::drain_echo_lines
+  tests:
+    - tests/test_desk_turn.py
+    - tests/test_desk_continuation.py
+    - tests/test_desk_echo_prompt.py
+    - tests/test_pending_approval_desk.py
+    - tests/test_redcase_1283.py
+    - tests/test_redcase_1342.py
+    - tests/test_desk_closing_silence.py
+  related: [architecture/specialist-desk.md, architecture/output-boundary.md, architecture/output-scope-properties.md, architecture/plugin-authorization.md, architecture/plugin-delivered-slots.md, architecture/memory-labelling.md]
+  defines_invariants: [INV-DESK-002]
+  invariant_tests:
+    INV-DESK-002: [tests/test_desk_turn.py::test_a_reply_runs_one_specialist_turn_and_posts_the_labelled_admitted_reply, tests/test_desk_turn.py::test_the_desk_origin_classifies_as_a_delegated_dm_turn_with_a_desk_identity, tests/test_desk_turn.py::test_the_reply_is_bounded_like_a_sync_answer, tests/test_desk_turn.py::test_an_aborted_run_posts_no_text_and_one_notice, tests/test_desk_turn.py::test_a_raising_run_is_a_notice_with_its_kind, tests/test_desk_turn.py::test_a_silent_turn_whose_plugin_posted_is_silent_and_logged_as_a_view, tests/test_desk_turn.py::test_a_silent_turn_with_no_outcome_is_a_notice, tests/test_desk_turn.py::test_a_failed_reply_send_is_logged_and_noticed, tests/test_desk_turn.py::test_a_refused_permit_is_a_busy_notice_and_runs_nothing, tests/test_desk_turn.py::test_a_full_queue_is_refused_before_any_run, tests/test_desk_post_map.py::test_a_resident_reply_records_when_its_context_carries_a_record, tests/test_desk_post_map.py::test_the_echo_ledger_caps_events_per_owner_only_when_asked, tests/test_specialist_desk.py::test_the_echo_is_drained_once_bounded_and_body_free, tests/test_desk_echo_prompt.py::test_the_residents_next_turn_carries_the_echo_once_then_nothing, tests/test_desk_echo_prompt.py::test_another_chats_echo_and_a_non_telegram_turn_get_nothing, tests/test_desk_continuation.py::test_a_challenge_raised_from_a_desk_continues_the_desk, tests/test_desk_continuation.py::test_a_challenge_without_a_desk_continues_the_resident_as_today, tests/test_desk_continuation.py::test_a_pending_challenge_reused_from_a_desk_is_promoted_to_it, tests/test_desk_continuation.py::test_a_denied_desk_challenge_tells_the_desk_too, tests/test_desk_continuation.py::test_the_hook_threads_the_identitys_desk_role_into_the_challenge, tests/test_desk_turn.py::test_the_exchange_is_stamped_after_delivery_settles, tests/test_desk_continuation.py::test_a_desk_continuation_never_waits_for_the_residents_slot, tests/test_desk_route.py::test_a_refused_continuation_also_echoes_to_the_resident, tests/test_desk_turn.py::test_a_silent_turn_whose_only_outcome_was_a_delivered_file_still_echoes, tests/test_desk_turn.py::test_a_silent_turns_echo_names_what_was_sent_not_always_a_file, tests/test_desk_turn.py::test_a_silent_turn_after_a_delivered_link_is_a_view_with_a_casa_line, tests/test_desk_turn.py::test_a_landed_message_post_echoes_exactly_its_s3_line, tests/test_desk_turn.py::test_one_delivered_send_is_an_outcome_even_when_a_later_send_failed, tests/test_pending_approval_desk.py::test_desk_pending_approval_keeps_prefix, tests/test_pending_approval_pins.py::test_desk_deny_then_consume_then_prose_is_posted_whole, tests/test_redcase_1283.py::test_a_closing_silence_after_narration_never_shows_the_sentinel, tests/test_redcase_1433.py::test_a_card_then_a_closing_silence_posts_only_the_card, tests/test_redcase_1433.py::test_a_card_and_words_without_a_closing_silence_post_the_words, tests/test_desk_closing_silence.py::test_one_message_with_prose_and_a_sentinel_posts_the_prose, tests/test_redcase_1342.py::test_words_then_a_sentinel_in_one_message_post_the_words_only, tests/test_desk_closing_silence.py::test_words_after_a_pending_call_never_reach_the_operator_through_the_rule]

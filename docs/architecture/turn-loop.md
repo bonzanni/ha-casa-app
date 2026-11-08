@@ -56,7 +56,8 @@ is built from the message's own text, and the options from the session's frozen 
 ([`memory-serving.md`](memory-serving.md)); the query sent
 puts `compose_turn_preamble` ahead of it — the `<current_time>` envelope, then, on a turn
 that has any, one `<casa_notes>` block of Casa's per-turn notes (on Telegram the drained
-front-desk lines, then a reply's note: [`specialist-desk.md`](specialist-desk.md); then a
+front-desk lines: [`specialist-desk-reply.md`](specialist-desk-reply.md), then a reply's
+note: [`specialist-desk.md`](specialist-desk.md); then a
 captioned file's note: [`inbound-files.md`](inbound-files.md); on every turn of a memory
 role, the correction note), which retention
 strips with the envelope (INV-MEM-022 in [`memory-labelling.md`](memory-labelling.md)). The origin's

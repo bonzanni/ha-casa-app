@@ -48,7 +48,8 @@ stored at its origin's tier. A turn Casa's own schedule fired is recorded `sched
 
 **What is captured is the turn's own text, never the query Casa composed.** Every sent user
 turn carries a per-turn time envelope, and a turn that carries Casa's notes — a Telegram
-resident turn's drained front-desk lines and a reply's note
+resident turn's drained front-desk lines
+([`architecture/specialist-desk-reply.md`](specialist-desk-reply.md)) and a reply's note
 ([`architecture/specialist-desk.md`](specialist-desk.md)) — carries them in one `<casa_notes>`
 block directly after the envelope (`compose_turn_preamble`; with no notes the preamble is
 exactly the envelope). Capture records the operator's text as it arrived, so neither the
