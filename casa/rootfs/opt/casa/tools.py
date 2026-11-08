@@ -213,7 +213,7 @@ def build_agent_role_map(residents: dict, specialists: dict, *,
     """The delegation role map, built the same way at boot
     (``casa_core._build_role_registry``) and on every reload
     (:func:`sync_agent_role_map`): residents, then the image-owned configurator
-    (kind ``executor``, engagement trim stage 4), then specialists. A role in
+    (kind ``executor``), then specialists. A role in
     both tiers raises when *strict* (boot: a configuration bug) and otherwise
     keeps the resident entry with a warning (a reload must not brick). A
     resident or specialist named like the configurator keeps its entry."""
@@ -278,7 +278,7 @@ _CONFIGURATOR_CFG: Any = None
 
 def _configurator_config() -> Any:
     """The image-owned configurator's config, loaded once per process (it ships
-    with Casa and cannot change without a release, D7). ``None`` when it does
+    with Casa and cannot change without a release). ``None`` when it does
     not load, which is logged: configuring then stops, nothing else does."""
     global _CONFIGURATOR_CFG  # noqa: PLW0603
     if _CONFIGURATOR_CFG is None:
@@ -3838,7 +3838,7 @@ def _int_or_none(value: object) -> int | None:
 
 
 def _configurator_step_line(cfg: Any, origin: dict) -> Any:
-    """D6: a step line for a configurator run (kind ``executor``), posted
+    """A step line for a configurator run (kind ``executor``), posted
     silently to the operator's DM and deleted when the run ends; ``None`` for
     any other run or when the DM is unavailable."""
     if getattr(cfg, "kind", "") != "executor":
@@ -4531,7 +4531,7 @@ async def _run_delegated_turn(
     # processes itself)
     _tree = _bounded_tree.get() if _owner is None else None
     _bounded_tree.set(None)
-    # D6 (engagement trim stage 4): the configurator's live step line in the
+    # The configurator's live step line in the
     # operator's DM, removed when the run ends.
     _steps = _configurator_step_line(cfg, parent)
 
@@ -4654,7 +4654,7 @@ async def _run_delegated_turn(
                         result_msg = sdk_msg
     finally:
         if _steps is not None:
-            _steps.finish(ok=True)        # D6: the line goes as the answer comes
+            _steps.finish(ok=True)        # the line goes as the answer comes
         # #1207: the grants this run left waiting on the operator, for a
         # synchronous launcher's fold — published however the run ended (an
         # abort or a raise leaves the keyboard up all the same). Only calls
@@ -6099,15 +6099,15 @@ def _ceiling_paused():
         clock.resume()
 
 
-# The longest one install-like call keeps its run's ceiling clock paused
-# (D3). Fetch and install time does not count toward the ceiling, but it is not
+# The longest one install-like call keeps its run's ceiling clock paused.
+# Fetch and install time does not count toward the ceiling, but it is not
 # unbounded: a call still running past this — say, waiting on the plugin lock
 # behind a stalled mutation — counts again, so the run and its lease still end.
 _OFF_THE_CEILING_MAX_S: float = 30 * 60.0
 
 
 def _off_the_ceiling(handler):
-    """Engagement trim stage 4 (D3): a tool whose call fetches or installs
+    """A tool whose call fetches or installs
     (a repository fetch, npm or venv setup, system requirements) runs with its
     run's ceiling clock paused, for at most ``_OFF_THE_CEILING_MAX_S`` per
     call; past that the clock runs again while the call goes on. The ceiling
@@ -6183,7 +6183,7 @@ async def _run_delegated_agent_bounded(
     Both bounds are read off the module at call time so tests can
     monkeypatch them."""
     import pinned_run
-    # Engagement trim stage 4: one configurator run at a time, from every
+    # One configurator run at a time, from every
     # origin, taken before the ceiling clock and before anything of the run
     # (its options build reads /config) — waiting for it never counts.
     lease = await _configurator_lease(cfg, task_text)
@@ -7833,7 +7833,7 @@ async def delegate_to_agent(args: dict) -> dict:
         if handoff_reservation is not None:
             handoff_reservation.release()
         return prelaunch_error
-    # Engagement trim stage 4: the configurator always runs detached. A commit
+    # The configurator always runs detached. A commit
     # that reloads the caller would otherwise cancel a run its turn awaits.
     mode = _delegation_mode_for(cfg, mode)
 
@@ -9793,7 +9793,7 @@ async def casa_restart_supervised(_: dict) -> dict:
     origin = _snapshot_origin() or {}
     run_key = origin.get("_delegation_id")
     if run_key:
-        # Engagement trim stage 4 (D5 revised): never inline from a run — the
+        # Never inline from a run — the
         # operator restarts by tapping the button that follows the answer.
         import configurator_run
         configurator_run.note_restart(str(run_key), str(origin.get("user_text") or ""))
@@ -13753,7 +13753,7 @@ async def _notify_plugin_health_if_possible() -> None:
 
 
 # #1053: the plugins a configurator run is installing are held back from the
-# plugin-health DM while its lease is held (engagement trim stage 4, D4); the
+# plugin-health DM while its lease is held; the
 # lease's release schedules the deferred notify pass. In-process only: after a
 # restart nothing is deferred, so a still-running install's rows are announced
 # (a spare DM, never a lost one).
@@ -15612,10 +15612,10 @@ async def specialist_install_inspect(args: dict) -> dict:
         })
     chat_id, operator_id = op
 
-    # D2 (engagement trim stage 4): an Approve tap continues the configurator
-    # by itself — one turn on its desk in the operator's DM (§7 of the desk
-    # design), whose text carries every staged value, because that turn starts
-    # a fresh session. Deny and expiry show on the card only.
+    # An Approve tap continues the configurator by itself — one turn on its
+    # desk in the operator's DM, whose text carries every staged value,
+    # because that turn starts a fresh session. Deny and expiry show on the
+    # card only.
     mode = args.get("mode", "install")
     _staged = (
         f"component_id {result.component_id!r}, version {result.version!r}, "
@@ -15682,7 +15682,7 @@ def _configurator_run_key() -> str:
 
 async def _continue_configurator(channel: Any, chat_id: Any, operator_id: Any,
                                  text: str, *, what: str) -> bool:
-    """D2: continue the configurator after an approval, as one turn on its
+    """Continue the configurator after an approval, as one turn on its
     desk in the operator's DM — a fresh session whose task is *text*. Returns
     the desk route's own report (the operator was told either way). Runs from a
     tap-callback finish hook: never raises."""
@@ -16691,7 +16691,7 @@ async def persona_install_inspect(args: dict) -> dict:
         })
     chat_id, operator_id = op
 
-    # D2 (engagement trim stage 4): as specialist_install_inspect — Approve
+    # As specialist_install_inspect — Approve
     # continues the configurator on its desk with the staged values; Deny and
     # expiry show on the card only.
     continuation = (
@@ -17660,7 +17660,7 @@ def _owned_entries_now(slug: str) -> "list[dict]":
 
 
 def _configurator_deliverer(channel: Any, chat_id: Any, operator_id: Any, *, what: str):
-    """A continuation of the configurator (D2): one turn on its desk in the
+    """A continuation of the configurator: one turn on its desk in the
     operator's DM; returns True when the desk route took it."""
     async def _deliver(text: str) -> bool:
         if channel is None:
@@ -19170,7 +19170,7 @@ def _tool_verify_plugin_state(
             else:
                 row["state"] = "dormant"
         elif tier == "executor":
-            # Engagement trim stage 4: no executor runs plugins any more (the
+            # No executor runs plugins any more (the
             # configurator is a delegated run with none), so such a target is
             # never loaded — dormant, with nothing to authorize.
             row["state"] = "dormant"

@@ -30,7 +30,7 @@ disclosure: {policy: executor-internal, overrides: {}}
 delegates: []
 executors: []
 triggers: []
-# Engagement trim stage 4: the configurator's hooks ship with Casa (D7) and
+# The configurator's hooks ship with Casa and
 # nothing in /config can repoint or hollow them, so every guard is listed here
 # once and run as written.
 hooks:

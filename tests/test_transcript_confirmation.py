@@ -598,8 +598,8 @@ async def test_every_run_kind_registers_before_its_first_capture(
         "delegated_request": "delegation", "delegated_answer": "delegation",
         "summary": "summary",
     }
-    # One finalize summary: the per-executor-type second summary went with
-    # engagement trim stage 4.
+    # One finalize summary: the per-executor-type second summary went in
+    # v0.351.0.
     assert [e for e, _k in seen] == [
         "write_trusted_turn", "resident_message", "engagement_turn",
         "engagement_answer", "delegated_request", "delegated_answer",

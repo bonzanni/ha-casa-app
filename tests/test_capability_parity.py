@@ -74,7 +74,7 @@ REQUIRED_FRAMEWORK_TOOLS: dict[str, set[str]] = {
         "send_message", "get_schedule", "send_media",
     },
     "butler": {"search_memory", "browse_memory_day"},  # the voice channel
-    # Engagement trim stage 4: the configurator is a delegated run — it no
+    # Since v0.351.0 the configurator is a delegated run — it no
     # longer completes an engagement or cleans up engagement topics.
     "configurator": {"config_git_commit"},
 }
@@ -84,7 +84,7 @@ CONFIGURATOR_ROLE_YAML = CASA / "defaults" / "roles" / "executor" / "configurato
 
 def _agent_configs() -> list[tuple[str, Path, dict]]:
     """(role, config_path, parsed) for every resident/specialist runtime.yaml
-    and the configurator. Engagement trim stage 4: the configurator ships as
+    and the configurator. Since v0.351.0 the configurator ships as
     an image-owned role artifact; its entry is the RUNTIME config Casa builds
     from it (``agent_loader.load_configurator``), keyed to that role.yaml."""
     import agent_loader
@@ -153,7 +153,7 @@ def test_configurator_has_no_bash() -> None:
     doctrine audit found no legitimate configurator Bash dependency. Pinned in
     BOTH the runtime config (``agent_loader.load_configurator`` — feeds
     ClaudeAgentOptions.allowed_tools via tools._build_specialist_options since
-    engagement trim stage 4) and the canonical role artifact (role.yaml)."""
+    v0.351.0) and the canonical role artifact (role.yaml)."""
     by_role = {r: d for r, _, d in _agent_configs()}
     cfg_allowed = (by_role["configurator"].get("tools") or {}).get("allowed") or []
     assert "Bash" not in cfg_allowed, (
@@ -188,7 +188,7 @@ def test_cleanup_engagement_topics_grant_limited_to_configurator_and_assistant()
     every other caller (see test_topic_cleanup_tool
     test_tool_all_terminal_refused_for_other_roles). The grant must never
     spread beyond {configurator, assistant} — any other role is a security
-    regression, not a convenience. Since engagement trim stage 4 the
+    regression, not a convenience. Since v0.351.0 the
     configurator no longer holds it (it opens no topics)."""
     granted = {
         role
@@ -253,7 +253,7 @@ def test_configurator_definition_and_role_allowlists_are_identical() -> None:
     specialist/persona pipeline tools to role.yaml only, but the RUNTIME
     allowlist flowed from a separate definition.yaml — so the live
     configurator had no typed install path and hand-authored instead. Since
-    engagement trim stage 4 the runtime config is built from role.yaml itself
+    v0.351.0 the runtime config is built from role.yaml itself
     (``agent_loader.load_configurator``); the two must never drift again."""
     import agent_loader
     runtime_allowed = set(agent_loader.load_configurator().tools.allowed)
@@ -304,7 +304,7 @@ def test_assistant_denies_bash():
 # base. Its job is to keep holding.
 # ---------------------------------------------------------------------------
 
-# Engagement trim stage 4: no executor definition.yaml ships any more — the
+# Since v0.351.0 no executor definition.yaml ships any more — the
 # configurator's grants are its role.yaml's.
 GRANT_CARRIERS = ("runtime.yaml", "role.yaml")
 

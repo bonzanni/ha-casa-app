@@ -129,7 +129,7 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "send_reply_line"): "notice",           # the Stop: its one outcome line, Casa-composed
     ("channels/telegram.py", "notify_operator"): "notice",           # the memory wipe's restart and done lines
     ("channels/telegram.py", "_send_plain_line"): "notice",          # the memory wipe's courtesy line
-    ("channels/telegram.py", "send_step_line"): "notice",            # D6: the configurator's step line, Casa template
+    ("channels/telegram.py", "send_step_line"): "notice",            # the configurator's step line, Casa template
     # topic — engagement-topic methods (out of this boundary)
     ("channels/telegram.py", "edit_topic_message"): "topic",
     ("channels/telegram.py", "emit"): "topic",                      # TopicStreamHandle

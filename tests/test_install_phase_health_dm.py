@@ -1,7 +1,7 @@
 """#1053: the plugin-health DM does not announce an install's own intermediate
 rows (consent pending, a setup-provided value not wired yet, setup still to
 run, not loaded yet, waiting for its specialist) while the configurator run
-installing that plugin holds its lease (engagement trim stage 4, D4); the pass
+installing that plugin holds its lease; the pass
 run when the lease is released names whatever still stands; a real fault is
 sent at once, install or not."""
 from __future__ import annotations

@@ -1770,7 +1770,7 @@ class TestValidateConfigRepoWalkScope:
         ), errors
 
 class TestValidateConfigRepoExecutorGrantGuard:
-    """Task 12, re-pointed by engagement trim stage 4: an executor may not
+    """Task 12, re-pointed in v0.351.0: an executor may not
     hold the whole-server ``mcp__casa-framework`` grant. The only executor,
     the configurator, now ships with Casa (its role artifact, not a
     ``/config`` definition), so the check moved from validate_config_repo to

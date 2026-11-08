@@ -32,8 +32,8 @@ def test_merge_eligible_table_is_exactly_the_two_list_files():
     Deriving eligibility from "the schema contains an array of objects" would
     silently enrol any future file of that shape, including files whose entries
     are NOT order-independent. These two are, which is a fact about them
-    rather than about their shape. (``executors.yaml`` left the table with
-    engagement trim stage 4: nothing reads it.)
+    rather than about their shape. (``executors.yaml`` left the table in
+    v0.351.0: nothing reads it.)
     """
     assert config_sync.MERGE_ELIGIBLE == {
         ("agents", "triggers.yaml"): ("triggers", "name"),
@@ -54,7 +54,7 @@ def test_merge_spec_for_eligible_paths(rel, expected):
     "agents/assistant/runtime.yaml",
     "agents/assistant/character.yaml",
     "agents/executors/configurator/hooks.yaml",
-    # No longer read (engagement trim stage 4), so no longer merged.
+    # No longer read (since v0.351.0), so no longer merged.
     "agents/assistant/executors.yaml",
     "agents/assistant/prompts/morning-briefing.md",
     # A nested mapping, not a list.

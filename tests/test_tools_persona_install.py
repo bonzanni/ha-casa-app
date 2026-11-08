@@ -610,7 +610,7 @@ async def test_persona_inspect_prompt_exception_is_structured(
 
 
 # ---------------------------------------------------------------------------
-# v0.102.0 (#217), reworked by engagement trim stage 4 (D2):
+# v0.102.0 (#217), reworked in v0.351.0:
 # persona_install_inspect mirrors specialist_install_inspect — on
 # Approve+ack, reconcile_cb continues the configurator as one turn on its desk
 # in the operator's DM (``_dispatch_desk_continuation``) so the persona recipe
@@ -827,7 +827,7 @@ async def _persona_expiry(monkeypatch, tmp_path, *, outcome, run="deleg-p",
 async def test_inspect_withdrawal_tells_the_engagement_nothing(
     monkeypatch, tmp_path, outcome, edit,
 ) -> None:
-    """D2 (engagement trim stage 4): an expiry, a Deny or a withdrawal edits
+    """An expiry, a Deny or a withdrawal edits
     the card and continues nobody — the configurator's desk is not dispatched
     and no approval is recorded."""
     from persona_install import PersonaInstallAckStore
@@ -845,7 +845,7 @@ async def test_inspect_withdrawal_tells_the_engagement_nothing(
 @pytest.mark.asyncio
 async def test_the_persona_card_key_names_its_requester(monkeypatch, tmp_path) -> None:
     """#1445 (design round d1): one card per requesting configurator run (its
-    delegation id, engagement trim stage 4); the approval identity is
+    delegation id, since v0.351.0); the approval identity is
     unchanged."""
     _c, _e, cap_a = await _persona_expiry(
         monkeypatch, tmp_path, outcome=None, run="deleg-a")

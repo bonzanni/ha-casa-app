@@ -1161,7 +1161,7 @@ class _TurnCapture:
 
 
 def _offers_configurator_restart(handle):
-    """Engagement trim stage 4 (D5): a narration turn for a configurator run
+    """A narration turn for a configurator run
     that needs a Casa restart is followed by the Restart now button, after the
     resident's own answer — whether or not it relayed the configurator's words."""
     @functools.wraps(handle)

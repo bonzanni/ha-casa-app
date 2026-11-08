@@ -181,7 +181,7 @@ def _specialist_cfg():
 
 def test_specialist_and_executor_options(monkeypatch):
     """A specialist and the configurator (kind ``executor``, built through the
-    same specialist builder since engagement trim stage 4)."""
+    same specialist builder since v0.351.0)."""
     import agent_loader
     from plugin_registry import ResolutionResult
     import tools as tools_mod

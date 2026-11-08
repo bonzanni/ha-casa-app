@@ -2614,7 +2614,7 @@ class TelegramChannel(Channel):
             return False
 
     async def send_step_line(self, chat_id: int, text: str) -> "int | None":
-        """D6: the configurator's step line in the operator's DM — Casa's
+        """The configurator's step line in the operator's DM — Casa's
         text, silent. Returns the message id, or None when not posted."""
         if self._app is None:
             return None

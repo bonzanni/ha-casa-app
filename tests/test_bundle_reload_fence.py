@@ -1,8 +1,8 @@
 """Task 10 checkpoint 2f: ENTRY-POINT-ONLY manual-reload fencing (spec §3.1).
 
 Every caller that dispatches a reload whose handler reaches the plugin-tools
-lock — scopes `full` and `plugin_env` (#706; `executors` until engagement
-trim stage 4 removed that scope), the set
+lock — scopes `full` and `plugin_env` (#706; `executors` until v0.351.0
+removed that scope), the set
 `tools._PLUGIN_TOOLS_RELOAD_SCOPES` — must acquire _PLUGIN_TOOLS_LOCK BEFORE
 dispatch, establishing the global lock order `_PLUGIN_TOOLS_LOCK -> reload
 writer/reader lock` for every path (INV-CFG-011). The two entry points are the
@@ -235,7 +235,7 @@ async def test_plugin_tools_guard_excludes_other_tasks() -> None:
 # ---------------------------------------------------------------------------
 # #706 red cases (INV-CFG-011). `dispatch` takes the reload RW lock for EVERY
 # scope and holds it across the handler (reload.py:293-305), and the
-# plugin_env handler (and, until engagement trim stage 4 removed that scope,
+# plugin_env handler (and, until v0.351.0 removed that scope,
 # the executors handler) acquires the plugin-tools guard UNDERNEATH that held
 # reader (reload.py:1486) — the reverse of the documented
 # `_PLUGIN_TOOLS_LOCK -> reload RW lock` order the entry points state and, at

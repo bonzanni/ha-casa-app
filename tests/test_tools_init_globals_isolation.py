@@ -19,7 +19,7 @@ _BEFORE: dict = {}
 def test_the_sweep_covers_the_globals_the_leaks_were_measured_on():
     names = conftest._init_tools_globals()
     assert "_engagement_registry" in names and "_channel_manager" in names
-    # 13 since engagement trim stage 4 dropped `_executor_registry`.
+    # 13 since v0.351.0 dropped `_executor_registry`.
     assert len(names) >= 13
 
 

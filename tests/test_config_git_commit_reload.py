@@ -46,7 +46,7 @@ def table_runtime(tmp_path):
     """Live residents assistant and butler; a resident directory `newbie` that
     is not live yet; specialists `finance` (installed: a link to its content
     directory) and `legacy` (a plain directory); a leftover executor directory
-    (nothing reads it since engagement trim stage 4)."""
+    (nothing reads it since v0.351.0)."""
     agents = tmp_path / "agents"
     for d in ("assistant", "butler", "newbie", "executors/configurator",
               f"specialists/.finance.material-{_HEX}", "specialists/legacy"):
@@ -84,8 +84,8 @@ _TABLE = [
     ([f"{_MATERIAL}/runtime.yaml"], [("agent", "finance")]),        # edit in place
     (["agents/specialists/legacy/runtime.yaml"], [("agent", "legacy")]),
     (["agents/specialists/dropped/runtime.yaml"], [("agents", None)]),
-    # executors: nothing reads agents/executors/ any more (engagement trim
-    # stage 4 — the configurator ships with Casa), so nothing there reloads
+    # executors: nothing reads agents/executors/ any more (since
+    # v0.351.0 the configurator ships with Casa), so nothing there reloads
     (["agents/executors/configurator/definition.yaml"], []),
     (["agents/executors/probe/definition.yaml",
       "agents/executors/probe/prompt.md"], []),

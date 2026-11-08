@@ -15,7 +15,7 @@ import reload as reload_mod
 
 def test_pin_inv_cfg_001_exactly_eight_scopes_none_reading_options():
     """INV-CFG-001: exactly seven reload scopes exist (the `executors` scope
-    went with engagement trim stage 4; the test keeps its name because the
+    went in v0.351.0; the test keeps its name because the
     corpus binds it), and none rereads the app manifest options.
 
     Red case demonstrated: registering an eighth scope

@@ -689,7 +689,7 @@ async def test_a_sticky_fault_set_while_a_cut_off_run_unwinds_outlives_that_run(
 
 async def test_a_reply_to_a_configurator_busy_in_this_chat_gets_the_busy_line_at_the_bound(
         env, monkeypatch, tmp_path):
-    """Engagement trim stage 4: a swipe-reply on the configurator's post while
+    """A swipe-reply on the configurator's post while
     its desk is in use waits no longer than the lease bound, runs nothing, and
     gets the busy line naming the running task."""
     import configurator_run
@@ -716,7 +716,7 @@ async def test_a_reply_to_a_configurator_busy_in_this_chat_gets_the_busy_line_at
 
 
 async def test_a_busy_configurator_says_what_it_is_busy_with(env):
-    """Engagement trim stage 4: a reply that waited past the lease bound ran
+    """A reply that waited past the lease bound ran
     nothing, and the notice names the task the configurator is busy with."""
     import configurator_run
 

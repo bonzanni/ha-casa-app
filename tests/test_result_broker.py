@@ -702,7 +702,7 @@ def _broker_hooks(opts):
 
 
 def test_executor_builder_carries_no_broker(tmp_path, monkeypatch):
-    """Executors are outside the contract (#923). Engagement trim stage 4: the
+    """Executors are outside the contract (#923). Since v0.351.0 the
     only executor, the configurator, is built through the specialist builder
     and loads no plugin — not even one assigned to ``executor:configurator``
     — so it carries no broker matchers and no broker env."""

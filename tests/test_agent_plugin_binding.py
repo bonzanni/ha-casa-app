@@ -1,6 +1,6 @@
 """§3.3/§3.9: agents consume the resolver snapshot; active binding recorded
 at construction; resolve happens off-loop; specialist options resolve with
-their concrete role; the configurator (engagement trim stage 4) is built
+their concrete role; the configurator (since v0.351.0) is built
 through the specialist builder like any delegate."""
 from __future__ import annotations
 
@@ -257,8 +257,8 @@ def _configurator_cfg():
 def test_executor_options_prefer_passed_resolution_over_fresh_resolve(
         tmp_path, monkeypatch):
     """Sol F5: one resolve feeds gate + record + options — a passed resolution
-    is used verbatim and resolve_for is NOT called again. Engagement trim stage
-    4: the configurator (kind ``executor``) is built through
+    is used verbatim and resolve_for is NOT called again. Since v0.351.0
+    the configurator (kind ``executor``) is built through
     ``_build_specialist_options``, which keeps that contract."""
     import tools as tools_mod
     rp = SimpleNamespace(name="a", artifact_id="0" * 64, path="/store/a",
@@ -353,7 +353,7 @@ def test_specialist_and_executor_options_inject_plugins_guard(tmp_path,
     """Sol #5: the /config/plugins + settings.json guard is injected code-side
     into specialist AND configurator options — not just residents. The
     configurator (kind ``executor``) is built through the specialist builder
-    since engagement trim stage 4."""
+    since v0.351.0."""
     import tools as tools_mod
     store = tmp_path / "store"
     e = entry("p", ["specialist:finance"])

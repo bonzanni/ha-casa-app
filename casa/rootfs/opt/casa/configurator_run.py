@@ -227,7 +227,7 @@ def release_when_done(lease: Lease, inner: asyncio.Task) -> None:
     inner.add_done_callback(_done)
 
 
-# -- D4: plugins installed under the lease -----------------------------------
+# -- Plugins installed under the lease ---------------------------------------
 
 def record_installing(names) -> None:
     if _held is None:

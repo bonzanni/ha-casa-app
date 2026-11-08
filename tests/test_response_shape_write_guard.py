@@ -23,7 +23,7 @@ Scope, deliberately one directory depth (mirroring `_is_resident_trigger_file`):
   one path and neither on the reason is the failure mode the trigger guard
   documents avoiding.
 * executors are not claimed either: no executor has an agent directory under
-  /config (engagement trim stage 4 — the configurator ships with Casa), so
+  /config (since v0.351.0 the configurator ships with Casa), so
   there is no such file to protect.
 """
 from __future__ import annotations
@@ -109,8 +109,8 @@ class TestResponseShapeWriteGuard:
             "file_path": "/config/agents/specialists/mtg/response_shape.yaml"}) == {}
 
     async def test_does_not_claim_an_executor_path(self):
-        """No executor reads an agent directory under /config (engagement trim
-        stage 4), so an executor has no such file to protect and a claim here
+        """No executor reads an agent directory under /config (since
+        v0.351.0), so an executor has no such file to protect and a claim here
         would be a guard over an empty set."""
         assert await self._run("Edit", {
             "file_path": "/config/agents/executors/configurator/response_shape.yaml"}) == {}
@@ -575,8 +575,8 @@ class TestTheWriteClauseHoldsOnEveryPathItNames:
         The fourth is 0 BY DESIGN: an actual specialist writing its own
         engagement artifacts must not be refused by a basename match.
         Mutation: drop the guard from any one builder (or from the
-        configurator's shipped hooks) and that entry becomes 0. Engagement
-        trim stage 4: the configurator session is built through
+        configurator's shipped hooks) and that entry becomes 0. Since
+        v0.351.0 the configurator session is built through
         ``_build_specialist_options`` from the image-owned config.
         """
         import asyncio

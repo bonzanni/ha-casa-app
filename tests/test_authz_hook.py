@@ -858,7 +858,7 @@ class TestWiring:
         assert _has_settings_guard(opts)  # guard still present
 
     def test_executor_options_have_no_authz_matcher(self, tmp_path, monkeypatch):
-        """Engagement trim stage 4: the configurator (the only executor) is
+        """Since v0.351.0 the configurator (the only executor) is
         built through the specialist builder and loads no plugin — not even
         one assigned to ``executor:configurator`` — so it has no protected
         tool and no authz matcher."""

@@ -170,8 +170,8 @@ def test_butler_prompt_teaches_protected_tool_challenge_only():
 
 
 def _configurator_card() -> dict:
-    """The configurator's entry in the assistant's delegates.yaml (engagement
-    trim stage 4: the configurator is a delegate, and this card is what the
+    """The configurator's entry in the assistant's delegates.yaml (since
+    v0.351.0 the configurator is a delegate, and this card is what the
     `<delegates>` block serves a bundle-bound assistant)."""
     import yaml
 
@@ -1150,7 +1150,7 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # `assistant:*` carrier, and on `assistant:text` the changes inside those three
 # paragraphs and nothing else; the six other carriers byte-identical. No
 # retention claim.
-# MOVED (engagement trim stage 4, the configurator becomes a delegate), the
+# MOVED (v0.351.0, the configurator becomes a delegate), the
 # three `assistant:*` carriers, core doctrine only: "task-bounded executors"
 # becomes "the configurator"; "the executor reported" becomes "the delegate
 # reported"; the setup-report rule says "delegate that report to the
@@ -2223,7 +2223,7 @@ def test_the_stop_paragraph_asks_first_and_otherwise_says_only_what_stopped(syst
 
 
 def test_the_configurator_is_a_delegate_and_no_executor_card_ships():
-    """Engagement trim stage 4: the configurator is reached with
+    """Since v0.351.0 the configurator is reached with
     delegate_to_agent; executors.yaml and engage_executor are gone."""
     agents_dir = _system_md_path().parent.parent.parent
     assert not (agents_dir / "assistant" / "executors.yaml").exists()

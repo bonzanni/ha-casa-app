@@ -2,7 +2,7 @@
 agreement. Verification can never report active agreement while a running
 consumer executes different code (FR3); dormant targets report configured
 readiness; an `executor:` target is always dormant (no executor loads
-plugins since engagement trim stage 4)."""
+plugins since v0.351.0)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -231,7 +231,7 @@ def test_verify_reload_required_is_never_green(tmp_path, monkeypatch):
 
 def test_verify_disabled_executor_target_not_authorization_missing(
         tmp_path, monkeypatch):
-    """v0.71.1, re-pointed by engagement trim stage 4: a plugin assigned to an
+    """v0.71.1, re-pointed in v0.351.0: a plugin assigned to an
     executor must NOT report authorization_missing — a false operator health
     DM on every boot. No executor loads plugins any more (the configurator is
     a delegated run with none), so an ``executor:`` target is dormant, ready,

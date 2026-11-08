@@ -2536,8 +2536,8 @@ async def main() -> None:
     )
     await job_registry.load()
     recovered_jobs = await job_registry.recover_after_restart()
-    # Engagement trim stage 4: a configurator run the last process did not
-    # finish left its lease file; it is removed now, so no run is blocked by
+    # A configurator run the last process did not finish (since v0.351.0)
+    # left its lease file; it is removed now, so no run is blocked by
     # it, and announced once after the channels start (below).
     import configurator_run
     interrupted_configurator = configurator_run.claim_interrupted()

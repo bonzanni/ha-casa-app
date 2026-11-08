@@ -226,7 +226,7 @@ async def test_resident_specialist_and_executor_options_use_verified_cli(
         specialist_cfg,
         resolution=ResolutionResult(registry_valid=True),
     )
-    # Engagement trim stage 4: the configurator (kind ``executor``) is built
+    # Since v0.351.0 the configurator (kind ``executor``) is built
     # through the specialist builder from its image-owned config.
     import agent_loader
     monkeypatch.setattr(tools_mod, "_agent_registry", None)

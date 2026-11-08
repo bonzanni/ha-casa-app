@@ -11,8 +11,8 @@ the ledger meets the platform:
 - The pre-driver abort path (``tools._abort_engagement_topic``) appends
   too (outcome="error") — those topics are today's most orphan-prone.
 - [AR-7] the on-demand ``cleanup_engagement_topics`` tool (since #1373 the
-  assistant for both scopes; the configurator lost it with engagement trim
-  stage 4).
+  assistant for both scopes; the configurator lost it in
+  v0.351.0).
 - [AR-8] casa_core's periodic topics pass: skips cleanly when telegram is
   unconfigured, sweeps scope="due", and nags the operator for the
   "Delete messages" right at most once per boot.
@@ -347,7 +347,7 @@ async def test_tool_all_terminal_scope(monkeypatch):
     _wire_tool(_telegram_channel())
 
     # all_terminal is the assistant's (#1373; the configurator, v0.69.12's
-    # holder, lost it with engagement trim stage 4).
+    # holder, lost it in v0.351.0).
     import agent as agent_mod
     tok = agent_mod.origin_var.set({"role": "assistant"})
     try:

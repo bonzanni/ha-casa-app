@@ -1,5 +1,5 @@
-"""The configurator as a delegated run in the operator's DM (engagement trim,
-stage 4): the privileged tools follow the EXECUTING role, one lease admits one
+"""The configurator as a delegated run in the operator's DM (since
+v0.351.0): the privileged tools follow the EXECUTING role, one lease admits one
 configurator run at a time from every origin, the lease survives a shutdown
 cancel and is announced once at boot, a restart the configurator needs is a
 "Restart now" button spent on its first tap, install time does not count
@@ -148,7 +148,7 @@ async def test_the_boot_role_map_holds_the_configurator_with_no_reload(monkeypat
 
 
 async def test_a_swipe_reply_on_a_configurator_post_reaches_its_desk(monkeypatch):
-    """D1: the desk route admits the configurator (an executor) as it admits a
+    """The desk route admits the configurator (an executor) as it admits a
     specialist, and a resident's DM delegation to it uses that same desk."""
     import specialist_desk
     import tools
@@ -278,7 +278,7 @@ async def test_a_second_same_chat_delegation_is_refused_at_the_bound(lease_file,
     try:
         await asyncio.wait_for(started.wait(), 5)
         with pytest.raises(configurator_run.ConfiguratorBusy) as exc:
-            await asyncio.wait_for(_use("remove the s4-ask trigger", "deleg-2"), 5)
+            await asyncio.wait_for(_use("remove the morning trigger", "deleg-2"), 5)
         assert "do the full audit" in str(exc.value)
         assert "try again shortly" in str(exc.value)
     finally:
@@ -651,7 +651,7 @@ async def test_a_restart_outside_a_delegated_run_posts_inline(monkeypatch):
     assert posted == [1] and payload["supervisor_status"] == 200
 
 
-# -- D3: install time does not count toward the ceiling ------------------------
+# -- Install time does not count toward the ceiling ----------------------------
 
 @pytest.mark.parametrize("name", ["plugin_add", "plugin_update",
                                   "specialist_install_inspect", "specialist_install_commit",
@@ -729,7 +729,7 @@ async def test_a_paused_install_call_is_bounded_and_the_ceiling_applies_again(
     assert not lease_file.exists()
 
 
-# -- D4: plugin health DMs are held while the lease is held --------------------
+# -- Plugin health DMs are held while the lease is held ------------------------
 
 async def test_plugins_being_installed_are_held_until_the_lease_ends(lease_file, monkeypatch):
     import configurator_run

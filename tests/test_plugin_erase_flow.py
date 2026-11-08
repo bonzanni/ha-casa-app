@@ -541,7 +541,7 @@ async def test_a_keep_tap_closes_the_question_at_once(flow):
     assert pe.QUESTIONS.current("plugin:probe") is None
 
 
-# --- engagement trim stage 4 (D2): every continuation reaches the configurator's desk --
+# --- every continuation reaches the configurator's desk --
 
 class _DeskChannel:
     """A Telegram channel with the operator-DM desk route: an AsyncMock
@@ -559,7 +559,7 @@ class _DeskChannel:
 @pytest.mark.parametrize("caller", ["plugin_remove", "specialist_uninstall"])
 async def test_an_erase_choice_continuation_hands_off_the_question_lease(
         request, monkeypatch, caller, choice):
-    """#1261, re-pointed by engagement trim stage 4: every erase choice's
+    """#1261, re-pointed in v0.351.0: every erase choice's
     continuation — Keep, Erase, Erase data only, Cancel — continues the
     configurator exactly once, as a turn on its desk in the operator's DM
     (``_dispatch_desk_continuation`` with ``desk_role="configurator"``). The
@@ -588,7 +588,7 @@ async def test_an_erase_choice_continuation_hands_off_the_question_lease(
 
 @pytest.mark.asyncio
 async def test_the_erasure_outcome_delivery_carries_no_reservation(flow, monkeypatch):
-    """#1261 companion, re-pointed by engagement trim stage 4: after an Erase
+    """#1261 companion, re-pointed in v0.351.0: after an Erase
     tap's continuation, the background erasure's outcome continues the
     configurator through its desk too — a second, separate desk turn."""
     tm = flow.tm

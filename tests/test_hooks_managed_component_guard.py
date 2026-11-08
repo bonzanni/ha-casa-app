@@ -18,7 +18,7 @@ import yaml
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
-# Engagement trim stage 4: the configurator's hooks ship in its role artifact
+# Since v0.351.0 the configurator's hooks ship in its role artifact
 # (``hooks.pre_tool_use``), not in a config-editable hooks.yaml.
 _ROLES_EXECUTOR_DIR = (
     Path(__file__).resolve().parents[1]
@@ -660,7 +660,7 @@ async def test_managed_source_read_shapes_pass(cmd):
 
 
 # ------------------------------------------------------------------
-# Round-4 (Terra P0), re-pointed by engagement trim stage 4: the configurator
+# Round-4 (Terra P0), re-pointed in v0.351.0: the configurator
 # session Casa builds carries managed_component_guard. Its hooks ship with the
 # image (the role artifact's ``hooks.pre_tool_use``) and nothing in /config can
 # repoint or hollow them, so the guard is listed once and run as written; the

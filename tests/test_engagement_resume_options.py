@@ -98,7 +98,7 @@ async def test_resume_options_missing_config_fails_closed(monkeypatch):
 
 
 async def test_an_executor_engagement_left_from_an_upgrade_fails_closed(monkeypatch):
-    """Engagement trim stage 4: the configurator is no longer an engagement,
+    """Since v0.351.0 the configurator is no longer an engagement,
     and there is no migration — an executor record left open across the
     upgrade cannot resume, and refuses rather than resuming bare."""
     tools_mod = _wire(monkeypatch)

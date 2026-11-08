@@ -1180,7 +1180,7 @@ async def test_inspect_prompt_exception_is_structured(monkeypatch, tmp_path) -> 
 
 
 # ---------------------------------------------------------------------------
-# v0.102.0 (#217), reworked by engagement trim stage 4 (D2): on Approve+ack
+# v0.102.0 (#217), reworked in v0.351.0: on Approve+ack
 # the reconcile_cb the inspect tool built continues the configurator by
 # itself, as one turn on its desk in the operator's DM
 # (``_dispatch_desk_continuation``), so the install proceeds without a manual
@@ -1674,7 +1674,7 @@ async def test_commit_success_surfaces_bundled_plugins_required_env_vars(
 
 # ---------------------------------------------------------------------------
 # #662 red case (specified by the red-case reviewer at 1c8033bb; frozen once
-# accepted; re-pointed by engagement trim stage 4). A tap whose continuation
+# accepted; re-pointed in v0.351.0). A tap whose continuation
 # the configurator's desk route does not take must not leave the DM claiming
 # an install. These run the PRODUCTION reconcile_cb the inspect tool builds —
 # not a stub — through the REAL consent finish hook, so a fix that merely
@@ -1748,7 +1748,7 @@ def _662_channel(edits, ack_path, observations, *, desk_route=True):
 async def test_662_terminal_or_gone_engagement_uses_the_production_outcome(
     monkeypatch, tmp_path, tap_state,
 ) -> None:
-    """Engagement trim stage 4: the requester is no longer an engagement; the
+    """Since v0.351.0 the requester is no longer an engagement; the
     continuation the tap owes is a configurator desk turn. When the desk route
     does not take it (refuses, or the channel has none), the approval stays
     recorded and the single DM edit is the corrective one."""
@@ -2749,7 +2749,7 @@ async def test_upgrade_inspect_reuses_install_consent_identity(
 
 
 # ---------------------------------------------------------------------------
-# Engagement trim stage 4 (D2): only an Approve continues the configurator.
+# Since v0.351.0 only an Approve continues the configurator.
 # Deny, expiry, withdrawal and cancellation show on the card only. Through the
 # REAL inspect tool and the REAL consent prompt.
 # ---------------------------------------------------------------------------
@@ -2783,7 +2783,7 @@ async def _c_retire(monkeypatch, tmp_path, mode, outcome, *, commit_index=None):
 async def test_inspect_withdrawal_tells_the_engagement_nothing(
     monkeypatch, tmp_path, outcome,
 ) -> None:
-    """D2: an expiry, a Deny, a withdrawal or a cancellation edits the card
+    """An expiry, a Deny, a withdrawal or a cancellation edits the card
     and continues nobody — the configurator's desk is not dispatched and no
     approval is recorded."""
     commit_index = outcome.get("option_index")
@@ -2798,7 +2798,7 @@ async def test_each_requesting_engagement_gets_its_own_card(monkeypatch, tmp_pat
     """#1445 (design round d1): the coordinator dedups by key, so a key without
     the requester let a second run's inspect share the first one's card and
     its callbacks. The key names the requesting configurator run (its
-    delegation id, engagement trim stage 4); the approval identity does not."""
+    delegation id, since v0.351.0); the approval identity does not."""
     import agent as agent_mod
     from tools import specialist_install_inspect
 
@@ -2879,7 +2879,7 @@ async def test_the_librarys_activation_error_reaches_the_payload(
 
 
 # ---------------------------------------------------------------------------
-# Engagement trim, stage 4 (D2): the configurator is a delegated run, not an
+# Since v0.351.0 the configurator is a delegated run, not an
 # engagement. An Approve tap continues it by itself through its desk in the
 # operator's DM: one desk turn whose text carries the staged values, because
 # the continuation starts a fresh session. Deny and expiry show on the card

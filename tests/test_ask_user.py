@@ -1074,7 +1074,7 @@ class TestRuntimeYamlGrants:
             assert ASK_TOOL in _allowed(rt), f"{rt} missing {ASK_TOOL}"
 
     def test_no_executor_definition_grants_ask_user(self):
-        """No executor is granted ask_user. Engagement trim stage 4: the only
+        """No executor is granted ask_user. Since v0.351.0 the only
         executor, the configurator, ships as an image-owned role artifact."""
         import agent_loader
         allowed = agent_loader.load_configurator().tools.allowed

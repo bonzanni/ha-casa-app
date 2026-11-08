@@ -518,7 +518,7 @@ def is_specialist(cfg: Any) -> bool:
 
 def has_desk(cfg: Any) -> bool:
     """Who holds a desk: a specialist, or the configurator (kind ``executor``,
-    engagement trim stage 4) — a reply on its post reaches it here, and an
+    since v0.351.0) — a reply on its post reaches it here, and an
     approval it raised continues here. A resident holds none."""
     return getattr(cfg, "kind", "") in ("specialist", "executor")
 

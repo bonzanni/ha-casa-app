@@ -309,7 +309,7 @@ def validate_config_repo(
             # boot-non-fatal and deliberately not gate errors). Walking it
             # here double-validates the materialized files and false-flags
             # them. executors/ holds only leftovers nothing reads since the
-            # configurator ships with Casa (engagement trim stage 4).
+            # configurator ships with Casa (since v0.351.0).
             if root == agents_root:
                 for skipped in _NON_RESIDENT_AGENT_DIRS:
                     if skipped in dirs:
@@ -1226,8 +1226,8 @@ def load_agent_from_dir(
         _validate(deleg_data, "delegates", deleg_path)
         cfg.delegates = _build_delegates(deleg_data)
 
-    # executors.yaml: no longer read (engagement trim stage 4 — the configurator
-    # is a delegate in delegates.yaml); a leftover file is tolerated.
+    # executors.yaml: no longer read (since v0.351.0 the configurator is a
+    # delegate in delegates.yaml); a leftover file is tolerated.
 
     # triggers.yaml — optional, resident only.
     trig_path = os.path.join(agent_dir, "triggers.yaml")
@@ -1637,9 +1637,9 @@ def load_all_specialists(
     return found, failed
 
 
-# --- The image-owned configurator (engagement trim, stage 4) --------------
+# --- The image-owned configurator ------------------------------------------
 
-# Its prompt and doctrine ship with Casa (D7): an image-only tree that
+# Its prompt and doctrine ship with Casa: an image-only tree that
 # config-sync never copies into /config, so a change takes a release. The
 # role artifact beside the other canonical roles (defaults/roles/executor/
 # configurator/) holds the capability ceiling, the hooks and the model; that

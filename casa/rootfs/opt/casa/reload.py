@@ -2511,8 +2511,8 @@ register_handler("full", reload_full)
 # their own registry change (and commit it themselves); `bindings/` holds the
 # residents' staged persona bindings, which only a restart activates — an
 # in-process reload refuses them with `restart_required` (INV-CFG-003); and
-# nothing reads `agents/executors/` any more (the configurator ships with Casa,
-# engagement trim stage 4), so a leftover file there reloads nothing.
+# nothing reads `agents/executors/` any more (the configurator ships with Casa
+# since v0.351.0), so a leftover file there reloads nothing.
 # `unit` is the resident's or specialist's directory name. A specialist's link
 # (`agents/specialists/<slug>`) changes on install, upgrade, rollback and
 # uninstall; its content lives in `.<slug>.material-<hex>/`.

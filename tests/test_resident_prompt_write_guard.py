@@ -485,8 +485,8 @@ class TestTheGuardIsCodeMandatoryEverywhereCasaBuildsHooks:
 
         Pre-fix all four are 0: no builder appends the guard, so nothing in any
         stack refuses. The fourth entry is 0 BY DESIGN, not by omission — an
-        actual specialist keeps today's settings-guard-only stack. Engagement
-        trim stage 4: the configurator session is built through
+        actual specialist keeps today's settings-guard-only stack. Since
+        v0.351.0 the configurator session is built through
         ``_build_specialist_options`` from the image-owned config, whose
         shipped hooks declare the guard.
         """

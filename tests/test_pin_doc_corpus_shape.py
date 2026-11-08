@@ -839,7 +839,7 @@ def test_turn_outcomes_row_moves_to_launch_shard():
     row stays in the E shard (membership only, no count over the shard).
     v0.347.11 binds the executor closing-text tests to INV-ENG-011 in this row,
     and the claude_code driver's removal then drops its boot-replay and
-    claude_code anchors and bindings from it, and engagement trim stage 4
+    claude_code anchors and bindings from it, and v0.351.0
     drops the executor closing-text tests again, so the digest is the row as
     it stands after those changes.
 
@@ -937,7 +937,7 @@ PLUGIN_SHARD_RANGES = {
 # The plugin-delivered-files and plugin-handoff rows were re-pinned when the
 # claude_code driver's removal dropped their private-outbox and dropped-uid
 # bindings and prose.
-# The plugin-health row was re-pinned when engagement trim stage 4 moved the
+# The plugin-health row was re-pinned when v0.351.0 moved the
 # install hold from the engagement to the configurator lease (the plugin
 # invariant that held it was retired for INV-CFG-018).
 PLUGIN_SHARD_ROW_DIGESTS = {

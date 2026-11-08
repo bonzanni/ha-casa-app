@@ -1795,7 +1795,7 @@ class TestReloadRefreshesDelegationRoleMap:
 
         result = await dispatch("agents", runtime=runtime)
         assert result["status"] == "ok"
-        # Engagement trim stage 4: the image-owned configurator is merged in
+        # Since v0.351.0 the image-owned configurator is merged in
         # as a delegate beside the residents and specialists.
         assert tools_mod._agent_role_map == {
             "ellen": resident_cfg, "finance": spec_cfg,

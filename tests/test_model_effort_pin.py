@@ -136,7 +136,7 @@ def test_shipped_executors_stay_on_sonnet_5(executor):
         source=load_role_artifact(DEFAULTS / "roles" / "executor" / executor),
         options=_ha_model_options({}))
     assert role.resolved_model.sdk_model == "claude-sonnet-5"
-    # Engagement trim stage 4: the configurator's runtime config is built from
+    # Since v0.351.0 the configurator's runtime config is built from
     # that same role artifact (no definition.yaml any more).
     import agent_loader
     assert agent_loader.load_configurator().model == "claude-sonnet-5"

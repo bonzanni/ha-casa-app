@@ -11,7 +11,7 @@ existed to refuse.
 The rule these tests pin: a mistyped parameter raises ``UnknownPolicyError``
 out of the factory, so a session build fails closed, the same way an unknown
 parameter name already did. (The executor load boundary this used to pin went
-with engagement trim stage 4: the configurator's hooks ship with Casa, and
+in v0.351.0: the configurator's hooks ship with Casa, and
 ``test_hooks_managed_component_guard.py`` resolves the shipped ones.)
 """
 

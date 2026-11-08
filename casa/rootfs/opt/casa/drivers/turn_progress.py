@@ -1,4 +1,4 @@
-"""#1350: one step log per configurator run, in the operator's DM (D6).
+"""#1350: one step log per configurator run, in the operator's DM.
 
 A configurator run uses several tools between the words it writes, and the
 chat used to sit silent for 30–55 s at a stretch. This line records the
@@ -135,7 +135,7 @@ class TurnProgressLine:
     """The progress line of one turn. ``send(text)`` posts it and returns the
     message id (or None); ``edit(message_id, text)`` edits it; with
     ``delete(message_id)`` the closed line is deleted rather than edited to
-    its closing text (the configurator's line in the DM, D6)."""
+    its closing text (the configurator's line in the DM)."""
 
     def __init__(
         self, *,
@@ -241,7 +241,7 @@ class TurnProgressLine:
             if wait > 0:
                 await self._sleep(wait)
         if self._delete is not None:
-            # D6: a line with a delete goes away instead of being closed
+            # A line with a delete goes away instead of being closed
             try:
                 await asyncio.wait_for(self._delete(self._message_id), self._io_timeout_s)
             except asyncio.CancelledError:
