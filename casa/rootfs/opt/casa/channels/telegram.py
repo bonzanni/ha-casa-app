@@ -2034,11 +2034,11 @@ class TelegramChannel(Channel):
     # ------------------------------------------------------------------
 
     async def _maybe_route_desk_reply(self, update: Update, chat_id: str) -> bool:
-        """INV-DESK-001: four positive conditions — the sender is the
+        """INV-DESK-005: four positive conditions — the sender is the
         authenticated operator, the quoted message is retained in the post
         map for this chat and was posted for this operator, the poster is not
-        this chat's resident, and the poster is a specialist the resident may
-        delegate to now — then the chat's rate decision, exactly as today's
+        this chat's resident, and the poster holds a desk (a specialist or the
+        configurator) the resident may delegate to now — then the chat's rate decision, exactly as today's
         path takes it, then ONE tracked desk task. ``True`` when the message
         was consumed here (routed, or rate-limited with the notice)."""
         import result_broker

@@ -3,7 +3,8 @@
 A swipe-reply the operator sends on a message Casa posted for a specialist
 (an ``operator_message``/``operator_file``/``operator_link`` post, or a desk
 reply) reaches that specialist as ONE desk turn carrying the operator's exact
-words — never a resident turn (INV-DESK-001). The desk is a bounded dialogue
+words — never a resident turn (INV-DESK-005). The configurator holds a desk
+the same way (:func:`has_desk`). The desk is a bounded dialogue
 log injected into each turn's prompt, not an SDK session resume: the
 specialist runner runs every delegated turn in a fresh CLI session and gives
 the specialist its memory by prompt injection, and the plugin's own store is
