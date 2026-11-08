@@ -84,7 +84,7 @@ settle time — so a pending challenge the resident's delegation raised and a de
 again with the identical call is promoted to that desk — and the continuation is dispatched
 to the desk without the slot wait above (the desk's own queue and permit admit it), after
 re-checking that the approver is the operator and the specialist is still delegable
-([`specialist-desk.md`](specialist-desk.md)); the grant key and its single-use binding are
+([`specialist-desk-reply.md`](specialist-desk-reply.md)); the grant key and its single-use binding are
 unchanged. On a pinned stored-call turn the stored-call pin runs as the admission hook's FIRST
 check, so a protected tool that is not the stored call is denied before the authorization
 decision — no challenge is posted for it ([`stored-call-buttons.md`](stored-call-buttons.md)).

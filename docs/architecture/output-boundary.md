@@ -76,7 +76,7 @@ before any line is added, so a silent turn is never turned into a visible line. 
 withholds words in exactly two ruled cases, both scope properties in
 [`output-scope-properties.md`](output-scope-properties.md): the #1075 closing silence (on a
 specialist desk turn after a proven post too, #1433, applied by the desk —
-[`specialist-desk.md`](specialist-desk.md)), and
+[`specialist-desk-reply.md`](specialist-desk-reply.md)), and
 (#1252) the words written after a protected call that is waiting on the operator's approval,
 on a resident's DM, button or setup turn and on a specialist desk turn — on a resident's turn
 also after a synchronous delegate whose specialist left such a call waiting (#1207), whatever
@@ -136,7 +136,7 @@ records it and, in doing so, answers who authored the words.
 What it does not cover: the engagement-topic methods, which carry no scope; the arrival replies and a plugin's delivered posts — the link
 message, a message and a file, each Casa-composed from plugin-authored bytes — which the
 recorded lists class as notices (a desk's notice too; its reply is admitted,
-[`specialist-desk.md`](specialist-desk.md)); and the voice channel, which has not adopted the contract. The recorded lists
+[`specialist-desk-reply.md`](specialist-desk-reply.md)); and the voice channel, which has not adopted the contract. The recorded lists
 catch an accidental bypass; they are not a sandbox against Casa deliberately fabricating an
 admission.
 
