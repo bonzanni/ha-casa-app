@@ -109,3 +109,6 @@
   invariant_tests:
     INV-EVAL-001: [tests/test_pin_g5_invariants.py::test_pin_inv_eval_001_shipped_registry_is_empty]
     INV-EVAL-002: [tests/test_pin_g5_invariants.py::test_pin_inv_eval_002_sweep_forwards_caller_selected_value]
+- doc: architecture/engagement-containment.md
+  summary: "Retired: the OS boundary around a claude_code engagement, removed in v0.349.0 with the driver."
+  when_changing: nothing; this retired document is deleted in a docs-only change
