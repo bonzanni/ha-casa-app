@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.352.0] - 2026-11-08
+
+### Removed
+
+- **Casa no longer saves a summary of each finished background job into its memory.** Nothing ever read those summaries back. What you are told when a job ends is unchanged.
+- An agent ending a job with `emit_completion` no longer passes a list of artifacts; its text and next steps are what reach you, as before.
+
+### Upgrade notes
+
+- **Not backward compatible.** A memory export taken before this version can no longer be restored with `casactl memory-restore`. Summaries already saved stay in the store unused, and new exports leave them out.
+
 ## [0.351.0] - 2026-11-08
 
 ### Changed
