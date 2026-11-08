@@ -165,7 +165,7 @@ def capture_desk_reply(*, channel, chat_id, user_id, user_name,
 # its topic, or as a reply in their direct chat to one of its job's posts —
 # reaches the specialist's turn, and that engagement captures nothing
 # (INV-MEM-032), so their words were lost. They are the operator's message like any other:
-# captured once, as they typed them, classified like any message of their.
+# captured once, as they typed them, classified like any message of theirs.
 # ---------------------------------------------------------------------------
 
 def capture_topic_message(*, channel, engagement, user_id, user_name,
