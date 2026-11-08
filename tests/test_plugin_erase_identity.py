@@ -126,7 +126,7 @@ def test_an_erase_marked_engagement_yields_nothing(live_operator):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["interactive", "async"])
+@pytest.mark.parametrize("mode", ["async"])
 async def test_an_erase_turn_delegates_only_in_sync_mode(monkeypatch, mode):
     tm, tch, eng_reg = _wire(monkeypatch)
     origin = _erase_origin(target="finance")

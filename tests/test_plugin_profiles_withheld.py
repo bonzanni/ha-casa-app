@@ -133,7 +133,7 @@ async def test_launch_withheld_profiled_plugin_stays_profiled_after_unassign(
     alex.channels = []
     alex.system_prompt = "You are Alex."
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     tch = MagicMock()
     tch.engagement_permission_ok = True
     tch.engagement_supergroup_id = -1001
@@ -161,20 +161,13 @@ async def test_launch_withheld_profiled_plugin_stays_profiled_after_unassign(
         return opts
 
     monkeypatch.setattr(tools_mod, "_build_specialist_options", build_after_the_secret_went)
-    token = agent_mod.origin_var.set({
-        "role": "assistant", "channel": "telegram", "chat_id": "c1", "cid": "x",
-        "user_text": "hi", "scope": "business"})
-    try:
-        res = await tools_mod.delegate_to_agent.handler({
-            "agent": "finance", "task": "Plan Q2", "context": "",
-            "mode": "interactive"})
-    finally:
-        agent_mod.origin_var.reset(token)
+    from test_delegate_to_agent_interactive import launch_job
+    res = await launch_job("Plan Q2")
     assert json.loads(res["content"][0]["text"])["status"] == "pending", res
     assert len(built) == 1 and built[0].plugins == [], "the builder withheld gmail"
     rec = reg.by_topic_id(1186)
     assert [(r["name"], r.get("profile")) for r in rec.plugin_artifacts] == [("gmail", "read")]
-    reloaded = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reloaded = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     await reloaded.load()
     assert reloaded.get(rec.id).plugin_artifacts[0]["profile"] == "read"
 
@@ -322,7 +315,7 @@ async def test_withheld_profile_survives_a_build_that_loads_another_plugin(tmp_p
 
     monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient", _FakeClient)
     tomb = tmp_path / "e.json"
-    reg = EngagementRegistry(tombstone_path=str(tomb), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tomb))
     await reg.load()
     rows = tuple(
         {"name": e["name"], "artifact_id": e["artifact_id"],
@@ -339,7 +332,7 @@ async def test_withheld_profile_survives_a_build_that_loads_another_plugin(tmp_p
     assert [p["path"] for p in first.options.plugins] == [rows[2]["path"]]
     await drv.cancel(rec)
 
-    reloaded = EngagementRegistry(tombstone_path=str(tomb), bus=None)
+    reloaded = EngagementRegistry(tombstone_path=str(tomb))
     await reloaded.load()
     rec2 = reloaded.get(rec.id)
     assert [(r["name"], r["profile"]) for r in rec2.plugin_artifacts] == [

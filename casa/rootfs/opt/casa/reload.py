@@ -2605,9 +2605,9 @@ register_handler("full", reload_full)
 # asks for `full`. A kind of None asks for nothing: the plugin tools activate
 # their own registry change (and commit it themselves); `bindings/` holds the
 # residents' staged persona bindings, which only a restart activates — an
-# in-process reload refuses them with `restart_required` (INV-CFG-003); and an
-# executor's prompt, observer policy and doctrine are read when its next
-# session starts.
+# in-process reload refuses them with `restart_required` (INV-CFG-003); an
+# executor's prompt and doctrine are read when its next session starts; and
+# an `observer.yaml` is no longer read at all.
 # `unit` is the resident's or specialist's directory name. A specialist's link
 # (`agents/specialists/<slug>`) changes on install, upgrade, rollback and
 # uninstall; its content lives in `.<slug>.material-<hex>/`.

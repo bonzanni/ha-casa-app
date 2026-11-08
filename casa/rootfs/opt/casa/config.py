@@ -32,7 +32,7 @@ MODEL_MAP: dict[str, str] = {
 # #1353: the reasoning effort Casa passes with every call, keyed by the full
 # model id the call runs. Under the shipped option defaults this is the
 # per-role decision: the assistant (Opus 5.5) at medium; the butler, the
-# concierge, the tier classifier, the observer and query_engager's synthesis
+# concierge, the tier classifier and query_engager's synthesis
 # (Haiku 5.5) at low; the finance specialist (Sonnet 5.5) at medium; the
 # configurator (pinned to Sonnet 5) at high. Casa
 # passes it explicitly because the CLI's own default differs by model and
@@ -660,13 +660,9 @@ class AgentConfig:
 
 @dataclass
 class ExecutorMemoryConfig:
-    """Per-executor memory wiring (M4).
-
-    Defaults to ``enabled=False`` so existing executor definitions without
-    a ``memory:`` block continue to work unchanged. When enabled, the
-    engager pulls a per-channel-per-chat archive of prior engagement
-    summaries and interpolates the digest into ``{executor_memory}`` in
-    the prompt template.
+    """The parsed ``memory:`` block of an executor definition. Nothing
+    reads it since the executor archive was removed; it is still parsed
+    because the schema accepts the key and existing definitions carry it.
     """
     enabled: bool = False
     token_budget: int = 2000
@@ -688,6 +684,8 @@ class ExecutorDefinition:
     tools_disallowed: list[str] = field(default_factory=list)
     permission_mode: str = "acceptEdits"
     mcp_server_names: list[str] = field(default_factory=list)
+    # Parsed but unread, like ``observer_policy_path`` and ``memory`` below:
+    # the idle reminders and the observer are gone, the schema keys stay.
     idle_reminder_days: int = 7
     prompt_template_path: str = ""
     hooks_path: str | None = None

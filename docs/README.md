@@ -72,7 +72,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | plugin installation, artifact identity, or protected-tool declarations | [`architecture/plugins.md`](architecture/plugins.md) |
 | plugin mutation sequencing, a plugin or specialist mutation envelope, what a result may say about an integration being live, re-issuing a plugin-consent DM on demand, or how a plugin change warns about a reached specialist's open conversations | [`architecture/plugin-mutation-tools.md`](architecture/plugin-mutation-tools.md) |
 | plugin trigger declaration, the routing overlay, trigger consent, or per-trigger secret backing | [`architecture/plugin-triggers.md`](architecture/plugin-triggers.md) |
-| read clearance, the per-sender origin stamp, which ledgers are maintained, what a lower ledger's writer job is given, a read path's per-object check, the engagement clearance clamp, or the executor-archive epoch scoping | [`architecture/memory-scoping.md`](architecture/memory-scoping.md) |
+| read clearance, the per-sender origin stamp, which ledgers are maintained, what a lower ledger's writer job is given, a read path's per-object check, or the engagement clearance clamp | [`architecture/memory-scoping.md`](architecture/memory-scoping.md) |
 | reminder creation or cancellation, the reminder sweep, or recurrence derivation | [`architecture/reminders.md`](architecture/reminders.md) |
 | search_memory, browse_memory_day, open_memory or correct_memory, the search index, or what the engager query reads | [`architecture/memory-tools.md`](architecture/memory-tools.md) |
 | specialist install identity, consent, or materialization | [`architecture/specialist-lifecycle.md`](architecture/specialist-lifecycle.md) |

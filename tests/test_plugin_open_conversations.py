@@ -44,7 +44,7 @@ UPDATED = "Its open conversations keep the previous version and lose its approva
 def reg(tmp_path, monkeypatch):
     import tools as tools_mod
     from engagement_registry import EngagementRegistry
-    r = EngagementRegistry(tombstone_path=str(tmp_path / "engagements.json"), bus=None)
+    r = EngagementRegistry(tombstone_path=str(tmp_path / "engagements.json"))
     monkeypatch.setattr(tools_mod, "_engagement_registry", r)
     return r
 

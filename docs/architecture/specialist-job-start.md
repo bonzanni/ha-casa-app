@@ -50,7 +50,7 @@ delegate's job as that delegate's own (`Alex's own job: in text, ask Alex with a
 delegation; Alex starts it itself and it runs in Alex's topic`) only when the delegate's own
 start would accept it now, the same `own_job_hosts` resolution the call makes, so a job
 whose plugin is withheld keeps its plain line. The assistant's text doctrine sends such a
-request to the delegate through a sync delegation, never an interactive one, says a
+request to the delegate through a sync delegation, says a
 delegation does run the job, and keeps `start_job` for such a job as the fallback when the
 delegation reports that it could not start it. A sync delegation's reported job start counts
 as a topic the assistant may point to. Its voice doctrine says no job starts on a call. The

@@ -179,7 +179,7 @@ def _build(tmp_path, monkeypatch, probe, client_cls, *, driver_kind="in_casa"):
     )
 
     registry = EngagementRegistry(
-        tombstone_path=str(tmp_path / "engagements.json"), bus=None,
+        tombstone_path=str(tmp_path / "engagements.json"),
     )
 
     real_transition = registry.try_transition_terminal

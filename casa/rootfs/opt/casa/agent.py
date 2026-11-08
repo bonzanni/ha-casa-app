@@ -803,8 +803,6 @@ def _limit_stop_line(msg: BusMessage, *, is_narration: bool,
             prefix = "(plugin setup) "
         elif synthetic == "plugin_erase":
             prefix = "(plugin removal) "
-        elif msg.source == "observer":
-            prefix = "(observer) "
         else:
             prefix = ""
         subject = "This request"

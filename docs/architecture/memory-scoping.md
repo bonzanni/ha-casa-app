@@ -12,8 +12,8 @@ Which stored facts a given reader gets back: the read-clearance model — per ch
 Telegram sender via the stamped origin, failing closed — the ledgers Casa maintains, one per
 clearance it serves, each written only from what that clearance can read, the check every
 read path makes on each object it returns, the clearance an engagement
-inherits from its creating turn and the monotonic clamp steering applies to it, and the
-procedural-epoch scoping on the executor archive. How a ledger is served, what a
+inherits from its creating turn and the monotonic clamp steering applies to it. How a
+ledger is served, what a
 caller is told when the store cannot answer, and what a caller may claim from what comes
 back are [`architecture/memory-serving.md`](memory-serving.md) and
 [`architecture/memory-tools.md`](memory-tools.md); write trust is
@@ -69,8 +69,8 @@ date browse at `friends` still find the dated statement that was said.
 the reader's ledger and nothing else; an object there is dated only from source events that
 ledger can read. The correction note reads that ledger and re-checks each correction's own
 tier. Search hits, each hit's window neighbours and date browse check every event's tier
-before anything is paged or counted, so a count never reveals an unreadable event. The
-executor archive checks each summary's tier. An id the reader's ledger does not hold gets
+before anything is paged or counted, so a count never reveals an unreadable event. An id
+the reader's ledger does not hold gets
 the same answer as an id that does not exist, whether it names an object of another ledger
 or nothing at all.
 
@@ -80,9 +80,8 @@ engagement record, and where the ambient turn origin they run under carries no r
 own, a clearance resolved from that origin alone would find nothing and fall through to the
 channel default, handing an engagement started by a low-clearance sender the operator's
 private tier. The engagement's recorded origin carries the markers its creating turn was
-stamped with, and that is what its reads resolve against: its own recall, the prior-
-engagement archive injected into an executor's prompt at launch, the engager-side context a
-specialist can query, and a nested engagement it spawns, which inherits rather than
+stamped with, and that is what its reads resolve against: its own recall, the engager-side
+context it can query, and a nested engagement it spawns, which inherits rather than
 re-deriving. An engagement whose record predates this (or came from an origin that stamps no
 route) keeps the channel-keyed behaviour.
 
@@ -95,7 +94,7 @@ people steering concurrently can only drive it further down, and the operator re
 their own engagement does not restore what a lower-clearance participant has already seen.
 
 A clamp that moves the record does not stop at future reads — it evicts what the session
-already holds. The transcript and the launch-injected archive were built at the old tier, and
+already holds. The transcript was built at the old tier, and
 a lower-clearance steerer could simply ask the engagement to restate them, so the same locked
 ingress pass that lowers the record also: durably marks the context for rebuild (the flag and
 the clamp persist in one write, so a crash between them cannot happen), withholds the
@@ -179,7 +178,7 @@ The owed events a run is shown are bounded at the ledger's whole-text bound (40 
 tokens), newest first; past it the oldest are left out and cannot be withdrawn. An entry
 or event is withdrawn whole, with whatever else it held.
 
-**INV-MEM-034**: Every memory read path checks each object it returns against the reader's clearance — the served view and `open_memory` by ledger, the correction note by ledger and each correction's own tier, search hits, their window neighbours and date browse by event tier before paging and counts, the executor archive by summary tier — and an id the reader's ledger does not hold gets the same answer as an id that does not exist.
+**INV-MEM-034**: Every memory read path checks each object it returns against the reader's clearance — the served view and `open_memory` by ledger, the correction note by ledger and each correction's own tier, search hits, their window neighbours and date browse by event tier before paging and counts — and an id the reader's ledger does not hold gets the same answer as an id that does not exist.
 
 Enforced in each read function rather than by its callers, so a tool, the engager query, a
 delegated run and a resident turn all inherit it. Pinned by a matrix of every path against
@@ -195,8 +194,8 @@ access-control decision — the ambient origin wins when it has a route of its o
 in-process delegated turn), otherwise the bound engagement record supplies them — and at the
 engagement-topic ingress, which lowers the record's stamped clearance to each steering
 sender's before their turn is delivered. Every read an engagement can perform resolves
-through the first: its own recall, the executor archive injected at launch, the engager-side
-context, and a nested engagement it spawns.
+through the first: its own recall, the engager-side context, and a nested engagement it
+spawns.
 
 What it does not cover: a record carrying no markers falls back to channel-keyed clearance,
 which on Telegram is private — so this tightens what a *newly* stamped origin can reach, and
@@ -216,25 +215,6 @@ What it does not cover: output of a turn already running at clamp time, content 
 posted to the (group-readable) topic, and a pre-clamp nested child's own record — the
 deliberate residuals listed above. The completion tool stays reachable while the rebuild is
 pending, its output being in-flight-turn residual.
-
-**INV-MEM-015**: The lessons block injected into an executor's prompt at launch carries only summaries stamped with that launch's own procedural epoch; a summary is stamped at finalize with the epoch persisted on its engagement's record at create, never with the finalize-time definition.
-
-The epoch is a digest over the procedural bytes *as read at launch* — the role-artifact
-checksum, the resolved prompt template's path and just-read bytes, and every doctrine file.
-Launch-specific substitutions are never inputs: rendered bytes embed the task and the
-served memory itself, which would make every epoch unique and the filter circular. The
-archive is read from the memory store's
-`engagement_summaries`: the newest summaries of the executor's own type whose stored epoch
-equals the launch's, at a tier the originating turn's clearance can read, within the
-executor's budget. A record with no epoch matches nothing — a lesson that cannot prove it
-was learned under the current doctrine is exactly what the filter exists for — and the
-injected block subordinates itself to the doctrine files in as many words.
-
-What it does not cover: `query_engager` is deliberately unfiltered (an answer to "what
-happened last time" is not injected procedure); a same-epoch lesson that is merely wrong
-survives, tempered only by the subordination line; and epochs never expire lessons — a
-doctrine rollback to byte-identical state resurrects that epoch's lessons, by
-construction.
 
 ## Failure behavior
 
@@ -258,10 +238,6 @@ by default. Write access is a separate, deliberate addition
 ([`architecture/memory-capture.md`](memory-capture.md)), and the retention list is a third
 ([`architecture/memory-lifecycle.md`](memory-lifecycle.md)).
 
-**One archive read per launch.** A memory-enabled launch reads the archive once, into the
-executor's first turn, so an executor is never handed two accounts of what happened last
-time. Nothing after the launch reads it again ([`engagements.md`](engagements.md)).
-
 ## Source & test map
 
 <!-- BEGIN SOURCEMAP -->
@@ -272,10 +248,6 @@ time. Nothing after the launch reads it again ([`engagements.md`](engagements.md
 - `casa/rootfs/opt/casa/sensitivity.py::clearances_served`
 - `casa/rootfs/opt/casa/sensitivity.py::clearance_for_channel`
 - `casa/rootfs/opt/casa/sensitivity.py::clearance_for_origin`
-- `casa/rootfs/opt/casa/executor_epoch.py::compute_procedural_epoch`
-- `casa/rootfs/opt/casa/executor_epoch.py::epoch_application_tag`
-- `casa/rootfs/opt/casa/tools.py::_fetch_executor_archive`
-- `casa/rootfs/opt/casa/tools.py::_read_executor_archive`
 - `casa/rootfs/opt/casa/channel_trust.py`
 - `casa/rootfs/opt/casa/tools.py::_origin_clearance_markers`
 - `casa/rootfs/opt/casa/tools.py::inherit_origin_markers`
@@ -289,7 +261,6 @@ time. Nothing after the launch reads it again ([`engagements.md`](engagements.md
 **Tests**
 - `tests/test_sensitivity.py::test_readable_tiers_is_clearance_and_below`
 - `tests/test_sensitivity.py::test_clearance_docstring_states_the_fail_closed_direction`
-- `tests/test_executor_epoch.py`
 - `tests/test_butler_friends_view.py`
 - `tests/test_memory_withdrawal.py`
 

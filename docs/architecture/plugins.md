@@ -49,8 +49,8 @@ every resolve, and the resolved paths hand the live artifact tree to the SDK wit
 revalidation. So a *registry* edit is invisible until a reload — deliberate, because
 validation is expensive and a long-lived agent should not see a half-written registry — while
 a mutation *inside a stored artifact* can become visible immediately and evades the cached
-checksum until an explicit verification, the next snapshot reload — or an interactive
-specialist resume, which deep-validates its recorded artifacts automatically. Executor
+checksum until an explicit verification, the next snapshot reload — or a specialist
+engagement's resume, which deep-validates its recorded artifacts automatically. Executor
 resume checks only that the recorded directories still exist.
 
 **An assignment may hold a profile.** Beside `targets`, an entry may carry a sibling

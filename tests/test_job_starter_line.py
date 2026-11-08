@@ -191,7 +191,7 @@ class TestRecordedOnceAtLaunch:
     async def test_a_reloaded_record_renders_the_recorded_token(
             self, runtime, monkeypatch, markers, expected):
         rec, _ = await assert_job_says(runtime, monkeypatch, _origin(**markers), expected)
-        reloaded = EngagementRegistry(tombstone_path=runtime.registry._tombstone_path, bus=None)
+        reloaded = EngagementRegistry(tombstone_path=runtime.registry._tombstone_path)
         await reloaded.load()
         again = reloaded.get(rec.id)
         assert again is not None

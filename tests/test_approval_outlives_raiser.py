@@ -137,7 +137,7 @@ class TestEngagementEndRetiresItsChallenges:
         broker, coord, channel = env
         monkeypatch.setattr(tools_mod, "CHALLENGES", coord)
         monkeypatch.setattr(tools_mod, "_PLUGIN_INSTALLERS", {})
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         reg.set_terminal_observer(tools_mod._on_engagement_terminal)
         rec = await reg.create(kind="specialist", role_or_type="finance",
                                driver="in_casa", task="purge", origin={},
@@ -172,7 +172,7 @@ class TestEngagementEndRetiresItsChallenges:
         broker, coord, channel = env
         monkeypatch.setattr(tools_mod, "CHALLENGES", coord)
         monkeypatch.setattr(tools_mod, "_PLUGIN_INSTALLERS", {})
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         reg.set_terminal_observer(tools_mod._on_engagement_terminal)
         rec = await reg.create(kind="specialist", role_or_type="finance",
                                driver="in_casa", task="purge", origin={},

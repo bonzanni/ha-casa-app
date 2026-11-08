@@ -75,7 +75,7 @@ def _record(rec_id: str, **overrides):
     base = dict(
         id=rec_id, kind="executor", role_or_type="configurator",
         driver="in_casa", status="active", topic_id=42, started_at=0.0,
-        last_user_turn_ts=0.0, last_idle_reminder_ts=0.0, completed_at=None,
+        last_user_turn_ts=0.0, completed_at=None,
         sdk_session_id=None, origin={}, task="t",
     )
     base.update(overrides)
@@ -1607,7 +1607,7 @@ class TestTheSettledStatusReadIsBoundedAndProduction:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None)
+            tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             "executor", "configurator", "in_casa", "t",
             {"role": "assistant", "channel": "telegram"}, topic_id=901)

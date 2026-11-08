@@ -70,10 +70,10 @@ run_harness() {
 }
 
 # ---------------------------------------------------------------------------
-# E-1 — Tier 2 interactive open: channel.open_engagement_topic creates a
+# E-1 — Engagement topic open (a specialist job's): channel.open_engagement_topic creates a
 # forum topic in the mock-TG supergroup and the registry records it.
 # ---------------------------------------------------------------------------
-log "E-1: delegate_to_specialist(mode=interactive) opens a topic"
+log "E-1: an engagement opens a topic"
 curl -s -X POST "http://localhost:${MOCK_PORT}/_reset" >/dev/null
 
 read -r -d '' E1_PY <<'PY' || true
@@ -85,7 +85,7 @@ from channels.telegram import TelegramChannel
 async def main():
     os.environ["TELEGRAM_BOT_API_BASE"] = os.environ["MOCK_TG_BASE"]
     supergroup = int(os.environ["SUPERGROUP_ID"])
-    reg = EngagementRegistry(tombstone_path="/tmp/_eng_e1.json", bus=None)
+    reg = EngagementRegistry(tombstone_path="/tmp/_eng_e1.json")
     await reg.load()
     ch = TelegramChannel(
         bot_token="test-token", chat_id="999", default_agent="assistant",
@@ -117,7 +117,7 @@ run_harness "E-1" "$E1_PY"
 TOPICS=$(curl -s "http://localhost:${MOCK_PORT}/_inspect" \
     | python3 -c 'import sys,json;print(len(json.load(sys.stdin).get("topics",{})))')
 [ "$TOPICS" -ge 1 ] || fail "E-1: expected ≥1 topic in mock TG, got $TOPICS"
-pass "E-1 interactive-mode opens topic (mock TG topics=$TOPICS)"
+pass "E-1 engagement opens topic (mock TG topics=$TOPICS)"
 
 # ---------------------------------------------------------------------------
 # E-2 — User turn routed: a user message inside an engagement topic reaches
@@ -137,7 +137,7 @@ from channels.telegram import TelegramChannel
 async def main():
     os.environ["TELEGRAM_BOT_API_BASE"] = os.environ["MOCK_TG_BASE"]
     supergroup = int(os.environ["SUPERGROUP_ID"])
-    reg = EngagementRegistry(tombstone_path="/tmp/_eng_e2.json", bus=None)
+    reg = EngagementRegistry(tombstone_path="/tmp/_eng_e2.json")
     await reg.load()
     ch = TelegramChannel(
         bot_token="test-token", chat_id="999", default_agent="assistant",
@@ -207,7 +207,7 @@ from channels.telegram import TelegramChannel
 async def main():
     os.environ["TELEGRAM_BOT_API_BASE"] = os.environ["MOCK_TG_BASE"]
     supergroup = int(os.environ["SUPERGROUP_ID"])
-    reg = EngagementRegistry(tombstone_path="/tmp/_eng_e3.json", bus=None)
+    reg = EngagementRegistry(tombstone_path="/tmp/_eng_e3.json")
     ch = TelegramChannel(
         bot_token="test-token", chat_id="999", default_agent="assistant",
         bus=None, webhook_url="",
@@ -292,7 +292,7 @@ from channels.telegram import TelegramChannel
 async def main():
     os.environ["TELEGRAM_BOT_API_BASE"] = os.environ["MOCK_TG_BASE"]
     supergroup = int(os.environ["SUPERGROUP_ID"])
-    reg = EngagementRegistry(tombstone_path="/tmp/_eng_e4.json", bus=None)
+    reg = EngagementRegistry(tombstone_path="/tmp/_eng_e4.json")
     ch = TelegramChannel(
         bot_token="test-token", chat_id="999", default_agent="assistant",
         bus=None, webhook_url="",
@@ -362,114 +362,6 @@ run_harness "E-4" "$E4_PY"
 pass "E-4 /cancel marks record cancelled + closes topic"
 
 # ---------------------------------------------------------------------------
-# E-5 — /silent: toggles observer.is_silenced(engagement_id) → True.
-# ---------------------------------------------------------------------------
-log "E-5: /silent squelches observer"
-curl -s -X POST "http://localhost:${MOCK_PORT}/_reset" >/dev/null
-
-read -r -d '' E5_PY <<'PY' || true
-import asyncio, os, sys
-sys.path.insert(0, "/opt/casa")
-from types import SimpleNamespace
-from engagement_registry import EngagementRegistry
-from channels.telegram import TelegramChannel
-
-async def main():
-    os.environ["TELEGRAM_BOT_API_BASE"] = os.environ["MOCK_TG_BASE"]
-    supergroup = int(os.environ["SUPERGROUP_ID"])
-    reg = EngagementRegistry(tombstone_path="/tmp/_eng_e5.json", bus=None)
-    ch = TelegramChannel(
-        bot_token="test-token", chat_id="999", default_agent="assistant",
-        bus=None, webhook_url="",
-        engagement_supergroup_id=supergroup,
-    )
-    await ch._rebuild()
-
-    class StubObserver:
-        def __init__(self): self.silenced = set()
-        def silence(self, eid): self.silenced.add(eid)
-        def is_silenced(self, eid): return eid in self.silenced
-    obs = StubObserver()
-
-    ch._engagement_registry = reg
-    ch._observer = obs
-
-    tid = await ch.open_engagement_topic(name="E-5")
-    rec = await reg.create(kind="specialist", role_or_type="finance",
-                            driver="in_casa", task="",
-                            origin={"channel":"telegram"}, topic_id=tid)
-
-    update = SimpleNamespace(
-        message=SimpleNamespace(
-            message_id=90001,
-            chat=SimpleNamespace(id=supergroup),
-            message_thread_id=tid, text="/silent",
-            from_user=SimpleNamespace(id=7777),
-        ),
-    )
-    await ch.handle_update(update)
-    assert obs.is_silenced(rec.id), "observer not silenced after /silent"
-    await ch._teardown_app()
-    print("OK")
-
-asyncio.run(main())
-PY
-run_harness "E-5" "$E5_PY"
-pass "E-5 /silent flips observer.is_silenced"
-
-# ---------------------------------------------------------------------------
-# E-6 — Idle sweep fires idle_detected on bus after 4 days of user silence.
-# Uses now_override to fast-forward clock without monkey-patching time.
-# ---------------------------------------------------------------------------
-log "E-6: idle sweep fires idle_detected NOTIFICATION"
-
-read -r -d '' E6_PY <<'PY' || true
-import asyncio, os, sys, time
-sys.path.insert(0, "/opt/casa")
-from engagement_registry import EngagementRegistry
-from bus import MessageType
-
-async def main():
-    # Bus that captures NOTIFICATIONs.
-    class StubBus:
-        def __init__(self): self.notifs = []
-        async def notify(self, msg): self.notifs.append(msg)
-    bus = StubBus()
-
-    reg = EngagementRegistry(tombstone_path="/tmp/_eng_e6.json", bus=bus)
-    rec = await reg.create(kind="specialist", role_or_type="finance",
-                            driver="telegram_channel", task="",
-                            origin={"channel":"telegram"}, topic_id=5001)
-
-    # Stub driver (not used since rec.driver != in_casa).
-    class StubDriver:
-        def is_alive(self, rec): return False
-        def get_session_id(self, rec): return None
-        async def cancel(self, rec): pass
-    # Fast-forward 4 days beyond last_user_turn_ts.
-    future = rec.last_user_turn_ts + 4 * 86400 + 1
-    await reg.sweep_idle_and_suspend(driver=StubDriver(), now_override=future)
-
-    idle = [n for n in bus.notifs
-            if n.type == MessageType.NOTIFICATION
-            and isinstance(n.content, dict)
-            and n.content.get("event") == "idle_detected"]
-    assert len(idle) == 1, f"expected 1 idle_detected, got {len(bus.notifs)}"
-    assert idle[0].content["engagement_id"] == rec.id
-    # Re-firing within the refire window → no second notify.
-    await reg.sweep_idle_and_suspend(driver=StubDriver(), now_override=future + 60)
-    idle2 = [n for n in bus.notifs
-             if isinstance(n.content, dict)
-             and n.content.get("event") == "idle_detected"]
-    assert len(idle2) == 1, f"unexpected refire: {len(idle2)}"
-    print("OK")
-
-asyncio.run(main())
-PY
-run_harness "E-6" "$E6_PY"
-pass "E-6 idle_detected fires + does not refire within window"
-
-# ---------------------------------------------------------------------------
 # E-7 — Session suspend after 24h, resume on next user turn. Asserts the
 # driver transitions dead → alive via the resume path.
 # ---------------------------------------------------------------------------
@@ -486,7 +378,7 @@ from channels.telegram import TelegramChannel
 async def main():
     os.environ["TELEGRAM_BOT_API_BASE"] = os.environ["MOCK_TG_BASE"]
     supergroup = int(os.environ["SUPERGROUP_ID"])
-    reg = EngagementRegistry(tombstone_path="/tmp/_eng_e7.json", bus=None)
+    reg = EngagementRegistry(tombstone_path="/tmp/_eng_e7.json")
     ch = TelegramChannel(
         bot_token="test-token", chat_id="999", default_agent="assistant",
         bus=None, webhook_url="",
@@ -569,7 +461,7 @@ from engagement_registry import EngagementRegistry
 
 async def main():
     # Load straight from the container's /data tombstone — same path casa_core uses.
-    reg = EngagementRegistry(tombstone_path="/data/engagements.json", bus=None)
+    reg = EngagementRegistry(tombstone_path="/data/engagements.json")
     await reg.load()
     survivors = reg.active_and_idle()
     assert len(survivors) == 1, f"expected 1 survivor, got {len(survivors)}"
@@ -643,7 +535,7 @@ async def main():
     assert defn.driver == "in_casa", f"unexpected driver: {defn.driver}"
 
     # 2. Stand up channel + registry wiring like casa_core does.
-    reg = EngagementRegistry(tombstone_path="/tmp/_eng_e9.json", bus=None)
+    reg = EngagementRegistry(tombstone_path="/tmp/_eng_e9.json")
     ch = TelegramChannel(
         bot_token="test-token", chat_id="999", default_agent="assistant",
         bus=None, webhook_url="",
@@ -900,7 +792,7 @@ async def main():
     # 5. Simulate the tail of the cancelled path: configurator's proposed
     #    destructive tool was denied → it emits a cancel outcome → Ellen is
     #    NOTIFIED with kind="cancelled".
-    reg = EngagementRegistry(tombstone_path="/tmp/_eng_e10.json", bus=None)
+    reg = EngagementRegistry(tombstone_path="/tmp/_eng_e10.json")
     ch = TelegramChannel(
         bot_token="test-token", chat_id="999", default_agent="assistant",
         bus=None, webhook_url="",

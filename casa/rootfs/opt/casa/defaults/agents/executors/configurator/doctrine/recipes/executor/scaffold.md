@@ -35,18 +35,5 @@ tools:
   allowed: [Read, Write, Bash, ...]
   permission_mode: acceptEdits
 mcp_server_names: [casa-framework]
-idle_reminder_days: 7
 prompt_template_file: prompt.md
-
-# M4 (v0.16.0+): opt-in cross-engagement archive.
-# Set enabled: true for executors where the prior-engagement context
-# is materially useful (long-lived, configuration-heavy work).
-# Leave enabled: false for one-shot smoke or single-turn drivers.
-memory:
-  enabled: true
-  token_budget: 2000
 ```
-
-The `memory:` block is optional. When omitted, the executor runs
-without prior-engagement context (the default for test fixtures and
-any future smoke executor).

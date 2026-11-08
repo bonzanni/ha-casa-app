@@ -96,7 +96,7 @@ async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
     assert worker.bot.create_forum_topic.call_args.kwargs['name'] == '🟢 Ellen · Classify entries'
     await worker.channel.update_topic_state(engagement_id=rec.id, new_state='awaiting')
     assert 'Ellen · Classify entries' in worker.bot.edit_forum_topic.call_args.kwargs['name']
-    loaded = EngagementRegistry(tombstone_path=worker.registry._tombstone_path, bus=None)
+    loaded = EngagementRegistry(tombstone_path=worker.registry._tombstone_path)
     await loaded.load()
     restored = loaded.get(rec.id)
     assert restored.origin == rec.origin
@@ -118,7 +118,7 @@ async def test_env_withheld_before_topic(worker, monkeypatch):
 async def test_resume_uses_pinned_launch_settings(worker):
     result = await call()
     await tools.drain_launch_turns()
-    loaded = EngagementRegistry(tombstone_path=worker.registry._tombstone_path, bus=None)
+    loaded = EngagementRegistry(tombstone_path=worker.registry._tombstone_path)
     await loaded.load()
     rec = loaded.get(result['engagement_id'])
     worker.caller.model = 'opus'
@@ -195,7 +195,7 @@ async def test_worker_record_carries_the_effective_profile(worker, tmp_path):
     # (this fixture's declares none); the barrier is the guard matcher.
     assert any(getattr(m, 'matcher', '') == re.escape('mcp__plugin_ledger_ledger__') + '.*'
                for m in opts.hooks['PreToolUse'])
-    loaded = EngagementRegistry(tombstone_path=worker.registry._tombstone_path, bus=None)
+    loaded = EngagementRegistry(tombstone_path=worker.registry._tombstone_path)
     await loaded.load()
     assert loaded.get(rec.id).plugin_artifacts[0]['profile'] == 'read'
 

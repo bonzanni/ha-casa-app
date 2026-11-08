@@ -1,11 +1,11 @@
-"""Engagement primitive — Tier 2 Specialist interactive mode + (Plan 3+) Tier 3 Executors.
+"""Engagement primitive — Tier 2 Specialists' background jobs + Tier 3 Executors.
 
 Symmetric with :mod:`specialist_registry`. Owns:
 - EngagementRecord (one in-flight engagement)
 - EngagementRegistry (in-memory dict + ``/data/engagements.json``: in-flight
   records for crash recovery PLUS terminal tombstones, which age out after
   ``_TERMINAL_RETENTION_DAYS`` — D-4, v0.69.0)
-- Idle sweep (fires ``idle_detected`` bus events + session-suspends live clients)
+- Idle sweep (session-suspends live clients idle past a day)
 - Orphan recovery (startup: load the file; "active" rows are reconciled to
   idle — no driver survives a restart — and remain dormant until the next
   user turn in their topic; ``tools.reap_stale_engagements`` retires them
@@ -37,9 +37,6 @@ logger = logging.getLogger(__name__)
 # Sweep constants
 # ---------------------------------------------------------------------------
 
-_IDLE_REMINDER_DAYS_SPECIALIST = 3
-_IDLE_REMINDER_DAYS_EXECUTOR = 7          # default; per-type override lands Plan 3
-_IDLE_REMINDER_REFIRE_DAYS = 7
 _SESSION_SUSPEND_IDLE_S = 86400
 _IDLE_SWEEP_CRON = "0 8 * * *"            # daily 08:00 user TZ
 # D-4 (v0.69.0): terminal tombstones stay on disk this long, then age out of
@@ -155,8 +152,9 @@ def _restore_origin_field(rec: "EngagementRecord", key: str, snapped: Any) -> No
 class EngagementRecord:
     """One in-flight engagement.
 
-    ``kind`` = "specialist" for Tier 2 interactive mode; "executor" for Tier 3
-    (Plan 3+). ``role_or_type`` is the specialist role (e.g. "finance") or the
+    ``kind`` = "specialist" for a specialist's background job (or an interactive
+    conversation an older install left open); "executor" for Tier 3; "plugin"
+    for a resident-hosted plugin job. ``role_or_type`` is the specialist role (e.g. "finance") or the
     executor type (e.g. "configurator").
 
     ``status`` transitions:
@@ -177,7 +175,6 @@ class EngagementRecord:
     topic_id: int | None
     started_at: float
     last_user_turn_ts: float
-    last_idle_reminder_ts: float
     completed_at: float | None
     sdk_session_id: str | None
     origin: dict[str, Any]
@@ -209,29 +206,21 @@ class EngagementRecord:
     # launcher captures this at prompt-source time and the drivers compare it
     # immediately before the initial enqueue; any change aborts the launch.
     context_generation: int = 0
-    # #215: the procedural-epoch digest computed at LAUNCH from the exact
-    # bytes the launch consumed (executor_epoch.compute_procedural_epoch).
-    # Persisted so finalize stamps the summary with the epoch its engagement
-    # actually ran under — never the finalize-time definition, which a
-    # reload may have moved (design r1, Sol S-B2/Terra T-B1). "" = legacy or
-    # non-executor record: the summary is then retained UNTAGGED and a later
-    # archive filter drops it.
-    procedural_epoch: str = ""
-    # Task 6 (spec §4.6): the concurrency Permit this interactive
-    # specialist delegation holds, if any (set by tools.py's
-    # delegate_to_agent right after `create()`, None for executor
+    # Task 6 (spec §4.6): the concurrency Permit this specialist
+    # engagement holds, if any (set by tools.py's
+    # _launch_interactive_engagement right after `create()`, None for executor
     # engagements — they never acquire one). NOT persisted to the
     # tombstone (`_write_tombstone_locked` below lists fields explicitly)
     # — a live Permit cannot survive a restart; concurrency state is
     # memory-only and resets with the process. Released exactly once by
     # `_finalize_engagement` (the shared completion/cancel/reap funnel)
     # or, for a pre-finalize failure (topic/driver-start), inline at the
-    # point of failure — see delegate_to_agent's interactive branch.
+    # point of failure — see _launch_interactive_engagement.
     permit: Any = None
     # #283: the agent-spawn occupancy token (specialist_limits.SpawnToken)
     # this record holds when its origin carries ``_agent_spawned`` — a
-    # SEPARATE field from ``permit`` (design r3: an agent-context interactive
-    # specialist holds BOTH, and sharing the field would overwrite one or
+    # SEPARATE field from ``permit`` (design r3: an agent-context specialist
+    # engagement holds BOTH, and sharing the field would overwrite one or
     # leak the other). Memory-only like ``permit`` (never tombstoned; boot
     # reconciliation re-mints it via the limiter's restore()). Attached by
     # ``create()`` itself (design r4: ownership transfers at successful
@@ -290,19 +279,15 @@ class EngagementRegistry:
 
     All mutation methods acquire ``self._lock`` and write the tombstone
     inside the lock, same pattern as SpecialistRegistry.register_delegation.
-    The ``bus`` parameter is used to publish ``idle_detected`` events from
-    the sweep task; tests that don't exercise the sweep may pass ``None``.
     """
 
     def __init__(
         self,
         *,
         tombstone_path: str,
-        bus: Any | None,
         agent_spawn_limiter: Any | None = None,
     ) -> None:
         self._tombstone_path = tombstone_path
-        self._bus = bus
         # #698: the launch-cancellation ledger. All three are process-local,
         # synchronous and I/O-free — the shape ``JobRegistry.begin_shutdown``
         # already uses on the job ledger, which is the ledger this one is a
@@ -392,7 +377,6 @@ class EngagementRegistry:
                     topic_id=row.get("topic_id"),
                     started_at=float(row["started_at"]),
                     last_user_turn_ts=float(row["last_user_turn_ts"]),
-                    last_idle_reminder_ts=float(row.get("last_idle_reminder_ts", 0.0)),
                     completed_at=row.get("completed_at"),
                     sdk_session_id=row.get("sdk_session_id"),
                     origin=dict(row.get("origin") or {}),
@@ -401,7 +385,6 @@ class EngagementRegistry:
                     tools_allowed=tuple(row.get("tools_allowed") or ()),
                     permission_mode=row.get("permission_mode") or "acceptEdits",
                     plugin_artifacts=tuple(row.get("plugin_artifacts") or ()),
-                    procedural_epoch=row.get("procedural_epoch") or "",
                     topic_title=row.get("topic_title", "") or "",
                     context_rebuild_pending=bool(
                         row.get("context_rebuild_pending", False)),
@@ -663,7 +646,6 @@ class EngagementRegistry:
                 "topic_id": rec.topic_id,
                 "started_at": rec.started_at,
                 "last_user_turn_ts": rec.last_user_turn_ts,
-                "last_idle_reminder_ts": rec.last_idle_reminder_ts,
                 "completed_at": rec.completed_at,
                 "sdk_session_id": rec.sdk_session_id,
                 "origin": _persistable_origin(rec.origin),
@@ -672,7 +654,6 @@ class EngagementRegistry:
                 "tools_allowed": list(rec.tools_allowed),
                 "permission_mode": rec.permission_mode,
                 "plugin_artifacts": [dict(pa) for pa in rec.plugin_artifacts],
-                "procedural_epoch": rec.procedural_epoch,
                 "topic_title": rec.topic_title,
                 "context_rebuild_pending": rec.context_rebuild_pending,
                 "terminal_notification_pending":
@@ -749,7 +730,6 @@ class EngagementRegistry:
             topic_id=topic_id,
             started_at=now,
             last_user_turn_ts=now,
-            last_idle_reminder_ts=0.0,
             completed_at=None,
             sdk_session_id=None,
             origin=dict(origin),
@@ -851,7 +831,7 @@ class EngagementRegistry:
         own release (and re-entrant terminal calls) are safe no-ops.
         Executor engagements carry ``permit=None`` → guarded no-op."""
         # #283: BOTH permit fields release here (design r3: an agent-context
-        # interactive specialist holds a SpecialistLimiter permit AND an
+        # specialist engagement holds a SpecialistLimiter permit AND an
         # agent-spawn token; releasing only one wedges or overspends the
         # other pool). Each release is idempotent.
         for field in ("permit", "agent_spawn_permit"):
@@ -1229,7 +1209,7 @@ class EngagementRegistry:
                     rec.origin["error_kind"] = error_kind or "emit_completion_error"
                     rec.origin["error_message"] = error_message
                 self._stamp_shutdown_reason(rec)
-                # Task 6 (spec §4.6): release the interactive delegation's
+                # Task 6 (spec §4.6): release the specialist engagement's
                 # concurrency permit on this terminal transition (no-op for
                 # executor engagements, permit=None). Safe before the write:
                 # the non-strict path has no rollback, so the record is
@@ -1339,7 +1319,7 @@ class EngagementRegistry:
                 # terminal status is durably committed — the strict path can
                 # roll the status back to live on a persist failure, and
                 # releasing a still-live engagement's permit would free its
-                # scope slot while the interactive specialist is still running.
+                # scope slot while the specialist engagement is still running.
                 self._release_permit(rec)
                 # #599: the obligation is now durable, so the discharge may
                 # start. Inside the persist task (not after the shield below)
@@ -1408,7 +1388,7 @@ class EngagementRegistry:
 
         Timestamps are deliberately untouched. A redelivery is not a new user
         turn; re-stamping ``last_user_turn_ts`` on every restart would postpone
-        the idle reminder indefinitely. That is why ``update_user_turn`` is not
+        the idle suspension indefinitely. That is why ``update_user_turn`` is not
         reused here.
 
         An UNKNOWN record delivers rather than refusing: records leave
@@ -1463,12 +1443,6 @@ class EngagementRegistry:
             if rec is None:
                 return
             rec.last_user_turn_ts = ts
-            # C-fix (2026-05-29): reset the idle-reminder debounce so the next
-            # reminder tracks *activity* (the N-day-since-last-turn threshold)
-            # rather than the 7-day-since-last-reminder refire clock. Without
-            # this, a re-engaged specialist (3 d threshold < 7 d refire) gets
-            # its second reminder a few days late. See current-state-spec D7.
-            rec.last_idle_reminder_ts = 0.0
             if rec.status == "idle":
                 rec.status = "active"
             await self._write_tombstone_locked()
@@ -1531,7 +1505,7 @@ class EngagementRegistry:
                 return False          # already at or below this floor
             rec.origin["_origin_clearance"] = clearance
             # #369: the clamp gates future READS, but the session's transcript
-            # and launch-injected archive were built at the old tier — mark the
+            # and launch materials were built at the old tier — mark the
             # context for rebuild in the SAME step, so the two facts ("reads
             # lowered" and "old context must not be resumed") can never be
             # persisted apart.
@@ -1590,14 +1564,6 @@ class EngagementRegistry:
                     engagement_id[:8], clearance, exc, current,
                 )
             return True
-
-    async def update_last_idle_reminder(self, engagement_id: str, ts: float) -> None:
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                return
-            rec.last_idle_reminder_ts = ts
-            await self._write_tombstone_locked()
 
     async def persist_origin(self, engagement_id: str) -> None:
         """Persist updates made to a live record's origin."""
@@ -1771,24 +1737,6 @@ class EngagementRegistry:
             rec.current_state_emoji = emoji
             await self._write_tombstone_locked()
 
-    async def set_procedural_epoch(
-        self, engagement_id: str, epoch: str,
-    ) -> None:
-        """#215: launch-time publication of the procedural epoch this
-        engagement's prompt/doctrine bytes were digested to. Write-once
-        (a set value is never overwritten) and only on a non-terminal
-        record; best-effort persistence like the launch paths it serves."""
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                return
-            if rec.status in ("completed", "cancelled", "error"):
-                return
-            if rec.procedural_epoch:
-                return
-            rec.procedural_epoch = epoch
-            await self._write_tombstone_locked()
-
     # -- v0.79.0 (§4) question numbering + open-question ledger --------------
 
     # -- v0.79.0 (§5) live-summary state ------------------------------------
@@ -1796,21 +1744,20 @@ class EngagementRegistry:
     async def sweep_idle_and_suspend(
         self, *, driver: Any, now_override: float | None = None,
     ) -> None:
-        """Daily scan: fire idle_detected + tear down clients past suspend threshold.
+        """Daily scan: tear down in_casa clients idle past the suspend threshold.
 
         ``driver`` is the ``DriverProtocol`` instance for in_casa — used to
         check is_alive, read session_id, and close the client. For tests,
         ``now_override`` short-circuits ``time.time()``.
         """
         import time
-        from bus import BusMessage, MessageType
 
         now = now_override if now_override is not None else time.time()
 
         for rec in list(self.active_and_idle()):
             idle_s = now - rec.last_user_turn_ts
 
-            # 1) Session suspension (in_casa only)
+            # Session suspension (in_casa only)
             if (rec.driver == "in_casa" and rec.status == "active"
                     and idle_s > _SESSION_SUSPEND_IDLE_S
                     and driver.is_alive(rec)):
@@ -1836,30 +1783,3 @@ class EngagementRegistry:
                         )
                 await self.mark_idle(rec.id)
 
-            # 2) Idle reminder
-            threshold_s = (
-                _IDLE_REMINDER_DAYS_SPECIALIST * 86400
-                if rec.kind == "specialist"
-                else _IDLE_REMINDER_DAYS_EXECUTOR * 86400
-            )
-            if idle_s > threshold_s and (
-                rec.last_idle_reminder_ts == 0
-                or now - rec.last_idle_reminder_ts > _IDLE_REMINDER_REFIRE_DAYS * 86400
-            ):
-                if self._bus is not None:
-                    try:
-                        await self._bus.notify(BusMessage(
-                            type=MessageType.NOTIFICATION,
-                            source=rec.role_or_type,
-                            target="observer",
-                            content={
-                                "event": "idle_detected",
-                                "engagement_id": rec.id,
-                                "last_user_turn_ts": rec.last_user_turn_ts,
-                                "idle_days": int(idle_s // 86400),
-                            },
-                            context={"engagement_id": rec.id},
-                        ))
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("sweep: idle notify failed: %s", exc)
-                await self.update_last_idle_reminder(rec.id, now)

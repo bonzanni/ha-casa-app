@@ -48,7 +48,7 @@ def _issue(name, code, target=None):
 def wired(tmp_path, monkeypatch):
     """A real EngagementRegistry wired into tools the way init_tools does it,
     a health report path, and a channel manager."""
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     reg.set_terminal_observer(tools_mod._on_engagement_terminal)
     cm = _CM()
     path = tmp_path / "plugin-health.json"
@@ -236,7 +236,7 @@ async def test_an_unrelated_engagement_ending_runs_no_pass(wired, monkeypatch):
 
 
 async def test_a_failing_observer_never_fails_the_transition(tmp_path):
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
 
     def _boom(rec):
         raise RuntimeError("observer")
@@ -351,7 +351,7 @@ async def test_an_install_that_ended_unobserved_defers_nothing(tmp_path,
                                                                monkeypatch):
     # A registry with no observer wired (or a record already terminal when it
     # was recorded): the lookup itself must not treat it as live.
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     monkeypatch.setattr(tools_mod, "_engagement_registry", reg)
     monkeypatch.setattr(tools_mod, "_PLUGIN_INSTALLERS", {})
     rec = await _install_engagement(reg)

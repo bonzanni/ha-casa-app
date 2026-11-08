@@ -1,7 +1,7 @@
 """Voice turn budget, async route gates, and deterministic progress (spec A4).
 
 Covers:
-- TestVoiceModes: interactive delegation remains unsupported; async requires
+- TestVoiceModes: async requires
   a trusted background-delivery-capable WebSocket route.
 - TestVoiceDeadline: an expired/missing voice deadline degrades to a typed
   `deadline_exceeded` FAST (never the 60s general sync ceiling).
@@ -115,7 +115,7 @@ class _Reservation:
 
 
 # ---------------------------------------------------------------------------
-# TestVoiceModes — async/interactive rejected outright on voice
+# TestVoiceModes — async without a capable route rejected outright on voice
 # ---------------------------------------------------------------------------
 
 
@@ -139,26 +139,6 @@ class TestVoiceModes:
         assert payload["status"] == "error"
         assert payload["kind"] == "background_delivery_unavailable"
         # No side effect happened — the specialist never launched.
-        reg.register_delegation.assert_not_awaited()
-
-    async def test_interactive_mode_rejected_on_voice(self):
-        import agent as agent_mod
-
-        tm, reg = _init_tools_for_voice()
-        token = agent_mod.origin_var.set(_voice_origin(
-            voice_deadline=asyncio.get_running_loop().time() + 20.0,
-        ))
-        try:
-            res = await tm.delegate_to_agent.handler({
-                "agent": "finance", "task": "t", "context": "",
-                "mode": "interactive",
-            })
-        finally:
-            agent_mod.origin_var.reset(token)
-
-        payload = json.loads(res["content"][0]["text"])
-        assert payload["status"] == "error"
-        assert payload["kind"] == "mode_unsupported_on_voice"
         reg.register_delegation.assert_not_awaited()
 
     async def test_sync_mode_still_allowed_on_voice(self, monkeypatch):
@@ -326,47 +306,6 @@ class TestVoiceModes:
         assert payload["specialist_status"] == "answered"
         assert "PRIVATE_CITATION_CANARY" not in json.dumps(payload)
         assert "PRIVATE_ASSUMPTION_CANARY" not in json.dumps(payload)
-
-    async def test_voice_interactive_to_resident_hits_mode_gate_first(self):
-        """IMPORTANT 1 (review): the voice mode gate must precede the
-        resident-interactive-compat check. A voice interactive delegation
-        to a DECLARED RESIDENT target must return mode_unsupported_on_voice
-        — NOT interactive_not_supported (which would be an observable
-        ordering bypass of the voice mode gate)."""
-        import agent as agent_mod
-        import tools as tm
-
-        reg = MagicMock()
-        reg.get.return_value = None
-        reg.register_delegation = AsyncMock()
-        reg.complete_delegation = AsyncMock()
-        reg.job_registry.finish_voice_result = AsyncMock()
-        reg.cancel_delegation = AsyncMock()
-        # A resident target: channels non-empty. Declared by assistant.
-        butler = _cfg("butler")
-        butler.channels = ["voice"]
-        tm.init_tools(
-            channel_manager=MagicMock(), bus=MagicMock(),
-            specialist_registry=reg, mcp_registry=MagicMock(),
-            trigger_registry=MagicMock(), engagement_registry=MagicMock(),
-            agent_role_map={
-                "assistant": _cfg("assistant", delegates=("butler",)),
-                "butler": butler,
-            },
-        )
-        token = agent_mod.origin_var.set(_voice_origin(
-            voice_deadline=asyncio.get_running_loop().time() + 20.0,
-        ))
-        try:
-            res = await tm.delegate_to_agent.handler({
-                "agent": "butler", "task": "t", "context": "",
-                "mode": "interactive",
-            })
-        finally:
-            agent_mod.origin_var.reset(token)
-
-        payload = json.loads(res["content"][0]["text"])
-        assert payload["kind"] == "mode_unsupported_on_voice", payload
 
 
 @pytest.mark.asyncio

@@ -32,7 +32,7 @@ capability.
 
 What it does not cover: unprotected plugin tools, and the executor path entirely. And
 "proceeds by consuming" applies to direct resident calls, ephemerally delegated
-specialists, and — since #400 — interactive specialist *engagements*: a protected call whose
+specialists, and — since #400 — specialist *engagements* (a specialist's jobs): a protected call whose
 provenance is an engagement routes through the same DM authorization challenge, but its grant
 additionally binds the engagement id, so an approval minted inside one engagement can never
 consume a matching call in another. Identity for the engagement path comes from the live
@@ -167,7 +167,7 @@ The same holds on the paths #1207 named. When a resident's synchronous `delegate
 returns and its specialist's call was left waiting, the operator sees none of the words the
 resident wrote after the delegate's result: the child's outcome reaches the resident's turn
 by delegation id ([`delegation.md`](delegation.md)), even when the CLI rewrote the delegate's
-result before the turn read it (#1274), while the delegate's result is unchanged. On an interactive specialist engagement's topic and a plugin
+result before the turn read it (#1274), while the delegate's result is unchanged. On a specialist job's topic and a plugin
 background job's topic, the hook runs in the engagement client's SDK reader, so under an
 engagement it records on that client's running turn — the holder bound before the client was
 entered (`in_casa_driver._EngagementTurn`), live only while its turn runs — and the driver

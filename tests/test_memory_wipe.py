@@ -251,7 +251,7 @@ class _InCasaDriver:
 
 async def _record_file(path):
     from engagement_registry import EngagementRecord, EngagementRegistry
-    reg = EngagementRegistry(tombstone_path=str(path), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(path))
     for eid, driver, status in (("e1" * 16, "in_casa", "active"),
                                 ("e2" * 16, "in_casa", "completed"),
                                 ("e3" * 16, "in_casa", "cancelled"),
@@ -259,7 +259,7 @@ async def _record_file(path):
         reg._records[eid] = EngagementRecord(
             id=eid, kind="executor", role_or_type="configurator",
             driver=driver, status=status, topic_id=7, started_at=0.0,
-            last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
+            last_user_turn_ts=0.0,
             completed_at=None if status == "active" else time.time(),
             # e4 was persisted before its first session id was recorded
             sdk_session_id=(w.SID if driver == "in_casa" and eid != "e4" * 16
@@ -272,7 +272,7 @@ async def _next_turn(path, eid):
     """The engagement's next operator turn, through the real resume gate."""
     from channels.telegram import TelegramChannel
     from engagement_registry import EngagementRegistry
-    reg = EngagementRegistry(tombstone_path=str(path), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(path))
     await reg.load()
     driver, notices = _InCasaDriver(), []
     channel = TelegramChannel(bot_token="T", chat_id="42",

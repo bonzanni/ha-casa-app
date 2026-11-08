@@ -109,7 +109,7 @@ async def test_boot_notice_failure_still_runs_next_batch(harness, monkeypatch, t
         return await edit_topic(**kw)
     monkeypatch.setattr(h.bot, "edit_forum_topic", record_paint)
     await h.reg.persist_origin(h.rec.id)
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"))
     await reg.load()
     if h.rec.permit is not None:
         h.rec.permit.release()
@@ -168,7 +168,7 @@ async def test_long_batch_and_racing_hook_sweep(harness, monkeypatch, tmp_path):
     await asyncio.gather(jobs.sweep_jobs(h.reg, h.channel),
                          jobs.job_after_turn(h.rec, h.channel))
     await asyncio.wait_for(entered.wait(), 5)
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"))
     await reg.load()
     persisted = reg.get(h.rec.id).origin["job"]
     assert persisted["started"] == 1 and persisted["stalls"] == 0
@@ -236,7 +236,7 @@ async def test_progress_timestamp_and_fresh_job_not_swept(harness, tmp_path, mon
     assert h.rec.origin["job"]["last_advance"] >= before
     await jobs.sweep_jobs(h.reg, h.channel)
     assert h.rec.status == "active" and h.rec.origin["job"]["stalls"] == 0
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"))
     await reg.load()
     assert reg.get(h.rec.id).origin["job"]["last_advance"] >= before
 
@@ -308,7 +308,7 @@ async def test_shutdown_boundary_and_disk_restart(harness, monkeypatch, tmp_path
         assert h.rec.status == "active"
         assert h.rec.origin["job"]["started"] == 1
     await h.driver.cancel(h.rec)
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"))
     await reg.load()
     if h.rec.permit is not None:
         h.rec.permit.release()

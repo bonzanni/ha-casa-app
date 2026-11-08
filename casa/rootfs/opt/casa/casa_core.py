@@ -36,7 +36,7 @@ from claude_runtime import (
     CLAUDE_CLI_VERSION,
     verify_effective_cli,
 )
-from config import AgentConfig, resolve_model
+from config import AgentConfig
 from config_git import commit_config, init_repo, snapshot_manual_edits
 from ingress_identity import (
     IngressIdentityError,
@@ -276,14 +276,10 @@ def _repair_private_state() -> None:
 def _bus_loop_targets(agents: dict) -> list[str]:
     """H4 (v0.53.0): bus targets that need a ``run_agent_loop`` consumer.
 
-    Residents (``agents`` roles) + the ``telegram`` outbound target + the
-    ``observer`` target. ``observer`` was previously missing, so every
-    engagement event sent to target='observer' (subprocess_respawn,
-    idle_detected, error tool_results) enqueued forever with no consumer —
-    events lost, queue leaked. ``dict.fromkeys`` dedupes while preserving
-    order (guards a hypothetical user resident literally named "observer").
+    Residents (``agents`` roles) + the ``telegram`` outbound target.
+    ``dict.fromkeys`` dedupes while preserving order.
     """
-    return list(dict.fromkeys(list(agents.keys()) + ["telegram", "observer"]))
+    return list(dict.fromkeys(list(agents.keys()) + ["telegram"]))
 
 
 async def _drain_broker_before_channel_shutdown(channel_manager: Any) -> None:
@@ -2607,7 +2603,6 @@ async def main() -> None:
     agent_spawn_limiter = AgentSpawnLimiter(max_spawns=_AGENT_SPAWN_CAP)
     engagement_registry = EngagementRegistry(
         tombstone_path=os.path.join(DATA_DIR, "engagements.json"),
-        bus=bus,
         agent_spawn_limiter=agent_spawn_limiter,
     )
     await engagement_registry.load()
@@ -2993,7 +2988,7 @@ async def main() -> None:
 
     bus.register("telegram", _telegram_outbound)
 
-    # Engagement infrastructure: InCasaDriver + Observer
+    # Engagement infrastructure: InCasaDriver
     from drivers.in_casa_driver import InCasaDriver
 
     # Phase 3b: in_casa engagements stream via TopicStreamHandle (per-turn
@@ -3101,22 +3096,9 @@ async def main() -> None:
         _SCHEDULED_ASK_TASKS.add(_sa_task)
         _sa_task.add_done_callback(_SCHEDULED_ASK_TASKS.discard)
 
-    from observer import Observer
-    observer = Observer(
-        bus=bus,
-        engagement_registry=engagement_registry,
-        # #1353: pinned to the full Haiku id, never a bare CLI alias.
-        model_name=resolve_model("haiku"),
-    )
-    await observer.subscribe()
-    # L68/L17: stash so _finalize_engagement can prune per-engagement
-    # interjection-budget bookkeeping on terminal transition.
-    agent_mod.active_observer = observer
-
     if telegram_channel is not None:
         telegram_channel._engagement_registry = engagement_registry
         telegram_channel._engagement_driver = engagement_driver
-        telegram_channel._observer = observer
         telegram_channel._session_registry = session_registry
 
         async def _driver_send_user_turn(rec, text, *, tg_message_id=None,
@@ -3689,9 +3671,6 @@ async def main() -> None:
     # 13. Agent loop tasks. H10/H11 (v0.49.0): spawn through the bus so
     # the consumer tasks are tracked — reload reuses the same seam for
     # roles added after boot and cancels tracked tasks on eviction.
-    # H4 (v0.53.0): _bus_loop_targets adds "observer" so the observer queue
-    # (subscribed above) actually gets drained; observer.subscribe() ran
-    # earlier so its queue already exists here.
     for name in _bus_loop_targets(agents):
         if name in bus.queues:
             loop_tasks.append(bus.start_agent_loop(name))
@@ -3753,8 +3732,8 @@ async def main() -> None:
     # Pass the coroutine functions directly with kwargs.
     session_sweeper.start()
     # D-4 (v0.69.0): reap stale engagements FIRST, then run the idle pass —
-    # a record past the reap TTL is cancelled outright and must not receive
-    # a pointless idle reminder in the same daily run.
+    # a record past the reap TTL is cancelled outright and must not also be
+    # suspended in the same daily run.
     async def _engagement_daily_sweep() -> None:
         # reap resolves the per-record driver itself; no driver arg here.
         from tools import reap_stale_engagements

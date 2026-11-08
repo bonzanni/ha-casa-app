@@ -190,8 +190,8 @@ def test_assistant_executors_yaml_seed_loads():
     _validate(data, "executors", path)
     types = {e["executor_type"] for e in data["executors"]}
     # F-6 (v0.32.0): the fictional ``engagement`` entry was removed —
-    # interactive-mode delegation to a specialist is a Tier 2 primitive
-    # (delegate_to_agent(mode='interactive')), not a Tier 3 executor type.
+    # talking with a specialist is a delegation to it, not a Tier 3
+    # executor type.
     # The remaining seed list must match the real executor registry shape;
     # see test_assistant_prompts.test_executors_yaml_lists_only_real_registered_executor_types
     # for the cross-check against agents/executors/.

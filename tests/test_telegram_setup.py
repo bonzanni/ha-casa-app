@@ -73,10 +73,10 @@ class TestEngagementSetup:
                              engagement_supergroup_id=-1001)
         await ch.setup_engagement_features()
         sg = fake_telegram_bot._supergroups[-1001]
-        # Three commands registered under the supergroup scope
+        # Two commands registered under the supergroup scope
         scope_key = next(iter(sg.my_commands_by_scope))
         names = [c["command"] for c in sg.my_commands_by_scope[scope_key]]
-        assert set(names) == {"cancel", "complete", "silent"}
+        assert set(names) == {"cancel", "complete"}
 
     async def test_missing_manage_topics_logs_error(self, fake_telegram_bot, caplog):
         from channels.telegram import TelegramChannel

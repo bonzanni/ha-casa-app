@@ -740,7 +740,7 @@ class TestInteractiveEngagementPermitRelease:
 
         limiter = SpecialistLimiter(max_global=1)
         eng_reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None)
+            tombstone_path=str(tmp_path / "e.json"))
         tm.init_tools(
             channel_manager=None, bus=None,
             specialist_registry=SpecialistRegistry(
@@ -772,19 +772,20 @@ class TestInteractiveEngagementPermitRelease:
         assert again is not None
         again.release()
 
-    async def test_interactive_mode_hands_permit_to_engagement_record(
+    async def test_a_job_launch_hands_permit_to_engagement_record(
         self, tmp_path,
     ):
-        """delegate_to_agent(mode="interactive") transfers the permit
+        """A specialist-hosted job's engagement launch transfers the permit
         acquired in _prelaunch onto the just-created engagement record
         rather than releasing it early."""
+        from test_delegate_to_agent_interactive import launch_job
         import agent as agent_mod
         from unittest.mock import AsyncMock, MagicMock
         from engagement_registry import EngagementRegistry
         import tools as tm
 
         limiter = SpecialistLimiter(max_global=1)
-        eng_reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        eng_reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
         tch.engagement_permission_ok = True
         tch.engagement_supergroup_id = -1001
@@ -810,28 +811,16 @@ class TestInteractiveEngagementPermitRelease:
         agent_mod.active_engagement_driver = driver
 
         origin = _origin(chat_id="room-1")
-        result = await _with_origin(
-            tm.delegate_to_agent.handler({
-                "agent": "finance", "task": "Plan Q2", "context": "",
-                "mode": "interactive",
-            }),
-            origin,
-        )
+        result = await launch_job("Plan Q2", origin=origin)
         payload = json.loads(result["content"][0]["text"])
         assert payload["status"] == "pending"
 
         rec = eng_reg.by_topic_id(555)
         assert rec is not None
         assert rec.permit is not None
-        # The scope is held — a second interactive attempt for the same
-        # specialist from the same room must be denied as busy.
-        second = await _with_origin(
-            tm.delegate_to_agent.handler({
-                "agent": "finance", "task": "second", "context": "",
-                "mode": "interactive",
-            }),
-            origin,
-        )
+        # The scope is held — a second job launch on the same specialist
+        # from the same room must be denied as busy.
+        second = await launch_job("second", origin=origin)
         second_payload = json.loads(second["content"][0]["text"])
         assert second_payload["kind"] == "engagement_busy"
 
@@ -841,15 +830,16 @@ class TestInteractiveEngagementPermitRelease:
 
     async def test_driver_start_failure_releases_permit_inline(self, tmp_path):
         """A pre-finalize failure (driver.start raises) never reaches
-        _finalize_engagement — delegate_to_agent must release the permit
+        _finalize_engagement — the job launch owner must release the permit
         itself at the point of failure."""
+        from test_delegate_to_agent_interactive import launch_job
         import agent as agent_mod
         from unittest.mock import AsyncMock, MagicMock
         from engagement_registry import EngagementRegistry
         import tools as tm
 
         limiter = SpecialistLimiter(max_global=1)
-        eng_reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        eng_reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
         tch.engagement_permission_ok = True
         tch.engagement_supergroup_id = -1001
@@ -877,17 +867,11 @@ class TestInteractiveEngagementPermitRelease:
         agent_mod.active_engagement_driver = driver
 
         origin = _origin(chat_id="room-1")
-        result = await _with_origin(
-            tm.delegate_to_agent.handler({
-                "agent": "finance", "task": "Plan Q2", "context": "",
-                "mode": "interactive",
-            }),
-            origin,
-        )
+        result = await launch_job("Plan Q2", origin=origin)
         payload = json.loads(result["content"][0]["text"])
         assert payload["kind"] == "driver_start_failed"
 
-        scope = tm._delegation_scope(origin, "finance")
+        scope = tm._delegation_scope(origin, "finance", "interactive")
         permit = limiter.try_acquire(scope)
         assert permit is not None, "permit leaked on driver_start_failed"
         permit.release()
@@ -904,7 +888,7 @@ class TestInteractiveEngagementPermitRelease:
 
         limiter = SpecialistLimiter(max_global=1)
         eng_reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None)
+            tombstone_path=str(tmp_path / "e.json"))
         scope = "room-1:finance"
         permit = limiter.try_acquire(scope)
         assert permit is not None
@@ -952,7 +936,7 @@ class TestInteractiveEngagementPermitRelease:
         rec = EngagementRecord(
             id="e1", kind="specialist", role_or_type="finance",
             driver="in_casa", status="active", topic_id=99,
-            started_at=0.0, last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
+            started_at=0.0, last_user_turn_ts=0.0,
             completed_at=None, sdk_session_id=None, origin={}, task="t",
         )
         client = _FakeDriverClient(
@@ -984,7 +968,7 @@ class TestInteractiveEngagementPermitRelease:
         rec = EngagementRecord(
             id="e1", kind="specialist", role_or_type="finance",
             driver="in_casa", status="active", topic_id=99,
-            started_at=0.0, last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
+            started_at=0.0, last_user_turn_ts=0.0,
             completed_at=None, sdk_session_id=None, origin={}, task="t",
         )
         drv._clients["e1"] = _FakeDriverClient(text="x" * 100)
@@ -1011,7 +995,7 @@ class TestInteractiveEngagementPermitRelease:
         rec = EngagementRecord(
             id="e2", kind="executor", role_or_type="configurator",
             driver="in_casa", status="active", topic_id=99,
-            started_at=0.0, last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
+            started_at=0.0, last_user_turn_ts=0.0,
             completed_at=None, sdk_session_id=None, origin={}, task="t",
         )
         drv._clients["e2"] = _FakeDriverClient(text="y" * 100)

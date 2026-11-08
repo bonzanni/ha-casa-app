@@ -420,13 +420,13 @@ async def test_the_shared_envelope_carries_context_extra_and_routes_from_the_ori
     assert "next_steps" not in bus.messages[1].context
 
 
-# --- red case 6: the interactive specialist launch has the same shape -----------
+# --- red case 6: a specialist-hosted job's engagement launch has the same shape ---
 
-async def test_the_interactive_specialist_launch_returns_pending_before_its_turn(tmp_path, monkeypatch):
+async def test_a_job_engagement_launch_returns_pending_before_its_turn(tmp_path, monkeypatch):
     from unittest.mock import MagicMock
-    import agent as agent_mod
-    from tools import delegate_to_agent, init_tools
-    from test_delegate_to_agent_interactive import _make_alex_cfg, _make_assistant_cfg
+    from tools import init_tools
+    from test_delegate_to_agent_interactive import (
+        _make_alex_cfg, _make_assistant_cfg, launch_job)
     probe = _Probe()
     GatedClient.gate = asyncio.Event()
     _exec, registry, channel, driver = _build(tmp_path, monkeypatch, probe, GatedClient)
@@ -439,19 +439,9 @@ async def test_the_interactive_specialist_launch_returns_pending_before_its_turn
         agent_role_map={"assistant": _make_assistant_cfg()},
     )
     tools_mod = _with_bus(monkeypatch, _RecordingBus())
-    token = agent_mod.origin_var.set({
-        "role": "assistant", "channel": "telegram", "chat_id": "c1", "cid": "x",
-        "user_text": "hi", "scope": "business",
-    })
-    try:
-        res = await asyncio.wait_for(delegate_to_agent.handler({
-            "agent": "finance", "task": "Plan Q2", "context": "", "mode": "interactive",
-        }), 5)
-    finally:
-        agent_mod.origin_var.reset(token)
+    res = await asyncio.wait_for(launch_job("Plan Q2"), 5)
     payload = json.loads(res["content"][0]["text"])
     assert payload["status"] == "pending", payload
-    assert payload["mode"] == "interactive"
     assert GatedClient.frames_yielded == 0
     assert len(tools_mod._LAUNCH_TURN_TASKS) == 1
     GatedClient.gate.set()
@@ -744,7 +734,7 @@ async def test_an_inline_abort_reached_after_the_drains_mints_nothing(tmp_path, 
 async def test_the_boot_replay_addresses_a_roleless_record_to_the_configured_assistant(tmp_path):
     import casa_core
     from engagement_registry import EngagementRegistry
-    registry = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    registry = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await registry.create(kind="executor", role_or_type="configurator", driver="in_casa",
                                 topic_id=7, origin={"channel": "telegram", "cid": "c", "chat_id": "1"},
                                 task="t")
@@ -778,7 +768,7 @@ async def test_the_drain_awaits_the_telling_a_just_completed_abort_is_about_to_m
     import tools as tools_mod
     from engagement_registry import EngagementRegistry
     from tools import LaunchAbortResult
-    registry = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    registry = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     monkeypatch.setattr(tools_mod, "_engagement_registry", registry)
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
@@ -872,7 +862,7 @@ async def test_a_pre_record_cancellation_after_the_drains_mints_nothing(tmp_path
 
 # --- #998: the pre-record FAILURE arms' topic aborts are drained, and fenced after the mark --
 
-_PRE_RECORD_ARMS = ("interactive_persist", "executor_duplicate",
+_PRE_RECORD_ARMS = ("job_persist", "executor_duplicate",
                     "executor_gate", "executor_persist")
 _PRE_RECORD_ORIGIN = {"role": "assistant", "channel": "telegram",
                       "chat_id": "c1", "cid": "x", "user_text": "hi"}
@@ -898,8 +888,8 @@ def _arm_pre_record_failure(arm, tmp_path, monkeypatch, engage_executor, registr
         creates.append(1)
         raise AssertionError("create() must not be reached on this arm")
 
-    if arm == "interactive_persist":
-        from test_delegate_to_agent_interactive import _make_alex_cfg
+    if arm == "job_persist":
+        from test_delegate_to_agent_interactive import _job, _make_alex_cfg
         valid = plugin_registry_mod.ResolutionResult(registry_valid=True)
 
         async def _prelaunch(*a, **kw):
@@ -910,7 +900,7 @@ def _arm_pre_record_failure(arm, tmp_path, monkeypatch, engage_executor, registr
 
         def launch():
             return tools_mod._launch_interactive_engagement(
-                "finance", "Plan Q2", "", dict(_PRE_RECORD_ORIGIN))
+                "finance", "Plan Q2", "", dict(_PRE_RECORD_ORIGIN), job=_job())
         return launch, persist, lambda: creates == [1]
 
     if arm == "executor_duplicate":
@@ -1034,7 +1024,7 @@ async def test_the_stop_returns_only_when_no_anchor_has_pending_work(tmp_path, m
     pending."""
     import tools as tools_mod
     from engagement_registry import EngagementRegistry
-    registry = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    registry = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     release = asyncio.Event(); told: list = []
 
     async def _late_telling():

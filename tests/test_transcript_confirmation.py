@@ -140,7 +140,7 @@ async def _every_pass(home, sid: str, *, stale_days: float) -> None:
     await SessionSweeper(registry=reg, now=lambda: now,
                          directory_for=lambda role: AGENT_HOME)._sweep_once()
     await reap_engagement_transcripts(
-        EngagementRegistry(tombstone_path=str(home.tmp / "none.json"), bus=None),
+        EngagementRegistry(tombstone_path=str(home.tmp / "none.json")),
         now=time.time() + 400 * 86400)
     await asyncio.to_thread(transcript_runs.retention_pass, home.store,
                             now=after_retention())
@@ -344,7 +344,7 @@ def _engagement_record(kind="specialist", role="finance", sid=None):
     return EngagementRecord(
         id=uuid.uuid4().hex, kind=kind, role_or_type=role,
         driver="in_casa", status="active", topic_id=99, started_at=0.0,
-        last_user_turn_ts=0.0, last_idle_reminder_ts=0.0, completed_at=None,
+        last_user_turn_ts=0.0, completed_at=None,
         sdk_session_id=sid, task="t", origin=dict(ORIGIN))
 
 
@@ -395,7 +395,7 @@ async def record(item):
 cap.record = record
 
 async def main():
-    reg = EngagementRegistry(tombstone_path=tombstone, bus=None)
+    reg = EngagementRegistry(tombstone_path=tombstone)
     rec = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa",
         task="t", origin=json.loads(sys.argv[8]), topic_id=None)
@@ -435,7 +435,7 @@ async def test_a_summary_row_blocks_until_its_summaries_are_captured(
             row["confirmed_at"]) == ("summary", cwd, None, None)
     assert unresolved(home.store) == 1
 
-    reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tombstone))
     await reg.load()
     sibling = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa",
@@ -455,7 +455,7 @@ async def test_a_lost_terminal_flip_confirms_its_summary_row(home, monkeypatch):
     from engagement_registry import EngagementRegistry
     from tools import FinalizeResult, _finalize_engagement, init_tools
 
-    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"))
     rec = await reg.create(kind="executor", role_or_type="configurator",
                            driver="in_casa", task="t", origin=dict(ORIGIN),
                            topic_id=None)
@@ -580,7 +580,7 @@ async def test_every_run_kind_registers_before_its_first_capture(
     await transcript_runs.settle()
 
     from engagement_registry import EngagementRegistry
-    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"))
     rec = await reg.create(kind="executor", role_or_type="configurator",
                            driver="in_casa", task="t", origin=dict(ORIGIN),
                            topic_id=None)
@@ -621,7 +621,7 @@ async def test_a_summary_run_is_one_row_holding_its_folder(home):
     transcript there, and close confirms it."""
     from engagement_registry import JOB_SIDS_KEY, EngagementRegistry
     a, b, sibling = (str(uuid.uuid4()) for _ in range(3))
-    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"))
     rec = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa", task="t",
         origin=dict(ORIGIN, job={JOB_SIDS_KEY: [a, b]}), topic_id=None)
@@ -658,7 +658,7 @@ async def test_a_reload_during_finalize_never_captures_an_uncovered_summary(
 
     async def cancel(engagement):
         setting["writes"] = during           # the reload lands in the teardown
-    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"))
     rec = await reg.create(kind="specialist", role_or_type="finance",
                            driver="in_casa", task="t", origin=dict(ORIGIN),
                            topic_id=None)
@@ -687,7 +687,7 @@ async def test_a_finalize_cancelled_before_its_tail_confirms_its_summary_row(
     from engagement_registry import EngagementRegistry
     from tools import _finalize_engagement, init_tools
 
-    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"))
     rec = await reg.create(kind="executor", role_or_type="configurator",
                            driver="in_casa", task="t", origin=dict(ORIGIN),
                            topic_id=None)
@@ -768,7 +768,7 @@ async def test_a_run_cancelled_during_its_registration_confirms_its_row(
         coro = tools._run_delegated_agent(cfg, "task", "")
         cm = None
     else:
-        reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"))
         rec = await reg.create(kind="executor", role_or_type="configurator",
                                driver="in_casa", task="t", origin=dict(ORIGIN),
                                topic_id=None)

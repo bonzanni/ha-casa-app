@@ -216,7 +216,7 @@ class Client:
         yield _mk_result(sid)
 
 async def main():
-    reg = EngagementRegistry(tombstone_path=tombstone, bus=None)
+    reg = EngagementRegistry(tombstone_path=tombstone)
     rec = await reg.create(kind="specialist", role_or_type="finance",
                            driver="in_casa", task="t",
                            origin=json.loads(sys.argv[8]), topic_id=99)
@@ -251,7 +251,7 @@ async def test_a_failed_naming_keeps_the_engagement_transcript(home, monkeypatch
             row["confirmed_at"]) == ("engagement", cwd, None, None)
     eid = (home.tmp / "engagement-id").read_text()
     _specialists(monkeypatch, finance=SimpleNamespace(role="finance", cwd=cwd))
-    reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tombstone))
     await reg.load()
     assert reg.get(eid).sdk_session_id == sid
     await reg.mark_completed(eid, time.time())
@@ -280,7 +280,7 @@ async def record(item):
 cap.record = record
 
 async def main():
-    reg = EngagementRegistry(tombstone_path=tombstone, bus=None)
+    reg = EngagementRegistry(tombstone_path=tombstone)
     rec = await reg.create(kind="executor", role_or_type="configurator",
                            driver="in_casa", task="t",
                            origin=json.loads(sys.argv[8]), topic_id=None)
@@ -318,7 +318,7 @@ async def test_a_session_published_after_the_summary_row_is_kept(home, monkeypat
                str(tombstone), cwd, sid, json.dumps(ORIGIN), env=_env())
     assert [(r["kind"], r["directory"], r["session_id"], r["confirmed_at"])
             for r in rows(home.store)] == [("summary", cwd, None, None)]
-    reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tombstone))
     await reg.load()
     (rec,) = reg.terminal_records()
     assert rec.sdk_session_id == sid
@@ -342,7 +342,7 @@ async def test_an_unnamed_row_holds_a_shared_folder_until_it_is_confirmed(
     _specialists(monkeypatch, finance=SimpleNamespace(role="finance", cwd=cwd))
     run = transcript_runs.register(home.store, kind="engagement",
                                    role="finance", directory=cwd)
-    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"))
     sibling = await reg.create(kind="specialist", role_or_type="finance",
                                driver="in_casa", task="t", origin={},
                                topic_id=None)
@@ -452,7 +452,7 @@ async def test_a_cwd_reload_never_moves_where_an_engagement_is_held(
 
     monkeypatch.setattr(drv_mod, "ClaudeSDKClient", _Client)
     _specialists(monkeypatch, finance=SimpleNamespace(role="finance", cwd=a))
-    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"))
     rec = await reg.create(kind="specialist", role_or_type="finance",
                            driver="in_casa", task="t", origin=dict(ORIGIN),
                            topic_id=None)
@@ -467,8 +467,7 @@ async def test_a_cwd_reload_never_moves_where_an_engagement_is_held(
     assert [r["directory"] for r in rows(home.store)] == [a]
     await reg.mark_completed(rec.id, time.time())
     _specialists(monkeypatch, finance=SimpleNamespace(role="finance", cwd=a))
-    reloaded = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"),
-                                  bus=None)
+    reloaded = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"))
     await reloaded.load()
     path = write_transcript(a, sid)
     await reap_engagement_transcripts(reloaded, now=time.time() + 400 * 86400)
@@ -536,7 +535,7 @@ async def test_a_rebuilt_or_resumed_engagement_stays_in_its_launch_folder(
     monkeypatch.setattr(tools, "build_engagement_resume_options",
                         lambda engagement, sid: ClaudeAgentOptions(cwd=b, resume=sid))
     _specialists(monkeypatch, finance=SimpleNamespace(role="finance", cwd=a))
-    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"))
     rec = await reg.create(kind="specialist", role_or_type="finance",
                            driver="in_casa", task="t", origin=dict(ORIGIN),
                            topic_id=None)

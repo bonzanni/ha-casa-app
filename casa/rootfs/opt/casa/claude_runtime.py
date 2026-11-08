@@ -86,8 +86,8 @@ def cli_session_settings(extra: dict | None = None) -> str:
 
 
 def ephemeral_setting_sources() -> list[str]:
-    """The ``setting_sources`` of a utility one-shot (the observer, the tier
-    classifier, query_engager's synthesis): none at all (INV-MEM-021).
+    """The ``setting_sources`` of a utility one-shot (the tier classifier,
+    query_engager's synthesis): none at all (INV-MEM-021).
 
     Left unset, the SDK loads the user source, and with it the pinned CLI
     enables its own age-based cleanup, which walks the whole projects root

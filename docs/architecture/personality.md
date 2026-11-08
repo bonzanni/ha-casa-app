@@ -114,8 +114,7 @@ session's memory view goes into a projection's one slot, after `<persona>` and b
 `<role_doctrine>`, outside the ceilings and the digest
 ([`memory-serving.md`](memory-serving.md)).
 
-**The observer and secondary passes run on their own model.** Engagement observation and
-engager-query synthesis run on Haiku, resolved through `MODEL_MAP` to a full model id and
+**Secondary passes run on their own model.** Engager-query synthesis runs on Haiku, resolved through `MODEL_MAP` to a full model id and
 passed with the effort `MODEL_EFFORT` names for it — not on the primary agent's model, and
 not on a bare CLI alias, which moves with the CLI's release.
 

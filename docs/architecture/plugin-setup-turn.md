@@ -73,9 +73,9 @@ this brings is deliberate: a protected tool the dispatched target calls on a set
 becomes approvable through the operator's keyboard, where it was refused for lack of
 identity — the operator approved the plugin's consent, the turn is addressed to their
 chat, and the challenge still goes to them. The `sync`-only rule is enforced in the
-delegation tool's mode gate, before target resolution or any topic: an interactive launch
-would return a non-error pending result that the courier report counts as a delegation
-that went through, while the engagement's own setup tool is refused for identity.
+delegation tool's mode gate, before target resolution or any topic: an `async` delegation
+or a job launch would return a non-error pending result that the courier report counts as a
+delegation that went through, while a later turn's setup tool is refused for identity.
 
 The two markers are one rule, not two: `provenance.CASA_PLUGIN_TURN_TARGETS` pairs each
 marker with its target key, and the identity derivation, the transport classification and

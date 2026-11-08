@@ -1016,7 +1016,6 @@ class TelegramChannel(Channel):
         self._intake_locks: dict = {}
         # Injectable collaborators (wired at startup by Task 22; tests assign AsyncMocks).
         self._engagement_registry = None
-        self._observer = None
         self._driver_send_user_turn = None
         # #649: in_casa admission-ticket seams (see casa_core). ``admit`` is
         # SYNCHRONOUS and taken before the handler's first risky await;
@@ -1282,7 +1281,7 @@ class TelegramChannel(Channel):
         builder.request(_SurrogateSafeRequest())
         app = builder.build()
         # E-13: dispatch to handle_update (engagement-aware router) so
-        # that /cancel, /complete, /silent in engagement topics are
+        # that /cancel, /complete, /help in engagement topics are
         # intercepted. handle_update internally calls _handle for
         # non-engagement chats (assistant DM via _route_to_assistant).
         #
@@ -2751,8 +2750,8 @@ class TelegramChannel(Channel):
                         rec.id, self._origin_clearance_for_user_id(user_id))
                     if moved:
                         # #369: the clamp gates future reads, but the live session
-                        # still HOLDS what it fetched at the old tier — transcript
-                        # and launch-injected archive — and this steerer could
+                        # still HOLDS what it fetched at the old tier — its
+                        # transcript and launch materials — and this steerer could
                         # simply ask it to restate them. Tear the session down NOW
                         # (under this same lock, before the turn is delivered) and
                         # durably drop the resume pointer; _resume_and_ready's
@@ -2789,10 +2788,8 @@ class TelegramChannel(Channel):
                         command = recognized
                         # Bug 8 (v0.14.6): /cancel and /complete are originator-only.
                         # Pre-fix any user in the supergroup could terminate any
-                        # engagement; user_id wasn't even checked. /silent stays
-                        # open since it's local to the engagement (anyone reading
-                        # along can quiet the observer in their topic). A
-                        # command NEVER becomes a delivered user turn.
+                        # engagement; user_id wasn't even checked. /help stays
+                        # open. A command NEVER becomes a delivered user turn.
                         if command in ("/cancel", "/complete"):
                             owner_id = rec.origin.get("user_id")
                             if (
@@ -2834,13 +2831,6 @@ class TelegramChannel(Channel):
                                         logger.debug(
                                             "command retry notice failed",
                                             exc_info=True)
-                            return
-                        if command == "/silent":
-                            if self._observer is not None:
-                                self._observer.silence(rec.id)
-                            await self._post_engagement_notice(
-                                rec, "Observer quieted for this engagement.",
-                            )
                             return
                         if command == "/help":
                             # #1412: answered by Casa — the engaged CLI has
@@ -2968,10 +2958,10 @@ class TelegramChannel(Channel):
         computed once per update and reused by admission accounting AND the
         command dispatch below — never re-derived (a second, slightly
         different predicate is how a borrowed predicate answers a different
-        question). Returns '/cancel' | '/complete' | '/silent' | '/help' |
-        None (#1412: /help is Casa's, never the engaged CLI's); a
-        command explicitly addressed to a DIFFERENT bot is None (it falls
-        through to delivery, exactly as the historical dispatch treated it)."""
+        question). Returns '/cancel' | '/complete' | '/help' | None (#1412:
+        /help is Casa's, never the engaged CLI's); a command explicitly
+        addressed to a DIFFERENT bot is None (it falls through to delivery,
+        exactly as the historical dispatch treated it)."""
         if not text.startswith("/"):
             return None
         token = text.split()[0].lower()
@@ -2979,7 +2969,7 @@ class TelegramChannel(Channel):
         if mention and self._bot_username and mention != self._bot_username:
             return None  # addressed to another bot — not ours
         return command if command in (
-            "/cancel", "/complete", "/silent", "/help") else None
+            "/cancel", "/complete", "/help") else None
 
     async def _settle_lost_inbound(self, rec, token) -> None:
         """#649 visibility law: before a still-ledgered admission ticket is
@@ -3291,8 +3281,8 @@ class TelegramChannel(Channel):
             return
 
         async def _send():
-            # #369: a just-rebuilt context gets its preamble (context-reset
-            # note + floor-refetched archive) prepended to the first delivered
+            # #369: a just-rebuilt context gets its preamble (the
+            # context-reset note) prepended to the first delivered
             # turn — popped only once the session it goes to is ready.
             preamble = self._rebuild_preambles.pop(rec.id, None)
             sent = f"{preamble}\n\n{text}" if preamble else text
@@ -3585,7 +3575,7 @@ class TelegramChannel(Channel):
                 await self._cleanup_error_topic(rec)
                 return False
 
-        # v0.79.0 (§3): stamp the idle→active user turn so idle-reminder +
+        # v0.79.0 (§3): stamp the idle→active user turn so idle-suspension +
         # retention accounting see fresh activity before delivery.
         if reg is not None:
             import time as _time
@@ -4702,7 +4692,6 @@ class TelegramChannel(Channel):
     ENGAGEMENT_COMMANDS = [
         ("cancel", "Cancel this engagement and close the topic"),
         ("complete", "Mark this engagement complete (no agent summary)"),
-        ("silent", "Stop proactive notifications for this engagement"),
     ]
 
     def _engagement_help_text(self) -> str:

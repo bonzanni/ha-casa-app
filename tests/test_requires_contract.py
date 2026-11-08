@@ -662,17 +662,17 @@ class TestDependencyUnavailableCarriesTheReason:
 
 
 @pytest.mark.asyncio
-class TestInteractiveRequiresDenial:
+class TestJobLaunchRequiresDenial:
     async def test_denied_requires_creates_no_topic_or_engagement(
         self, monkeypatch,
     ):
-        """Task 4 deferred this sentinel to Task 5: an interactive delegation
-        whose requires don't resolve must return dependency_unavailable and
-        create NO topic/engagement record — the requires gate runs strictly
-        before the interactive branch's side effects (spec A4 ordering,
-        spec A5 gate)."""
-        import agent as agent_mod
+        """Task 4 deferred this sentinel to Task 5: a specialist-hosted job
+        whose specialist's requires don't resolve must return
+        dependency_unavailable and create NO topic/engagement record — the
+        requires gate runs strictly before the launch owner's side effects
+        (spec A4 ordering, spec A5 gate)."""
         import tools as tm
+        from test_delegate_to_agent_interactive import launch_job
 
         requires = RequiresConfig(plugins=["mtg"], tools=[])
         resolution = _resolution(name="other-plugin")
@@ -699,18 +699,11 @@ class TestInteractiveRequiresDenial:
             tm.plugin_registry, "resolve_for", lambda target: resolution,
         )
 
-        token = agent_mod.origin_var.set({
+        res = await launch_job("t", origin={
             "role": "assistant", "execution_role": "assistant",
             "channel": "telegram", "chat_id": "c1", "cid": "t",
             "user_text": "hi",
         })
-        try:
-            res = await tm.delegate_to_agent.handler({
-                "agent": "finance", "task": "t", "context": "",
-                "mode": "interactive",
-            })
-        finally:
-            agent_mod.origin_var.reset(token)
 
         payload = json.loads(res["content"][0]["text"])
         assert payload["status"] == "error"
@@ -719,10 +712,10 @@ class TestInteractiveRequiresDenial:
         tch.open_engagement_topic.assert_not_awaited()
         eng_reg.create.assert_not_awaited()
 
-    async def test_satisfied_interactive_reuses_same_resolution_once(
+    async def test_satisfied_job_launch_reuses_same_resolution_once(
         self, monkeypatch,
     ):
-        """Interactive success mirror of the sync builder-identity test: the
+        """Job-launch success mirror of the sync builder-identity test: the
         requires gate passes, and the SAME ResolutionResult from _prelaunch
         reaches BOTH the engagement-record binding and the options builder,
         with plugin_registry.resolve_for called once by the gate and once more
@@ -730,6 +723,7 @@ class TestInteractiveRequiresDenial:
         assignment; with none, the gate's object passes through unchanged)."""
         import agent as agent_mod
         import tools as tm
+        from test_delegate_to_agent_interactive import launch_job
 
         tool_name = "mcp__plugin_mtg_mtg__lookup_rule"
         requires = RequiresConfig(plugins=["mtg"], tools=[tool_name])
@@ -771,6 +765,7 @@ class TestInteractiveRequiresDenial:
         def _spy_builder(
             cfg, *, resolution=None, extra_casa_tools: tuple[str, ...] = (),
             plan_out=None,  # S8: the launch hands the builder a plan sink
+            max_turns=None,  # a job's turns per batch
         ):
             captured["resolution"] = resolution
             captured["extra_casa_tools"] = extra_casa_tools
@@ -783,18 +778,11 @@ class TestInteractiveRequiresDenial:
         driver.start = AsyncMock()
         agent_mod.active_engagement_driver = driver
 
-        token = agent_mod.origin_var.set({
+        res = await launch_job("t", origin={
             "role": "assistant", "execution_role": "assistant",
             "channel": "telegram", "chat_id": "c1", "cid": "t",
             "user_text": "hi",
         })
-        try:
-            res = await tm.delegate_to_agent.handler({
-                "agent": "finance", "task": "t", "context": "",
-                "mode": "interactive",
-            })
-        finally:
-            agent_mod.origin_var.reset(token)
 
         payload = json.loads(res["content"][0]["text"])
         assert payload["status"] == "pending"
@@ -811,6 +799,7 @@ class TestInteractiveRequiresDenial:
         assert captured["extra_casa_tools"] == (
             "mcp__casa-framework__query_engager",
             "mcp__casa-framework__emit_completion",
+            "mcp__casa-framework__report_job_progress",
         )
         # #1179: the gate's resolve, then one after the topic exists (it adds
         # what was assigned in between; here nothing was, so the gate's own

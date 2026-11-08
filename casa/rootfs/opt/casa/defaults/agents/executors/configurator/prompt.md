@@ -10,8 +10,6 @@ Current world state:
 
     {world_state_summary}
 
-{executor_memory}
-
 ## Your doctrine
 
 Before doing anything, read these four files (they are short - total ~2000 tokens):

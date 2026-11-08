@@ -2,7 +2,7 @@
 
 A plugin declares jobs in its manifest's ``casa.jobs`` block
 (``plugin_store.manifest_jobs`` validates them). The assistant starts one with
-the ``start_job`` tool; it runs as an interactive engagement of the specialist
+the ``start_job`` tool; it runs as an engagement of the specialist
 whose session loads the declaring plugin. The launch turn only acknowledges;
 every later batch is a system turn Casa starts itself once the previous turn
 has ended and nothing else is queued or running (``start_next_batch``), and

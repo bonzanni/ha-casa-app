@@ -21,7 +21,7 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
 
 async def _make(tmp_path, **origin_extra):
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa",
         task="secret task", topic_id=7,
@@ -38,7 +38,7 @@ class TestClampSetsRebuildPending:
         assert await reg.lower_origin_clearance(rec.id, "public") is True
         assert rec.context_rebuild_pending is True
         # Durable: a reloaded registry still refuses to resume this context.
-        reg2 = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg2 = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         await reg2.load()
         assert reg2.get(rec.id).context_rebuild_pending is True
         assert reg2.get(rec.id).origin["_origin_clearance"] == "public"
@@ -54,7 +54,7 @@ class TestClampSetsRebuildPending:
         await reg.clear_context_rebuild_pending(rec.id)
         await reg.lower_origin_clearance(rec.id, "public")
         assert rec.context_generation == 2   # never reset by a rebuild
-        reg2 = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg2 = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         await reg2.load()
         assert reg2.get(rec.id).context_generation == 2
 
@@ -73,7 +73,7 @@ class TestClampSetsRebuildPending:
         assert "context" not in rec.origin
         assert "world_state_summary" not in rec.origin
         # Durable.
-        reg2 = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg2 = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         await reg2.load()
         rec2 = reg2.get(rec.id)
         assert "secret task" not in rec2.task
@@ -95,7 +95,7 @@ class TestClampSetsRebuildPending:
         await reg.lower_origin_clearance(rec.id, "friends")
         await reg.clear_context_rebuild_pending(rec.id)
         assert rec.context_rebuild_pending is False
-        reg2 = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg2 = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         await reg2.load()
         assert reg2.get(rec.id).context_rebuild_pending is False
 
@@ -107,7 +107,7 @@ class TestClampSetsRebuildPending:
         for row in rows:
             row.pop("context_rebuild_pending", None)
         path.write_text(json.dumps(rows), encoding="utf-8")
-        reg2 = EngagementRegistry(tombstone_path=str(path), bus=None)
+        reg2 = EngagementRegistry(tombstone_path=str(path))
         await reg2.load()
         assert reg2.get(rec.id).context_rebuild_pending is False
 
@@ -119,6 +119,6 @@ class TestClearSessionId:
         assert reg.get(rec.id).sdk_session_id == "sid-old"
         await reg.clear_session_id(rec.id)
         assert reg.get(rec.id).sdk_session_id is None
-        reg2 = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg2 = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         await reg2.load()
         assert reg2.get(rec.id).sdk_session_id is None

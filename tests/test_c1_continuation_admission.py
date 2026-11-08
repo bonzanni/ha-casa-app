@@ -121,7 +121,7 @@ async def _mk_driver_rec(tmp_path, client, *, lock=None, fence=None):
     from drivers.in_casa_driver import InCasaDriver
     from engagement_registry import EngagementRegistry
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         "specialist", "configurator", "in_casa", "t",
         {"role": "assistant", "channel": "telegram", "user_id": 77},
@@ -381,7 +381,6 @@ async def _mk_ctx(tmp_path, fake_telegram_bot, *, lock=None):
                          engagement_supergroup_id=-1001)
     ch._engagement_registry = reg
     ch._engagement_driver = drv
-    ch._observer = MagicMock()
     ch._driver_advance_high_water = AsyncMock()
     ch._post_engagement_notice = AsyncMock()
     ch.edit_dm_message = AsyncMock()

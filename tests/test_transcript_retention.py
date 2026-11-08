@@ -107,7 +107,7 @@ async def test_an_engagement_transcript_lives_its_retention_after_its_terminal_r
 
     cwd = str(tmp_path / "agent-home" / "researcher")
     _specialists(monkeypatch, researcher=SimpleNamespace(role="researcher", cwd=cwd))
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(kind="specialist", role_or_type="researcher",
                            driver="in_casa", task="t", origin={}, topic_id=None)
     sid = str(uuid.uuid4())
@@ -135,7 +135,7 @@ async def _terminal_engagement(tmp_path, monkeypatch, *, cwd, days_ago):
     _specialists(monkeypatch, researcher=SimpleNamespace(role="researcher",
                                                           cwd=cwd))
     path = str(tmp_path / "e.json")
-    reg = EngagementRegistry(tombstone_path=path, bus=None)
+    reg = EngagementRegistry(tombstone_path=path)
     rec = await reg.create(kind="specialist", role_or_type="researcher",
                            driver="in_casa", task="t", origin={}, topic_id=None)
     sid = str(uuid.uuid4())
@@ -147,7 +147,7 @@ async def _terminal_engagement(tmp_path, monkeypatch, *, cwd, days_ago):
 
 async def _reloaded(path):
     from engagement_registry import EngagementRegistry
-    reg = EngagementRegistry(tombstone_path=path, bus=None)
+    reg = EngagementRegistry(tombstone_path=path)
     await reg.load()
     return reg
 

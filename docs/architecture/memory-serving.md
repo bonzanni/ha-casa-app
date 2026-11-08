@@ -15,8 +15,7 @@ every turn of every memory role. How events become a ledger is
 [`architecture/memory-writer.md`](memory-writer.md); the store and its registry are
 [`architecture/memory-store.md`](memory-store.md); the memory tools and what a caller
 may claim from their results are [`architecture/memory-tools.md`](memory-tools.md); who may read what —
-read clearance per channel and sender — is [`architecture/memory-scoping.md`](memory-scoping.md),
-which also owns the executor archive.
+read clearance per channel and sender — is [`architecture/memory-scoping.md`](memory-scoping.md).
 
 ## Mental model
 

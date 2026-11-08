@@ -25,7 +25,7 @@ async def test_topic_title_persists_and_round_trips(tmp_path):
     from engagement_registry import EngagementRegistry
 
     path = str(tmp_path / "e.json")
-    reg = EngagementRegistry(tombstone_path=path, bus=None)
+    reg = EngagementRegistry(tombstone_path=path)
     rec = await reg.create(
         "executor", "configurator", "in_casa", "wire up the Gmail plugin",
         {}, topic_id=7, topic_title="Gmail plugin",
@@ -37,7 +37,7 @@ async def test_topic_title_persists_and_round_trips(tmp_path):
     assert on_disk[0]["topic_title"] == "Gmail plugin"
 
     # A fresh registry reloading the tombstone recovers it.
-    reg2 = EngagementRegistry(tombstone_path=path, bus=None)
+    reg2 = EngagementRegistry(tombstone_path=path)
     await reg2.load()
     assert reg2.get(rec.id).topic_title == "Gmail plugin"
 
@@ -64,7 +64,7 @@ async def test_legacy_row_without_topic_title_loads_as_empty(tmp_path):
             "task": "old task",
         }
     ]))
-    reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tombstone))
     await reg.load()  # absent-tolerant: must not raise
     rec = reg.get("legacy1")
     assert rec is not None
@@ -94,7 +94,7 @@ async def _make_channel_with_topic(fake_telegram_bot, reg, *, topic_title, task)
 async def test_state_edit_uses_persisted_title(fake_telegram_bot, tmp_path):
     from engagement_registry import EngagementRegistry
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     ch, rec, tid = await _make_channel_with_topic(
         fake_telegram_bot, reg,
         topic_title="Gmail plugin", task="wire up the Gmail plugin")
@@ -112,7 +112,7 @@ async def test_state_edit_falls_back_to_derived_label_for_legacy(
     from engagement_registry import EngagementRegistry
     from channels.state_emoji import concise_task
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     ch, rec, tid = await _make_channel_with_topic(
         fake_telegram_bot, reg,
         topic_title="", task="wire up the Gmail plugin")

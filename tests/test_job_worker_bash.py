@@ -43,7 +43,7 @@ async def test_a_resumed_plugin_job_worker_is_not_offered_bash(worker):
     """The resident-hosted worker rebuilt from its persisted record on resume."""
     result = await call()
     await tools.drain_launch_turns()
-    loaded = EngagementRegistry(tombstone_path=worker.registry._tombstone_path, bus=None)
+    loaded = EngagementRegistry(tombstone_path=worker.registry._tombstone_path)
     await loaded.load()
     rec = loaded.get(result["engagement_id"])
     assert rec.kind == "plugin"

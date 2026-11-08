@@ -169,8 +169,7 @@ async def test_no_task_inside_a_relay_is_captured(roles, mem, composed):
 
 async def _finalize(tmp_path, monkeypatch, roles, role, text):
     from engagement_registry import EngagementRegistry
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / f"{role}.json"),
-                             bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / f"{role}.json"))
     rec = await reg.create(kind="specialist", role_or_type=role,
                            driver="in_casa", task="t",
                            origin={"role": "assistant", "channel": "telegram",
@@ -230,7 +229,7 @@ async def test_an_excluded_specialists_engagement_turn_captures_nothing(
     rec = EngagementRecord(
         id="b" * 32, kind="specialist", role_or_type="browser",
         driver="in_casa", status="active", topic_id=7, started_at=0.0,
-        last_user_turn_ts=0.0, last_idle_reminder_ts=0.0, completed_at=None,
+        last_user_turn_ts=0.0, completed_at=None,
         sdk_session_id=None, task="t", origin={"channel": "telegram"})
     drv._clients[rec.id] = _TopicClient()
     drv._locks[rec.id] = asyncio.Lock()

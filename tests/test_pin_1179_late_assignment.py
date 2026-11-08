@@ -1,4 +1,4 @@
-"""#1179: a plugin assigned while an interactive launch awaits topic creation.
+"""#1179: a plugin assigned while a job's engagement launch awaits topic creation.
 
 The session is built after ``open_engagement_topic`` returns, and ``plugin_assign``
 promises an assignment applies to sessions built from then on. A target with no
@@ -47,7 +47,7 @@ def _plugin(name: str, manifest_name: str = "") -> ResolvedPlugin:
 
 async def _launch(monkeypatch, *, requires: RequiresConfig | None,
                   before: list, after, ):
-    """Drive one interactive delegation to ``finance``. ``resolve_for`` returns
+    """Drive one job launch on ``finance``. ``resolve_for`` returns
     *before* until ``open_engagement_topic`` runs, then *after* (a list of plugins,
     or an exception instance to raise). Returns the observations."""
     import agent as agent_mod
@@ -112,16 +112,11 @@ async def _launch(monkeypatch, *, requires: RequiresConfig | None,
     driver.start = AsyncMock()
     monkeypatch.setattr(agent_mod, "active_engagement_driver", driver)
 
-    token = agent_mod.origin_var.set({
+    from test_delegate_to_agent_interactive import launch_job
+    res = await launch_job("t", origin={
         "role": "assistant", "execution_role": "assistant",
         "channel": "telegram", "chat_id": "c1", "cid": "t", "user_text": "hi",
     })
-    try:
-        res = await tm.delegate_to_agent.handler({
-            "agent": "finance", "task": "t", "context": "", "mode": "interactive",
-        })
-    finally:
-        agent_mod.origin_var.reset(token)
     return {
         "payload": json.loads(res["content"][0]["text"]),
         "topic": tch.open_engagement_topic, "create": eng_reg.create,
@@ -166,8 +161,6 @@ class TestLateAssignmentDuringTopicAwait:
         assert len(obs["built"]) == 1
         assert _recorded_names(obs) == [rp.name for rp in obs["built"][0].plugins] == [
             "mtg", "late"]
-        # The session is built from a resolve taken after the topic exists; the
-        # one read before it only decides whether the target's work is continued
-        # in its own turns (``_continues_its_own_work``) and builds nothing.
-        assert obs["resolves"] == [("before", "specialist:finance"),
-                                   ("after", "specialist:finance")]
+        # With no requires gate, the session is built from the one resolve,
+        # taken after the topic exists.
+        assert obs["resolves"] == [("after", "specialist:finance")]

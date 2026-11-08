@@ -46,7 +46,7 @@ async def _setup(reg, monkeypatch, tmp_path, *,
 
 async def _engagement(tmp_path, **markers):
     from engagement_registry import EngagementRegistry
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
         task="t", origin={"role": "assistant", "channel": "telegram",

@@ -60,7 +60,7 @@ live registry no longer assigns the plugin to
 the target, the plan falls back to the build's prior binding — the recorded effective
 profile on a resume, the captured one on a fresh launch — and a prior profile denies the
 whole namespace rather than widening. Every builder hands the plan it applied back to its
-caller, and the caller persists exactly that: an interactive launch writes the plan's
+caller, and the caller persists exactly that: a job's engagement launch writes the plan's
 effective profile onto the record's `plugin_artifacts` rows after the build and before the
 client starts, and a resume or fresh reopen does the same through the driver's persister
 before the client opens — never from a second read a mutation could slip between. The

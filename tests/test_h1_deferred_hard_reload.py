@@ -88,7 +88,7 @@ class TestCasaReloadDefers:
             id="eng-defer", kind="executor",
             role_or_type="configurator", driver="in_casa",
             status="active", topic_id=1, started_at=0.0,
-            last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
+            last_user_turn_ts=0.0,
             completed_at=None, sdk_session_id=None, origin={}, task="",
         )
 
@@ -160,7 +160,7 @@ class TestFinalizeEngagementHonorsDeferred:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None,
+            tombstone_path=str(tmp_path / "e.json"),
         )
         rec = await reg.create(
             kind="executor", role_or_type="configurator",
@@ -204,7 +204,7 @@ class TestFinalizeEngagementHonorsDeferred:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None,
+            tombstone_path=str(tmp_path / "e.json"),
         )
         rec = await reg.create(
             kind="executor", role_or_type="configurator",
@@ -242,7 +242,7 @@ class TestFinalizeEngagementHonorsDeferred:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None,
+            tombstone_path=str(tmp_path / "e.json"),
         )
         rec = await reg.create(
             kind="executor", role_or_type="configurator",
@@ -278,7 +278,7 @@ class TestFinalizeEngagementHonorsDeferred:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None,
+            tombstone_path=str(tmp_path / "e.json"),
         )
         rec = await reg.create(
             kind="executor", role_or_type="configurator",

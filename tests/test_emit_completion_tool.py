@@ -16,7 +16,7 @@ class TestEmitCompletionHandler:
         from engagement_registry import EngagementRegistry
         from tools import emit_completion, init_tools, engagement_var
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram"},
@@ -45,7 +45,7 @@ class TestEmitCompletionHandler:
         from engagement_registry import EngagementRegistry
         from tools import emit_completion, init_tools
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         init_tools(
             channel_manager=MagicMock(), bus=MagicMock(),
             specialist_registry=MagicMock(), mcp_registry=MagicMock(),
@@ -59,7 +59,7 @@ class TestEmitCompletionHandler:
         from engagement_registry import EngagementRegistry
         from tools import emit_completion, init_tools, engagement_var
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram"},
@@ -92,7 +92,7 @@ class TestEmitCompletionIdempotency:
         from engagement_registry import EngagementRegistry
         from tools import emit_completion, init_tools, engagement_var
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram"},
@@ -166,7 +166,7 @@ def _wire_engagement(tmp_path):
     from engagement_registry import EngagementRegistry
     from tools import init_tools
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     tch = MagicMock(); tch.send_to_topic = AsyncMock(); tch.send_response_to_topic = AsyncMock(); tch.close_topic = AsyncMock()
     cm = MagicMock(); cm.get.return_value = tch
     bus = MagicMock(); bus.notify = AsyncMock()
@@ -282,8 +282,7 @@ class TestFinalizeResultMapping:
     async def _setup(self, tmp_path):
         from engagement_registry import EngagementRegistry
         from tools import init_tools
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"),
-                                 bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram"},
@@ -383,8 +382,7 @@ class TestCompletionInboundGate:
         import agent as agent_mod
         from engagement_registry import EngagementRegistry
         from tools import init_tools
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"),
-                                 bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="executor", role_or_type="probe-exec",
             driver="in_casa", task="t",
@@ -559,8 +557,7 @@ class TestReservationDisclosure:
         import agent as agent_mod
         from engagement_registry import EngagementRegistry
         from tools import init_tools
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"),
-                                 bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="executor", role_or_type="probe-exec",
             driver="in_casa", task="t",
@@ -775,8 +772,7 @@ class TestEmitCompletionCancellation:
         from engagement_registry import EngagementRegistry
         from tools import emit_completion, init_tools, engagement_var
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"),
-                                 bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="executor", role_or_type="configurator", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram"},
@@ -881,8 +877,7 @@ class TestFinalizeTailObservability:
         from engagement_registry import EngagementRegistry
         from tools import emit_completion, init_tools, engagement_var
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"),
-                                 bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="executor", role_or_type="configurator", driver="in_casa",
             task="pay rent", origin={
@@ -1077,8 +1072,7 @@ class TestOneFailingAccessorCostsOnlyItsOwnInput:
         from engagement_registry import EngagementRegistry
         from tools import init_tools
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"),
-                                 bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="executor", role_or_type="probe-exec", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram"},

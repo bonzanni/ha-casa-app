@@ -55,11 +55,13 @@ class TestModeSchema:
 
     def test_every_mode_the_code_branches_on_is_accepted(self):
         """The enum must not be narrower than the modes the handler + prelaunch
-        actually implement, or a legitimate call becomes unreachable."""
+        actually implement, or a legitimate call becomes unreachable. It holds
+        one more value, the retired 'interactive', which the handler refuses
+        with a typed result that names the alternative."""
         import tools
 
         allowed = set(tools.delegate_to_agent.input_schema["properties"]["mode"]["enum"])
-        assert allowed == tools._KNOWN_MODES
+        assert allowed == tools._KNOWN_MODES | {tools._RETIRED_MODE}
 
 
 class TestHandlerCoercion:
@@ -101,7 +103,7 @@ class TestHandlerCoercion:
         blob = " ".join(r.getMessage() for r in caplog.records)
         assert "private question" not in blob
 
-    @pytest.mark.parametrize("mode", ["sync", "async", "interactive"])
+    @pytest.mark.parametrize("mode", ["sync", "async"])
     async def test_known_modes_pass_through_untouched(self, mode, caplog):
         assert await self._call(mode, caplog) == mode
         assert not [r for r in caplog.records

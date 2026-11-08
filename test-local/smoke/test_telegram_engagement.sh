@@ -72,7 +72,7 @@ CLOSE_OK=$(curl -s -X POST "${API}/closeForumTopic" \
 # --- 6. setMyCommands + getMyCommands -----------------------------------
 log "6. setMyCommands + getMyCommands (supergroup scope)"
 SCOPE_JSON="$(python3 -c 'import json; print(json.dumps({"type":"chat","chat_id":'${TELEGRAM_TEST_SUPERGROUP_ID}'}))')"
-CMDS_JSON='[{"command":"cancel","description":"Cancel this engagement"},{"command":"complete","description":"Mark complete"},{"command":"silent","description":"Quiet observer"}]'
+CMDS_JSON='[{"command":"cancel","description":"Cancel this engagement"},{"command":"complete","description":"Mark complete"}]'
 curl -s -X POST "${API}/setMyCommands" \
     --data-urlencode "scope=${SCOPE_JSON}" \
     --data-urlencode "commands=${CMDS_JSON}" \
@@ -80,7 +80,7 @@ curl -s -X POST "${API}/setMyCommands" \
 GOT=$(curl -s -X POST "${API}/getMyCommands" \
     --data-urlencode "scope=${SCOPE_JSON}" \
     | python3 -c 'import sys, json; print(len(json.load(sys.stdin)["result"]))')
-[ "$GOT" = "3" ] || fail "setMyCommands/getMyCommands roundtrip got $GOT commands"
+[ "$GOT" = "2" ] || fail "setMyCommands/getMyCommands roundtrip got $GOT commands"
 
 # --- 7. deleteForumTopic (cleanup) --------------------------------------
 log "7. cleanup — deleteForumTopic"

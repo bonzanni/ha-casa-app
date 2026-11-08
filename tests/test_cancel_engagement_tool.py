@@ -17,7 +17,7 @@ class TestCancelEngagement:
         from engagement_registry import EngagementRegistry
         from tools import cancel_engagement, init_tools
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram"},
@@ -40,7 +40,7 @@ class TestCancelEngagement:
         from engagement_registry import EngagementRegistry
         from tools import cancel_engagement, init_tools
 
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         init_tools(
             channel_manager=MagicMock(), bus=MagicMock(),
             specialist_registry=MagicMock(), mcp_registry=MagicMock(),
@@ -58,7 +58,7 @@ async def test_cancel_writes_meta_scope_summary(tmp_path, monkeypatch, mem):
     from tools import cancel_engagement, init_tools
 
     reg = EngagementRegistry(
-        tombstone_path=str(tmp_path / "e.json"), bus=None,
+        tombstone_path=str(tmp_path / "e.json"),
     )
     rec = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa",
@@ -106,7 +106,7 @@ class TestCancelFinalizeContract:
         from tools import init_tools
 
         reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None,
+            tombstone_path=str(tmp_path / "e.json"),
         )
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",

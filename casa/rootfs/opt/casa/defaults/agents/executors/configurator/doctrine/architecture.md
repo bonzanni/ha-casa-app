@@ -33,7 +33,6 @@ Everything you edit lives under `/config/`:
           definition.yaml
           prompt.md
           hooks.yaml               # optional
-          observer.yaml            # optional
           doctrine/                # your own knowledge base
     policies/
       disclosure.yaml
@@ -81,7 +80,6 @@ Any resident may delegate (`delegate_to_agent`) to any other agent listed in its
 | prompts/<name>.md | per-trigger | - | - |
 | definition.yaml | forbidden | forbidden | required |
 | prompt.md | forbidden | forbidden | required |
-| observer.yaml | forbidden | forbidden | optional |
 
 agent_loader.py enforces these rules. Adding a forbidden file or removing a required file makes the agent fail to load.
 
@@ -91,27 +89,8 @@ Residents (Tier 1) carry long-term memory: each session is served a view
 of its ledger at its start (clearance-gated by the channel's trust). Specialists (Tier 2) were
 stateless per delegation through v0.16.0 — *Specialist memory (M4b,
 v0.17.0)* below documents the per-`(role, user_peer)` memory opt-in. Tier
-3 Executors are ephemeral per engagement, but may opt in to a
-per-(channel, chat, executor_type) **archive** of prior engagement
-summaries.
-
-**Executor memory opt-in.** A Tier 3 executor's `definition.yaml` may
-include:
-
-    memory:
-      enabled: true       # default false
-      token_budget: 2000
-
-When `enabled: true`, `engage_executor` reads the archive — the summaries
-of earlier engagements of the same executor type, under the same doctrine
-epoch, readable at the engagement's clearance — from Casa's memory store and
-substitutes it into the prompt template's `{executor_memory}` slot before
-driver dispatch. The archive is populated by `_finalize_engagement` (one
-summary per terminal engagement) — no separate writer code.
-
-For Configurator (you), `memory.enabled: false` is shipped: an
-engagement starts without prior engagement summaries in its prompt, so it
-starts sooner. Summaries are still captured when an engagement ends.
+3 Executors are ephemeral per engagement: an engagement starts with no
+memory of earlier ones. Its summary is still captured when it ends.
 
 ## Specialist memory
 

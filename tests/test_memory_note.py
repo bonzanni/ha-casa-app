@@ -200,7 +200,7 @@ async def test_an_in_casa_engagement_turn_carries_the_note(
     rec = EngagementRecord(
         id="e" * 32, kind="specialist", role_or_type="finance",
         driver="in_casa", status="active", topic_id=99, started_at=0.0,
-        last_user_turn_ts=0.0, last_idle_reminder_ts=0.0, completed_at=None,
+        last_user_turn_ts=0.0, completed_at=None,
         sdk_session_id=None, task="t",
         origin={"channel": "telegram", "_origin_route": "telegram",
                 "_origin_clearance": "private"})
@@ -232,7 +232,7 @@ async def test_an_engagement_sees_corrections_filed_between_its_turns(
     rec = EngagementRecord(
         id="f" * 32, kind="specialist", role_or_type="finance",
         driver="in_casa", status="active", topic_id=99, started_at=0.0,
-        last_user_turn_ts=0.0, last_idle_reminder_ts=0.0, completed_at=None,
+        last_user_turn_ts=0.0, completed_at=None,
         sdk_session_id=None, task="t",
         origin={"channel": "telegram", "_origin_route": "telegram",
                 "_origin_clearance": "private"})
@@ -410,7 +410,7 @@ async def test_an_engagement_owes_a_correction_committed_as_it_started(
         id="b" * 32, kind="specialist", role_or_type="finance",
         driver="in_casa", status="active", topic_id=99,
         started_at=_time.time(), last_user_turn_ts=0.0,
-        last_idle_reminder_ts=0.0, completed_at=None, sdk_session_id=None,
+        completed_at=None, sdk_session_id=None,
         task="t", origin={"channel": "telegram", "_origin_route": "telegram",
                           "_origin_clearance": "private"})
     drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream())
@@ -449,7 +449,7 @@ async def test_an_engagement_owes_every_correction_filed_since_it_started(
         id="a" * 32, kind="specialist", role_or_type="finance",
         driver="in_casa", status="active", topic_id=99,
         started_at=_time.time(), last_user_turn_ts=0.0,
-        last_idle_reminder_ts=0.0, completed_at=None, sdk_session_id=None,
+        completed_at=None, sdk_session_id=None,
         task="t", origin={"channel": "telegram", "_origin_route": "telegram",
                           "_origin_clearance": "private"})
     _EngagementClient.prompts = []

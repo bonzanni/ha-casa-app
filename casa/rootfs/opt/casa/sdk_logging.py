@@ -2,7 +2,7 @@
 
 One module owns every per-message log shape and the stderr-callback
 factory. All consumers (in_casa-driver._deliver_turn,
-agent._attempt_sdk_turn, observer._decide_interjection,
+agent._attempt_sdk_turn,
 tools.delegate_to_agent + _synthesize_answer) call into here so the
 log shape is identical and tested in one place.
 
@@ -247,7 +247,7 @@ def with_stderr_callback(
     """Return a copy of options with our stderr callback if not already set.
 
     Caller provides engagement_id where available (in_casa start /
-    resume / observer / query_engager) and None otherwise (assistant DM,
+    resume / query_engager) and None otherwise (assistant DM,
     delegate_to_agent specialist invocation). Caller-provided
     ``stderr=`` callbacks (vanishingly rare in Casa code today) are
     preserved — we never overwrite.

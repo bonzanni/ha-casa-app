@@ -21,7 +21,7 @@ FQ_SEND = "mcp__plugin_gmail_gmail__send_email"
 
 
 async def _registry(tmp_path):
-    reg = EngagementRegistry(tombstone_path=tmp_path / "tomb.json", bus=None)
+    reg = EngagementRegistry(tombstone_path=tmp_path / "tomb.json")
     await reg.load()
     return reg
 
@@ -38,7 +38,7 @@ async def test_update_plugin_profiles_persists_the_effective_profile(tmp_path):
     )
     await reg.update_plugin_profiles(rec.id, {"gmail": "read"})
     assert [r["profile"] for r in rec.plugin_artifacts] == ["read", None]
-    loaded = EngagementRegistry(tombstone_path=tmp_path / "tomb.json", bus=None)
+    loaded = EngagementRegistry(tombstone_path=tmp_path / "tomb.json")
     await loaded.load()
     assert [r["profile"] for r in loaded.get(rec.id).plugin_artifacts] == ["read", None]
 

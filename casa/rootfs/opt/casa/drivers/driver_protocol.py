@@ -43,13 +43,6 @@ class DriverProtocol(ABC):
 
         ``in_casa`` (the only driver): ``options`` is a
         ``ClaudeAgentOptions`` and ``prompt`` is the first user turn.
-
-        #583: a memory-enabled launch fetches the prior-engagement archive
-        once, while the engager renders ``prompt``. An executor that does not
-        opt into memory never fetches it, and nothing after the launch fetches
-        at all: a replay that re-renders reuses the cached block, and a
-        clearance rebuild clears it rather than refetching at the clearance it
-        left.
         """
 
     @abstractmethod

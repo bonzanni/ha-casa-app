@@ -71,7 +71,7 @@ async def runtime(tmp_path, monkeypatch):
                               engagement_supergroup_id=-1001)
     channel._app = SimpleNamespace(bot=bot)
     channel.engagement_permission_ok = True
-    registry = EngagementRegistry(tombstone_path=str(tmp_path / 'eng.json'), bus=bus)
+    registry = EngagementRegistry(tombstone_path=str(tmp_path / 'eng.json'))
     channel._engagement_registry = registry
     driver = InCasaDriver(topic_stream_factory=channel.create_topic_stream,
                           persist_session_id=registry.persist_session_id,
@@ -193,7 +193,15 @@ async def test_second_engagement_from_another_chat_names_open_job(runtime, secon
     if second_job:
         result = await call(chat='2')
     else:
-        result = await call(tools.delegate_to_agent, chat='2', agent='finance', mode='interactive')
+        # another plugin's job on the same specialist: past its own plugin's
+        # claim, the per-specialist rule refuses it (one open engagement)
+        other = jobs.JobDecl('budget:review', 'budget', 'review', 'budget:review',
+                             'Review budget', None, None, 30)
+        origin = dict(role='assistant', execution_role='assistant', channel='telegram',
+                      chat_id='2', cid='test', user_text='review', _operator_turn=True,
+                      plugin_job={'plugin': 'budget'})
+        result = json.loads((await tools._launch_interactive_engagement(
+            'finance', 'Review it', '', origin, job=other))['content'][0]['text'])
     assert result['engagement_id'] == first['engagement_id']
     assert result['topic_id'] == 42
     if second_job:

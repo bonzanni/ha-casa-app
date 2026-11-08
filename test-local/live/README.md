@@ -50,6 +50,6 @@ $D python3 /tmp/wsa_probe.py converse --role probe-gw --scope wsa-s1 \
 The RAWCALL contract (see `agents/probe-gw/prompts/system.md`) makes the
 gateway relay exact `delegate_to_agent` arguments and echo the raw tool
 result, so typed-error assertions (`delegation_not_declared`,
-`mode_unsupported_on_voice`, `deadline_exceeded`, `dependency_unavailable`,
+`interactive_retired`, `deadline_exceeded`, `dependency_unavailable`,
 `busy`, `input_too_large`) are observable in the SSE stream; cross-check
 against container logs (`specialist_telemetry_*`, `Delegation <id> → <role>`).

@@ -19,7 +19,6 @@ from specialist_limits import AgentSpawnLimiter
 def _mk_registry(tmp_path, limiter=None):
     return EngagementRegistry(
         tombstone_path=str(tmp_path / "engagements.json"),
-        bus=None,
         agent_spawn_limiter=limiter,
     )
 
