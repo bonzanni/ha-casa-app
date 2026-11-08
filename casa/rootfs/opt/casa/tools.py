@@ -208,6 +208,37 @@ def init_tools(
     _voice_job_route_cap = voice_job_route_cap
 
 
+def build_agent_role_map(residents: dict, specialists: dict, *,
+                         strict: bool = False) -> dict:
+    """The delegation role map, built the same way at boot
+    (``casa_core._build_role_registry``) and on every reload
+    (:func:`sync_agent_role_map`): residents, then the image-owned configurator
+    (kind ``executor``, engagement trim stage 4), then specialists. A role in
+    both tiers raises when *strict* (boot: a configuration bug) and otherwise
+    keeps the resident entry with a warning (a reload must not brick). A
+    resident or specialist named like the configurator keeps its entry."""
+    overlap = set(residents) & set(specialists)
+    if overlap and strict:
+        raise ValueError(
+            f"duplicate role(s) across residents and specialists: "
+            f"{sorted(overlap)} — each role must be unique"
+        )
+    merged = dict(residents)
+    configurator = _configurator_config()
+    if (configurator is not None and configurator.role not in merged
+            and configurator.role not in specialists):
+        merged[configurator.role] = configurator
+    for name, cfg in specialists.items():
+        if name in merged:
+            logger.warning(
+                "sync_agent_role_map: role %r exists in both tiers — "
+                "resident entry wins", name,
+            )
+            continue
+        merged[name] = cfg
+    return merged
+
+
 def sync_agent_role_map(runtime: Any) -> None:
     """Rebuild the delegation role map from live runtime state.
 
@@ -234,22 +265,7 @@ def sync_agent_role_map(runtime: Any) -> None:
     residents = dict(getattr(runtime, "role_configs", {}) or {})
     registry = getattr(runtime, "specialist_registry", None)
     specialists = dict(registry.all_configs()) if registry is not None else {}
-    merged = dict(residents)
-    # Engagement trim stage 4: the image-owned configurator is a delegate like
-    # a specialist (kind ``executor``); a resident or specialist of the same
-    # name keeps its entry, as a resident does over a specialist.
-    configurator = _configurator_config()
-    if configurator is not None and configurator.role not in merged:
-        merged[configurator.role] = configurator
-    for name, cfg in specialists.items():
-        if name in merged:
-            logger.warning(
-                "sync_agent_role_map: role %r exists in both tiers — "
-                "resident entry wins", name,
-            )
-            continue
-        merged[name] = cfg
-    _agent_role_map = merged
+    _agent_role_map = build_agent_role_map(residents, specialists)
     fresh_registry = getattr(runtime, "agent_registry", None)
     if fresh_registry is not None:
         # Only ever REPLACE with a real registry: a runtime stand-in without one

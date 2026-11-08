@@ -993,23 +993,17 @@ def _build_role_registry(
     residents: dict,
     specialists: dict,
 ) -> dict:
-    """Merge resident and specialist role→AgentConfig dicts. Fail on overlap.
+    """Merge resident and specialist role→AgentConfig dicts, with the
+    configurator, through the builder every reload uses
+    (``tools.build_agent_role_map``). Fail on overlap.
 
     Returns a single dict the renamed delegate_to_agent tool resolves
     against. Roles must be globally unique across both tiers — colliding
     roles are a configuration bug (e.g. someone created
     agents/specialists/butler/ while a butler resident already exists).
     """
-    overlap = set(residents) & set(specialists)
-    if overlap:
-        raise ValueError(
-            f"duplicate role(s) across residents and specialists: "
-            f"{sorted(overlap)} — each role must be unique"
-        )
-    merged = {}
-    merged.update(residents)
-    merged.update(specialists)
-    return merged
+    from tools import build_agent_role_map
+    return build_agent_role_map(residents, specialists, strict=True)
 
 
 # ------------------------------------------------------------------

@@ -25,9 +25,10 @@ the image alone (`agent_loader.py::load_configurator`): kind `executor`, working
 `/config`, its prompt and doctrine under `defaults/configurator/`, its tools, hooks and
 model in the role artifact `defaults/roles/executor/configurator/role.yaml`. Nothing under
 `/config` can change it; a release does. `tools.py::_configurator_config` loads it once per
-process, and `tools.py::sync_agent_role_map` adds it to the delegation role map unless a
-resident or specialist already holds the name — so the assistant reaches it the way she
-reaches a specialist, through the delegate card in her `delegates.yaml` and
+process, and `tools.py::build_agent_role_map`, the one builder of the delegation role map
+at boot (`casa_core._build_role_registry`) and on every reload (`sync_agent_role_map`), adds
+it unless a resident or specialist already holds the name — so from the first turn after boot
+the assistant reaches it the way she reaches a specialist, through the delegate card in her `delegates.yaml` and
 `delegate_to_agent`. Each run is a fresh, ephemeral session through the delegated builder;
 its system prompt gains a world-state block (`Default vault:`, `Addon version:`, the live
 config surface) at every options build.
@@ -199,6 +200,7 @@ inside the run (INV-CFG-016).
 - `casa/rootfs/opt/casa/agent_loader.py::load_configurator`
 - `casa/rootfs/opt/casa/defaults/roles/executor/configurator/role.yaml`
 - `casa/rootfs/opt/casa/tools.py::_configurator_config`
+- `casa/rootfs/opt/casa/tools.py::build_agent_role_map`
 - `casa/rootfs/opt/casa/tools.py::_configurator_lease`
 - `casa/rootfs/opt/casa/tools.py::_delegation_mode_for`
 - `casa/rootfs/opt/casa/tools.py::_effective_caller_role`

@@ -149,7 +149,8 @@ that tier requires, and a role no resident or specialist already claims.
 
 **The configurator's role** is outside the cross-tier uniqueness check, since that check
 spans residents and specialists only; the delegation role map adds it only when no resident
-or specialist already holds the name (`tools.py::sync_agent_role_map`).
+or specialist already holds the name (`tools.py::build_agent_role_map`, which boot's
+`_build_role_registry` and every reload's `sync_agent_role_map` both build through).
 
 A new tier is larger still: the file set, the loading path and the registry's tier type all
 move together, and the type currently admits two tiers.

@@ -125,6 +125,28 @@ async def test_role_map_carries_the_configurator(monkeypatch):
     assert tools._agent_role_map["configurator"].kind == "executor"
 
 
+async def test_the_boot_role_map_holds_the_configurator_with_no_reload(monkeypatch):
+    """The role map boot hands init_tools is built by the same builder a
+    reload uses, so the configurator is a delegate from the first turn after
+    boot, with no reload in between."""
+    import casa_core
+    import tools
+    resident = SimpleNamespace(role="assistant", kind="resident", delegates=())
+    specialist = SimpleNamespace(role="finance", kind="specialist", delegates=())
+    boot_map = casa_core._build_role_registry(
+        residents={"assistant": resident}, specialists={"finance": specialist})
+    assert boot_map["configurator"].kind == "executor"
+    assert boot_map["assistant"] is resident and boot_map["finance"] is specialist
+    # init_tools adopts this map as the one delegate_to_agent resolves against
+    for name in ("_channel_manager", "_bus", "_specialist_registry", "_mcp_registry",
+                 "_agent_role_map", "_agent_registry", "_trigger_registry",
+                 "_engagement_registry", "_runtime", "_specialist_limiter",
+                 "_specialist_telemetry", "_agent_spawn_limiter", "_voice_job_route_cap"):
+        monkeypatch.setattr(tools, name, getattr(tools, name))
+    tools.init_tools(None, None, None, agent_role_map=boot_map)
+    assert tools._agent_role_map.get("configurator") is boot_map["configurator"]
+
+
 async def test_a_swipe_reply_on_a_configurator_post_reaches_its_desk(monkeypatch):
     """D1: the desk route admits the configurator (an executor) as it admits a
     specialist, and a resident's DM delegation to it uses that same desk."""

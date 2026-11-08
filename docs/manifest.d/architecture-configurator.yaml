@@ -14,6 +14,7 @@
     - casa/rootfs/opt/casa/agent_loader.py::load_configurator
     - casa/rootfs/opt/casa/defaults/roles/executor/configurator/role.yaml
     - casa/rootfs/opt/casa/tools.py::_configurator_config
+    - casa/rootfs/opt/casa/tools.py::build_agent_role_map
     - casa/rootfs/opt/casa/tools.py::_configurator_lease
     - casa/rootfs/opt/casa/tools.py::_delegation_mode_for
     - casa/rootfs/opt/casa/tools.py::_effective_caller_role
