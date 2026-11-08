@@ -61,8 +61,8 @@ configuration:
     name: "Telegram engagement supergroup chat ID"
     description: |
       Chat ID of the dedicated Telegram forum supergroup used to host
-      interactive engagements (Tier 2 Specialists in interactive mode;
-      Tier 3 Executor types, Plan 3+). Must be a negative integer
+      engagements (specialists' background jobs; Tier 3 Executor
+      types). Must be a negative integer
       (Telegram supergroup chat IDs are always negative). Leave at 0
       to disable engagement features; Casa still boots.
   telegram_bot_api_base:

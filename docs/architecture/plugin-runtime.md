@@ -74,7 +74,7 @@ on the old value even though the binding passes the gate. Both heal through the 
 seams, and neither is something verification can fully see: a plain-value rotation shows
 as reload-pending only until the plugin-env reload lands, and an unchanged `op://`
 reference cannot be compared at all — a warm session on a rotated credential reports
-ready. An interactive specialist engagement records the plugin set *admitted when its
+ready. A specialist job's engagement records the plugin set *admitted when its
 topic exists* (one filter feeding the record and the launch), and every later build —
 including resume — re-applies current-environment admission control; an environment
 change after that admission point — even one that RESOLVES a variable moments later — is

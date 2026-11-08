@@ -22,10 +22,12 @@ is in [`architecture/engagement-completion-gate.md`](engagement-completion-gate.
 
 **A delegated turn and an engagement are different things.** Delegation in its ordinary form
 is a task handed to a specialist that runs and returns — ephemeral. An engagement is a
-durable record with its own topic, which outlives the call that created it. Three launch
-paths exist and they are not symmetrical: ordinary specialist delegation runs ephemerally;
-*interactive* specialist delegation creates an engagement; engaging an executor always
-creates one.
+durable record with its own topic, which outlives the call that created it. Specialist
+delegation, `sync` or `async`, runs ephemerally; engaging an executor or starting a
+background job creates an engagement. The retired `mode='interactive'` is refused
+(`interactive_retired`) before any gate, with a message naming a `sync` delegation, after
+which the person talks with the specialist by replying to its message
+([`specialist-desk.md`](specialist-desk.md)).
 
 **The operator sees a hand-off as it happens.** When the operator's own Telegram turn hands
 work on — a `sync` or `async` delegation once the specialist's run has been created, or an
@@ -51,7 +53,7 @@ line: the person has the hand-off line, and often a card the specialist already 
 
 **Two different limits bound agent-created work, and they deliberately divide the
 territory.** The *depth cap* stops delegation from chaining: an agent reached through
-delegation — ephemeral or interactive — cannot call the delegation tool again. The
+delegation, or running a job hosted on it, cannot call the delegation tool again. The
 *agent-spawn cap* bounds fan-out: engagements created from agent context, whatever the
 path, draw from one small global pool of live slots. The executor launch path is
 deliberately outside the depth cap (launching executors is what that tool is for) and
@@ -124,9 +126,9 @@ Enforced in the pre-launch check for the delegation tool against the *effective*
 depth: the ambient origin's stamped depth when present, else the depth persisted on the
 bound engagement record's origin — the fallback matters because an in-process engagement
 turn inherits the parent task's ambient origin rather than the record's. The depth is
-stamped when an ephemeral delegated child's origin is built AND when the interactive branch
-creates a specialist engagement, so an interactively-engaged specialist runs at depth one
-and is refused onward delegation exactly as an ephemeral delegate is.
+stamped when an ephemeral delegated child's origin is built AND when the job launch owner
+creates a job's engagement, so a job's specialist runs at depth one and is refused onward
+delegation exactly as an ephemeral delegate is.
 
 What it does not cover: the executor launch path neither reads nor stamps the depth — BY
 DESIGN, since launching executors is the purpose of that tool; its fan-out is bounded by
@@ -221,8 +223,8 @@ publish a briefly partial role map, since the specialist registry is cleared and
 place off-loop while another reload snapshots it; and *tier* lookups still read a boot-time
 registry global no reload refreshes.
 
-Interactive specialist launches, including a specialist-hosted `start_job`, use a role-wide
-`<role>:engagement` limiter scope. Before acquiring it, admission checks active and
+A specialist-hosted `start_job` launch uses a role-wide `<role>:engagement` limiter
+scope. Before acquiring it, admission checks active and
 idle specialist records across all chats. An existing record produces `engagement_busy`
 with its engagement id, topic id and job title (or the first 80 task characters).
 Quick sync/async delegations retain their chat-and-role scope, independently of the

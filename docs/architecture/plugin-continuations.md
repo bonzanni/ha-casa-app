@@ -114,14 +114,10 @@ this plugin's and the operator's as configured now, and marks that request's car
 (`plugin_stop.settle_ended`, [`plugin-stop.md`](plugin-stop.md)). A failure there is logged
 and leaves the continuations the pass queued as they are.
 
-**Such a specialist is never engaged in a topic.** A continuation's answer reaches the
+**Such a specialist's work never runs in a topic.** A continuation's answer reaches the
 resident's DM, never a topic, and the specialist asks the person itself, with its own cards,
-whenever it needs them. So `delegate_to_agent` with `mode='interactive'` to a specialist one
-of whose resolved plugins declares `casa.driverSweep` is refused before any record or topic
-(`interactive_not_supported`, `tools._continues_its_own_work`), with a message that names one
-`sync` delegation of the whole task, also when the person asked to be asked first. The
-refusal reads the declaration, never a role name; a `sync` or `async` delegation to the
-same specialist passes, as does any job launch (the job start stamps `plugin_job` first).
+whenever it needs them; the whole task is one `sync` delegation, also when the person asked
+to be asked first.
 
 ## Contracts & invariants
 

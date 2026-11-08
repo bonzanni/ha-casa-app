@@ -120,7 +120,7 @@ the same way but deliberately does not end it: the topic is told the turn failed
 engagement stays open, because one declined turn is not the engagement's verdict. That whole
 half needed the engagement lifecycle to be ready for it rather than the suppression alone, so
 it followed a release later. Its detection deliberately sits outside the
-branch that streams text: an interactive specialist's output is capped, and once the cap
+branch that streams text: a specialist engagement's output is capped, and once the cap
 freezes the accumulator that branch stops running, so a fault arriving after the freeze would
 otherwise end the turn as a truncated success.
 

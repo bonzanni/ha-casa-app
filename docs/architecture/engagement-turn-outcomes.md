@@ -39,7 +39,7 @@ that was cut off in flight — transport EOF, agent-process exit, or the reader 
 cut off mid-tool-loop is indistinguishable from a finished one by frame evidence, so a check
 built on evidence catches only the trivially empty turn and misses the reachable case.
 
-The engagement's terminal artifact is its record. An interactive engagement that ends its
+The engagement's terminal artifact is its record. A specialist engagement that ends its
 launch turn having posted text is legitimately awaiting the operator and is left alive; one
 that posted nothing, or whose turn was cut off, has left no surface anyone can act on. One
 whose words were all withheld because a call it made is still waiting on the operator's

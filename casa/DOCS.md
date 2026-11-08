@@ -38,7 +38,7 @@ A fresh install ships with no specialists installed; see [Installing a specialis
 |--------|-------------|
 | `telegram_bot_token` | Telegram bot token from @BotFather. Enables the Telegram channel. |
 | `telegram_chat_id` | Telegram chat ID to restrict messages to. Leave empty to accept all chats. **Setting it is a security control**, not just a filter: this id is the operator identity, so only the sender whose Telegram user id matches it is attributed as the operator and reads memory at private clearance — any other accepted sender is recorded under its own `telegram:<id>` identity and reads at public clearance only, as does any engagement they start. Protected plugin tools (v0.139.0) can only be authorized by the configured operator: a non-operator sender's protected call is denied outright, and with the option empty (accept-all) no sender is the operator, so protected tools are denied for everyone — the add-on logs a warning at startup in that mode. Set this id unless you specifically want an open bot. |
-| `telegram_engagement_supergroup_id` | Chat ID of the dedicated Telegram forum supergroup used for interactive engagements (Tier 2 Specialist interactive mode; Tier 3 Executor types, Plan 3+). Must be a negative integer. Leave at 0 to disable engagements. |
+| `telegram_engagement_supergroup_id` | Chat ID of the dedicated Telegram forum supergroup used for engagements (specialists' background jobs; Tier 3 Executor types). Must be a negative integer. Leave at 0 to disable engagements. |
 
 ### Memory
 
@@ -705,20 +705,26 @@ agent as part of that scheduled run, not as a message from you.
 
 ## Engagements (v0.11.0)
 
-Casa supports **engagements** — bounded conversational threads where a
-specialist (Tier 2) or executor (Tier 3, Plan 3+) works with you on a
-specific task, separate from your 1:1 chat with Ellen. Each engagement
-lives in its own Telegram forum topic inside a dedicated supergroup.
+Casa supports **engagements** — bounded threads where a specialist's
+background job (Tier 2) or an executor (Tier 3) works on a specific task,
+separate from your 1:1 chat with Ellen. Each engagement lives in its own
+Telegram forum topic inside a dedicated supergroup.
+
+To talk with a specialist yourself, ask Ellen ("let me talk to Alex"):
+she passes your words on and the specialist's answer arrives in your chat
+under its name. Reply to that message to carry on with the specialist
+directly. (Interactive specialist engagements, which opened a topic for
+such a conversation, are retired.)
 
 The setup is a one-time Telegram configuration. Skip this section to
-keep Casa running in 1:1-only mode (Ellen delegates synchronously and
-returns a single response; `delegate_to_agent(mode="interactive")`
-will return `engagement_not_configured`).
+keep Casa running in 1:1-only mode (Ellen delegates and returns the
+answer; a background job or an executor returns
+`engagement_not_configured`).
 
 ### Delegation limits
 
-Every `delegate_to_agent` call, interactive or synchronous, is bounded by
-two app options:
+Every `delegate_to_agent` call, and every specialist's background job, is
+bounded by two app options:
 
 - `specialist_max_concurrency` (default `2`) — the total number of
   specialist delegations allowed in flight fleet-wide at once. Once the cap
@@ -790,8 +796,8 @@ Alternatives:
 
 1. Home Assistant → **Settings** → **Apps** (formerly Add-ons) → **Casa** → **Configuration**.
 2. Set `telegram_engagement_supergroup_id` to the negative integer from step 3.
-   Leave it at `0` to disable engagements (Casa still boots; interactive
-   mode returns `engagement_not_configured`).
+   Leave it at `0` to disable engagements (Casa still boots; a background
+   job or an executor returns `engagement_not_configured`).
 3. **Save** → **Restart** the app.
 
 #### 5. Verify

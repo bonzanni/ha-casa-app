@@ -30,7 +30,7 @@ name is `<plugin manifest name>:<job name>`.
 The assistant sees the jobs its delegates can host in a `<jobs>` block and starts one with
 `start_job(job, task, context)` — except a job a delegate can start itself, which she asks
 that delegate for with a sync delegation
-([`specialist-job-start.md`](specialist-job-start.md)). The job runs as an ordinary interactive engagement of the
+([`specialist-job-start.md`](specialist-job-start.md)). The job runs as an engagement of the
 host specialist, with three differences: the engagement record carries the job's counters
 under `origin["job"]`, the specialist's client is opened with the job's per-batch turn limit
 and the `report_job_progress` grant, and the launch prompt asks only for a one-line
@@ -241,7 +241,7 @@ through the ordinary funnel, with its last progress and the durable resident not
 The sweep does not run while the channel is stopping, and a shutdown-refused hand-off
 does not count as a failed attempt.
 
-Job resume failures stay live for that sweep instead of taking the interactive engagement's
+Job resume failures stay live for that sweep instead of taking a non-job engagement's
 two-strike terminal path. A job with no session to resume ends through the finalize funnel.
 These rules concern continuation, including an acknowledged job whose first hand-off was
 refused and whose `started` counter is still zero; the launch owners remain unchanged.

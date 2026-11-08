@@ -134,8 +134,8 @@ earlier outcome reached before the restart, whose announcement was never confirm
 the time the record went terminal, or says that time is unknown (INV-ENG-018).
 
 Background-job continuation uses the periodic recovery and finalize paths described in
-[`background-jobs.md`](background-jobs.md); the interactive two-strike resume rule does
-not terminalize a job. Launch cancellation remains governed by the launch owner.
+[`background-jobs.md`](background-jobs.md); the two-strike resume rule for a non-job
+engagement does not terminalize a job. Launch cancellation remains governed by the launch owner.
 
 ## Extension points
 

@@ -67,7 +67,6 @@
     - casa/rootfs/opt/casa/drivers/driver_protocol.py::DriverProtocol
     - casa/rootfs/opt/casa/tools.py::engage_executor
     - casa/rootfs/opt/casa/tools.py::_post_topic_opening
-    - casa/rootfs/opt/casa/tools.py::engagement_launch_prompt
     - casa/rootfs/opt/casa/drivers/turn_progress.py::TurnProgressLine
     - casa/rootfs/opt/casa/drivers/in_casa_driver.py::_fold_closing_text
   tests:

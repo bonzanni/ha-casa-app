@@ -32,24 +32,27 @@ the turn loop itself, nor what a driver's underlying runtime does once started.
 is a task handed to a specialist that runs and returns — ephemeral. An engagement is a
 durable record with its own topic, which outlives the call that created it.
 
-Three launch paths exist and they are not symmetrical. Ordinary specialist delegation runs
-ephemerally. *Interactive* specialist delegation creates an engagement. Engaging an executor
-always creates one. Both engagement-creating paths pass the agent-spawn gate first
-(INV-ENG-008). `start_job` launches through the same interactive launch owner, as a
-`specialist` record when a delegate hosts the job and as a third record kind, `plugin`,
-when the declaring plugin is installed on the calling resident — a worker record whose
-`role_or_type` is that resident and whose session carries neither the resident's tools nor
-its prompt; what Casa then does with a job's engagement is
-[`architecture/background-jobs.md`](background-jobs.md).
+Two launch paths create an engagement, and they are not symmetrical. Engaging an executor
+always creates one. `start_job` launches a background job through the one job launch owner
+(`tools.py::_launch_interactive_engagement`), as a `specialist` record when a delegate hosts
+the job and as a third record kind, `plugin`, when the declaring plugin is installed on the
+calling resident — a worker record whose `role_or_type` is that resident and whose session
+carries neither the resident's tools nor its prompt; what Casa then does with a job's
+engagement is [`architecture/background-jobs.md`](background-jobs.md). Both paths pass the
+agent-spawn gate first (INV-ENG-008). Specialist delegation, sync or async, runs
+ephemerally and creates none.
 
-**A specialist's interactive engagement is a conversation, and completing it closes it.**
-Its first message (`tools.py::engagement_launch_prompt`) carries the task and the engager's
-context, and says that the topic stays open for the person after each reply while
-`emit_completion` ends the engagement and closes the topic — to be called when the work is
-done or the person says they are finished, never while they are expected to keep talking.
-Without that sentence a specialist asked to "open a chat and wait" completed on its first
-turn, so the topic closed at once (#1411). Which call ends it stays the model's judgement;
-Casa adds no gate. A job's launch replaces this message with its own.
+**Interactive specialist engagements are retired; the desk replaced them.** A
+`delegate_to_agent` call naming `mode='interactive'` is refused with `interactive_retired`
+before any gate or side effect, and its message names the alternative: a `sync` delegation,
+after which the person carries on with the specialist by replying to its message
+([`architecture/specialist-desk.md`](specialist-desk.md)). The value stays in the tool
+schema's enum only so a stale call — a model's, or a stored scheduled prompt's — reaches
+that refusal rather than the SDK's bare validation error. An interactive engagement an older
+install left open loads as any `specialist` record does: it is not resumed at boot (only
+jobs are), it stays one of its specialist's open conversations (a job on that specialist
+is refused `engagement_busy` meanwhile), the operator may still write in its topic, and
+`/complete`, `/cancel` or the stale-engagement reap ends it.
 
 **An in-process executor's topic says what it was asked and shows each turn's steps.**
 When an `in_casa` executor's launch is handed off, its topic gets a first line with the
@@ -72,9 +75,8 @@ way a streamed turn posts a single block — sent raw, then rendered in place, s
 render leaves the raw closing text, never an earlier line; a long text is sent one page at a
 time, so that a failed page never drops a later one — or, when the turn raises or is
 cancelled first, on its way out, within a bound. A cancellation that lands while the text is being sent waits for that
-same send, within the same bound, and the send is never restarted, so no page repeats. A sub-agent's words are inside a call and are never the closing text. A specialist's
-topic, where the operator talks with the agent turn by turn and no step log runs, still
-streams every text block.
+same send, within the same bound, and the send is never restarted, so no page repeats. A sub-agent's words are inside a call and are never the closing text. A specialist
+job's topic, where no step log runs, still streams every text block.
 
 **A specialist's engagements are its open conversations, and a change to the specialist
 does not reach them.** One keeps the personality and the plugin versions it started with
@@ -158,7 +160,6 @@ persisting ledger checks it — is answered in the same document.
 - `casa/rootfs/opt/casa/drivers/driver_protocol.py::DriverProtocol`
 - `casa/rootfs/opt/casa/tools.py::engage_executor`
 - `casa/rootfs/opt/casa/tools.py::_post_topic_opening`
-- `casa/rootfs/opt/casa/tools.py::engagement_launch_prompt`
 - `casa/rootfs/opt/casa/drivers/turn_progress.py::TurnProgressLine`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::_fold_closing_text`
 

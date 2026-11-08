@@ -161,7 +161,7 @@ question first: a row the creator had already cancelled ends CANCELLED — as it
 is not told it was answered. The notice it does enqueue carries a delivery
 acknowledgement, so the obligation to announce it outlives a restart (INV-JOB-010).
 
-What it does not cover: interactive specialist engagements, which run under the in-casa
+What it does not cover: specialist engagements (a specialist's jobs), which run under the in-casa
 driver and its own finalize funnel, and the voice arms, whose abort handling predates this
 rule and is unchanged. Nor does it cover a creator-cancelled row, per the paragraph above.
 It also says nothing about *retries of the run itself* — nothing retries a delegated run;

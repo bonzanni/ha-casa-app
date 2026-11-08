@@ -51,7 +51,7 @@ after the attempt, on success or failure.
 other shipped agent's. The assistant's doctrine tells it when to use it: for a sign-in link or
 code the operator pasted or asked it to read from a specific email, when the consuming plugin
 declares a drop-off; with none declared, the person hands the link to the specialist directly
-in an interactive engagement's topic. The kernel's per-send rule still governs the mailbox
+by replying to one of its messages in the chat. The kernel's per-send rule still governs the mailbox
 read.
 
 **Write sequence.** One process-wide lock covers it, so two drops for the same item cannot
