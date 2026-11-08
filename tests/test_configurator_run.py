@@ -248,6 +248,45 @@ async def test_past_the_bound_a_second_run_is_refused_with_the_busy_text(lease_f
     await asyncio.wait_for(first, 5)
 
 
+async def test_a_second_same_chat_delegation_is_refused_at_the_bound(lease_file, monkeypatch):
+    """Two requests from the operator's DM share one configurator desk. The
+    second's whole wait, for the desk and then the lease, ends at the bound
+    in the busy result naming what is running, never an unbounded queue."""
+    import agent as agent_mod
+    import configurator_run
+    import specialist_desk
+    import tools
+    monkeypatch.setattr(configurator_run, "LEASE_WAIT_S", 0.1)
+    monkeypatch.setattr(specialist_desk, "DESKS", specialist_desk.DeskRegistry())
+    monkeypatch.setattr(tools, "_specialist_limiter", None)
+    started, release = asyncio.Event(), asyncio.Event()
+    monkeypatch.setattr(tools, "_run_delegated_agent",
+                        await _blocking_runner(started, release))
+    cfg = _configurator_cfg()
+    desk = specialist_desk.DESKS.get_or_create(123, "configurator")
+
+    async def _use(task, key):
+        tok = agent_mod.origin_var.set(_origin(_delegation_id=key))
+        try:
+            return await specialist_desk.delegation_use(
+                desk, reservation=desk.reserve(), run=tools._run_delegated_agent_bounded,
+                cfg=cfg, task_text=task, context_text="")
+        finally:
+            agent_mod.origin_var.reset(tok)
+
+    first = asyncio.create_task(_use("do the full audit", "deleg-1"))
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        with pytest.raises(configurator_run.ConfiguratorBusy) as exc:
+            await asyncio.wait_for(_use("remove the s4-ask trigger", "deleg-2"), 5)
+        assert "do the full audit" in str(exc.value)
+        assert "try again shortly" in str(exc.value)
+    finally:
+        release.set()
+        await asyncio.wait_for(first, 5)
+    assert desk.waiting == 0 and not desk.lock.locked()
+
+
 async def test_a_new_run_waits_for_running_plugin_erasures(lease_file, monkeypatch):
     import configurator_run
     import tools

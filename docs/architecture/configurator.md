@@ -61,13 +61,22 @@ Writes are coalesced, spaced and bounded, and none is awaited by the run.
 
 ## Contracts & invariants
 
-**INV-CFG-014**: A configurator run, from any origin, takes the one process-wide configurator lease before its ceiling clock starts and before anything of the run starts, waiting up to `LEASE_WAIT_S` for the holder, for running plugin erasures and for specialist-bundle transactions still running after their handler was cancelled; a run that cannot take it by then is refused with the busy text naming the holder's task and nothing of it runs; the lease is released when the run ends, and a failure before the run starts releases it at once.
+**INV-CFG-014**: A configurator run, from any origin, takes the one process-wide configurator lease before its ceiling clock starts and before anything of the run starts, waiting up to `LEASE_WAIT_S` in all, for its desk when it comes through one and then for the holder, for running plugin erasures and for specialist-bundle transactions still running after their handler was cancelled; a run that cannot take it by then is refused with the busy text naming the holder's task and nothing of it runs; the lease is released when the run ends, and a failure before the run starts releases it at once.
 
 The lease is taken in `tools.py::_run_delegated_agent_bounded` (`_configurator_lease`), the
 one door every origin goes through, so a desk reply, an approval continuation and a
 delegation exclude one another alike, and waiting never counts toward the run's ceiling. It
 is released by `configurator_run.release_when_done`, a done callback on the run's own task.
-A run of any other agent takes no lease. The erasures waited for are the plugin erasers
+A run of any other agent takes no lease.
+
+A desk reply and the assistant's DM delegation also wait for the configurator's desk in that
+chat before the lease (`specialist_desk.Desk.use`), and the run holding the lease usually holds
+that desk too. So the bound starts when the request reaches its desk
+(`configurator_run.wait_deadline`), covers the desk wait and the lease wait together, and a
+request still waiting for the desk at the bound is refused with the same busy text, its queue
+place released; the desk lock only orders the dialogue.
+
+The erasures waited for are the plugin erasers
 `plugin_remove` and `specialist_uninstall` start (`tools._ERASE_TASKS`): an eraser runs
 outside any run, and a new run must not reconfigure a plugin whose data it is still removing.
 The bundle transactions waited for are the shielded ones `tools._run_bundle_transaction`

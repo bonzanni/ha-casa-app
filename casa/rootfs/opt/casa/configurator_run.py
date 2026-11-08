@@ -27,11 +27,13 @@ plugin-health DM (``installing``); the release schedules the deferred pass.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
 import logging
 import os
 import time
+from contextvars import ContextVar
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable
 
@@ -110,20 +112,54 @@ async def _leftovers_done() -> None:
         await asyncio.wait(erasing + bundles)
 
 
+def busy_error() -> ConfiguratorBusy:
+    """The refusal for a request whose wait passed the bound, naming what is
+    running: the holder's task, else a plugin erasure or a bundle transaction."""
+    holding = _held.record.get("task") if _held is not None else None
+    if not holding:
+        erasing, bundles = _leftovers()
+        holding = ("removing a plugin's data" if erasing
+                   else "finishing a specialist change" if bundles
+                   else "an earlier request")
+    return ConfiguratorBusy(busy_text(holding))
+
+
+# The instant a configurator request's whole wait ends: set where the request
+# arrives (a desk use waits for its desk first), read by :func:`acquire`, so
+# the desk wait and the lease wait share one ``LEASE_WAIT_S``.
+_wait_deadline: "ContextVar[float | None]" = ContextVar(
+    "configurator_wait_deadline", default=None)
+
+
+def wait_deadline() -> float:
+    """The deadline of a request arriving now, or of the one already waiting."""
+    current = _wait_deadline.get()
+    return current if current is not None else time.monotonic() + LEASE_WAIT_S
+
+
+@contextlib.contextmanager
+def waiting_until(deadline: float):
+    """Make *deadline* the end of the lease wait for runs started inside."""
+    token = _wait_deadline.set(deadline)
+    try:
+        yield
+    finally:
+        _wait_deadline.reset(token)
+
+
+def is_configurator(cfg: Any) -> bool:
+    return getattr(cfg, "role", None) == "configurator" and getattr(cfg, "kind", "") == "executor"
+
+
 async def acquire(*, run_key: str, via: str, task: str) -> Lease:
     """Take the lease, waiting up to ``LEASE_WAIT_S`` for the holder, any
-    running plugin erasure and any surviving bundle transaction; past the
-    bound raise :class:`ConfiguratorBusy`."""
+    running plugin erasure and any surviving bundle transaction (less any
+    time the request already spent waiting for its desk); past the bound
+    raise :class:`ConfiguratorBusy`."""
     global _held
     lock = _get_lock()
-    deadline = time.monotonic() + LEASE_WAIT_S
-
-    def _busy() -> ConfiguratorBusy:
-        holding = _held.record.get("task") if _held is not None else None
-        if not holding:
-            holding = ("removing a plugin's data" if _leftovers()[0]
-                       else "finishing a specialist change")
-        return ConfiguratorBusy(busy_text(holding))
+    deadline = wait_deadline()
+    _busy = busy_error
 
     try:
         await asyncio.wait_for(lock.acquire(), max(deadline - time.monotonic(), 0.0))

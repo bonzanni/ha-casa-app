@@ -6188,9 +6188,9 @@ async def _run_delegated_agent_bounded(
 
 async def _configurator_lease(cfg, task_text: str):
     """The configurator lease for a run of *cfg*, or ``None`` for any other role."""
-    if getattr(cfg, "role", None) != "configurator" or getattr(cfg, "kind", "") != "executor":
-        return None
     import configurator_run
+    if not configurator_run.is_configurator(cfg):
+        return None
     origin = _snapshot_origin() or {}
     return await configurator_run.acquire(
         run_key=str(origin.get("_delegation_id") or _delegation_quota_key.get() or ""),

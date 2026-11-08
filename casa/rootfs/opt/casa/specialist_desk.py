@@ -278,19 +278,36 @@ class Desk:
         self._changed.set()
 
     @contextlib.asynccontextmanager
-    async def use(self, reservation: "Reservation | None"):
+    async def use(self, reservation: "Reservation | None", deadline: "float | None" = None):
         """One use of the desk: wait until *reservation* is at the head of
         the queue (an abandoned place ahead is skipped as it is released),
-        take the lock, release the place, yield; the lock is released on
-        every exit."""
-        if reservation is not None:
-            while self._queue and self._queue[0] is not reservation and not reservation.released:
-                self._changed.clear()
-                await self._changed.wait()
-        async with self.lock:
+        take the lock, release the place, yield ``True``; the lock is released
+        on every exit. With *deadline* (a ``time.monotonic`` instant) the wait
+        ends there: the place is released and the use yields ``False``,
+        holding nothing."""
+        async def _admit() -> None:
+            if reservation is not None:
+                while self._queue and self._queue[0] is not reservation and not reservation.released:
+                    self._changed.clear()
+                    await self._changed.wait()
+            await self.lock.acquire()
+
+        if deadline is None:
+            await _admit()
+        else:
+            try:
+                await asyncio.wait_for(_admit(), max(deadline - time.monotonic(), 0.0))
+            except asyncio.TimeoutError:
+                if reservation is not None:
+                    reservation.release()
+                yield False
+                return
+        try:
             if reservation is not None:
                 reservation.release()
-            yield
+            yield True
+        finally:
+            self.lock.release()
 
     # -- the window (every call below runs under ``lock``) ------------------
     def begin_use(self, now: float) -> None:
@@ -653,8 +670,13 @@ async def delegation_use(desk: Desk, *, reservation: "Reservation | None", run: 
     # entry, before any await, from the task's own origin snapshot
     caller = str(tools_mod._snapshot_origin().get("role") or "")
     resident_name = tools_mod._display_name_for_role(caller) if caller else None
+    import configurator_run
+    # a configurator request's whole wait, desk then lease, is one bound
+    deadline = configurator_run.wait_deadline() if configurator_run.is_configurator(cfg) else None
     try:
-        async with desk.use(reservation):
+        async with desk.use(reservation, deadline) as admitted:
+            if not admitted:
+                raise configurator_run.busy_error()
             if desk.faulted:
                 # a delegation queued before the fault must not run
                 raise DeskFaulted(f"{cfg.role!r}'s desk is faulted")
@@ -676,8 +698,10 @@ async def delegation_use(desk: Desk, *, reservation: "Reservation | None", run: 
             runs: list = []
             sink_tok = tools_mod._desk_run_sink.set(runs)
             try:
-                output = await run(cfg, task_text, context, resolution=resolution,
-                                   output_format=output_format)
+                with (configurator_run.waiting_until(deadline) if deadline is not None
+                      else contextlib.nullcontext()):
+                    output = await run(cfg, task_text, context, resolution=resolution,
+                                       output_format=output_format)
             finally:
                 tools_mod._desk_run_sink.reset(sink_tok)
                 desk.hold_unwinding(runs)     # #1197: before the permit and the lock
@@ -840,7 +864,16 @@ async def handle_reply(
                 channel=channel, chat_id=chat_id, user_id=user_id, user_name=user_name,
                 message_id=message_id, resident=resident_role, desk_role=desk_role,
                 text=text or "")
-        async with desk.use(reservation):
+        import configurator_run
+        # a configurator request's whole wait, desk then lease, is one bound
+        deadline = (configurator_run.wait_deadline() if configurator_run.is_configurator(
+            tools_mod._agent_role_map.get(desk_role)) else None)
+        async with desk.use(reservation, deadline) as admitted:
+            if not admitted:
+                busy = str(configurator_run.busy_error())
+                await _tell(f"{busy.removeprefix('the configurator ')}.", notice=True,
+                            receipt=False)
+                return
             if desk.faulted:
                 # S5 §14.8: a reply queued before the fault finds it here,
                 # before the idle reset, the run and any permit
@@ -892,8 +925,10 @@ async def handle_reply(
                 qk = tools_mod._delegation_quota_key.set(turn_id)
                 sk = tools_mod._desk_run_sink.set(runs)
                 try:
-                    run = asyncio.create_task(
-                        tools_mod._run_delegated_agent_bounded(cfg, task_text, context_text))
+                    with (configurator_run.waiting_until(deadline) if deadline is not None
+                          else contextlib.nullcontext()):
+                        run = asyncio.create_task(
+                            tools_mod._run_delegated_agent_bounded(cfg, task_text, context_text))
                 finally:
                     agent_mod.origin_var.reset(ov)
                     tools_mod._delegation_quota_key.reset(qk)
