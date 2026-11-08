@@ -80,9 +80,18 @@ engagement record, and where the ambient turn origin they run under carries no r
 own, a clearance resolved from that origin alone would find nothing and fall through to the
 channel default, handing an engagement started by a low-clearance sender the operator's
 private tier. The engagement's recorded origin carries the markers its creating turn was
-stamped with, and that is what its reads resolve against: its own recall, the engager-side
-context it can query, and a nested engagement it spawns, which inherits rather than
-re-deriving. An engagement whose record predates this (or came from an origin that stamps no
+stamped with, and that is what its reads resolve against: its own recall and the engager-side
+context it can query. No engagement starts another: an engagement is created only by
+starting a job, through the `start_job` tool or a scheduled job's fire
+(`tools.py::start_scheduled_job`), and no engagement session can call `start_job` — a
+specialist engagement's casa-framework tools stay inside the consumer-safe ceiling
+(`specialist_component.SPECIALIST_CASA_TOOL_ALLOWLIST`, checked again at dispatch), and a
+resident-hosted plugin job holds only `report_job_progress` and `emit_completion`. Every
+engagement is therefore created by a resident's turn, a specialist's desk or delegated turn
+(the desk stamps the operator's route and clearance; a delegated turn's origin copies its
+caller's), or a scheduled fire (which stamps them as the DM ingress does), and its record
+carries that turn's markers. An engagement
+whose record predates this (or came from an origin that stamps no
 route) keeps the channel-keyed behaviour.
 
 Inheritance at creation is only half the rule, because an engagement is *steerable*: anyone
@@ -121,8 +130,7 @@ What the eviction deliberately does not do: content already posted to the topic 
 posted, and a turn already running at clamp time completes into the topic, its tool calls
 refused while the rebuild is pending —
 engagement topics are readable by every supergroup member regardless, so both are
-disclosures the topic already carried. A nested engagement spawned before the clamp keeps
-its own record's clearance (steering its topic clamps it the same way). And it only moves a
+disclosures the topic already carried. And it only moves a
 record that carries a stamped clearance: an engagement running before per-sender markers
 existed has none, so it keeps channel-keyed clearance — on Telegram, private — until it
 finishes.
@@ -194,8 +202,7 @@ access-control decision — the ambient origin wins when it has a route of its o
 in-process delegated turn), otherwise the bound engagement record supplies them — and at the
 engagement-topic ingress, which lowers the record's stamped clearance to each steering
 sender's before their turn is delivered. Every read an engagement can perform resolves
-through the first: its own recall, the engager-side context, and a nested engagement it
-spawns.
+through the first: its own recall and the engager-side context.
 
 What it does not cover: a record carrying no markers falls back to channel-keyed clearance,
 which on Telegram is private — so this tightens what a *newly* stamped origin can reach, and
@@ -212,8 +219,7 @@ before it is accepted; and by the post-await re-filter and the driver's last-ins
 gate, which close the calls already in flight when the clamp lands.
 
 What it does not cover: output of a turn already running at clamp time, content already
-posted to the (group-readable) topic, and a pre-clamp nested child's own record — the
-deliberate residuals listed above. The completion tool stays reachable while the rebuild is
+posted to the (group-readable) topic — the deliberate residuals listed above. The completion tool stays reachable while the rebuild is
 pending, its output being in-flight-turn residual.
 
 ## Failure behavior
