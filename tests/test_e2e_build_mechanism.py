@@ -16,7 +16,7 @@ serves today: that needs a registry which re-tags.
 and #942 is the gap it disclaims. A reader must not take a green run here as
 evidence that any base was current.
 
-They also pin the two DELIBERATE exclusions, which are the half of the design a
+They also pin the DELIBERATE exclusion, which is the half of the design a
 later edit is most likely to "fix":
 
 * `build_image` itself takes NO pull flag. `qa.yml`'s tier1/tier2/tier3 steps
@@ -24,9 +24,6 @@ later edit is most likely to "fix":
   so a mandatory registry resolution there turns a ghcr outage or rate-limit
   into a red `main`. Refresh belongs on the `make` paths, which CI never
   invokes (`test-local/README.md`).
-* the mock-CLI derivative build takes no pull flag either: its base is the
-  local-only tag `casa-test`, which no registry serves, so a pull there fails
-  deterministically.
 
 Hermetic: a recording `docker` stub on `PATH` plus make's own recipe
 resolution. No daemon, no network, no image, and nothing is written into the
@@ -181,8 +178,8 @@ def test_make_build_recipe_honours_the_offline_opt_out(target, makedir, stub):
 
 def test_tier3_builds_before_it_runs_its_harnesses(stub):
     """tier3 was the one tier with no `build` prerequisite — and the one whose
-    wasted runs were measured in #942. Its image otherwise comes straight from
-    `build_image_with_mock_cli`, which never resolves the base.
+    wasted runs were measured in #942. Its image otherwise comes only from the
+    harness's own `build_image`, which never resolves the base.
     """
     recipe = _dry_run("test-tier3", REPO / "test-local", stub)
     lines = _build_lines(recipe)
@@ -265,27 +262,7 @@ def test_a_failed_build_stops_before_the_report(stub):
 
 
 # --------------------------------------------------------------------------
-# 4. The derivative mock-CLI build must never pull. Green at the base: this is
-#    a regression control, not a red case.
-# --------------------------------------------------------------------------
-
-def test_the_mock_cli_derivative_build_never_pulls(stub):
-    """Its `FROM` is the local-only tag `casa-test`; no registry serves it, so
-    a pull there fails deterministically — offline or not.
-    """
-    proc = _run(["bash", "-c",
-                 "source test-local/e2e/common.sh; build_image_with_mock_cli"],
-                stub, IMAGE="probe-image")
-    assert proc.returncode == 0, proc.stderr
-
-    builds = _builds(stub.calls())
-    assert len(builds) == 2, stub.calls()
-    assert [b.count("--pull") for b in builds] == [0, 0], builds
-    assert "BASE=probe-image" in builds[1], builds[1]
-
-
-# --------------------------------------------------------------------------
-# 5. The baseline-runtime build: the same reporting, on the release Dockerfile.
+# 4. The baseline-runtime build: the same reporting, on the release Dockerfile.
 #    Found by the gate-owned review, filed as #970 before it was fixed here.
 # --------------------------------------------------------------------------
 

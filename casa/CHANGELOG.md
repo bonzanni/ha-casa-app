@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.349.1] - 2026-11-08
+
+### Fixed
+
+- The app image build again checks that Casa's own service definitions compile, so a broken one stops the build instead of stopping Casa from starting. Version 0.349.0 removed that check together with the plugin developer's engine, by mistake.
+
 ## [0.349.0] - 2026-11-08
 
 ### Removed

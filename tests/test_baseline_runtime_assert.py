@@ -1,16 +1,17 @@
 """Baseline runtime tools (§4.5) must all resolve inside the running addon
 container. Run under the `docker` marker — skipped if no docker in env.
 
-The same built image also carries the release build's two launch-path guards
-(#957); the tests at the bottom run each guard's own `RUN` body against it with
-one launch-path program broken, and require the guard to refuse. They prove the
-guards' MECHANISM on this runner's architecture only. No test in this tree can
+The same built image also carries the release build's compile smoke (#957);
+the tests below run its own `RUN` body against it with Casa's service database
+broken, and require the smoke to refuse, and check that it compiles the
+sources the base's boot compiles. They prove the smoke's MECHANISM on this
+runner's architecture only. No test in this tree can
 establish that the published aarch64 image is healthy; that is what a native
 aarch64 lane would run (#985).
 """
 from __future__ import annotations
 
-import importlib.util
+import shlex
 import shutil
 import subprocess
 import uuid
@@ -114,35 +115,45 @@ def test_tool_on_path(tool: str, image_tag: str) -> None:
 
 
 # --------------------------------------------------------------------------
-# #957: the release build's launch-path guards refuse a broken program.
+# #957: the release build's compile smoke refuses a service database that
+# does not compile, and compiles what the base's boot compiles.
 # --------------------------------------------------------------------------
 
 REPO = Path(__file__).resolve().parents[1]
 
-# A truncated ELF header with an unknown machine: the kernel refuses it with
-# ENOEXEC on any host, including one with a qemu binfmt handler registered.
-_BOGUS_ELF = (
-    r"printf '\177ELF\002\001\001\000\000\000\000\000\000\000\000\000\002\000\377\377'"
-    ' > "$f"; head -c 200 /dev/zero >> "$f"'
-)
+# The base's stage2: it compiles Casa's service database at every container
+# start. Fixed by s6-overlay's own layout, independent of the overlay version.
+RC_INIT = "/package/admin/s6-overlay/etc/s6-linux-init/skel/rc.init"
 
 
-def _guard_bodies() -> tuple[str, str]:
-    """The exec probe's and the compile smoke's RUN bodies, read VERBATIM from
-    casa/Dockerfile with the same instruction reader the list pin uses; a copy
+def _logical_instructions(text: str) -> list[str]:
+    """Dockerfile instructions with backslash continuations joined; blank lines
+    and whole-line comments are dropped, as the Dockerfile parser drops them."""
+    out: list[str] = []
+    current = ""
+    for raw in text.split("\n"):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if raw.rstrip().endswith("\\"):
+            current += raw.rstrip()[:-1] + " "
+            continue
+        out.append(current + raw)
+        current = ""
+    if current:
+        out.append(current)
+    return out
+
+
+def _smoke_body() -> str:
+    """The compile smoke's RUN body, read VERBATIM from casa/Dockerfile; a copy
     would pin the copy."""
-    spec = importlib.util.spec_from_file_location(
-        "_casa_launch_path_guard", REPO / "tests" / "test_launch_path_guard.py")
-    guard = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(guard)
     text = (REPO / "casa" / "Dockerfile").read_text(encoding="utf-8")
-    runs = [i.strip()[len("RUN "):] for i in guard._logical_instructions(text)
+    runs = [i.strip()[len("RUN "):] for i in _logical_instructions(text)
             if i.strip().startswith("RUN ")]
-    probe = [b for b in runs if "subprocess.run([p]" in b]
     smoke = [b for b in runs if 's6-rc-compile "${scratch}/db"' in b]
-    assert len(probe) == 1 and len(smoke) == 1, (probe, smoke)
-    assert len(guard.probe_instructions(text)) == 1
-    return probe[0], smoke[0]
+    assert len(smoke) == 1, smoke
+    return smoke[0]
 
 
 def _run_in_image(image_tag: str, script: str) -> subprocess.CompletedProcess:
@@ -151,27 +162,6 @@ def _run_in_image(image_tag: str, script: str) -> subprocess.CompletedProcess:
          "--entrypoint", "/bin/bash", image_tag, "-o", "pipefail", "-c", script],
         capture_output=True, text=True,
     )
-
-
-_TARGET = 'f="$(readlink -f "$(command -v s6-rc-update)")" && '
-
-
-@pytest.mark.parametrize("mutation", [
-    "",
-    _TARGET + 'chmod 0644 "$f"',
-    _TARGET + _BOGUS_ELF,
-    _TARGET + ': > "$f"',
-    _TARGET + "printf 'echo hi\\n' > \"$f\"",
-    _TARGET + 'rm -f "$f"',
-], ids=["healthy", "mode-0644", "bogus-elf", "empty", "no-shebang-text", "removed"])
-def test_exec_probe_refuses_an_unlaunchable_program(mutation: str, image_tag: str) -> None:
-    probe, _ = _guard_bodies()
-    r = _run_in_image(image_tag, f"{mutation}\n{probe}" if mutation else probe)
-    if not mutation:
-        assert r.returncode == 0, r.stderr
-        return
-    assert r.returncode != 0, (mutation, r.stdout, r.stderr)
-    assert "s6-rc-update" in r.stderr, r.stderr
 
 
 @pytest.mark.parametrize("mutation", [
@@ -183,13 +173,43 @@ def test_exec_probe_refuses_an_unlaunchable_program(mutation: str, image_tag: st
 def test_compile_smoke_refuses_a_database_that_does_not_compile(
     mutation: str, image_tag: str,
 ) -> None:
-    _, smoke = _guard_bodies()
+    smoke = _smoke_body()
     r = _run_in_image(image_tag, f"{mutation}\n{smoke}" if mutation else smoke)
     if not mutation:
         assert r.returncode == 0, r.stderr
         return
     assert r.returncode != 0, (r.stdout, r.stderr)
     assert "does not compile" in r.stderr, r.stderr
+
+
+def test_compile_smoke_compiles_what_the_boot_compiles(image_tag: str) -> None:
+    """The smoke stands for the boot only while it compiles the same sources.
+    BUILD_FROM floats, so the base's stage2 is read from the built image: its
+    one `s6-rc-compile` call, with the profile and bundle directories at their
+    defaults, must name the smoke's three directories."""
+    r = _run_in_image(image_tag, f"cat {RC_INIT}")
+    assert r.returncode == 0, r.stderr
+    rc_init = r.stdout
+    assert "\n  profiledir=/etc/s6-overlay\n" in rc_init, rc_init
+    assert '\n  bundledir="$profiledir/user-bundles.d"\n' in rc_init, rc_init
+    calls = [ln for ln in rc_init.splitlines()
+             if ln.strip().startswith("s6-rc-compile ")]
+    assert len(calls) == 1, calls
+    argv = shlex.split(calls[0])
+    sources = argv[argv.index("--") + 2:]
+    expand = {"$profiledir/s6-rc.d": "/etc/s6-overlay/s6-rc.d",
+              "$bundledir": "/etc/s6-overlay/user-bundles.d"}
+    boot = [expand.get(s, s) for s in sources]
+
+    smoke = shlex.split(_smoke_body().split("&&")[1])
+    assert smoke[:2] == ["s6-rc-compile", "${scratch}/db"], smoke
+    r = _run_in_image(image_tag, " ".join(
+        ["readlink", "-e", *boot, ";", "echo", "---", ";",
+         "readlink", "-e", *smoke[2:]]))
+    assert r.returncode == 0, r.stderr
+    boot_dirs, smoke_dirs = (part.split() for part in r.stdout.split("---"))
+    assert len(boot_dirs) == 3 and sorted(boot_dirs) == sorted(smoke_dirs), (
+        boot_dirs, smoke_dirs)
 
 
 # --------------------------------------------------------------------------

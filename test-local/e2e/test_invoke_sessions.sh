@@ -60,14 +60,21 @@ uuid_count=$(echo "$webhook_keys" | grep -Ev "^($exp_a|$exp_b)$" | grep -c "^web
     || fail "expected 2 UUID-backed invoke sessions, got $uuid_count (keys: $webhook_keys)"
 pass "C-3b each chat_id-less invoke gets its own session"
 
-log "C-4: 5 default plugins materialized (store + registry) after boot"
-# v0.71.0 unified arch: the init-plugin-store oneshot imports the bundled
-# artifacts into /config/plugins/store/<name>/<artifact_id>/ and seeds the
-# registry. No cc-home marketplace, no enabled-flag filter.
-store_count=$(docker exec "$NAME" sh -c 'ls -1 /config/plugins/store 2>/dev/null | wc -l')
-[ "$store_count" -ge 5 ] \
-    || fail "expected >=5 plugin dirs in /config/plugins/store, got $store_count"
-reg_count=$(docker exec "$NAME" sh -c 'jq ".plugins | length" /config/plugins/registry.json')
-[ "$reg_count" -ge 5 ] \
-    || fail "expected >=5 registry entries in registry.json, got $reg_count"
-pass "C-4 default plugins materialized: store=$store_count registry=$reg_count"
+log "C-4: the plugin store boots empty and clean (no bundled plugins since v0.349.0)"
+# The init-plugin-store oneshot still runs on every boot: it creates the store,
+# runs the registry/resolve pass and writes /data/plugin-health.json. The image
+# carries no bundle and no default registry, so a fresh install has no plugins
+# and nothing to report.
+store_count=$(docker exec "$NAME" sh -c 'test -d /config/plugins/store && ls -1A /config/plugins/store | wc -l') \
+    || fail "init-plugin-store did not create /config/plugins/store"
+[ "$store_count" -eq 0 ] \
+    || fail "expected an empty /config/plugins/store on a fresh boot, got $store_count entries"
+reg_count=$(docker exec "$NAME" sh -c \
+    'if [ -e /config/plugins/registry.json ]; then jq ".plugins // [] | length" /config/plugins/registry.json; else echo 0; fi')
+[ "$reg_count" -eq 0 ] \
+    || fail "expected no registry entries on a fresh boot, got $reg_count"
+issue_count=$(docker exec "$NAME" sh -c 'jq ".issues | length" /data/plugin-health.json') \
+    || fail "init-plugin-store wrote no readable /data/plugin-health.json"
+[ "$issue_count" -eq 0 ] \
+    || fail "expected no plugin-health issues on a fresh boot, got $issue_count: $(docker exec "$NAME" cat /data/plugin-health.json)"
+pass "C-4 plugin store boots empty and clean: store=$store_count registry=$reg_count issues=$issue_count"
