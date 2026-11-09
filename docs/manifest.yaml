@@ -114,7 +114,11 @@
 
 - doc: doctrine/invariants.md
   kind: generated
-  summary: Every INV-* id in families A-D, its statement, and the file that defines it.
+  summary: Every INV-* id in families A-B, its statement, and the file that defines it.
+
+- doc: doctrine/invariants-c-d.md
+  kind: generated
+  summary: Every INV-* id in families C-D, its statement, and the file that defines it.
 
 - doc: doctrine/invariants-e.md
   kind: generated
