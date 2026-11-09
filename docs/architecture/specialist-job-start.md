@@ -10,8 +10,8 @@ last_reviewed: 2026-10-03
 
 How a specialist starts a background job its own plugins declare, from its own turn: which
 turns are offered `start_job`, which jobs a specialist's call can resolve, which launch gates
-apply to it, and the origin the job runs with. The job itself — its declaration, its batch
-loop, its one-per-manifest-name rule and the resident's own `start_job` — is
+apply to it, and the origin the job runs with. The job itself — its declaration, its one long
+session, its one-per-manifest-name rule and the resident's own `start_job` — is
 [`background-jobs.md`](background-jobs.md); the desk a swipe-reply turn runs in is
 [`specialist-desk.md`](specialist-desk.md); the ACL and the depth cap a delegation passes are
 [`delegation.md`](delegation.md).
@@ -21,8 +21,8 @@ loop, its one-per-manifest-name rule and the resident's own `start_job` — is
 **A specialist owns its plugins' work.** When the operator asks a specialist for something
 its plugin does as a job — in a desk turn, or in a turn the resident delegated to it — the
 specialist starts the job itself, on itself, with `start_job(job, task, context)`. The job is
-exactly the job the resident would have started on that specialist: the same topic, batch
-loop, refusals and end notice.
+exactly the job the resident would have started on that specialist: the same topic, session,
+refusals and end notice.
 
 **Offered by the build, decided at the call.** A specialist's desk, delegated or tap build is
 offered `start_job` when the plugins it loads (after env withholding) declare at least one job;
@@ -69,7 +69,7 @@ its end notice, with its post echoes, goes to the resident.
 The two exceptions travel to the one prelaunch call through a context variable set and reset
 around that call only, so nothing the launch later spawns inherits them.
 Because the job keeps the calling turn's origin, its starter line
-([`background-job-fresh-sessions.md`](background-job-fresh-sessions.md)) is read from that origin too: a desk turn's
+([`background-job-session.md`](background-job-session.md)) is read from that origin too: a desk turn's
 start reads `operator`, and a delegated turn's start reads the token of the resident's turn that
 delegated (`operator` when that turn was the operator's own or answered by them, `agent` for a
 scheduled or webhook turn), whether the resident waited for the delegation or not. The specialist

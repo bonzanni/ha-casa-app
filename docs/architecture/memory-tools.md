@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-02
+last_reviewed: 2026-11-09
 ---
 
 # Memory tools: search, browse, open and correct
@@ -29,17 +29,17 @@ its own; a model calls a tool.
 
 **Every object a tool returns is checked against the reader's clearance, one by one.** The
 clearance is the one the turn path uses: the turn's stamped origin, or for an engagement's
-call the markers its own record carries (INV-MEM-008). A search hit and each of its window
+call the markers its own record carries (INV-MEM-045). A search hit and each of its window
 neighbours are kept only when that clearance reads the event's tier, read from the store at
 the time of the search; a browse filters every event of its days the same way. Both filter
 **before** anything is paged or counted, so a page break, a page count or an event count
 never moves because of an event the reader cannot read. `open_memory` reads only the ledger
 the reader's clearance is served (the highest maintained ledger at or below it): an id of
-another ledger gets exactly the answer an id that exists nowhere gets, `unknown`. A
-clearance lowered while a read runs — an engagement's clamp — is noticed when it returns,
-and the read runs again at the new clearance before anything is returned; for a call bound
-to an engagement, that engagement's own record, read live, is the authority, not the
-origin its call inherited.
+another ledger gets exactly the answer an id that exists nowhere gets, `unknown`. The
+clearance is resolved again when a read returns, and a read whose clearance changed while
+it ran runs again at the new one before anything is returned; for a call bound to an
+engagement, that engagement's own record, read live, is the authority, not the origin its
+call inherited.
 
 **Which specialist's output is kept is decided when it is captured.** Output a specialist
 produces while it writes no memory is never stored (INV-MEM-032), so no tool can return it;
@@ -158,7 +158,7 @@ conversation itself still carries his words.
 
 **A new memory read** opens every connection with the turn-path bound and joins the timing
 pin in `tests/test_memory_tools_busy.py`, resolves clearance through `_memory_reader`, runs
-its blocking read through `_read_memory` (off the event loop, re-run on a clamp), filters every returned
+its blocking read through `_read_memory` (off the event loop, re-run when the clearance changed meanwhile), filters every returned
 object by its own tier or ledger before paging or counting, and frames its `ok` result with
 the shared note.
 

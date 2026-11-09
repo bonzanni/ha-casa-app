@@ -199,28 +199,12 @@ def _sentences(text):
     return [s for s in re.split(r"(?<=[.!?])\s+|\n\s*\n", text) if s.strip()]
 
 
-def _batch_one_block(body):
-    """The skill's ``- Batch 1:`` list item with its continuation lines: it ends at
-    the next list item, heading or blank line. The worker reads per-turn
-    instructions from these items, so the order is checked INSIDE this one."""
-    lines = body.splitlines()
-    starts = [i for i, l in enumerate(lines) if re.match(r"-\s+Batch 1\b", l)]
-    assert len(starts) == 1, starts
-    block = [lines[starts[0]]]
-    for line in lines[starts[0] + 1:]:
-        if not line.strip() or re.match(r"\s{0,1}[-*#]", line):
-            break
-        block.append(line)
-    return "\n".join(block)
-
-
-def test_the_fixture_check_job_can_offer_once_and_then_complete_inside_its_one_batch():
-    """#1219: a ``batches: 1`` job ends ``ok`` only by calling emit_completion
-    inside that batch; otherwise the next ``start_next_batch`` finalizes it as an
-    error, "reached its limit of 1 batches". A resident-hosted worker reaches
-    ``offer`` through Skill and ToolSearch, so the batch needs Skill + ToolSearch
-    + offer + emit_completion: four turns, five with one of slack. Static only:
-    the live run (one proposal posted, the job ending ok) is PLAY's check."""
+def test_the_fixture_check_job_offers_once_and_then_completes():
+    """#1219: the job ends ``ok`` only by calling emit_completion; a job that
+    stops without it is nudged and then parked, never completed for it. So the
+    skill tells the worker to call ``offer`` once and then ``emit_completion``
+    with status "ok". Static only: the live run (one proposal posted, the job
+    ending ok) is PLAY's check."""
     manifest = validate_manifest(ROOT, NAME)
     assert manifest["casa"]["jobs"]
     text = (ROOT / "skills" / "fixture-check" / "SKILL.md").read_text()
@@ -230,12 +214,8 @@ def test_the_fixture_check_job_can_offer_once_and_then_complete_inside_its_one_b
     assert body.index("`offer`") < body.index("`emit_completion`")
     offer_sentences = [s for s in _sentences(body) if "`offer`" in s]
     assert any(re.search(r"\bonce\b", s) for s in offer_sentences), offer_sentences
-    # ...and both inside Batch 1's own instruction item, offer first, completion
-    # naming status "ok": an order that holds only across items does not count
-    batch1 = _batch_one_block(body)
-    assert "`offer`" in batch1 and "`emit_completion`" in batch1, batch1
-    after_offer = batch1[batch1.index("`offer`"):]
-    assert re.search(r'`emit_completion`[^.]*status:\s*"ok"', after_offer), batch1
+    after_offer = body[body.index("`offer`"):]
+    assert re.search(r'`emit_completion`[^.]*status:\s*"ok"', after_offer), body
     # nothing tells the worker to stop short of completing, or not to complete
     assert "Nothing else" not in body
     for sentence in _sentences(body):

@@ -212,27 +212,16 @@ effects still complete, detached (INV-ENG-010 in
 [`engagement-finalization.md`](engagement-finalization.md)).
 The pre-terminal refusals above all precede the teardown and always return their results.
 
-**A launch's first turn ends without leaving an artifact.** The engagement-launch tools
-answer `pending` once the engagement's client is open and its first turn has an anchored
-owner (INV-ENG-021, [`engagement-launch-detach.md`](engagement-launch-detach.md)); before
-v0.314.0 they answered when the driver's `start` returned, and that answer used to be given
-even when the first turn had been cut off mid-flight — the record then sat active with
-nothing posted. The `in_casa` launch owner asks the driver what the turn left behind and,
-when it left nothing, hands the death to one reporter that records a distinct
-`launch_turn_incomplete` error kind, tells the operator in the topic before closing it, and
-tells the engager over the bus — the tool call has already returned, so no envelope carries
-it. "Left nothing" includes text that never arrived: a launch turn whose streamed text
-was wholly refused by Telegram (the stream handle's finalize established `not delivered` —
-INV-TG-006 in [`telegram.md`](telegram.md)) is a topic showing nothing, and takes the same
-owner; an ambiguous delivery records nothing, since the text may be on screen. Only that
-outcome changes: a launch whose turn ran to its end is reported nowhere, and neither is one
-that lost the terminal race to its own completion, because the engagement really did report
-itself. The kind is deliberately its own rather than the generic
-driver-start failure — a reader who cannot tell "the driver never got going" from "the turn
-ran and then died" cannot act on either. See INV-ENG-011 in
-[`engagements.md`](engagements.md). A launch turn that stopped at its turn limit is the
-exception: whatever it left, it is not a death — the engagement stays open and the owner
-posts Casa's step-limit line instead (INV-ENG-020, same document).
+**A launch ends before it answers.** The job-launch tools answer `pending` once the job's
+session is open and its brief is queued; the job's first turn runs after that, in the
+session's reader (INV-ENG-021, [`engagement-launch-detach.md`](engagement-launch-detach.md)).
+A launch that fails before that answer with a named fault returns that fault's kind to the
+calling turn; one cancelled after its record exists records `launch_cancelled`, tells the
+operator in the topic before closing it, and tells the engager over the bus, since no envelope
+carries it (INV-ENG-030, same document). From the answer on, nothing is reported to the
+launching call: a first turn that ends with nothing visible is a turn end the job's
+turn-end handler nudges or parks, and a session that ends is resumed once
+([`background-job-session.md`](background-job-session.md)).
 
 **A delivery is uncertain.** The send classifiers separate definitive refusal from
 uncertainty, and an uncertain Telegram send is deliberately not retried — a duplicate

@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-08
+last_reviewed: 2026-11-09
 ---
 
 # Engagement launch failure and restart
@@ -40,15 +40,16 @@ A LOST race means another writer already committed a terminal, and that writer o
 terminal side effect (INV-ENG-001) — so painting `failed` here contradicts the durable record
 and closes a topic its owner is about to close for its own reason. A ROLLED-BACK persist means
 the record is still live and disk agrees: an open topic over a live record is recoverable, a
-closed one is not, and the next turn that resumes that record would find its topic gone. All seventeen named arms route through one owner that asks the transition exactly one
+closed one is not, and the next turn that resumes that record would find its topic gone. All four named arms route through one owner that asks the transition exactly one
 question and lets its three outcomes decide; that owner is anchored and shielded, so a
 cancellation arriving after the durable commit cannot leave a terminal record behind a
 permanently open topic. The caller is told its own named fault on all three outcomes, because
 that fault is true of this launch whoever won the record.
 
-The behaviour here is also measured against INV-ENG-011, stated in
-[`architecture/engagement-turn-outcomes.md`](engagement-turn-outcomes.md), which keeps a launch that ended
-without a terminal artifact on the launch-death path.
+A launch that ends without a named fault — cancelled after its record exists, or caught by
+Casa's stop — is the launch-death reporter's instead (INV-ENG-030, in
+[`architecture/engagement-launch-detach.md`](engagement-launch-detach.md)), which posts the
+bounded notice these arms do not.
 
 ## Failure behavior
 
@@ -59,31 +60,25 @@ and plugin-withholding refusals, and what each payload discloses, are described 
 **A driver fails to start after the record exists.** The engagement is marked errored, topic
 cleanup is attempted, and the caller is told the start failed.
 
-These launch-failure arms — a missing driver, a clearance change during launch, a superseded
-plugin, a missing prompt template, and a client that would not open — deliberately do NOT
-take the launch-death path's bounded topic notice. The reason is not that the death path has
-nobody to answer: its post-launch arms have no live tool call left, because the launch
-answered `pending` before the turn ran (INV-ENG-021), so they tell the engager over the bus
-instead. The reason is that these arms carry a *named fault* and the death path carries only
-an *absence*. Each of the five is a fact about why the launch did not happen, returned
-synchronously to the turn that asked for it, in a kind string it can act on — one of them
-carries retry advice only that caller can use. The topic is aborted silently because the
-launch never reached the point where the engagement is handed over as live: the tool call
-still owns it, and is the one answering for it. An API-level fault raised by the launch turn
-itself used to be the sixth of these; it is not any more, because the turn runs after the
-tool call has returned and there is no caller to hand the kind to — it takes the death path,
-the bounded notice names the fault, and the engager is told the same kind live. Text the turn
-had already posted progressively can be standing in the topic and cannot be retracted; this
-is a claim about who answers, not that nothing ran. A launch death has no such fact to hand back: the turn ran to its end and
-left nothing, or the launch was cancelled, and an operator's topic that says nothing is what
-the notice exists to explain.
+These launch-failure arms — options that would not build (`options_build_failed`), a profile
+that would not persist (`profile_persist_failed`), a missing driver (`no_driver`), and a client
+that would not open (`driver_start_failed`) — deliberately do NOT take the launch-death path's
+bounded topic notice. The reason is that these arms carry a *named fault* and the death path
+carries only an *absence*. Each of the four is a fact about why the launch did not happen,
+returned synchronously to the turn that asked for it, in a kind string it can act on. The
+topic is aborted silently because the launch never reached the point where the job is handed
+over as live: the tool call still owns it, and is the one answering for it. A launch death has
+no such fact to hand back — the launch was cancelled — and an operator's topic that says
+nothing is what the notice exists to explain. Once the launch has answered `pending`, nothing
+here applies: a fault on one of the job's turns is a turn end, continued once and then parked,
+and a session that ends is resumed once
+([`background-job-session.md`](background-job-session.md), INV-BGJOB-017 and INV-BGJOB-018).
 
 The claim is bounded to what the tree provides, and it is a claim about the *caller*: the
 failure kind reaches the live invoking turn. Whether it then reaches the operator is that
 turn's own business, and nothing here relays it. The exemption is from the notice, and from
-nothing else — it does not extend to a cancellation, nor to a launch turn that ended after
-starting without its terminal artifact, both of which stay on the launch-death path
-(INV-ENG-011). What it never extended to is the *strictness* of the mark behind the abort, and
+nothing else — it does not extend to a cancellation, which stays on the launch-death path
+(INV-ENG-030). What it never extended to is the *strictness* of the mark behind the abort, and
 that is now settled the other way by INV-ENG-019 above: the exemption buys these arms their
 silence, never the authority to close a topic on a transition they did not win or did not
 persist.
@@ -107,9 +102,11 @@ The notice is *attempted*, never guaranteed: a wedged or failing transport still
 bounded and logged.
 
 **A restart interrupts an engagement.** Persisted records load with `active` rewritten to
-`idle`, because no live driver survived to make `active` true. No engagement is resumed at
-boot; a live one that runs a background job is continued once channels and residents are up,
-as [`architecture/background-jobs.md`](background-jobs.md) describes. An `executor` record an
+`idle`, because no live driver survived to make `active` true. A live job is resumed once
+channels and residents are up — one attempt, ending the job `error` when it fails; a job
+waiting on the operator with nothing journaled waits for their next input instead — as
+[`architecture/background-job-session.md`](background-job-session.md) describes; no other
+engagement is resumed at boot. An `executor` record an
 older install left behind, from when the configurator ran as an engagement, has no config to
 rebuild from: its resume refuses (`config not found`) rather than open a bare session.
 
@@ -135,9 +132,9 @@ in its closed topic. It never reconstructs an answer from the task. It does say 
 earlier outcome reached before the restart, whose announcement was never confirmed, and gives
 the time the record went terminal, or says that time is unknown (INV-ENG-018).
 
-Background-job continuation uses the periodic recovery and finalize paths described in
-[`background-jobs.md`](background-jobs.md); the two-strike resume rule for a non-job
-engagement does not terminalize a job. Launch cancellation remains governed by the launch owner.
+A job's session that ends while it runs is resumed once by the driver's session-loss path
+([`background-job-session.md`](background-job-session.md), INV-BGJOB-018); a launch cancelled
+before it answered is the launch-death reporter's (INV-ENG-030).
 
 ## Extension points
 
@@ -148,7 +145,7 @@ silently; the second belongs on the launch-death path, with its bounded notice.
 **A new terminal writer** decides whether it is the one telling the engager. If it announces
 the outcome, it arms the durable obligation in the same transition that commits the terminal
 — the finalization funnel does (except for the completed end of a quiet scheduled run nobody
-interacted with, which is told to no one, INV-BGJOB-010 and INV-BGJOB-015), and so do the detached launch owner's death report and the
+interacted with, which is told to no one, INV-BGJOB-010 and INV-BGJOB-015), and so do the cancellation owner's death report and the
 inline named-fault abort, the latter acknowledged by its launcher's own return when it won, and handed to the abort's own completion when the launcher was cancelled first; if it does not
 — a bare mark — it leaves the default and owes nothing; a reporter that asks to arm but loses its
 transition writes nothing, and so arms nothing. The
@@ -173,6 +170,8 @@ decide it.
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)
+- [`architecture/engagement-launch-detach.md`](../architecture/engagement-launch-detach.md)
+- [`architecture/background-job-session.md`](../architecture/background-job-session.md)
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
 - [`architecture/delegation.md`](../architecture/delegation.md)
 <!-- END SOURCEMAP -->

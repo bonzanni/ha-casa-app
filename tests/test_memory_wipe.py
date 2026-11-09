@@ -297,6 +297,134 @@ async def test_an_open_in_casa_engagement_is_not_resumed_after_the_wipe(
     assert rec.status in ("active", "idle")
 
 
+# --- a background job after the wipe ------------------------------------------------
+
+JOB_ID = "f1" * 16
+
+
+async def _wiped_job(tmp_path, monkeypatch, *, awaiting=None):
+    """One open job's record, through the container-start step, then Casa's
+    boot wiring around it: the real registry loaded from the file the step
+    left, the real in_casa driver and the real job runner wired as
+    ``casa_core`` wires them. The CLI is the session driver tests' fake; the
+    finalize funnel is recorded."""
+    import background_jobs as bj
+    import job_inbox
+    import tools
+    from claude_agent_sdk import ClaudeAgentOptions
+    from drivers import in_casa_driver as drv
+    from engagement_registry import EngagementRecord, EngagementRegistry
+    try:
+        from tests.test_job_session_driver import FakeCLI
+    except ImportError:  # pragma: no cover — direct-path collection
+        from test_job_session_driver import FakeCLI
+
+    root, proc = tmp_path / "root", w.fake_proc(tmp_path)
+    record = w.under(root, "/data/engagements.json")
+    record.parent.mkdir(parents=True)
+    job = {"title": "Garden notes", "skill": "q:job", "context": "",
+           "brief_uuid": "b0000000-0000-4000-8000-000000000001"}
+    if awaiting is not None:
+        job[bj.AWAITING_KEY] = awaiting
+    writer = EngagementRegistry(tombstone_path=str(record))
+    writer._records[JOB_ID] = EngagementRecord(
+        id=JOB_ID, kind="specialist", role_or_type="finance",
+        driver="in_casa", status="active", topic_id=7, started_at=0.0,
+        last_user_turn_ts=0.0, completed_at=None, sdk_session_id=w.SID,
+        origin={"channel": "telegram", "_origin_route": "telegram",
+                "_origin_clearance": "private", "job": job},
+        task="Tidy the garden notes")
+    await writer._write_tombstone_locked(strict=True)
+    w.write(w.under(root, f"/config/cc-home/.claude/projects/-cwd/{w.SID}.jsonl"),
+            "turns")
+    assert maintenance.write_wipe_intent(str(root)) == "written"
+    assert w.run_oneshot(root, proc).stdout.strip() == "done"
+
+    FakeCLI.instances, FakeCLI.events = [], []
+    FakeCLI.on_enter = FakeCLI.hold_disconnect = None
+    monkeypatch.setattr(drv, "ClaudeSDKClient", FakeCLI)
+    monkeypatch.setattr(job_inbox, "INBOX_ROOT", tmp_path / "job-inbox")
+    transcript = tmp_path / f"{w.SID}.jsonl"
+    transcript.write_text("")
+    monkeypatch.setattr(job_inbox, "transcript_path", lambda cwd, sid: transcript)
+    monkeypatch.setattr(tools, "build_engagement_resume_options",
+                        lambda rec, sid: ClaudeAgentOptions(resume=sid))
+    finalized: list[dict] = []
+
+    async def finalize(rec, **kw):
+        finalized.append(kw)
+        rec.status = kw["outcome"]
+    monkeypatch.setattr(tools, "_finalize_engagement", finalize)
+
+    class Channel:
+        def __init__(self):
+            self.notices: list[str] = []
+
+        async def _post_engagement_notice(self, rec, text):
+            self.notices.append(text)
+
+    reg = EngagementRegistry(tombstone_path=str(record))
+    await reg.load()
+    channel = Channel()
+    monkeypatch.setattr(bj, "_states", {})
+    monkeypatch.setattr(bj, "_runner", None)
+    runner = bj.JobRunner(registry=reg, channel=channel)
+    driver = drv.InCasaDriver(
+        topic_stream_factory=lambda topic: None, record_lookup=reg.get,
+        begin_turn_delivery=reg.begin_turn_delivery,
+        on_turn_end=runner.turn_ended, on_session_lost=runner.session_lost,
+        on_operator_written=bj.note_operator_input)
+    runner.driver = driver
+    bj.configure(runner)
+    return reg, driver, channel, finalized, FakeCLI
+
+
+async def test_a_wiped_job_is_not_resumed_at_boot_and_ends_as_an_error(
+        tmp_path, monkeypatch):
+    """The wipe deleted the job's session transcript, so the one long session
+    cannot continue. Boot's resume of every open job tells the topic it is
+    resuming, opens no session for the job and ends it as an error: "could
+    not be resumed after a restart"."""
+    import casa_core
+    reg, driver, channel, finalized, cli = await _wiped_job(tmp_path, monkeypatch)
+    assert reg.get(JOB_ID).context_rebuild_pending is True
+
+    await casa_core._resume_background_jobs(reg, channel)
+
+    assert channel.notices == ['↻ Resuming "Garden notes" after a restart.']
+    assert cli.instances == []
+    assert [(f["outcome"], f["text"]) for f in finalized] == [
+        ("error", "could not be resumed after a restart")]
+
+
+async def test_a_wiped_job_waiting_on_the_operator_ends_at_their_next_message(
+        tmp_path, monkeypatch):
+    """A job that was waiting for the operator, with nothing journaled, is
+    left alone at boot. Their next message is accepted, but the session it
+    would be written into cannot be resumed, so the job ends as an error:
+    "its session ended unexpectedly"."""
+    import asyncio
+
+    import background_jobs as bj
+    import casa_core
+    reg, driver, channel, finalized, cli = await _wiped_job(
+        tmp_path, monkeypatch, awaiting=bj.AWAITING_ASKED)
+
+    await casa_core._resume_background_jobs(reg, channel)
+    assert channel.notices == [] and finalized == []
+
+    driver.submit_operator(reg.get(JOB_ID), "carry on")
+    for _ in range(200):
+        if finalized:
+            break
+        await asyncio.sleep(0.005)
+
+    assert cli.instances == []
+    assert [(f["outcome"], f["text"]) for f in finalized] == [
+        ("error", "its session ended unexpectedly")]
+    await driver.cancel(reg.get(JOB_ID))
+
+
 async def test_a_valid_record_file_keeps_every_record_and_field(tmp_path):
     root, proc = tmp_path / "root", w.fake_proc(tmp_path)
     record = w.under(root, "/data/engagements.json")

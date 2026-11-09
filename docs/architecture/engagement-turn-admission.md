@@ -1,76 +1,73 @@
 ---
-last_reviewed: 2026-09-01
+last_reviewed: 2026-11-09
 ---
 
-# Engagement turn admission
+# Engagement write admission
 
 > Code is the source of truth. This file is a map; when it and the code disagree, the code wins.
 
 ## Scope
 
-How a turn is admitted to a live engagement: the registry decision taken immediately before
-the call that hands the turn over, where the driver places that decision, and what it does
-and does not fence. The record itself, how an engagement is launched and the driver protocol
-are in [`architecture/engagements.md`](engagements.md); the completion gate that refuses a
-success over input nobody read, and the account of how strong the admission's placement is,
-are in
-[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md); what a
-terminal transition does and does not do to a turn already begun is
+How a write is admitted into a live job's session: the registry decision taken immediately
+before the call that hands the write to the job's client, where the driver places that
+decision, and what it does and does not fence. The record itself, how an engagement is launched
+and the driver protocol are in [`architecture/engagements.md`](engagements.md); the one writer
+per job and what it writes are in
+[`architecture/background-job-session.md`](background-job-session.md) (INV-BGJOB-016); the
+completion gate that refuses a success over input nobody read is
+[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md); what a terminal
+transition does and does not do to a turn already begun is
 [`architecture/engagement-finalization.md`](engagement-finalization.md)'s.
 
 ## Mental model
 
 **Admission is a decision about the hand-off, not about the turn.** The registry says,
-synchronously and immediately before the hand-off, whether this record may receive a turn —
-a terminal record never may — and the guarantee ends where delivery begins: a prompt handed
-to the client cannot be revoked, and stopping a turn already running is the finalize path's
-driver teardown, never the admission's.
+synchronously and immediately before the hand-off, whether this record may receive a write —
+a terminal record never may — and the guarantee ends where delivery begins: a message handed
+to the client cannot be revoked, and stopping a running session is the finalize path's driver
+teardown, never the admission's.
 
 ## Contracts & invariants
 
-**INV-ENG-009**: A turn is admitted by the registry immediately before the call that hands it to the engagement, with no suspension point in between — a record found idle is `active` by then, and a terminal record is never handed a turn. For `in_casa` the admission precedes the awaited client hand-off, and covers follow-up turns only — the launch turn is INV-ENG-011's. It does not fence the hand-off itself: a terminal transition landing once a turn has begun cannot revoke it, and stopping an in-flight turn stays `driver.cancel`'s job. A refused turn is never reported as delivered and never told twice.
+**INV-ENG-009**: Every write into an `in_casa` job's session — the brief, an operator's message, a nudge, a continue or restart line — is admitted by the registry immediately before the client call that hands it over, with no suspension point in between: a record found idle is `active` by then, and a terminal record is never written to. It does not fence the hand-off itself: a terminal transition landing once a write has begun cannot revoke it, and stopping a running session stays `driver.cancel`'s job. A refused write is never reported as delivered and never told twice.
 
-**One decision, and where it can be placed.** The registry answers it synchronously —
-terminal refuses, `idle` delivers and becomes `active` without re-stamping the last-turn time,
-`active` delivers, and an unknown record delivers rather than refusing. What bounds the
-guarantee is *where the answer can be placed*: for `in_casa` there is no instant at which the
-engagement has provably seen nothing, because the hand-off is an awaited client call.
-[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) carries that
-account, next to the driver inbound surface it belongs to.
+**One decision, and where it is placed.** The registry answers it synchronously
+(`EngagementRegistry.begin_turn_delivery`) — terminal refuses, `idle` delivers and becomes
+`active` without re-stamping the last-turn time, `active` delivers, and an unknown record
+delivers rather than refusing. The job's delivery worker is the only writer into the session,
+and it asks the question under the session's write lock with only synchronous statements
+between the answer and `client.query`. There is no turn lock: a write never waits for a turn to
+end, and the CLI takes a message written mid-turn up at its next step. The brief is admitted
+the same way, so a job that ended between its session opening and the brief's write receives
+nothing; Casa's own writes, which pass no channel seam, are fenced at the driver all the same.
 
-The `in_casa` admission covers FOLLOW-UP turns only, which is a decision rather than an
-omission. A refusal on the launch turn would surface through the launch owners' error-marking
-and death-reporting path, telling the operator a launch died for an engagement that a racing
-writer — or their own cancellation — had just deliberately ended, which INV-ENG-013 forbids;
-and the only writer racing that window is the coroutine that created the record moments
-earlier. The launch turn's owner stays INV-ENG-011.
+An operator's message is admitted twice, and both answers matter. The seam admits it when it
+journals it (`InCasaDriver.submit_operator`), so a message to a terminal record is refused at
+once and its one notice told there
+([`engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md), INV-ENG-029). The
+worker asks again immediately before the write, because the job can end while the message
+waits in the queue; a write refused there is dropped, and the journal's terminal branch tells
+that message as lost.
 
-The `in_casa` follow-up turn is refused at that same point for one other reason: the
-session it would be sent into was invalidated by a clearance downgrade while the turn waited
-for the turn lock. Either the rebuild is still pending, or the client the turn captured was
-replaced. The ticket is not accepted, so the message is still unread, and the delivery task
-waits for the fresh session and sends the same message there (INV-MEM-011,
-[`architecture/memory-scoping.md`](memory-scoping.md)).
-
-What it does not cover: a turn already handed to the client. A terminal transition landing
-mid-turn cannot revoke it, so a turn already begun runs until the finalize path's driver
-teardown stops it. The admission also expresses no opinion on a record the registry does not
-know, which is unreachable for a live engagement.
+What it does not cover: a write already handed to the client. The client call is awaited, and
+whether it reaches its transport write before its first internal suspension is the SDK's
+business, so a terminal transition CAN commit while the hand-off is in progress and the message
+still arrives. A terminal landing mid-turn cannot revoke what was written, so a running session
+runs until the finalize path's driver teardown stops it. The admission also expresses no
+opinion on a record the registry does not know, which is unreachable for a live job.
 
 ## Failure behavior
 
-**The registry refuses the turn.** For `in_casa` the refusal lands before the awaited client
-hand-off. A refused turn is never
-reported as delivered and never told twice (INV-ENG-009 above); how the delivery task
-settles the refused turn's admission ticket is described with the driver inbound surface in
-[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md).
+**The registry refuses the write.** The worker drops it from the queue before the client call
+and writes nothing more into a terminal job; an operator's message refused there is told once
+by the journal's terminal branch, and a refusal at the seam is told by the seam (INV-ENG-009
+above, INV-ENG-029).
 
 ## Extension points
 
-**A new driver** places its admission at the last synchronous instant before the
-engagement can observe the turn — the placement, not the decision, is what a driver
-chooses. Everything else a driver implements is in
-[`architecture/engagements.md`](engagements.md).
+**A new driver** places its admission at the last synchronous instant before the engagement
+can observe the write — the placement, not the decision, is what a driver chooses. Everything
+else a driver implements is in [`architecture/engagements.md`](engagements.md).
 
 ## Source & test map
 
@@ -87,6 +84,8 @@ chooses. Everything else a driver implements is in
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)
+- [`architecture/background-job-session.md`](../architecture/background-job-session.md)
 - [`architecture/engagement-completion-gate.md`](../architecture/engagement-completion-gate.md)
+- [`architecture/engagement-inbound-disclosure.md`](../architecture/engagement-inbound-disclosure.md)
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
 <!-- END SOURCEMAP -->

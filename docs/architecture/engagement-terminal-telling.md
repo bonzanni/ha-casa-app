@@ -30,18 +30,18 @@ merely having tried. Both directions fail toward telling again rather than towar
 
 ## Contracts & invariants
 
-**INV-ENG-018**: An engagement outcome committed by the finalization funnel carries, in the same durable write as its terminal status, the obligation to tell the party that asked for the work — except the completed end of a quiet scheduled job run nobody interacted with, which is told to no one and arms nothing, a decision the transition makes under its lock from the record's quiet stamp (INV-BGJOB-010, INV-BGJOB-015). That obligation is cleared only by the delivery acknowledgement of the notice that carries it — the notice's narration reaching the transport, or that narration turn ending in a clean chosen silence as INV-JOB-010 defines it, while a turn that ends with no text and no sentinel stays owed — never by the bus accepting the message and never by another record's acknowledgement; a record still carrying it is exempt from terminal-retention expiry, so the obligation outlives the process. Casa's boot owner replays every record that owed one when this process loaded its records and still owes it when the replay reaches it — never one this process armed, which it told live and which, if that notice is never delivered, the next boot replays — addressed from that record's own persisted origin and reporting the FACT of the outcome, never a retained answer the record does not hold; startup awaits that owner unguarded, once the channels and the resident loops are running. A replayed notice says so: it carries one replay statement after its header — an earlier outcome, reached before a Casa restart, whose announcement was never confirmed as delivered — with the time the record was committed terminal, or says that time is unknown; a missing or unusable recorded time never stops the notice from becoming a prompt and never makes a tombstone write fail, a recorded time that is not a finite number never ages the record out, and a notice sent live is never so marked. A rolled-back transition owes nothing, a row written before the field existed owes nothing, and no other terminal writer arms it by default: the two that do — the detached launch owner's death report, which tells the engager over the bus, and the inline named-fault abort, whose returned envelope is the telling and whose return schedules the acknowledgement for a transition it won — opt in explicitly (INV-ENG-021).
+**INV-ENG-018**: An engagement outcome committed by the finalization funnel carries, in the same durable write as its terminal status, the obligation to tell the party that asked for the work — except the completed end of a quiet scheduled job run nobody interacted with, which is told to no one and arms nothing, a decision the transition makes under its lock from the record's quiet stamp (INV-BGJOB-010, INV-BGJOB-015). That obligation is cleared only by the delivery acknowledgement of the notice that carries it — the notice's narration reaching the transport, or that narration turn ending in a clean chosen silence as INV-JOB-010 defines it, while a turn that ends with no text and no sentinel stays owed — never by the bus accepting the message and never by another record's acknowledgement; a record still carrying it is exempt from terminal-retention expiry, so the obligation outlives the process. Casa's boot owner replays every record that owed one when this process loaded its records and still owes it when the replay reaches it — never one this process armed, which it told live and which, if that notice is never delivered, the next boot replays — addressed from that record's own persisted origin and reporting the FACT of the outcome, never a retained answer the record does not hold; startup awaits that owner unguarded, once the channels and the resident loops are running. A replayed notice says so: it carries one replay statement after its header — an earlier outcome, reached before a Casa restart, whose announcement was never confirmed as delivered — with the time the record was committed terminal, or says that time is unknown; a missing or unusable recorded time never stops the notice from becoming a prompt and never makes a tombstone write fail, a recorded time that is not a finite number never ages the record out, and a notice sent live is never so marked. A rolled-back transition owes nothing, a row written before the field existed owes nothing, and no other terminal writer arms it by default: the two that do — the cancellation owner's launch-death report, which tells the engager over the bus, and the inline named-fault abort, whose returned envelope is the telling and whose return schedules the acknowledgement for a transition it won — opt in explicitly (INV-ENG-021).
 
 The obligation follows the WRITER, not the record. This funnel and the launch-death reporter
 reach the same registry method with the same outcome on the same kind of record, and whether
 the write announces is the caller's to say — the funnel does, for every outcome but the completed one of a quiet
 scheduled run that never interacted with the operator — decided inside the transition, from the
 record's stamp as it commits ([`background-job-quiet-runs.md`](background-job-quiet-runs.md)); the reporter does when its
-caller tells on a win, as the detached launch owner and the cancellation owner do, while a
+caller tells on a win, as the cancellation owner and the stop's inline report do, while a
 transition that loses writes nothing and so arms nothing — so no predicate over a record could
 tell them apart, and an armed bit is never read as permission to send, and each caller that announces opts in
 explicitly while every other terminal writer is correct by default. The boot replay, the
-funnel and the launch owner send through one envelope builder
+funnel and the cancellation owner send through one envelope builder
 ([`architecture/engagement-launch-detach.md`](engagement-launch-detach.md)); only the routing is
 shared, each caller's payload is its own. Arming it inside the transition rather than after it is the whole safety property:
 one durable write carries both facts, so there is no window in which the outcome is committed
@@ -121,8 +121,8 @@ with its expectation updated alongside it, is true. A blacklist of forbidden phr
 tried and cut — it was bypassed three times by respelling the same false claims — so the
 rule lives here and at the production sites, where the person making that edit reads it.
 The disclosure counts as a telling in its own right — if it lands, the topic has been told
-why the engagement ended, which is what a follow-up turn's owner reads (INV-ENG-012) — and
-its confirmation is the returned id, on the same rule as the summary's.
+why the engagement ended — and its confirmation is the returned id, on the same rule as the
+summary's.
 
 **The close is unconditional, and bounded.** Withholding the close as a second failure
 signal was considered and rejected on review. It is not authoritative: the mark and the
@@ -134,8 +134,8 @@ still accepts messages, each answered with a refusal, so anything typed there is
 it. The withheld MARK carries the whole signal, and the disclosure names the retention
 deadline. The close is bounded like every other topic operation here, because it is the one
 thing standing between an already-terminal record and its tail: a close that never returned
-would strand the driver teardown and the notification, and with them any follow-up turn
-waiting on the teardown to end its stream.
+would strand the driver teardown, the message journal's terminal branch and the
+notification.
 
 Three things this invariant does *not* do. It does not re-open a completed record because a
 channel failed — the work did complete, and reverting the transition would restore tool

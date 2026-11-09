@@ -1,4 +1,4 @@
-"""The job's brief (INV-BGJOB-005): the one message Casa writes at launch.
+"""The job's brief (INV-BGJOB-016): the one message Casa writes at launch.
 
 It names the job by its engagement id exactly once, right after its first
 line, and carries the launch context byte for byte. The record keeps what the
@@ -72,7 +72,7 @@ async def test_the_launch_prompt_names_the_job_id_once(runtime, monkeypatch):
     assert launch.splitlines()[0].startswith('You are running the background job')
 
 
-async def test_brief_context_is_the_launch_context_verbatim_across_batches_and_restart(
+async def test_the_brief_carries_the_launch_context_verbatim_across_a_restart(
         runtime, monkeypatch):
     """The launch context reaches the brief verbatim, is recorded on the job,
     survives a reload from disk, and the brief rendered from the reloaded

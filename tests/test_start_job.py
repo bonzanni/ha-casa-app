@@ -150,7 +150,7 @@ async def test_launch_limit_prompt_envelope_and_persistence(runtime):
     client = Client.instances[0]
     assert cli_limit(client.options) == str(jobs.JOB_MAX_TURNS)
     rec = runtime.registry.get(result['engagement_id'])
-    # The launch prompt names the job by its engagement id (INV-BGJOB-005).
+    # The launch prompt names the job by its engagement id (INV-BGJOB-016).
     # #1277: the harness origin is the operator's own turn.
     assert client.prompts == [jobs.launch_prompt(DECL, 'Classify the ledger', 'all rows',
                                                  job_id=rec.id, started_by='operator')]

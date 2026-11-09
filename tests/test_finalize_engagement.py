@@ -201,6 +201,45 @@ class TestFinalizeU3Transition:
 # --- G4 D5 (v0.96.0): typed finalize result --------------------------------
 
 
+@pytest.mark.parametrize("outcome", ["cancelled", "error"])
+async def test_a_job_s_cancelled_or_failed_end_carries_its_last_progress_once(
+        tmp_path, outcome):
+    """INV-BGJOB-022: a job's ``cancelled`` or ``error`` end tells what it had
+    done — the funnel appends ``Last progress: <summary>`` to the text the
+    topic and the resident receive, once; a completed end does not."""
+    from engagement_registry import EngagementRegistry
+    from tools import _finalize_engagement, init_tools
+
+    texts = []
+    for out in (outcome, "completed"):
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / f"{out}.json"))
+        rec = await reg.create(
+            kind="specialist", role_or_type="finance", driver="in_casa",
+            task="t", topic_id=42,
+            origin={"role": "assistant", "channel": "telegram",
+                    "job": {"title": "Rows", "last_summary": "12 of 40 rows"}})
+        telegram = MagicMock()
+        telegram.send_to_topic = AsyncMock(return_value=1)
+        telegram.send_response_to_topic = AsyncMock(return_value=1)
+        telegram.close_topic = AsyncMock()
+        cm = MagicMock()
+        cm.get.return_value = telegram
+        bus = MagicMock()
+        bus.notify = AsyncMock()
+        init_tools(channel_manager=cm, bus=bus, specialist_registry=MagicMock(),
+                   mcp_registry=MagicMock(), trigger_registry=MagicMock(),
+                   engagement_registry=reg)
+        await _finalize_engagement(rec, outcome=out, text="Stopped.",
+                                   next_steps=[], driver=_driver_double())
+        posted = telegram.send_response_to_topic.await_args.args[1]
+        told = bus.notify.await_args.args[0].content.text
+        texts.append((posted, told))
+    (posted, told), (done_posted, done_told) = texts
+    for text in (posted, told):
+        assert text.count("Last progress: 12 of 40 rows") == 1
+    assert "Last progress" not in done_posted and "Last progress" not in done_told
+
+
 def test_finalize_result_enum_exists():
     from tools import FinalizeResult
     assert {r.name for r in FinalizeResult} >= {

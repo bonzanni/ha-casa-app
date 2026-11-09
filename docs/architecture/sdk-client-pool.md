@@ -116,9 +116,10 @@ later consumer can record why a turn is about to be cut. A second close overlapp
 first, or one that resumes after an outer bound cancelled an earlier one, re-drains that
 call's live entries with its own window rather than cutting them early. What the transport
 cut itself waits for is unchanged: a client's disconnect is awaited, and a closer already
-inside its disconnect is joined rather than skipped. What that force-close can reach when
-the turn holding the lock is hosting an engagement launch is in
-[`architecture/engagement-turn-outcomes.md`](engagement-turn-outcomes.md).
+inside its disconnect is joined rather than skipped. The force-close never reaches a
+background job: a job's session belongs to no pool, and a resident's tool call that launched
+it returned before the job's first turn
+([`architecture/engagement-launch-detach.md`](engagement-launch-detach.md)).
 
 A client the pool has opened is recorded before it exists. The replacement a turn
 builds goes into the entry map — replacing the entry that turn was serialized

@@ -163,7 +163,7 @@ context 8,000), then the desk block is fitted into what remains of the desk's 12
 context budget — newest exchanges kept, possibly none — after the resident's own context;
 an async launch or a degraded sync still returns `pending` to the resident at once while its
 task waits for the desk. A delegation launched elsewhere (an engagement, a scheduled or
-webhook turn, another chat), a job batch, and a voice turn touch no desk.
+webhook turn, another chat), a job's session, and a voice turn touch no desk.
 
 **INV-DESK-004**: A Telegram DM text message that replies to another message and that the desk does not take reaches the chat's resident with its text unchanged and one Casa-composed note on the reserved `_reply_note` context key, naming who posted the quoted message — decided from Casa's post map and Telegram's sender ids, never from text — when, and what it read, clipped to 600 characters.
 

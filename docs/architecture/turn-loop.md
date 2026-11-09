@@ -114,16 +114,12 @@ text apply the same suppression and then report *their own* failure rather than 
 a delegated specialist run raises, so all four of its consumers fail the delegation with the
 carried kind through the exception paths they already had; engager synthesis raises rather
 than answering with an empty string that would read as "the engager remembers nothing"; and
-an engagement turn raises too, so a fault on the launch turn reaches the engagement's terminal
-record with its own kind instead of flattening into one generic driver-start failure, where a
-refusal and a crash read identically. A fault on a *later* turn of a live engagement raises
-the same way but deliberately does not end it: the topic is told the turn failed and the
-engagement stays open, because one declined turn is not the engagement's verdict. That whole
-half needed the engagement lifecycle to be ready for it rather than the suppression alone, so
-it followed a release later. Its detection deliberately sits outside the
-branch that streams text: a specialist engagement's output is capped, and once the cap
-freezes the accumulator that branch stops running, so a fault arriving after the freeze would
-otherwise end the turn as a truncated success.
+a job's session reader records the fault's kind on the turn and hands it to the job's
+turn-end handler at the turn's result, which waits and continues the job once and parks it on
+a second consecutive fault — never ends it, because one declined turn is not the job's verdict
+([`background-job-session.md`](background-job-session.md)). Its detection runs before the
+branch that streams text, so the CLI's error prose is never streamed into the topic, however
+much the turn has already written.
 
 **INV-TURN-008**: A turn carrying server-stamped trusted user ingress that consumes SDK retries and still ends in silence ends as a classified error instead of silence, unless it stopped at its turn limit (INV-TURN-014); and a conversation whose resumed trusted-ingress turns repeatedly evidence SDK faults is not resumed past a bounded streak — it starts fresh with the old session retained.
 

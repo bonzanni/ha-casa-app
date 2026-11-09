@@ -1197,7 +1197,7 @@ SPLIT_LEADS = {
 AB_CD_SPLIT_LEADS = {
     "doctrine/invariants.md": [
         "| `INV-AGENT-001` | A role claimed by both a resident and a specialist is refused",
-        "| `INV-BGJOB-001` | A job engagement's next batch is started only while the record",
+        "| `INV-BGJOB-004` | A resident-hosted job's session is offered exactly its declaring",
         "| `INV-BRW-001` | Root bootstrap removes the Supervisor token",
     ],
     "doctrine/invariants-c-d.md": [
@@ -1837,7 +1837,7 @@ def test_engagement_finalization_is_named_when_job_registry_changes():
 #
 # Scope, stated so it is not over-read: this table claims exactly the (source file,
 # owning document) pairs listed in it, and a second table further down claims the
-# INV-MEM-011 enforcement pairs. Together they assert nothing about any other anchor
+# INV-MEM-046 enforcement pairs. Together they assert nothing about any other anchor
 # anywhere in the corpus. A corpus-wide "no undeclared anchor" pin was tried and cut:
 # closing that class would bind these tests to the ENTIRE `covers` list of each of the
 # five documents edited here rather than to the rows declared below, so a later
@@ -1862,12 +1862,9 @@ _DECLARED_OWNERSHIP = [
     ("casa/rootfs/opt/casa/reminders.py", "architecture/config-reconciliation.md",
      ["remove_entry"]),
     ("casa/rootfs/opt/casa/tools.py", "architecture/memory-scoping.md",
-     ["_origin_clearance_markers", "_engagement_rebuild_fence"]),
-    ("casa/rootfs/opt/casa/engagement_registry.py", "architecture/memory-scoping.md",
-     ["EngagementRegistry.lower_origin_clearance",
-      "EngagementRegistry.clear_context_rebuild_pending"]),
+     ["_origin_clearance_markers"]),
     ("casa/rootfs/opt/casa/channels/telegram.py", "architecture/memory-scoping.md",
-     ["TelegramChannel.handle_update", "TelegramChannel._resume_and_ready"]),
+     ["TelegramChannel.handle_update", "TelegramChannel._steer_refused"]),
 ]
 # (The internal_handlers.py row — the /internal/tools/call handler — went with
 # that route when the claude_code driver was removed.)
@@ -1925,44 +1922,33 @@ def test_an_owning_document_claims_exactly_its_enforcement_points(source, doc, s
     assert actual == expected, actual
 
 
-# --- #707 + #646: INV-MEM-011's own enforcement points ------------------------------
+# --- #707 + #646: INV-MEM-046's own enforcement point -------------------------------
 #
-# The sites `architecture/memory-scoping.md` names in its INV-MEM-011 prose
-# (`docs/architecture/memory-scoping.md:106-112` at this change's base) and that no
-# document claimed: "the driver's last-instant launch gate" — the `#369` gate inside
-# `InCasaDriver.start`. (A claude_code driver gate and boot replay were once listed
-# here too; both were removed with that driver.)
+# The site `architecture/memory-wipe.md` names in its INV-MEM-046 prose: the driver's
+# refusal to resume a record the wipe marked, inside `InCasaDriver.resume`. Impact is
+# file-grained (`_claimants` matches `parse_anchor(anchor)[0]`, not the symbol), so
+# claiming it adds `memory-wipe.md` to the impact set of every edit to the driver,
+# whatever the edit touched. That cost is accepted: a guard that is silent where the
+# invariant is enforced is not a cheaper guard.
 #
-# An earlier attempt of this cluster EXCLUDED them and pinned the exclusion
-# negatively, on the ground that impact is file-grained (`_claimants` matches
-# `parse_anchor(anchor)[0]`, not the symbol), so claiming them adds a read-clearance
-# document to the impact set of EVERY edit to these files, whatever the edit touched.
-# That cost is real, and it was measured rather than argued at the time; the figures
-# are in the commit that added these anchors, dated by it. The exclusion was reversed
-# anyway, because a cheaper guard that is silent where the invariant is enforced is
-# not a cheaper guard.
-#
-# Their own table, deliberately not merged into `_DECLARED_OWNERSHIP`: that table and
-# the two tests parametrized over it are the earlier attempt's ACCEPTED red case, and
-# re-parametrizing an accepted red case is not a thing this may do.
+# Its own table, kept apart from `_DECLARED_OWNERSHIP`, whose rows each list every
+# symbol a document claims in a file; this one names a single enforcement point.
 
 # (source file, owning document, the one enforcement point that document claims IN it)
-_INV_MEM_011_ENFORCEMENT_OWNERSHIP = [
+_INV_MEM_046_ENFORCEMENT_OWNERSHIP = [
     ("casa/rootfs/opt/casa/drivers/in_casa_driver.py",
-     "architecture/memory-scoping.md", "InCasaDriver.start"),
+     "architecture/memory-wipe.md", "InCasaDriver.resume"),
 ]
 
-_ENFORCEMENT_IDS = [s.rsplit("/", 1)[-1] for s, _, _ in _INV_MEM_011_ENFORCEMENT_OWNERSHIP]
+_ENFORCEMENT_IDS = [s.rsplit("/", 1)[-1] for s, _, _ in _INV_MEM_046_ENFORCEMENT_OWNERSHIP]
 
 
-@pytest.mark.parametrize("source,doc,symbol", _INV_MEM_011_ENFORCEMENT_OWNERSHIP,
+@pytest.mark.parametrize("source,doc,symbol", _INV_MEM_046_ENFORCEMENT_OWNERSHIP,
                          ids=_ENFORCEMENT_IDS)
-def test_an_inv_mem_011_enforcement_point_names_memory_scoping(source, doc, symbol):
-    """The impact level — the one the shipping gate actually consults. At this
-    change's base `memory-scoping.md` was among the documents `impacted_docs`
-    returned for none of these three files, so a change that weakened one of
-    INV-MEM-011's launch gates satisfied `docs_impact.sh` without the document that
-    asserts the invariant ever being named.
+def test_an_inv_mem_046_enforcement_point_names_memory_wipe(source, doc, symbol):
+    """The impact level — the one the shipping gate consults. Without the claim, a
+    change that weakened the driver's refusal to resume a wiped record would satisfy
+    `docs_impact.sh` without the document that asserts the invariant being named.
 
     `count(doc) == 1` rather than an exact set, for the reason
     `_DECLARED_OWNERSHIP`'s tests give: any other claimant of the same file is
@@ -1974,17 +1960,16 @@ def test_an_inv_mem_011_enforcement_point_names_memory_scoping(source, doc, symb
     assert impact.count(doc) == 1, impact
 
 
-@pytest.mark.parametrize("source,doc,symbol", _INV_MEM_011_ENFORCEMENT_OWNERSHIP,
+@pytest.mark.parametrize("source,doc,symbol", _INV_MEM_046_ENFORCEMENT_OWNERSHIP,
                          ids=_ENFORCEMENT_IDS)
-def test_memory_scoping_claims_exactly_the_enforcement_point(source, doc, symbol):
+def test_memory_wipe_claims_exactly_the_enforcement_point(source, doc, symbol):
     """The manifest level, as a SEPARATELY COLLECTED test rather than a second
-    assertion in the one above. Measured: substituting an anchor for another
-    resolvable symbol in the same file (`InCasaDriver.start` ->
+    assertion in the one above. Substituting the anchor for another resolvable
+    symbol in the same file (`InCasaDriver.resume` ->
     `InCasaDriver.inbound_unread_depth`) leaves the impact count at 1, so the impact
     assertion still passes and only this `Counter` equality fails. Were the two
-    assertions in one test the impact one would fire first on a deletion mutant and
-    stop execution, and the mutation evidence could claim both levels were checked
-    while only one was.
+    assertions in one test, the impact one would fire first on a deletion and stop
+    execution, so a deletion would never reach this check.
 
     `Counter` equality on the file's slice of `covers` rejects an absent anchor, a
     substituted one, an extra one and a duplicated one — a set comparison hides the

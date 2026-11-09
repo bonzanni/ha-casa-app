@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-08
+last_reviewed: 2026-11-09
 ---
 
 # Transcript reaping: a finished engagement's and a delegation's CLI transcripts
@@ -24,7 +24,7 @@ unconfirmed run.** The invariant below states what that selects, and its gaps.
 
 ## Contracts & invariants
 
-**INV-ENG-027**: Once an `in_casa` engagement's terminal status is on disk and `TRANSCRIPT_RETENTION_DAYS` have passed since its `completed_at`, a pass run at scheduler start and every six hours deletes its CLI transcripts — a plugin job's whole per-engagement project folder, or, for a specialist or executor, each session the record names (its current session, every session its background job lists, and every session a clearance downgrade retired from it) in that record's own project folder — each only where the run-confirmation gate passes, and a plugin job's working folder `/data/engagements/<id>` at once, and selects nothing else. A pass that cannot import the SDK's folder lookup deletes no transcript.
+**INV-ENG-027**: Once an `in_casa` engagement's terminal status is on disk and `TRANSCRIPT_RETENTION_DAYS` have passed since its `completed_at`, a pass run at scheduler start and every six hours deletes its CLI transcripts — a plugin job's whole per-engagement project folder, or, for a specialist or executor, the session the record names in that record's own project folder — each only where the run-confirmation gate passes, and a plugin job's working folder `/data/engagements/<id>` at once, and selects nothing else. A pass that cannot import the SDK's folder lookup deletes no transcript.
 
 **The gate** is `memory/transcript_runs.py`'s, asked at each delete and never copied:
 nothing in a folder is deleted while a run registered in that folder is unconfirmed. Each
@@ -47,13 +47,14 @@ the session's working directory. Nothing resumes or reads an `in_casa` transcrip
 once its record is terminal, so the pass deletes the files the record attributes to it. The
 folder comes from the launch's own working-directory constructor
 (`engagement_transcript_reaper.py::transcript_cwd`, the same one a run registers under:
-the cwd persisted on the record at its first open, which every later resume and rebuild
-launches in too, so a configuration reload cannot move it) run through the SDK's lookup — a plugin job's folder is unique to the engagement, so it goes whole with every
-batch's session in it; a specialist's folder (its configured working directory, else its
-agent home) and the executors' shared `/config` folder hold other sessions, so only the
-named ones go, a zero-byte file included. A clearance downgrade (INV-MEM-011) records the
-session it evicts on the record in the clamp's own write, so a restart or the rebuild's new
-session cannot overwrite the only pointer to it first. A plugin job's working folder needs no
+the cwd persisted on the record at its first open, which every later resume
+launches in too, so a configuration reload cannot move it) run through the SDK's lookup — a plugin job's folder is unique to the engagement, so it goes whole with
+everything in it; a specialist's folder (its configured working directory, else its agent
+home) and the executors' shared `/config` folder hold other sessions, so only the named one
+goes, a zero-byte file included. A job runs one session for its whole life: a resume after a
+restart, a session death or an idle suspension reopens the session the record names
+(`sdk_session_id`, the one its stream last reported), and nothing else records a session. A
+plugin job's working folder needs no
 SDK lookup: it goes even when the lookup is missing or the project folder is already gone,
 and an entry an operator's delete removes mid-walk is skipped, not an error.
 
@@ -137,5 +138,5 @@ deleter of engagement transcripts** asks `transcript_runs.blocked` at its delete
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
 - [`architecture/memory-lifecycle.md`](../architecture/memory-lifecycle.md)
 - [`architecture/persistent-state.md`](../architecture/persistent-state.md)
-- [`architecture/background-job-fresh-sessions.md`](../architecture/background-job-fresh-sessions.md)
+- [`architecture/background-job-session.md`](../architecture/background-job-session.md)
 <!-- END SOURCEMAP -->
