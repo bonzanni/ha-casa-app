@@ -1468,12 +1468,19 @@ def _note_approval(tool_use_id: "str | None", kind: str, key: GrantKey) -> None:
     depend on it."""
     try:
         import tools as tools_mod
-        if tools_mod.engagement_var.get(None) is not None:
+        engagement = tools_mod.engagement_var.get(None)
+        if engagement is not None:
             from drivers.in_casa_driver import _EngagementTurn
             from log_cid import cid_var
             holder = cid_var.get(None)
             if isinstance(holder, _EngagementTurn):
                 holder.note_approval(tool_use_id, kind, key)
+            if kind == "pending":
+                # A job with an approval keyboard up waits for the operator:
+                # a turn that ends from here is not nudged.
+                import background_jobs
+                background_jobs.mark_awaiting(
+                    engagement.id, background_jobs.AWAITING_APPROVAL)
             return
         from output_boundary import resolve_scope
         scope = resolve_scope()

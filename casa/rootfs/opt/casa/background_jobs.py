@@ -1,15 +1,21 @@
-"""Background jobs: a plugin-declared skill run as a specialist engagement in batches.
+"""Background jobs: a plugin-declared skill run as one long session.
 
 A plugin declares jobs in its manifest's ``casa.jobs`` block
 (``plugin_store.manifest_jobs`` validates them). The assistant starts one with
-the ``start_job`` tool; it runs as an engagement of the specialist
-whose session loads the declaring plugin. The launch turn only acknowledges;
-every later batch is a system turn Casa starts itself once the previous turn
-has ended and nothing else is queued or running (``start_next_batch``), and
-the specialist reports each batch through ``report_job_progress``.
+the ``start_job`` tool; it runs as an engagement of the specialist whose
+session loads the declaring plugin, or of a resident's plugin worker. Casa
+writes the job's brief into its session once; everything later (an operator's
+message, a tapped answer, Casa's own nudge) is written in as it arrives. The
+model decides when to report progress, when to ask and when to finish.
 
-The job's counters live in the engagement record's ``origin["job"]`` so they
-survive a restart; ``initial_job_state`` is their shape.
+Casa never ends a job on its own judgement. When a turn ends without the job
+finishing, the turn-end guard (:meth:`JobRunner.turn_ended`) continues it,
+nudges it once, or parks it: a parked job waits for the operator, who is told
+in their direct chat and can reply to continue it or Cancel. Only Cancel, a
+failed resume and the stale-job reap end one.
+
+The job's durable state lives in the engagement record's ``origin["job"]``;
+``initial_job_state`` is its shape.
 """
 
 from __future__ import annotations
@@ -24,12 +30,12 @@ from typing import Any, Iterable
 logger = logging.getLogger(__name__)
 
 # Casa tools granted to a specialist session only while it runs a job: its
-# batch reports, and its questions to the operator.
+# progress lines, and its questions to the operator.
 JOB_CASA_GRANTS: tuple[str, ...] = ("mcp__casa-framework__report_job_progress",
                                     "mcp__casa-framework__ask_operator")
 
 # The COMPLETE casa-framework surface of a plugin-job (resident-hosted) session:
-# it reports and it finishes, and the bridge admits exactly this — no union with
+# it reports progress and it finishes, and the bridge admits exactly this — no union with
 # MANDATORY_BRIDGE_CASA_GRANTS, so a worker never holds query_engager (C3).
 PLUGIN_JOB_CASA_GRANTS: tuple[str, ...] = (
     "mcp__casa-framework__report_job_progress",
@@ -87,8 +93,7 @@ def compaction_hook_matcher(rec: Any) -> Any:
     ``additionalContext`` into the model's context (measured). Any other
     source adds nothing.
 
-    TODO(single-session jobs): the pad's shape and brief follow the header
-    once the job pad is integrated."""
+    The job's scratchpad, once jobs have one, is re-stated here too."""
     from claude_agent_sdk import HookMatcher
 
     async def re_state_job(hook_input: Any, tool_use_id: Any, context: Any) -> dict:
@@ -101,13 +106,6 @@ def compaction_hook_matcher(rec: Any) -> Any:
 
     return HookMatcher(matcher=None, hooks=[re_state_job])
 
-
-# A job that has not advanced for this long, with no turn queued and no delivery
-# owner live, is stalled and the sweep continues it (C7a).
-_JOB_STALL_S: float = 180.0
-
-# Consecutive failed continuations before the sweep ends the job (C7a).
-_JOB_MAX_STALLS: int = 3
 
 # A launch creates its engagement only after a few awaits.  Keep the small
 # in-process claim separate from durable records so two starts cannot pass
@@ -460,19 +458,22 @@ def starter_line(started_by: Any) -> str:
     return f"Started by: {started_by}\n" if started_by in STARTED_BY_TOKENS else ""
 
 
-def initial_job_state(decl: JobDecl, *, started_by: str | None = None) -> dict:
+def initial_job_state(decl: JobDecl, *, started_by: str | None = None,
+                      context: str = "") -> dict:
     """The ``origin["job"]`` a job engagement is created with.
 
     ``brief_uuid`` is the identity of the job's brief: the brief is written
     into the session with this uuid, and the CLI records a uuid in the
     session transcript only when it takes the message into a turn. A resume
     after a restart or a session death therefore knows, from the transcript
-    alone, whether the job ever read its brief."""
+    alone, whether the job ever read its brief. ``context`` is the launch
+    context, kept so the brief can be written again when it was not."""
     state = {
         "name": decl.qualified_name,
         "title": decl.title,
         "skill": decl.skill,
         "brief_uuid": str(uuid.uuid4()),
+        "context": context,
         "last_summary": None,
     }
     if started_by is not None:
@@ -486,8 +487,8 @@ def initial_job_state(decl: JobDecl, *, started_by: str | None = None) -> dict:
 def is_quiet_run(rec: Any) -> bool:
     """Whether *rec* is a quiet run (#1301): a job declaring
     ``quietWhenScheduled`` that the scheduler started. It has no topic, posts
-    no acknowledgement or progress line, and a completed end is told nowhere;
-    the plugin's delivered slots still reach the operator."""
+    no progress line, and a completed end is told nowhere; the plugin's
+    delivered slots still reach the operator."""
     return is_quiet_origin(getattr(rec, "origin", None))
 
 
@@ -507,322 +508,409 @@ def is_quiet_origin(origin: Any) -> bool:
     return isinstance(job, dict) and job.get("quiet") is True
 
 
-def launch_prompt(decl: JobDecl, task: str, context: str, turns_per_batch: int,
-                  *, job_id: str, started_by: str | None,
-                  can_ask: bool = True) -> str:
-    """The launch turn: state the job, acknowledge in one line, do no work.
+# ---------------------------------------------------------------------------
+# The brief
+# ---------------------------------------------------------------------------
 
-    ``job_id`` is the engagement id. The launch turn and every fresh turn's
-    brief (``job_brief``) name it, so a plugin can claim work by it and match
-    the job-end notice, whose delegation id is the same engagement id.
-    ``started_by`` is the record's token (#1277), rendered on the next line.
-    ``can_ask``: the job runs on a specialist and may ask the operator; a
-    resident's plugin worker parks and reports instead."""
+def launch_prompt(decl: JobDecl, task: str, context: str, *, job_id: str,
+                  started_by: str | None, can_ask: bool = True) -> str:
+    """The job's brief: the one message Casa writes at launch, which starts
+    the work.
+
+    ``job_id`` is the engagement id: a plugin can claim work by it and match
+    the job-end notice, whose delegation id is the same id. ``started_by`` is
+    the record's token (#1277), rendered on the line after it. ``can_ask``:
+    the job runs on a specialist and may ask the operator; a resident's
+    plugin worker has no question tool."""
     return (
-        f'You are starting the background job "{decl.title}" (skill {decl.skill}).\n'
+        f'You are running the background job "{decl.title}" (skill {decl.skill}).\n'
         f"Job id: {job_id}\n"
         + starter_line(started_by)
         + f"Request: {task}\n"
-        f"Context: {context}\n"
-        "In THIS turn do no work: reply with one short line saying what you are "
-        "about to do, then end your turn.\n"
-        "Casa then starts batch 1. How the job runs:\n"
-        + _job_rules(turns_per_batch, can_ask=can_ask)
+        f"Context: {context or '(none)'}\n"
+        "How the job runs:\n"
+        + _job_rules(can_ask=can_ask)
     )
-
-
-def _job_rules(turns_per_batch: int | None, *, can_ask: bool = True) -> str:
-    """How a job runs — the rules the launch prompt and the job brief share.
-    ``can_ask`` adds how a specialist's job asks the operator; a resident's
-    plugin worker has no question tool."""
-    limit = (f" of at most {turns_per_batch} turns"
-             if isinstance(turns_per_batch, int) else "")
-    return (
-        f"- Each batch is one turn{limit}. Load the skill, "
-        "do one bounded batch, call report_job_progress as your last action, then end "
-        "your turn. Casa starts the next batch. Running out of turns only ends the batch.\n"
-        "- report_job_progress takes a one-line summary and `progressed`: whether this "
-        "batch moved the job toward completion, whatever that means for this work. "
-        "Say false when it did not — a batch that found nothing to do, or that could "
-        "not proceed. Three batches in a row without progress end the job.\n"
-        "- The done/remaining counts are optional and only shown to the operator: pass "
-        "them when this job's work has a real unit and a known total, leave them out "
-        "otherwise. Nothing left to do means the job is finished, not a batch with "
-        "0 remaining: complete it instead.\n"
-        + ("- When something needs the operator's decision or information only they have, "
-           "call ask_operator with the question and, when there are clear choices, the "
-           "options. Park that item, carry on with other work if there is any, and end "
-           "the batch as usual; their answer arrives as its own turn. Do not ask in your "
-           "own text: only ask_operator reaches them.\n" if can_ask else "")
-        + "- The operator's messages arrive as their own turns — a reply in their direct "
-        "chat to one of this job's messages, or a message written in this job's topic: "
-        "answer briefly and end your turn; the job then continues.\n"
-        "- When nothing is left, call emit_completion with a summary for the operator. "
-        "If it is refused because a message is unread, end your turn, read it, then complete."
-    )
-
-
-def job_session(rec: Any) -> str:
-    """The job's declared session mode; a record without one is "resume"."""
-    job = (getattr(rec, "origin", None) or {}).get("job")
-    if not isinstance(job, dict):
-        return "resume"
-    return job.get("session", "resume")
-
-
-def is_fresh_job(rec: Any) -> bool:
-    """Whether *rec* is a job whose turns after the launch start fresh."""
-    return job_session(rec) == "fresh"
-
-
-_CONTEXT_WITHHELD = (
-    "[The launch context is withheld: this engagement's clearance was lowered "
-    "after it started.]")
 
 
 def job_brief(rec: Any) -> str:
-    """The brief a fresh job's every turn after the launch begins with
-    (INV-BGJOB-005).
+    """The brief rendered from the record — what a resume writes when the
+    session transcript shows the job never read the one written at launch."""
+    job = (getattr(rec, "origin", None) or {}).get("job") or {}
+    decl = JobDecl(qualified_name=str(job.get("name") or ""), plugin="",
+                   name="", skill=str(job.get("skill") or ""),
+                   title=str(job.get("title") or ""), summary=None)
+    return launch_prompt(
+        decl, getattr(rec, "task", "") or "", str(job.get("context") or ""),
+        job_id=rec.id, started_by=job.get("started_by"),
+        can_ask=getattr(rec, "kind", "") == "specialist")
 
-    Rendered from the record's id and ``task``, the launch context recorded in
-    ``origin["job"]["brief_context"]``, the declaration fields in
-    ``origin["job"]`` and who started the job as recorded at launch
-    (``origin["job"]["started_by"]``, #1277) — nothing else. A clearance
-    downgrade replaces ``task`` with its withheld notice and drops
-    ``brief_context`` in the same step, so the brief then carries neither."""
-    job = rec.origin["job"]
-    context = job.get("brief_context")
-    if not isinstance(context, str):
-        context = _CONTEXT_WITHHELD
-    elif not context:
-        context = "(none)"
+
+def _job_rules(*, can_ask: bool = True) -> str:
+    """How a job runs. ``can_ask`` adds how a specialist's job asks the
+    operator; a resident's plugin worker has no question tool."""
     return (
-        f'You are running the background job "{job.get("title")}" '
-        f'(skill {job.get("skill")}). This turn starts a fresh conversation: '
-        "nothing from the job's earlier turns is visible here, so load the skill "
-        "again before you work.\n"
-        # An identifier, not launch material: it stays through a clearance
-        # downgrade, which withholds only the task and the context.
-        f"Job id: {rec.id}\n"
-        # Casa's record of who started the job; like the id it is no launch
-        # material, so it stays through a clearance downgrade.
-        + starter_line(job.get("started_by"))
-        + f"Request: {rec.task}\n"
-        f"Context:\n{context}\n"
-        + _pending_completion_line(job)
-        + "What follows this brief is this turn: a batch to run, or a message from "
-        "the operator to answer. How the job runs:\n"
-        + _job_rules(job.get("turns_per_batch"),
-                     can_ask=getattr(rec, "kind", "") == "specialist")
+        "- Load the skill and do the work. The job is one long session: keep "
+        "going until it is finished.\n"
+        "- report_job_progress posts a one-line progress note in the job's "
+        "topic. Use it when there is something worth telling; pass done and "
+        "remaining only when the work has a real unit and a known total.\n"
+        + ("- When something needs the operator's decision or information only "
+           "they have, call ask_operator with the question and, when there are "
+           "clear choices, the options. Carry on with other work if there is "
+           "any; if there is none, end your turn and wait. Their answer reaches "
+           "you as a message. Do not ask in your own text: only ask_operator "
+           "reaches them.\n" if can_ask else
+           "- You cannot ask the operator anything: set aside an item that "
+           "needs their answer and say so in your progress or your summary.\n")
+        + "- The operator's messages reach you as they arrive, between your "
+        "steps: read them, act on them, and carry on.\n"
+        "- When nothing is left, call emit_completion with a summary for the "
+        "operator. If it is refused because a message has not reached you "
+        "yet, read the message that arrives, then call it again."
     )
 
 
-def _pending_completion_line(job: dict) -> str:
-    """#1180: a completion the gate refused for unread input, named so the
-    fresh turn that reads that input can complete again. Its text was authored
-    at the job's tier: a clearance downgrade keeps only the status."""
-    pending = job.get("completion_pending")
-    if not isinstance(pending, dict):
-        return ""
-    line = f'A completion (status {pending.get("status")}) was pending when an earlier turn ended'
-    text = pending.get("text")
-    if isinstance(text, str):
-        line += f": {(text.splitlines() or [''])[0][:300]}."
-    else:
-        line += ("; its summary is withheld because this engagement's clearance "
-                 "was lowered.")
-    return line + " Handle this turn, then call emit_completion again.\n"
-
-
-def batch_prompt(n: int, title: str) -> str:
-    return f'Batch {n} of "{title}": continue the job.'
-
-
 # ---------------------------------------------------------------------------
-# Live turn-delivery owners (per engagement)
-# ---------------------------------------------------------------------------
-#
-# A turn is "in progress" from the moment its delivery owner (the launch owner
-# or the channel's turn-delivery task) starts until that owner has finished its
-# finalization and incomplete/error adjudication. Not the driver's per-turn
-# lock, which is released before the final stream delivery.
-
-_turn_owners: dict[str, int] = {}
-
-
-def turn_owner_started(engagement_id: str) -> None:
-    _turn_owners[engagement_id] = _turn_owners.get(engagement_id, 0) + 1
-
-
-def turn_owner_finished(engagement_id: str) -> None:
-    n = _turn_owners.get(engagement_id, 0) - 1
-    if n > 0:
-        _turn_owners[engagement_id] = n
-    else:
-        _turn_owners.pop(engagement_id, None)
-
-
-def turn_owners(engagement_id: str) -> int:
-    return _turn_owners.get(engagement_id, 0)
-
-
-# ---------------------------------------------------------------------------
-# The batch loop
+# Turn ends, parking, recovery
 # ---------------------------------------------------------------------------
 
-# The batch loop's counters, seeded by the loop itself (see start_next_batch).
-_LOOP_DEFAULTS = {"batches": None, "turns_per_batch": None, "started": 0,
-                  "judged": 0, "stuck": 0, "advanced": False, "stalls": 0}
+CONTINUE_LINE = "Continue the job."
+
+_NUDGE_ASK = ("You ended your turn but the job is not finished. Continue, ask "
+              "the operator with ask_operator, or call emit_completion.")
+_NUDGE_NO_ASK = ("You ended your turn but the job is not finished. Continue, "
+                 "or call emit_completion.")
+
+CASA_RESTART_LINE = (
+    "Casa restarted. Your conversation is intact up to the restart; a tool "
+    "call that was running may or may not have finished. Continue the job.")
+SESSION_RESTART_LINE = (
+    "Your session restarted after its process ended unexpectedly. Your "
+    "conversation is intact up to that point; a tool call that was running "
+    "may or may not have finished. Continue the job.")
+CASA_RESTART_PREFIX = "(Sent before Casa restarted:)"
+SESSION_RESTART_PREFIX = "(Sent before the job's session restarted:)"
+
+# ``origin["job"]["awaiting"]``: the job is waiting for the operator — it
+# asked (ask_operator), an approval is pending, or it was parked. Persisted
+# because boot reads it: a waiting job with nothing journaled resumes lazily,
+# on the operator's next input.
+AWAITING_KEY = "awaiting"
+AWAITING_ASKED = "asked"
+AWAITING_APPROVAL = "approval"
+AWAITING_STOPPED = "stopped"
+
+# The wait before the one "continue" after a turn ended on an API fault.
+FAULT_RETRY_S: float = 60.0
 
 
-def _pending_input_reserved(rec: Any, driver: Any) -> bool:
-    """#1180: while a refused completion is pending, an ingress reservation is
-    input about to arrive: the job waits for it, so the one spared batch is not
-    spent on a completion the same reservation would refuse again."""
-    if not rec.origin["job"].get("completion_pending"):
-        return False
-    reserved = getattr(driver, "inbound_reservations", None)
-    return reserved is not None and reserved(rec.id) > 0
+@dataclass
+class _JobState:
+    """A live job's in-memory guard state. Lost on a restart, by design."""
+
+    stops: int = 0              # turn ends without finishing since operator input
+    faults: int = 0             # consecutive API-fault turn ends
+    progress: bool = False      # report_job_progress since the last ceiling
+    auto_resumed: bool = False  # the one automatic resume after a session death
 
 
-async def job_after_turn(rec: Any, channel: Any, *, turn_cut_off: bool = False) -> None:
-    """Runs after every turn of a job engagement, once that turn's own owner has
-    finished (and called ``turn_owner_finished``)."""
-    latest = channel._engagement_registry.get(rec.id)
-    if latest is None or latest.status not in ("active", "idle"):
+_states: dict[str, _JobState] = {}
+_runner: "JobRunner | None" = None
+
+
+def _state(engagement_id: str) -> _JobState:
+    return _states.setdefault(engagement_id, _JobState())
+
+
+def configure(runner: "JobRunner | None") -> None:
+    """Install the process's job runner (casa_core, once the driver exists)."""
+    global _runner
+    _runner = runner
+
+
+def note_progress(engagement_id: str) -> None:
+    """``report_job_progress`` was called: the next step-ceiling stop is a
+    continuation boundary, not a loop."""
+    _state(engagement_id).progress = True
+
+
+def note_operator_input(rec: Any) -> None:
+    """An operator message was written into the job's session: the guard
+    starts over (stops, faults, progress since the last ceiling) and the job
+    is no longer waiting for the operator."""
+    st = _state(rec.id)
+    st.stops = 0
+    st.faults = 0
+    st.progress = False
+    job = (getattr(rec, "origin", None) or {}).get("job")
+    if isinstance(job, dict) and job.pop(AWAITING_KEY, None) is not None:
+        _persist_later(rec.id)
+
+
+def mark_awaiting(engagement_id: str, kind: str) -> None:
+    """The job is now waiting for the operator (*kind*: asked, approval or
+    stopped). SYNCHRONOUS; the write is scheduled."""
+    reg = _runner.registry if _runner is not None else None
+    rec = reg.get(engagement_id) if reg is not None else None
+    job = (getattr(rec, "origin", None) or {}).get("job")
+    if not isinstance(job, dict):
         return
-    # This hook runs after every turn of a job, the launch turn first: its first
-    # run is the moment launch ownership ends and continuation begins. Recording
-    # it is what lets the sweep tell "still launching" from "running but not
-    # advancing" — three review rounds showed that inferring it from the session
-    # pointer and the rebuild flag misreads a post-launch state (diff review r4).
-    if turn_cut_off:
-        from tools import _finalize_engagement
-        await _finalize_engagement(
-            latest, outcome="error", text="a batch stopped before finishing",
-            next_steps=[], driver=channel._engagement_driver)
-        return
-    await start_next_batch(latest, channel)
+    job[AWAITING_KEY] = kind
+    _persist_later(engagement_id)
 
 
-async def sweep_jobs(registry: Any, channel: Any) -> None:
-    """Periodic owner of job liveness (C7a): continue a stalled job, and end one
-    that could not be continued `_JOB_MAX_STALLS` times running."""
-    if channel is None or channel._stopping:
-        return
-    driver = channel._engagement_driver
-    for rec in registry.active_and_idle():
-        if channel._stopping:
-            return
-        job = rec.origin.get("job")
-        if not job or driver.inbound_unread_depth(rec.id) > 0 or turn_owners(rec.id):
-            continue
-        if _pending_input_reserved(rec, driver):
-            continue
-        # The launch owns the record until its acknowledgement turn ends, and
-        # until then there is no turn owner to see (diff review r1). This is a
-        # guard against acting, not a claim about ownership: a record can also
-        # leave its launch without ever reaching here — which is why the sweep
-        # below only ever CONTINUES a job it cannot prove is running, and needs
-        # three failed attempts of its own before it ends one.
-        if getattr(registry, "launch_in_flight", None) and registry.launch_in_flight(rec.id):
-            continue
-        # A job that has never advanced is measured from when it was created,
-        # not from the epoch.
-        since = job.get("last_advance") or getattr(rec, "started_at", None) or 0
-        if time.time() - since < _JOB_STALL_S:
-            continue
+def awaiting(rec: Any) -> str | None:
+    job = (getattr(rec, "origin", None) or {}).get("job")
+    value = job.get(AWAITING_KEY) if isinstance(job, dict) else None
+    return value if isinstance(value, str) else None
+
+
+def _persist_later(engagement_id: str) -> None:
+    if _runner is not None:
+        _runner.spawn(_runner.persist(engagement_id))
+
+
+def format_elapsed(seconds: float) -> str:
+    """``40 min``, ``1 h 5 min``, ``2 h`` — the job's running time as the
+    operator reads it on the start line."""
+    minutes = max(1, int(seconds // 60))
+    hours, minutes = divmod(minutes, 60)
+    if not hours:
+        return f"{minutes} min"
+    return f"{hours} h {minutes} min" if minutes else f"{hours} h"
+
+
+def cost_suffix(rec: Any, *, now: float | None = None) -> str:
+    """`` · 40 min · $2.40``: the time the job has run (to its end, once it
+    has one) and its exact cost as of its last turn end — absent until a turn
+    has ended. Shown only; nothing reads it to decide anything."""
+    origin = getattr(rec, "origin", None) or {}
+    job = origin.get("job") if isinstance(origin, dict) else None
+    started = getattr(rec, "started_at", None)
+    end = getattr(rec, "completed_at", None) or (now if now is not None else time.time())
+    parts = []
+    if isinstance(started, (int, float)) and started > 0:
+        parts.append(format_elapsed(max(0.0, end - started)))
+    cost = job.get("cost_usd") if isinstance(job, dict) else None
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        parts.append(f"${cost:.2f}")
+    return "".join(f" · {p}" for p in parts)
+
+
+def _title(rec: Any) -> str:
+    job = (getattr(rec, "origin", None) or {}).get("job") or {}
+    title = str(job.get("title") or getattr(rec, "task", "") or "job")
+    return (title.splitlines() or ["job"])[0][:80]
+
+
+def _last_progress(rec: Any) -> str:
+    job = (getattr(rec, "origin", None) or {}).get("job") or {}
+    summary = job.get("last_summary")
+    return f"\nLast progress: {summary}" if isinstance(summary, str) and summary else ""
+
+
+class JobRunner:
+    """What Casa does around a job's session: the turn-end guard, parking,
+    the one automatic resume after a session death, and the resume at boot.
+
+    Wired into the in_casa driver as its turn-end and session-lost handlers.
+    ``channel`` is the Telegram channel (the parking post, the start line).
+    """
+
+    def __init__(self, *, registry: Any, channel: Any = None,
+                 driver: Any = None) -> None:
+        self.registry = registry
+        self.channel = channel
+        self.driver = driver
+        self._tasks: set[asyncio.Task] = set()
+
+    # -- small helpers -----------------------------------------------------
+
+    def spawn(self, coro: Any) -> "asyncio.Task | None":
         try:
-            admitted = await start_next_batch(rec, channel)
-        except Exception:
-            logger.warning("job continuation failed for %s", rec.id, exc_info=True)
-            admitted = False
-        if channel._stopping:
+            task = asyncio.get_running_loop().create_task(coro)
+        except RuntimeError:        # no loop: nothing can run now
+            coro.close()
+            return None
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+    async def persist(self, engagement_id: str) -> None:
+        try:
+            await self.registry.persist_origin(engagement_id)
+        except Exception:  # noqa: BLE001 — the in-memory value stands
+            logger.warning("job %s: state write failed", engagement_id[:8],
+                           exc_info=True)
+
+    def _live(self, rec: Any) -> bool:
+        latest = self.registry.get(rec.id) if self.registry is not None else rec
+        if latest is None or latest.status not in ("active", "idle"):
+            return False
+        pending = getattr(self.registry, "terminal_pending", None)
+        return not (callable(pending) and pending(rec.id) is True)
+
+    def _input_pending(self, engagement_id: str) -> bool:
+        drv = self.driver
+        try:
+            return (drv.inbound_unread_depth(engagement_id) > 0
+                    or drv.inbound_reservations(engagement_id) > 0)
+        except Exception:  # noqa: BLE001 — no reading, no input assumed
+            return False
+
+    def _write(self, rec: Any, text: str) -> None:
+        self.driver.submit_casa(rec, text)
+
+    # -- the turn-end guard ------------------------------------------------
+
+    def turn_ended(self, rec: Any, result: Any, api_error: Any = None) -> None:
+        """At every ResultMessage of a job's session, SYNCHRONOUSLY, in the
+        reader. Continue, nudge once, or park — never end the job. Also
+        persists the job's cost (the driver updated it in memory) and
+        refreshes the start line."""
+        job = (getattr(rec, "origin", None) or {}).get("job")
+        if not isinstance(job, dict):
+            return                  # an interactive record an older Casa left
+        if not self._live(rec):
+            _states.pop(rec.id, None)
             return
-        if admitted or rec.status not in ("active", "idle"):
-            continue
-        # A refused continuation is the ONLY thing that counts toward ending a
-        # job here. The sweep cannot tell a job that is still launching from one
-        # that is stuck — seven review rounds established that no combination of
-        # live state says so reliably — so it never ends a job on a state read:
-        # it continues one, harmlessly if it was launching, and only its own
-        # three refused attempts end it (INV-BGJOB-003).
-        job["stalls"] = job.get("stalls", 0) + 1
-        await registry.persist_origin(rec.id)
-        if job["stalls"] >= _JOB_MAX_STALLS:
-            from tools import _finalize_engagement
-            await _finalize_engagement(
-                rec, outcome="error",
-                text=f"could not be continued after {_JOB_MAX_STALLS} attempts",
-                next_steps=[], driver=driver)
+        self.spawn(self._after_turn(rec))
+        st = _state(rec.id)
+        if api_error is not None:
+            kind = getattr(api_error, "value", api_error)
+            if st.faults == 0:
+                st.faults = 1
+                logger.info("job %s turn ended on an API fault (%s); continuing "
+                            "in %.0fs", rec.id[:8], kind, FAULT_RETRY_S)
+                self.spawn(self._continue_after_fault(rec))
+            else:
+                self.park(rec, f"«{_title(rec)}» stopped on an error from "
+                               f"Claude ({kind}). Reply to continue it, or Cancel.")
+            return
+        st.faults = 0
+        if self._input_pending(rec.id):
+            return                  # the CLI runs the queued input as the next turn
+        if awaiting(rec) is not None:
+            return                  # waiting for the operator
+        from drivers.in_casa_driver import RESULT_SUBTYPE_MAX_TURNS
+        if getattr(result, "subtype", None) == RESULT_SUBTYPE_MAX_TURNS:
+            if st.progress:
+                st.progress = False
+                logger.info("job %s reached its step ceiling with progress; "
+                            "continuing", rec.id[:8])
+                self._write(rec, CONTINUE_LINE)
+            else:
+                self.park(rec, f"«{_title(rec)}» stopped without finishing. "
+                               "Reply to continue it, or Cancel.")
+            return
+        if st.stops == 0:
+            st.stops = 1
+            logger.info("job %s ended its turn unfinished; nudging once", rec.id[:8])
+            self._write(rec, _NUDGE_ASK if getattr(rec, "kind", "") == "specialist"
+                        else _NUDGE_NO_ASK)
+            return
+        self.park(rec, f"«{_title(rec)}» stopped without finishing. "
+                       "Reply to continue it, or Cancel.")
 
+    async def _after_turn(self, rec: Any) -> None:
+        await self.persist(rec.id)
+        refresh = getattr(self.channel, "refresh_job_start_line", None)
+        if callable(refresh):
+            try:
+                await refresh(rec)
+            except Exception:  # noqa: BLE001 — cosmetic
+                logger.info("job %s start line not refreshed", rec.id[:8],
+                            exc_info=True)
 
-async def start_next_batch(rec: Any, channel: Any) -> bool:
-    """The only place a batch is counted, judged, limit-checked and started.
+    async def _continue_after_fault(self, rec: Any) -> None:
+        await asyncio.sleep(FAULT_RETRY_S)
+        if self._live(rec) and _state(rec.id).faults == 1:
+            # The delivery worker resumes the session first if it died.
+            self._write(rec, CONTINUE_LINE)
 
-    Returns whether it ADMITTED a turn: False for a quiet skip, a refused
-    hand-off, or a finalize. The batch number is chosen and the previous batch
-    judged synchronously (the operator's "count when a batch starts"), but
-    `started` is committed and persisted only once the hand-off succeeded — a
-    refused continuation costs nothing (C7a, review r3)."""
-    driver = channel._engagement_driver
-    if driver.inbound_unread_depth(rec.id) > 0 or turn_owners(rec.id) or (
-            _pending_input_reserved(rec, driver)):
-        return False
-    # Stage the judgment: a refused hand-off must cost no batch or progress.
-    # TODO(single-session jobs): this loop is removed with the turn-end guard
-    # that replaces it; until then it seeds its own counters, which a job's
-    # declaration no longer carries.
-    job = {**_LOOP_DEFAULTS, **rec.origin["job"]}
-    if "advanced" not in job:
-        # A job launched before #1031 persisted `reported`/`remaining`/
-        # `prev_remaining` instead. Its one in-flight batch ran under the count
-        # rule and is judged under it, so an upgrade mid-job neither invents a
-        # stuck batch nor throws away one the old rule had credited.
-        job["advanced"] = bool(job.get("reported")) and (
-            job.get("remaining") is None or job.get("prev_remaining") is None
-            or job["remaining"] < job["prev_remaining"])
-    if job["started"] > job["judged"]:
-        # A batch made progress when it said so through report_job_progress.
-        # A batch that reported no progress, or ended without reporting at all
-        # (out of turns, an error, or it simply did not call the tool), did not.
-        job["stuck"] = 0 if job.get("advanced") else job["stuck"] + 1
-        job["advanced"] = False
-        job["judged"] = job["started"]
-    detail = None
-    if job["stuck"] >= 3:
-        detail = "no progress in 3 consecutive batches"
-    elif isinstance(job["batches"], int) and job["started"] >= job["batches"]:
-        detail = f'reached its limit of {job["batches"]} batches'
-    # #1180: a completion refused for unread input is named in the next brief.
-    # When that input never became a turn of its own (a reservation released
-    # without one, a restart), the job gets ONE spared batch to read the brief
-    # and complete — once per job, whichever limit it reached.
-    if detail and job.get("completion_pending") and not job.get("pending_spared"):
-        job["pending_spared"] = True
-        detail = None
-    if detail:
+    # -- parking -------------------------------------------------------------
+
+    def park(self, rec: Any, line: str) -> None:
+        """The job waits for the operator: ``awaiting = "stopped"`` and one
+        line in their direct chat with the job's Cancel button. The operator's
+        reply to it continues the job. Nothing here ends the job."""
+        logger.info("job %s parked: %s", rec.id[:8], line)
+        st = _state(rec.id)
+        st.stops = 0
+        mark_awaiting(rec.id, AWAITING_STOPPED)
+        self.spawn(self._post_parked(rec, line + _last_progress(rec)))
+
+    async def _post_parked(self, rec: Any, text: str) -> None:
+        if was_quiet_run(rec):
+            # A quiet run that parks needs the operator now: it stops being
+            # quiet, so its end is told like any job's.
+            try:
+                await self.registry.promote_from_quiet(rec.id)
+            except Exception:  # noqa: BLE001
+                logger.warning("job %s: quiet promotion failed", rec.id[:8],
+                               exc_info=True)
+        poster = getattr(self.channel, "post_job_parked", None)
+        if not callable(poster):
+            return
+        try:
+            await poster(rec, text)
+        except Exception:  # noqa: BLE001 — the record still says it waits
+            logger.warning("job %s parking line not posted", rec.id[:8],
+                           exc_info=True)
+
+    # -- session death -------------------------------------------------------
+
+    async def session_lost(self, rec: Any) -> None:
+        """The job's session ended without Casa's teardown. Resume it once,
+        by the boot path, with the restart line and every journaled message
+        the transcript lacks. A failed resume, or a second death, ends the
+        job ``error`` with its last progress."""
+        st = _state(rec.id)
+        if st.auto_resumed:
+            await self._end_error(rec, "its session ended unexpectedly")
+            return
+        st.auto_resumed = True
+        try:
+            await self.driver.recover(
+                rec, restart_line=SESSION_RESTART_LINE, brief=job_brief(rec),
+                redelivery_prefix=SESSION_RESTART_PREFIX)
+        except Exception as exc:  # noqa: BLE001 — the job ends below
+            logger.warning("job %s could not be resumed after its session "
+                           "ended: %s", rec.id[:8], exc)
+            await self._end_error(rec, "its session ended unexpectedly")
+
+    async def resume_at_boot(self, rec: Any) -> None:
+        """Boot, for one live job. A job waiting for the operator with nothing
+        journaled resumes lazily, on their next input. Otherwise: the topic
+        line, the resume, the journal reconcile, then the brief (when the
+        transcript shows it was never read) or the restart line, then every
+        journaled message the transcript lacks. One attempt: a failed resume
+        ends the job ``error``."""
+        import job_inbox
+        if awaiting(rec) is not None and not job_inbox.load(rec.id):
+            return
+        notice = getattr(self.channel, "_post_engagement_notice", None)
+        if callable(notice):
+            try:
+                await notice(rec, f'↻ Resuming "{_title(rec)}" after a restart.')
+            except Exception:  # noqa: BLE001
+                logger.warning("job %s resume notice failed", rec.id[:8],
+                               exc_info=True)
+        try:
+            await self.driver.recover(
+                rec, restart_line=CASA_RESTART_LINE, brief=job_brief(rec),
+                redelivery_prefix=CASA_RESTART_PREFIX)
+        except Exception as exc:  # noqa: BLE001 — the job ends below
+            logger.warning("job %s could not be resumed after a restart: %s",
+                           rec.id[:8], exc)
+            await self._end_error(rec, "could not be resumed after a restart")
+
+    async def _end_error(self, rec: Any, reason: str) -> None:
         from tools import _finalize_engagement
-        task = asyncio.create_task(_finalize_engagement(
-            rec, outcome="error", text=detail, next_steps=[],
-            driver=driver))
-        channel._turn_tasks.add(task)
-        task.add_done_callback(channel._turn_tasks.discard)
-        await task
-        return False
-    job["started"] += 1
-    # #1033: the batch number travels with the turn. ``report_job_progress``
-    # credits a report to the batch whose turn is running when its handler
-    # runs (a cancelled call handled late is the exception it states).
-    handed_off = await channel.deliver_system_turn(
-        rec, batch_prompt(job["started"], job["title"]), batch=job["started"])
-    if not handed_off:
-        logger.info("job batch handoff refused for %s", rec.id)
-        return False
-    rec.origin["job"].update(
-        {key: job[key] for key in ("started", "judged", "stuck", "advanced")})
-    if job.get("pending_spared"):
-        rec.origin["job"]["pending_spared"] = True
-    rec.origin["job"].update(last_advance=time.time(), stalls=0)
-    await channel._engagement_registry.persist_origin(rec.id)
-    return True
+        latest = self.registry.get(rec.id) or rec
+        if latest.status not in ("active", "idle"):
+            return
+        await _finalize_engagement(
+            latest, outcome="error", text=reason + _last_progress(latest),
+            next_steps=[], driver=self.driver)
