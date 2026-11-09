@@ -97,6 +97,7 @@ EDIT_DM_MESSAGE_CALLERS = {
     ("trigger_consent.py", "_finish"): {"plugin"},
     ("operator_calls.py", "_finish"): {"plugin"},                  # browser executor: a plugin's question, ☑ label / retired
     ("plugin_stop.py", "settle_run_card"): {"status"},             # the Stop: the card's stored text + ☑ Stopped / Ended / Stop asked
+    ("channels/telegram.py", "_retire_job_post"): {"status"},      # an ended job's start line: its outcome mark, Casa template
 }
 
 RAW_TRANSPORT_FUNCTIONS = {
@@ -106,6 +107,7 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "finalize_response_stream"): "admitted",
     ("channels/telegram.py", "finalize_stream"): "admitted",
     ("channels/telegram.py", "post_dm_keyboard"): "admitted",
+    ("channels/telegram.py", "post_job_question"): "admitted",     # a job's question, admitted by ask_operator
     ("channels/telegram.py", "_send_one"): "admitted",             # helper of the two above
     ("channels/telegram.py", "_send_overflow_line"): "admitted",   # the admission's lines as their own message (§6.6 as amended)
     # stream — fed only from agent._emit, which admits every cumulative
@@ -130,6 +132,8 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "notify_operator"): "notice",           # the memory wipe's restart and done lines
     ("channels/telegram.py", "_send_plain_line"): "notice",          # the memory wipe's courtesy line
     ("channels/telegram.py", "send_step_line"): "notice",            # the configurator's step line, Casa template
+    ("channels/telegram.py", "post_job_start_line"): "notice",       # a job's start line with its Cancel, Casa template
+    ("channels/telegram.py", "_send_dm_reply"): "notice",            # a lost-message / turn notice in reply to the operator, Casa-composed
     # topic — engagement-topic methods (out of this boundary)
     ("channels/telegram.py", "edit_topic_message"): "topic",
     ("channels/telegram.py", "emit"): "topic",                      # TopicStreamHandle
@@ -142,7 +146,7 @@ RAW_TRANSPORT_FUNCTIONS = {
 
 
 CHANNEL_METHODS = {"send", "send_response", "finalize_stream", "finalize_response_stream",
-                   "post_dm_keyboard", "send_media"}
+                   "post_dm_keyboard", "send_media", "post_job_question"}
 # (file, enclosing function) → what the call hands the method. "admitted" = a value
 # minted by TurnScope.admit or carried from one; "casa_text" = the Casa template
 # class; "forward" = the channel forwarding an already-admitted value to a sibling
@@ -163,6 +167,7 @@ CHANNEL_METHOD_CALLERS = {
     ("tools.py", "relay_answer"): "admitted",          # slice 5l: the labelled delegate answer, admitted on the relaying turn
     ("tools.py", "_classify_send"): "admitted",                 # the caption, admitted by send_media
     ("tools.py", "_post"): "admitted",                          # ask_user (both arms) and wipe_memory (casa_text)
+    ("tools.py", "ask_operator"): "admitted",                   # a job's question, admitted on the job's scope
     ("specialist_desk.py", "handle_reply"): "admitted",         # S4: the desk reply, the specialist's admitted text
     ("specialist_desk.py", "handle_tap"): "admitted",           # S5: the stored call's receipt, the plugin's admitted text
 }
@@ -221,7 +226,7 @@ def test_every_raw_transport_call_is_inside_a_recorded_function():
 
 
 ADMITTED_METHODS = {"send", "send_response", "finalize_stream", "finalize_response_stream",
-                    "post_dm_keyboard", "send_media"}
+                    "post_dm_keyboard", "send_media", "post_job_question"}
 DERIVED_METHODS = {"edit_dm_message"}
 TOPIC_METHODS = {"send_to_topic", "send_to_topic_rich", "send_to_topic_paged",
                  "send_response_to_topic", "edit_topic_message", "post_topic_message"}
@@ -231,7 +236,7 @@ NOTICE_METHODS = {"deliver_operator_link", "deliver_operator_message", "deliver_
                   "deliver_operator_question", "notify_operator", "deliver_run_card",
                   "send_reply_line", "send_step_line"}
 # dispatch — the text becomes a TURN's input, not an emission (Astra r1 item 1)
-DISPATCH_METHODS = {"deliver_system_turn"}
+DISPATCH_METHODS = {"deliver_system_turn", "deliver_operator_reply"}
 
 
 def test_channel_text_methods_are_classified():

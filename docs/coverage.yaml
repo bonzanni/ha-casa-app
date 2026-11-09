@@ -409,6 +409,8 @@
   doc: architecture/background-jobs.md
 - item: tool:report_job_progress
   doc: architecture/background-jobs.md
+- item: tool:ask_operator
+  doc: architecture/background-job-direct-chat.md
 - item: tool:correct_memory
   doc: architecture/memory-tools.md
 - item: tool:delegate_to_agent

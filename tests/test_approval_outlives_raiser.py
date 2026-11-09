@@ -63,7 +63,8 @@ class _Channel:
         return True
 
     async def _dispatch_engagement_continuation(
-            self, *, engagement_id, text, inbound_reservation=None):
+            self, *, engagement_id, text, inbound_reservation=None,
+            notice_target=None):
         self.eng_dispatches.append(engagement_id)
         return self.eng_result
 

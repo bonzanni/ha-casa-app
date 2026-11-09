@@ -840,8 +840,10 @@ def test_turn_outcomes_row_moves_to_launch_shard():
     v0.347.11 binds the executor closing-text tests to INV-ENG-011 in this row,
     and the claude_code driver's removal then drops its boot-replay and
     claude_code anchors and bindings from it, and v0.351.0
-    drops the executor closing-text tests again, so the digest is the row as
-    it stands after those changes.
+    drops the executor closing-text tests again, and the job-in-the-direct-
+    chat change binds a reply turn's and a batch turn's tests to INV-ENG-012
+    and INV-ENG-020, so the digest is the row as it stands after those
+    changes.
 
     Specified by **astra** in the drive red-case round.
     """
@@ -862,8 +864,8 @@ def test_turn_outcomes_row_moves_to_launch_shard():
         json.dumps(rows[0], sort_keys=True).encode("utf-8")
     ).hexdigest()
     assert digest == (
-        "01dfeddde37311e7f9f9ae8a2aa4e66bc3"
-        "6fe0a0cf18252b28cfbaaf9fc88784"
+        "2a3169e242e4b04ee87bca3dd8e9ff0d8e"
+        "e6b53902c87b1dfe223a3c99889ae5"
     ), digest
     retained = yaml.safe_load(
         (DOCS / "manifest.d/architecture-e.yaml").read_text()

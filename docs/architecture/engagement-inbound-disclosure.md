@@ -1,70 +1,74 @@
 ---
-last_reviewed: 2026-08-23
+last_reviewed: 2026-11-08
 ---
 
-# Engagement inbound disclosure
+# Inbound messages an engagement never took up
 
 > Code is the source of truth. This file is a map; when it and the code disagree, the code wins.
 
 ## Scope
 
-What a terminal outcome tells about inbound messages that died with the engagement: which of
-the driver's populations it quotes, what it counts without quoting, and what the count may
-claim. What a *successful* completion is refused over and what the driver counts are in
-[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md). The terminal
-transition itself and the finalization side effects behind it are in
-[`architecture/engagement-finalization.md`](engagement-finalization.md); the outcome mark and the
-notify obligation are in
-[`architecture/engagement-terminal-telling.md`](engagement-terminal-telling.md).
+What the operator is told about a message an engagement admitted and never took up — their reply
+into a job, a tapped answer, an approval's continuation, a message written in a topic — and who
+tells it. What a *successful* completion is refused over, and what the driver counts, is in
+[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md). The notice a turn
+draws when it *was* taken up and then cut off is INV-ENG-012 in
+[`architecture/engagement-turn-outcomes.md`](engagement-turn-outcomes.md). How replies and taps
+reach a job is [`architecture/background-job-direct-chat.md`](background-job-direct-chat.md).
 
 ## Mental model
 
-**A message that dies with the engagement is disclosed, not swallowed.** Every terminal
-outcome posts the inbound messages no turn ever took up into the topic — the driver's unread
-texts (turns admitted and never handed to the client) and its in-flight texts (handed to the
-client, no model-evidence frame yet), excerpted and counted, plus a count of pending
-reservations. The claim it makes is what the system can evidence: that no turn start was
-*recorded* for them before the engagement ended. It does not claim they were never read,
-because that is not provable for a prompt already handed to the client — the model can read
-it before the first evidence frame is processed, and a cancellation landing in that interval
-would otherwise assert something false about a message the agent did see.
+**Each message is told once, by the holder of its ticket.** Every inbound message an engagement
+admits gets an admission ticket, taken synchronously at the seam that admits it
+(`deliver_operator_reply`, `deliver_system_turn`, the topic handler). Until the seam hands the
+ticket to a delivery task, the seam holds it; after that, the task does. Whichever holds it when
+the message is not taken up — the record went terminal, resume failed, the stop began, the
+driver's terminal fence refused the turn, the turn raised — makes one bounded notice attempt and
+discharges the ticket (`TelegramChannel._settle_lost_inbound`). The callers of the seams never
+post one: they get a bare hand-off boolean for their own bookkeeping, a toast or a card edit.
+
+**The notice goes where the message came from.** A message from the operator's direct chat — a
+reply into a job, or the card a tap answered — is told there, as a reply to it: "The job had
+just ended — not delivered, please resend." (or "Your message could not be delivered — please
+resend it." while the job is live) for their words, and "The job had already ended; your answer
+wasn't used." (or "Your answer could not be passed to the job — please answer again.") for a
+tap. The ended form is chosen from the record's settled status. A message written in a topic is
+told in that topic — including one whose delivery task waited for a running turn before it
+could ready a rebuilt session — and when the readiness step's refusal has itself just told the
+topic why (a failed context rebuild, a legacy record that could not be resumed), that line is
+the message's notice. Nothing is forwarded anywhere else.
+
+**No end-of-job list.** A terminal outcome — the finalize funnel's completion post, the
+launch-death notice — lists no inbound messages. The messages that died with the engagement are
+each told by their own ticket's holder, so a list would tell them twice. The driver's teardown
+does not clear the ticket ledger, so the holder still finds its ticket when it settles.
+
+**A batch turn is Casa's, not a message.** A batch prompt that cannot be delivered because the
+record went terminal or could not be resumed is discharged silently; the job's own loop and
+sweep own a batch that could not start. A batch turn the delivery task cannot complete still
+draws its notice in the topic, as before.
 
 ## Contracts & invariants
 
-This document defines no invariant of its own: the reads it renders are taken by the same
-terminal hook, under the same per-accessor rule, as the completion gate's
-([`architecture/engagement-completion-gate.md`](engagement-completion-gate.md), INV-ENG-003).
+**INV-ENG-029**: An admitted inbound message the engagement never takes up — other than a batch prompt refused before its hand-off, which is discharged silently — draws exactly one bounded notice attempt, made by whichever of the admitting seam or its delivery task holds the message's ticket at that moment — never by a caller of the seam — before the ticket is discharged; a message from the operator's direct chat is told there in reply to their message or the tapped card, worded from the record's settled status, and no terminal outcome lists such messages.
 
-**A reservation is counted, not quoted, and the count over it is an upper bound.** An in-casa
-reservation is taken for a system continuation whose text does not exist anywhere yet, so
-`InCasaDriver.inbound_reservation_texts` is empty by construction and the disclosure counts
-it. Because a reservation is anonymous to the count, a total that includes reservations reads
-"up to N"; a text-only total keeps the exact claim. The renderer still quotes a reservation
-text a driver does supply, and when the reservation count could not be read beside such a
-text the sentence names no number rather than risk a false one; the in-casa driver supplies
-none, so that arm is not reached with it.
-
-One reservation is excluded by construction: the one a recognized command holds for itself
-while the handler processes it — classified at the reservation's birth, so the exclusion
-holds under *every* terminal winner — still counts toward the completion veto but is never
-disclosed as lost, because a command is consumed by the handler and never delivered to the
-model; the disclosure reads the projection that leaves it out
-(`inbound_message_reservations`). The operator's ungated complete command finalizes past
-unread input deliberately, and it does so *disclosing* — the topic post counts what it
-committed past. The launch-death reporter folds the same projection into its own disclosure.
+What it does not cover: the notice is one attempt — a Telegram failure or a crash at that point
+loses it, and the ticket is discharged regardless, because retrying would hold an unclearable
+completion veto. And a message that *was* taken up and then cut off is INV-ENG-012's, not this one's: the two are
+exclusive by construction, success path against failure path.
 
 ## Failure behavior
 
-**A disclosure accessor raises or is absent.** These populations are read by the same terminal
-hook, under the same per-accessor isolation rule, as the reads the completion gate refuses on:
-[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) (INV-ENG-003) has
-what one failing read costs — its own contribution and nothing else.
+**The settled-status read does not return.** It is bounded; the notice is then worded as if the
+job were live, which is still true of a message that was not delivered.
+
+**The notice send fails.** It is logged at debug and the ticket is discharged.
 
 ## Extension points
 
-**A new driver that owns inbound state** should implement the text accessors, so a terminal
-outcome can quote what died with its engagements. What no terminal ever does is assert that
-nothing was lost — the disclosure, like the refusal, is scoped to what a driver can evidence.
+**A new seam that admits inbound text** takes its ticket synchronously at entry, settles every
+ticket it does not hand off through `_settle_lost_inbound` with the message's notice target, and
+returns a bare hand-off boolean that no caller posts on.
 
 ## Source & test map
 
@@ -72,19 +76,20 @@ nothing was lost — the disclosure, like the refusal, is scoped to what a drive
 <!-- generated by scripts/verify_docs.py --write-nav; do not hand-edit -->
 
 **Source**
-- `casa/rootfs/opt/casa/tools.py::_finalize_engagement`
-- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_unread_texts`
-- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_in_flight_texts`
-- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_message_reservations`
-- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_reservation_texts`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._settle_lost_inbound`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._post_lost_inbound_notice`
+- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_token_held`
 
 **Tests**
+- `tests/test_job_dm_attention.py`
 - `tests/test_emit_completion_tool.py`
 - `tests/test_launch_death_reporter.py`
+- `tests/test_in_casa_inbound_admission.py`
 
 **Related**
 - [`architecture/engagement-completion-gate.md`](../architecture/engagement-completion-gate.md)
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
-- [`architecture/engagement-terminal-telling.md`](../architecture/engagement-terminal-telling.md)
+- [`architecture/engagement-turn-outcomes.md`](../architecture/engagement-turn-outcomes.md)
+- [`architecture/background-job-direct-chat.md`](../architecture/background-job-direct-chat.md)
 - [`architecture/telegram.md`](../architecture/telegram.md)
 <!-- END SOURCEMAP -->

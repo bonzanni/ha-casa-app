@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-14
+last_reviewed: 2026-11-08
 ---
 
 # Job triggers: a schedule that starts a plugin job
@@ -21,8 +21,9 @@ and its fire sends that prompt to the resident as a scheduled turn. A job entry 
 `job: <manifest name>:<job name>` instead, with an optional `task` and `context`. Its fire
 sends nothing to the resident: it resolves the job's host at that moment, builds the origin a
 job the operator started from their DM would carry, and starts the job through the same
-launcher `start_job` uses. From there the job runs, posts and ends exactly like one the
-resident started, and the resident hears of it only through the job's own end telling.
+launcher `start_job` uses. From there the job runs, posts and ends like one the resident
+started, except that it posts no start line in the operator's chat, and the resident hears
+of it only through the job's own end telling.
 
 **The entry is checked where it is written, and the fire tells what it could not do.** The
 schema makes `job`, `prompt` and `prompt_file` mutually exclusive on every scheduled type,

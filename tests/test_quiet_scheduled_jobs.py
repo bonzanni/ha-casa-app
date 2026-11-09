@@ -254,7 +254,7 @@ async def test_a_quiet_runs_completed_end_is_logged_as_deliberately_untold(
     caplog.clear()
     with caplog.at_level("DEBUG", logger="channels.telegram"):
         assert await runtime.channel._report_incomplete_turn(
-            runtime.registry.get(rec.id), "tok", system_turn=True) is True
+            runtime.registry.get(rec.id), "tok", batch=1) is True
     records = [r for r in caplog.records if r.name == "channels.telegram"]
     warnings = [r.getMessage() for r in records if r.levelname == "WARNING"]
     infos = [r.getMessage() for r in records if r.levelname == "INFO"]

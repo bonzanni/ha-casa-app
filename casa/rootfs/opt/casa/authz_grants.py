@@ -893,9 +893,13 @@ class ChallengeCoordinator:
                 # releases it in the same synchronous step that admits the
                 # continuation's ticket — so the completion gate never sees
                 # both populations empty.
+                # The card is the continuation's notice target: if the job
+                # never takes the turn up, the seam (or its delivery task)
+                # tells the operator in reply to it, once.
                 return await channel._dispatch_engagement_continuation(
                     engagement_id=engagement_id, text=text,
                     inbound_reservation=inbound_reservation,
+                    notice_target=(chat_id, message_id),
                 )
             desk_role = _desk_role()
             if desk_role:
@@ -936,8 +940,16 @@ class ChallengeCoordinator:
                     "authz continuation dispatch failed (%s)", _target_desc)
                 return False
 
+        def _seam_tells_its_loss() -> bool:
+            # The engagement's delivery seam tells a continuation the job
+            # never took up in reply to this card, once; the card then adds
+            # no failure line. An engagement the channel does not know keeps
+            # the line.
+            owner = getattr(channel, "engagement_continuation_tells_its_loss", None)
+            return bool(engagement_id) and callable(owner) and owner(engagement_id) is True
+
         async def _deliver(text: str, fail_text: str) -> None:
-            if not await _safe_dispatch(text):
+            if not await _safe_dispatch(text) and not _seam_tells_its_loss():
                 await channel.edit_dm_message(chat_id, message_id, fail_text)
 
         async def _hand_over(text: str, fail_text: str) -> None:

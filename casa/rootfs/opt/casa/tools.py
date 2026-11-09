@@ -3253,7 +3253,8 @@ _PLUGIN_JOB_PROMPT = (
     "in bounded batches. Do not ask questions: park items needing an answer "
     "and report them instead. Report each batch through report_job_progress; "
     "finish through emit_completion. You have no delegation, messaging, or "
-    "resident memory. Read operator messages between batches and continue "
+    "resident memory. The operator answers by replying to this job's messages "
+    "in their direct chat; read those messages between batches and continue "
     "the work using only the declaring plugin and the job tools."
 )
 
@@ -7301,7 +7302,8 @@ async def _launch_interactive_engagement(
 
             prompt = background_jobs.launch_prompt(
                 job, task_text, context_text, turns_per_batch,
-                job_id=rec.id, started_by=rec.origin["job"].get("started_by"))
+                job_id=rec.id, started_by=rec.origin["job"].get("started_by"),
+                can_ask=plugin_host is None)
 
             driver = getattr(agent_mod, "active_engagement_driver", None)
             if driver is None:
@@ -7648,6 +7650,8 @@ async def start_job(args: dict) -> dict:
     result = await _start_job_on_host(host, args.get("task", ""), args.get("context", "") or "", origin,
                                       **({"self_host": True} if self_host else {}))
     payload = json.loads(result["content"][0]["text"])
+    if payload.get("status") == "pending":
+        await _post_job_start_line(payload.get("engagement_id"))
     if self_host:
         # #1229: a specialist relays its own start to the operator; the ids are
         # Casa's, not theirs — every result names the job and its topic instead
@@ -7663,6 +7667,30 @@ async def start_job(args: dict) -> dict:
                     f"{_display_name_for_role(role)}'s topic.")
         return _result(payload)
     return _result(payload) if self_host else result
+
+
+_START_LINE_TIMEOUT_S = 10.0
+
+
+async def _post_job_start_line(engagement_id: Any) -> None:
+    """The silent start line, with its Cancel button, of a job the operator
+    started — directly or through an agent acting on their message. A job the
+    scheduler started gets none, and nor does one an agent started on its
+    own: neither was asked for in the chat. Bounded; a failure is logged."""
+    rec = (_engagement_registry.get(engagement_id)
+           if _engagement_registry is not None and isinstance(engagement_id, str)
+           else None)
+    if rec is None or (rec.origin.get("job") or {}).get("started_by") != "operator":
+        return
+    channel = _channel_manager.get("telegram") if _channel_manager is not None else None
+    poster = getattr(channel, "post_job_start_line", None)
+    if not callable(poster):
+        return
+    try:
+        await asyncio.wait_for(poster(rec), _START_LINE_TIMEOUT_S)
+    except Exception as exc:  # noqa: BLE001 — a start line is never the job's fault
+        logger.warning("job %s start line not posted: %s", rec.id[:8],
+                       type(exc).__name__)
 
 
 def _delegation_mode_for(cfg: Any, mode: str) -> str:
@@ -10217,71 +10245,10 @@ async def _report_launch_death(
     if _engagement_registry is None:
         return LaunchDeathResult.PERSIST_FAILED
 
-    # The snapshot hook, evaluated INSIDE the registry's terminal critical
-    # section: an operator message admitted while the launch turn was ending
-    # (telegram admits synchronously before its first await) would otherwise
-    # vanish with the topic, and the expected-non-delivery path discharges its
-    # ticket without a telling. Returns None UNCONDITIONALLY — a veto here
-    # could wedge the death report forever, and something going wrong must
-    # always be able to end.
-    lost_texts: list[str] = []
-    lost_reservation_texts: list[str] = []
-    lost_reservations = 0
-    # #848: whether the disclosure-count read RAISED — an observation made in
-    # its except arm only, never inferred from a zero. Carried out like
-    # `lost_reservations`; read by the rendering below and by nothing else.
-    reservation_count_failed = False
-
-    def _snapshot_hook():
-        nonlocal lost_reservations, reservation_count_failed
-        if driver is None:
-            return None
-        try:
-            _q = (driver.inbound_unread_texts(rec.id)
-                  if hasattr(driver, "inbound_unread_texts") else [])
-            queued = [t for t in _q if isinstance(t, str)] if type(_q) is list else []
-        except Exception:  # noqa: BLE001 — fail open
-            logger.warning(
-                "launch-death report %s: unread accessor failed",
-                rec.id[:8], exc_info=True)
-            queued = []
-        try:
-            _f = (driver.inbound_in_flight_texts(rec.id)
-                  if hasattr(driver, "inbound_in_flight_texts") else [])
-            in_flight = [t for t in _f if isinstance(t, str)] if type(_f) is list else []
-        except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
-            logger.warning(
-                "launch-death report %s: in-flight accessor failed",
-                rec.id[:8], exc_info=True)
-            in_flight = []
-        try:
-            # #664: the DISCLOSURE projection — a reservation held by a
-            # recognized command being processed is not lost input and is
-            # excluded here as at every _finalize_engagement terminal; the
-            # completion gate elsewhere keeps reading the raw total.
-            _r = (driver.inbound_message_reservations(rec.id)
-                  if hasattr(driver, "inbound_message_reservations") else 0)
-            lost_reservations = _r if type(_r) is int else 0
-        except Exception:  # noqa: BLE001 — fail open
-            lost_reservations = 0
-            reservation_count_failed = True
-        # #691: and the TEXTS of those reservations, where Casa knows them —
-        # its own try, so a new accessor's failure costs only the new coverage.
-        try:
-            _rt = (driver.inbound_reservation_texts(rec.id)
-                   if hasattr(driver, "inbound_reservation_texts") else [])
-            lost_reservation_texts[:] = (
-                [t for t in _rt if isinstance(t, str)]
-                if type(_rt) is list else [])
-        except Exception:  # noqa: BLE001 — fail open
-            lost_reservation_texts[:] = []
-        lost_texts[:] = list(in_flight) + list(queued)
-        return None
-
     try:
         won = await _engagement_registry.try_transition_terminal(
             rec.id, "error", strict=True, error_kind=kind,
-            error_message=detail, terminal_hook=_snapshot_hook,
+            error_message=detail,
             # §2.A: the detached launch owner and the cancellation owner tell
             # the engager themselves, so they arm the durable obligation the
             # live telling then acknowledges; an inline launcher that returns
@@ -10314,46 +10281,8 @@ async def _report_launch_death(
             f"({detail}). Its task may be incomplete \u2014 inspect any "
             "partial changes before retrying."
         )
-        # #848: a reservation text that was read is evidence of a lost message
-        # even when the count read raised — the paragraph is posted for it.
-        # The new arm needs BOTH the observed failure and a text: a failed
-        # read alone is never evidence (nothing was read), and a successful
-        # zero beside a text is the driver answering off its own clamp, left
-        # exactly as it was.
-        if (lost_texts or lost_reservations
-                or (reservation_count_failed and lost_reservation_texts)):
-            _budget, _parts = 2800, []
-            # #691: the spool population, then the texts of reservations whose
-            # message never became durable. The paragraph's emission condition
-            # with no reservation text involved, the base sentence above and
-            # this paragraph's position after the retention one are all
-            # UNCHANGED — red cases assert this notice by whole-text
-            # equality.
-            _bullets = list(lost_texts) + list(lost_reservation_texts)
-            for _t in _bullets:
-                _ex = _t if len(_t) <= 400 else _t[:400] + "\u2026"
-                if _budget - len(_ex) < 0:
-                    break
-                _budget -= len(_ex)
-                _parts.append(f"\u2022 {_ex}")
-            _more = len(_bullets) - len(_parts)
-            if reservation_count_failed and lost_reservation_texts:
-                # #848: the reservation population is quoted but cannot be
-                # counted, so the sentence names no number (see the
-                # _finalize_engagement rendering for why no bound is honest).
-                _count = "An unknown number of"
-            else:
-                _total = len(lost_texts) + lost_reservations
-                # #664: reservation counts are an upper bound (see the
-                # _finalize_engagement rendering); text-only totals stay exact.
-                _count = f"up to {_total}" if lost_reservations else f"{_total}"
-            text += (
-                f"\n\n\u26a0\ufe0f {_count} inbound message(s) had no turn "
-                "start recorded before this engagement ended \u2014 they may "
-                "never have been read"
-                + ((":\n" + "\n".join(_parts)) if _parts else ".")
-                + (f"\n\u2026and {_more} more." if _more > 0 else "")
-            )
+        # Inbound messages that die with the launch are not listed here: each
+        # one's ticket holder tells it once, in reply to the message.
         try:
             await asyncio.wait_for(
                 _post_engagement_notice(channel, rec, text),
@@ -11237,42 +11166,17 @@ async def _finalize_engagement(
     #    the record stays live for a retry / boot replay instead of a torn close.
     # G4 D2/D4 (v0.96.0): SYNCHRONOUS terminal hook, evaluated inside the
     # registry's terminal critical section (no suspension between check and
-    # flip). Composes the completion inbound GATE (inbound_gate=True: veto on
-    # unread depth or a pending ingress reservation) with the no-silent-loss
-    # SNAPSHOT of queued-unseen texts (all callers — surfaced to the topic
-    # after the flip). Accessor failures fail OPEN with a warning: a driver
-    # bug must not wedge termination forever. #807: open for THAT accessor
-    # only — each of the reads below is guarded on its own and
-    # contributes only its own value, so a failure changes what the hook knows
-    # and never what it does about everything else it read.
-    unread_snapshot: list[str] = []
-    reservation_texts: list[str] = []
-    lost_reservations = 0
-    # #848: whether the disclosure-count read RAISED — an observation made in
-    # its except arm only, never inferred from a zero. Carried out like
-    # `lost_reservations`; read by the post-flip rendering and nothing else.
-    reservation_count_failed = False
+    # flip): the completion inbound GATE (inbound_gate=True: veto on unread
+    # depth or a pending ingress reservation). Accessor failures fail OPEN
+    # with a warning: a driver bug must not wedge termination forever. #807:
+    # open for THAT accessor only — each read below is guarded on its own and
+    # contributes only its own value. Inbound messages that die with the
+    # engagement are not listed here: each one's ticket holder tells it once,
+    # in reply to the message.
 
     def _terminal_hook():
-        nonlocal lost_reservations, reservation_count_failed
-        if driver is None:
+        if driver is None or not inbound_gate:
             return None
-        # #807: the queued-text read is ONE optional accessor among several, and
-        # it is guarded like every one of them — its own try, contributing only
-        # its own value. It used to be the hook's precondition instead: absent,
-        # it returned before the whole hook; raising, it returned before the
-        # reservation, depth and in-flight arms of the veto and before all four
-        # disclosure populations. A gated completion then committed over
-        # reservations, in-flight work and a depth the gate could still have
-        # read, and every terminal — completed, cancelled, error, reap, forced
-        # delete, operator /cancel and complete — posted no inbound disclosure
-        # at all. Failing open is the published policy for an accessor that
-        # cannot answer (see this funnel's header, and the completion gate
-        # document's failure-behaviour section); failing open for the OTHER
-        # seven, which answered, never was. A driver implementing none of the
-        # accessors is still not gated and still discloses nothing — every read
-        # below is hasattr-optional, so that outcome now comes from the reads
-        # themselves rather than from this one accessor standing in for them.
         try:
             _ut = (driver.inbound_unread_texts(engagement.id)
                    if hasattr(driver, "inbound_unread_texts") else [])
@@ -11280,16 +11184,12 @@ async def _finalize_engagement(
         except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the below
             logger.warning(
                 "finalize engagement %s: inbound_unread_texts failed — the "
-                "reservation, depth and in-flight arms still stand",
+                "reservation and depth arms still stand",
                 engagement.id[:8], exc_info=True)
             texts = []
-        # #740: the RAW reservation count is read in its OWN try. It used to
-        # share the one above, so an unread-accessor failure returned before it
-        # and the reservation arm of the gate — the arm that survives a session
-        # teardown, and the only one still standing in that window — was skipped
-        # with it. That coupling was survivable while the unread read was a dict
-        # lookup; it now reads a file when no incarnation is attached, so the
-        # isolation is owed.
+        # #740: the RAW reservation count is read in its OWN try, so an
+        # unread-accessor failure can never skip the reservation arm — the arm
+        # that survives a session teardown.
         try:
             _hr = (driver.inbound_reservations(engagement.id)
                    if hasattr(driver, "inbound_reservations") else 0)
@@ -11300,28 +11200,12 @@ async def _finalize_engagement(
                 "unread gate below still stands", engagement.id[:8],
                 exc_info=True)
             resv = 0
-        # #740: the VETO reads the DEPTH, not len(texts). The two are the same
-        # population whenever an incarnation is attached (both enumerate the
-        # spool's queued, non-initial envelopes), but ``inbound_unread_texts``
-        # now also answers from the durable FILE when none is — and a file-only
-        # population must never refuse a completion, because nothing the gate
-        # can force could clear it: the escalation exists to make a queued
-        # envelope pump, and there is no pump. It discloses instead, below.
-        # Its own try, and its failure contributes ZERO rather than falling
-        # back to len(texts) — a fallback would let a file-sourced population
-        # veto by the back door, which is the one thing this split exists to
-        # prevent. Nothing already read is discarded: the reservation and
-        # in-flight arms still veto and the texts still reach the disclosure.
-        # An ABSENT depth accessor keeps the previous behaviour (a duck driver
-        # exposing only texts has no file tier for the split to protect it
-        # from); a PRESENT one that raises contributes zero, per above.
-        # #807: that ``len(texts)`` fallback now reads a list that is EMPTY
-        # when the text accessor was absent or raised, which is the value this
-        # arm wants — a population the gate could not read must not veto, and
-        # an unbound ``texts`` here would raise inside the registry's terminal
-        # critical section and be misread as a persist failure that leaves the
-        # record live. An edit that makes the degraded value non-empty must
-        # revisit this line.
+        # #740: the VETO reads the DEPTH, not len(texts): a population read
+        # from the durable file must never refuse a completion, because
+        # nothing the gate can force could clear it. An ABSENT depth accessor
+        # falls back to the texts read above (empty when that read failed —
+        # a population the gate could not read must not veto); a PRESENT one
+        # that raises contributes zero.
         try:
             _du = (driver.inbound_unread_depth(engagement.id)
                    if hasattr(driver, "inbound_unread_depth") else len(texts))
@@ -11329,72 +11213,22 @@ async def _finalize_engagement(
         except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
             logger.warning(
                 "finalize engagement %s: unread-depth accessor failed — the "
-                "reservation and in-flight arms still stand",
+                "reservation arm still stands",
                 engagement.id[:8], exc_info=True)
             depth = 0
-        # #591: the texts of accepted turns no turn start was recorded for —
-        # disclosure only. Strictly typed so a duck or mock driver reads as
-        # empty; guarded SEPARATELY from the reads above (Terra, diff review)
-        # so its failure costs only this coverage.
-        try:
-            _ift = (driver.inbound_in_flight_texts(engagement.id)
-                    if hasattr(driver, "inbound_in_flight_texts") else [])
-            in_flight = ([t for t in _ift if isinstance(t, str)]
-                         if type(_ift) is list else [])
-        except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
-            logger.warning(
-                "finalize engagement %s: in-flight-text accessor failed — the "
-                "unread gate below still stands",
-                engagement.id[:8], exc_info=True)
-            in_flight = []
-        # #664: a message still inside its ingress-reservation window has no
-        # text anywhere, but it dies with this terminal all the same — carry
-        # the DISCLOSURE projection (reservations minus the ones a recognized
-        # command holds for itself) out of the hook so the post-flip
-        # rendering can tell the operator. Guarded in its OWN try (seam
-        # review): this accessor is NEW, and its failure must cost only the
-        # new coverage — never the texts, the raw reservation count, or the
-        # gate those already feed. The GATE keeps raw ``resv``: a command
-        # reservation still vetoes a racing successful completion.
-        try:
-            _mr = (driver.inbound_message_reservations(engagement.id)
-                   if hasattr(driver, "inbound_message_reservations") else 0)
-            lost_reservations = _mr if type(_mr) is int else 0
-        except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
-            logger.warning(
-                "finalize engagement %s: message-reservation accessor "
-                "failed — reservation count skipped", engagement.id[:8],
-                exc_info=True)
-            lost_reservations = 0
-            reservation_count_failed = True
-        # #649: in-flight first — an accepted turn is usually older than the
-        # turns still queued behind it. Best-effort, mostly-chronological;
-        # cross-population order is NOT a guarantee (a system turn admitted
-        # pre-lock can be older than an accepted manual one) and the rendered
-        # copy claims counts and texts, never chronology.
-        # #691: the TEXTS of reservations still held for messages that never
-        # reached the spool — the population that could previously only be
-        # counted. Its OWN try, like every accessor beside it: this read is new
-        # and its failure must cost only the new coverage. It contributes
-        # nothing to the veto (the raw count above already does) and nothing to
-        # the totals (below) — only bullets; #848: when the count read above
-        # RAISED, these texts are the only evidence the population has, and
-        # the rendering posts them under a sentence that names no number.
-        try:
-            _rt = (driver.inbound_reservation_texts(engagement.id)
-                   if hasattr(driver, "inbound_reservation_texts") else [])
-            reservation_texts[:] = ([t for t in _rt if isinstance(t, str)]
-                                    if type(_rt) is list else [])
-        except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
-            logger.warning(
-                "finalize engagement %s: reservation-text accessor failed — "
-                "the counts below still stand", engagement.id[:8],
-                exc_info=True)
-            reservation_texts[:] = []
-        unread_snapshot[:] = list(in_flight) + list(texts)
-        if inbound_gate and (depth or resv):
+        if depth or resv:
             return f"unread_inbound depth={depth} reservations={resv}"
         return None
+
+    # The terminal notification is owed unless a quiet scheduled run
+    # completed. Decided INSIDE the transition, from the record as it
+    # commits: an operator's interaction ends a run's quietness under the
+    # same lock, so the decision and the stamp cannot disagree.
+    _owes: dict[str, bool] = {}
+
+    def _owes_notification(rec: Any) -> bool:
+        _owes["notify"] = not _told_nowhere(rec.origin, outcome)
+        return _owes["notify"]
 
     if _engagement_registry is not None:
         try:
@@ -11411,7 +11245,7 @@ async def _finalize_engagement(
                 # same write that commits the terminal, never after it. Every
                 # other terminal writer leaves the default and owes nothing.
                 # #1301: a quiet run's completed end is told nowhere.
-                owes_terminal_notification=not _told_nowhere(engagement.origin, outcome),
+                owes_terminal_notification=_owes_notification,
             )
         except TerminalPreconditionFailed as exc:
             logger.info(
@@ -11457,6 +11291,10 @@ async def _finalize_engagement(
         "role_or_type": engagement.role_or_type,
         "started_at": engagement.started_at,
         "origin": dict(engagement.origin),
+        # Whether the transition owed the engager a telling — the decision it
+        # made under the registry lock; without a registry, the record's.
+        "notify": _owes.get("notify",
+                            not _told_nowhere(engagement.origin, outcome)),
     }
 
     # [AR-4] Topic-retention ledger (2026-07-10 design): record the topic
@@ -11499,73 +11337,6 @@ async def _finalize_engagement(
                     f"Engagement {outcome}. Summary:\n{text}"
                     if text else f"Engagement {outcome}."
                 )
-                # G4 D4 (v0.96.0): surface operator messages no turn ever took
-                # up (queued at terminalization — cancel/reap/error paths; a
-                # gated completion cannot reach here with unread input), plus
-                # (#591) accepted turns with no turn_start evidence back.
-                #
-                # The copy claims what Casa can actually evidence: no turn
-                # start was RECORDED for them before the engagement ended.
-                # TOPIC-ONLY (never in `text`, which flows to the bus
-                # notification) and BOUNDED to one message: excerpts + count.
-                # #848: a reservation text that was read is evidence of a
-                # lost message even when the count read raised — the
-                # paragraph is posted for it. The new arm needs BOTH the
-                # observed failure and a text: a failed read alone is never
-                # evidence (nothing was read), and a successful zero beside
-                # a text is the driver answering off its own clamp, left
-                # exactly as it was.
-                if (unread_snapshot or lost_reservations
-                        or (reservation_count_failed and reservation_texts)):
-                    _budget = 2800
-                    _parts = []
-                    # #691: the spool population first, in its existing order
-                    # and with its duplicates intact (two distinct queued
-                    # messages carrying the same text are two messages), then
-                    # the texts of reservations whose message never became
-                    # durable. No de-duplication happens here and no aliasing
-                    # policy lives here: the driver drops a reservation's text
-                    # the instant its message is persisted, so a message is
-                    # quoted once, from wherever it currently lives.
-                    _bullets = list(unread_snapshot) + list(reservation_texts)
-                    for _t in _bullets:
-                        _ex = _t if len(_t) <= 400 else _t[:400] + "…"
-                        if _budget - len(_ex) < 0:
-                            break
-                        _budget -= len(_ex)
-                        _parts.append(f"• {_ex}")
-                    _more = len(_bullets) - len(_parts)
-                    # #649: "inbound", not "operator" — deliver_system_turn
-                    # continuations are Casa-authored. The in_casa ticket
-                    # ledger is non-durable by design — the count is always
-                    # stated, the overflow text is not recoverable.
-                    # #664: reservations contribute a COUNT only — no text
-                    # exists for a message that never reached the spool. An
-                    # anonymous reservation can alias an already-spooled text
-                    # in the enqueue-to-release window, so a total that
-                    # includes reservations is an upper bound and the copy
-                    # says so; a text-only total keeps the exact claim.
-                    if reservation_count_failed and reservation_texts:
-                        # #848: the reservation population is quoted but
-                        # cannot be counted. No bound is honest here: "up to"
-                        # is false whenever a text-less reservation the
-                        # failed read would have counted exists, and "at
-                        # least" is false when the exclusion read ALSO failed
-                        # (it fails open to "suppress nothing", so a held
-                        # text can sit beside its own spool envelope). So the
-                        # sentence names no number; the bullets stay.
-                        _count = "An unknown number of"
-                    else:
-                        _total = len(unread_snapshot) + lost_reservations
-                        _count = (f"up to {_total}" if lost_reservations
-                                  else f"{_total}")
-                    summary_text += (
-                        f"\n\n⚠️ {_count} inbound message(s) "
-                        "had no turn start recorded before this engagement "
-                        "ended — they may never have been read"
-                        + ((":\n" + "\n".join(_parts)) if _parts else ".")
-                        + (f"\n…and {_more} more." if _more > 0 else "")
-                    )
                 # v0.109.0 (G2/G5): executor completion summaries are
                 # markdown-heavy — render them, paginating past the
                 # 4096/100-entity caps (the in_casa configurator path was
@@ -11812,7 +11583,8 @@ async def _finalize_engagement_tail(
     # 4. NOTIFY the assistant (via existing DelegationComplete-shaped pathway).
     # #1301: not for a quiet run's completed end — its plugin already posted
     # whatever the operator needs to see.
-    if _bus is not None and not _told_nowhere(frozen["origin"], outcome):
+    if _bus is not None and frozen.get(
+            "notify", not _told_nowhere(frozen["origin"], outcome)):
         target_role = frozen["origin"].get("role") or "assistant"
         # S3 §6: a specialist's or job's proven posts, as body-free Casa
         # lines after the terminal text — the one announcement the creator
@@ -12052,6 +11824,73 @@ async def report_job_progress(args: dict) -> dict:
     await _post_engagement_notice(_channel_manager.get("telegram"), rec, text)
     await _engagement_registry.persist_origin(rec.id)
     return _result({"ok": True})
+
+
+@tool(
+    "ask_operator",
+    "Ask the operator something this job cannot settle on its own: a decision, a "
+    "choice, missing information. Casa posts the question in the operator's direct "
+    "chat, under your name, with one button per option and a Cancel job button; their "
+    "answer — a tap, or a reply in words — arrives later as its own turn. Park the item "
+    "that needs it, carry on with other work if there is any, and end the batch as "
+    "usual. Asking again posts the question again; either copy answers it. Only a "
+    "specialist's background job can ask.",
+    {"type": "object", "properties": {
+        "question": {"type": "string"},
+        "options": {"type": "array", "items": {"type": "string"}}},
+     "required": ["question"]},
+)
+async def ask_operator(args: dict) -> dict:
+    rec = engagement_var.get(None)
+    rec = _engagement_registry.get(rec.id) if rec and _engagement_registry else None
+    if (rec is None or rec.kind != "specialist" or not rec.origin.get("job")
+            or not _engagement_registry.counts_as_live(rec.id)):
+        return _result({"status": "error", "kind": "not_a_job"})
+    question = args.get("question")
+    options = args.get("options")
+    options = [] if options is None else options
+    if (not isinstance(question, str) or not question.strip()
+            or len(question) > _ASK_QUESTION_MAX
+            or not isinstance(options, list) or len(options) > _ASK_OPTIONS_MAX
+            or any(not isinstance(o, str) or not o.strip()
+                   or len(o) > _ASK_OPTION_LABEL_MAX for o in options)):
+        return _result({
+            "status": "error", "kind": "invalid_arguments",
+            "message": (f"question: a non-empty string of at most "
+                        f"{_ASK_QUESTION_MAX} characters; options: at most "
+                        f"{_ASK_OPTIONS_MAX} non-empty strings of at most "
+                        f"{_ASK_OPTION_LABEL_MAX} characters each")})
+    channel = _channel_manager.get("telegram") if _channel_manager is not None else None
+    if channel is None or not hasattr(channel, "post_job_question"):
+        return _result({"status": "error", "kind": "delivery_failed",
+                        "message": "the operator's chat is not available"})
+    scope = _current_scope(_snapshot_origin())
+    if scope is None:
+        return _result({"status": "error", "kind": "unsupported_origin",
+                        "message": _NO_SCOPE_MESSAGE})
+    # A quiet run that asks stops being quiet, durably, before it asks — so
+    # its end is told like any job's. Entered for any run carrying the stamp:
+    # one another promotion cleared in memory may still roll back, and the
+    # registry decides under its lock.
+    if (background_jobs.was_quiet_run(rec)
+            and not await _engagement_registry.promote_from_quiet(rec.id)):
+        return _result({"status": "error", "kind": "not_asked",
+                        "message": "the question could not be recorded; ask again"})
+    import result_broker
+    from channels.telegram import render_ask_body, resolve_button_labels
+    captions = resolve_button_labels(list(options), multi=False)
+    body = (f"{result_broker.post_label(rec.role_or_type)}\n"
+            + render_ask_body(None, question, list(options), captions))
+    qid = _engagement_registry.new_job_question(rec.id, question, options)
+    if qid is None:
+        return _result({"status": "error", "kind": "not_a_job"})
+    message_id = await channel.post_job_question(
+        rec, qid, scope.admit(IntentKind.KEYBOARD, body), list(options),
+        captions)
+    if message_id is None:
+        return _result({"status": "error", "kind": "delivery_failed",
+                        "message": "the question was not posted; you may ask again"})
+    return _result({"status": "asked", "message_id": message_id})
 
 
 async def _record_pending_completion(engagement: Any, status: str, text: str) -> None:
@@ -13614,8 +13453,21 @@ def _on_engagement_terminal(rec) -> None:
     nothing will ever resume. Synchronously, in this same step: a deferred
     retirement left a window after the transition in which a tap still
     committed. ``cancel_matching`` never awaits; the keyboard edits it causes
-    run later on the broker's own hook tasks."""
+    run later on the broker's own hook tasks.
+
+    An ended job's keyboards in the direct chat (its start line, its
+    questions) are retired on every terminal winner too: the channel takes
+    them off the record in this step and edits them away on a task of its
+    own."""
     CHALLENGES.cancel_matching(engagement=rec.id, reason="engagement_ended")
+    channel = _channel_manager.get("telegram") if _channel_manager is not None else None
+    retire = getattr(channel, "retire_job_keyboards", None)
+    if callable(retire):
+        try:
+            retire(rec)
+        except Exception:  # noqa: BLE001 — never fail a terminal transition
+            logger.warning("retiring job keyboards failed for %s", rec.id[:8],
+                           exc_info=True)
 
 
 def _specialist_target_pending(runtime, role: str) -> bool:
@@ -19860,6 +19712,7 @@ CASA_TOOLS: tuple = (
     ack_event,                     # #419 — plugin-events delivery receipt
     emit_completion,
     report_job_progress,
+    ask_operator,                  # a specialist's job asks the operator
     cancel_engagement,
     query_engager,
     config_git_commit,
@@ -19934,7 +19787,7 @@ from specialist_component import SPECIALIST_CASA_TOOL_ALLOWLIST
 
 _SPECIALIST_DISPATCH_CEILING: frozenset[str] = frozenset(
     SPECIALIST_CASA_TOOL_ALLOWLIST
-    | {"report_job_progress"}
+    | {"report_job_progress", "ask_operator"}
     | {g.rsplit("__", 1)[-1] for g in MANDATORY_BRIDGE_CASA_GRANTS}
 )
 

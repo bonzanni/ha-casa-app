@@ -1211,7 +1211,7 @@ class TestDeliverSystemTurn:
         rec.sdk_session_id = None
         ch, drv, sent = self._mk(fake_telegram_bot, engagement_fixture)  # not alive
 
-        assert await ch._resume_and_ready(rec) is False
+        assert not await ch._resume_and_ready(rec)
         assert drv.events == []                   # nothing to resume
         assert rec.status == "error"              # orphan_no_session marked
         assert sent == []
@@ -1227,10 +1227,10 @@ class TestDeliverSystemTurn:
             fake_telegram_bot, engagement_fixture,
             resume_error=RuntimeError("rotated"))
 
-        assert await ch._resume_and_ready(rec) is False   # strike 1
+        assert not await ch._resume_and_ready(rec)   # strike 1
         assert rec.origin["_resume_fail_count"] == 1
         assert rec.status != "error"                       # not yet terminal
-        assert await ch._resume_and_ready(rec) is False   # strike 2
+        assert not await ch._resume_and_ready(rec)   # strike 2
         assert rec.origin["_resume_fail_count"] == 2
         assert rec.status == "error"                       # resume_failed marked
         assert len(drv.events) == 2                         # attempted both times

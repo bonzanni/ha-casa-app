@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-19
+last_reviewed: 2026-11-08
 ---
 
 # The MCP surface and the tool boundary
@@ -68,7 +68,7 @@ gates and the specialist ceiling (INV-MCP-009) still apply on top.
 Enforced in the one wrapper every casa tool passes through at registry definition — the
 same choke point as the context-rebuild fence — so it covers every casa tool by
 construction. The ceiling is the install-time allowlist unioned with the launch-mandatory
-grants and `report_job_progress`, which a job engagement's session is granted
+grants, `report_job_progress` and `ask_operator`, which a job engagement's session is granted
 ([`background-jobs.md`](background-jobs.md)); when the bound engagement record's kind is
 specialist and the tool is outside it, the call is refused before the handler runs. This is
 the layer that revokes a forbidden grant PINNED on a record before the install and load

@@ -30,6 +30,37 @@
     INV-BGJOB-003: [tests/test_job_sweep.py::test_three_failed_continuations_finalize, tests/test_job_sweep.py::test_rebuild_failure_recovers, tests/test_job_sweep.py::test_boot_notice_failure_still_runs_next_batch, tests/test_job_sweep.py::test_stopping_refusal_leaves_live_for_boot]
     INV-BGJOB-004: [tests/test_plugin_job_grants.py::test_plugin_job_identity_is_bound_to_its_host_and_artifact, tests/test_plugin_job_launch.py::test_worker_options_record_and_topic]
 
+- doc: architecture/background-job-direct-chat.md
+  summary: A background job in the operator's direct chat — the start line and its Cancel, a specialist job's ask_operator questions and their buttons, replies into a live job, the job-post ownership the engagement record keeps, and the retirement of a job's keyboards when it ends.
+  when_changing: a job's start line or Cancel button, ask_operator or a question's buttons, how a reply or a tap reaches a live job, the job posts an engagement record files, or how an ended job's keyboards are retired
+  covers:
+    - casa/rootfs/opt/casa/tools.py::ask_operator
+    - casa/rootfs/opt/casa/tools.py::_post_job_start_line
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.deliver_operator_reply
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._maybe_route_job_reply
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_start_line
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_question
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_job_question_callback
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_job_cancel_callback
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.retire_job_keyboards
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.retire_ended_job_keyboards
+    - casa/rootfs/opt/casa/channels/telegram.py::_parse_job_callback
+    - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.record_job_post
+    - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.job_post_owner
+    - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.counts_as_live
+    - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.take_ui_posts
+    - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.new_job_question
+  tests:
+    - tests/test_job_dm_attention.py
+    - tests/test_job_dm_posts_registry.py
+  related: [architecture/background-jobs.md, architecture/engagement-inbound-disclosure.md, architecture/background-job-quiet-runs.md, architecture/specialist-desk.md, architecture/telegram.md]
+  defines_invariants: [INV-BGJOB-011, INV-BGJOB-012, INV-BGJOB-013, INV-BGJOB-014]
+  invariant_tests:
+    INV-BGJOB-011: [tests/test_job_dm_posts_registry.py::TestFilingAndIndex::test_a_live_jobs_post_is_filed_indexed_and_persisted, tests/test_job_dm_posts_registry.py::TestFilingAndIndex::test_posts_are_uncapped_while_the_job_lives, tests/test_job_dm_posts_registry.py::TestFilingAndIndex::test_the_index_is_rebuilt_from_live_records_at_load, tests/test_job_dm_posts_registry.py::TestFilingAndIndex::test_settling_the_terminal_transition_drops_posts_and_questions, tests/test_job_dm_posts_registry.py::TestPendingTerminalCountsAsLive::test_a_pending_record_routes_and_files_and_a_rollback_keeps_them, tests/test_job_dm_attention.py::TestReplyRoute::test_a_plugin_post_of_the_job_is_filed_and_routes]
+    INV-BGJOB-012: [tests/test_job_dm_attention.py::TestReplyRoute::test_a_reply_to_a_live_jobs_post_goes_into_the_job, tests/test_job_dm_attention.py::TestReplyRoute::test_a_reply_to_an_ended_jobs_post_falls_through, tests/test_job_dm_attention.py::TestReplyRoute::test_another_sender_falls_through, tests/test_job_dm_attention.py::TestPendingTerminalRoutesIntoTheJob::test_a_reply_routed_while_a_terminal_write_is_pending_is_delivered_after_a_rollback, tests/test_job_dm_attention.py::TestOneNoticePerLostMessage::test_cancel_racing_a_queued_reply_tells_it_exactly_once]
+    INV-BGJOB-013: [tests/test_job_dm_attention.py::TestAskAndTap::test_a_question_is_a_filed_post_whose_buttons_name_the_engagement, tests/test_job_dm_attention.py::TestAskAndTap::test_a_tap_answers_the_job, tests/test_job_dm_attention.py::TestAskAndTap::test_tap_reserves_before_its_first_await_so_a_completion_is_vetoed, tests/test_job_dm_attention.py::TestAskAndTap::test_a_tap_on_a_question_the_record_no_longer_holds_delivers_nothing, tests/test_job_dm_attention.py::TestAskAndTap::test_job_buttons_are_matched_before_the_generic_parser, tests/test_job_dm_posts_registry.py::TestKeyboardsAndQuestions::test_a_question_id_is_redrawn_until_free, tests/test_job_dm_attention.py::TestStartLineCancelAndRetirement::test_a_cancel_that_could_not_be_saved_keeps_the_button_and_says_so]
+    INV-BGJOB-014: [tests/test_job_dm_attention.py::TestStartLineCancelAndRetirement::test_cancel_ends_the_job_and_every_keyboard_is_retired, tests/test_job_dm_attention.py::TestStartLineCancelAndRetirement::test_launch_death_retires_the_keyboards_too, tests/test_job_dm_attention.py::TestStartLineCancelAndRetirement::test_a_keyboard_post_landing_after_the_end_is_retired_by_its_filer, tests/test_job_dm_attention.py::TestStartLineCancelAndRetirement::test_boot_retires_what_an_ended_job_still_carries, tests/test_job_dm_posts_registry.py::TestPendingTerminalCountsAsLive::test_a_post_filed_while_pending_is_among_the_keyboards_the_end_takes]
+
 - doc: architecture/background-job-fresh-sessions.md
   summary: A plugin-declared background job's session mode — a fresh job's confirmed conversation reset before every turn after the launch, the job brief, the session ids it keeps, the Started by line of its launch prompt and briefs, and a refused completion its later briefs name.
   when_changing: a background job's session mode, a fresh job's conversation reset or job brief, its session-id list, the launch prompt's or a brief's Job id or Started by line, or a refused completion a fresh job's brief names
@@ -65,8 +96,8 @@
     INV-BGJOB-006: [tests/test_specialist_job_host.py::test_unassign_during_topic_creation_still_blocks, tests/test_specialist_job_host.py::test_legacy_markerless_record_without_its_declaring_row_blocks, tests/test_specialist_job_host.py::test_legacy_record_without_manifest_name_blocks, tests/test_specialist_job_host.py::test_concurrent_starts_of_one_manifest_claim_once, tests/test_specialist_job_host.py::test_installations_sharing_a_manifest_name_serialise, tests/test_specialist_job_host.py::test_the_marker_names_the_plugin_selected_at_start_not_a_later_resolution, tests/test_specialist_job_host.py::test_specialist_job_record_blocks_a_second_start, tests/test_specialist_job_host.py::test_an_incidental_artifact_does_not_block_its_own_plugin, tests/test_specialist_job_host.py::test_a_start_during_a_pending_strict_terminal_write_is_refused, tests/test_specialist_job_host.py::test_a_durably_ended_job_frees_its_plugin_at_once, tests/test_specialist_job_host.py::test_the_pending_window_opens_at_the_commit_and_closes_when_the_write_settles, tests/test_specialist_job_host.py::test_an_unrelated_plugin_starts_while_another_jobs_terminal_write_is_pending, tests/test_specialist_job_host.py::test_the_installed_plugin_check_also_counts_a_pending_terminal_write]
 
 - doc: architecture/background-job-quiet-runs.md
-  summary: A plugin job declaring quietWhenScheduled — a run its schedule started opens no topic, posts no acknowledgement or progress line, and is told nowhere when it completes, while its plugin's delivered slots still reach the operator.
-  when_changing: the quietWhenScheduled job option, a quiet run's missing topic, its withheld turn stream, the notices it skips, its grant identity or handler lock, or how its end is told
+  summary: A plugin job declaring quietWhenScheduled — a run its schedule started opens no topic, posts no acknowledgement or progress line, and is told nowhere when it completes unless it asked the operator something or was answered, while its plugin's delivered slots still reach the operator.
+  when_changing: the quietWhenScheduled job option, a quiet run's missing topic, its withheld turn stream, the notices it skips, its grant identity or handler lock, how its end is told, or how interacting with it ends its quietness
   covers:
     - casa/rootfs/opt/casa/background_jobs.py::is_quiet_run
     - casa/rootfs/opt/casa/background_jobs.py::is_quiet_origin
@@ -74,9 +105,13 @@
     - casa/rootfs/opt/casa/channels/telegram.py::_handler_lock_key
     - casa/rootfs/opt/casa/channels/telegram.py::_require_topic
     - casa/rootfs/opt/casa/tools.py::_told_nowhere
+    - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.promote_from_quiet
   tests:
     - tests/test_quiet_scheduled_jobs.py
+    - tests/test_job_dm_attention.py
+    - tests/test_job_dm_posts_registry.py
   related: [architecture/background-jobs.md, architecture/job-triggers.md, architecture/plugin-delivered-slots.md, architecture/engagement-finalization.md]
-  defines_invariants: [INV-BGJOB-010]
+  defines_invariants: [INV-BGJOB-010, INV-BGJOB-015]
   invariant_tests:
+    INV-BGJOB-015: [tests/test_job_dm_attention.py::TestQuietRunsEndOnInteraction::test_a_quiet_run_that_asks_is_told_at_its_end, tests/test_job_dm_attention.py::TestQuietRunsEndOnInteraction::test_a_reply_ends_a_quiet_runs_quietness_so_its_end_is_told, tests/test_job_dm_attention.py::TestQuietRunsEndOnInteraction::test_a_quiet_run_nobody_interacted_with_is_told_nowhere, tests/test_job_dm_attention.py::TestQuietRunsEndOnInteraction::test_a_reply_racing_a_pending_quiet_completion_is_told_once, tests/test_job_dm_attention.py::TestQuietRunsEndOnInteraction::test_a_reply_racing_a_quiet_completion_that_rolls_back_is_delivered, tests/test_job_dm_attention.py::TestQuietRunsEndOnInteraction::test_a_completion_entering_while_a_promotion_commits_owes_the_telling, tests/test_job_dm_posts_registry.py::TestQuietPromotion::test_a_failed_write_rolls_the_stamp_back_and_refuses, tests/test_job_dm_posts_registry.py::TestQuietPromotion::test_promotion_after_a_pending_completion_commits_is_refused_and_owes_nothing]
     INV-BGJOB-010: [tests/test_quiet_scheduled_jobs.py::test_a_quiet_scheduled_run_opens_no_topic_and_posts_nothing, tests/test_quiet_scheduled_jobs.py::test_a_quiet_runs_batch_turn_and_progress_post_nothing, tests/test_quiet_scheduled_jobs.py::test_every_other_run_opens_its_topic_as_today, tests/test_quiet_scheduled_jobs.py::test_a_topic_send_without_a_topic_refuses_rather_than_post_to_general, tests/test_quiet_scheduled_jobs.py::test_topic_less_records_never_share_a_handler_lock, tests/test_quiet_scheduled_jobs.py::test_a_quiet_run_whose_resume_fails_mid_launch_is_not_ended_untold, tests/test_quiet_scheduled_jobs.py::test_a_quiet_run_keeps_the_operators_grant_identity, tests/test_quiet_scheduled_jobs.py::test_a_completed_quiet_run_is_told_nowhere_and_a_failed_one_is_told, tests/test_quiet_scheduled_jobs.py::test_a_completed_run_that_is_not_quiet_is_still_told, tests/test_quiet_scheduled_jobs.py::test_only_a_scheduled_start_of_a_quiet_job_is_quiet]

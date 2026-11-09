@@ -17,14 +17,16 @@ See docs/superpowers/specs/2026-04-22-3.5-plan2-engagement-primitive-design.md.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import math
 import os
+import secrets
 import time
 import uuid
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Callable
 
 from atomic_io import atomic_write_json
 from job_registry import CASA_SHUTDOWN_REASON
@@ -79,6 +81,45 @@ def _usable_time(value: object) -> bool:
         return math.isfinite(value)
     except OverflowError:       # an int too large for a float, e.g. 10**400
         return False
+
+# The keyboard posts a job leaves in the operator's direct chat.
+JOB_POST_START = "start"
+JOB_POST_QUESTION = "question"
+
+
+def _message_ids(value: object) -> list[int]:
+    """A persisted list of Telegram message ids, as far as it is one."""
+    if not isinstance(value, list):
+        return []
+    return [v for v in value if type(v) is int]
+
+
+def _keyboard_posts(value: object) -> list[list]:
+    """A persisted ``ui_posts`` list: ``[message_id, kind]`` pairs."""
+    if not isinstance(value, list):
+        return []
+    return [[item[0], item[1]] for item in value
+            if isinstance(item, list) and len(item) == 2
+            and type(item[0]) is int
+            and item[1] in (JOB_POST_START, JOB_POST_QUESTION)]
+
+
+def _question_map(value: object) -> dict:
+    """A persisted ``questions`` map: question id -> text and options."""
+    if not isinstance(value, dict):
+        return {}
+    return {qid: {"text": str(q.get("text", "")),
+                  "options": [str(o) for o in (q.get("options") or [])
+                              if isinstance(o, str)]}
+            for qid, q in value.items()
+            if isinstance(qid, str) and isinstance(q, dict)}
+
+
+def _new_question_id() -> str:
+    """Eight random base32 characters (40 bits) — what a question's buttons
+    carry, so a button can only ever answer the question it was posted with."""
+    return base64.b32encode(secrets.token_bytes(5)).decode("ascii")
+
 
 # v0.79.0 (§3): sentinel for the strict terminal transition's full-field
 # snapshot — distinguishes "origin had no such key" from "key was None" so the
@@ -260,6 +301,23 @@ class EngagementRecord:
     # is set the record's tombstone does not age out — the record is the
     # reaper's only index of its sessions. Never cleared.
     transcripts_reaped: bool = False
+    # A background job's posts in the operator's direct chat — its start line,
+    # its questions and its plugin's delivered posts — oldest first. A reply
+    # quoting one of them goes into the job while the record counts as live
+    # (``EngagementRegistry.counts_as_live``). Unbounded while the job lives:
+    # a job may run any number of batches and every post it made stays
+    # steerable. Emptied, and dropped from the registry's index, by the write
+    # that settles the terminal transition.
+    dm_posts: list = field(default_factory=list)
+    # The subset of those posts that carry a keyboard, each
+    # ``[message_id, kind]`` (``JOB_POST_START`` or ``JOB_POST_QUESTION``).
+    # Kept past the end until the keyboards are retired
+    # (``take_ui_posts``).
+    ui_posts: list = field(default_factory=list)
+    # The questions the job asked the operator, keyed by the random id their
+    # buttons carry: ``{"text": str, "options": [str, ...]}``. Emptied with
+    # ``dm_posts``.
+    questions: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +362,11 @@ class EngagementRegistry:
         self._agent_spawn_limiter = agent_spawn_limiter
         self._records: dict[str, EngagementRecord] = {}
         self._topic_index: dict[int, str] = {}
+        # DM message id -> the job record that posted it, for every post of a
+        # record that counts as live. Rebuilt from the records at ``load()``,
+        # extended by ``record_job_post`` and emptied for a record when its
+        # terminal transition settles.
+        self._job_post_index: dict[int, str] = {}
         # #678/#692: whether the terminal path CONFIRMED a telling into each
         # terminal engagement's topic. In-memory, never persisted — see
         # ``record_terminal_telling``. Bounded by the record set: dropped
@@ -398,6 +461,9 @@ class EngagementRegistry:
                         row.get("transcripts_reaped", False)),
                     context_generation=int(
                         row.get("context_generation", 0) or 0),
+                    dm_posts=_message_ids(row.get("dm_posts")),
+                    ui_posts=_keyboard_posts(row.get("ui_posts")),
+                    questions=_question_map(row.get("questions")),
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 logger.warning("Skipping malformed engagement row: %s", exc)
@@ -429,6 +495,14 @@ class EngagementRegistry:
             loaded[rec.id] = rec
             if rec.topic_id is not None:
                 self._topic_index[rec.topic_id] = rec.id
+            if rec.status in ("active", "idle"):
+                for message_id in rec.dm_posts:
+                    self._job_post_index[message_id] = rec.id
+            else:
+                # The settling write empties both; a row that still carries
+                # them is not steerable.
+                rec.dm_posts = []
+                rec.questions = {}
 
         # #1093: what the previous process left owed, captured here — before
         # any path that can arm an obligation in this process is reachable.
@@ -535,6 +609,149 @@ class EngagementRegistry:
                 return ("", False)
             return (rec.status, self._terminal_telling.get(engagement_id, False))
 
+    def counts_as_live(self, engagement_id: str) -> bool:
+        """Whether the record is live for routing and filing a job's direct
+        chat posts: ``active`` or ``idle``, or terminal in memory while its
+        strict terminal write is still pending — a write that fails puts it
+        back live, so a reply routed into it in that window either reaches it
+        after the rollback or is refused and told. Synchronous."""
+        rec = self._records.get(engagement_id)
+        return rec is not None and (
+            rec.status in ("active", "idle")
+            or engagement_id in self._terminal_pending)
+
+    def terminal_pending(self, engagement_id: str) -> bool:
+        """Whether the record's strict terminal write is committed in memory
+        and not yet settled. Synchronous."""
+        return engagement_id in self._terminal_pending
+
+    async def settle_pending(self, engagement_id: str) -> None:
+        """Wait until a pending strict terminal write of this record has
+        settled — committed or rolled back. The strict transition holds the
+        registry lock from its in-memory commit until its write settles, so
+        taking the lock once is the wait. Returns at once when nothing is
+        pending."""
+        if engagement_id in self._terminal_pending:
+            async with self._lock:
+                pass
+
+    def job_post_owner(self, message_id: Any) -> "EngagementRecord | None":
+        """The job record that filed *message_id* as one of its direct chat
+        posts, while that record counts as live; otherwise ``None``."""
+        if type(message_id) is not int:
+            return None
+        engagement_id = self._job_post_index.get(message_id)
+        if engagement_id is None or not self.counts_as_live(engagement_id):
+            return None
+        return self._records.get(engagement_id)
+
+    def record_job_post(self, engagement_id: str, message_id: Any, *,
+                        keyboard: str | None = None) -> bool:
+        """File one landed direct chat post of a job: append it to the
+        record's ``dm_posts`` (and, with ``keyboard``, to ``ui_posts``),
+        index it, and schedule the tombstone write. SYNCHRONOUS — the
+        channel calls it from the step in which the post landed.
+
+        ``False`` when nothing was filed: an unknown record, one that is not a
+        job, a message id that is not one, or a record whose terminal
+        transition has settled. A keyboard post refused for that last reason
+        is the caller's to retire, since the terminal-time retirement has
+        already run (``take_ui_posts``). A record whose terminal write is
+        still pending files the post, so a rollback leaves it steerable and a
+        commit's retirement still takes its keyboard."""
+        rec = self._records.get(engagement_id)
+        if (rec is None or type(message_id) is not int
+                or not isinstance(rec.origin.get("job"), dict)
+                or not self.counts_as_live(engagement_id)):
+            return False
+        if message_id not in rec.dm_posts:
+            rec.dm_posts.append(message_id)
+        self._job_post_index[message_id] = engagement_id
+        if keyboard is not None and not any(
+                post[0] == message_id for post in rec.ui_posts):
+            rec.ui_posts.append([message_id, keyboard])
+        self._schedule_tombstone_persist()
+        return True
+
+    def take_ui_posts(self, engagement_id: str) -> list:
+        """Take and clear the record's keyboard posts in one synchronous step
+        (and schedule the write), so each keyboard is retired by one owner.
+        Called for a terminal record only."""
+        rec = self._records.get(engagement_id)
+        if rec is None or not rec.ui_posts:
+            return []
+        posts, rec.ui_posts = rec.ui_posts, []
+        self._schedule_tombstone_persist()
+        return posts
+
+    def records_with_ui_posts(self) -> list["EngagementRecord"]:
+        """Terminal records that still carry keyboard posts — the boot
+        retirement pass's work list."""
+        return [r for r in self._records.values()
+                if r.ui_posts and r.status in _TERMINAL_STATUSES]
+
+    def new_job_question(self, engagement_id: str, text: str,
+                         options: list[str]) -> str | None:
+        """Record a question a live job is about to post and return its id:
+        eight random base32 characters, drawn again until no question of this
+        record holds them. SYNCHRONOUS; the write is scheduled, never awaited,
+        so nothing stands between this and the post. ``None`` for a record
+        that does not count as live."""
+        rec = self._records.get(engagement_id)
+        if rec is None or not self.counts_as_live(engagement_id):
+            return None
+        qid = _new_question_id()
+        while qid in rec.questions:
+            qid = _new_question_id()
+        rec.questions[qid] = {"text": str(text),
+                              "options": [str(o) for o in options]}
+        self._schedule_tombstone_persist()
+        return qid
+
+    def _settle_job_posts(self, rec: "EngagementRecord") -> None:
+        """A record whose terminal transition just settled leaves the job-post
+        index and forgets its posts and questions. The write that settled it
+        already stored both empty (``_write_tombstone_locked`` writes a
+        terminal record's lists empty), so memory now matches disk."""
+        for message_id in rec.dm_posts:
+            if self._job_post_index.get(message_id) == rec.id:
+                del self._job_post_index[message_id]
+        rec.dm_posts = []
+        rec.questions = {}
+
+    async def promote_from_quiet(self, engagement_id: str) -> bool:
+        """End a quiet run's quietness because the operator interacted with it
+        (it asked, or they replied or tapped). Under the registry lock, which
+        also waits out a pending strict terminal write; STRICT — the stamp is
+        rolled back when its write fails.
+
+        ``True`` when the record is live and not quiet afterwards (including
+        one that never was). ``False`` when the interaction must be refused:
+        the record is unknown or terminal — a terminal job receives nothing,
+        so a quiet completed end stays told to no one — or the write failed.
+        """
+        async with self._lock:
+            rec = self._records.get(engagement_id)
+            if rec is None or rec.status not in ("active", "idle"):
+                return False
+            job = rec.origin.get("job")
+            if not isinstance(job, dict) or job.get("quiet") is not True:
+                return True
+            job["quiet"] = False
+            try:
+                await self._write_tombstone_locked(strict=True)
+            except asyncio.CancelledError:
+                if not self._last_tombstone_ok:
+                    job["quiet"] = True
+                raise
+            except Exception as exc:  # noqa: BLE001 — refused, rolled back
+                job["quiet"] = True
+                logger.warning("engagement %s: ending a quiet run's quietness "
+                               "could not be persisted: %s",
+                               engagement_id[:8], exc)
+                return False
+            return True
+
     def by_topic_id(self, topic_id: int) -> EngagementRecord | None:
         rec_id = self._topic_index.get(topic_id)
         return self._records.get(rec_id) if rec_id else None
@@ -619,6 +836,15 @@ class EngagementRegistry:
                     rec.terminal_notification_pending,
                 "transcripts_reaped": rec.transcripts_reaped,
                 "context_generation": rec.context_generation,
+                # A terminal record's posts and questions are stored empty:
+                # the write that commits the terminal status is the one that
+                # drops them (``_settle_job_posts`` then empties memory).
+                "dm_posts": ([] if rec.status in _TERMINAL_STATUSES
+                             else list(rec.dm_posts)),
+                "ui_posts": [list(post) for post in rec.ui_posts],
+                "questions": ({} if rec.status in _TERMINAL_STATUSES
+                              else {qid: dict(q)
+                                    for qid, q in rec.questions.items()}),
             })
         write = asyncio.ensure_future(
             asyncio.to_thread(self._write_tombstone, snapshot),
@@ -809,14 +1035,18 @@ class EngagementRegistry:
 
     def _on_terminal_locked(self, rec: "EngagementRecord") -> None:
         """Everything owed by a record that JUST won a terminal transition in
-        this process: the #1053 observer.
+        this process: its job posts leave the index, then the #1053 observer.
 
         The strict path calls this after a DURABLE write, so a strict
         transition that rolled back — which leaves the record live — tells
         nobody; the direct mutators call it in a ``finally``, which also covers
         a non-strict write that failed (that contract leaves the in-memory flip
         standing). Under ``self._lock`` and MUST NOT await: the observer may
-        only schedule, and it can never fail the transition that called it."""
+        only schedule, and it can never fail the transition that called it.
+        On the strict path it runs before the record leaves
+        ``_terminal_pending``, so a post filed while the write was pending is
+        among the keyboards the observer takes."""
+        self._settle_job_posts(rec)
         observer = getattr(self, "_terminal_observer", None)
         if observer is None:
             return
@@ -1098,7 +1328,7 @@ class EngagementRegistry:
         stale_before: float | None = None,
         strict: bool = False,
         terminal_hook=None,
-        owes_terminal_notification: bool = False,
+        owes_terminal_notification: "bool | Callable[[EngagementRecord], bool]" = False,
     ) -> bool:
         """Atomically move a record to a terminal status. Returns True only
         for the first caller; False if missing or already terminal.
@@ -1126,6 +1356,11 @@ class EngagementRegistry:
         other terminal writer correct without a guard to remember. Never
         CLEARED here — only ``ack_terminal_notification`` clears it — so a
         second transition cannot silently discharge an outstanding telling.
+        It may also be a callable taking the record: it is then evaluated
+        inside this critical section, after ``terminal_hook`` and before the
+        flip, so a decision that depends on the record (a quiet run's stamp,
+        which an operator's interaction ends under this same lock) is read
+        from the record as the transition commits it.
 
         ``strict`` (v0.79.0 §3, Sol r6-2/r7-2): the finalize path uses STRICT
         transactional persistence. Non-strict callers keep the historical
@@ -1155,6 +1390,8 @@ class EngagementRegistry:
                 abort_reason = terminal_hook()
                 if abort_reason is not None:
                     raise TerminalPreconditionFailed(abort_reason)
+            if callable(owes_terminal_notification):
+                owes_terminal_notification = bool(owes_terminal_notification(rec))
             new_status = (
                 outcome if outcome in ("completed", "cancelled") else "error"
             )

@@ -561,3 +561,40 @@ async def test_a_topic_capture_that_fails_never_fails_the_turn(
     assert topic.clients["browser"].query_prompts == ["Saturday please"]
     assert any(CANARY in f for f in topic.stream.finals)
     assert await captured_events(mem) == []
+
+
+async def test_the_operator_s_reply_to_a_no_memory_specialist_s_job_post_is_their_message(
+        topic, mem, monkeypatch):
+    """A reply in their direct chat to a live job's post reaches that job as a
+    turn; their typed words — not the note Casa puts before them for the job —
+    are captured once as their message, keyed by that DM message under the
+    engagement, and never the specialist's reply."""
+    import background_jobs as jobs
+    from memory import occurrence
+    monkeypatch.setattr(jobs, "job_after_turn", AsyncMock())
+    rec = topic.recs["browser"]
+    rec.origin["job"] = jobs.initial_job_state(jobs.JobDecl(
+        "sample:work", "sample", "work", "sample:work", "Book slots", None,
+        None, 10), started_by="operator")
+    rec.origin["chat_id"] = str(OPERATOR_CHAT)
+    ch = topic.channel()
+    ch._engagement_registry.record_job_post(rec.id, 600)
+    quoted = SimpleNamespace(message_id=600, text="📊 Fido: which day?",
+                             caption=None)
+    update = SimpleNamespace(
+        message=SimpleNamespace(text="Saturday please", message_id=910,
+                                reply_to_message=quoted),
+        effective_user=SimpleNamespace(id=OPERATOR_CHAT, first_name="Nicola"))
+    from test_in_casa_inbound_admission import _drain
+    await ch._handle_serialized(update, str(OPERATOR_CHAT))
+    await _drain(ch)
+    assert topic.clients["browser"].query_prompts == [
+        "[replying to «📊 Fido: which day?»]\nSaturday please"]
+    rows = await captured_events(mem)
+    assert [(e["speaker_kind"], e["origin_kind"], e["role"], e["text"])
+            for e in rows] == [
+        ("operator", "operator", "assistant", "Saturday please")]
+    [mine] = rows
+    assert mine["source_key"] == occurrence.engagement_key(
+        "telegram", rec.id, "910")
+    assert not any(CANARY in str(v) for e in rows for v in e.values())

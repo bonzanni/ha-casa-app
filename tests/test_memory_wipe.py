@@ -327,7 +327,8 @@ async def test_an_open_in_casa_engagement_continues_fresh_after_the_wipe(
         assert rows["e2" * 16]["context_rebuild_pending"] is False
         assert rows["e3" * 16]["context_rebuild_pending"] is False
     else:
-        assert (ok, calls) == (False, ["resume"])
+        # A refusal that already told the topic returns a falsy marker.
+        assert (bool(ok), calls) == (False, ["resume"])
         assert notices[0].startswith("Could not resume this engagement")
 
 

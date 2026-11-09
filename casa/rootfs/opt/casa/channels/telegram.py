@@ -18,6 +18,7 @@ import asyncio
 import collections
 import logging
 import os
+import re
 import time
 
 import httpx
@@ -330,6 +331,51 @@ def _parse_callback_data(
             return None, None, None, None
         return ns, request_id, idx, None
     return None, None, None, None
+
+
+# A background job's buttons in the direct chat. They carry the engagement id
+# (32 hex characters) and, for a question, its random id and the option's
+# index, so a tap is resolved against the record alone and works after a
+# restart. Matched BEFORE ``_parse_callback_data``, whose four-field shape
+# they do not have.
+_JOB_QUESTION_PREFIX = "v1|job_q|"
+_JOB_CANCEL_PREFIX = "v1|job_cancel|"
+_ENGAGEMENT_ID_RE = re.compile(r"[0-9a-f]{32}")
+_QUESTION_ID_RE = re.compile(r"[A-Z2-7]{8}")
+_QUESTION_GONE_TOAST = "This question is no longer active — reply in words"
+_CANCEL_NOT_SAVED_LINE = ("The job could not be cancelled just now — "
+                          "tap Cancel again.")
+
+
+def job_question_callback(engagement_id: str, qid: str, index: int) -> str:
+    return f"{_JOB_QUESTION_PREFIX}{engagement_id}|{qid}|{index}"
+
+
+def job_cancel_callback(engagement_id: str) -> str:
+    return f"{_JOB_CANCEL_PREFIX}{engagement_id}"
+
+
+def _parse_job_callback(data: str) -> "tuple | None":
+    """``None`` when *data* is not a job button; ``("bad",)`` when it has a
+    job prefix but not its exact shape; else ``("q", eid, qid, index)`` or
+    ``("cancel", eid)``."""
+    if data.startswith(_JOB_QUESTION_PREFIX):
+        parts = data.split("|")
+        if (len(data.encode("utf-8")) > _CALLBACK_DATA_MAX_BYTES
+                or len(parts) != 5
+                or not _ENGAGEMENT_ID_RE.fullmatch(parts[2])
+                or not _QUESTION_ID_RE.fullmatch(parts[3])
+                or not parts[4].isdigit()):
+            return ("bad",)
+        return ("q", parts[2], parts[3], int(parts[4]))
+    if data.startswith(_JOB_CANCEL_PREFIX):
+        parts = data.split("|")
+        if (len(data.encode("utf-8")) > _CALLBACK_DATA_MAX_BYTES
+                or len(parts) != 3
+                or not _ENGAGEMENT_ID_RE.fullmatch(parts[2])):
+            return ("bad",)
+        return ("cancel", parts[2])
+    return None
 
 
 # v0.81.0 (W-R3, Sol r1-5): button labels are DERIVED channel-side from the
@@ -671,8 +717,70 @@ that is the notice actively causing harm. What is always true is that the
 turn's outcome was never confirmed and that whatever it did may be partial, so
 that is what it says."""
 
+_LOST_INBOUND_NOTICE = "Your message could not be delivered — please resend it."
+"""#649: what a message the engagement never took up draws in its topic."""
+
+_LOST_REPLY_NOTICE = _LOST_INBOUND_NOTICE
+_LOST_REPLY_ENDED_NOTICE = "The job had just ended — not delivered, please resend."
+_LOST_ANSWER_NOTICE = "Your answer could not be passed to the job — please answer again."
+_LOST_ANSWER_ENDED_NOTICE = "The job had already ended; your answer wasn't used."
+"""The one notice for an operator's words a job never took up, posted in the
+direct chat as a reply to them: their typed reply, or the question or approval
+card their tap answered. The ended form is chosen when the record's settled
+status is terminal; Casa never forwards the words anywhere else."""
+
+_DM_TURN_CUT_OFF_NOTICE = (
+    "The job's turn for this message did not finish: its stream stopped "
+    "without ResultMessage, the frame that marks a turn that ran to its end, "
+    "so its outcome was never confirmed. Anything it already posted may be "
+    "partial, and work it started may already have taken effect \u2014 check "
+    "before asking for it again."
+)
+_DM_TURN_NOT_DELIVERED_NOTICE = (
+    "The job's turn for this message finished, but Casa could not deliver "
+    "its response to the job's topic."
+)
+_DM_TURN_ENDED_NOTICE = "The job ended while handling this message."
+"""The follow-up notices an operator-triggered turn draws in the direct chat,
+as a reply to the message that started it. Same rule as the topic notices
+above: each asserts only what its site observed — the settled status, and the
+driver's observation of the turn."""
+
 # Callback type for on_token streaming
 OnTokenCallback = Callable[[str], Awaitable[None]]
+
+
+class _Refusal:
+    """A falsy readiness refusal that says whether the refusing arm already
+    told the engagement's topic why (a failed context rebuild, a legacy record
+    that could not be resumed). A message from that topic then draws no second
+    notice; a message from the direct chat still gets its own."""
+
+    __slots__ = ("told",)
+
+    def __init__(self, told: bool) -> None:
+        self.told = told
+
+    def __bool__(self) -> bool:
+        return False
+
+
+_REFUSED_TOLD = _Refusal(True)
+
+
+def _refusal_told(result: Any) -> bool:
+    return getattr(result, "told", False) is True
+
+
+@dataclass(frozen=True)
+class _NoticeTarget:
+    """Where an operator-triggered engagement turn's notices go: a reply to
+    *message_id* in the operator's direct chat — their own message for a typed
+    reply, the question or approval card for a tap (``answer``)."""
+
+    chat_id: int
+    message_id: int
+    answer: bool = False
 
 
 
@@ -1089,6 +1197,12 @@ class TelegramChannel(Channel):
         # Recorded SYNCHRONOUSLY in handle_update from the trusted
         # msg.message_id; MONOTONIC (never regresses to an older id).
         self._current_inbound: dict[str, tuple[int, int, int]] = {}
+        # Jobs whose Cancel button started a cancellation that has not
+        # finished: a second tap answers "already finishing" instead of
+        # starting a second funnel run.
+        self._job_cancels: set[str] = set()
+        # Tasks retiring ended jobs' keyboards (strong references).
+        self._job_ui_tasks: set[asyncio.Task] = set()
         # Default routing: forward to the existing PTB handler.
         self._route_to_assistant = self._route_to_assistant_default
 
@@ -1781,6 +1895,10 @@ class TelegramChannel(Channel):
         # resets nothing, and the desk turn's context says so (#1198).
         # Everything that does not route takes the path below, byte for byte.
         if getattr(update.message, "reply_to_message", None) is not None:
+            # A reply to a live job's post goes into that job, ahead of the
+            # desk: the job is the one that is waiting on the operator.
+            if await self._maybe_route_job_reply(update, chat_id):
+                return
             if await self._maybe_route_desk_reply(update, chat_id):
                 return
         # /new reset — intercept before rate-limiting or bus dispatch (spec §4.2 #2, C2).
@@ -2028,6 +2146,53 @@ class TelegramChannel(Channel):
                 posted = None
         text = getattr(quoted, "text", None) or getattr(quoted, "caption", None)
         return specialist_desk.reply_note(who, posted, text)
+
+    # ------------------------------------------------------------------
+    # A reply to a live background job's post in the direct chat
+    # ------------------------------------------------------------------
+
+    async def _maybe_route_job_reply(self, update: Update, chat_id: str) -> bool:
+        """The sender is the authenticated operator, the quoted message is a
+        post the job record filed (its start line, a question, a plugin
+        post), the record counts as live, and it is this operator's job in
+        this chat — then the chat's rate decision, then the reply goes into
+        the job (``deliver_operator_reply``). ``True`` when the message was
+        consumed here; anything else falls through to the routes below
+        unchanged. A reply the job does not take up is told, never sent
+        anywhere else."""
+        reg = self._engagement_registry
+        owner_of = getattr(reg, "job_post_owner", None) if reg is not None else None
+        user = update.effective_user
+        chat = strict_positive_id(chat_id)
+        if (owner_of is None or chat is None or user is None
+                or not self._sender_is_operator(user)):
+            return False
+        quoted = update.message.reply_to_message
+        rec = owner_of(getattr(quoted, "message_id", None))
+        origin = getattr(rec, "origin", None)
+        if not isinstance(origin, dict):
+            return False
+        owner = strict_positive_id(origin.get("user_id"))
+        job_chat = origin.get("chat_id")
+        if owner is None or owner != user.id or (
+                job_chat is not None and strict_positive_id(job_chat) != chat):
+            return False
+        if self._rate_limiter is not None and self._rate_limiter.enabled:
+            decision = self._rate_limiter.check(chat_id)
+            if not decision.allowed:
+                if decision.should_notify:
+                    logger.info("Telegram rate limit hit for chat_id=%s (job reply); "
+                                "replying with one-shot notice", chat_id)
+                    await self._send_rate_limit_reply(chat_id)
+                return True
+        await self.deliver_operator_reply(
+            rec, update.message.text, chat_id=chat,
+            message_id=update.message.message_id,
+            quoted_text=(getattr(quoted, "text", None)
+                         or getattr(quoted, "caption", None)),
+            user_name=getattr(user, "first_name", None) or "unknown",
+            user_id=user.id)
+        return True
 
     # ------------------------------------------------------------------
     # S4: the specialist desk — a swipe-reply on a specialist's post
@@ -2878,8 +3043,13 @@ class TelegramChannel(Channel):
                     # lock (and a /cancel with it). The delivery task drains
                     # the turn, then runs the readiness step itself.
                     await_rebuild = self._rebuild_waits_for_turn(rec)
-                    if not await_rebuild and not await self._resume_and_ready(
-                            rec):
+                    ready = True if await_rebuild else await self._resume_and_ready(rec)
+                    if not ready:
+                        # The ticket's holder tells the one lost-message
+                        # notice — unless the refusing arm already told this
+                        # topic why; the finally's discharge then runs.
+                        if not _refusal_told(ready):
+                            await self._settle_lost_inbound(rec, inbound_token)
                         return
 
                     # M9 (v0.52.0): deliver the user turn in a tracked background
@@ -2995,15 +3165,20 @@ class TelegramChannel(Channel):
         return command if command in (
             "/cancel", "/complete", "/help") else None
 
-    async def _settle_lost_inbound(self, rec, token) -> None:
+    async def _settle_lost_inbound(self, rec, token,
+                                   notice_target: "_NoticeTarget | None" = None,
+                                   ) -> None:
         """#649 visibility law: before a still-ledgered admission ticket is
         discharged on a failure path, make ONE bounded, guarded notice
-        attempt — never gated on any record-status read (no status, settled
-        or not, proves the terminal snapshot ran; a funnel terminal already
-        closed the topic, so the attempt fails harmlessly there and the
-        intentional silences survive de facto). One attempt, then discharge
-        regardless: retry-until-posted would be an UNCLEARABLE completion
-        veto (the INV-ENG-003 livelock class)."""
+        attempt — never gated on any record-status read. One attempt, then
+        discharge regardless: retry-until-posted would be an UNCLEARABLE
+        completion veto (the INV-ENG-003 livelock class).
+
+        The holder of the ticket is the only sender of that message's notice;
+        the callers of the delivery seams never post one. With a
+        ``notice_target`` (an operator's reply or tap) the notice is a reply
+        to their message in the direct chat, worded from the record's settled
+        status; without one it goes to the engagement's topic."""
         if token is None or self._driver_discharge_inbound is None:
             return
         try:
@@ -3011,9 +3186,9 @@ class TelegramChannel(Channel):
                     if self._driver_inbound_held is not None else False)
             if held:
                 try:
-                    await asyncio.wait_for(self._post_engagement_notice(
-                        rec, "Your message could not be delivered — "
-                             "please resend it."), 5)
+                    await asyncio.wait_for(
+                        self._post_lost_inbound_notice(rec, notice_target),
+                        5)
                 except BaseException:  # noqa: BLE001 — bounded best-effort
                     logger.debug("lost-inbound notice failed for %s",
                                  rec.id[:8], exc_info=True)
@@ -3023,7 +3198,54 @@ class TelegramChannel(Channel):
             except Exception:  # noqa: BLE001
                 logger.debug("inbound discharge failed", exc_info=True)
 
-    def _schedule_inbound_cleanup(self, rec, token) -> None:
+    async def _post_lost_inbound_notice(
+            self, rec, notice_target: "_NoticeTarget | None") -> None:
+        if notice_target is None:
+            await self._post_engagement_notice(rec, _LOST_INBOUND_NOTICE)
+            return
+        ended = False
+        reg = self._engagement_registry
+        if reg is not None:
+            try:
+                status, _told = await asyncio.wait_for(
+                    reg.settled_terminal_state(rec.id),
+                    _SETTLED_STATUS_TIMEOUT_S)
+                ended = status in ("completed", "cancelled", "error")
+            except Exception:  # noqa: BLE001 — the plain wording is still true
+                logger.debug("settled read for a lost-message notice failed "
+                             "for %s", rec.id[:8], exc_info=True)
+        if notice_target.answer:
+            text = _LOST_ANSWER_ENDED_NOTICE if ended else _LOST_ANSWER_NOTICE
+        else:
+            text = _LOST_REPLY_ENDED_NOTICE if ended else _LOST_REPLY_NOTICE
+        await self._send_dm_reply(notice_target.chat_id,
+                                  notice_target.message_id, text)
+
+    async def _send_dm_reply(self, chat_id: int, message_id: int,
+                             text: str) -> None:
+        """One Casa line in the operator's direct chat as a reply to
+        *message_id* (sent even when that message is gone). Raises on
+        failure; every caller bounds and logs it."""
+        from telegram import ReplyParameters
+        await self.bot.send_message(
+            chat_id=chat_id, text=text,
+            reply_parameters=ReplyParameters(
+                message_id=message_id, allow_sending_without_reply=True))
+
+    async def _post_turn_notice(self, rec, text: str,
+                                notice_target: "_NoticeTarget | None") -> None:
+        """A notice about one engagement turn: in the direct chat as a reply
+        to the message that triggered the turn, or, for a turn with no such
+        message (a batch, a message written in the topic), in the topic."""
+        if notice_target is None:
+            await self._post_engagement_notice(rec, text)
+        else:
+            await self._send_dm_reply(notice_target.chat_id,
+                                      notice_target.message_id, text)
+
+    def _schedule_inbound_cleanup(self, rec, token,
+                                  notice_target: "_NoticeTarget | None" = None,
+                                  ) -> None:
         """#649: task-end backstop, attached as a done_callback at both
         spawn sites. On every normal path the ticket is already discharged
         (held=False → pure no-op); its real work is the
@@ -3033,17 +3255,25 @@ class TelegramChannel(Channel):
         if token is None:
             return
         try:
-            t = asyncio.create_task(self._settle_lost_inbound(rec, token))
+            t = asyncio.create_task(
+                self._settle_lost_inbound(rec, token, notice_target))
         except RuntimeError:  # loop closing — process death; non-durable
             return
         self._inbound_cleanup_tasks.add(t)
         t.add_done_callback(self._inbound_cleanup_tasks.discard)
 
     async def _report_incomplete_turn(
-            self, rec, token, *, system_turn: bool = False) -> bool:
+            self, rec, token, *, batch: int | None = None,
+            notice_target: "_NoticeTarget | None" = None) -> bool:
         """#692/#678: tell the operator when THEIR turn ended without the
         turn's own terminal artifact — or, #665, finished with its streamed
         text wholly undelivered — and the engagement is still live.
+
+        A turn an operator triggered from the direct chat (``notice_target``)
+        is told there, as a reply to their message, whatever the record's
+        terminal state: nothing about the topic excuses it. A turn without
+        one — a batch, or a message written in the topic — is told in the
+        topic, under the rules below.
 
         Called on ``_deliver_turn_bg``'s SUCCESS path only. Every exception
         path already has an owner — the "Turn failed" notice, the terminal
@@ -3102,20 +3332,20 @@ class TelegramChannel(Channel):
         # #1141: a turn that stopped at its turn limit arrives as a
         # ``TurnLimitStop`` (duck-typed: the channel does not import a driver
         # module) carrying the reason the slot would otherwise hold. A BATCH
-        # turn — one ``deliver_system_turn`` delivered into a job engagement —
+        # turn — the one ``start_next_batch`` delivers with its batch number —
         # drops the limit fact and is handled on that reason exactly as before
         # (ruling-1141: "background job batches are unchanged"). Every other
-        # turn — an operator's message, a job topic's included, and a
-        # Casa-started turn into a non-job engagement — is the limit's: the
-        # limit wins over the reason, so neither of the two WARNINGs nor any
-        # notice below is reached for it.
+        # turn — an operator's message, a reply or a tapped answer from the
+        # direct chat — is the limit's: the limit wins over the reason, so
+        # neither of the two WARNINGs nor any notice below is reached for it.
         if not isinstance(reason, str):
             limit_stop = reason
             reason = getattr(limit_stop, "reason", "")
             if not isinstance(reason, str):
                 reason = ""
-            if not (system_turn and rec.origin.get("job")):
-                return await self._tell_turn_limit_stop(rec, limit_stop)
+            if batch is None:
+                return await self._tell_turn_limit_stop(
+                    rec, limit_stop, notice_target=notice_target)
         if not reason:
             return False
         status, told = "", False
@@ -3129,7 +3359,8 @@ class TelegramChannel(Channel):
                 logger.warning(
                     "settled terminal-state read did not return for %s — "
                     "telling the operator anyway", rec.id[:8], exc_info=True)
-        if status in ("completed", "cancelled", "error") and told:
+        if (notice_target is None
+                and status in ("completed", "cancelled", "error") and told):
             logger.info(
                 "turn %s ended incompletely on an already-terminal "
                 "engagement (%s) whose terminal path DID tell this topic — it "
@@ -3162,7 +3393,12 @@ class TelegramChannel(Channel):
         # that finished. The terminal-untold arm keeps the unconfirmed notice:
         # "could not confirm that its account ... reached this topic" is still
         # true of a response that never arrived.
-        if terminal_untold:
+        if notice_target is not None:
+            notice = (_DM_TURN_ENDED_NOTICE if terminal_untold
+                      else _DM_TURN_NOT_DELIVERED_NOTICE
+                      if reason == _FOLLOWUP_TEXT_NOT_DELIVERED
+                      else _DM_TURN_CUT_OFF_NOTICE)
+        elif terminal_untold:
             notice = _TURN_ENDED_UNCONFIRMED_NOTICE
         elif reason == _FOLLOWUP_TEXT_NOT_DELIVERED:
             notice = _TURN_NOT_DELIVERED_NOTICE
@@ -3170,14 +3406,16 @@ class TelegramChannel(Channel):
             notice = _TURN_CUT_OFF_NOTICE
         try:
             await asyncio.wait_for(
-                self._post_engagement_notice(rec, notice),
+                self._post_turn_notice(rec, notice, notice_target),
                 _TURN_INCOMPLETE_NOTICE_TIMEOUT_S)
         except BaseException:  # noqa: BLE001 — one bounded best-effort attempt
             logger.warning("incomplete-turn notice failed for %s",
                            rec.id[:8], exc_info=True)
         return True
 
-    async def _tell_turn_limit_stop(self, rec, limit_stop) -> bool:
+    async def _tell_turn_limit_stop(
+            self, rec, limit_stop, *,
+            notice_target: "_NoticeTarget | None" = None) -> bool:
         """#1141 (ruling-1141, INV-ENG-020): a non-batch follow-up turn that
         stopped at its turn limit. Returns False — a limit stop is never "cut
         off", so a job topic's operator turn goes on to the next batch.
@@ -3211,7 +3449,7 @@ class TelegramChannel(Channel):
         else:
             try:
                 await asyncio.wait_for(
-                    self._post_engagement_notice(rec, _LIMIT_CONTINUE),
+                    self._post_turn_notice(rec, _LIMIT_CONTINUE, notice_target),
                     _TURN_INCOMPLETE_NOTICE_TIMEOUT_S)
             except asyncio.CancelledError:
                 line = "cancelled"
@@ -3230,6 +3468,7 @@ class TelegramChannel(Channel):
         system_turn: bool = False,
         await_rebuild: bool = False,
         batch: int | None = None,
+        notice_target: "_NoticeTarget | None" = None,
     ) -> None:
         """M9 (v0.52.0): run one engagement user-turn to completion.
 
@@ -3266,15 +3505,21 @@ class TelegramChannel(Channel):
         #1033: ``batch`` is the job batch number this turn delivers — passed
         only through ``deliver_system_turn`` by ``start_next_batch`` — and goes
         to the driver with the text, so a turn re-sent into the fresh session
-        is still that batch. ``system_turn`` is not batch identity: an authz or
-        configurator continuation is a system turn too.
+        is still that batch. ``system_turn`` is not batch identity: an authz
+        continuation or a tapped answer is a system turn too.
+
+        ``notice_target``: the operator's message in the direct chat that
+        triggered this turn (a reply, or the card a tap answered). Every
+        notice this task owes for the turn is a reply to it; without one they
+        go to the topic.
         """
         import background_jobs
         background_jobs.turn_owner_started(rec.id)
 
         async def _ready() -> bool:
             try:
-                return await self._ready_after_drain(rec, inbound_token)
+                return await self._ready_after_drain(
+                    rec, inbound_token, notice_target, batch=batch)
             except BaseException:
                 background_jobs.turn_owner_finished(rec.id)
                 raise
@@ -3289,8 +3534,8 @@ class TelegramChannel(Channel):
         from memory import maintenance as memory_maintenance
         if not system_turn and memory_maintenance.restart_pending():
             try:
-                await self._post_engagement_notice(
-                    rec, memory_maintenance.courtesy_line())
+                await self._post_turn_notice(
+                    rec, memory_maintenance.courtesy_line(), notice_target)
             except Exception:  # noqa: BLE001 — a notice fault is logged
                 logger.debug("courtesy line failed for %s", rec.id[:8],
                              exc_info=True)
@@ -3323,7 +3568,8 @@ class TelegramChannel(Channel):
             try:
                 await _send()
             except SessionInvalidatedError:
-                if not await self._ready_after_drain(rec, inbound_token):
+                if not await self._ready_after_drain(
+                        rec, inbound_token, notice_target, batch=batch):
                     return
                 try:
                     await _send()
@@ -3331,7 +3577,8 @@ class TelegramChannel(Channel):
                     logger.warning(
                         "turn for %s refused twice by an invalidated session: "
                         "%s", rec.id[:8], exc)
-                    await self._settle_lost_inbound(rec, inbound_token)
+                    await self._settle_lost_inbound(
+                        rec, inbound_token, notice_target)
                     return
             # #649: on the success path the driver already discharged the
             # ticket at its evidence frame — this is the idempotent safety.
@@ -3344,12 +3591,12 @@ class TelegramChannel(Channel):
             # did not. After the discharge above, so the ledger is in its
             # final state either way.
             turn_cut_off = await self._report_incomplete_turn(
-                rec, inbound_token, system_turn=system_turn)
+                rec, inbound_token, batch=batch, notice_target=notice_target)
         except asyncio.CancelledError:
             # #649 visibility law: one bounded notice attempt while the
             # ticket is still held, then discharge (guarded — a shutdown
             # cancellation's notice may fail; that is the bounded attempt).
-            await self._settle_lost_inbound(rec, inbound_token)
+            await self._settle_lost_inbound(rec, inbound_token, notice_target)
             raise
         except Exception as exc:  # noqa: BLE001
             latest = (
@@ -3363,16 +3610,16 @@ class TelegramChannel(Channel):
                     "turn delivery ended by finalize for %s: %s",
                     rec.id[:8], exc,
                 )
-                # #649: never infer disclosure from a status read — a
-                # transiently-terminal strict persist can roll back live.
-                # The settle attempt targets a closed topic on a GENUINE
-                # terminal (whose flip snapshot disclosed the held ticket)
-                # and fails harmlessly; on a fake one it posts.
-                await self._settle_lost_inbound(rec, inbound_token)
+                # #649: the turn was refused or cut by the end of the
+                # engagement, so the ticket still held is told as lost — by
+                # this task, its owner, once.
+                await self._settle_lost_inbound(
+                    rec, inbound_token, notice_target)
                 return
             logger.warning("turn delivery failed for %s: %s", rec.id[:8], exc)
             try:
-                await self._post_engagement_notice(rec, f"Turn failed: {exc}")
+                await self._post_turn_notice(
+                    rec, f"Turn failed: {exc}", notice_target)
             except Exception:  # noqa: BLE001 — best-effort user notice
                 pass
             finally:
@@ -3417,15 +3664,19 @@ class TelegramChannel(Channel):
         latest = (reg.get(rec.id) if reg is not None else None) or rec
         return bool(getattr(latest, "context_rebuild_pending", False))
 
-    async def _ready_after_drain(self, rec, inbound_token) -> bool:
+    async def _ready_after_drain(
+            self, rec, inbound_token,
+            notice_target: "_NoticeTarget | None" = None,
+            *, batch: int | None = None) -> bool:
         """#1166: the readiness step a delivery task runs itself when the
         session its turn is for was invalidated under a running turn — wait
         for that turn to end, then run ``_resume_and_ready`` under the topic
         lock (its rebuild branch tears the old session down and opens the
         fresh one). True: deliver. Otherwise this step has settled the turn,
-        mirroring ``handle_update``'s pre-hand-off paths: a False result
-        already told the operator (or the record is terminal) and the ticket
-        is discharged with no second telling; an exception gets the one
+        mirroring the seams' pre-hand-off paths: a False result for an
+        operator's message draws that message's one notice — in reply to it
+        in the direct chat (``notice_target``), or in the topic it was written
+        in — while a batch prompt (``batch``) is discharged with no telling; an exception gets the one
         bounded lost-inbound telling. Never the job finalizer — nothing was
         sent, so no batch failed."""
         try:
@@ -3437,15 +3688,25 @@ class TelegramChannel(Channel):
             async with lock:
                 ready = await self._resume_and_ready(rec)
         except asyncio.CancelledError:
-            await self._settle_lost_inbound(rec, inbound_token)
+            await self._settle_lost_inbound(rec, inbound_token, notice_target)
             raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("engagement %s could not be readied after a "
                            "clearance downgrade: %s", rec.id[:8], exc)
-            await self._settle_lost_inbound(rec, inbound_token)
+            await self._settle_lost_inbound(rec, inbound_token, notice_target)
             return False
         if ready:
             return True
+        if batch is None and (notice_target is not None
+                              or not _refusal_told(ready)):
+            # An operator's message the job will not take up — it ended, or
+            # could not be resumed, while this task waited — is told once,
+            # here, by the ticket's holder: in the direct chat when it came
+            # from there, otherwise in the topic, unless the refusing arm has
+            # just told the topic itself. A batch prompt is Casa's own and is
+            # discharged silently below; the job's loop owns it.
+            await self._settle_lost_inbound(rec, inbound_token, notice_target)
+            return False
         if (inbound_token is not None
                 and self._driver_discharge_inbound is not None):
             try:
@@ -3475,6 +3736,13 @@ class TelegramChannel(Channel):
         # records are deliverable; a terminal one aborts before any resume.
         reg = self._engagement_registry
         if reg is not None:
+            # A record whose strict terminal write is still pending counts as
+            # live until that write settles: wait for it, so a turn routed in
+            # that window is delivered after a rollback and refused after a
+            # commit.
+            pending = getattr(reg, "terminal_pending", None)
+            if pending is not None and pending(rec.id) is True:
+                await reg.settle_pending(rec.id)
             latest = reg.get(rec.id)
             if latest is None or latest.status not in ("active", "idle"):
                 return False
@@ -3510,7 +3778,7 @@ class TelegramChannel(Channel):
                 await self._post_engagement_notice(
                     rec, "This engagement is re-establishing its context — "
                          "please resend in a moment.")
-                return False
+                return _REFUSED_TOLD
             if preamble:
                 self._rebuild_preambles[rec.id] = preamble
             if reg is not None:
@@ -3578,7 +3846,7 @@ class TelegramChannel(Channel):
                         # can_manage_topics — mirror the funnel's send-then-close
                         # order.
                         await self._cleanup_error_topic(rec)
-                    return False
+                    return _REFUSED_TOLD
             elif not drv.is_alive(rec):
                 # No session to resume — orphan.
                 if continuing_job:
@@ -3597,7 +3865,7 @@ class TelegramChannel(Channel):
                 )
                 # [AR-1] (v0.65.0): terminal path bypasses finalize — see above.
                 await self._cleanup_error_topic(rec)
-                return False
+                return _REFUSED_TOLD
 
         # v0.79.0 (§3): stamp the idle→active user turn so idle-suspension +
         # retention accounting see fresh activity before delivery.
@@ -3627,6 +3895,7 @@ class TelegramChannel(Channel):
     async def _dispatch_engagement_continuation(
         self, *, engagement_id: str, text: str,
         inbound_reservation: "_InboundReservation | None" = None,
+        notice_target: "tuple[int, int] | None" = None,
     ) -> bool:
         """#400: resume a SPECIALIST ENGAGEMENT after an operator authorized (or
         denied) a protected plugin tool over the DM authorization keyboard.
@@ -3656,7 +3925,11 @@ class TelegramChannel(Channel):
         means is narrow and unchanged: the turn was HANDED OFF to a background
         delivery task. It is not a delivery receipt and not a turn outcome —
         the driver's own admission fence runs later, inside the engagement's
-        per-turn lock, long after this returns."""
+        per-turn lock, long after this returns.
+
+        ``notice_target`` — ``(chat_id, message_id)`` of the approval card —
+        is where the continuation's one notice goes if the job never takes it
+        up; the seam or its delivery task posts it, never the caller."""
         reg = self._engagement_registry
         rec = reg.get(engagement_id) if reg is not None else None
         if rec is None:
@@ -3665,13 +3938,20 @@ class TelegramChannel(Channel):
                 str(engagement_id)[:8],
             )
             return False
+        target = None
+        if notice_target is not None:
+            chat, mid = notice_target
+            if type(chat) is int and type(mid) is int:
+                target = _NoticeTarget(chat_id=chat, message_id=mid, answer=True)
         return await self.deliver_system_turn(
-            rec, text, inbound_reservation=inbound_reservation)
+            rec, text, inbound_reservation=inbound_reservation,
+            notice_target=target)
 
     async def deliver_system_turn(
         self, rec, text: str,
         *, inbound_reservation: "_InboundReservation | None" = None,
         batch: int | None = None,
+        notice_target: "_NoticeTarget | None" = None,
     ) -> bool:
         """Resume-if-suspended (under the per-topic lock), then deliver a
         synthetic system-authored turn to engagement ``rec`` — the seam a
@@ -3706,7 +3986,16 @@ class TelegramChannel(Channel):
         ``mark_error``) can still terminalize between the hand-off and the
         fence, after the operator has been told a continuation was requested —
         which is what "requested" says, and what
-        ``architecture/specialist-lifecycle.md`` records."""
+        ``architecture/specialist-lifecycle.md`` records.
+
+        ``notice_target`` marks a turn the operator triggered from the direct
+        chat — a tapped answer, an approval's continuation — and names the
+        card they tapped. Such a turn ends a quiet run's quietness before it is
+        delivered, and every way it is not taken up draws its one notice
+        there, from this seam before the hand-off or from the delivery task
+        after it; the caller never posts one. A turn without one (a batch) is
+        refused silently: the job's own loop and sweep own a batch that could
+        not start."""
         # #649: admit the continuation SYNCHRONOUSLY at entry, before the
         # topic-lock wait and every _resume_and_ready await — a completion
         # racing any of those suspensions must already see it as unread.
@@ -3730,6 +4019,10 @@ class TelegramChannel(Channel):
             inbound_reservation.release()
         handed_off = False
         try:
+            if notice_target is not None and not await self._end_quiet_run(rec):
+                await self._settle_lost_inbound(rec, inbound_token, notice_target)
+                inbound_token = None
+                return False
             lock = self._engagement_handler_locks.setdefault(
                 _handler_lock_key(rec), asyncio.Lock())
             async with lock:
@@ -3737,29 +4030,34 @@ class TelegramChannel(Channel):
                 if not await_rebuild and not await self._resume_and_ready(
                         rec):
                     logger.info(
-                        "post-consent auto-resume skipped for engagement %s — "
-                        "not deliverable (terminal/unresumable); operator can "
-                        "re-nudge", rec.id[:8])
+                        "system turn for engagement %s not delivered — the "
+                        "record is terminal or could not be resumed",
+                        rec.id[:8])
+                    if notice_target is not None:
+                        await self._settle_lost_inbound(
+                            rec, inbound_token, notice_target)
+                        inbound_token = None
                     return False
                 if self._stopping:
                     # #649 producer-closing stop gate: no new delivery task
                     # after stop() began; the failure owner's settle below
                     # makes the drop visible (bounded, best-effort).
-                    await self._settle_lost_inbound(rec, inbound_token)
+                    await self._settle_lost_inbound(
+                        rec, inbound_token, notice_target)
                     inbound_token = None
                     return False
                 # #1141: the explicit system-turn marker — set here and only
-                # here — is what lets the follow-up owner tell a job's batch
-                # turn from an operator's message in the same topic.
+                # here. A job's batch turn is told apart by ``batch``.
                 task = asyncio.create_task(self._deliver_turn_bg(
                     rec, text, inbound_token=inbound_token, system_turn=True,
-                    await_rebuild=await_rebuild, batch=batch))
+                    await_rebuild=await_rebuild, batch=batch,
+                    notice_target=notice_target))
                 self._turn_tasks.add(task)
                 task.add_done_callback(self._turn_tasks.discard)
                 # Task-end backstop for a cancelled-before-first-step task.
                 task.add_done_callback(
-                    lambda t, r=rec, tok=inbound_token:
-                        self._schedule_inbound_cleanup(r, tok))
+                    lambda t, r=rec, tok=inbound_token, nt=notice_target:
+                        self._schedule_inbound_cleanup(r, tok, nt))
                 handed_off = True
             return True
         except BaseException:
@@ -3767,7 +4065,8 @@ class TelegramChannel(Channel):
             # _resume_and_ready's strict writes): the ticket has no task
             # owner — apply the visibility law here, then re-raise.
             if inbound_token is not None and not handed_off:
-                await self._settle_lost_inbound(rec, inbound_token)
+                await self._settle_lost_inbound(
+                    rec, inbound_token, notice_target)
                 inbound_token = None
             raise
         finally:
@@ -3779,6 +4078,432 @@ class TelegramChannel(Channel):
                     self._driver_discharge_inbound(rec, inbound_token)
                 except Exception:  # noqa: BLE001
                     logger.debug("inbound discharge failed", exc_info=True)
+
+    def engagement_continuation_tells_its_loss(self, engagement_id: str) -> bool:
+        """Whether a continuation into *engagement_id* that the job never
+        takes up is told by this channel's delivery seam itself — the record
+        resolves and the admission seam that gives its message a ticket is
+        wired. The approval card then shows no failure line of its own, so
+        the operator is told once."""
+        reg = self._engagement_registry
+        return (reg is not None and self._driver_admit_inbound is not None
+                and reg.get(str(engagement_id or "")) is not None)
+
+    async def _end_quiet_run(self, rec) -> bool:
+        """An operator's reply or tap into a quiet scheduled run ends its
+        quietness before the turn is delivered, so the run's end is told like
+        any job's. ``False`` refuses the interaction: the record went terminal
+        (a terminal job receives nothing) or the stamp could not be
+        persisted."""
+        import background_jobs
+        reg = self._engagement_registry
+        if reg is None:
+            return True
+        latest = reg.get(rec.id) or rec
+        if not background_jobs.was_quiet_run(latest):
+            return True
+        # Entered even when the stamp already reads not-quiet: another
+        # promotion may have cleared it in memory with its write still in
+        # flight. The registry's lock-held check waits for that write and
+        # promotes again if it rolled back.
+        return await reg.promote_from_quiet(rec.id)
+
+    async def deliver_operator_reply(
+        self, rec, text: str, *, chat_id: int, message_id: int,
+        quoted_text: str | None = None, user_name: str = "unknown",
+        user_id: int | None = None,
+    ) -> bool:
+        """The operator's reply to one of a live job's direct chat posts,
+        delivered into that job as an operator turn — the sibling of
+        :meth:`deliver_system_turn` for their own words.
+
+        The ticket is admitted SYNCHRONOUSLY at entry, before any await, so a
+        completion racing what follows is vetoed by it. A quiet run stops
+        being quiet first. Then the id-keyed handler lock, the shared
+        readiness step, and ONE tracked delivery task. The turn's text names
+        the post it answers (``[replying to «…»]``); the ticket holds their own
+        words, which is what memory and the completion gate see.
+
+        One notice per message, by whoever holds the ticket: this seam for
+        every refusal before the hand-off, the delivery task after it — a
+        reply to their message in the direct chat. Returns the hand-off
+        decision only; no caller posts anything on it."""
+        notice_target = _NoticeTarget(chat_id=int(chat_id),
+                                      message_id=int(message_id))
+        inbound_token = (self._driver_admit_inbound(rec, text)
+                         if self._driver_admit_inbound is not None else None)
+        first = ((quoted_text or "").strip().splitlines() or [""])[0].strip()
+        sent = f"[replying to «{first[:200]}»]\n{text}" if first else text
+        handed_off = False
+        try:
+            if not await self._end_quiet_run(rec):
+                await self._settle_lost_inbound(rec, inbound_token, notice_target)
+                inbound_token = None
+                return False
+            lock = self._engagement_handler_locks.setdefault(
+                _handler_lock_key(rec), asyncio.Lock())
+            async with lock:
+                await_rebuild = self._rebuild_waits_for_turn(rec)
+                if not await_rebuild and not await self._resume_and_ready(rec):
+                    await self._settle_lost_inbound(
+                        rec, inbound_token, notice_target)
+                    inbound_token = None
+                    return False
+                if self._stopping or self._driver_send_user_turn is None:
+                    await self._settle_lost_inbound(
+                        rec, inbound_token, notice_target)
+                    inbound_token = None
+                    return False
+                task = asyncio.create_task(self._deliver_turn_bg(
+                    rec, sent, tg_message_id=int(message_id),
+                    inbound_token=inbound_token, await_rebuild=await_rebuild,
+                    notice_target=notice_target))
+                self._turn_tasks.add(task)
+                task.add_done_callback(self._turn_tasks.discard)
+                task.add_done_callback(
+                    lambda t, r=rec, tok=inbound_token, nt=notice_target:
+                        self._schedule_inbound_cleanup(r, tok, nt))
+                handed_off = True
+            # INV-MEM-044: the operator's words to a specialist that keeps
+            # no memory are their message, kept by memory. Detached.
+            from delegated_memory import capture_topic_message
+            capture_topic_message(
+                channel=self, engagement=rec,
+                user_id=user_id if user_id is not None else self.operator_user_id(),
+                user_name=user_name, message_id=int(message_id),
+                resident=self.default_agent, text=text)
+            return True
+        except BaseException:
+            if inbound_token is not None and not handed_off:
+                await self._settle_lost_inbound(
+                    rec, inbound_token, notice_target)
+                inbound_token = None
+            raise
+        finally:
+            if (not handed_off and inbound_token is not None
+                    and self._driver_discharge_inbound is not None):
+                try:
+                    self._driver_discharge_inbound(rec, inbound_token)
+                except Exception:  # noqa: BLE001
+                    logger.debug("inbound discharge failed", exc_info=True)
+
+    # -- a job's posts in the direct chat ---------------------------------
+
+    @staticmethod
+    def _job_chat(rec) -> "int | None":
+        return strict_positive_id((getattr(rec, "origin", None) or {}).get("chat_id"))
+
+    @staticmethod
+    def _job_title(rec) -> str:
+        job = (getattr(rec, "origin", None) or {}).get("job") or {}
+        title = str(job.get("title") or getattr(rec, "task", "") or "job")
+        return (title.splitlines() or ["job"])[0][:80]
+
+    @staticmethod
+    def _job_agent_name(rec) -> str:
+        import tools as tools_mod
+        return tools_mod._display_name_for_role(rec.role_or_type)
+
+    async def post_job_start_line(self, rec) -> "int | None":
+        """The silent ``📊 <Agent> started «<title>».`` line of a job the
+        operator started, with its Cancel button — Casa's text. Filed as the
+        job's keyboard post once it lands. Returns the message id, or
+        ``None`` when nothing landed."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        from engagement_registry import JOB_POST_START
+        chat = self._job_chat(rec)
+        if chat is None or self.bot is None:
+            return None
+        kbd = InlineKeyboardMarkup([[InlineKeyboardButton(
+            text="Cancel", callback_data=job_cancel_callback(rec.id))]])
+        try:
+            msg = await self.bot.send_message(
+                chat_id=chat,
+                text=f"📊 {self._job_agent_name(rec)} started «{self._job_title(rec)}».",
+                reply_markup=kbd, disable_notification=True)
+        except Exception as exc:  # noqa: BLE001 — a start line is never the job's fault
+            logger.info("job start line not posted: %s", type(exc).__name__)
+            return None
+        mid = getattr(msg, "message_id", None)
+        if type(mid) is not int:
+            return None
+        await self._file_job_keyboard(rec, mid, JOB_POST_START)
+        return mid
+
+    async def post_job_question(self, rec, qid: str, body: Any,
+                                options: list, captions: list) -> "int | None":
+        """A job's question in the direct chat: the admitted *body* (Casa's
+        label line and the job's question) with one button per option and a
+        Cancel job button, each naming the engagement — the options by
+        question id and index. Filed as the job's keyboard post once it
+        lands. Returns the message id, or ``None`` when nothing landed (a
+        send that timed out may still have landed: its buttons still work)."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        from engagement_registry import JOB_POST_QUESTION
+        if _unadmitted("post_job_question", body):
+            return None
+        chat = self._job_chat(rec)
+        if chat is None or self.bot is None:
+            return None
+        rows = [[InlineKeyboardButton(
+            text=str(captions[i]),
+            callback_data=job_question_callback(rec.id, qid, i))]
+            for i in range(len(options))]
+        rows.append([InlineKeyboardButton(
+            text="Cancel job", callback_data=job_cancel_callback(rec.id))])
+        kbd = InlineKeyboardMarkup(rows)
+        display, entities = render(body)
+        try:
+            if entities is not None:
+                try:
+                    msg = await self.bot.send_message(
+                        chat_id=chat, text=display, entities=entities,
+                        reply_markup=kbd)
+                except BadRequest as exc:
+                    logger.warning("job question rich send fell back to plain: %s",
+                                   type(exc).__name__)
+                    msg = await self.bot.send_message(
+                        chat_id=chat, text=str(body), reply_markup=kbd)
+            else:
+                msg = await self.bot.send_message(
+                    chat_id=chat, text=_plain(body), reply_markup=kbd)
+        except Exception as exc:  # noqa: BLE001 — the tool reports the failure
+            logger.warning("job question not posted: %s", type(exc).__name__)
+            return None
+        mid = getattr(msg, "message_id", None)
+        if type(mid) is not int:
+            return None
+        await self._file_job_keyboard(rec, mid, JOB_POST_QUESTION)
+        return mid
+
+    async def _file_job_keyboard(self, rec, message_id: int, kind: str) -> None:
+        """File a landed keyboard post; one that landed after the record's
+        terminal transition settled is retired here — whoever sees the record
+        terminal last retires the post."""
+        reg = self._engagement_registry
+        if reg is None:
+            return
+        if not reg.record_job_post(rec.id, message_id, keyboard=kind):
+            await self._retire_job_post(reg.get(rec.id) or rec, [message_id, kind])
+
+    def retire_job_keyboards(self, rec) -> None:
+        """Take a terminal job's keyboard posts off the record (synchronously,
+        so each is retired once) and edit them away on a task of their own.
+        Called by the registry's terminal observer, so it never awaits."""
+        reg = self._engagement_registry
+        if reg is None:
+            return
+        posts = reg.take_ui_posts(rec.id)
+        if not posts:
+            return
+        try:
+            task = asyncio.get_running_loop().create_task(
+                self._retire_job_posts(rec, posts))
+        except RuntimeError:  # no loop — nothing can be edited now
+            return
+        self._job_ui_tasks.add(task)
+        task.add_done_callback(self._job_ui_tasks.discard)
+
+    def retire_ended_job_keyboards(self) -> int:
+        """Boot: retire the keyboards of every terminal job that still
+        carries some. Returns how many records it scheduled."""
+        reg = self._engagement_registry
+        lister = getattr(reg, "records_with_ui_posts", None) if reg is not None else None
+        if lister is None:
+            return 0
+        records = list(lister())
+        for rec in records:
+            self.retire_job_keyboards(rec)
+        return len(records)
+
+    async def _retire_job_posts(self, rec, posts: list) -> None:
+        for post in posts:
+            try:
+                await self._retire_job_post(rec, post)
+            except Exception:  # noqa: BLE001 — one post never stops the rest
+                logger.warning("retiring a job keyboard failed for %s",
+                               rec.id[:8], exc_info=True)
+
+    async def _retire_job_post(self, rec, post) -> None:
+        """Edit one keyboard post of an ended job: the start line to its
+        outcome mark, a question to no buttons. A post this cannot edit keeps
+        its keyboard; a tap on it reads the terminal record."""
+        from engagement_registry import JOB_POST_START
+        chat = self._job_chat(rec)
+        message_id, kind = post[0], post[1]
+        if chat is None:
+            return
+        if kind == JOB_POST_START:
+            mark = {"completed": "✅", "cancelled": "🛑"}.get(rec.status, "❌")
+            await self.edit_dm_message(
+                chat, message_id,
+                f"{mark} {self._job_agent_name(rec)} «{self._job_title(rec)}»")
+        else:
+            await self.clear_dm_keyboard(chat, message_id)
+
+    def _job_tap_allowed(self, cq: Any, rec) -> bool:
+        user = getattr(cq, "from_user", None)
+        if user is None or not self._sender_is_operator(user):
+            return False
+        owner = strict_positive_id((rec.origin or {}).get("user_id"))
+        return owner is not None and owner == user.id
+
+    async def _answer_once(self, cq: Any, toast: str) -> None:
+        """Exactly one completed answer, even under cancellation."""
+        t = asyncio.create_task(_safe_answer(cq, toast))
+        try:
+            await asyncio.shield(t)
+        except asyncio.CancelledError:
+            await t
+            raise
+
+    async def _on_job_question_callback(self, cq: Any, engagement_id: str,
+                                        qid: str, index: int) -> None:
+        """A tap on a job question's option. Resolved against the record —
+        never a memory-only broker — so it works after a restart: the
+        operator, the record counting as live, the question id it holds and
+        the option. An id the record does not hold delivers nothing. Then,
+        BEFORE the first await, the inbound reservation, so the completion
+        gate vetoes a successful completion from this instant; then the toast,
+        the keyboard showing the choice, and the answer as a system turn whose
+        notice target is the question. This handler never posts a notice."""
+        toast = "expired"
+        lease = None
+        rec = question = None
+        msg = getattr(cq, "message", None)
+        try:
+            reg = self._engagement_registry
+            if reg is None or msg is None or getattr(msg, "chat", None) is None:
+                return
+            rec = reg.get(engagement_id)
+            if rec is None:
+                return
+            if not self._job_tap_allowed(cq, rec):
+                toast = "not for you"
+                return
+            if not reg.counts_as_live(engagement_id):
+                toast = "already finished"
+                return
+            question = rec.questions.get(qid)
+            options = (question or {}).get("options") or []
+            if question is None or not 0 <= index < len(options):
+                toast = _QUESTION_GONE_TOAST
+                return
+            lease = self.engagement_inbound_reservation(engagement_id)
+            lease.take()
+            toast = "✔"
+        finally:
+            await self._answer_once(cq, toast)
+        if lease is None:
+            return
+        try:
+            option = question["options"][index]
+            await self._mark_job_answer(msg, rec, qid, question, index)
+            await self.deliver_system_turn(
+                rec, f"[operator answered «{question['text']}»: {option}]",
+                inbound_reservation=lease,
+                notice_target=_NoticeTarget(chat_id=msg.chat.id,
+                                            message_id=msg.message_id,
+                                            answer=True))
+        except Exception:  # noqa: BLE001 — the seam settled its own ticket
+            logger.warning("job answer for %s not handed off", engagement_id[:8],
+                           exc_info=True)
+        finally:
+            lease.release()
+
+    async def _mark_job_answer(self, msg: Any, rec, qid: str, question: dict,
+                               index: int) -> None:
+        """Show the chosen option on the question's keyboard (``✔`` on its
+        button). The buttons stay: a second tap is a second answer."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        options = question.get("options") or []
+        captions = resolve_button_labels(list(options), multi=False)
+        rows = [[InlineKeyboardButton(
+            text=(f"✔ {captions[i]}" if i == index else str(captions[i])),
+            callback_data=job_question_callback(rec.id, qid, i))]
+            for i in range(len(options))]
+        rows.append([InlineKeyboardButton(
+            text="Cancel job", callback_data=job_cancel_callback(rec.id))])
+        try:
+            await asyncio.wait_for(self.bot.edit_message_reply_markup(
+                chat_id=msg.chat.id, message_id=msg.message_id,
+                reply_markup=InlineKeyboardMarkup(rows)),
+                _TURN_INCOMPLETE_NOTICE_TIMEOUT_S)
+        except Exception as exc:  # noqa: BLE001 — cosmetic
+            logger.info("job answer mark not shown: %s", type(exc).__name__)
+
+    async def _on_job_cancel_callback(self, cq: Any, engagement_id: str) -> None:
+        """The Cancel button on a job's start line or question: the operator,
+        a live record, the toast, then the cancel funnel on a task of its own.
+        A second tap while it runs answers "already finishing"."""
+        toast = "expired"
+        start = False
+        rec = None
+        msg = getattr(cq, "message", None)
+        try:
+            reg = self._engagement_registry
+            if reg is None or msg is None or getattr(msg, "chat", None) is None:
+                return
+            rec = reg.get(engagement_id)
+            if rec is None:
+                return
+            if not self._job_tap_allowed(cq, rec):
+                toast = "not for you"
+                return
+            if engagement_id in self._job_cancels:
+                toast = "already finishing"
+                return
+            if not reg.counts_as_live(engagement_id):
+                toast = "already finished"
+                return
+            # A record whose other terminal write is still pending is
+            # cancelled too: the funnel's transition waits for that write,
+            # wins after a rollback, and ends harmlessly after a commit.
+            self._job_cancels.add(engagement_id)
+            start = True
+            toast = "Cancelling…"
+        finally:
+            try:
+                await self._answer_once(cq, toast)
+            except BaseException:
+                if start:
+                    self._job_cancels.discard(engagement_id)
+                raise
+        if not start:
+            return
+        task = asyncio.create_task(
+            self._run_job_cancel(rec, msg.chat.id, msg.message_id))
+        self._turn_tasks.add(task)
+        task.add_done_callback(self._turn_tasks.discard)
+
+    async def _run_job_cancel(self, rec, chat_id: int, message_id: int) -> None:
+        """The cancel funnel for a Cancel tap. Its transition waits out any
+        other terminal write still pending. A won transition is told by the
+        terminal notification and its keyboards are retired by the terminal
+        observer; one lost to another outcome needs nothing more. A write that rolled back
+        leaves the record live and the button in place, and draws one line in
+        reply to the tapped message."""
+        try:
+            fin = (await self._finalize_cancel(rec, reason="the operator")
+                   if self._finalize_cancel is not None else None)
+        except Exception:  # noqa: BLE001 — told below if still live
+            logger.warning("job cancel failed for %s", rec.id[:8], exc_info=True)
+            fin = None
+        finally:
+            self._job_cancels.discard(rec.id)
+        if fin:
+            return
+        reg = self._engagement_registry
+        latest = reg.get(rec.id) if reg is not None else None
+        if latest is None or latest.status not in ("active", "idle"):
+            return
+        try:
+            await asyncio.wait_for(
+                self._send_dm_reply(chat_id, message_id, _CANCEL_NOT_SAVED_LINE),
+                _TURN_INCOMPLETE_NOTICE_TIMEOUT_S)
+        except BaseException:  # noqa: BLE001 — one bounded attempt
+            logger.warning("cancel retry line failed for %s", rec.id[:8],
+                           exc_info=True)
 
     async def _on_non_text_message(
         self, update, _context: ContextTypes.DEFAULT_TYPE | None = None,
@@ -4184,6 +4909,16 @@ class TelegramChannel(Channel):
         """
         cq = update.callback_query
         data = cq.data or ""
+        # A job's buttons first: they are not of the generic parser's shape.
+        job = _parse_job_callback(data)
+        if job is not None:
+            if job[0] == "q":
+                await self._on_job_question_callback(cq, job[1], job[2], job[3])
+            elif job[0] == "cancel":
+                await self._on_job_cancel_callback(cq, job[1])
+            else:
+                await _safe_answer(cq, "expired")
+            return
         ns, request_id, idx, _kind = _parse_callback_data(data)
         if ns is None:
             await _safe_answer(cq, "expired")
@@ -5263,6 +5998,19 @@ class TelegramChannel(Channel):
             return
         import result_broker
         result_broker.POST_MAP.record(chat, message_id, post)
+        # A job's plugin post is also filed on the job's record, so a reply
+        # to it reaches the job for as long as the job lives — a restart and
+        # the post map's bound included. Anything else files nothing.
+        reg = self._engagement_registry
+        owner = getattr(post, "owner", "")
+        if (reg is not None and isinstance(owner, str) and owner
+                and type(message_id) is int):
+            filer = getattr(reg, "record_job_post", None)
+            if filer is not None:
+                try:
+                    filer(owner, message_id)
+                except Exception:  # noqa: BLE001 — filing never fails a post
+                    logger.warning("job post filing failed", exc_info=True)
         if message_id is not None:
             # INV-MEM-040: memory keeps that a specialist which keeps no
             # memory posted here, never what (one line per post).

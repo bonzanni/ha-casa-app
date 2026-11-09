@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-02
+last_reviewed: 2026-11-08
 ---
 
 # Engagement completion gate
@@ -9,10 +9,10 @@ last_reviewed: 2026-10-02
 ## Scope
 
 The admission side of ending an engagement: what a *successful* completion is refused over,
-why a message in flight is disclosed but never vetoed, and what the driver counts.
+why a message in flight is never vetoed, and what the driver counts.
 Completion owes no reload: each configuration commit reloads what it changed (INV-TOOL-014, in
 [`architecture/tools-interface.md`](tools-interface.md)).
-What a terminal outcome then discloses about the messages that died with the engagement is in
+How a message that died with the engagement is told — once, by its ticket's holder — is in
 [`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md). The terminal
 transition itself, the strictness that keeps the persisted and in-memory records agreeing, the
 finalization side effects behind the flip are in
@@ -27,13 +27,13 @@ messages are unread or reserved — an agent cannot declare victory over a quest
 read. Failure and cancellation deliberately bypass that gate, because something going wrong
 must always be able to end.
 
-**"In flight" is disclosed, never vetoed.** The in-casa driver counts admission tickets: a
-turn is unread from its synchronous admission at the Telegram entry seam until the embedded
-client takes the prompt, then in flight — disclosure-only — until the first model-evidence
-frame. A blocking count of the in-flight population could only veto the carrying turn's own
-completion, so the driver deliberately implements none; the annotation described in
-[`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md) still
-quotes what was in flight when a terminal committed.
+**"In flight" is never vetoed.** The in-casa driver counts admission tickets: a turn is unread
+from its synchronous admission at the Telegram entry seam until the embedded client takes the
+prompt, then in flight until the first model-evidence frame. A blocking count of the in-flight
+population could only veto the carrying turn's own completion, so the driver deliberately
+implements none. A ticket that a terminal outcome strands, in either population, is told by its
+holder ([`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md),
+INV-ENG-029).
 
 ## Contracts & invariants
 
@@ -82,7 +82,7 @@ relieve one, so release is the only exit.
 
 Two things it deliberately is not. It is *not* the reservation the operator-message path takes:
 that path already admits a text-bearing ticket at handler entry, so reserving there too would
-count one message twice in the veto and inflate the lost-message disclosure. And its counters
+count one message twice in the veto. And its counters
 have no attach step and no detach step — nothing tears them down and nothing but a release
 removes an entry — so an absent key means *nothing is held*, never *the answer is unavailable*.
 Adding a lifecycle teardown to a reservation counter would break that: a teardown would read
@@ -148,22 +148,12 @@ INV-BGJOB-007); the reply is the same.
 than wedging termination: a driver that cannot answer one question does not get to make an
 engagement unendable — and does not get to answer for the other reads either. Each of the
 terminal hook's reads is guarded on its own and contributes only its own value, so a completion
-is still refused over the unread depth or reservations the gate could still read, and every terminal still discloses the populations that did read — including reservation
-texts read beside a count that raised, which are posted under a sentence naming no number. That
-arm needs the observed failure as well as a text: a raising count read with nothing else read
-posts no paragraph, and a count that answered zero, is absent or answers a non-integer beside a
-reservation text is a driver answering off its own clamp, which the renderers do not correct and
-this document does not cover.
+is still refused over the unread depth or reservations the gate could still read.
 
 **An inbound accessor is absent.** The same contribution, without the warning: an optional
 accessor a driver never implements answers empty because nothing failed, so there is nothing to
 report. `InCasaDriver` implements every accessor the gate reads, so absence arises only for a
 driver that does not.
-
-**A disclosure population fails to read.** Those populations are read by the same terminal
-hook and under the same per-accessor rule as the reads above; what a terminal then quotes,
-counts or declines to number is in
-[`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md).
 
 ## Extension points
 

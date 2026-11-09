@@ -46,11 +46,18 @@ retry.
 **Completion is gated on unread input, and that gate is its own contract.** A *successful*
 completion requested through the completion tool is refused while inbound messages are
 unread or reserved; failure, cancellation and the operator's own complete command
-deliberately bypass it, and every terminal outcome discloses what it committed past. What
-the driver counts is in
-[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) (INV-ENG-003); how
-a message that dies with the engagement is disclosed is in
-[`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md).
+deliberately bypass it. What the driver counts is in
+[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) (INV-ENG-003). No
+terminal outcome lists the messages it committed past: each is told once by its own ticket's
+holder ([`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md),
+INV-ENG-029).
+
+**Whether the engager is owed a telling is decided inside the transition.** The funnel passes
+the registry a decision it evaluates under its lock, from the record as the transition commits
+it: every outcome is owed except a quiet scheduled run's completed end, and an operator's
+interaction with a quiet run ends its quietness under that same lock
+([`background-job-quiet-runs.md`](background-job-quiet-runs.md), INV-BGJOB-015). The tail sends
+the notification on that same decision.
 
 ## Contracts & invariants
 
@@ -122,7 +129,7 @@ remains until the boot reconcile and reap TTL retire it.
 **The completion gate is INV-ENG-003, and it lives in its own document.** A successful
 completion requested through the completion tool is refused over unread or reserved inbound
 input when the driver exposes its inbound state; the operator's own
-complete command is not gated and finalizes disclosing what it committed past — see
+complete command is not gated and finalizes past it — see
 [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md).
 
 **One terminal path deliberately stays outside this funnel.** A launch turn that ends
@@ -205,7 +212,7 @@ stop's launch step is described in
 engagement stays live and the caller sees a tool error.
 
 **Completion is refused for unread input.** The transition is vetoed and the record stays
-live; the outcome and its disclosure are INV-ENG-003's subject
+live; the outcome is INV-ENG-003's subject
 ([`architecture/engagement-completion-gate.md`](engagement-completion-gate.md)).
 
 **The terminal write fails.** The record is rolled back to live and no side effects run.

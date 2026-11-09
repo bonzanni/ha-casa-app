@@ -22,8 +22,10 @@ from typing import Any, Iterable
 
 logger = logging.getLogger(__name__)
 
-# Casa tool granted to a specialist session only while it runs a job.
-JOB_CASA_GRANTS: tuple[str, ...] = ("mcp__casa-framework__report_job_progress",)
+# Casa tools granted to a specialist session only while it runs a job: its
+# batch reports, and its questions to the operator.
+JOB_CASA_GRANTS: tuple[str, ...] = ("mcp__casa-framework__report_job_progress",
+                                    "mcp__casa-framework__ask_operator")
 
 # The COMPLETE casa-framework surface of a plugin-job (resident-hosted) session:
 # it reports and it finishes, and the bridge admits exactly this — no union with
@@ -442,6 +444,16 @@ def is_quiet_run(rec: Any) -> bool:
     return is_quiet_origin(getattr(rec, "origin", None))
 
 
+def was_quiet_run(rec: Any) -> bool:
+    """Whether *rec* carries a quiet stamp at all — a quiet run, or one whose
+    quietness an interaction ended (or is ending: a promotion clears the stamp
+    in memory before its write settles, and rolls it back if the write
+    fails). An interaction with such a run goes through the registry's
+    promotion, which decides under its lock."""
+    job = (getattr(rec, "origin", None) or {}).get("job")
+    return isinstance(job, dict) and "quiet" in job
+
+
 def is_quiet_origin(origin: Any) -> bool:
     """``is_quiet_run`` over a record's origin (or a frozen copy of it)."""
     job = origin.get("job") if isinstance(origin, dict) else None
@@ -449,13 +461,16 @@ def is_quiet_origin(origin: Any) -> bool:
 
 
 def launch_prompt(decl: JobDecl, task: str, context: str, turns_per_batch: int,
-                  *, job_id: str, started_by: str | None) -> str:
+                  *, job_id: str, started_by: str | None,
+                  can_ask: bool = True) -> str:
     """The launch turn: state the job, acknowledge in one line, do no work.
 
     ``job_id`` is the engagement id. The launch turn and every fresh turn's
     brief (``job_brief``) name it, so a plugin can claim work by it and match
     the job-end notice, whose delegation id is the same engagement id.
-    ``started_by`` is the record's token (#1277), rendered on the next line."""
+    ``started_by`` is the record's token (#1277), rendered on the next line.
+    ``can_ask``: the job runs on a specialist and may ask the operator; a
+    resident's plugin worker parks and reports instead."""
     return (
         f'You are starting the background job "{decl.title}" (skill {decl.skill}).\n'
         f"Job id: {job_id}\n"
@@ -465,12 +480,14 @@ def launch_prompt(decl: JobDecl, task: str, context: str, turns_per_batch: int,
         "In THIS turn do no work: reply with one short line saying what you are "
         "about to do, then end your turn.\n"
         "Casa then starts batch 1. How the job runs:\n"
-        + _job_rules(turns_per_batch)
+        + _job_rules(turns_per_batch, can_ask=can_ask)
     )
 
 
-def _job_rules(turns_per_batch: int | None) -> str:
-    """How a job runs — the rules the launch prompt and the job brief share."""
+def _job_rules(turns_per_batch: int | None, *, can_ask: bool = True) -> str:
+    """How a job runs — the rules the launch prompt and the job brief share.
+    ``can_ask`` adds how a specialist's job asks the operator; a resident's
+    plugin worker has no question tool."""
     limit = (f" of at most {turns_per_batch} turns"
              if isinstance(turns_per_batch, int) else "")
     return (
@@ -485,7 +502,13 @@ def _job_rules(turns_per_batch: int | None) -> str:
         "them when this job's work has a real unit and a known total, leave them out "
         "otherwise. Nothing left to do means the job is finished, not a batch with "
         "0 remaining: complete it instead.\n"
-        "- Messages the operator writes in this topic arrive as their own turns: "
+        + ("- When something needs the operator's decision or information only they have, "
+           "call ask_operator with the question and, when there are clear choices, the "
+           "options. Park that item, carry on with other work if there is any, and end "
+           "the batch as usual; their answer arrives as its own turn. Do not ask in your "
+           "own text: only ask_operator reaches them.\n" if can_ask else "")
+        + "- The operator's messages arrive as their own turns — a reply in their direct "
+        "chat to one of this job's messages, or a message written in this job's topic: "
         "answer briefly and end your turn; the job then continues.\n"
         "- When nothing is left, call emit_completion with a summary for the operator. "
         "If it is refused because a message is unread, end your turn, read it, then complete."
@@ -542,7 +565,8 @@ def job_brief(rec: Any) -> str:
         + _pending_completion_line(job)
         + "What follows this brief is this turn: a batch to run, or a message from "
         "the operator to answer. How the job runs:\n"
-        + _job_rules(job.get("turns_per_batch"))
+        + _job_rules(job.get("turns_per_batch"),
+                     can_ask=getattr(rec, "kind", "") == "specialist")
     )
 
 
