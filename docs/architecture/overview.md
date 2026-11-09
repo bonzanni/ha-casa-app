@@ -53,6 +53,21 @@ consecutive scans find none, and claims extinction only on that observation, nev
 signalled everything we saw"; with no such primitive it signals nothing and reports the kill
 unverified. `live_pids_for_uid` is the enumeration it reads, zombies excluded.
 
+The whole container runs under the app's AppArmor profile, `casa/apparmor.txt`; every process
+in it, `docker exec` included, carries the same label. File access is open (`file,`), and the
+capabilities are listed one by one: `kill` is the one the ladder above needs, because an
+engagement's processes run under that engagement's own uid. The profile's first line is an
+`abi` line, and without it the kernel enforces none of the network rules. With it, the rules
+keep TCP and UDP open to any destination over IPv4 and IPv6, keep `netlink raw` because glibc's
+`getaddrinfo` reads addresses over NETLINK_ROUTE (in Python and in the agent CLI alike), and
+keep `unix stream` as a margin. Socket kinds outside these rules, such as inet raw, packet
+and netlink dgram, are refused. Unix sockets are not limited to the listed rule: pathname
+sockets (the internal API socket, the terminal's socket, the s6 control sockets) are mediated
+by the file rules, and the base abstraction lets the container's processes create unix
+sockets of any type and talk to each other over them. No unit or end-to-end test loads the
+profile, so `tests/test_apparmor_profile.py` pins the `abi` line, the network rules Casa needs
+and the `kill` grant as text.
+
 Four `init-*` one-shots exist — config validation, config materialisation, nginx setup and
 the plugin store — but they do **not** all precede every service. Each service names only
 the one-shots it needs: the nginx setup gates `svc-nginx` alone, the plugin store gates the
@@ -152,12 +167,14 @@ is what the host renders.
 - `casa/config.yaml::options`
 - `casa/rootfs/opt/casa/uid_kill.py::kill_uid_until_empty`
 - `casa/rootfs/opt/casa/uid_kill.py::live_pids_for_uid`
+- `casa/apparmor.txt`
 
 **Tests**
 - `tests/test_casa_core_agent_loading.py`
 - `tests/test_setup_nginx_ingress.py`
 - `tests/test_uid_kill.py`
 - `tests/test_trusted_path.py`
+- `tests/test_apparmor_profile.py`
 
 **Related**
 - [`architecture/agent-taxonomy.md`](../architecture/agent-taxonomy.md)

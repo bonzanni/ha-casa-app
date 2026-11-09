@@ -52,7 +52,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | adding or removing an option, the reload scopes, the config repo, or secret resolution | [`architecture/configuration.md`](architecture/configuration.md) |
 | agent prompts, refusal text, or anything shaping how an agent acts at runtime | [`doctrine/operating-casa.md`](doctrine/operating-casa.md) |
 | anything published — docs, comments, commit messages, PR text, branch names | [`doctrine/publishing.md`](doctrine/publishing.md) |
-| anything structural, or when you need to find which document owns an area | [`architecture/overview.md`](architecture/overview.md) |
+| anything structural, the app's AppArmor profile, or when you need to find which document owns an area | [`architecture/overview.md`](architecture/overview.md) |
 | anything that must serialize, a new lock, bus dispatch, or blocking I/O placement | [`architecture/concurrency-model.md`](architecture/concurrency-model.md) |
 | anything under casa_browser/ — an app option, the bootstrap, the store or retention, a /v1 route, its errors or pairing, the address check or the request policy | [`reference/casa-browser.md`](reference/casa-browser.md) |
 | authorization grants, the protected-tool challenge, who may approve a protected call, or what a finished engagement does to its challenges | [`architecture/plugin-authorization.md`](architecture/plugin-authorization.md) |
