@@ -25,7 +25,7 @@ from test_in_casa_launch_terminal_artifact import ScriptedCompleteClient
 
 pytestmark = pytest.mark.asyncio
 DECL = jobs.JobDecl('ledger:classify', 'ledger', 'classify', 'ledger:classify',
-                    'Classify entries', None, None, 30)
+                    'Classify entries', None)
 
 
 class Client(ScriptedCompleteClient):
@@ -144,16 +144,18 @@ async def test_launch_limit_prompt_envelope_and_persistence(runtime):
     assert result['message'] == "Started Classify entries. Progress appears in Alex's topic."
     await tools.drain_launch_turns()
     client = Client.instances[0]
-    assert cli_limit(client.options) == '30'
+    assert cli_limit(client.options) == str(jobs.JOB_MAX_TURNS)
     rec = runtime.registry.get(result['engagement_id'])
     # The launch prompt names the job by its engagement id (INV-BGJOB-005).
     # #1277: the harness origin is the operator's own turn.
-    assert client.prompts == [jobs.launch_prompt(DECL, 'Classify the ledger', 'all rows', 30,
+    assert client.prompts == [jobs.launch_prompt(DECL, 'Classify the ledger', 'all rows', jobs.JOB_MAX_TURNS,
                                                  job_id=rec.id, started_by='operator')]
     assert DECL.title in runtime.bot.create_forum_topic.call_args.kwargs['name']
-    assert rec.origin['job'] == jobs.initial_job_state(DECL, started_by='operator')
+    expected = {**jobs.initial_job_state(DECL, started_by='operator'),
+                'brief_uuid': rec.origin['job']['brief_uuid']}
+    assert rec.origin['job'] == expected
     rows = json.loads(Path(runtime.registry._tombstone_path).read_text())
-    assert rows[0]['origin']['job'] == jobs.initial_job_state(DECL, started_by='operator')
+    assert rows[0]['origin']['job'] == expected
     assert jobs.JOB_CASA_GRANTS[0] in client.options.allowed_tools
 
 
@@ -196,7 +198,7 @@ async def test_second_engagement_from_another_chat_names_open_job(runtime, secon
         # another plugin's job on the same specialist: past its own plugin's
         # claim, the per-specialist rule refuses it (one open engagement)
         other = jobs.JobDecl('budget:review', 'budget', 'review', 'budget:review',
-                             'Review budget', None, None, 30)
+                             'Review budget', None)
         origin = dict(role='assistant', execution_role='assistant', channel='telegram',
                       chat_id='2', cid='test', user_text='review', _operator_turn=True,
                       plugin_job={'plugin': 'budget'})
@@ -226,14 +228,12 @@ async def test_sync_delegation_while_job_open(runtime):
     assert jobs.JOB_CASA_GRANTS[0] not in Client.instances[1].options.allowed_tools
 
 
-@pytest.mark.parametrize('limit', [30, None])
-async def test_resume_keeps_limit_and_job_grant(runtime, limit):
+async def test_resume_keeps_limit_and_job_grant(runtime):
     result = await call()
     await tools.drain_launch_turns()
     rec = runtime.registry.get(result['engagement_id'])
-    rec.origin['job']['turns_per_batch'] = limit
     opts = tools.build_engagement_resume_options(rec, 'resumed-session')
-    assert cli_limit(opts) == str(limit or 20)
+    assert cli_limit(opts) == str(jobs.JOB_MAX_TURNS)
     assert opts.resume == 'resumed-session'
     assert jobs.JOB_CASA_GRANTS[0] in opts.allowed_tools
 

@@ -53,7 +53,7 @@ async def worker(runtime, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('limit', [30, None])
 async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
-    host = replace(worker.host, decl=replace(DECL, turns_per_batch=limit))
+    host = replace(worker.host, decl=replace(DECL))
     monkeypatch.setattr(jobs, 'find_job_host', lambda *args: host)
     result = await call()
     assert result['status'] == 'pending', result
@@ -74,7 +74,7 @@ async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
     assert opts.plugins == [{'type': 'local', 'path': str(worker.root)}]
     assert set(opts.mcp_servers) == {'casa-framework'}
     assert set(worker.selected) == {'report_job_progress', 'emit_completion'}
-    assert cli_limit(opts) == str(limit or 17)
+    assert cli_limit(opts) == str(jobs.JOB_MAX_TURNS)
     assert Path(opts.cwd) == tools._PLUGIN_JOB_ROOT / rec.id / 'plugin-job'
     assert Path(opts.cwd).is_dir()
     assert opts.system_prompt == tools._PLUGIN_JOB_PROMPT
@@ -85,7 +85,7 @@ async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
     assert {'PreToolUse', 'PostToolUse', 'PostToolUseFailure'} <= set(opts.hooks)
     assert (rec.kind, rec.role_or_type, rec.driver) == ('plugin', 'assistant', 'in_casa')
     assert rec.origin['plugin_job'] == {'plugin': 'ledger', 'model': 'sonnet'}
-    assert rec.origin['job']['turns_per_batch'] == (limit or 17)
+    assert 'turns_per_batch' not in rec.origin['job']
     assert rec.origin['chat_id'] == '1' and rec.origin['_operator_turn'] is True
     assert rec.tools_allowed == ('mcp__plugin_ledger_ledger', *jobs.PLUGIN_JOB_CASA_GRANTS)
     assert rec.plugin_artifacts == ({'name': 'ledger', 'manifest_name': worker.host.plugin.manifest_name,
@@ -128,7 +128,7 @@ async def test_resume_uses_pinned_launch_settings(worker):
     opts = tools.build_engagement_resume_options(rec, 'resume-id')
     initial = Client.instances[0].options
     assert opts.resume == 'resume-id' and opts.model == 'sonnet'
-    assert cli_limit(opts) == '30'
+    assert cli_limit(opts) == str(jobs.JOB_MAX_TURNS)
     assert opts.plugins == initial.plugins
     assert opts.allowed_tools == initial.allowed_tools
     assert opts.system_prompt == initial.system_prompt

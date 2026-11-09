@@ -574,8 +574,7 @@ async def test_the_operator_s_reply_to_a_no_memory_specialist_s_job_post_is_thei
     monkeypatch.setattr(jobs, "job_after_turn", AsyncMock())
     rec = topic.recs["browser"]
     rec.origin["job"] = jobs.initial_job_state(jobs.JobDecl(
-        "sample:work", "sample", "work", "sample:work", "Book slots", None,
-        None, 10), started_by="operator")
+        "sample:work", "sample", "work", "sample:work", "Book slots", None), started_by="operator")
     rec.origin["chat_id"] = str(OPERATOR_CHAT)
     ch = topic.channel()
     ch._engagement_registry.record_job_post(rec.id, 600)

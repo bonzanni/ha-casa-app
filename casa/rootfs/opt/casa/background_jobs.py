@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -34,6 +35,29 @@ PLUGIN_JOB_CASA_GRANTS: tuple[str, ...] = (
     "mcp__casa-framework__report_job_progress",
     "mcp__casa-framework__emit_completion",
 )
+
+# The step ceiling of one write into a job's session. Measured: ``max_turns``
+# applies per ``query()``, and a message absorbed mid-turn neither resets nor
+# extends the running turn's count. The ceiling is high on purpose: reaching
+# it is a continuation boundary, not a stop, so it only bounds a loop.
+JOB_MAX_TURNS: int = 1000
+
+
+def job_session_options(options: Any, rec: Any) -> Any:
+    """*options* as every job session runs: the high step ceiling, the
+    long-session auto-compaction window, and the CLI's echo of each written
+    message at take-up. Applied by the three job options builders (launch,
+    resident-hosted worker, resume), so a resumed session runs exactly as the
+    launched one did."""
+    import dataclasses
+    from claude_runtime import REPLAY_USER_MESSAGES_ARG, long_session_env
+    return dataclasses.replace(
+        options,
+        max_turns=JOB_MAX_TURNS,
+        env={**(options.env or {}), **long_session_env()},
+        extra_args={**(options.extra_args or {}), REPLAY_USER_MESSAGES_ARG: None},
+    )
+
 
 # A job that has not advanced for this long, with no turn queued and no delivery
 # owner live, is stalled and the sweep continues it (C7a).
@@ -69,11 +93,6 @@ class JobDecl:
     skill: str                     # "<manifest name>:<skill>"
     title: str
     summary: str | None
-    batches: int | None            # None = unlimited
-    turns_per_batch: int | None    # None = the specialist's tools.max_turns
-    # "resume" continues one conversation across turns; "fresh" resets it
-    # before every turn after the launch and re-states the brief (S1).
-    session: str = "resume"
     host: str | None = None        # "specialist" = never hosted by a resident
     # #1301: a run the scheduler started is quiet — no topic, no
     # acknowledgement, no progress line, no telling of a completed end.
@@ -273,10 +292,6 @@ def _declared_jobs(plugins: Iterable[Any]) -> dict[str, tuple[JobDecl, Any]]:
                 skill=f"{plugin}:{entry['skill']}",
                 title=entry["title"],
                 summary=entry.get("summary"),
-                batches=(None if entry["batches"] == "unlimited"
-                         else entry["batches"]),
-                turns_per_batch=entry.get("turnsPerBatch"),
-                session=entry.get("session", "resume"),
                 host=entry.get("host"),
                 quiet_when_scheduled=entry.get("quietWhenScheduled") is True,
             ), resolved)
@@ -403,30 +418,19 @@ def starter_line(started_by: Any) -> str:
 
 
 def initial_job_state(decl: JobDecl, *, started_by: str | None = None) -> dict:
-    """The ``origin["job"]`` a job engagement is created with."""
+    """The ``origin["job"]`` a job engagement is created with.
+
+    ``brief_uuid`` is the identity of the job's brief: the brief is written
+    into the session with this uuid, and the CLI records a uuid in the
+    session transcript only when it takes the message into a turn. A resume
+    after a restart or a session death therefore knows, from the transcript
+    alone, whether the job ever read its brief."""
     state = {
         "name": decl.qualified_name,
         "title": decl.title,
         "skill": decl.skill,
-        "batches": decl.batches,
-        "turns_per_batch": decl.turns_per_batch,
-        # Readers use .get("session", "resume"): a record written before the
-        # field existed is a resume-mode job.
-        "session": decl.session,
-        "started": 0,
-        "judged": 0,
-        "stuck": 0,
-        # Whether the current batch reported moving the job toward completion.
-        # The specialist says so itself (#1031): counts are the worker's own
-        # invented unit — a job can be uncountable, or its total unknown — so
-        # they are shown to the operator and decide nothing.
-        "advanced": False,
+        "brief_uuid": str(uuid.uuid4()),
         "last_summary": None,
-        # C7a: the sweep's inputs. `last_advance` is written whenever a batch is
-        # admitted and whenever a progress report lands; `stalls` counts
-        # consecutive failed continuations and resets on a successful admission.
-        "last_advance": None,
-        "stalls": 0,
     }
     if started_by is not None:
         state["started_by"] = started_by
@@ -623,6 +627,11 @@ def turn_owners(engagement_id: str) -> int:
 # The batch loop
 # ---------------------------------------------------------------------------
 
+# The batch loop's counters, seeded by the loop itself (see start_next_batch).
+_LOOP_DEFAULTS = {"batches": None, "turns_per_batch": None, "started": 0,
+                  "judged": 0, "stuck": 0, "advanced": False, "stalls": 0}
+
+
 def _pending_input_reserved(rec: Any, driver: Any) -> bool:
     """#1180: while a refused completion is pending, an ingress reservation is
     input about to arrive: the job waits for it, so the one spared batch is not
@@ -718,7 +727,10 @@ async def start_next_batch(rec: Any, channel: Any) -> bool:
             _pending_input_reserved(rec, driver)):
         return False
     # Stage the judgment: a refused hand-off must cost no batch or progress.
-    job = dict(rec.origin["job"])
+    # TODO(single-session jobs): this loop is removed with the turn-end guard
+    # that replaces it; until then it seeds its own counters, which a job's
+    # declaration no longer carries.
+    job = {**_LOOP_DEFAULTS, **rec.origin["job"]}
     if "advanced" not in job:
         # A job launched before #1031 persisted `reported`/`remaining`/
         # `prev_remaining` instead. Its one in-flight batch ran under the count

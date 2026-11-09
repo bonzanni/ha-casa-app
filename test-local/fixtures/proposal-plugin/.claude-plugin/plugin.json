@@ -16,8 +16,7 @@
     },
     "jobs": [
       {"name": "fixture-check", "skill": "fixture-check", "title": "Fixture check",
-       "summary": "Posts one line through the delivered slot so a scheduled job trigger can be seen to fire.",
-       "batches": 1, "turnsPerBatch": 8}
+       "summary": "Posts one line through the delivered slot so a scheduled job trigger can be seen to fire."}
     ]
   }
 }

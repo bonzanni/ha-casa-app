@@ -81,7 +81,7 @@ async def start(runtime, monkeypatch, origin, *, session="fresh", task=TASK,
                 context=CONTEXT):
     """``start_job`` from *origin*; returns (record, launch prompt). Asserts one
     record, one client, one launch query."""
-    decl = dataclasses.replace(DECL, session=session)
+    decl = dataclasses.replace(DECL)
     _serve(monkeypatch, decl)
     before = len(LaunchClient.instances)
     token = agent.origin_var.set(dict(origin))
@@ -140,7 +140,7 @@ class TestStarterFromTheLaunchingTurn:
 class TestScheduledFire:
     async def test_a_job_trigger_fire_starts_a_scheduled_job(self, runtime, monkeypatch):
         import authz_grants
-        decl = dataclasses.replace(DECL, session="fresh")
+        decl = dataclasses.replace(DECL)
         _serve(monkeypatch, decl)
         monkeypatch.setattr(authz_grants, "_live_operator_identity", lambda: (1, 1))
         trig = SimpleNamespace(name="weekly", type="cron", job=decl.qualified_name,
@@ -233,7 +233,7 @@ class TestRecordedOnceAtLaunch:
 
 class TestLegacyRecord:
     def test_a_record_without_a_recorded_token_renders_no_line(self):
-        job = jobs.initial_job_state(dataclasses.replace(DECL, session="fresh"))
+        job = jobs.initial_job_state(dataclasses.replace(DECL))
         job["brief_context"] = "rows"
         assert "started_by" not in job
         # every fact a re-derivation could read is present; none may be used
@@ -457,7 +457,7 @@ def turns(runtime, tmp_path, monkeypatch):
     from mcp_registry import McpServerRegistry
     from session_registry import SessionRegistry
 
-    _serve(monkeypatch, dataclasses.replace(DECL, session="fresh"))
+    _serve(monkeypatch, dataclasses.replace(DECL))
     broker = verdict_broker.VerdictBroker()
     monkeypatch.setattr(verdict_broker, "BROKER", broker)
     monkeypatch.setattr(scheduled_asks, "_ROLE_EPOCHS", {})

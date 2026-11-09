@@ -25,7 +25,6 @@ def _load_jobs(tmp_path, monkeypatch) -> None:
         extra_manifest={"casa": {"jobs": [{
             "name": "classify", "skill": "classify", "title": "Classify transactions",
             "summary": "Classify unreviewed transactions in batches",
-            "batches": "unlimited", "turnsPerBatch": 30,
         }]}},
         extra_files={"skills/classify/SKILL.md": "# Classify\n"},
     )

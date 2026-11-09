@@ -608,8 +608,7 @@ _LEDGER_JOB = {"name": "ledger:classify", "title": "Classify"}
 
 def _ledger_host(kind, role, installed, name="scan"):
     decl = jobs.JobDecl(qualified_name=f"ledger:{name}", plugin="ledger", name=name,
-                        skill=f"ledger:{name}", title=name.title(), summary=None,
-                        batches=None, turns_per_batch=None)
+                        skill=f"ledger:{name}", title=name.title(), summary=None)
     return jobs.JobHost(kind=kind, role=role, decl=decl,
                         plugin=SimpleNamespace(name=installed))
 

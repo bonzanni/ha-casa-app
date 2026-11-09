@@ -275,7 +275,7 @@ async def _job_rig(tmp_path, monkeypatch, probe, kind, shape="tool"):
     _launcher, registry, channel, driver = _build(
         tmp_path, monkeypatch, probe, client_cls)
     decl = jobs.JobDecl("sample:work", "sample", "work", "sample:work",
-                        "Process rows", None, None, 10)
+                        "Process rows", None)
     origin = {"role": "assistant", "channel": "telegram", "chat_id": "c1",
               "user_id": 77, "job": jobs.initial_job_state(decl)}
     if kind == "plugin":
@@ -348,7 +348,7 @@ class _FollowUp:
 def _job_state():
     import background_jobs as jobs
     decl = jobs.JobDecl("sample:work", "sample", "work", "sample:work",
-                        "Process rows", None, None, 10)
+                        "Process rows", None)
     return jobs.initial_job_state(decl)
 
 

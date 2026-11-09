@@ -3322,7 +3322,7 @@ def _build_plugin_job_options(rec, resolution,
     cwd = plugin_job_cwd(rec.id)
     cwd.mkdir(parents=True, exist_ok=True)
     _job_model = current_resident_model(identity["model"])
-    return ClaudeAgentOptions(
+    return background_jobs.job_session_options(ClaudeAgentOptions(
         model=_job_model, effort=effort_for(_job_model),
         cli_path=CLAUDE_CLI_PATH,
         max_buffer_size=SDK_MAX_BUFFER_SIZE,
@@ -3335,14 +3335,13 @@ def _build_plugin_job_options(rec, resolution,
             ["Agent", "Task", "AskUserQuestion", *_profile_denies, "Bash"]),
         settings=cli_session_settings(),
         permission_mode="default",
-        max_turns=rec.origin["job"]["turns_per_batch"],
         mcp_servers=servers, hooks=hooks, cwd=str(cwd), resume=None,
         setting_sources=[], skills="all",
         plugins=[{"type": "local", "path": resolution.plugins[0].path}],
         env={**sanitized_env_for_resolution(resolution),
              **result_broker.broker_env(client_id)},
         can_use_tool=make_fail_closed_can_use_tool(role),
-    )
+    ), rec)
 
 
 def build_engagement_resume_options(
@@ -3392,23 +3391,22 @@ def build_engagement_resume_options(
             # (field absent → None) falls back to a fresh resolve.
             job = (getattr(engagement, "origin", None) or {}).get("job")
             grants = SPECIALIST_CASA_GRANTS + (background_jobs.JOB_CASA_GRANTS if job else ())
-            max_turns = (job.get("turns_per_batch") if job else None) or cfg.tools.max_turns
             recorded = getattr(engagement, "plugin_artifacts", None)
             if recorded is not None:
                 opts = _build_specialist_options(
                     cfg,
                     resolution=_resolution_from_recorded(recorded),
                     extra_casa_tools=grants,
-                    max_turns=max_turns,
                     plan_out=_applied_plans,
                 )
             else:
                 opts = _build_specialist_options(
                     cfg,
                     extra_casa_tools=grants,
-                    max_turns=max_turns,
                     plan_out=_applied_plans,
                 )
+            if job:
+                opts = background_jobs.job_session_options(opts, engagement)
     if opts is None:
         raise RuntimeError(
             f"cannot rebuild options to resume {kind or 'specialist'} engagement "
@@ -7081,16 +7079,12 @@ async def _launch_interactive_engagement(
     # origin; both renderers read it from the record, never from markers.
     origin["job"] = background_jobs.initial_job_state(
         job, started_by=background_jobs.job_started_by(origin))
-    if job.session == "fresh":
-        # INV-BGJOB-005: every later turn of a fresh job re-states the
-        # launch context verbatim (already bounded by _MAX_CONTEXT_CHARS).
-        # Clearance-governed: lower_origin_clearance drops it.
-        origin["job"]["brief_context"] = context_text
     casa_grants += background_jobs.JOB_CASA_GRANTS
-    turns_per_batch = job.turns_per_batch or cfg.tools.max_turns
+    # TODO(single-session jobs): the launch prompt still names a per-turn
+    # bound until the brief is rewritten; it is the job session's ceiling.
+    turns_per_batch = background_jobs.JOB_MAX_TURNS
     if plugin_host is not None:
         casa_grants = background_jobs.PLUGIN_JOB_CASA_GRANTS
-        origin["job"]["turns_per_batch"] = turns_per_batch
         origin["plugin_job"] = {"plugin": plugin_host.plugin.name, "model": cfg.model}
     try:
         # #283: agent-spawn cap — BEFORE the channel setup/topic Telegram
@@ -7318,11 +7312,11 @@ async def _launch_interactive_engagement(
                         _build_plugin_job_options, rec, _spec_res,
                         plan_out=_applied_plans)
                 else:
-                    options = await asyncio.to_thread(
-                        _build_specialist_options, cfg, resolution=_spec_res,
-                        extra_casa_tools=casa_grants, plan_out=_applied_plans,
-                        max_turns=turns_per_batch,
-                    )
+                    options = background_jobs.job_session_options(
+                        await asyncio.to_thread(
+                            _build_specialist_options, cfg, resolution=_spec_res,
+                            extra_casa_tools=casa_grants, plan_out=_applied_plans,
+                        ), rec)
             except Exception as exc:
                 _abort = await _abort_launch_inline(
                     channel, rec, topic_id,
@@ -11852,7 +11846,7 @@ async def report_job_progress(args: dict) -> dict:
     driver = getattr(agent_mod, "active_engagement_driver", None)
     running = getattr(driver, "running_batch", None)
     batch = running(rec.id) if running is not None else None
-    if batch is None or batch != job["started"]:
+    if batch is None or batch != job.get("started", 0):
         return _result({"ok": False, "kind": "not_a_batch"})
     # The last report credited to a batch decides it. Recorded in the SAME
     # synchronous step as the check above, before any await: a call the CLI

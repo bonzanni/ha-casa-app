@@ -94,8 +94,7 @@ class _CQ:
 def _job_state(*, started_by="operator", quiet=False):
     import background_jobs as jobs
     decl = jobs.JobDecl("sample:work", "sample", "work", "sample:work",
-                        "Process rows", None, None, 10,
-                        quiet_when_scheduled=quiet)
+                        "Process rows", None, quiet_when_scheduled=quiet)
     return jobs.initial_job_state(decl, started_by=started_by)
 
 

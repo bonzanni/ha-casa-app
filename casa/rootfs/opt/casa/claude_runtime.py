@@ -24,6 +24,30 @@ CLAUDE_CLI_VERSION = "2.1.293"
 # line — nothing is preallocated.
 SDK_MAX_BUFFER_SIZE = 64 * 1024 * 1024
 
+# Auto-compaction for long sessions. The CLI compacts a session's context on
+# its own when it crosses a threshold; this env lowers the window the threshold
+# is computed from (threshold = window - 33k; measured on the pinned CLI, with a
+# floor of a 100k window). Without it the job model's 1M window compacts only
+# at about 967k tokens. Compaction fires between steps, mid-turn, and the turn
+# carries on. One shared value for every session meant to run long: background
+# jobs, and roles that hold one long conversation.
+AUTO_COMPACT_WINDOW_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+LONG_SESSION_COMPACT_WINDOW = "200000"
+
+
+def long_session_env() -> dict[str, str]:
+    """The env entries every long-running session is started with."""
+    return {AUTO_COMPACT_WINDOW_ENV: LONG_SESSION_COMPACT_WINDOW}
+
+
+# ``--replay-user-messages``: the CLI echoes each user message written to its
+# stdin back on its stdout, once, carrying the uuid the host wrote it with, and
+# only at the moment it takes the message into a turn (never at write time;
+# measured on the pinned CLI). The SDK keeps the ``uuid`` on the echoed
+# ``UserMessage``, which is how a driver learns that a message was read.
+REPLAY_USER_MESSAGES_ARG = "replay-user-messages"
+
+
 # The pinned CLI's cross-session messaging surface. ``SendMessage`` and
 # ``ListAgents`` list and message the other Claude Code sessions running as the
 # same OS user on this machine (per-user inbox sockets, on by default), and

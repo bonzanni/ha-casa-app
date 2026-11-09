@@ -291,7 +291,7 @@ async def test_restart_turn_is_fresh_and_carries_the_launch_context(
 @pytest.mark.parametrize("session", ["fresh", "resume"])
 async def test_start_job_records_brief_context_only_for_a_fresh_job(runtime, monkeypatch, session):
     import agent
-    decl = dataclasses.replace(DECL, session=session)
+    decl = dataclasses.replace(DECL)
     host = jobs.JobHost('specialist', 'finance', decl, SimpleNamespace(name='ledger'))
     monkeypatch.setattr(jobs, 'find_job_host', lambda name, caller, roles:
                         host if name == decl.qualified_name and 'finance' in roles else None)
@@ -638,7 +638,7 @@ async def test_the_launch_prompt_names_the_job_id_once(runtime, monkeypatch, ses
     claims work by that id and matches the job-end notice's delegation id to
     it."""
     import agent
-    decl = dataclasses.replace(DECL, session=session)
+    decl = dataclasses.replace(DECL)
     host = jobs.JobHost('specialist', 'finance', decl, SimpleNamespace(name='ledger'))
     monkeypatch.setattr(jobs, 'find_job_host', lambda name, caller, roles:
                         host if name == decl.qualified_name and 'finance' in roles else None)

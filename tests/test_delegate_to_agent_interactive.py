@@ -56,7 +56,7 @@ def _make_alex_cfg():
 def _job(title="Plan Q2"):
     import background_jobs as jobs
     return jobs.JobDecl("finplan:plan", "finplan", "plan", "finplan:plan",
-                        title, None, None, None)
+                        title, None)
 
 
 async def launch_job(task="Plan Q2", context="", *, origin=None, job=None,

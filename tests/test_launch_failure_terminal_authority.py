@@ -231,7 +231,7 @@ def _build_job(tmp_path, monkeypatch, effects, *, arm):
         # as ``_start_job_on_host`` hands a specialist-hosted job over
         import background_jobs as jobs
         job = jobs.JobDecl("finplan:plan", "finplan", "plan", "finplan:plan",
-                           args["task"], None, None, None)
+                           args["task"], None)
         origin = dict(agent_mod.origin_var.get())
         origin["plugin_job"] = {"plugin": job.plugin}
         return await tools._launch_interactive_engagement(
