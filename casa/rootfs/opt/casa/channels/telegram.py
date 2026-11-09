@@ -3715,6 +3715,14 @@ class TelegramChannel(Channel):
                 logger.debug("inbound discharge failed", exc_info=True)
         return False
 
+    def engagement_lifecycle_lock(self, rec) -> asyncio.Lock:
+        """The per-engagement lifecycle lock: the one every resume owner of a
+        job's session takes — this channel's resume path and the driver's
+        (its delivery worker and its recoveries) alike — so at most one
+        client per job is ever opened."""
+        return self._engagement_handler_locks.setdefault(
+            _handler_lock_key(rec), asyncio.Lock())
+
     async def _resume_and_ready(self, rec) -> bool:
         """Resume-if-suspended + lifecycle gate for one engagement turn, run
         UNDER the per-topic handler lock (``_engagement_handler_locks[topic]``).

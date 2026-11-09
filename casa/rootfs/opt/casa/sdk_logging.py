@@ -1,7 +1,7 @@
 """SDK message-loop logging primitives (Phase 4b — Bug 3 + Bug 4).
 
 One module owns every per-message log shape and the stderr-callback
-factory. All consumers (in_casa-driver._deliver_turn,
+factory. All consumers (the in_casa driver's session reader,
 agent._attempt_sdk_turn,
 tools.delegate_to_agent + _synthesize_answer) call into here so the
 log shape is identical and tested in one place.

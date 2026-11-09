@@ -121,10 +121,9 @@ async def _rig(tmp_path, monkeypatch, *, scripts=None, quiet=False,
                                topic_id=None)
     r.client = _ScriptedClient(scripts=list(scripts or []))
     r.drv = InCasaDriver(topic_stream_factory=lambda tid: None)
-    r.drv._clients[r.rec.id] = r.client
-    r.drv._ctx_stack[r.rec.id] = r.client
-    r.drv._locks[r.rec.id] = asyncio.Lock()
     r.drv._begin_turn_delivery = r.reg.begin_turn_delivery
+    from turn_scripted_session import attach_session
+    attach_session(r.drv, r.rec, r.client)
     ch = TelegramChannel(bot=r.bot, chat_id=str(CHAT))
     ch._engagement_registry = r.reg
     ch._engagement_driver = r.drv

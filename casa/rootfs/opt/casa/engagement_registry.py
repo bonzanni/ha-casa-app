@@ -1611,8 +1611,8 @@ class EngagementRegistry:
     def _schedule_tombstone_persist(self) -> None:
         """Best-effort durable catch-up for a mutation committed in memory.
 
-        Fire-and-forget by design: the only caller is ``begin_turn_delivery``,
-        which may not await. Failures are logged and dropped — the in-memory
+        Fire-and-forget by design: the callers (``begin_turn_delivery``,
+        ``note_activity``) may not await. Failures are logged and dropped — the in-memory
         record is what every authority check reads, and the next mutation's own
         write carries this one along (the snapshot is rebuilt from memory).
         """
@@ -1632,6 +1632,18 @@ class EngagementRegistry:
         task = loop.create_task(_persist())
         self._deferred_persists.add(task)
         task.add_done_callback(self._deferred_persists.discard)
+
+    def note_activity(self, engagement_id: str, ts: float) -> None:
+        """SYNCHRONOUS: stamp ``last_user_turn_ts`` in memory and schedule its
+        persist. A job's driver calls it when operator input is accepted, at
+        every turn end and while it recovers a session, so the stale reap
+        and the idle sweep see a working job as active. Never flips status:
+        admission (``begin_turn_delivery``) does that."""
+        rec = self._records.get(engagement_id)
+        if rec is None or rec.status in _TERMINAL_STATUSES:
+            return
+        rec.last_user_turn_ts = max(rec.last_user_turn_ts, ts)
+        self._schedule_tombstone_persist()
 
     async def update_user_turn(self, engagement_id: str, ts: float) -> None:
         async with self._lock:

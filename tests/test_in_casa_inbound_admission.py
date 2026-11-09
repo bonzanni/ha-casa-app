@@ -18,6 +18,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from turn_scripted_session import TurnScriptedSession, attach_session
+
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
 
@@ -49,7 +51,7 @@ def _mk_fault_assistant():
     return m
 
 
-class _ScriptedClient:
+class _ScriptedClient(TurnScriptedSession):
     """query() records prompts; receive_response() yields the next scripted
     frame list. ``on_query`` lets a test observe ledger state AT the
     hand-off instant (the pre-query-move mutation pin)."""
@@ -61,7 +63,7 @@ class _ScriptedClient:
         self.scripts = list(scripts or [])
         self.on_query = on_query
 
-    async def query(self, prompt):
+    async def record_query(self, prompt):
         if self.closed:
             raise RuntimeError("client closed")
         if self.on_query is not None:
@@ -99,9 +101,7 @@ async def _mk_driver_rec(tmp_path, client):
         {"role": "assistant", "channel": "telegram", "user_id": 77},
         topic_id=555)
     drv = InCasaDriver(topic_stream_factory=lambda tid: _Stream())
-    drv._clients[rec.id] = client
-    drv._ctx_stack[rec.id] = client
-    drv._locks[rec.id] = asyncio.Lock()
+    attach_session(drv, rec, client)
     return reg, rec, drv
 
 

@@ -12091,7 +12091,7 @@ async def emit_completion(args: dict) -> dict:
                     "read it, then call emit_completion again"),
             })
 
-    fin = await _finalize_engagement(
+    finalization = _finalize_engagement(
         engagement,
         outcome=outcome,
         text=text,
@@ -12106,6 +12106,16 @@ async def emit_completion(args: dict) -> dict:
         # other caller (cancel/reap) keeps the default fully-synchronous path.
         detach_teardown_tail=(driver is not None),
     )
+    # The WHOLE finalization — the terminal transition and every side effect
+    # after it — runs in a Casa-owned task created before the transition; this
+    # callback only awaits it shielded. Retiring the job's session disconnects
+    # its client, which cancels the client's outstanding tool callbacks, this
+    # one included: a committed completion must still reach its notification.
+    from drivers.in_casa_driver import InCasaDriver
+    if isinstance(driver, InCasaDriver):
+        fin = await asyncio.shield(driver.spawn_owned(finalization))
+    else:
+        fin = await finalization
     # G4 D2 (v0.96.0): the registry-internal gate vetoed the flip (a message
     # landed between the handler gate above and the terminal critical
     # section). Refuse with the same retryable contract.

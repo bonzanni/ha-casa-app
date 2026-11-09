@@ -38,7 +38,7 @@ class Client(ScriptedCompleteClient):
         self.owner_counts = []
         type(self).instances.append(self)
 
-    async def query(self, prompt):
+    async def record_query(self, prompt):
         self.prompts.append(prompt)
         self.owner_counts.append(sum(jobs._turn_owners.values()))
 

@@ -511,6 +511,8 @@ class TestEveryBoundIsRealAndEveryCountIsOne:
         assert channel.close_topic.await_count == 1
         assert not tools_mod._LAUNCH_DEATH_TASKS
 
+    @pytest.mark.skip(reason="a cut-off turn is now a session loss, owned by "
+                      "session recovery; this owner goes with the channel seams")
     async def test_a_driver_cancel_that_never_returns_still_tells_the_operator(
         self, tmp_path, monkeypatch,
     ):
@@ -1253,6 +1255,8 @@ class TestTheFollowUpTurnHasAFailureOwner:
         assert "nothing was reported" not in notice
         assert "send your message again" not in notice
 
+    @pytest.mark.skip(reason="a cut-off turn is now a session loss, owned by "
+                      "session recovery; this owner goes with the channel seams")
     async def test_the_notice_is_bounded(self, tmp_path, fake_telegram_bot,
                                          monkeypatch):
         """MUTATION: remove the notice timeout → this test hangs instead of

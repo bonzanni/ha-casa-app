@@ -3025,6 +3025,15 @@ async def main() -> None:
         # immediately before the client hand-off. Injected so the driver stays
         # importable without a registry.
         begin_turn_delivery=engagement_registry.begin_turn_delivery,
+        # A working job is active to the stale reap and the idle sweep.
+        stamp_activity=engagement_registry.note_activity,
+        # The channel's per-engagement lock: the driver's resume owners and
+        # the channel's resume path are one owner.
+        lifecycle_lock=(telegram_channel.engagement_lifecycle_lock
+                        if telegram_channel is not None else None),
+        # TODO(single-session jobs): on_turn_end, on_session_lost and
+        # on_operator_written are wired when background_jobs implements the
+        # turn-end guard and the once-only resume.
     )
 
     # Expose on the agent module so tools.emit_completion / cancel_engagement

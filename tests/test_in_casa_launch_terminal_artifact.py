@@ -31,12 +31,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from turn_scripted_session import TurnScriptedSession
+
 pytestmark = [pytest.mark.asyncio]
 
 
 # --- the scripted stream ----------------------------------------------------
 
-class ScriptedCutoffClient:
+class ScriptedCutoffClient(TurnScriptedSession):
     """An SDK client whose launch turn is cut off mid-tool-loop.
 
     Yields one AssistantMessage carrying a ToolUseBlock and one UserMessage
@@ -62,7 +64,7 @@ class ScriptedCutoffClient:
     async def __aexit__(self, *a):
         return False
 
-    async def query(self, prompt):
+    async def record_query(self, prompt):
         return None
 
     async def receive_response(self):
