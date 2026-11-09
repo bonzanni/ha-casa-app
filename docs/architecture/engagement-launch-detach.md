@@ -68,7 +68,12 @@ enrols its own task under the engagement's id right after `create()` and drops t
 every exit, so the graceful stop's ledger walk sees the launch for its whole stretch between
 record and answer. A stop that began during `open()` finds the ledger latched: a tool call
 that resumes from `open()` to find the latch set queues no brief — it reports the cancellation
-inline, armed, and acknowledges on return like every other inline abort.
+inline, armed, and acknowledges on return like every other inline abort. The same enrolment is
+what the job's delivery worker reads (`EngagementRegistry.launch_in_flight`): while the launch
+is enrolled the worker writes, resumes and recovers nothing, so an operator message that reaches
+the job during its launch waits behind the brief, and the launcher's `finally` wakes the worker
+(`InCasaDriver.wake_worker`). A launch that failed and left its record live is thereby resumed
+once by the worker, finds no session, and ends as a job that could not be resumed.
 
 **A launch that answered has nothing left to report.** Once the brief is queued and `pending`
 returned, the launch owner holds nothing: the session's reader owns every turn, the job's
@@ -186,6 +191,8 @@ unarmed and carries a kind the consumer narrates as non-terminal, with its own b
 - `casa/rootfs/opt/casa/tools.py::stop_engagement_launches`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.open`
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.launch_shutdown_active`
+- `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.launch_in_flight`
+- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.wake_worker`
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.mark_launch_drains_complete`
 
 **Tests**

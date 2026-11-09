@@ -3029,6 +3029,9 @@ async def main() -> None:
         on_turn_end=job_runner.turn_ended,
         on_session_lost=job_runner.session_lost,
         on_operator_written=background_jobs.note_operator_input,
+        # A job whose launch is still in flight is the launch's: its
+        # delivery worker writes nothing until the launcher's finally.
+        launch_in_flight=engagement_registry.launch_in_flight,
     )
     job_runner.driver = engagement_driver
     background_jobs.configure(job_runner)

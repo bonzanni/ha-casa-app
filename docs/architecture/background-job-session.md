@@ -34,7 +34,11 @@ worker task (`InCasaDriver._work`) that is the only writer into the session: the
 admit and enqueue synchronously (`submit_operator`, `submit_casa`, `enqueue_brief`) and return
 without waiting on the session, so a slow resume never holds the next message back. The
 worker resumes the session when none is registered (under the per-engagement lifecycle lock
-that every resume owner takes), admits each write immediately before `client.query`, and
+that every resume owner takes) — except while the job's launch is still enrolled
+([`engagement-launch-detach.md`](engagement-launch-detach.md)): the launch owns the job, it
+queues the brief at the head of the queue, and anything that arrived meanwhile waits behind it
+until the launcher lets go. The worker admits each write immediately before `client.query`,
+removes exactly the ticket it wrote (the head can change while a write is awaited), and
 stamps it with its ticket's uuid. One reader task per session (`InCasaDriver._read`) consumes
 `receive_messages()` for the session's whole life: it streams each turn's text to the topic
 (a new topic message when the text reaches the output cap), logs, detects API faults, and at

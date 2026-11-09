@@ -33,6 +33,8 @@
     - casa/rootfs/opt/casa/tools.py::stop_engagement_launches
     - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.open
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.launch_shutdown_active
+    - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.launch_in_flight
+    - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.wake_worker
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.mark_launch_drains_complete
   tests:
     - tests/test_in_casa_launch_detach.py

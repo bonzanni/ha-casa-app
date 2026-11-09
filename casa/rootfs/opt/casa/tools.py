@@ -7407,6 +7407,12 @@ async def _launch_interactive_engagement(
             raise
         finally:
             _unregister_launch_safe(_launch_handle)
+            # The launch lets go of the job: its delivery worker, which wrote
+            # nothing while the launch was in flight, re-reads the job.
+            _wake = getattr(getattr(agent_mod, "active_engagement_driver", None),
+                            "wake_worker", None)
+            if callable(_wake):
+                _wake(rec.id)
 
     finally:
         if owned is not None:

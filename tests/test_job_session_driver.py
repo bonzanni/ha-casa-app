@@ -46,6 +46,7 @@ class FakeCLI:
     on_enter = None                 # called at each __aenter__
     hold_disconnect: asyncio.Event | None = None
     hold_usage: asyncio.Event | None = None
+    hold_enter: asyncio.Event | None = None
 
     def __init__(self, options):
         self.options = options
@@ -63,6 +64,8 @@ class FakeCLI:
         type(self).events.append(f"enter:{len(type(self).instances) - 1}")
         if type(self).on_enter is not None:
             type(self).on_enter()
+        if type(self).hold_enter is not None:
+            await type(self).hold_enter.wait()
         return self
 
     async def query(self, prompt):
@@ -158,6 +161,7 @@ def env(tmp_path, monkeypatch):
     FakeCLI.on_enter = None
     FakeCLI.hold_disconnect = None
     FakeCLI.hold_usage = None
+    FakeCLI.hold_enter = None
     monkeypatch.setattr(drv, "ClaudeSDKClient", FakeCLI)
     monkeypatch.setattr(job_inbox, "INBOX_ROOT", tmp_path / "job-inbox")
     transcript = tmp_path / "sess-1.jsonl"
@@ -997,3 +1001,169 @@ async def test_a_cancel_during_an_unfinished_suspension_keeps_the_barrier(
     await settle(50)
     if "enter:1" in FakeCLI.events:
         assert FakeCLI.events.index("disconnect:0") < FakeCLI.events.index("enter:1")
+
+
+class _Launch:
+    """The launcher's ownership, as the registry reports it: enrolled from
+    the committed create until the launcher's finally, which wakes the
+    job's worker."""
+
+    def __init__(self):
+        self.in_flight: set[str] = set()
+
+    def __call__(self, eid):
+        return eid in self.in_flight
+
+    async def run(self, driver, rec, *, brief="BRIEF", fail=False):
+        self.in_flight.add(rec.id)
+        try:
+            if fail:
+                raise RuntimeError("the client could not start")
+            await driver.open(rec, ClaudeAgentOptions())
+            await asyncio.sleep(0)          # an await before the brief
+            driver.enqueue_brief(rec, brief)
+        finally:
+            self.in_flight.discard(rec.id)
+            driver.wake_worker(rec.id)
+
+
+def _lost_recorder(holder):
+    async def on_lost(rec):
+        holder.setdefault("lost", 0)
+        holder["lost"] += 1
+        await holder["driver"].recover(
+            rec, restart_line="RESTART", brief=None, redelivery_prefix="x")
+    return on_lost
+
+
+async def test_a_reply_during_the_launch_waits_for_it_and_follows_the_brief(env):
+    """An operator message arrives while the launch's first client is still
+    connecting: nothing resumes or recovers, the job stays live, and the
+    reply is written after the brief."""
+    holder, launch = {}, _Launch()
+    driver = env.make(on_session_lost=_lost_recorder(holder),
+                      launch_in_flight=launch)
+    holder["driver"] = driver
+    env.rec.sdk_session_id = None
+    FakeCLI.hold_enter = asyncio.Event()
+    launch.in_flight.add(env.rec.id)       # enrolled at the committed create
+    ticket = driver.submit_operator(env.rec, "the reply")
+    task = asyncio.create_task(launch.run(driver, env.rec))
+    await until(lambda: FakeCLI.instances)
+    await settle(50)
+    assert "lost" not in holder and env.rec.status == "active"
+    FakeCLI.hold_enter.set()
+    await task
+    cli = FakeCLI.instances[0]
+    await until(lambda: len(cli.written) == 2)
+    assert cli.texts() == ["BRIEF", "the reply"]
+    assert cli.uuids() == [BRIEF_UUID, ticket.uuid]
+    assert len(FakeCLI.instances) == 1 and "lost" not in holder
+
+
+async def test_a_reply_after_the_client_registers_still_follows_the_brief(env):
+    """The client is registered and the launch is still probing it when the
+    reply arrives: the brief is still written first, and each item once."""
+    launch = _Launch()
+    driver = env.make(launch_in_flight=launch)
+    env.rec.sdk_session_id = None
+    FakeCLI.hold_usage = asyncio.Event()
+    task = asyncio.create_task(launch.run(driver, env.rec))
+    await until(lambda: driver.is_alive(env.rec))
+    ticket = driver.submit_operator(env.rec, "the reply")
+    await settle(50)
+    cli = FakeCLI.instances[0]
+    assert cli.written == []
+    FakeCLI.hold_usage.set()
+    await task
+    await until(lambda: len(cli.written) == 2)
+    await settle()
+    assert cli.texts() == ["BRIEF", "the reply"]
+    assert cli.uuids() == [BRIEF_UUID, ticket.uuid]
+
+
+async def test_a_launch_that_fails_and_leaves_the_record_live_ends_the_job(env):
+    """The launch fails before any client registers and its record stays
+    live: when the launcher lets go, the worker resumes, finds nothing to
+    resume, and the job reaches the ordinary failed-resume end — the queued
+    reply does not wait forever."""
+    holder, launch = {}, _Launch()
+    driver = env.make(on_session_lost=_lost_recorder(holder),
+                      launch_in_flight=launch)
+    holder["driver"] = driver
+    env.rec.sdk_session_id = None
+    launch.in_flight.add(env.rec.id)
+    driver.submit_operator(env.rec, "the reply")
+    await settle()                          # the worker parks: launch in flight
+    with pytest.raises(RuntimeError):
+        await launch.run(driver, env.rec, fail=True)
+    await until(lambda: holder.get("lost") == 1)
+    await settle(50)
+    assert FakeCLI.instances == []
+    assert driver.recovering(env.rec.id) is False
+
+
+async def test_a_client_that_dies_while_the_launch_probes_it_has_a_recovery_owner(env):
+    """The launch's client dies after registration, before the launch's
+    worker exists: its death still reaches the session-lost owner."""
+    holder, launch = {}, _Launch()
+    driver = env.make(on_session_lost=_lost_recorder(holder),
+                      launch_in_flight=launch)
+    holder["driver"] = driver
+    env.rec.sdk_session_id = None
+    FakeCLI.hold_usage = asyncio.Event()
+    task = asyncio.create_task(launch.run(driver, env.rec))
+    await until(lambda: driver.is_alive(env.rec))
+    FakeCLI.instances[0].die()
+    await until(lambda: holder.get("lost") == 1)
+    FakeCLI.hold_usage.set()
+    await task
+
+
+async def test_a_lost_message_notice_leaves_the_journal_as_soon_as_it_is_told(env):
+    """Casa dies after telling the first of two lost messages: the next
+    settlement tells only the second."""
+    driver = env.make()
+    first, second = ("eeeeeeee-0000-4000-8000-000000000001",
+                     "eeeeeeee-0000-4000-8000-000000000002")
+    job_inbox.append(env.rec.id, uuid=first, text="one", notice=None)
+    job_inbox.append(env.rec.id, uuid=second, text="two", notice=None)
+    env.rec.status = "cancelled"
+    told = []
+
+    class Died(BaseException):
+        pass
+
+    async def dies_after_first(rec, entry):
+        if told:
+            raise Died()
+        told.append(entry["text"])
+
+    with pytest.raises(Died):
+        await driver.settle_journal_terminal(env.rec, dies_after_first)
+    assert [e["uuid"] for e in job_inbox.load(env.rec.id)] == [second]
+    again = []
+
+    async def tell(rec, entry):
+        again.append(entry["text"])
+
+    assert await driver.settle_journal_terminal(env.rec, tell) == 1
+    assert told == ["one"] and again == ["two"]
+
+
+async def test_a_finished_write_removes_its_own_ticket_not_the_queue_head(env):
+    """Something is staged at the head of the queue while a write is in the
+    transport (a recovery's restart line, a brief): the finished write
+    removes its own ticket, so the staged item is written next and the
+    operator's message once."""
+    driver = env.make()
+    cli = await open_job(env, driver)
+    cli.gate = asyncio.Event()
+    ticket = driver.submit_operator(env.rec, "the reply")
+    await until(lambda: cli.writing == 1)
+    driver.submit_casa(env.rec, "STAGED", head=True)
+    cli.gate.set()
+    await until(lambda: len(cli.written) == 2)
+    await settle()
+    assert cli.texts() == ["the reply", "STAGED"]
+    assert cli.uuids().count(ticket.uuid) == 1

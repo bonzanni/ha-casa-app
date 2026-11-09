@@ -1110,6 +1110,13 @@ class EngagementRegistry:
         if handle is not None:
             self._launch_handles.pop(id(handle), None)
 
+    def launch_in_flight(self, engagement_id: str) -> bool:
+        """SYNCHRONOUS: is this engagement's launch still enrolled — from the
+        committed create until the launcher's ``finally``? A job's delivery
+        worker writes nothing for it meanwhile: the launch owns the job."""
+        return any(h.engagement_id == engagement_id
+                   for h in self._launch_handles.values())
+
     def launch_cause(self, engagement_id: str) -> str:
         """The carried cause for this launch, or ``""`` when it carries none."""
         return self._launch_causes.get(engagement_id, "")

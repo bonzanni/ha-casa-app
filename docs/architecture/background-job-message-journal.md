@@ -57,8 +57,9 @@ ends:
   that session — written, taken up or still queued, whatever it reaches meanwhile — and the
   reconcile considers only the entries written before Casa restarted. A job with entries is
   resumed at boot even while it waits for the operator — an entry is operator input.
-- uuid missing, job ended: one lost-message notice, then the entry goes, and the file goes
-  with it (`InCasaDriver.settle_journal_terminal`, run by every terminal path through
+- uuid missing, job ended: one lost-message notice, then the entry goes at once (so a Casa
+  death later in the same settlement does not tell it again), and the file goes with the last
+  one (`InCasaDriver.settle_journal_terminal`, run by every terminal path through
   `tools._settle_job_journal` after the job's client is closed; the channel's
   `TelegramChannel.tell_journal_lost` makes one bounded attempt).
 

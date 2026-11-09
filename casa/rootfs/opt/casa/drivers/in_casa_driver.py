@@ -494,6 +494,7 @@ class InCasaDriver(DriverProtocol):
         on_turn_end: "TurnEndHandler | None" = None,
         on_session_lost: "SessionLostHandler | None" = None,
         on_operator_written: "Callable[[EngagementRecord], None] | None" = None,
+        launch_in_flight: "Callable[[str], bool] | None" = None,
     ) -> None:
         self._topic_stream_factory = topic_stream_factory
         self._persist_session_id = persist_session_id
@@ -519,6 +520,7 @@ class InCasaDriver(DriverProtocol):
         self._on_turn_end = on_turn_end
         self._on_session_lost = on_session_lost
         self._on_operator_written = on_operator_written
+        self._launch_in_flight = launch_in_flight
         self._sessions: dict[str, _JobSession] = {}
         self._lanes: dict[str, _JobLane] = {}
         self._settle_locks: dict[str, asyncio.Lock] = {}
@@ -648,8 +650,20 @@ class InCasaDriver(DriverProtocol):
         reader and the job's delivery worker. The launch owner then enqueues
         the brief (:meth:`enqueue_brief`). A failure here, before the session
         is registered, takes the launch-abort arms; once registered, session
-        loss owns every failure."""
+        loss owns every failure. While the launch is in flight the job's
+        worker writes and resumes nothing: an operator message that arrives
+        meanwhile waits in the queue behind the brief, which the launch
+        queues at the head."""
         await self._open_session(engagement, options)
+
+    def wake_worker(self, engagement_id: str) -> None:
+        """SYNCHRONOUS: the launcher let go of the job — let its worker
+        re-read the job's state (write the brief, or, when the launch failed
+        and left the record live, resume it and so reach the ordinary
+        failed-resume end)."""
+        lane = self._lanes.get(engagement_id)
+        if lane is not None:
+            lane.wake.set()
 
     def enqueue_brief(self, engagement: EngagementRecord, prompt: str) -> None:
         """SYNCHRONOUS: queue the job's brief, stamped with the record's brief
@@ -658,7 +672,7 @@ class InCasaDriver(DriverProtocol):
         cancelled between ``open`` and the write receives nothing."""
         job = (getattr(engagement, "origin", None) or {}).get("job") or {}
         self.submit_casa(engagement, prompt, uuid=job.get("brief_uuid"),
-                         brief=True)
+                         brief=True, head=True)
 
     async def _persist_applied_profiles(self, engagement: EngagementRecord) -> None:
         """S8: write the record's rows as ``build_engagement_resume_options``
@@ -767,6 +781,9 @@ class InCasaDriver(DriverProtocol):
             session = _JobSession(
                 client=entered, ctx=client, holder=holder,
                 cost_base=float(base) if isinstance(base, (int, float)) else 0.0)
+            # The lane exists before the reader starts, so a death of this
+            # client at any point after registration finds its recovery owner.
+            self._lane(engagement)
             self._sessions[engagement.id] = session
             self._clients.setdefault(engagement.id, []).append(session)
             # The reader is created in this context, so it carries the
@@ -1030,6 +1047,15 @@ class InCasaDriver(DriverProtocol):
                 lane.wake.clear()
                 await lane.wake.wait()
                 continue
+            if (self._launch_in_flight is not None
+                    and self._launch_in_flight(engagement_id)):
+                # The launch owns the job until its launcher's finally: it
+                # opens the client and queues the brief at the head. Nothing
+                # is written, resumed or recovered meanwhile; the launcher
+                # wakes this worker when it lets go (wake_worker).
+                lane.wake.clear()
+                await lane.wake.wait()
+                continue
             session = self._sessions.get(engagement_id)
             if session is None:
                 await self._resume_for_write(lane)
@@ -1115,10 +1141,12 @@ class InCasaDriver(DriverProtocol):
             # recovery it is written once into the replacement.
             logger.warning("job %s write failed: %s", eid[:8], failure)
             if self._on_session_lost is None:
-                lane.queue.popleft()
+                _drop(lane, ticket)
             self._begin_loss(session, rec)
             return
-        lane.queue.popleft()
+        # The ticket itself, not the queue's head: the head can change while
+        # the write was awaited (a recovery's restart line, a brief).
+        _drop(lane, ticket)
         ticket.state = TICKET_WRITTEN
         session.written[ticket.uuid] = ticket
         if ticket.kind == OPERATOR:
@@ -1581,6 +1609,9 @@ class InCasaDriver(DriverProtocol):
                 except Exception:  # noqa: BLE001 — one bounded attempt
                     logger.warning("lost-message notice failed for %s",
                                    eid[:8], exc_info=True)
+                # Gone as soon as it is told (or its one attempt failed), so
+                # a Casa death later in this loop does not tell it again.
+                job_inbox.remove(eid, [entry["uuid"]])
         journaled = {e["uuid"] for e in entries}
         for ticket in list(self._tickets.get(eid, {})):
             if ticket.uuid in journaled:
@@ -1615,6 +1646,13 @@ class InCasaDriver(DriverProtocol):
                     "(retried on the next message): %s", engagement.id[:8], exc)
             else:
                 engagement.sdk_session_id = sid
+
+
+def _drop(lane: "_JobLane", ticket: "_Ticket") -> None:
+    try:
+        lane.queue.remove(ticket)
+    except ValueError:
+        pass
 
 
 async def _close_client(client: Any, ctx: Any) -> None:
