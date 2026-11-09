@@ -777,53 +777,19 @@ def _comment_block_above(rel, name):
     return "\n".join(reversed(block))
 
 
-def _comment_block_above_assert(rel, cls, meth, assertion):
-    src, tree = _module_tree(rel)
-    classes = [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls]
-    assert len(classes) == 1, f"{cls}: {len(classes)} classes"
-    fns = [
-        n for n in classes[0].body
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == meth
-    ]
-    assert len(fns) == 1, f"{cls}.{meth}: {len(fns)} definitions"
-    lines = src.splitlines()[fns[0].lineno - 1:fns[0].end_lineno]
-    at = [i for i, ln in enumerate(lines) if ln.strip() == assertion]
-    assert len(at) == 1, f"{cls}.{meth}: {len(at)} lines {assertion!r}"
-    block = []
-    j = at[0] - 1
-    while j >= 0 and lines[j].lstrip().startswith("#"):
-        block.append(lines[j])
-        j -= 1
-    assert block, f"no comment block above {assertion!r}"
-    return "\n".join(reversed(block))
-
-
 def _rule_pointer_sites():
     return {
         "tools.py _DISCLOSURE_UNCONFIRMED": _attribute_docstring(
             "casa/rootfs/opt/casa/tools.py", "_DISCLOSURE_UNCONFIRMED"),
-        "channels/telegram.py _TURN_ENDED_UNCONFIRMED_NOTICE": _attribute_docstring(
-            "casa/rootfs/opt/casa/channels/telegram.py",
-            "_TURN_ENDED_UNCONFIRMED_NOTICE"),
         "test_finalize_engagement.py _EXPECTED_DISCLOSURE": _comment_block_above(
             "tests/test_finalize_engagement.py", "_EXPECTED_DISCLOSURE"),
-        "test_launch_death_reporter.py _EXPECTED_TERMINAL_UNCONFIRMED_NOTICE":
-            _attribute_docstring(
-                "tests/test_launch_death_reporter.py",
-                "_EXPECTED_TERMINAL_UNCONFIRMED_NOTICE"),
-        "test_launch_death_reporter.py TestTerminalStatusIsNotProofOfATelling":
-            _comment_block_above_assert(
-                "tests/test_launch_death_reporter.py",
-                "TestTerminalStatusIsNotProofOfATelling",
-                "test_a_terminal_record_that_told_nobody_still_gets_its_notice",
-                "assert _notice == _EXPECTED_TERMINAL_UNCONFIRMED_NOTICE"),
     }
 
 
 def test_every_terminal_notice_rule_pointer_names_a_document_carrying_the_rule():
     docs = _repo_root() / "docs"
     sites = _rule_pointer_sites()
-    assert len(sites) == 5
+    assert len(sites) == 2
     problems = []
     for site, text in sites.items():
         pointers = [t.rstrip(".") for t in _RULE_POINTER_TOKEN.findall(text)]

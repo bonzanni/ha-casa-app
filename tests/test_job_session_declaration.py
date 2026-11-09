@@ -24,7 +24,7 @@ def test_the_declaration_carries_no_batch_fields():
 
 def test_initial_state_has_identity_and_no_loop_counters():
     state = jobs.initial_job_state(DECL, started_by="operator")
-    assert set(state) == {"name", "title", "skill", "brief_uuid",
+    assert set(state) == {"name", "title", "skill", "brief_uuid", "context",
                           "last_summary", "started_by"}
     assert str(uuid.UUID(state["brief_uuid"])) == state["brief_uuid"]
 

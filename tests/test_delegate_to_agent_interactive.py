@@ -102,9 +102,8 @@ class TestJobLaunchEngagement:
             trigger_registry=MagicMock(), engagement_registry=reg,
             agent_role_map={"assistant": _make_assistant_cfg()},
         )
-        # Driver + start side-effect
         driver = MagicMock()
-        driver.start = AsyncMock()
+        driver.open = AsyncMock()
         agent_mod.active_engagement_driver = driver
 
         res = await launch_job("Plan Q2")
@@ -112,8 +111,12 @@ class TestJobLaunchEngagement:
         assert payload["status"] == "pending"
         assert payload["topic_id"] == 555
         tch.open_engagement_topic.assert_awaited_once()
-        driver.start.assert_awaited_once()
-        assert reg.by_topic_id(555) is not None
+        driver.open.assert_awaited_once()
+        rec = reg.by_topic_id(555)
+        assert rec is not None
+        # the brief is the session's first write, queued once
+        assert driver.enqueue_brief.call_count == 1
+        assert driver.enqueue_brief.call_args.args[0] is rec
 
     async def test_record_excludes_env_withheld_plugin(self, tmp_path,
                                                        monkeypatch):
@@ -155,7 +158,7 @@ class TestJobLaunchEngagement:
             agent_role_map={"assistant": _make_assistant_cfg()},
         )
         driver = MagicMock()
-        driver.start = AsyncMock()
+        driver.open = AsyncMock()
         agent_mod.active_engagement_driver = driver
 
         res = await launch_job("Plan Q2")
@@ -226,7 +229,7 @@ class TestJobLaunchEngagement:
             trigger_registry=MagicMock(), engagement_registry=reg,
             agent_role_map={"assistant": _make_assistant_cfg()},
         )
-        driver = MagicMock(); driver.start = AsyncMock()
+        driver = MagicMock(); driver.open = AsyncMock()
         agent_mod.active_engagement_driver = driver
 
         long_task = (
@@ -260,7 +263,7 @@ class TestJobLaunchEngagement:
     async def test_driver_start_failure_flips_and_closes_topic(
         self, tmp_path, monkeypatch,
     ):
-        """L23 leak guard: a failed driver.start in the job launch
+        """L23 leak guard: a failed driver.open in the job launch
         path must not leave the just-created topic open
         forever — it must be flipped to 'failed' and closed."""
         import agent as agent_mod
@@ -286,13 +289,14 @@ class TestJobLaunchEngagement:
             agent_role_map={"assistant": _make_assistant_cfg()},
         )
         driver = MagicMock()
-        driver.start = AsyncMock(side_effect=RuntimeError("boom"))
+        driver.open = AsyncMock(side_effect=RuntimeError("boom"))
         agent_mod.active_engagement_driver = driver
 
         res = await launch_job("Plan Q2")
         payload = json.loads(res["content"][0]["text"])
         assert payload["status"] == "error"
         assert payload["kind"] == "driver_start_failed"
+        assert driver.enqueue_brief.call_count == 0
 
         rec = reg.by_topic_id(555)
         assert rec is not None
@@ -328,7 +332,7 @@ class TestInteractiveModeRetired:
             agent_role_map={"assistant": _make_assistant_cfg(),
                             "finance": _make_alex_cfg()},
         )
-        driver = MagicMock(); driver.start = AsyncMock(); driver.open = AsyncMock()
+        driver = MagicMock(); driver.open = AsyncMock()
         agent_mod.active_engagement_driver = driver
         return reg, tch, driver
 
@@ -363,8 +367,8 @@ class TestInteractiveModeRetired:
         assert "reply" in payload["message"]
         # nothing launched, nothing silently coerced into another mode
         tch.open_engagement_topic.assert_not_awaited()
-        driver.start.assert_not_awaited()
         driver.open.assert_not_awaited()
+        assert driver.enqueue_brief.call_count == 0
         assert reg.active_and_idle() == []
         assert not [r for r in caplog.records if "unrecognised mode" in r.getMessage()]
 
@@ -413,9 +417,10 @@ class TestInteractiveModeRetired:
 
         resumed: list = []
 
-        async def start(r, channel):
-            resumed.append(r.id)
-        monkeypatch.setattr(background_jobs, "start_next_batch", start)
+        class _Runner:
+            async def resume_at_boot(self, r):
+                resumed.append(r.id)
+        monkeypatch.setattr(background_jobs, "_runner", _Runner())
         await casa_core._resume_background_jobs(reg, object())
         assert resumed == []
 

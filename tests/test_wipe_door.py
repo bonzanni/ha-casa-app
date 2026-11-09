@@ -316,35 +316,29 @@ async def test_an_engagement_topic_message_gets_the_line_and_no_turn(
 
     channel = TelegramChannel(bot_token="T", chat_id="42",
                               default_agent="assistant", bus=None)
-    notices, turns, discharged = [], [], []
+    notices, turns = [], []
 
     async def notice(rec, text):
         notices.append(text)
 
-    async def send_turn(rec, text, **kw):
-        turns.append(text)
-        return "queued"
-
-    def discharge(rec, token):
-        discharged.append(token)
+    class _Driver:
+        def submit_operator(self, rec, text, **kw):
+            turns.append(text)
 
     channel._post_engagement_notice = notice
-    channel._driver_send_user_turn = send_turn
-    channel._driver_discharge_inbound = discharge
-    channel._report_incomplete_turn = lambda *a, **k: asyncio.sleep(0, False)
+    channel._engagement_driver = _Driver()
     rec = types.SimpleNamespace(id="e" * 32, origin={})
 
-    await channel._deliver_turn_bg(rec, "first")
+    assert await channel._deliver_to_job(rec, "first") is True
     assert (turns, notices) == (["first"], [])
     assert await _answered()
-    await channel._deliver_turn_bg(rec, "second", inbound_token="tok")
+    assert await channel._deliver_to_job(rec, "second") is False
     assert turns == ["first"]
     assert notices == [maintenance.COURTESY_LINE]
-    # the message is released as one that was not delivered
-    assert discharged == ["tok"]
     # a system turn into the engagement is not the operator's message
-    await channel._deliver_turn_bg(rec, "batch 2", system_turn=True)
-    assert turns == ["first", "batch 2"]
+    assert await channel.deliver_system_turn(rec, "continue") is True
+    assert turns == ["first", "continue"]
+    assert notices == [maintenance.COURTESY_LINE]
 
 
 # --- nothing else reads the flag or the intent -------------------------------------
@@ -353,7 +347,7 @@ async def test_an_engagement_topic_message_gets_the_line_and_no_turn(
 #: or the intent's reader: the two courtesy readers, boot, and the doors.
 ALLOWED = {
     ("channels/telegram.py", "_dispatch_dm_turn"): {"restart_pending"},
-    ("channels/telegram.py", "_deliver_turn_bg"): {"restart_pending"},
+    ("channels/telegram.py", "_deliver_to_job"): {"restart_pending"},
     ("casa_core.py", "main"): {"read_intent"},
     # the size meter reports whether one is pending; it refuses nothing
     ("memory/meter.py", "measure"): {"maintenance.json"},

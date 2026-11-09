@@ -807,7 +807,7 @@ class TestInteractiveEngagementPermitRelease:
             specialist_limiter=limiter,
         )
         driver = MagicMock()
-        driver.start = AsyncMock()
+        driver.open = AsyncMock()
         agent_mod.active_engagement_driver = driver
 
         origin = _origin(chat_id="room-1")
@@ -829,7 +829,7 @@ class TestInteractiveEngagementPermitRelease:
         rec.permit.release()
 
     async def test_driver_start_failure_releases_permit_inline(self, tmp_path):
-        """A pre-finalize failure (driver.start raises) never reaches
+        """A pre-finalize failure (driver.open raises) never reaches
         _finalize_engagement — the job launch owner must release the permit
         itself at the point of failure."""
         from test_delegate_to_agent_interactive import launch_job
@@ -863,7 +863,7 @@ class TestInteractiveEngagementPermitRelease:
             specialist_limiter=limiter,
         )
         driver = MagicMock()
-        driver.start = AsyncMock(side_effect=RuntimeError("boom"))
+        driver.open = AsyncMock(side_effect=RuntimeError("boom"))
         agent_mod.active_engagement_driver = driver
 
         origin = _origin(chat_id="room-1")
@@ -913,9 +913,6 @@ class TestInteractiveEngagementPermitRelease:
         cost reaches SpecialistTelemetry (the ephemeral path is covered by
         _run_delegated_agent). Verifies the driver seam + a telemetry-shaped
         observer end to end."""
-        from drivers.in_casa_driver import InCasaDriver
-        from engagement_registry import EngagementRecord
-
         telem = SpecialistTelemetry()
 
         def _observer(engagement, result_msg):
@@ -928,23 +925,11 @@ class TestInteractiveEngagementPermitRelease:
                 usage=extract_usage(result_msg),
             )
 
-        drv = InCasaDriver(
-            topic_stream_factory=lambda tid: _FakeTopicStream(),
-            result_observer=_observer,
-        )
-
-        rec = EngagementRecord(
-            id="e1", kind="specialist", role_or_type="finance",
-            driver="in_casa", status="active", topic_id=99,
-            started_at=0.0, last_user_turn_ts=0.0,
-            completed_at=None, sdk_session_id=None, origin={}, task="t",
-        )
         client = _FakeDriverClient(
             total_cost_usd=0.07, usage={"input_tokens": 30, "output_tokens": 9})
-        drv._clients["e1"] = client
-        drv._locks["e1"] = asyncio.Lock()
-
-        await drv._deliver_turn(rec, "hello")
+        await _run_one_turn(_engagement("e1", "specialist", "finance"), client,
+                            lambda tid: _FakeTopicStream(),
+                            result_observer=_observer)
 
         snap = telem.snapshot("finance")
         assert snap.total_cost_usd == pytest.approx(0.07)
@@ -953,58 +938,75 @@ class TestInteractiveEngagementPermitRelease:
     async def test_interactive_specialist_stream_output_capped(
         self, monkeypatch,
     ):
-        """IMPORTANT 2: InCasaDriver caps each interactive SPECIALIST turn's
-        accumulated/emitted assistant text at `_MAX_OUTPUT_CHARS`, appends a
-        truncation marker, and persists a flag — the stream was otherwise
-        unbounded before emit_completion."""
+        """IMPORTANT 2: no topic message of a SPECIALIST turn grows past
+        `_MAX_OUTPUT_CHARS`. A job's turn can run for hours, so at the cap the
+        turn's stream is finalized and a new one started: every message is
+        delivered whole, none is dropped, and no stream holds more than the
+        cap."""
         import specialist_limits as sl
-        from drivers.in_casa_driver import InCasaDriver
-        from engagement_registry import EngagementRecord
 
         monkeypatch.setattr(sl, "_MAX_OUTPUT_CHARS", 20)
-        stream = _CapturingStream()
-        drv = InCasaDriver(topic_stream_factory=lambda tid: stream)
+        streams: list[_CapturingStream] = []
+        parts = ["a" * 15, "b" * 15, "c" * 15]
+        await _run_one_turn(_engagement("e1", "specialist", "finance"),
+                            _FakeDriverClient(texts=parts),
+                            _stream_collector(streams))
 
-        rec = EngagementRecord(
-            id="e1", kind="specialist", role_or_type="finance",
-            driver="in_casa", status="active", topic_id=99,
-            started_at=0.0, last_user_turn_ts=0.0,
-            completed_at=None, sdk_session_id=None, origin={}, task="t",
-        )
-        drv._clients["e1"] = _FakeDriverClient(text="x" * 100)
-        drv._locks["e1"] = asyncio.Lock()
-
-        await drv._deliver_turn(rec, "hello")
-
-        assert stream.final is not None
-        assert stream.final.endswith("[truncated]")
-        assert len(stream.final) <= 20 + len(" … [truncated]") + 2
-        assert rec.origin.get("stream_output_truncated") is True
+        assert [st.final for st in streams] == parts
+        assert all(len(st.final) <= 20 for st in streams)
 
     async def test_interactive_executor_stream_not_capped(self, monkeypatch):
         """The stream cap is specialist-only — executor engagements stream
         unrestricted (their output surface is a different concern)."""
         import specialist_limits as sl
-        from drivers.in_casa_driver import InCasaDriver
-        from engagement_registry import EngagementRecord
 
         monkeypatch.setattr(sl, "_MAX_OUTPUT_CHARS", 20)
-        stream = _CapturingStream()
-        drv = InCasaDriver(topic_stream_factory=lambda tid: stream)
+        streams: list[_CapturingStream] = []
+        parts = ["y" * 15, "z" * 15]
+        await _run_one_turn(_engagement("e2", "executor", "configurator"),
+                            _FakeDriverClient(texts=parts),
+                            _stream_collector(streams))
 
-        rec = EngagementRecord(
-            id="e2", kind="executor", role_or_type="configurator",
-            driver="in_casa", status="active", topic_id=99,
-            started_at=0.0, last_user_turn_ts=0.0,
-            completed_at=None, sdk_session_id=None, origin={}, task="t",
-        )
-        drv._clients["e2"] = _FakeDriverClient(text="y" * 100)
-        drv._locks["e2"] = asyncio.Lock()
+        assert len(streams) == 1
+        assert streams[0].final == "\n\n".join(parts)  # one stream, not split
 
-        await drv._deliver_turn(rec, "hello")
 
-        assert stream.final == "y" * 100  # not truncated
-        assert "stream_output_truncated" not in rec.origin
+def _engagement(eid, kind, role):
+    from engagement_registry import EngagementRecord
+    return EngagementRecord(
+        id=eid, kind=kind, role_or_type=role,
+        driver="in_casa", status="active", topic_id=99,
+        started_at=0.0, last_user_turn_ts=0.0,
+        completed_at=None, sdk_session_id=None, origin={}, task="t",
+    )
+
+
+def _stream_collector(streams):
+    def factory(topic_id):
+        streams.append(_CapturingStream())
+        return streams[-1]
+    return factory
+
+
+async def _run_one_turn(rec, client, stream_factory, **driver_kw):
+    """Run one turn of *rec*'s job session on a real InCasaDriver with
+    *client* attached as its live session: Casa writes one line, the client
+    plays its scripted turn, and this returns once the turn has ended."""
+    from drivers.in_casa_driver import InCasaDriver
+    try:
+        from tests.turn_scripted_session import attach_session
+    except ImportError:
+        from turn_scripted_session import attach_session
+
+    ended = asyncio.Event()
+    drv = InCasaDriver(topic_stream_factory=stream_factory,
+                       on_turn_end=lambda r, res, err: ended.set(), **driver_kw)
+    attach_session(drv, rec, client)
+    drv.submit_casa(rec, "hello")
+    try:
+        await asyncio.wait_for(ended.wait(), 5)
+    finally:
+        await drv.cancel(rec)
 
 
 class _FakeTopicStream:
@@ -1027,30 +1029,25 @@ class _CapturingStream:
         self.final = text
 
 
-class _FakeDriverClient:
-    """Minimal client for InCasaDriver._deliver_turn: yields one
-    AssistantMessage (``text``) then a ResultMessage carrying cost/usage."""
+try:
+    from tests.turn_scripted_session import TurnScriptedSession as _Session
+except ImportError:
+    from turn_scripted_session import TurnScriptedSession as _Session
 
-    def __init__(self, *, total_cost_usd=None, usage=None, text="done"):
+
+class _FakeDriverClient(_Session):
+    """A job session whose one turn yields an AssistantMessage per entry of
+    ``texts`` then a ResultMessage carrying cost/usage."""
+
+    def __init__(self, *, total_cost_usd=None, usage=None, texts=("done",)):
         self._total_cost_usd = total_cost_usd
         self._usage = usage
-        self._text = text
-
-    async def query(self, prompt):
-        self._prompt = prompt
+        self._texts = list(texts)
 
     async def receive_response(self):
         from claude_agent_sdk import AssistantMessage, TextBlock
-        try:
-            block = TextBlock(text=self._text)
-        except TypeError:
-            block = TextBlock(self._text)  # type: ignore[call-arg]
-        try:
-            asst = AssistantMessage(content=[block])
-        except TypeError:
-            asst = AssistantMessage.__new__(AssistantMessage)
-            asst.content = [block]  # type: ignore[attr-defined]
-        yield asst
+        for text in self._texts:
+            yield AssistantMessage(content=[TextBlock(text=text)], model="m")
         yield _mk_result_message(
             total_cost_usd=self._total_cost_usd, usage=self._usage)
 

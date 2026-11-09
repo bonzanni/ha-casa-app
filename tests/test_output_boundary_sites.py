@@ -98,6 +98,7 @@ EDIT_DM_MESSAGE_CALLERS = {
     ("operator_calls.py", "_finish"): {"plugin"},                  # browser executor: a plugin's question, ☑ label / retired
     ("plugin_stop.py", "settle_run_card"): {"status"},             # the Stop: the card's stored text + ☑ Stopped / Ended / Stop asked
     ("channels/telegram.py", "_retire_job_post"): {"status"},      # an ended job's start line: its outcome mark, Casa template
+    ("channels/telegram.py", "refresh_job_start_line"): {"status"},  # a live job's start line: elapsed time and cost, Casa template
 }
 
 RAW_TRANSPORT_FUNCTIONS = {
@@ -133,6 +134,7 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "_send_plain_line"): "notice",          # the memory wipe's courtesy line
     ("channels/telegram.py", "send_step_line"): "notice",            # the configurator's step line, Casa template
     ("channels/telegram.py", "post_job_start_line"): "notice",       # a job's start line with its Cancel, Casa template
+    ("channels/telegram.py", "post_job_parked"): "notice",           # a parked job's line with its Cancel, Casa template quoting the job's last progress report
     ("channels/telegram.py", "_send_dm_reply"): "notice",            # a lost-message / turn notice in reply to the operator, Casa-composed
     # topic — engagement-topic methods (out of this boundary)
     ("channels/telegram.py", "edit_topic_message"): "topic",
@@ -234,7 +236,7 @@ NOTICE_METHODS = {"deliver_operator_link", "deliver_operator_message", "deliver_
                   "deliver_operator_file", "deliver_desk_notice", "send_handoff_line", "reply",
                   "deliver_operator_proposal", "replace_operator_proposal",
                   "deliver_operator_question", "notify_operator", "deliver_run_card",
-                  "send_reply_line", "send_step_line"}
+                  "send_reply_line", "send_step_line", "post_job_parked"}
 # dispatch — the text becomes a TURN's input, not an emission (Astra r1 item 1)
 DISPATCH_METHODS = {"deliver_system_turn", "deliver_operator_reply"}
 

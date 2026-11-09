@@ -64,20 +64,18 @@ async def _reap(registry) -> dict:
 
 async def test_named_sessions_go_in_the_record_dir_zero_byte_included(
         home, tmp_path, monkeypatch):
-    """Specialist and executor: every sid the record names — its current
-    session and its job's list — is removed, ``.jsonl`` and ``<sid>/``,
-    including a named zero-byte file the SDK's ``delete_session`` refuses."""
-    from engagement_registry import JOB_SIDS_KEY
-
+    """Specialist and executor: the session each record names is removed,
+    ``.jsonl`` and ``<sid>/``, including a named zero-byte file the SDK's
+    ``delete_session`` refuses."""
     _specialists(monkeypatch, researcher=SimpleNamespace(role="researcher", cwd=""))
     registry = _registry(tmp_path)
-    a, b, c, empty, ex = (_sid() for _ in range(5))
-    await _record(registry, origin={"job": {JOB_SIDS_KEY: [a, b, c, empty]}}, sid=c)
+    c, empty, ex = (_sid() for _ in range(3))
+    await _record(registry, origin={"job": {}}, sid=c)
+    await _record(registry, sid=empty)
     await _record(registry, kind="executor", role="configurator", sid=ex)
     spec = _project_dir(home, "/config/agent-home/researcher")
     conf = _project_dir(home, "/config")
-    for sid in (a, b, c):
-        _seed_session(spec, sid)
+    _seed_session(spec, c)
     _seed_session(spec, empty, body="", sibling=False)
     _seed_session(conf, ex)
 
@@ -163,21 +161,19 @@ async def test_a_record_without_a_job_list_is_reaped_by_its_session(
 
 async def test_a_session_named_after_a_pass_goes_on_the_next(
         home, tmp_path, monkeypatch):
-    """No "reaped" marker: a sid listed on a terminal record after a pass
-    has handled it is removed by the next pass."""
-    from engagement_registry import JOB_SIDS_KEY
-
+    """No "reaped" marker: a terminal record's session written again after a
+    pass has handled it (a late flush) is removed by the next pass."""
     _specialists(monkeypatch, researcher=SimpleNamespace(role="researcher", cwd=""))
     registry = _registry(tmp_path)
-    first, late = _sid(), _sid()
-    rec = await _record(registry, origin={"job": {JOB_SIDS_KEY: [first]}}, sid=first)
+    first = _sid()
+    await _record(registry, origin={"job": {}}, sid=first)
     spec = _project_dir(home, "/config/agent-home/researcher")
     _seed_session(spec, first)
     await _reap(registry)
     assert list(spec.iterdir()) == []
 
-    rec.origin["job"][JOB_SIDS_KEY].append(late)
-    _seed_session(spec, late)
+    _seed_session(spec, first)
+    assert len(list(spec.iterdir())) == 2
     await _reap(registry)
 
     assert list(spec.iterdir()) == []
@@ -215,15 +211,15 @@ async def test_one_failing_record_does_not_stop_the_others(
 
 async def test_an_absent_session_never_blocks_a_present_sibling(
         home, tmp_path, monkeypatch):
-    """On one record, a sid already gone is counted absent and the present
-    one beside it is still removed, whatever the iteration order."""
-    from engagement_registry import JOB_SIDS_KEY
-
+    """A record whose session is already gone is counted absent and the
+    present session of the record beside it is still removed, whatever the
+    iteration order."""
     _specialists(monkeypatch, researcher=SimpleNamespace(role="researcher", cwd=""))
     registry = _registry(tmp_path)
     sids = sorted(_sid() for _ in range(4))
     present = sids[1::2]            # sids[0::2] are named but already gone
-    await _record(registry, origin={"job": {JOB_SIDS_KEY: sids}})
+    for sid in sids:
+        await _record(registry, sid=sid)
     spec = _project_dir(home, "/config/agent-home/researcher")
     for sid in present:
         _seed_session(spec, sid)
@@ -473,92 +469,10 @@ def _tombstone_row(tmp_path: Path, rec_id: str) -> dict:
     return {r["id"]: r for r in rows}[rec_id]
 
 
-def _inventory(root: Path) -> list[str]:
-    return sorted(str(p.relative_to(root)) for p in root.rglob("*"))
-
-
 def _reaper_warnings(caplog) -> list[logging.LogRecord]:
     return [r for r in caplog.records
             if r.name == "engagement_transcript_reaper"
             and r.levelno == logging.WARNING]
-
-
-@pytest.mark.parametrize("kind,role,resume_job", [
-    ("specialist", "researcher", False),
-    ("executor", "configurator", False),
-    ("specialist", "researcher", True),
-    ("executor", "configurator", True),
-])
-async def test_clearance_retired_sessions_survive_restart_until_terminal_reap(
-        home, tmp_path, monkeypatch, kind, role, resume_job):
-    """#1167: a session a clearance downgrade abandons is the record's own,
-    built at the old tier and never resumed; it goes with the record at the
-    terminal pass — even when the process restarted between the clamp's
-    write and the pointer clear, and a later session overwrote the pointer.
-    Nothing goes while the record is live."""
-    import tools
-
-    _specialists(monkeypatch, researcher=SimpleNamespace(
-        role="researcher", cwd="/config/custom-home/researcher"))
-    registry = _registry(tmp_path)
-    a, b, c = (_sid() for _ in range(3))
-    origin = {"_origin_clearance": "private"}
-    if resume_job:
-        origin["job"] = {"session": "resume"}
-    rec = await _record(registry, kind=kind, role=role, origin=origin, sid=a,
-                        outcome="active")
-    project = _project_dir(home, "/config/custom-home/researcher"
-                           if kind == "specialist" else tools.EXECUTOR_CWD)
-    other = _project_dir(home, "/config/other-home")
-    for sid in (a, b, c):
-        _seed_session(project, sid)
-        _seed_session(other, sid)
-    unrelated = _sid()
-    _seed_session(project, unrelated)
-    other_before = _inventory(other)
-    selected = [path for sid in (a, b, c)
-                for path in (project / f"{sid}.jsonl", project / sid)]
-
-    assert await registry.lower_origin_clearance(rec.id, "family") is True
-    row = _tombstone_row(tmp_path, rec.id)
-    assert row["origin"]["_origin_clearance"] == "family"
-    assert row["context_rebuild_pending"] is True
-    assert row["sdk_session_id"] == a
-    assert await _reap(registry) == _ZERO
-    assert all(p.exists() for p in selected)
-
-    # Crash gap: the process dies after the clamp's write, before the clear.
-    registry = _registry(tmp_path)
-    await registry.load()
-    assert registry.get(rec.id).sdk_session_id == a
-    assert registry.get(rec.id).origin["_origin_clearance"] == "family"
-    await registry.persist_session_id(rec.id, b)     # the rebuild's session
-    await registry.clear_context_rebuild_pending(rec.id)
-
-    assert await registry.lower_origin_clearance(rec.id, "public") is True
-    await registry.clear_session_id(rec.id)
-    registry = _registry(tmp_path)
-    await registry.load()
-    assert registry.get(rec.id).sdk_session_id is None
-    await registry.persist_session_id(rec.id, c)
-    await registry.clear_context_rebuild_pending(rec.id)
-    assert await _reap(registry) == _ZERO
-    assert all(p.exists() for p in selected)
-
-    await _terminal(registry, rec.id, "completed")
-    row = _tombstone_row(tmp_path, rec.id)
-    assert (row["status"], row["sdk_session_id"]) == ("completed", c)
-    registry = _registry(tmp_path)
-    await registry.load()
-
-    counts = await _reap(registry)
-
-    survivors = [path for path in selected if path.exists()]
-    assert len(survivors) == 0, survivors
-    assert counts == {**_ZERO, "deleted": 6}
-    assert sorted(p.name for p in project.iterdir()) == sorted(
-        [f"{unrelated}.jsonl", unrelated])
-    assert _inventory(other) == other_before
 
 
 @pytest.mark.parametrize("project_present", [False, True])
@@ -685,65 +599,6 @@ async def test_never_written_tombstone_is_quiet_but_waiting_terminal_warns(
 
 
 # --- Cluster R: regression pins beside the red cases (green at the fix) ----
-
-async def test_a_retired_session_is_recorded_once_and_survives_a_reload(
-        tmp_path):
-    """#1167: two clamps that both move, with the same session still the
-    pointer, record it once; the list rides the tombstone across a reload."""
-    from engagement_registry import RETIRED_SIDS_KEY
-
-    registry = _registry(tmp_path)
-    a = _sid()
-    rec = await _record(registry, origin={"_origin_clearance": "private"},
-                        sid=a, outcome="active")
-    assert await registry.lower_origin_clearance(rec.id, "family") is True
-    assert await registry.lower_origin_clearance(rec.id, "public") is True
-    assert rec.origin[RETIRED_SIDS_KEY] == [a]
-
-    registry = _registry(tmp_path)
-    await registry.load()
-    assert registry.get(rec.id).origin[RETIRED_SIDS_KEY] == [a]
-
-
-@pytest.mark.parametrize("case", ["no_move", "unstamped", "no_session"])
-async def test_a_clamp_that_retires_nothing_records_nothing(tmp_path, case):
-    """#1167: a clamp that does not move, a record with no stamped clearance,
-    and a record with no session yet add no retired-session entry."""
-    from engagement_registry import RETIRED_SIDS_KEY
-
-    registry = _registry(tmp_path)
-    origin = {} if case == "unstamped" else {"_origin_clearance": "family"}
-    rec = await _record(registry, origin=origin, outcome="active",
-                        sid=None if case == "no_session" else _sid())
-    moved = await registry.lower_origin_clearance(
-        rec.id, "private" if case == "no_move" else "public")
-    assert moved is (case == "no_session")
-    assert RETIRED_SIDS_KEY not in rec.origin
-
-
-async def test_a_malformed_session_list_never_hides_a_valid_session(
-        home, tmp_path, monkeypatch):
-    """#1167: unhashable, non-string or non-list entries in either list name
-    nothing, and the valid sessions beside them are still removed."""
-    from engagement_registry import JOB_SIDS_KEY, RETIRED_SIDS_KEY
-
-    _specialists(monkeypatch, researcher=SimpleNamespace(role="researcher", cwd=""))
-    registry = _registry(tmp_path)
-    job_sid, retired_sid, other = _sid(), _sid(), _sid()
-    await _record(registry, origin={
-        "job": {JOB_SIDS_KEY: [{"x": 1}, job_sid, 5, None]},
-        RETIRED_SIDS_KEY: [["nested"], retired_sid, "not-a-sid"]})
-    await _record(registry, role="researcher", origin={RETIRED_SIDS_KEY: "oops"})
-    spec = _project_dir(home, "/config/agent-home/researcher")
-    for sid in (job_sid, retired_sid, other):
-        _seed_session(spec, sid)
-
-    counts = await _reap(registry)
-
-    assert sorted(p.name for p in spec.iterdir()) == sorted(
-        [f"{other}.jsonl", other])
-    assert counts == {**_ZERO, "deleted": 4}
-
 
 async def _durable_plugin(registry, tmp_path, monkeypatch, home):
     import tools

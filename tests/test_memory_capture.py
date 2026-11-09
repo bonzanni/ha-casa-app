@@ -10,7 +10,8 @@ drains are serialized so a drain removes only lines it stored.
 
 The resident, delegated and engagement cases drive the real seams —
 ``Agent._process`` with an SDK double, ``tools._run_delegated_agent`` and
-``InCasaDriver.send_user_turn`` — against a real SQLite store.
+``InCasaDriver.submit_operator`` into a live job session — against a real
+SQLite store.
 """
 from __future__ import annotations
 
@@ -780,7 +781,7 @@ class _TopicStream:
         return None
 
 
-class _EngagementClient:
+class _ScriptedEngagementTurn:
     async def query(self, prompt):
         self.prompt = prompt
 
@@ -789,6 +790,29 @@ class _EngagementClient:
         yield _mk_assistant("first part")
         yield _mk_assistant("second part")
         yield _mk_result_message()
+
+
+def _engagement_client():
+    """A job session whose every written message runs one scripted turn: two
+    specialist messages, then the turn's result."""
+    from turn_scripted_session import TurnScriptedSession
+
+    class _Session(TurnScriptedSession, _ScriptedEngagementTurn):
+        pass
+
+    return _Session()
+
+
+async def _rows_when(store, count: int, timeout: float = 2.0) -> list[dict]:
+    """The captured rows once *count* of them are durable (the reader
+    captures on its own task), or what there is at the timeout."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        rows = await captured_events(store)
+        if len(rows) >= count or loop.time() > deadline:
+            return rows
+        await asyncio.sleep(0.01)
 
 
 async def test_a_turn_a_delegation_and_an_engagement_turn_each_capture(
@@ -830,11 +854,13 @@ async def test_a_turn_a_delegation_and_an_engagement_turn_each_capture(
         sdk_session_id=None, task="t",
         origin={"channel": "telegram", "_origin_route": "telegram",
                 "_origin_clearance": "private"})
-    drv._clients[rec.id] = _EngagementClient()
-    drv._locks[rec.id] = asyncio.Lock()
-    ticket = drv.admit_inbound(rec.id, "topic message")
-    await drv.send_user_turn(rec, "topic message", tg_message_id=55,
-                             inbound_token=ticket)
+    from turn_scripted_session import attach_session
+    attach_session(drv, rec, _engagement_client())
+    try:
+        drv.submit_operator(rec, "topic message", tg_message_id=55)
+        await _rows_when(mem, 7)
+    finally:
+        await drv.cancel(rec)
     rows = await captured_events(mem)
     assert len(rows) == 7
     assert [(e["speaker_kind"], e["text"]) for e in rows[4:]] == [

@@ -2,15 +2,13 @@
 whose protected call is waiting on the operator's approval shows nothing the
 model wrote after that call; the words before it are emitted and finalized.
 
-Red case specified by **astra** (drive redcase round, MODE: SPECIFY, against
-``8e9971ef241e732f4000c937814bfab1f30ffdad``). It drives the REAL
-``InCasaDriver.start`` (the launch turn through ``_deliver_turn``) with a
-scripted SDK client and the REAL ``authz_grants.make_resident_authz_hook``.
-The hook runs where production runs it: in a task created from a copy of the
-context the client was ENTERED in — ``engagement_var`` bound to the record and
-``cid_var`` to the client's turn holder, as ``InCasaDriver.open`` binds them —
-never in the delivery task, where no per-turn variable set by
-``_deliver_turn`` can reach it.
+It drives the REAL ``InCasaDriver`` (``open``, then the job's brief through
+``enqueue_brief`` and later writes through ``submit_casa``) with a scripted SDK
+client and the REAL ``authz_grants.make_resident_authz_hook``. The hook runs
+where production runs it: in a task created from a copy of the context the
+client was ENTERED in — ``engagement_var`` bound to the record and ``cid_var``
+to the session's turn holder, as ``InCasaDriver.open`` binds them — never in
+the delivery worker or the reader, where no per-turn variable can reach it.
 """
 from __future__ import annotations
 
@@ -31,6 +29,13 @@ from authz_grants import (
 from test_authz_hook import _deny_reason
 from test_in_casa_driver import _make_record, _mk_factory_with_fake_handle
 from test_pending_approval_output import ARGS, PROTECTED, TOOL, _Channel
+
+try:
+    from tests.test_job_session_driver import until
+    from tests.turn_scripted_session import TurnScriptedSession
+except ImportError:  # pragma: no cover — direct-path collection
+    from test_job_session_driver import until
+    from turn_scripted_session import TurnScriptedSession
 
 pytestmark = [pytest.mark.asyncio]
 
@@ -67,7 +72,27 @@ class _Ask:
         self.call_id = call_id
 
 
-class _EntryClient:
+_OPEN: list = []
+
+
+@pytest.fixture(autouse=True)
+async def _close_sessions():
+    _OPEN.clear()
+    yield
+    for drv, rec in _OPEN:
+        await drv.cancel(rec)
+    _OPEN.clear()
+
+
+def _turn_counter():
+    ends: list = []
+
+    def on_turn_end(rec, result, api_error):
+        ends.append(rec.id)
+    return ends, on_turn_end
+
+
+class _EntryClient(TurnScriptedSession):
     """A scripted engagement client that keeps its ``__aenter__`` context —
     the context the SDK's read task snapshots — and runs every hook from a
     copy of it."""
@@ -93,9 +118,6 @@ class _EntryClient:
         return None
 
     async def close(self):
-        return None
-
-    async def query(self, prompt):
         return None
 
     async def receive_response(self):
@@ -133,12 +155,14 @@ async def test_launch_pending_approval_keeps_prefix_from_sdk_context(
     monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient", _EntryClient)
 
     factory, handle = _mk_factory_with_fake_handle()
-    drv = InCasaDriver(topic_stream_factory=factory)
+    ends, on_turn_end = _turn_counter()
+    drv = InCasaDriver(topic_stream_factory=factory, on_turn_end=on_turn_end)
     rec = _make_record(kind=kind, role_or_type=ROLE, topic_id=OPERATOR,
                        origin={"chat_id": str(OPERATOR), "user_id": OPERATOR})
-    await asyncio.wait_for(
-        drv.start(rec, prompt="go", options=ClaudeAgentOptions(model="sonnet")),
-        10)
+    await drv.open(rec, ClaudeAgentOptions(model="sonnet"))
+    _OPEN.append((drv, rec))
+    drv.enqueue_brief(rec, "go")
+    await until(lambda: len(ends) == 1, 10)
 
     client = _EntryClient.instances[-1]
     assert client.entry_engagement is rec
@@ -162,9 +186,6 @@ from unittest.mock import AsyncMock  # noqa: E402
 from authz_grants import (  # noqa: E402
     GrantKey, canonical_args_hash, _DENY_DELIVERY_FAILED, _DENY_PENDING,
 )
-from drivers.in_casa_driver import (  # noqa: E402
-    LAUNCH_MISSING_RESULT, LAUNCH_NO_VISIBLE_OUTPUT,
-)
 from test_authz_hook import _OriginCtx  # noqa: E402
 
 
@@ -181,12 +202,10 @@ class _Do:
         self.fn = fn
 
 
-NO_RESULT = object()   # the stream ends with no ResultMessage
-
-
 class _Session:
-    """One scripted client per open/resume/open_fresh, each with its own entry
-    context; each query runs the next script from one shared queue."""
+    """One scripted client per open/resume, each with its own entry context;
+    each turn (one written message) runs the next script from one shared
+    queue."""
 
     def __init__(self, hook) -> None:
         self.hook = hook
@@ -195,10 +214,9 @@ class _Session:
         self.answers: list = []
         session = self
 
-        class _Client:
+        class _Client(TurnScriptedSession):
             def __init__(self, options) -> None:
                 self.options = options
-                self.script: list = []
                 session.clients.append(self)
 
             async def __aenter__(self):
@@ -211,11 +229,8 @@ class _Session:
             async def close(self):
                 return None
 
-            async def query(self, prompt):
-                self.script = session.scripts.pop(0)
-
             async def receive_response(self):
-                for item in self.script:
+                for item in session.scripts.pop(0):
                     if isinstance(item, _Ask):
                         args = getattr(item, "args", ARGS)
                         task = asyncio.get_running_loop().create_task(
@@ -228,8 +243,6 @@ class _Session:
                     if isinstance(item, _Do):
                         await item.fn()
                         continue
-                    if item is NO_RESULT:
-                        return
                     yield item
                 yield _done()
 
@@ -256,7 +269,9 @@ class _Topic:
         monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient",
                             self.session.client_cls)
         self.factory, self.handle = _mk_factory_with_fake_handle()
-        self.drv = InCasaDriver(topic_stream_factory=self.factory)
+        self.ends, on_turn_end = _turn_counter()
+        self.drv = InCasaDriver(topic_stream_factory=self.factory,
+                                on_turn_end=on_turn_end)
         self.rec = _make_record(id=rec_id, kind=kind, role_or_type=ROLE,
                                 topic_id=OPERATOR,
                                 origin={"chat_id": str(OPERATOR),
@@ -274,14 +289,23 @@ class _Topic:
             self.grants.mint(self.key(args))
         return _Do(_mint)
 
-    async def launch(self, *script) -> None:
-        self.session.scripts.append(list(script))
-        await asyncio.wait_for(self.drv.start(
-            self.rec, prompt="go", options=ClaudeAgentOptions(model="sonnet")), 10)
+    async def _turn(self, write) -> None:
+        before = len(self.ends)
+        write()
+        await until(lambda: len(self.ends) == before + 1, 10)
 
-    async def follow_up(self, *script, **kw) -> None:
+    async def launch(self, *script) -> None:
+        """Open the job's session and run its brief as the first turn."""
         self.session.scripts.append(list(script))
-        await asyncio.wait_for(self.drv.send_user_turn(self.rec, "next", **kw), 10)
+        await self.drv.open(self.rec, ClaudeAgentOptions(model="sonnet"))
+        _OPEN.append((self.drv, self.rec))
+        await self._turn(lambda: self.drv.enqueue_brief(self.rec, "go"))
+
+    async def follow_up(self, *script) -> None:
+        """One more message written into the running session, as its own
+        turn."""
+        self.session.scripts.append(list(script))
+        await self._turn(lambda: self.drv.submit_casa(self.rec, "next"))
 
     @property
     def emits(self) -> list[str]:
@@ -303,15 +327,14 @@ def _waiting(call_id="deny-1"):
 async def test_a_launch_whose_only_words_are_withheld_shows_nothing_and_lives(
         monkeypatch, kind, tail):
     """R6-1 with no prefix, R6-4 and R6-4b: no emit, no finalize — and the
-    launch observation the owner reads is empty, so it reports no death and
-    withdraws no challenge. tail=False is the mute launch after a POSTED deny,
-    reported dead at the base."""
+    session stays open, the keyboard up. tail=False is the mute launch after a
+    POSTED deny."""
     t = _Topic(monkeypatch, kind)
     await t.launch(*_waiting(), *([_text(TAIL)] if tail else []))
     assert [_reason(a) for a in t.session.answers] == [_DENY_POSTED]
     assert len(t.channel.posts) == 1
     assert t.emits == [] and t.finals == []
-    assert t.drv.launch_turn_incomplete(t.rec.id) == ""
+    assert t.drv.is_alive(t.rec)
 
 
 async def test_a_reused_keyboard_whose_post_settled_cuts_too(monkeypatch):
@@ -368,31 +391,6 @@ async def test_a_deny_that_left_no_keyboard_delivers_the_words(monkeypatch):
     assert t.finals == ["BEFORE\n\n" + TAIL]
 
 
-# --- R6-4c: a launch mute for any other reason is reported as at the base ------
-
-@pytest.mark.parametrize("case", ["no_keyboard", "released", "no_deny",
-                                  "no_result"])
-async def test_a_launch_mute_for_any_other_reason_is_still_observed(
-        monkeypatch, case):
-    t = _Topic(monkeypatch)
-    if case == "no_keyboard":
-        t.channel.post_dm_keyboard = AsyncMock(side_effect=RuntimeError("down"))
-        script, expected = _waiting(), LAUNCH_NO_VISIBLE_OUTPUT
-    elif case == "released":
-        script = [*_waiting(), t.approve(), _call("ok-1"), _Ask("ok-1"),
-                  _result("ok-1", error=False)]
-        expected = LAUNCH_NO_VISIBLE_OUTPUT
-    elif case == "no_deny":
-        script, expected = [_call("x-1"), _result("x-1", error=False)], \
-            LAUNCH_NO_VISIBLE_OUTPUT
-    else:
-        # The stream ended with no ResultMessage after the cut: a cut-off turn
-        # keeps its own reason.
-        script, expected = [*_waiting(), NO_RESULT], LAUNCH_MISSING_RESULT
-    await t.launch(*script)
-    assert t.drv.launch_turn_incomplete(t.rec.id) == expected
-
-
 # --- R6-7: the cut counts exactly what the stream folds -------------------------
 
 async def test_the_cut_counts_what_the_stream_folds(monkeypatch):
@@ -408,15 +406,18 @@ async def test_the_cut_counts_what_the_stream_folds(monkeypatch):
     await t.launch(_text("B" * 15), fault, *_waiting(), _text("X" * 30))
     assert t.emits == ["B" * 15] and t.finals == ["B" * 15]
 
-    t2 = _Topic(monkeypatch, rec_id="e2")
-    await t2.launch(_text("B" * 25), *_waiting(), _text(TAIL))
-    frozen = "B" * 20 + " … [truncated]"
-    assert t2.emits == [frozen] and t2.finals == [frozen]
+
+async def test_the_kept_prefix_is_finalized_as_it_was_shown(monkeypatch):
+    import specialist_limits
+    monkeypatch.setattr(specialist_limits, "_MAX_OUTPUT_CHARS", 20)
+    t = _Topic(monkeypatch)
+    await t.launch(_text("B" * 25), *_waiting(), _text(TAIL))
+    assert t.emits == ["B" * 25] and t.finals == ["B" * 25]
 
 
 # --- R6-8 / R6-14: a resumed or rebuilt session gets its own carrier -----------
 
-@pytest.mark.parametrize("reopen", ["resume", "open_fresh"])
+@pytest.mark.parametrize("reopen", ["resume"])
 async def test_a_reopened_session_is_cut_and_the_old_clients_hook_lands_nowhere(
         monkeypatch, reopen):
     import tools
@@ -427,11 +428,8 @@ async def test_a_reopened_session_is_cut_and_the_old_clients_hook_lands_nowhere(
                         AsyncMock(return_value=None))
     await t.launch(_text("Hi."))
     old = t.session.clients[-1]
-    t.drv._clients.pop(t.rec.id)            # the old session is gone
-    if reopen == "resume":
-        await t.drv.resume(t.rec, "eng-sid")
-    else:
-        await t.drv.open_fresh(t.rec)
+    await t.drv.cancel(t.rec)               # the old session is gone
+    await t.drv.resume(t.rec, "eng-sid")
     assert t.session.clients[-1] is not old
 
     async def _old_clients_hook():
@@ -465,21 +463,6 @@ async def test_a_stale_write_changes_nothing(monkeypatch):
     assert t.finals == ["Hi.", "BEFORE\n\n" + TAIL]
 
 
-# --- R6-11: a fresh plugin job's batch turn -------------------------------------
-
-async def test_a_fresh_jobs_batch_turn_is_cut(monkeypatch):
-    import background_jobs
-    t = _Topic(monkeypatch, kind="plugin")
-    monkeypatch.setattr("drivers.in_casa_driver._is_fresh_job", lambda _r: True)
-    monkeypatch.setattr(type(t.drv), "_reset_conversation",
-                        AsyncMock(return_value=None))
-    monkeypatch.setattr(background_jobs, "job_brief", lambda _r: "BRIEF")
-    t.rec.origin["job"] = {}
-    await t.launch(_text("Started."))
-    await t.follow_up(_text("BEFORE"), *_waiting(), _text(TAIL), batch=2)
-    assert t.finals == ["Started.", "BEFORE"]
-
-
 # --- R6-12: two engagements of one specialist at once ---------------------------
 
 async def test_a_record_reaches_only_its_own_engagements_topic(monkeypatch):
@@ -499,16 +482,16 @@ async def test_a_record_reaches_only_its_own_engagements_topic(monkeypatch):
     a.session.scripts.append([_text("B-WORDS"), _call("b-1"),
                               _result("b-1", error=False), _text("B-TAIL")])
     opts = ClaudeAgentOptions(model="sonnet")
-    first = asyncio.create_task(a.drv.start(a.rec, prompt="go", options=opts))
-    await asyncio.sleep(0)
-    for _ in range(50):
-        if a.session.answers:
-            break
-        await asyncio.sleep(0.01)
-    second = asyncio.create_task(a.drv.start(b.rec, prompt="go", options=opts))
-    await asyncio.wait_for(second, 10)
+    for rec in (a.rec, b.rec):
+        _OPEN.append((a.drv, rec))
+    await a.drv.open(a.rec, opts)
+    a.drv.enqueue_brief(a.rec, "go")
+    await until(lambda: a.session.answers, 10)
+    await a.drv.open(b.rec, opts)
+    a.drv.enqueue_brief(b.rec, "go")
+    await until(lambda: a.ends == ["e-b"], 10)
     gate.set()
-    await asyncio.wait_for(first, 10)
+    await until(lambda: sorted(a.ends) == ["e-a", "e-b"], 10)
     assert [_reason(x) for x in a.session.answers] == [_DENY_POSTED]
     finals = [str(c.args[0]) for c in a.handle.finalize.await_args_list]
     assert sorted(finals) == ["A-BEFORE", "B-WORDS\n\nB-TAIL"]

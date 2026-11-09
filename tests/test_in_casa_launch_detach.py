@@ -2,13 +2,13 @@
 
 On the production box (2026-09-15) Ellen's tool call was held for three minutes because
 the engagement launcher (then the configurator's ``engage_executor``) awaited the
-whole in-casa launch turn inline. Now the launch opens the client, hands the launch TURN to an anchored owner in one
-synchronous block, and returns ``pending``. The owner does what the tool call
-did after ``start()`` returned — reports a death through the reporter with the
-engager's obligation armed and tells the engager live — and a never-started
-owner, a stop latched during ``open()``, and a persist failure each have an
-owner of their own. These are the design's red cases 1, 2, 2b, 2c, 3, 5, 5b,
-5c, 5d, 5f, 5g, 5h, 5i and 7, on the real registry, driver and tool.
+whole in-casa launch turn inline. Now the launch opens the job's session, queues its
+brief and returns ``pending``; the session's reader owns the job from there. A launch
+that dies after its record exists — cancelled while its session opens, or caught by
+the graceful stop — is reported by the cancellation owner with the engager's
+obligation armed and told live; a stop latched during ``open()``, a persist failure
+and a lost terminal race each have an owner of their own. On the real registry,
+driver and tool.
 """
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ import pytest
 from test_in_casa_launch_terminal_artifact import (
     ScriptedCompleteClient, ScriptedCutoffClient, _Probe, _build, _launch,
 )
+from test_launch_death_reporter import _cancel_while_opening
 
 
 class _RecordingBus:
@@ -43,8 +44,9 @@ class _RecordingBus:
                 await m.on_delivery()
 
 
-class GatedClient(ScriptedCutoffClient):
-    """Blocks before its first frame until the test releases it."""
+class GatedClient(ScriptedCompleteClient):
+    """Blocks before its launch turn's first frame until the test releases it;
+    the turn then runs to its end."""
     gate: asyncio.Event | None = None
 
     async def receive_response(self):
@@ -53,14 +55,24 @@ class GatedClient(ScriptedCutoffClient):
             yield frame
 
 
-class PreFrameApiErrorClient(ScriptedCutoffClient):
-    """Raises the driver's API-fault shape before any frame."""
+async def _until(predicate, timeout: float = 5.0) -> None:
+    async def wait():
+        while not predicate():
+            await asyncio.sleep(0.001)
+    await asyncio.wait_for(wait(), timeout)
 
-    async def receive_response(self):
-        from error_kinds import ErrorKind
-        from drivers.in_casa_driver import ApiErrorTurn
-        raise ApiErrorTurn(ErrorKind.API_ERROR, "boom")
-        yield  # pragma: no cover
+
+def _hang_open(driver, monkeypatch):
+    """Make the job session's open never return; the returned event is set
+    once the launcher is inside it (its record and topic exist)."""
+    entered = asyncio.Event()
+
+    async def _hang(engagement, options=None):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(driver, "open", _hang)
+    return entered
 
 
 def _with_bus(monkeypatch, bus):
@@ -70,7 +82,6 @@ def _with_bus(monkeypatch, bus):
 
 
 async def _drain_all(tools_mod):
-    await tools_mod.drain_launch_turns()
     await tools_mod.drain_launch_death_reports()
     await asyncio.sleep(0)
 
@@ -91,70 +102,19 @@ async def test_the_engager_gets_pending_before_the_launch_turn_starts(tmp_path, 
     assert GatedClient.frames_yielded == 0          # the turn has not begun
     created_id = next(iter(registry._records))
     assert registry.get(created_id).status == "active"
-    assert len(tools_mod._LAUNCH_TURN_TASKS) == 1
+    assert driver.is_alive(registry.get(created_id)) is True
 
     GatedClient.gate.set()
-    await _drain_all(tools_mod)
-    assert GatedClient.frames_yielded == 2
-    # the cutoff client dies mid-loop: the owner reported it
-    assert registry.get(created_id).status == "error"
-    assert channel._post_engagement_notice.await_count == 1
-    assert channel.close_topic.await_count == 1
-    assert not tools_mod._LAUNCH_TURN_TASKS
+    await _until(lambda: probe.finalize_count == 1)
+    assert GatedClient.frames_yielded == 4
+    # the session's reader ran the turn; the launch reported nothing
+    assert registry.get(created_id).status == "active"
+    assert channel._post_engagement_notice.await_count == 0
+    assert channel.close_topic.await_count == 0
+    await driver.cancel(registry.get(created_id))
 
 
-# --- red cases 2 / 2b / 2c: the owner tells the engager live -------------------
-
-async def test_a_cutoff_after_pending_tells_the_engager_live(tmp_path, monkeypatch):
-    probe = _Probe()
-    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
-    bus = _RecordingBus()
-    tools_mod = _with_bus(monkeypatch, bus)
-
-    envelope = await _launch(launcher)
-    assert json.loads(envelope["content"][0]["text"])["status"] == "pending"
-    await _drain_all(tools_mod)
-
-    created_id = next(iter(registry._records))
-    rec = registry.get(created_id)
-    assert rec.status == "error"
-    assert rec.origin["error_kind"] == "launch_turn_incomplete"
-    assert channel._post_engagement_notice.await_count == 1
-    assert channel.close_topic.await_count == 1
-    assert probe.events.index("notice") < probe.events.index("topic_close")
-    # exactly one live notification, of the launch fault's kind, to the engager
-    assert len(bus.messages) == 1
-    complete = bus.messages[0].content
-    assert complete.delegation_id == created_id
-    assert complete.status == "error"
-    assert complete.kind == "launch_turn_incomplete"
-    assert complete.result_available is False
-    assert bus.messages[0].target == "assistant"
-    # the obligation is ARMED until the delivery acknowledgement clears it
-    assert rec.terminal_notification_pending is True
-    await bus.deliver_all()
-    assert registry.get(created_id).terminal_notification_pending is False
-    assert registry.records_owing_terminal_notification() == []
-
-
-async def test_a_pre_frame_api_fault_after_pending_is_told_once(tmp_path, monkeypatch):
-    probe = _Probe()
-    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, PreFrameApiErrorClient)
-    bus = _RecordingBus()
-    tools_mod = _with_bus(monkeypatch, bus)
-
-    envelope = await _launch(launcher)
-    assert json.loads(envelope["content"][0]["text"])["status"] == "pending"
-    await _drain_all(tools_mod)
-
-    created_id = next(iter(registry._records))
-    rec = registry.get(created_id)
-    assert rec.status == "error"
-    assert rec.origin["error_kind"] == "api_error"
-    assert channel._post_engagement_notice.await_count == 1      # tonight's silent arm posts
-    assert channel.close_topic.await_count == 1
-    assert [m.content.kind for m in bus.messages] == ["api_error"]
-
+# --- a dropped telling stays owed ------------------------------------------------
 
 async def test_a_dropped_bus_target_leaves_the_obligation_owed(tmp_path, monkeypatch):
     probe = _Probe()
@@ -162,10 +122,11 @@ async def test_a_dropped_bus_target_leaves_the_obligation_owed(tmp_path, monkeyp
     bus = _RecordingBus(roles=())          # the engager's role is not registered
     tools_mod = _with_bus(monkeypatch, bus)
 
-    await _launch(launcher)
+    await _cancel_while_opening(launcher, driver, monkeypatch)
     await _drain_all(tools_mod)
 
     created_id = next(iter(registry._records))
+    assert registry.get(created_id).status == "error"
     assert bus.messages == []
     assert [r.id for r in registry.records_owing_terminal_notification()] == [created_id]
 
@@ -176,37 +137,39 @@ async def test_cancelling_the_tool_task_after_return_does_not_cancel_the_turn(tm
     probe = _Probe()
     GatedClient.gate = asyncio.Event()
     launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, GatedClient)
-    tools_mod = _with_bus(monkeypatch, _RecordingBus())
+    _with_bus(monkeypatch, _RecordingBus())
 
     task = asyncio.ensure_future(_launch(launcher))
     envelope = await task
     assert json.loads(envelope["content"][0]["text"])["status"] == "pending"
     task.cancel()                           # a finished task: nothing to cancel
     GatedClient.gate.set()
-    await _drain_all(tools_mod)
-    assert GatedClient.frames_yielded == 2   # the turn ran to its end regardless
+    await _until(lambda: probe.finalize_count == 1)
+    assert GatedClient.frames_yielded == 4   # the turn ran to its end regardless
+    assert GatedClient.result_messages_yielded == 1
+    created_id = next(iter(registry._records))
+    assert registry.get(created_id).status == "active"
+    await driver.cancel(registry.get(created_id))
 
 
-# --- red case 5: the graceful stop drains a running owner ------------------------
+# --- the graceful stop drains a running launch -----------------------------------
 
 async def test_the_stop_drains_a_running_owner_and_reports_the_cancellation(tmp_path, monkeypatch):
     probe = _Probe()
-    GatedClient.gate = asyncio.Event()
-    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, GatedClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
+    entered = _hang_open(driver, monkeypatch)
 
-    await _launch(launcher)
-    await asyncio.sleep(0)                  # the owner has started and is gated
-    assert len(tools_mod._LAUNCH_TURN_TASKS) == 1
-    owner = next(iter(tools_mod._LAUNCH_TURN_TASKS))
+    task = asyncio.ensure_future(_launch(launcher))
+    await asyncio.wait_for(entered.wait(), 5)     # record and topic exist; the session opens
 
-    # bounded: a stop that cannot find the owner (not enrolled) would wait
-    # on the gated turn for ever, and a hang is not a pin
+    # bounded: a stop that cannot find the launch (not enrolled) would wait on
+    # the hung open for ever, and a hang is not a pin
     await asyncio.wait_for(tools_mod.stop_engagement_launches(registry), 5)
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
-    assert owner.done()
-    assert not tools_mod._LAUNCH_TURN_TASKS
     created_id = next(iter(registry._records))
     rec = registry.get(created_id)
     assert rec.status == "error"
@@ -246,8 +209,7 @@ async def test_a_stop_latched_during_open_mints_no_owner(tmp_path, monkeypatch):
     payload = json.loads(envelope["content"][0]["text"])
     assert payload["status"] == "error", payload
     assert payload["kind"] == "launch_cancelled"
-    assert tools_mod._LAUNCH_TURN_TASKS == set()
-    assert ScriptedCutoffClient.frames_yielded == 0
+    assert ScriptedCutoffClient.frames_yielded == 0     # the brief was never queued
     await tools_mod.drain_launch_death_reports()
     created_id = next(iter(registry._records))
     assert registry.get(created_id).status == "error"
@@ -256,101 +218,6 @@ async def test_a_stop_latched_during_open_mints_no_owner(tmp_path, monkeypatch):
     assert registry.get(created_id).terminal_notification_pending is False  # acked on return
     assert bus.messages == []                          # the envelope was the telling
     assert all(t.done() or t is asyncio.current_task() for t in asyncio.all_tasks())
-
-
-# --- red case 5d: an owner cancelled before its first step ---------------------
-
-async def test_an_owner_cancelled_before_its_first_step_is_reported_by_its_callback(
-        tmp_path, monkeypatch):
-    probe = _Probe()
-    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
-    bus = _RecordingBus()
-    tools_mod = _with_bus(monkeypatch, bus)
-
-    # Build a live record with an open client the way the launcher would,
-    # then hand off and latch in the SAME synchronous block.
-    import agent as agent_mod
-    from engagement_registry import EngagementRecord
-    rec = await registry.create(
-        kind="specialist", role_or_type="finance", driver="in_casa",
-        topic_id=42, origin={"role": "assistant", "channel": "telegram", "chat_id": "c1",
-                             "cid": "x", "user_text": "hi"}, task="t")
-    options = AsyncMock()
-    await driver.open(rec, options=options, expected_generation=rec.context_generation)
-    handle = registry.register_launch(rec.id, asyncio.current_task())
-    tools_mod._hand_off_launch_turn(driver, rec, "prompt", channel, 42, handle)
-    issued = registry.begin_launch_shutdown()      # cancels the owner before it runs
-    assert issued == 1
-    await _drain_all(tools_mod)
-
-    assert ScriptedCutoffClient.frames_yielded == 0   # zero owner statements ran
-    latest = registry.get(rec.id)
-    assert latest.status == "error"
-    assert latest.origin["error_kind"] == "launch_cancelled"
-    assert channel._post_engagement_notice.await_count == 1
-    assert channel.close_topic.await_count == 1
-    assert [m.content.kind for m in bus.messages] == ["launch_cancelled"]
-    assert registry._launch_handles == {}            # the callback dropped the handle
-    assert driver.is_alive(latest) is False
-
-
-# --- red case 5i: after the drains, a callback mints nothing --------------------
-
-async def test_after_the_drains_a_never_started_owner_is_only_logged(tmp_path, monkeypatch, caplog):
-    probe = _Probe()
-    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
-    bus = _RecordingBus()
-    tools_mod = _with_bus(monkeypatch, bus)
-    rec = await registry.create(
-        kind="specialist", role_or_type="finance", driver="in_casa",
-        topic_id=42, origin={"role": "assistant"}, task="t")
-    await driver.open(rec, options=AsyncMock(), expected_generation=rec.context_generation)
-    registry.mark_launch_drains_complete()
-    handle = registry.register_launch(rec.id, asyncio.current_task())
-    with caplog.at_level(logging.ERROR):
-        tools_mod._hand_off_launch_turn(driver, rec, "prompt", channel, 42, handle)
-        owner = next(iter(tools_mod._LAUNCH_TURN_TASKS))
-        owner.cancel()
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-    assert not tools_mod._LAUNCH_TURN_TASKS
-    assert not tools_mod._LAUNCH_DEATH_TASKS          # nothing minted
-    assert registry.get(rec.id).status == "active"    # left live for boot
-    assert any("after the stop's drains completed" in r.getMessage() for r in caplog.records)
-
-
-# --- red case 5c: a persist failure has an owner, and it is not a failure ------
-
-async def test_a_persist_failure_after_pending_tells_the_engager_the_outcome_is_uncommitted(
-        tmp_path, monkeypatch):
-    probe = _Probe()
-    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
-    bus = _RecordingBus()
-    tools_mod = _with_bus(monkeypatch, bus)
-    real_write = registry._write_tombstone
-
-    def _boom_on_terminal(snapshot):
-        if any(row.get("status") == "error" for row in snapshot):
-            raise OSError("tombstone write refused")
-        return real_write(snapshot)
-
-    monkeypatch.setattr(registry, "_write_tombstone", _boom_on_terminal)
-
-    envelope = await _launch(launcher)
-    assert json.loads(envelope["content"][0]["text"])["status"] == "pending"
-    await _drain_all(tools_mod)
-
-    created_id = next(iter(registry._records))
-    rec = registry.get(created_id)
-    assert rec.status == "active"                       # rolled back, live
-    assert rec.completed_at is None
-    assert channel._post_engagement_notice.await_count == 1   # the bounded notice
-    assert "could not be recorded" in probe.notice_texts[0]
-    assert channel.close_topic.await_count == 0
-    assert rec.terminal_notification_pending is False   # nothing to arm
-    assert [m.content.kind for m in bus.messages] == ["launch_outcome_uncommitted"]
-    assert bus.messages[0].on_delivery is None
-    assert driver.is_alive(rec) is False                # the dead client retired
 
 
 def test_the_consumer_narrates_an_uncommitted_outcome_as_still_open():
@@ -435,22 +302,22 @@ async def test_a_job_engagement_launch_returns_pending_before_its_turn(tmp_path,
     init_tools(
         channel_manager=cm, bus=MagicMock(), specialist_registry=specialist_reg,
         mcp_registry=MagicMock(), trigger_registry=MagicMock(),
-        engagement_registry=registry, 
+        engagement_registry=registry,
         agent_role_map={"assistant": _make_assistant_cfg()},
     )
-    tools_mod = _with_bus(monkeypatch, _RecordingBus())
+    _with_bus(monkeypatch, _RecordingBus())
     res = await asyncio.wait_for(launch_job("Plan Q2"), 5)
     payload = json.loads(res["content"][0]["text"])
     assert payload["status"] == "pending", payload
     assert GatedClient.frames_yielded == 0
-    assert len(tools_mod._LAUNCH_TURN_TASKS) == 1
     GatedClient.gate.set()
-    await _drain_all(tools_mod)
-    assert GatedClient.frames_yielded == 2
+    await _until(lambda: probe.finalize_count == 1)
+    assert GatedClient.frames_yielded == 4
     created_id = next(iter(registry._records))
-    assert registry.get(created_id).status == "error"      # the cutoff client, reported
-    assert channel._post_engagement_notice.await_count == 1
-    assert channel.close_topic.await_count == 1
+    assert registry.get(created_id).status == "active"     # the job runs on
+    assert channel._post_engagement_notice.await_count == 0
+    assert channel.close_topic.await_count == 0
+    await driver.cancel(registry.get(created_id))
 
 
 # --- red case 5e: an inline abort whose launcher is cancelled before its return ----
@@ -490,48 +357,11 @@ async def test_an_inline_abort_cancelled_before_its_return_is_told_live(tmp_path
     assert registry.get(created_id).terminal_notification_pending is False
 
 
-# --- diff round 1 (Terra S1): a cancellation inside the live telling tells once ----
-
-async def test_an_owner_cancelled_inside_its_live_telling_tells_the_engager_once(tmp_path, monkeypatch):
-    probe = _Probe()
-    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
-    entered = asyncio.Event(); release = asyncio.Event()
-
-    class _BlockingBus(_RecordingBus):
-        async def notify(self, msg):
-            entered.set()
-            await release.wait()      # the telling is in flight; the bus has not yet taken it
-            self.messages.append(msg)
-            return True
-
-    bus = _BlockingBus()
-    tools_mod = _with_bus(monkeypatch, bus)
-
-    await _launch(launcher)
-    await asyncio.wait_for(entered.wait(), 5)
-    owner = next(iter(tools_mod._LAUNCH_TURN_TASKS))
-    owner.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await owner
-    release.set()
-    await _drain_all(tools_mod)
-
-    created_id = next(iter(registry._records))
-    assert [m.content.kind for m in bus.messages] == ["launch_turn_incomplete"]   # ONE telling
-    assert registry.get(created_id).status == "error"
-    assert channel._post_engagement_notice.await_count == 1
-    assert channel.close_topic.await_count == 1
-    assert registry.get(created_id).terminal_notification_pending is True         # until delivery
-    await bus.deliver_all()
-    assert registry.get(created_id).terminal_notification_pending is False
-
-
 # --- diff round 1 (Astra J1.1): the cancellation owner tells a persist failure --------
 
 async def test_a_stop_whose_cancellation_report_cannot_persist_still_tells(tmp_path, monkeypatch):
     probe = _Probe()
-    GatedClient.gate = asyncio.Event()
-    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, GatedClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
     real_write = registry._write_tombstone
@@ -542,10 +372,13 @@ async def test_a_stop_whose_cancellation_report_cannot_persist_still_tells(tmp_p
         return real_write(snapshot)
 
     monkeypatch.setattr(registry, "_write_tombstone", _boom_on_terminal)
+    entered = _hang_open(driver, monkeypatch)
 
-    await _launch(launcher)
-    await asyncio.sleep(0)
+    task = asyncio.ensure_future(_launch(launcher))
+    await asyncio.wait_for(entered.wait(), 5)
     await asyncio.wait_for(tools_mod.stop_engagement_launches(registry), 5)
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
     created_id = next(iter(registry._records))
     rec = registry.get(created_id)
@@ -561,13 +394,13 @@ async def test_a_stop_whose_cancellation_report_cannot_persist_still_tells(tmp_p
 
 async def test_a_cancellation_owner_that_loses_to_a_telling_writer_sends_nothing(tmp_path, monkeypatch):
     probe = _Probe()
-    GatedClient.gate = asyncio.Event()
-    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, GatedClient)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
+    entered = _hang_open(driver, monkeypatch)
 
-    await _launch(launcher)
-    await asyncio.sleep(0)
+    task = asyncio.ensure_future(_launch(launcher))
+    await asyncio.wait_for(entered.wait(), 5)
     created_id = next(iter(registry._records))
     # The funnel (the operator cancelled the engagement) wins the terminal and
     # ARMS its own telling, whose delivery is still pending when the stop lands.
@@ -575,6 +408,8 @@ async def test_a_cancellation_owner_that_loses_to_a_telling_writer_sends_nothing
         created_id, "cancelled", strict=True, owes_terminal_notification=True)
     assert won is True
     await asyncio.wait_for(tools_mod.stop_engagement_launches(registry), 5)
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
     assert bus.messages == []                                       # the winner's to tell
     rec = registry.get(created_id)
@@ -644,51 +479,9 @@ async def test_a_launcher_cancelled_after_the_drains_mints_no_compensation(tmp_p
             await asyncio.wait_for(task, 5)
         await asyncio.sleep(0)
     assert not tools_mod._LAUNCH_DEATH_TASKS
-    assert not tools_mod._LAUNCH_TURN_TASKS
     created_id = next(iter(registry._records))
     assert registry.get(created_id).status == "active"   # left live for boot
     assert any("after the stop's drains completed" in r.getMessage() for r in caplog.records)
-
-
-# --- diff round 2 (Terra S1): a cancellation inside the uncommitted telling tells once --
-
-async def test_an_owner_cancelled_inside_its_uncommitted_telling_tells_once(tmp_path, monkeypatch):
-    probe = _Probe()
-    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
-    real_write = registry._write_tombstone
-
-    def _boom_on_terminal(snapshot):
-        if any(row.get("status") == "error" for row in snapshot):
-            raise OSError("tombstone write refused")
-        return real_write(snapshot)
-
-    monkeypatch.setattr(registry, "_write_tombstone", _boom_on_terminal)
-    entered = asyncio.Event(); release = asyncio.Event()
-
-    class _BlockingBus(_RecordingBus):
-        async def notify(self, msg):
-            entered.set()
-            await release.wait()
-            self.messages.append(msg)
-            return True
-
-    bus = _BlockingBus()
-    tools_mod = _with_bus(monkeypatch, bus)
-
-    await _launch(launcher)
-    await asyncio.wait_for(entered.wait(), 5)          # the uncommitted telling is in flight
-    owner = next(iter(tools_mod._LAUNCH_TURN_TASKS))
-    owner.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await owner
-    release.set()
-    await _drain_all(tools_mod)
-
-    created_id = next(iter(registry._records))
-    assert [m.content.kind for m in bus.messages] == ["launch_outcome_uncommitted"]   # ONE
-    assert channel._post_engagement_notice.await_count == 1                          # one bounded notice
-    assert registry.get(created_id).status == "active"
-    assert channel.close_topic.await_count == 0
 
 
 # --- diff round 2 (Astra J2): a named-fault arm reached after the drains mints nothing --
@@ -724,7 +517,6 @@ async def test_an_inline_abort_reached_after_the_drains_mints_nothing(tmp_path, 
             await asyncio.wait_for(asyncio.ensure_future(_launch_reaching_its_arm()), 5)
         await asyncio.sleep(0)
     assert not tools_mod._LAUNCH_DEATH_TASKS     # no abort, no compensator
-    assert not tools_mod._LAUNCH_TURN_TASKS
     assert registry.get(rec.id).status == "active"
     assert bus.messages == [] and channel.close_topic.await_count == 0
     assert any("plugin_superseded abort after the stop's drains completed" in r.getMessage()

@@ -526,8 +526,8 @@ def test_every_sdk_read_loop_declares_how_it_handles_an_api_fault():
 
     Three review rounds each found one more loop that folded assistant text
     without reading the API-fault carriers — the recurrence was coverage, not
-    mechanism. A NEW ``receive_response()`` call site now fails this test until
-    it is declared here, the same way memory.md pins its recall-consumer
+    mechanism. A NEW ``receive_response()`` or ``receive_messages()`` loop now
+    fails this test until it is declared here, the same way memory.md pins its recall-consumer
     inventory (INV-MEM-010's "declare how you frame a non-empty result").
     """
     import re
@@ -535,7 +535,7 @@ def test_every_sdk_read_loop_declares_how_it_handles_an_api_fault():
 
     root = Path(__file__).resolve().parents[1] / "casa" / "rootfs" / "opt" / "casa"
 
-    # module -> (number of receive_response call sites, why each is safe).
+    # module -> (number of SDK read loops, why each is safe).
     # The COUNT is load-bearing: keying on the filename alone would let a
     # second loop inside an already-declared module pass undeclared, which is
     # exactly how the fourth one was missed (Terra, closing round).
@@ -548,20 +548,17 @@ def test_every_sdk_read_loop_declares_how_it_handles_an_api_fault():
         # 1) the delegated specialist run and 2) query_engager synthesis —
         #    both read both carriers and raise.
         "tools.py": (2, "raises from the delegated run and from synthesis"),
-        # 1) _deliver_turn — suppresses the prose so it is never streamed
-        #    into the engagement's topic, and logs the kind. The engagement's
-        #    TERMINAL kind is still the generic one — tracked separately, see
-        #    #595. 2) _reset_conversation — a fresh job's /clear drain
-        #    (INV-BGJOB-005): folds and streams no text, and anything but a
-        #    confirmed reset with a non-error result raises
-        #    ConversationResetError before the turn is accepted.
-        "in_casa_driver.py": (2, "suppresses; a reset that is not confirmed raises"),
+        # 1) the job session's one reader (``receive_messages()``) — never
+        #    streams an API fault's prose into the job's topic, logs the kind
+        #    and hands it to the turn-end handler with the turn's result.
+        "in_casa_driver.py": (1, "suppresses; the turn end receives the kind"),
     }
 
+    loop = re.compile(r"async for \w+ in [\w.]+\.receive_(?:response|messages)\(")
     found = {
-        path.name: len(re.findall(r"\.receive_response\(", path.read_text()))
+        path.name: len(loop.findall(path.read_text()))
         for path in root.rglob("*.py")
-        if re.search(r"\.receive_response\(", path.read_text())
+        if loop.search(path.read_text())
     }
 
     undeclared = set(found) - set(declared)

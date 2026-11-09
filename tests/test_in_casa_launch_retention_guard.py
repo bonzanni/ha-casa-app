@@ -1,9 +1,9 @@
 """#678 H2 guard — the launch-death path must never fabricate a success.
 
-Its own file so it can be MUTATED ON ITS OWN (drive rule): flipping the
-reporting helper to ``outcome="completed"``, or routing it through
-``_finalize_engagement``, must fail THIS test while the primary red case in
-``test_in_casa_launch_terminal_artifact.py`` still passes.
+Its own file so it can be MUTATED ON ITS OWN: flipping the reporting helper to
+``outcome="completed"``, or routing it through ``_finalize_engagement``, must
+fail THIS test. The launch death here is a launch cancelled while its session
+opens, after its record and topic exist.
 
 Why it matters, stated as the outcome it protects: ``_finalize_engagement``
 announces the outcome to the party that asked for the work. A launch death
@@ -21,23 +21,25 @@ import pytest
 
 try:
     from tests.test_in_casa_launch_terminal_artifact import (
-        ScriptedCutoffClient, _Probe, _build, _launch,
+        ScriptedCutoffClient, _Probe, _build,
     )
+    from tests.test_launch_death_reporter import _cancel_while_opening
 except ImportError:  # pragma: no cover — direct-path collection
     from test_in_casa_launch_terminal_artifact import (
-        ScriptedCutoffClient, _Probe, _build, _launch,
+        ScriptedCutoffClient, _Probe, _build,
     )
+    from test_launch_death_reporter import _cancel_while_opening
 
 pytestmark = [pytest.mark.asyncio]
 
 
-async def test_mid_tool_loop_cutoff_never_completes_or_retains(
+async def test_a_reported_launch_death_never_completes_or_retains(
     tmp_path, monkeypatch,
 ):
     import tools as tools_mod
 
     probe = _Probe()
-    launcher, registry, _channel, _driver = _build(
+    launcher, registry, _channel, driver = _build(
         tmp_path, monkeypatch, probe, ScriptedCutoffClient,
     )
 
@@ -61,11 +63,7 @@ async def test_mid_tool_loop_cutoff_never_completes_or_retains(
 
     monkeypatch.setattr(tools_mod, "_finalize_engagement", spy_finalize)
 
-    envelope = await _launch(launcher)
-
-    payload = json.loads(envelope["content"][0]["text"])
-    assert payload["status"] == "pending", payload   # §2.A: detached owner
-    await tools_mod.drain_launch_turns()
+    await _cancel_while_opening(launcher, driver, monkeypatch)
     await tools_mod.drain_launch_death_reports()
 
     created_id = next(iter(registry._records))
@@ -75,13 +73,13 @@ async def test_mid_tool_loop_cutoff_never_completes_or_retains(
     assert written_statuses.count("error") == 1, written_statuses
     assert registry.get(created_id).status == "error"
     assert registry.get(created_id).origin["error_kind"] == (
-        "launch_turn_incomplete")
+        "launch_cancelled")
 
     rows = json.loads((tmp_path / "engagements.json").read_text())
     matching = [r for r in rows if r["id"] == created_id]
     assert len(matching) == 1, rows
     assert matching[0]["status"] == "error"
-    assert matching[0]["origin"]["error_kind"] == "launch_turn_incomplete"
+    assert matching[0]["origin"]["error_kind"] == "launch_cancelled"
 
     # Nothing reached the funnel, which announces the outcome as told.
     assert finalize_calls == []

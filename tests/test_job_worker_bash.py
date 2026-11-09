@@ -15,7 +15,7 @@ import plugin_registry
 import tools
 from engagement_registry import EngagementRegistry
 from test_plugin_job_launch import worker  # noqa: F401 — fixture
-from test_start_job import Client, call, runtime  # noqa: F401 — fixture
+from test_start_job import Client, call, drain_launch_turns, runtime  # noqa: F401 — fixture
 
 
 def _specialist_cfg(allowed, disallowed):
@@ -42,7 +42,7 @@ def _specialist_options(monkeypatch, allowed, disallowed):
 async def test_a_resumed_plugin_job_worker_is_not_offered_bash(worker):
     """The resident-hosted worker rebuilt from its persisted record on resume."""
     result = await call()
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     loaded = EngagementRegistry(tombstone_path=worker.registry._tombstone_path)
     await loaded.load()
     rec = loaded.get(result["engagement_id"])
@@ -68,7 +68,7 @@ async def test_a_specialist_hosted_job_is_not_offered_bash(runtime):
     assert "Bash" not in runtime.cfg.tools.disallowed
     result = await call()
     assert result["status"] == "pending", result
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     opts = Client.instances[0].options
     assert opts.disallowed_tools.count("Bash") == 1
 
@@ -76,7 +76,7 @@ async def test_a_specialist_hosted_job_is_not_offered_bash(runtime):
 @pytest.mark.asyncio
 async def test_a_resumed_specialist_hosted_job_is_not_offered_bash(runtime):
     result = await call()
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     rec = runtime.registry.get(result["engagement_id"])
     assert rec.kind == "specialist" and rec.plugin_artifacts is not None
     opts = tools.build_engagement_resume_options(rec, "resumed-session")

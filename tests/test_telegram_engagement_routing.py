@@ -10,16 +10,30 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
-async def _drain_turns(ch) -> None:
-    """Await any background engagement-turn delivery tasks (M9, v0.52.0).
+class _SubmitDriver:
+    """The job driver's synchronous seam entry, recorded. A topic message is
+    handed to the job through ``submit_operator`` and the handler returns;
+    nothing in the handler waits on the job's session."""
 
-    handle_update now spawns the SDK turn in a tracked background task so the
-    per-topic lock is not held across it; tests that assert on
-    ``_driver_send_user_turn`` must first drain those tasks.
-    """
-    tasks = list(getattr(ch, "_turn_tasks", ()) or ())
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+    def __init__(self, on_submit=None):
+        self.submitted: list[tuple] = []
+        self.on_submit = on_submit
+
+    def submit_operator(self, rec, text, *, tg_message_id=None, notice=None):
+        self.submitted.append((rec, text, tg_message_id))
+        if self.on_submit is not None:
+            self.on_submit(rec, text)
+        return object()
+
+    @property
+    def texts(self) -> list[str]:
+        return [t for _r, t, _m in self.submitted]
+
+
+def _wire_driver(ch, **kw) -> _SubmitDriver:
+    drv = _SubmitDriver(**kw)
+    ch._engagement_driver = drv
+    return drv
 
 
 def _mk_update(*, chat_id, text, thread_id=None, user_id=77):
@@ -40,47 +54,44 @@ class TestSupergroupRouting:
 
         ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
                              engagement_supergroup_id=-1001)
-        ch._driver_send_user_turn = AsyncMock()
+        drv = _wire_driver(ch)
 
         u = _mk_update(chat_id=-1001, text="hi", thread_id=None, user_id=7)
         await ch.handle_update(u)
         # First time: redirect posted
         assert -1001 in fake_telegram_bot._supergroups
-        ch._driver_send_user_turn.assert_not_called()
+        assert drv.submitted == []
 
         # Second time: no additional redirect (rate-limited per user per boot)
         await ch.handle_update(u)
-        ch._driver_send_user_turn.assert_not_called()
+        assert drv.submitted == []
 
     async def test_topic_message_routed_to_driver(self, fake_telegram_bot, engagement_fixture):
         from channels.telegram import TelegramChannel
 
         ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
                              engagement_supergroup_id=-1001)
-        ch._driver_send_user_turn = AsyncMock()
+        drv = _wire_driver(ch)
         ch._engagement_registry = engagement_fixture.registry
         rec = engagement_fixture.active_record  # topic_id=555, status=active
 
         u = _mk_update(chat_id=-1001, text="Alex please continue", thread_id=555)
         await ch.handle_update(u)
-        await _drain_turns(ch)
-        ch._driver_send_user_turn.assert_awaited_once()
-        args = ch._driver_send_user_turn.await_args.args
-        assert args[0].id == rec.id
-        assert args[1] == "Alex please continue"
+        assert [(r.id, t) for r, t, _m in drv.submitted] == [
+            (rec.id, "Alex please continue")]
 
     async def test_ellen_main_chat_unchanged(self, fake_telegram_bot):
         from channels.telegram import TelegramChannel
 
         ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
                              engagement_supergroup_id=-1001)
-        ch._driver_send_user_turn = AsyncMock()
+        drv = _wire_driver(ch)
         ch._route_to_assistant = AsyncMock()
 
         u = _mk_update(chat_id=100, text="hi Ellen")
         await ch.handle_update(u)
         ch._route_to_assistant.assert_awaited_once()
-        ch._driver_send_user_turn.assert_not_called()
+        assert drv.submitted == []
 
 
 class TestOnlyANewMessageStartsATurn:
@@ -109,15 +120,14 @@ class TestOnlyANewMessageStartsATurn:
 
         ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
                              engagement_supergroup_id=-1001)
-        ch._driver_send_user_turn = AsyncMock()
+        drv = _wire_driver(ch)
         ch._route_to_assistant = AsyncMock()
         ch._engagement_registry = engagement_fixture.registry
 
         await ch.handle_update(self._as(field, chat_id=100))
         await ch.handle_update(self._as(field, chat_id=-1001, thread_id=555))
-        await _drain_turns(ch)
         ch._route_to_assistant.assert_not_called()
-        ch._driver_send_user_turn.assert_not_called()
+        assert drv.submitted == []
         assert fake_telegram_bot.messages == []
 
 
@@ -135,7 +145,7 @@ class TestEngagementTopicRateLimit:
             engagement_supergroup_id=-1001,
             rate_limiter=RateLimiter(capacity=capacity, window_s=60.0),
         )
-        ch._driver_send_user_turn = AsyncMock()
+        _wire_driver(ch)
         ch._engagement_registry = registry
         ch.send_to_topic_rich = AsyncMock()
         ch.send_to_topic = AsyncMock()
@@ -153,10 +163,8 @@ class TestEngagementTopicRateLimit:
             chat_id=-1001, text="second", thread_id=rec.topic_id))
         await ch.handle_update(_mk_update(
             chat_id=-1001, text="third", thread_id=rec.topic_id))
-        await _drain_turns(ch)
 
-        ch._driver_send_user_turn.assert_awaited_once()
-        assert ch._driver_send_user_turn.await_args.args[1] == "first"
+        assert ch._engagement_driver.texts == ["first"]
         # One-shot notice per reject streak.
         notices = [c.args[1] for c in ch.send_to_topic_rich.await_args_list]
         assert sum("slow down" in n.lower() for n in notices) == 1
@@ -180,7 +188,6 @@ class TestEngagementTopicRateLimit:
             chat_id=-1001, text="first", thread_id=556, user_id=77))
         await ch.handle_update(_mk_update(
             chat_id=-1001, text="/cancel", thread_id=556, user_id=77))
-        await _drain_turns(ch)
 
         notices = [c.args[1] for c in ch.send_to_topic_rich.await_args_list]
         assert any("originator" in n for n in notices), notices
@@ -200,9 +207,8 @@ class TestEngagementTopicRateLimit:
             chat_id=-1001, text="to-one", thread_id=rec1.topic_id))
         await ch.handle_update(_mk_update(
             chat_id=-1001, text="to-two", thread_id=rec2.topic_id))
-        await _drain_turns(ch)
 
-        assert ch._driver_send_user_turn.await_count == 2
+        assert ch._engagement_driver.texts == ["to-one", "to-two"]
 
 
 class TestPTBDispatchContract:
@@ -238,26 +244,20 @@ class TestPTBDispatchContract:
     async def test_handle_update_supergroup_topic_with_ptb_context(
         self, fake_telegram_bot, engagement_fixture,
     ):
-        """Same regression coverage on the engagement-routing branch
-        (``_driver_send_user_turn``) so a future signature change that
-        only breaks one leg fails the test."""
+        """Same regression coverage on the engagement-routing branch (the
+        job's driver) so a future signature change that only breaks one leg
+        fails the test."""
         from channels.telegram import TelegramChannel
 
         ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
                              engagement_supergroup_id=-1001)
-        ch._driver_send_user_turn = AsyncMock()
+        drv = _wire_driver(ch)
         ch._engagement_registry = engagement_fixture.registry
         rec = engagement_fixture.active_record
 
         u = _mk_update(chat_id=-1001, text="continue please", thread_id=rec.topic_id)
         await ch.handle_update(u, MagicMock(name="CallbackContext"))
-        await _drain_turns(ch)
-        ch._driver_send_user_turn.assert_awaited_once()
-
-
-async def rec_with_session(registry, rec, session_id):
-    await registry.persist_session_id(rec.id, session_id)
-    await registry.mark_idle(rec.id)
+        assert drv.texts == ["continue please"]
 
 
 class TestSlashCommands:
@@ -298,16 +298,15 @@ class TestSlashCommands:
         ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
                              engagement_supergroup_id=-1001)
         ch._engagement_registry = engagement_fixture.registry
-        ch._driver_send_user_turn = AsyncMock()
+        drv = _wire_driver(ch)
         ch._post_engagement_notice = AsyncMock()
         rec = engagement_fixture.active_record
 
         u = _mk_update(chat_id=-1001, text="/help@CasaBot",
                        thread_id=rec.topic_id)
         await ch.handle_update(u)
-        await _drain_turns(ch)
 
-        ch._driver_send_user_turn.assert_not_called()
+        assert drv.submitted == []
         ch._post_engagement_notice.assert_awaited_once()
         reply = ch._post_engagement_notice.await_args.args[1]
         for c in ("/cancel", "/complete"):
@@ -326,16 +325,15 @@ class TestSlashCommands:
                              engagement_supergroup_id=-1001)
         ch._engagement_registry = engagement_fixture.registry
         ch._finalize_cancel = AsyncMock()
-        ch._driver_send_user_turn = AsyncMock()
+        drv = _wire_driver(ch)
         rec = engagement_fixture.active_record
 
         u = _mk_update(chat_id=-1001, text="/cancel@CasaBot",
                        thread_id=rec.topic_id)
         await ch.handle_update(u)
-        await _drain_turns(ch)
 
         ch._finalize_cancel.assert_awaited_once()
-        ch._driver_send_user_turn.assert_not_called()
+        assert drv.submitted == []
 
     async def test_user_turn_threads_message_id(
         self, fake_telegram_bot, engagement_fixture,
@@ -347,19 +345,16 @@ class TestSlashCommands:
         ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
                              engagement_supergroup_id=-1001)
         ch._engagement_registry = engagement_fixture.registry
-        ch._driver_send_user_turn = AsyncMock()
+        drv = _wire_driver(ch)
         rec = engagement_fixture.active_record
 
         u = _mk_update(chat_id=-1001, text="operator says hi",
                        thread_id=rec.topic_id)
         await ch.handle_update(u)
-        await _drain_turns(ch)
 
-        ch._driver_send_user_turn.assert_awaited_once()
-        assert ch._driver_send_user_turn.await_args.args[0] is rec
         # message id threaded through as a kwarg.
-        assert ch._driver_send_user_turn.await_args.kwargs.get(
-            "tg_message_id") == 999
+        assert [(r.id, t, m) for r, t, m in drv.submitted] == [
+            (rec.id, "operator says hi", 999)]
 
     async def test_slash_command_for_other_bot_falls_through(
         self, fake_telegram_bot, engagement_fixture,
@@ -373,16 +368,15 @@ class TestSlashCommands:
         ch._engagement_registry = engagement_fixture.registry
         ch._bot_username = "casabot"
         ch._finalize_cancel = AsyncMock()
-        ch._driver_send_user_turn = AsyncMock()
+        drv = _wire_driver(ch)
         rec = engagement_fixture.active_record
 
         u = _mk_update(chat_id=-1001, text="/cancel@otherbot",
                        thread_id=rec.topic_id)
         await ch.handle_update(u)
-        await _drain_turns(ch)
 
         ch._finalize_cancel.assert_not_awaited()
-        ch._driver_send_user_turn.assert_awaited_once()
+        assert drv.texts == ["/cancel@otherbot"]
 
 
 class TestSlashCommandOriginatorOnly:
@@ -496,53 +490,6 @@ class TestSlashCommandOriginatorOnly:
         ch._finalize_cancel.assert_awaited_once()
 
 
-class TestResumeOnTurn:
-    async def test_resume_called_when_driver_not_alive(
-        self, fake_telegram_bot, engagement_fixture,
-    ):
-        from channels.telegram import TelegramChannel
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        ch._engagement_registry = engagement_fixture.registry
-        ch._driver_send_user_turn = AsyncMock()
-        driver = MagicMock()
-        driver.is_alive = MagicMock(return_value=False)
-        driver.resume = AsyncMock()
-        ch._engagement_driver = driver
-        rec = engagement_fixture.active_record
-        rec.sdk_session_id = "sess-xyz"
-        await rec_with_session(engagement_fixture.registry, rec, "sess-xyz")
-
-        u = _mk_update(chat_id=-1001, text="Hi again", thread_id=rec.topic_id)
-        await ch.handle_update(u)
-        await _drain_turns(ch)
-        driver.resume.assert_awaited_once_with(rec, "sess-xyz")
-        ch._driver_send_user_turn.assert_awaited_once()
-
-    async def test_two_resume_failures_mark_error(
-        self, fake_telegram_bot, engagement_fixture,
-    ):
-        from channels.telegram import TelegramChannel
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        ch._engagement_registry = engagement_fixture.registry
-        ch._driver_send_user_turn = AsyncMock()
-        driver = MagicMock()
-        driver.is_alive = MagicMock(return_value=False)
-        driver.resume = AsyncMock(side_effect=RuntimeError("rotated"))
-        ch._engagement_driver = driver
-        rec = engagement_fixture.active_record
-        await rec_with_session(engagement_fixture.registry, rec, "sess-xyz")
-
-        u = _mk_update(chat_id=-1001, text="turn1", thread_id=rec.topic_id)
-        await ch.handle_update(u)
-        u = _mk_update(chat_id=-1001, text="turn2", thread_id=rec.topic_id)
-        await ch.handle_update(u)
-        assert rec.status == "error"
-
-
 class TestHandleUpdateConcurrencyRace:
     """Bug 10 (v0.14.7): per-topic lock around handle_update.
 
@@ -563,8 +510,8 @@ class TestHandleUpdateConcurrencyRace:
         first; uncontended setdefault returns the same Lock for both
         tasks; the cancel-task acquires first). cancel_impl yields BEFORE
         mutating registry status — without the lock the regular turn
-        would slip past the status check during that yield and call
-        _driver_send_user_turn on a soon-to-be-dead engagement.
+        would slip past the status check during that yield and hand the
+        message to a soon-to-be-dead engagement.
 
         Acceptance criterion 1: with the lock the regular turn either
         runs before the cancel (saw "active") or is dropped after the
@@ -583,14 +530,14 @@ class TestHandleUpdateConcurrencyRace:
 
         async def cancel_impl(rec_arg, *, reason):
             # Yield the event loop FIRST. Without the per-topic lock
-            # this gives the turn-task a window to reach
-            # `await driver_send_user_turn` before mark_cancelled fires
+            # this gives the turn-task a window to reach the driver
+            # before mark_cancelled fires
             # — exactly the race window Bug 10 documents.
             await asyncio.sleep(0)
             await registry.mark_cancelled(rec_arg.id)
 
         ch._finalize_cancel = AsyncMock(side_effect=cancel_impl)
-        ch._driver_send_user_turn = AsyncMock()
+        drv = _wire_driver(ch)
 
         u_cancel = _mk_update(chat_id=-1001, text="/cancel",
                               thread_id=rec.topic_id, user_id=99)
@@ -606,7 +553,7 @@ class TestHandleUpdateConcurrencyRace:
         # The lock guarantees cancel completes before the turn is
         # routed. With cancel completing first, the turn sees terminal
         # status at re-check and is dropped (case a in acceptance).
-        assert ch._driver_send_user_turn.await_count == 0, (
+        assert drv.submitted == [], (
             "regular turn was routed despite a concurrent /cancel; "
             "the per-topic lock is missing or broken"
         )
@@ -628,31 +575,21 @@ class TestHandleUpdateConcurrencyRace:
                              engagement_supergroup_id=-1001)
         ch._engagement_registry = engagement_fixture.registry
         rec = engagement_fixture.active_record
-        ch._driver_send_user_turn = AsyncMock()
+        drv = _wire_driver(ch)
 
         u1 = _mk_update(chat_id=-1001, text="hello1", thread_id=rec.topic_id)
         u2 = _mk_update(chat_id=-1001, text="hello2", thread_id=rec.topic_id)
 
         await asyncio.gather(ch.handle_update(u1), ch.handle_update(u2))
-        await _drain_turns(ch)
 
-        assert ch._driver_send_user_turn.await_count == 2
-        texts_sent = sorted(
-            c.args[1] for c in ch._driver_send_user_turn.await_args_list
-        )
-        assert texts_sent == ["hello1", "hello2"]
+        assert drv.texts == ["hello1", "hello2"]
 
     async def test_concurrent_turns_on_different_topics_run_in_parallel(
         self, fake_telegram_bot, tmp_path,
     ):
         """The lock is keyed by thread_id — two updates on different
-        engagements must not block each other.
-
-        Set up two engagements in different topics; have the first
-        turn's driver call block on an event the second turn must set.
-        If different topics share a lock, this deadlocks; with per-
-        topic locks it completes.
-        """
+        engagements must not block each other: with topic A's handler lock
+        held, a message in topic B is still handed to its job."""
         from channels.telegram import TelegramChannel
         from engagement_registry import EngagementRegistry
 
@@ -671,39 +608,26 @@ class TestHandleUpdateConcurrencyRace:
         ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
                              engagement_supergroup_id=-1001)
         ch._engagement_registry = reg
+        drv = _wire_driver(ch)
 
-        b_routed = asyncio.Event()
-        a_can_finish = asyncio.Event()
-
-        async def driver_send(rec_arg, text, *, tg_message_id=None):
-            if rec_arg.id == rec_a.id:
-                # A holds its lock; wait for B to also be routed.
-                await asyncio.wait_for(b_routed.wait(), timeout=2.0)
-                a_can_finish.set()
-            else:
-                b_routed.set()
-
-        ch._driver_send_user_turn = driver_send
-
-        u_a = _mk_update(chat_id=-1001, text="for-A", thread_id=rec_a.topic_id)
-        u_b = _mk_update(chat_id=-1001, text="for-B", thread_id=rec_b.topic_id)
-
-        # M9 (v0.52.0): turn delivery now runs in background tasks, so the
-        # per-topic lock is never held across driver_send. Both turns must
-        # still be routed and complete; A's task waits on B's, and the
-        # wait_for(2.0) inside driver_send catches any regression that
-        # serialises the two topics.
-        await asyncio.gather(ch.handle_update(u_a), ch.handle_update(u_b))
-        await _drain_turns(ch)
-        assert b_routed.is_set()
-        assert a_can_finish.is_set()
+        lock_a = ch._engagement_handler_locks.setdefault(
+            rec_a.topic_id, asyncio.Lock())
+        async with lock_a:
+            await asyncio.wait_for(ch.handle_update(_mk_update(
+                chat_id=-1001, text="for-B", thread_id=rec_b.topic_id)), 2.0)
+            assert [(r.id, t) for r, t, _m in drv.submitted] == [
+                (rec_b.id, "for-B")]
+        await ch.handle_update(_mk_update(
+            chat_id=-1001, text="for-A", thread_id=rec_a.topic_id))
+        assert drv.texts == ["for-B", "for-A"]
 
     async def test_cancel_interrupts_inflight_turn(
         self, fake_telegram_bot, engagement_fixture,
     ):
         """M9 (v0.52.0): /cancel must complete while a turn is STILL in
-        flight — not queue behind it. Pre-fix the per-topic lock was held
-        across the whole SDK turn, so /cancel blocked until it drained."""
+        flight — not queue behind it. The topic's handler hands the message
+        to the job and returns; the job's turn runs in its own session, so a
+        /cancel right after is handled at once while that turn still runs."""
         from channels.telegram import TelegramChannel
 
         ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
@@ -712,14 +636,8 @@ class TestHandleUpdateConcurrencyRace:
         ch._engagement_registry = registry
         rec = engagement_fixture.active_record  # driver=in_casa, status=active
 
-        turn_started = asyncio.Event()
-        release_turn = asyncio.Event()
-
-        async def slow_turn(rec_arg, text, *, tg_message_id=None):
-            turn_started.set()
-            await release_turn.wait()  # simulates a minutes-long SDK turn
-
-        ch._driver_send_user_turn = slow_turn
+        release_turn = asyncio.Event()       # the job's turn: never released here
+        drv = _wire_driver(ch)
 
         cancel_ran = asyncio.Event()
 
@@ -729,10 +647,10 @@ class TestHandleUpdateConcurrencyRace:
 
         ch._finalize_cancel = AsyncMock(side_effect=cancel_impl)
 
-        t_turn = asyncio.create_task(ch.handle_update(
+        await asyncio.wait_for(ch.handle_update(
             _mk_update(chat_id=-1001, text="work on it",
-                       thread_id=rec.topic_id, user_id=99)))
-        await asyncio.wait_for(turn_started.wait(), timeout=1.0)
+                       thread_id=rec.topic_id, user_id=99)), timeout=1.0)
+        assert drv.texts == ["work on it"]
 
         # Core assertion: /cancel returns while the turn is STILL in flight.
         await asyncio.wait_for(
@@ -743,10 +661,6 @@ class TestHandleUpdateConcurrencyRace:
         )
         assert cancel_ran.is_set()
         assert not release_turn.is_set()  # turn had not drained when cancel ran
-
-        release_turn.set()
-        await asyncio.wait_for(t_turn, timeout=1.0)
-        await _drain_turns(ch)
 
 
 class TestMessageHandlerWiring:
@@ -838,106 +752,11 @@ def test_inbound_message_without_message_id_is_tolerated():
     assert "msg.message_id))" not in src
 
 
-class TestResumeFailureRaces:
-    async def test_resume_fail_count_persists_to_tombstone(
-        self, fake_telegram_bot, engagement_fixture, tmp_path,
-    ):
-        """#326 (low): the two-strike counter must survive a restart — a failed
-        resume writes it through the registry, not just onto the in-memory
-        origin dict."""
-        import json
-
-        from channels.telegram import TelegramChannel
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        ch._engagement_registry = engagement_fixture.registry
-        ch._driver_send_user_turn = AsyncMock()
-        driver = MagicMock()
-        driver.is_alive = MagicMock(return_value=False)
-        driver.resume = AsyncMock(side_effect=RuntimeError("rotated"))
-        ch._engagement_driver = driver
-        rec = engagement_fixture.active_record
-        await rec_with_session(engagement_fixture.registry, rec, "sess-xyz")
-
-        u = _mk_update(chat_id=-1001, text="turn1", thread_id=rec.topic_id)
-        await ch.handle_update(u)
-
-        rows = json.loads((tmp_path / "e.json").read_text())
-        row = next(r for r in rows if r["id"] == rec.id)
-        assert row["origin"].get("_resume_fail_count") == 1
-
-    async def test_second_strike_lost_to_concurrent_finalize_skips_cleanup(
-        self, fake_telegram_bot, engagement_fixture,
-    ):
-        """#326: a failed resume must not overwrite a concurrently committed
-        terminal status with `error`, nor run its duplicate topic cleanup."""
-        from channels.telegram import TelegramChannel
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        reg = engagement_fixture.registry
-        ch._engagement_registry = reg
-        ch._driver_send_user_turn = AsyncMock()
-        ch._cleanup_error_topic = AsyncMock()
-        rec = engagement_fixture.active_record
-        await rec_with_session(reg, rec, "sess-xyz")
-        await reg.set_resume_fail_count(rec.id, 1)   # one strike already
-
-        driver = MagicMock()
-        driver.is_alive = MagicMock(return_value=False)
-
-        async def _cancel_races_resume(*_a, **_k):
-            # A /cancel finalizer commits terminal while resume() is awaited.
-            assert await reg.try_transition_terminal(rec.id, "cancelled")
-            raise RuntimeError("rotated")
-
-        driver.resume = AsyncMock(side_effect=_cancel_races_resume)
-        ch._engagement_driver = driver
-
-        u = _mk_update(chat_id=-1001, text="turn2", thread_id=rec.topic_id)
-        await ch.handle_update(u)
-
-        assert reg.get(rec.id).status == "cancelled"          # winner stands
-        assert "error_kind" not in reg.get(rec.id).origin
-        ch._cleanup_error_topic.assert_not_awaited()          # no duplicate cleanup
-
-
 class TestSteeringClampsEngagementClearance:
-    """#336 (review r4): an engagement reads at its creator's clearance, but
-    any supergroup member can steer it by messaging its topic. The ingress
-    clamps the record's clearance DOWN to the steering sender's BEFORE the
-    turn is delivered, so the engagement never reads above the
-    least-privileged person taking part.
-
-    Red case: removing the ``lower_origin_clearance`` call from the topic
-    ingress leaves the record at ``private`` and fails this test."""
-
-    async def test_non_operator_topic_message_lowers_the_record(
-        self, fake_telegram_bot, engagement_fixture,
-    ):
-        from channels.telegram import TelegramChannel
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        ch._driver_send_user_turn = AsyncMock()
-        # #369: a moving clamp now also tears down + rebuilds the session
-        # context; wire the seams so delivery can proceed.
-        ch._driver_invalidate_session = AsyncMock()
-        ch._engagement_context_rebuilder = AsyncMock(return_value="")
-        ch._engagement_registry = engagement_fixture.registry
-        rec = engagement_fixture.active_record
-        rec.origin["_origin_route"] = "telegram"
-        rec.origin["_origin_clearance"] = "private"   # operator-created
-
-        # user_id 77 != configured chat_id 100 ⇒ not the operator.
-        await ch.handle_update(
-            _mk_update(chat_id=-1001, text="what's the alarm code?",
-                       thread_id=555, user_id=77))
-        await _drain_turns(ch)
-
-        assert rec.origin["_origin_clearance"] == "public"
-        ch._driver_send_user_turn.assert_awaited_once()
+    """#336: an engagement reads at its creator's clearance. The operator
+    steering it from its topic leaves that clearance as it is and reaches the
+    job; a household member's message never reaches the job at all (pinned in
+    test_job_message_seams)."""
 
     async def test_operator_topic_message_leaves_it_private(
         self, fake_telegram_bot, engagement_fixture,
@@ -946,7 +765,7 @@ class TestSteeringClampsEngagementClearance:
 
         ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
                              engagement_supergroup_id=-1001)
-        ch._driver_send_user_turn = AsyncMock()
+        drv = _wire_driver(ch)
         ch._engagement_registry = engagement_fixture.registry
         rec = engagement_fixture.active_record
         rec.origin["_origin_route"] = "telegram"
@@ -956,6 +775,6 @@ class TestSteeringClampsEngagementClearance:
         await ch.handle_update(
             _mk_update(chat_id=-1001, text="carry on", thread_id=555,
                        user_id=100))
-        await _drain_turns(ch)
 
         assert rec.origin["_origin_clearance"] == "private"
+        assert drv.texts == ["carry on"]

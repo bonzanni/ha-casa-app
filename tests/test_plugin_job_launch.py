@@ -14,7 +14,7 @@ import tools
 from config import CharacterConfig, HooksConfig
 from engagement_registry import EngagementRegistry
 from plugin_fixtures import entry, mk_artifact, mk_registry
-from test_start_job import Client, DECL, call, cli_limit, runtime
+from test_start_job import Client, DECL, call, cli_limit, drain_launch_turns, runtime
 
 pytestmark = pytest.mark.asyncio
 
@@ -59,7 +59,7 @@ async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
     assert result['status'] == 'pending', result
     assert (result['agent'], result['job'], result['title']) == ('assistant', DECL.qualified_name, DECL.title)
     assert result['message'] == "Started Classify entries. Progress appears in Ellen's topic."
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     rec = worker.registry.get(result['engagement_id'])
     opts = Client.instances[0].options
     assert isinstance(opts, ClaudeAgentOptions)
@@ -79,7 +79,7 @@ async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
     assert Path(opts.cwd).is_dir()
     assert opts.system_prompt == tools._PLUGIN_JOB_PROMPT
     assert 'PERSONA SECRET' not in opts.system_prompt
-    for fragment in ('worker', 'bounded batches', 'park', 'report_job_progress', 'emit_completion', 'no delegation', 'resident memory'):
+    for fragment in ('worker', 'one long session', 'Do not ask questions', 'report_job_progress', 'emit_completion', 'no delegation', 'resident memory'):
         assert fragment in opts.system_prompt
     assert isinstance(await opts.can_use_tool('Bash', {}, None), PermissionResultDeny)
     assert {'PreToolUse', 'PostToolUse', 'PostToolUseFailure'} <= set(opts.hooks)
@@ -102,7 +102,6 @@ async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
     assert restored.origin == rec.origin
     assert restored.plugin_artifacts == rec.plugin_artifacts
     assert restored.topic_title == rec.topic_title
-    assert worker.calls == [(rec.id, 0, worker.channel)]
 
 
 async def test_env_withheld_before_topic(worker, monkeypatch):
@@ -117,7 +116,7 @@ async def test_env_withheld_before_topic(worker, monkeypatch):
 
 async def test_resume_uses_pinned_launch_settings(worker):
     result = await call()
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     loaded = EngagementRegistry(tombstone_path=worker.registry._tombstone_path)
     await loaded.load()
     rec = loaded.get(result['engagement_id'])
@@ -138,7 +137,7 @@ async def test_resume_uses_pinned_launch_settings(worker):
 @pytest.mark.parametrize('lost', ['resolution', 'environment'])
 async def test_resume_refuses_lost_plugin(worker, monkeypatch, lost):
     result = await call()
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     rec = worker.registry.get(result['engagement_id'])
     if lost == 'resolution':
         # The real recorded resolver excludes malformed protected declarations.
@@ -185,7 +184,7 @@ async def test_worker_record_carries_the_effective_profile(worker, tmp_path):
                                     store_root=live_store)
     result = await call()
     assert result['status'] == 'pending', result
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     rec = worker.registry.get(result['engagement_id'])
     assert rec.plugin_artifacts[0]['profile'] == 'read'
     opts = Client.instances[0].options
@@ -222,7 +221,7 @@ async def test_launch_records_the_plan_the_builder_applied_without_rereading(wor
         return real(resolution, target=target)
     monkeypatch.setattr(tools, 'profile_plan', counting)
     result = await call()
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     assert calls == ['resident:assistant'], calls
     rec = worker.registry.get(result['engagement_id'])
     assert rec.plugin_artifacts[0]['profile'] == 'read'
@@ -235,7 +234,7 @@ async def test_launch_aborts_when_the_profile_write_fails(worker, monkeypatch):
     monkeypatch.setattr(worker.registry, 'update_plugin_profiles',
                         AsyncMock(side_effect=OSError(28, 'No space left on device')))
     result = await call()
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     assert (result['status'], result['kind']) == ('error', 'profile_persist_failed'), result
     assert not Client.instances, 'no client may open when the profile write failed'
     assert not worker.registry.active_and_idle()
@@ -254,7 +253,7 @@ async def test_a_job_recorded_before_the_5_5_move_resumes_on_its_successor(
     monkeypatch.setattr(jobs, 'find_job_host', lambda *args: worker.host)
     result = await call()
     assert result['status'] == 'pending', result
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     rec = worker.registry.get(result['engagement_id'])
     rec.origin['plugin_job']['model'] = recorded
     opts = tools.build_engagement_resume_options(rec, 'sid-1')

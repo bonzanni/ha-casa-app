@@ -1,27 +1,13 @@
-"""#678 red case — an in_casa LAUNCH turn that dies mid-tool-loop.
+"""The job launch through the real driver, and the shared launch rig.
 
-Specified by Sol (drive redcase round, MODE: SPECIFY) against
-03abe71036990af61a914e6257eced8e77df413a. The shape is the MID-TOOL-LOOP
-CUTOFF, not the zero-frame case: assistant and tool-result frames are seen —
-so ``evidence_seen`` has already latched (drivers/in_casa_driver.py:643-652) —
-and the stream then reaches EOF with no ``ResultMessage``, no
-``emit_completion`` and no assistant text.
+A job launch opens the job's session and queues its brief; the session's
+reader owns the job from there. A launch turn that runs to its end — frames,
+streamed text, its ``ResultMessage`` — leaves a live job with nothing
+reported. (A launch turn cut off before its ``ResultMessage`` is a session
+loss, owned by session recovery and pinned with the job session.)
 
-The pinned SDK makes that EOF unambiguous: ``receive_response()`` returns AT
-the ``ResultMessage`` (client.py:571-610, "If no ResultMessage is received,
-the iterator continues indefinitely"), and ``receive_messages()`` ends only on
-the ``{"type": "end"}`` sentinel that the read task's ``finally`` sends
-(_internal/query.py:406-418). A turn that ran to its end always yields one.
-
-Pre-run terminus for the invariant, read rather than cited:
-  - tests/test_delegate_to_agent.py:124-126@03abe710 — "A stream that ends
-    without a ResultMessage certifies nothing — the runner does not raise on
-    that path, so it must still be an abort."
-  - docs/architecture/engagements.md:104@03abe710 — "A driver fails to start
-    after the record exists. The engagement is marked errored, topic cleanup is
-    attempted, and the caller is told the start failed."
-  - casa/rootfs/opt/casa/tools.py:7434-7437@03abe710 — these aborts stay
-    OUTSIDE _finalize_engagement and its retention side effects.
+``_build``/``_launch`` and the scripted clients are shared with the other
+launch suites.
 """
 
 from __future__ import annotations
@@ -248,75 +234,14 @@ async def _launch(launcher, task="Plan Q2"):
 # --- the red case -----------------------------------------------------------
 
 class TestInCasaLaunchTerminalArtifact:
-    """INV-ENG-011: an in_casa LAUNCH turn ends holding the turn's own
-    terminal artifact (a ResultMessage) AND either a durably-terminal record
-    or operator-visible topic output — or the launch REPORTS the death."""
-
-    async def test_mid_tool_loop_cutoff_reports_death_before_topic_close(
-        self, tmp_path, monkeypatch,
-    ):
-        probe = _Probe()
-        launcher, registry, channel, driver = _build(
-            tmp_path, monkeypatch, probe, ScriptedCutoffClient,
-        )
-
-        envelope = await _launch(launcher)
-        # §2.A (INV-ENG-021): the tool call returned `pending` before the
-        # launch turn ran; the turn and its death report are the anchored
-        # owner's. Await the owner, then assert what it left behind.
-        payload = json.loads(envelope["content"][0]["text"])
-        assert payload.get("status") == "pending", payload
-        import tools as tools_mod
-        await tools_mod.drain_launch_turns()
-        await tools_mod.drain_launch_death_reports()
-
-        # The stream really was the mid-tool-loop cutoff, not the easy case.
-        assert ScriptedCutoffClient.frames_yielded == 2
-        assert ScriptedCutoffClient.result_messages_yielded == 0
-        assert probe.emit_count == 0
-        assert probe.finalize_count == 0
-
-        assert len(registry._records) == 1
-        created_id = next(iter(registry._records))
-        rec = registry.get(created_id)
-        assert rec.status == "error", rec.status
-        assert rec.origin.get("error_kind") == "launch_turn_incomplete"
-        assert "without ResultMessage" in rec.origin.get("error_message", "")
-        assert rec.completed_at is not None
-
-        # ONE durable, strict terminal transition — not mark_error.
-        assert len(probe.transition_calls) == 1, probe.transition_calls
-        eid, outcome, kw = probe.transition_calls[0]
-        assert (eid, outcome) == (created_id, "error")
-        assert kw["strict"] is True
-        assert kw["error_kind"] == "launch_turn_incomplete"
-        assert probe.mark_error_calls == []
-
-        # One of each operator-visible effect, notice STRICTLY before close.
-        assert channel._post_engagement_notice.await_count == 1
-        assert probe.driver_cancel_calls == 1
-        assert channel.update_topic_state.await_count == 1
-        assert channel.close_topic.await_count == 1
-        assert channel.update_topic_state.await_args.kwargs == {
-            "engagement_id": created_id, "new_state": "failed",
-        }
-        assert channel.close_topic.await_args.kwargs == {"thread_id": 42}
-
-        assert probe.events.count("notice") == 1
-        assert probe.events.count("topic_close") == 1
-        assert probe.events.index("notice") < probe.events.index("topic_close")
-        assert probe.topic_open_at_notice == [True]
-        assert "without ResultMessage" in probe.notice_texts[0]
-
-        # The client is retired: no half-alive engagement behind a dead pipe.
-        assert driver.is_alive(rec) is False
-
     async def test_a_complete_launch_turn_stays_pending_and_reports_nothing(
         self, tmp_path, monkeypatch,
     ):
-        """The control that kills an unconditional-failure mutation: the same
-        frames plus the turn's ResultMessage and a text block is a legitimate
-        conversational launch end. Nothing is reported, nothing is closed."""
+        """The control that kills an unconditional-failure mutation: a launch
+        turn with its frames, a text block and its ResultMessage is a
+        legitimate launch. Nothing is reported, nothing is closed, the session
+        stays alive."""
+        import asyncio
         probe = _Probe()
         launcher, registry, channel, driver = _build(
             tmp_path, monkeypatch, probe, ScriptedCompleteClient,
@@ -325,11 +250,13 @@ class TestInCasaLaunchTerminalArtifact:
         envelope = await _launch(launcher)
         payload = json.loads(envelope["content"][0]["text"])
         assert payload.get("status") == "pending", payload
-        import tools as tools_mod
-        await tools_mod.drain_launch_turns()        # §2.A: the turn ran detached
+
+        async def _turn_ended():
+            while probe.finalize_count < 1:
+                await asyncio.sleep(0.001)
+        await asyncio.wait_for(_turn_ended(), 5)
 
         assert ScriptedCompleteClient.result_messages_yielded == 1
-
         created_id = next(iter(registry._records))
         assert registry.get(created_id).status == "active"
         assert probe.transition_calls == []
@@ -340,3 +267,4 @@ class TestInCasaLaunchTerminalArtifact:
         assert probe.driver_cancel_calls == 0
         assert probe.finalize_count == 1
         assert driver.is_alive(registry.get(created_id)) is True
+        await driver.cancel(registry.get(created_id))

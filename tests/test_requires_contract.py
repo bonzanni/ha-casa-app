@@ -746,6 +746,7 @@ class TestJobLaunchRequiresDenial:
         eng_reg.create = AsyncMock(return_value=rec)
         eng_reg.update_plugin_profiles = AsyncMock()  # S8: the launch records the applied profile
         eng_reg.set_channel_state = AsyncMock()
+        eng_reg.launch_shutdown_active = MagicMock(return_value=False)
 
         tm.init_tools(
             channel_manager=cm, bus=MagicMock(),
@@ -765,17 +766,17 @@ class TestJobLaunchRequiresDenial:
         def _spy_builder(
             cfg, *, resolution=None, extra_casa_tools: tuple[str, ...] = (),
             plan_out=None,  # S8: the launch hands the builder a plan sink
-            max_turns=None,  # a job's turns per batch
         ):
             captured["resolution"] = resolution
             captured["extra_casa_tools"] = extra_casa_tools
-            opts = MagicMock()
-            opts.allowed_tools = []
-            return opts
+            # A real options object: a job's launch applies its session
+            # settings to it with dataclasses.replace.
+            from claude_agent_sdk import ClaudeAgentOptions
+            return ClaudeAgentOptions(allowed_tools=[])
 
         monkeypatch.setattr(tm, "_build_specialist_options", _spy_builder)
         driver = MagicMock()
-        driver.start = AsyncMock()
+        driver.open = AsyncMock()
         agent_mod.active_engagement_driver = driver
 
         res = await launch_job("t", origin={

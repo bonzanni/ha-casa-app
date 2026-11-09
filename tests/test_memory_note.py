@@ -187,16 +187,55 @@ class _EngagementClient:
         yield _mk_result_message()
 
 
+class _JobRig:
+    """A real in_casa driver holding one live job session whose every written
+    message runs as one turn; ``_EngagementClient.prompts`` records each text
+    the driver wrote, in order."""
+
+    def __init__(self, rec):
+        from drivers.in_casa_driver import InCasaDriver
+        from test_memory_capture import _TopicStream
+        from turn_scripted_session import TurnScriptedSession, attach_session
+
+        class _Session(TurnScriptedSession, _EngagementClient):
+            pass
+
+        self.rec = rec
+        self.ended: list = []
+        self.drv = InCasaDriver(
+            topic_stream_factory=lambda tid: _TopicStream(),
+            on_turn_end=lambda r, result, api_error: self.ended.append(r))
+        _EngagementClient.prompts = []
+        attach_session(self.drv, rec, _Session())
+
+    async def _ended(self, count: int) -> None:
+        async with asyncio.timeout(5):
+            while len(self.ended) < count:
+                await asyncio.sleep(0.001)
+
+    async def turn(self, text, message_id) -> None:
+        """The operator's message, written and its turn ended."""
+        count = len(self.ended) + 1
+        self.drv.submit_operator(self.rec, text, tg_message_id=message_id)
+        await self._ended(count)
+
+    async def brief(self, text) -> None:
+        """The job's brief, written and its turn ended."""
+        count = len(self.ended) + 1
+        self.drv.enqueue_brief(self.rec, text)
+        await self._ended(count)
+
+    async def close(self) -> None:
+        await self.drv.cancel(self.rec)
+
+
 async def test_an_in_casa_engagement_turn_carries_the_note(
         tmp_path, monkeypatch):
-    from drivers.in_casa_driver import InCasaDriver
     from engagement_registry import EngagementRecord
-    from test_memory_capture import _TopicStream
     store = ledger_store(tmp_path)
     wire(monkeypatch, store)
     _correction(store, "the code is 4417")
     monkeypatch.setattr(tools, "_agent_role_map", {}, raising=False)
-    drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream())
     rec = EngagementRecord(
         id="e" * 32, kind="specialist", role_or_type="finance",
         driver="in_casa", status="active", topic_id=99, started_at=0.0,
@@ -204,12 +243,11 @@ async def test_an_in_casa_engagement_turn_carries_the_note(
         sdk_session_id=None, task="t",
         origin={"channel": "telegram", "_origin_route": "telegram",
                 "_origin_clearance": "private"})
-    _EngagementClient.prompts = []
-    drv._clients[rec.id] = _EngagementClient()
-    drv._locks[rec.id] = asyncio.Lock()
-    ticket = drv.admit_inbound(rec.id, "topic message")
-    await drv.send_user_turn(rec, "topic message", tg_message_id=55,
-                             inbound_token=ticket)
+    rig = _JobRig(rec)
+    try:
+        await rig.turn("topic message", 55)
+    finally:
+        await rig.close()
     [prompt] = _EngagementClient.prompts
     assert prompt.startswith("<pending_corrections>")
     assert 'his words: "the code is 4417"' in prompt
@@ -222,13 +260,10 @@ async def test_an_engagement_sees_corrections_filed_between_its_turns(
     correction the writer files between two of its turns is still owed to
     every later turn. Red case: an engagement note of pending corrections
     only loses it once filed."""
-    from drivers.in_casa_driver import InCasaDriver
     from engagement_registry import EngagementRecord
-    from test_memory_capture import _TopicStream
     store = ledger_store(tmp_path)
     wire(monkeypatch, store)
     monkeypatch.setattr(tools, "_agent_role_map", {}, raising=False)
-    drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream())
     rec = EngagementRecord(
         id="f" * 32, kind="specialist", role_or_type="finance",
         driver="in_casa", status="active", topic_id=99, started_at=0.0,
@@ -236,20 +271,15 @@ async def test_an_engagement_sees_corrections_filed_between_its_turns(
         sdk_session_id=None, task="t",
         origin={"channel": "telegram", "_origin_route": "telegram",
                 "_origin_clearance": "private"})
-    _EngagementClient.prompts = []
-    drv._clients[rec.id] = _EngagementClient()
-    drv._locks[rec.id] = asyncio.Lock()
-
-    async def turn(text, message_id):
-        ticket = drv.admit_inbound(rec.id, text)
-        await drv.send_user_turn(rec, text, tg_message_id=message_id,
-                                 inbound_token=ticket)
-
-    await turn("first", 1)
-    _correction(store, "the code is 4417")
-    await _run_jobs(store, no_change_all)          # filed, no longer pending
-    await turn("second", 2)
-    await turn("third", 3)
+    rig = _JobRig(rec)
+    try:
+        await rig.turn("first", 1)
+        _correction(store, "the code is 4417")
+        await _run_jobs(store, no_change_all)      # filed, no longer pending
+        await rig.turn("second", 2)
+        await rig.turn("third", 3)
+    finally:
+        await rig.close()
     first, second, third = _EngagementClient.prompts
     assert "4417" not in first
     for prompt in (second, third):
@@ -398,9 +428,7 @@ async def test_an_engagement_owes_a_correction_committed_as_it_started(
     worst once more than needed. Red case: a base taken at the start itself
     includes that commit, and no turn ever notes its correction."""
     import time as _time
-    from drivers.in_casa_driver import InCasaDriver
     from engagement_registry import EngagementRecord
-    from test_memory_capture import _TopicStream
     store = ledger_store(tmp_path)
     wire(monkeypatch, store)
     monkeypatch.setattr(tools, "_agent_role_map", {}, raising=False)
@@ -413,14 +441,13 @@ async def test_an_engagement_owes_a_correction_committed_as_it_started(
         completed_at=None, sdk_session_id=None,
         task="t", origin={"channel": "telegram", "_origin_route": "telegram",
                           "_origin_clearance": "private"})
-    drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream())
-    _EngagementClient.prompts = []
-    drv._clients[rec.id] = _EngagementClient()
-    drv._locks[rec.id] = asyncio.Lock()
-    for i, text in enumerate(("launch", "second")):
-        ticket = drv.admit_inbound(rec.id, text)
-        await drv.send_user_turn(rec, text, tg_message_id=i,
-                                 inbound_token=ticket)
+    rig = _JobRig(rec)
+    try:
+        await rig.brief("launch")
+        await rig.turn("second", 1)
+    finally:
+        await rig.close()
+    assert len(_EngagementClient.prompts) == 2
     for prompt in _EngagementClient.prompts:
         assert 'his words: "the city is Milan"' in prompt
 
@@ -435,16 +462,13 @@ async def test_an_engagement_owes_every_correction_filed_since_it_started(
     lands after the correction, and no turn ever notes it."""
     import sqlite3
     import time as _time
-    from drivers.in_casa_driver import InCasaDriver
     from engagement_registry import EngagementRecord
-    from test_memory_capture import _TopicStream
     store = ledger_store(tmp_path)
     wire(monkeypatch, store)
     monkeypatch.setattr(tools, "_agent_role_map", {}, raising=False)
     _correction(store, "the code is 4417")
     await _run_jobs(store, no_change_all)
     _backdate_commits(store, 3600)                 # filed long before the start
-    drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream())
     rec = EngagementRecord(
         id="a" * 32, kind="specialist", role_or_type="finance",
         driver="in_casa", status="active", topic_id=99,
@@ -452,27 +476,23 @@ async def test_an_engagement_owes_every_correction_filed_since_it_started(
         completed_at=None, sdk_session_id=None,
         task="t", origin={"channel": "telegram", "_origin_route": "telegram",
                           "_origin_clearance": "private"})
-    _EngagementClient.prompts = []
-    drv._clients[rec.id] = _EngagementClient()
-    drv._locks[rec.id] = asyncio.Lock()
-
-    async def turn(text, message_id):
-        ticket = drv.admit_inbound(rec.id, text)
-        await drv.send_user_turn(rec, text, tg_message_id=message_id,
-                                 inbound_token=ticket)
-
-    lock = sqlite3.connect(store.path, isolation_level=None)
-    lock.execute("BEGIN IMMEDIATE")
+    rig = _JobRig(rec)
     try:
-        await turn("launch", 1)
+        lock = sqlite3.connect(store.path, isolation_level=None)
+        lock.execute("BEGIN IMMEDIATE")
+        try:
+            await rig.brief("launch")
+        finally:
+            lock.execute("ROLLBACK")
+            lock.close()
+        capture.drain_spool(store)  # what the lock spooled, stored now
+        _correction(store, "the city is Milan")
+        await _run_jobs(store, no_change_all)      # filed after the start
+        await rig.turn("second", 2)
+        await rig.turn("third", 3)
     finally:
-        lock.execute("ROLLBACK")
-        lock.close()
-    capture.drain_spool(store)  # what the lock spooled, stored now
-    _correction(store, "the city is Milan")
-    await _run_jobs(store, no_change_all)          # filed after the start
-    await turn("second", 2)
-    await turn("third", 3)
+        await rig.close()
+    assert len(_EngagementClient.prompts) == 3
     for prompt in _EngagementClient.prompts[1:]:
         assert 'his words: "the city is Milan"' in prompt
         assert "4417" not in prompt

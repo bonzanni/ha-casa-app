@@ -66,4 +66,5 @@ class TestLateAssignmentIsAddOnly:
         assert obs["abort"].await_count == 0
         assert _recorded_names(obs) == ["mtg"]
         assert obs["built"][0].plugins[0] is mtg
-        assert obs["driver"].start.await_count == 1
+        assert obs["driver"].open.await_count == 1
+        assert obs["driver"].enqueue_brief.call_count == 1

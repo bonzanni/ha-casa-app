@@ -160,17 +160,6 @@ def _cancel_on_create(registry):
     registry.create = _create
 
 
-def _start_effect(arm: str):
-    from drivers.driver_protocol import StaleLaunchError
-    from error_kinds import ApiErrorTurn, ErrorKind
-
-    if arm.endswith("clearance_changed_during_launch"):
-        return StaleLaunchError("clamped", record_live=False)
-    if arm.endswith("api_error"):
-        return ApiErrorTurn(ErrorKind.RATE_LIMIT, "rate limited")
-    return RuntimeError("boom")
-
-
 # --------------------------------------------------------------------------
 # a specialist-hosted job's engagement launch arms
 # --------------------------------------------------------------------------
@@ -214,7 +203,7 @@ def _build_job(tmp_path, monkeypatch, effects, *, arm):
     specialist_reg.get = MagicMock(return_value=_finance_cfg())
 
     driver = MagicMock()
-    driver.start = AsyncMock(side_effect=_start_effect(arm))
+    driver.open = AsyncMock(side_effect=RuntimeError("boom"))
     driver.cancel = AsyncMock()
     monkeypatch.setattr(
         agent_mod, "active_engagement_driver",
@@ -241,20 +230,17 @@ def _build_job(tmp_path, monkeypatch, effects, *, arm):
 
 
 # --------------------------------------------------------------------------
-# the four arms
+# the arms
 # --------------------------------------------------------------------------
 
 #: (case id, handler family, arm key, the kind the caller MUST still be told).
 #: The configurator's six executor arms went with ``engage_executor``: the
 #: configurator is a delegated run now, and the job launch owner is the one
-#: engagement launcher left.
+#: engagement launcher left. ``start_failed`` is the job session failing to
+#: open.
 ARMS = [
     ("job_no_driver",           "job", "no_driver",
      "no_driver"),
-    ("job_stale",               "job", "clearance_changed_during_launch",
-     "clearance_changed_during_launch"),
-    ("job_api_error",           "job", "api_error",
-     "rate_limit"),
     ("job_start_failed",        "job", "start_failed",
      "driver_start_failed"),
 ]

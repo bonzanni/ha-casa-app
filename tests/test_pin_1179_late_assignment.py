@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock
 
+from claude_agent_sdk import ClaudeAgentOptions
+
 import pytest
 
 from config import AgentConfig, DelegateEntry, RequiresConfig
@@ -85,6 +87,7 @@ async def _launch(monkeypatch, *, requires: RequiresConfig | None,
     eng_reg.update_plugin_profiles = AsyncMock()
     eng_reg.set_channel_state = AsyncMock()
     eng_reg.set_initial_state_emoji = AsyncMock()
+    eng_reg.launch_shutdown_active.return_value = False
 
     tm.init_tools(
         channel_manager=cm, bus=MagicMock(),
@@ -103,13 +106,13 @@ async def _launch(monkeypatch, *, requires: RequiresConfig | None,
 
     def _spy_builder(cfg, *, resolution=None, extra_casa_tools=(), plan_out=None, **_kw):
         built.append(resolution)
-        opts = MagicMock()
-        opts.allowed_tools = []
-        return opts
+        # A real options object: the job launch re-derives the session's
+        # options from it (``background_jobs.job_session_options``).
+        return ClaudeAgentOptions(allowed_tools=[])
 
     monkeypatch.setattr(tm, "_build_specialist_options", _spy_builder)
     driver = MagicMock()
-    driver.start = AsyncMock()
+    driver.open = AsyncMock()
     monkeypatch.setattr(agent_mod, "active_engagement_driver", driver)
 
     from test_delegate_to_agent_interactive import launch_job
@@ -147,7 +150,8 @@ class TestLateAssignmentDuringTopicAwait:
         assert _recorded_names(obs) == [rp.name for rp in built] == ["mtg", "late"]
         # The gate's own admitted entry is kept, not swapped for the fresh one.
         assert built[0] is mtg
-        assert obs["driver"].start.await_count == 1
+        assert obs["driver"].open.await_count == 1
+        assert obs["driver"].enqueue_brief.call_count == 1
 
     async def test_no_requires_target_already_picks_the_late_plugin_up(self, monkeypatch):
         mtg = _plugin("mtg")

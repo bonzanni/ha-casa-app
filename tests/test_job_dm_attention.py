@@ -18,10 +18,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import job_inbox
+
 try:
-    from tests.test_in_casa_inbound_admission import _ScriptedClient, _mk_assistant
+    from tests.test_job_session_driver import until
+    from tests.turn_scripted_session import TurnScriptedSession, attach_session
 except ImportError:  # pragma: no cover — direct-path collection
-    from test_in_casa_inbound_admission import _ScriptedClient, _mk_assistant
+    from test_job_session_driver import until
+    from turn_scripted_session import TurnScriptedSession, attach_session
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
@@ -98,13 +102,48 @@ def _job_state(*, started_by="operator", quiet=False):
     return jobs.initial_job_state(decl, started_by=started_by)
 
 
+def _mk_assistant(text):
+    from claude_agent_sdk import AssistantMessage, TextBlock
+    return AssistantMessage(content=[TextBlock(text=text)], model="m")
+
+
+def _result():
+    from claude_agent_sdk import ResultMessage
+    return ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1,
+                         is_error=False, num_turns=1, session_id="sid")
+
+
+class _Session(TurnScriptedSession):
+    """The job's live session: each written message runs as its own turn,
+    taken up (echoed) first and answered with one line. ``gate``, when set,
+    holds every write inside the client call — a session busy or slow to
+    accept input."""
+
+    def __init__(self):
+        self.query_prompts: list[str] = []
+        self.gate: asyncio.Event | None = None
+        self.entered = asyncio.Event()
+
+    async def record_query(self, text):
+        self.entered.set()
+        if self.gate is not None:
+            await self.gate.wait()
+        self.query_prompts.append(text)
+
+    async def receive_response(self):
+        yield _mk_assistant("ok")
+        yield _result()
+
+    async def close(self):
+        pass
+
+
 class _Rig:
     pass
 
 
-async def _rig(tmp_path, monkeypatch, *, scripts=None, quiet=False,
-               started_by="operator", kind="specialist"):
-    import background_jobs as jobs
+async def _rig(tmp_path, monkeypatch, *, quiet=False, started_by="operator",
+               kind="specialist"):
     import tools
     from channels.telegram import TelegramChannel
     from drivers.in_casa_driver import InCasaDriver
@@ -119,27 +158,28 @@ async def _rig(tmp_path, monkeypatch, *, scripts=None, quiet=False,
                                 quiet=quiet)}
     r.rec = await r.reg.create(kind, "finance", "in_casa", "t", origin,
                                topic_id=None)
-    r.client = _ScriptedClient(scripts=list(scripts or []))
-    r.drv = InCasaDriver(topic_stream_factory=lambda tid: None)
-    r.drv._begin_turn_delivery = r.reg.begin_turn_delivery
-    from turn_scripted_session import attach_session
-    attach_session(r.drv, r.rec, r.client)
     ch = TelegramChannel(bot=r.bot, chat_id=str(CHAT))
+    r.client = _Session()
+    r.drv = InCasaDriver(
+        topic_stream_factory=lambda tid: None, record_lookup=r.reg.get,
+        begin_turn_delivery=r.reg.begin_turn_delivery,
+        lifecycle_lock=ch.engagement_lifecycle_lock)
+    attach_session(r.drv, r.rec, r.client)
+    # No session transcript in the rig: the journal's terminal branch tells
+    # every entry still in the journal.
+    monkeypatch.setattr(job_inbox, "transcript_path", lambda cwd, sid: None)
     ch._engagement_registry = r.reg
     ch._engagement_driver = r.drv
-    ch._driver_admit_inbound = lambda rec, text: r.drv.admit_inbound(rec.id, text)
-    ch._driver_discharge_inbound = (
-        lambda rec, tok: tok is not None and r.drv.discharge_inbound(rec.id, tok))
-    ch._driver_inbound_held = (
-        lambda rec, tok: tok is not None and r.drv.inbound_token_held(rec.id, tok))
+    # ``delivered``: the messages the job accepted (journaled and queued);
+    # ``client.query_prompts``: what was written into its session.
     r.delivered: list[str] = []
+    real_submit = r.drv.submit_operator
 
-    async def _send(rec, text, *, tg_message_id=None, inbound_token=None,
-                    batch=None):
+    def _submit(rec, text, **kw):
+        ticket = real_submit(rec, text, **kw)
         r.delivered.append(text)
-        await r.drv.send_user_turn(rec, text, inbound_token=inbound_token,
-                                   batch=batch)
-    ch._driver_send_user_turn = _send
+        return ticket
+    r.drv.submit_operator = _submit
     r.topic_notices = AsyncMock()
     ch._post_engagement_notice = r.topic_notices
 
@@ -149,8 +189,6 @@ async def _rig(tmp_path, monkeypatch, *, scripts=None, quiet=False,
             next_steps=[], driver=r.drv)
     ch._finalize_cancel = _finalize_cancel
     r.ch = ch
-    r.after = AsyncMock()
-    monkeypatch.setattr(jobs, "job_after_turn", r.after)
     cm = MagicMock()
     cm.get.return_value = ch
     r.bus = MagicMock()
@@ -162,12 +200,24 @@ async def _rig(tmp_path, monkeypatch, *, scripts=None, quiet=False,
 
 
 async def _drain(r):
+    """Every channel task done (a Cancel's funnel, the keyboard edits), every
+    message the job accepted written, taken up and its turn ended (or
+    dropped), and every deferred persist written."""
+    def _pending():
+        return [t for t in (r.ch._turn_tasks | r.ch._job_ui_tasks)
+                if not t.done()]
+
     for _ in range(200):
-        pending = [t for t in (r.ch._turn_tasks | r.ch._inbound_cleanup_tasks
-                               | r.ch._job_ui_tasks) if not t.done()]
-        if not pending:
+        pending = _pending()
+        if pending:
+            await asyncio.wait_for(
+                asyncio.gather(*pending, return_exceptions=True), 10)
+        lane = r.drv._lanes.get(r.rec.id)
+        if r.client.gate is None or r.client.gate.is_set():
+            await until(lambda: (not r.drv.turn_open(r.rec.id))
+                        and not (lane is not None and lane.queue), 5)
+        if not _pending():
             break
-        await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), 10)
     while r.reg._deferred_persists:
         await asyncio.gather(*list(r.reg._deferred_persists),
                              return_exceptions=True)
@@ -225,7 +275,7 @@ async def _wait(event_like, what):
 class TestReplyRoute:
     async def test_a_reply_to_a_live_jobs_post_goes_into_the_job(
             self, tmp_path, monkeypatch):
-        r = await _rig(tmp_path, monkeypatch, scripts=[[_mk_assistant("ok")]])
+        r = await _rig(tmp_path, monkeypatch)
         r.reg.record_job_post(r.rec.id, 501)
         desk = AsyncMock(return_value=True)
         monkeypatch.setattr(r.ch, "_maybe_route_desk_reply", desk)
@@ -234,6 +284,7 @@ class TestReplyRoute:
         await _drain(r)
         assert r.delivered == [
             "[replying to «📊 Finance started «Process rows».»]\nuse the second account"]
+        assert r.client.query_prompts == r.delivered
         assert desk.await_count == 0
         assert r.bot.replies() == []
         assert r.drv.inbound_unread_depth(r.rec.id) == 0
@@ -258,7 +309,7 @@ class TestReplyRoute:
     async def test_a_plugin_post_of_the_job_is_filed_and_routes(
             self, tmp_path, monkeypatch):
         import result_broker
-        r = await _rig(tmp_path, monkeypatch, scripts=[[_mk_assistant("ok")]])
+        r = await _rig(tmp_path, monkeypatch)
         post = result_broker.PostRecord(
             role="finance", operator_id=OPERATOR, plugin="ledger",
             slot="operator_message", tool_use_id="tu", owner=r.rec.id,
@@ -293,29 +344,29 @@ class TestOneNoticePerLostMessage:
 
     async def test_cancel_racing_a_queued_reply_tells_it_exactly_once(
             self, tmp_path, monkeypatch):
-        """RACE: a reply handed off and waiting on the driver's turn lock while
-        a Cancel tap ends the job. The fence refuses the turn and the delivery
-        task — the ticket's holder — tells the operator once, in reply to their
-        message; the funnel lists nothing."""
+        """RACE: a reply accepted and waiting in the job's queue behind a
+        write the session has not finished taking, while a Cancel tap ends the
+        job. The write-time fence keeps it out of the session, and the
+        journal's terminal branch — run by the finalize funnel after the
+        client closed — tells the operator once, in reply to their message."""
         r = await _rig(tmp_path, monkeypatch)
-        lock = r.drv._locks[r.rec.id]
-        await lock.acquire()                     # a batch turn is running
-        try:
-            assert await r.ch.deliver_operator_reply(
-                r.rec, "stop at row 9", chat_id=CHAT, message_id=7) is True
-            await asyncio.sleep(0)
-            cq = _CQ(f"v1|job_cancel|{r.rec.id}", 900)
-            await r.ch._on_inline_callback(SimpleNamespace(callback_query=cq))
-            await _wait(lambda: r.rec.status == "cancelled", "the cancel")
-        finally:
-            lock.release()
+        r.client.gate = asyncio.Event()          # the session is busy
+        r.drv.submit_casa(r.rec, "Continue.")
+        await asyncio.wait_for(r.client.entered.wait(), 5)
+        assert await r.ch.deliver_operator_reply(
+            r.rec, "stop at row 9", chat_id=CHAT, message_id=7) is True
+        cq = _CQ(f"v1|job_cancel|{r.rec.id}", 900)
+        await r.ch._on_inline_callback(SimpleNamespace(callback_query=cq))
+        await _wait(lambda: r.rec.status == "cancelled", "the cancel")
+        r.client.gate.set()
         await _drain(r)
         assert cq.answers == ["Cancelling…"]
-        assert r.delivered == ["stop at row 9"]          # sent to the driver ...
-        assert r.client.query_prompts == []              # ... never to the model
+        assert r.delivered == ["stop at row 9"]             # accepted ...
+        assert "stop at row 9" not in "".join(r.client.query_prompts)  # ... never written
         notices = [(m["text"], m["reply_to"]) for m in r.bot.replies()]
         assert notices == [("The job had just ended — not delivered, please resend.", 7)]
         assert r.topic_notices.await_count == 0
+        assert not job_inbox.path_for(r.rec.id).exists()
 
     async def test_a_tapped_answer_refused_is_told_once_on_the_question(
             self, tmp_path, monkeypatch):
@@ -329,39 +380,6 @@ class TestOneNoticePerLostMessage:
         assert handed is False
         assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
             ("The job had already ended; your answer wasn't used.", 812)]
-
-    async def test_a_batch_turn_refused_tells_no_one(self, tmp_path, monkeypatch):
-        r = await _rig(tmp_path, monkeypatch)
-        await r.reg.try_transition_terminal(r.rec.id, "completed", strict=True)
-        assert await r.ch.deliver_system_turn(r.rec, "Batch 2", batch=2) is False
-        await _drain(r)
-        assert r.bot.sent == []
-        assert r.topic_notices.await_count == 0
-        assert r.drv.inbound_unread_depth(r.rec.id) == 0
-
-    async def test_a_cut_off_reply_turn_on_an_ended_job_is_still_told(
-            self, tmp_path, monkeypatch):
-        """No terminal state excuses an operator turn's notice: the turn took
-        the reply up, the job ended during it, and the notice says so in
-        reply to their message."""
-        r = await _rig(tmp_path, monkeypatch)
-        r.ch._driver_turn_incomplete = lambda rec, tok: "followup_missing_result"
-        r.reg.record_terminal_telling(r.rec.id, True)    # the topic WAS told
-        await r.reg.try_transition_terminal(r.rec.id, "completed", strict=True)
-        from channels.telegram import _NoticeTarget
-        assert await r.ch._report_incomplete_turn(
-            r.rec, object(), notice_target=_NoticeTarget(CHAT, 7)) is True
-        assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
-            ("The job ended while handling this message.", 7)]
-
-    async def test_the_topic_telling_still_excuses_a_batch_turns_notice(
-            self, tmp_path, monkeypatch):
-        r = await _rig(tmp_path, monkeypatch)
-        r.ch._driver_turn_incomplete = lambda rec, tok: "followup_missing_result"
-        r.reg.record_terminal_telling(r.rec.id, True)
-        await r.reg.try_transition_terminal(r.rec.id, "completed", strict=True)
-        assert await r.ch._report_incomplete_turn(r.rec, object(), batch=3) is True
-        assert r.bot.sent == [] and r.topic_notices.await_count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +423,7 @@ class TestAskAndTap:
         assert r.bot.sent == []
 
     async def test_a_tap_answers_the_job(self, tmp_path, monkeypatch):
-        r = await _rig(tmp_path, monkeypatch, scripts=[[_mk_assistant("ok")]])
+        r = await _rig(tmp_path, monkeypatch)
         mid = (await _ask(r))["message_id"]
         (qid,) = r.rec.questions
         cq = _CQ(f"v1|job_q|{r.rec.id}|{qid}|1", mid)
@@ -413,6 +431,7 @@ class TestAskAndTap:
         await _drain(r)
         assert cq.answers == ["✔"]
         assert r.delivered == ["[operator answered «Which account?»: Current]"]
+        assert r.client.query_prompts == r.delivered
         assert r.bot.markups and "✔ Current" in [
             b.text for b in _buttons(r.bot.markups[-1]["markup"])]
         assert r.drv.inbound_reservations(r.rec.id) == 0
@@ -423,7 +442,7 @@ class TestAskAndTap:
         completion is refused by the reservation the tap already took — and
         the answer is then delivered once, with no notice."""
         import tools
-        r = await _rig(tmp_path, monkeypatch, scripts=[[_mk_assistant("ok")]])
+        r = await _rig(tmp_path, monkeypatch)
         mid = (await _ask(r))["message_id"]
         (qid,) = r.rec.questions
         cq = _CQ(f"v1|job_q|{r.rec.id}|{qid}|0", mid, hold=True)
@@ -530,7 +549,7 @@ class TestStartLineCancelAndRetirement:
         assert cq.answers == ["Cancelling…"]
         assert r.rec.status == "cancelled"
         assert [e["text"] for e in r.bot.edits if e["message_id"] == start_mid] == [
-            "🛑 finance «Process rows»"]
+            "🛑 finance «Process rows» · 1 min"]
         assert [m["message_id"] for m in r.bot.markups] == [q_mid]
         assert r.rec.ui_posts == []
         assert r.bot.replies() == []
@@ -584,7 +603,7 @@ class TestStartLineCancelAndRetirement:
         assert r.ch.retire_ended_job_keyboards() == 1
         await _drain(r)
         assert [(e["message_id"], e["text"]) for e in r.bot.edits] == [
-            (960, "✅ finance «Process rows»")]
+            (960, "✅ finance «Process rows» · 1 min")]
         assert r.ch.retire_ended_job_keyboards() == 0
 
     async def test_launch_death_retires_the_keyboards_too(self, tmp_path, monkeypatch):
@@ -597,7 +616,7 @@ class TestStartLineCancelAndRetirement:
         assert result is tools.LaunchDeathResult.REPORTED
         await _drain(r)
         assert [(e["message_id"], e["text"]) for e in r.bot.edits] == [
-            (970, "❌ finance «Process rows»")]
+            (970, "❌ finance «Process rows» · 1 min")]
 
 
 # ---------------------------------------------------------------------------
@@ -642,9 +661,9 @@ class TestQuietRunsEndOnInteraction:
         await _wait(held.started.is_set, "the completion write")
         reply = asyncio.ensure_future(r.ch._maybe_route_job_reply(
             _reply_update("one more thing", 501), str(CHAT)))
-        await _wait(lambda: r.drv.inbound_unread_depth(r.rec.id) > 0,
-                    "the reply's admission")
+        await asyncio.sleep(0.01)
         assert not reply.done()                  # its promotion is waiting
+        assert r.drv.inbound_unread_depth(r.rec.id) == 0
         held.release.set()
         await fin
         assert await reply is True
@@ -659,8 +678,7 @@ class TestQuietRunsEndOnInteraction:
 
     async def test_a_reply_racing_a_quiet_completion_that_rolls_back_is_delivered(
             self, tmp_path, monkeypatch):
-        r = await _rig(tmp_path, monkeypatch, quiet=True,
-                       scripts=[[_mk_assistant("ok")]])
+        r = await _rig(tmp_path, monkeypatch, quiet=True)
         r.reg.record_job_post(r.rec.id, 501)
         await _drain(r)
         held = _HeldWrite(r.reg)
@@ -670,8 +688,8 @@ class TestQuietRunsEndOnInteraction:
         await _wait(held.started.is_set, "the completion write")
         reply = asyncio.ensure_future(r.ch._maybe_route_job_reply(
             _reply_update("one more thing", 501), str(CHAT)))
-        await _wait(lambda: r.drv.inbound_unread_depth(r.rec.id) > 0,
-                    "the reply's admission")
+        await asyncio.sleep(0.01)
+        assert not reply.done()                  # its promotion is waiting
         held.release.set()
         with pytest.raises(OSError):
             await transition
@@ -687,8 +705,7 @@ class TestQuietRunsEndOnInteraction:
     async def test_a_reply_ends_a_quiet_runs_quietness_so_its_end_is_told(
             self, tmp_path, monkeypatch):
         import tools
-        r = await _rig(tmp_path, monkeypatch, quiet=True,
-                       scripts=[[_mk_assistant("ok")]])
+        r = await _rig(tmp_path, monkeypatch, quiet=True)
         r.reg.record_job_post(r.rec.id, 501)
         assert await r.ch._maybe_route_job_reply(
             _reply_update("also check May", 501), str(CHAT)) is True
@@ -730,7 +747,7 @@ class TestQuietRunsEndOnInteraction:
 class TestPendingTerminalRoutesIntoTheJob:
     async def test_a_reply_routed_while_a_terminal_write_is_pending_is_delivered_after_a_rollback(
             self, tmp_path, monkeypatch):
-        r = await _rig(tmp_path, monkeypatch, scripts=[[_mk_assistant("ok")]])
+        r = await _rig(tmp_path, monkeypatch)
         r.reg.record_job_post(r.rec.id, 501)
         await _drain(r)
         held = _HeldWrite(r.reg)
@@ -740,10 +757,10 @@ class TestPendingTerminalRoutesIntoTheJob:
         await _wait(held.started.is_set, "the terminal write")
         reply = asyncio.ensure_future(r.ch._maybe_route_job_reply(
             _reply_update("wait", 501), str(CHAT)))
-        # Admitted: the routing decision and the readiness step have run up
-        # to their first wait.
-        await _wait(lambda: r.drv.inbound_unread_depth(r.rec.id) > 0,
-                    "the reply's admission")
+        # Routed: the reply waits for the pending write to settle before the
+        # job accepts it.
+        await asyncio.sleep(0.01)
+        assert not reply.done()
         held.release.set()
         with pytest.raises(OSError):
             await transition
@@ -779,33 +796,6 @@ class _FailFirstWrite(_HeldWrite):
 
 
 class TestSeamEdges:
-    async def test_a_reply_waiting_for_a_rebuild_that_loses_to_cancel_is_told_once(
-            self, tmp_path, monkeypatch):
-        """RACE: the reply is handed to a delivery task that must wait for the
-        running turn before it can ready the session; a Cancel ends the job
-        meanwhile. The task's readiness step is refused and tells the operator
-        once, in reply to their message; nothing reaches the job."""
-        r = await _rig(tmp_path, monkeypatch, scripts=[[_mk_assistant("ok")]])
-        r.reg.record_job_post(r.rec.id, 501)
-        await _drain(r)
-        monkeypatch.setattr(r.ch, "_rebuild_waits_for_turn", lambda rec: True)
-        lock = r.drv._locks[r.rec.id]
-        await lock.acquire()                     # a batch turn is running
-        try:
-            assert await r.ch._maybe_route_job_reply(
-                _reply_update("skip row 9", 501), str(CHAT)) is True
-            await asyncio.sleep(0)
-            cq = _CQ(f"v1|job_cancel|{r.rec.id}", 900)
-            await r.ch._on_inline_callback(SimpleNamespace(callback_query=cq))
-            await _wait(lambda: r.rec.status == "cancelled", "the cancel")
-        finally:
-            lock.release()
-        await _drain(r)
-        assert r.delivered == []
-        assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
-            ("The job had just ended — not delivered, please resend.", 7)]
-        assert r.drv.inbound_unread_depth(r.rec.id) == 0
-
     async def test_a_cancel_tap_during_another_pending_terminal_write_still_cancels(
             self, tmp_path, monkeypatch):
         """RACE: a completion's terminal write is pending when the operator
@@ -890,8 +880,7 @@ class TestSeamEdges:
         that outcome and promotes again, so the run it reached is told at its
         end."""
         import tools
-        r = await _rig(tmp_path, monkeypatch, quiet=True,
-                       scripts=[[_mk_assistant("ok")]])
+        r = await _rig(tmp_path, monkeypatch, quiet=True)
         r.reg.record_job_post(r.rec.id, 501)
         await _drain(r)
         held = _FailFirstWrite(r.reg)

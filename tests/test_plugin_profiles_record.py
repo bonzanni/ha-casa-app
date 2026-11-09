@@ -123,9 +123,6 @@ async def test_resume_persists_the_applied_profile_before_opening(monkeypatch, t
     await _driver_persists_before_open(monkeypatch, tmp_path, "resume")
 
 
-async def test_open_fresh_persists_the_applied_profile_before_opening(monkeypatch, tmp_path):
-    await _driver_persists_before_open(monkeypatch, tmp_path, "open_fresh")
-
 
 def test_casa_core_wires_the_profile_persister_into_every_driver():
     import ast
@@ -239,9 +236,6 @@ async def test_resume_refuses_to_open_when_the_profile_write_fails(monkeypatch):
     await _driver_refuses_open_when_persist_fails(monkeypatch, "resume")
 
 
-async def test_open_fresh_refuses_to_open_when_the_profile_write_fails(monkeypatch):
-    await _driver_refuses_open_when_persist_fails(monkeypatch, "open_fresh")
-
 
 async def _real_writer_failure_refuses_open(monkeypatch, tmp_path, method):
     """The REAL registry writer failing (ENOSPC) must propagate through the
@@ -293,6 +287,3 @@ async def _real_writer_failure_refuses_open(monkeypatch, tmp_path, method):
 async def test_resume_refuses_to_open_when_the_real_writer_fails(monkeypatch, tmp_path):
     await _real_writer_failure_refuses_open(monkeypatch, tmp_path, "resume")
 
-
-async def test_open_fresh_refuses_to_open_when_the_real_writer_fails(monkeypatch, tmp_path):
-    await _real_writer_failure_refuses_open(monkeypatch, tmp_path, "open_fresh")
