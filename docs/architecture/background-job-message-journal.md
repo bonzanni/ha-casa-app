@@ -76,7 +76,9 @@ quiet run's promotion write, and the wait for a pending terminal write, happen i
 the commit, inside that same window. The terminal branch runs on the path that ends the job, after
 the terminal write: a Casa death between the two leaves that job's file behind, and the next boot
 settles it the same way (`casa_core._settle_ended_job_journals`, after the live jobs are resumed),
-removing any file whose record is gone.
+removing any file whose record is gone. Settlements of one job run one at a time, each reading
+the file under that job's lock, so a boot settle racing a live terminal path tells each entry
+once.
 
 ## Failure behavior
 

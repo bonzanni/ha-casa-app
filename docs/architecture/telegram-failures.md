@@ -58,8 +58,8 @@ is stopping — draws one bounded "not delivered, please resend" notice, in the 
 to the message, and goes no further; a message the job accepted and never read is told once
 when the job ends
 ([`engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md), INV-ENG-029). A
-message from someone below the job's clearance — a household member rather than the person who
-started it — gets one line, "Only the person who started this job can steer it.", and never
+message from someone below the job's clearance — a household member in a job started at a
+higher one — gets one line, "This job can't take instructions from you, so your message didn't reach it.", and never
 reaches the job.
 
 **A job's session ends in the middle of a turn.** No Telegram path waits on the session, so

@@ -464,6 +464,10 @@ class _JobLane:
     recovery_done: asyncio.Event = field(default_factory=asyncio.Event)
     recovery_failed: bool = False
     retiring: _JobSession | None = None
+    # A live session Casa's own teardown (the idle suspension) took out of
+    # the map and is still disconnecting: every resume waits for it to be
+    # retired before opening a replacement, so two clients never overlap.
+    suspending: _JobSession | None = None
     stopped: bool = False
 
     def __post_init__(self) -> None:
@@ -521,6 +525,7 @@ class InCasaDriver(DriverProtocol):
         self._on_operator_written = on_operator_written
         self._sessions: dict[str, _JobSession] = {}
         self._lanes: dict[str, _JobLane] = {}
+        self._settle_locks: dict[str, asyncio.Lock] = {}
         # Casa-owned tasks (readers, workers, retirements, recoveries, a
         # completion's finalization): anchored here so none is collected.
         self._tasks: set[asyncio.Task] = set()
@@ -682,6 +687,10 @@ class InCasaDriver(DriverProtocol):
             logger.warning("resume() called on engagement %s that is already alive",
                            engagement.id[:8])
             return
+        lane = self._lanes.get(engagement.id)
+        old = lane.suspending if lane is not None else None
+        if old is not None:
+            await old.retired.wait()
         from tools import build_engagement_resume_options
         options = await asyncio.to_thread(
             build_engagement_resume_options, engagement, session_id)
@@ -778,6 +787,8 @@ class InCasaDriver(DriverProtocol):
         session = self._sessions.pop(eid, None)
         lane = self._lanes.get(eid)
         retiring = lane.retiring if lane is not None else None
+        if lane is not None and session is not None:
+            lane.suspending = session
         self._session_ids.pop(eid, None)
         for s in (session, retiring):
             if s is not None and not s.retired.is_set():
@@ -789,6 +800,9 @@ class InCasaDriver(DriverProtocol):
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Engagement %s cancel: client close raised %s",
                                    eid[:8], exc)
+        if lane is not None and session is not None \
+                and lane.suspending is session:
+            lane.suspending = None
         if self._record_lookup is None or self._is_terminal(eid, engagement) \
                 or self._latest(eid) is None:
             self._end_lane(eid)
@@ -1479,6 +1493,17 @@ class InCasaDriver(DriverProtocol):
         notice (*tell_lost*, bounded by the caller); an entry the transcript
         holds goes silently. Matching in-memory tickets are discharged and
         the file goes. Returns the number of notices sent."""
+        eid = engagement.id
+        # Boot and a live terminal path may settle the same job at once: one
+        # at a time per job, each loading the entries under the lock, so an
+        # entry is told by whichever runs first and seen by the other as gone.
+        async with self._settle_locks.setdefault(eid, asyncio.Lock()):
+            return await self._settle_journal_locked(engagement, tell_lost)
+
+    async def _settle_journal_locked(
+        self, engagement: EngagementRecord,
+        tell_lost: Callable[[EngagementRecord, dict], Awaitable[None]],
+    ) -> int:
         eid = engagement.id
         entries = job_inbox.load(eid)
         told = 0

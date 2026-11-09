@@ -128,7 +128,11 @@ The dead reader marks the job recovering (the stale reap and the idle suspension
 recovering job as they skip a running turn), removes its own session from the map with an
 identity check, and disconnects its client explicitly — the SDK's close cancels the session's
 outstanding hook and tool callbacks, which an EOF alone does not. Every resume path waits for
-that retirement first, so no callback of the old session acts after the new one exists. A write
+that retirement first, so no callback of the old session acts after the new one exists. The
+idle suspension is Casa's own teardown and needs no recovery, but it holds the same rule: the
+suspended client is recorded on the job's lane while it disconnects, and `InCasaDriver.resume`
+waits for it to be retired before opening a replacement, so a message that arrives during the
+disconnect never runs on a second client alongside the first. A write
 that fails because the CLI died stays at the head of the queue and is written once into the
 replacement. The recovery takes the lifecycle lock, re-checks the record, opens the
 replacement, reconciles the journal

@@ -668,7 +668,7 @@ def _notice_target_from(value: Any) -> "_NoticeTarget | None":
                          answer=value.get("answer") is True)
 
 
-_MEMBER_STEER_LINE = "Only the person who started this job can steer it."
+_MEMBER_STEER_LINE = "This job can't take instructions from you, so your message didn't reach it."
 """What a household member's message in a job's topic draws: it does not
 reach the job."""
 
@@ -2825,9 +2825,9 @@ class TelegramChannel(Channel):
                             rec, self._engagement_help_text())
                         return
 
-                # Only the person who started a job steers it: a message
-                # from someone who reads below the job's clearance gets one
-                # line and never reaches the job.
+                # A message from someone who reads below the job's
+                # clearance (a household member in a job started at a higher
+                # one) gets one line and never reaches the job.
                 if self._steer_refused(rec, user_id):
                     await self._post_engagement_notice(rec, _MEMBER_STEER_LINE)
                     return

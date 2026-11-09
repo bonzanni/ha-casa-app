@@ -415,9 +415,9 @@ has ended, what it has cost so far ("· 40 min · $2.40"). When a specialist's j
 needs a decision from you it asks in your DM, with a button per choice: tap one,
 or reply to the question in words. To steer a running job, reply in your DM to any
 of its messages there (its start line, a question, something its plugin posted), or
-write in its topic; your words reach the job while it works, at its next step. Only
-the person who started a job can steer it: anyone else who writes in its topic is
-told so, and their message does not reach the job. You can also send `/cancel` in
+write in its topic; your words reach the job while it works, at its next step. A
+household member with less access than the job was started with cannot steer it:
+they are told so in its topic, and their message does not reach the job. You can also send `/cancel` in
 the topic, or ask the assistant to cancel it. If the job ended before it read your
 message, Casa answers it once: "The job had just ended — not delivered, please
 resend."

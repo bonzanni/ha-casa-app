@@ -762,3 +762,46 @@ async def test_a_completing_turn_that_never_ends_finalizes_after_the_bound(
     assert "$" not in job.channel.painted[0]
     assert "$" not in job.notices[0]
     assert job.cli.disconnected
+
+
+async def test_a_resume_waits_for_a_suspended_client_to_disconnect(env):
+    """The idle suspension takes the client out of the map and disconnects
+    it; a message arriving while that disconnect is still running resumes the
+    job only after the old client is retired — never two clients at once."""
+    driver = env.make()
+    await open_job(env, driver)
+    FakeCLI.hold_disconnect = asyncio.Event()
+    suspension = asyncio.create_task(driver.cancel(env.rec))
+    await settle()
+    driver.submit_operator(env.rec, "are you there?")
+    await settle(50)
+    assert [e for e in FakeCLI.events if e.startswith("enter")] == ["enter:0"]
+    FakeCLI.hold_disconnect.set()
+    await suspension
+    await until(lambda: len(FakeCLI.instances) == 2
+                and FakeCLI.instances[1].written)
+    assert FakeCLI.events.index("disconnect:0") < FakeCLI.events.index("enter:1")
+    assert FakeCLI.instances[1].texts() == ["are you there?"]
+
+
+async def test_two_settlements_of_one_ended_job_tell_a_lost_message_once(env):
+    """Boot and a live terminal path settling the same ended job at once:
+    one lost-message notice per entry, not one per settler."""
+    driver = env.make()
+    job_inbox.append(env.rec.id, uuid="cccccccc-0000-4000-8000-000000000001",
+                     text="never read", notice=None)
+    env.rec.status = "cancelled"
+    told = []
+    release = asyncio.Event()
+
+    async def slow_tell(rec, entry):
+        told.append(entry["text"])
+        await release.wait()
+
+    first = asyncio.create_task(driver.settle_journal_terminal(env.rec, slow_tell))
+    await until(lambda: told)
+    second = asyncio.create_task(driver.settle_journal_terminal(env.rec, slow_tell))
+    await settle()
+    release.set()
+    assert sorted([await first, await second]) == [0, 1]
+    assert told == ["never read"]
