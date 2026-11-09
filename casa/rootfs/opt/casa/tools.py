@@ -10789,6 +10789,70 @@ and it is on you. See `architecture/engagement-terminal-telling.md`.
 # silent-finalization mode, which is the very defect this exists to fix.
 _finalize_tail_tasks: set[asyncio.Task] = set()
 
+# A job that completes from inside a running turn: its teardown waits, at most
+# this long, for that turn to end, so the end paint and the end notice carry
+# the completing turn's cost. Past the bound it finalizes with the last cost
+# known.
+_COMPLETION_TURN_END_WAIT_S = 30.0
+
+# Jobs whose end paint (start line and question keyboards) waits for their
+# completing turn to end: the terminal observer leaves their keyboards to the
+# finalize tail, which retires them once the turn's cost is recorded.
+_end_paint_deferred: set[str] = set()
+
+
+def _completing_turn_running(driver: Any, engagement_id: str) -> bool:
+    """A turn is running in the job's session and the driver can wait for
+    its end: the completion came from inside that turn."""
+    probe = getattr(driver, "turn_open", None)
+    if not callable(probe) or not callable(getattr(driver, "wait_turn_end", None)):
+        return False
+    try:
+        return probe(engagement_id) is True
+    except Exception:  # noqa: BLE001 — no reading, nothing to wait for
+        return False
+
+
+async def _await_completing_turn(driver: Any, engagement: Any) -> None:
+    """Wait, bounded, for the turn that completed the job to end, then
+    store the cost its end recorded. Never raises."""
+    try:
+        ended = await driver.wait_turn_end(engagement.id,
+                                           _COMPLETION_TURN_END_WAIT_S)
+    except Exception:  # noqa: BLE001 — the teardown goes on regardless
+        logger.warning("finalize engagement %s: waiting for the completing "
+                       "turn failed", engagement.id[:8], exc_info=True)
+        ended = False
+    if not ended:
+        logger.info("finalize engagement %s: the completing turn did not end "
+                    "within %.0fs; finalizing with the last cost known",
+                    engagement.id[:8], _COMPLETION_TURN_END_WAIT_S)
+    if _engagement_registry is not None:
+        try:
+            await _engagement_registry.persist_origin(engagement.id)
+        except Exception:  # noqa: BLE001 — the in-memory cost still shows
+            logger.warning("finalize engagement %s: storing the final cost "
+                           "failed", engagement.id[:8], exc_info=True)
+
+
+def _paint_job_end(engagement: Any) -> None:
+    """Retire an ended job's keyboards (the start line painted with its
+    outcome, time and cost) — the step the terminal observer left to the
+    finalize tail. Never raises."""
+    _end_paint_deferred.discard(engagement.id)
+    channel = (_channel_manager.get("telegram")
+               if _channel_manager is not None else None)
+    retire = getattr(channel, "retire_job_keyboards", None)
+    if not callable(retire):
+        return
+    rec = (_engagement_registry.get(engagement.id)
+           if _engagement_registry is not None else None) or engagement
+    try:
+        retire(rec)
+    except Exception:  # noqa: BLE001 — cosmetic
+        logger.warning("retiring job keyboards failed for %s",
+                       engagement.id[:8], exc_info=True)
+
 
 def _finalize_tail_done(engagement_id: str, task: asyncio.Task) -> None:
     _finalize_tail_tasks.discard(task)
@@ -10911,6 +10975,14 @@ async def _finalize_engagement(
         _owes["notify"] = not _told_nowhere(rec.origin, outcome)
         return _owes["notify"]
 
+    # A completion from inside a running turn: the teardown waits for that
+    # turn to end (bounded), and the terminal observer leaves the end paint
+    # to it, so both carry the completing turn's cost.
+    await_turn_end = (detach_teardown_tail
+                      and _completing_turn_running(driver, engagement.id))
+    if await_turn_end:
+        _end_paint_deferred.add(engagement.id)
+
     if _engagement_registry is not None:
         try:
             won = await _engagement_registry.try_transition_terminal(
@@ -10929,11 +11001,15 @@ async def _finalize_engagement(
                 owes_terminal_notification=_owes_notification,
             )
         except TerminalPreconditionFailed as exc:
+            _end_paint_deferred.discard(engagement.id)
             logger.info(
                 "Engagement %s completion vetoed by inbound gate: %s",
                 engagement.id[:8], exc)
             return FinalizeResult.PRECONDITION_FAILED
-        except Exception as exc:  # noqa: BLE001 — strict persist failed + rolled back
+        except BaseException as exc:
+            _end_paint_deferred.discard(engagement.id)
+            if not isinstance(exc, Exception):
+                raise
             logger.warning(
                 "Engagement %s terminal transition failed to persist "
                 "(rolled back, left live): %s",
@@ -10941,6 +11017,7 @@ async def _finalize_engagement(
             )
             return FinalizeResult.PERSIST_FAILED
         if not won:
+            _end_paint_deferred.discard(engagement.id)
             logger.info(
                 "Engagement %s not finalized — already terminal or revived "
                 "since snapshot (outcome=%s)",
@@ -11195,15 +11272,23 @@ async def _finalize_engagement(
     # result is documented-lost on this path) while the tail completes every
     # side effect. Every other caller awaits the same helper inline:
     # identical task, ordering and cancellation semantics as before.
+    #
+    # A completion from inside a running turn does not await its tail: the
+    # tail waits for that turn to end, and the turn cannot end until this
+    # tool call has returned. The transition is committed, so the result is
+    # already FINALIZED; the Casa-owned tail finishes the side effects.
     if detach_teardown_tail:
         tail = asyncio.create_task(_finalize_engagement_tail(
             engagement, outcome=outcome, text=text,
             next_steps=next_steps, driver=driver, now=now,
             output_truncated=output_truncated, frozen=frozen,
+            await_turn_end=await_turn_end,
         ))
         _finalize_tail_tasks.add(tail)
         tail.add_done_callback(
             lambda t, _eid=engagement.id: _finalize_tail_done(_eid, t))
+        if await_turn_end:
+            return FinalizeResult.FINALIZED
         return await asyncio.shield(tail)
     return await _finalize_engagement_tail(
         engagement, outcome=outcome, text=text,
@@ -11212,16 +11297,19 @@ async def _finalize_engagement(
     )
 
 
-def _with_job_cost(text: str, frozen: dict, now: float) -> str:
+def _with_job_cost(text: str, frozen: dict, now: float,
+                   cost_job: dict | None = None) -> str:
     """A job's end notice to its resident carries how long it ran and its
     cost as of its last turn end, so a job with no start line (scheduled or
-    agent-started) still shows it when the outcome is reported."""
+    agent-started) still shows it when the outcome is reported. ``cost_job``
+    is the live job state to read the cost from when the completing turn's
+    end recorded it after the terminal flip."""
     job = (frozen.get("origin") or {}).get("job")
     if not isinstance(job, dict):
         return text
     line = "Job ran " + background_jobs.format_elapsed(
         max(0.0, now - float(frozen.get("started_at") or now)))
-    cost = job.get("cost_usd")
+    cost = (cost_job if isinstance(cost_job, dict) else job).get("cost_usd")
     if isinstance(cost, (int, float)) and not isinstance(cost, bool):
         line += f" · ${cost:.2f}"
     return f"{text}\n\n{line}" if text else line
@@ -11244,9 +11332,14 @@ async def _finalize_engagement_tail(
     now: float,
     output_truncated: bool,
     frozen: dict[str, Any],
+    await_turn_end: bool = False,
 ) -> "FinalizeResult":
     """#632: the finalize funnel's post-topic tail — driver teardown, the
     completion notification and the finalized log, in that order.
+
+    ``await_turn_end`` (a completion from inside a running turn): first wait,
+    bounded, for that turn to end so its cost is recorded; after the teardown,
+    paint the job's end (which the terminal observer left to this tail).
 
     Payload reads come from ``frozen`` (snapshotted at the terminal flip,
     before the funnel's first post-flip await) — never from the live record,
@@ -11255,6 +11348,8 @@ async def _finalize_engagement_tail(
     record) and for log lines reading immutable identity only.
     """
     eng_id: str = frozen["id"]
+    if await_turn_end:
+        await _await_completing_turn(driver, engagement)
     # 3. Tear down driver client
     if driver is not None:
         try:
@@ -11275,6 +11370,8 @@ async def _finalize_engagement_tail(
                 engagement.id[:8], exc,
             )
         await _settle_job_journal(engagement, driver)
+    if await_turn_end:
+        _paint_job_end(engagement)
 
     # 4. NOTIFY the assistant (via existing DelegationComplete-shaped pathway).
     # #1301: not for a quiet run's completed end — its plugin already posted
@@ -11286,7 +11383,11 @@ async def _finalize_engagement_tail(
         # lines after the terminal text — the one announcement the creator
         # is owed (INV-JOB-010) carries them.
         text = _with_post_echo(text, eng_id)
-        text = _with_job_cost(text, frozen, now)
+        live = (_engagement_registry.get(eng_id)
+                if await_turn_end and _engagement_registry is not None else None)
+        text = _with_job_cost(
+            text, frozen, now,
+            cost_job=((live.origin or {}).get("job") if live is not None else None))
         complete = DelegationComplete(
             delegation_id=eng_id,
             agent=frozen["role_or_type"],
@@ -13134,8 +13235,12 @@ def _on_engagement_terminal(rec) -> None:
     An ended job's keyboards in the direct chat (its start line, its
     questions) are retired on every terminal winner too: the channel takes
     them off the record in this step and edits them away on a task of its
-    own."""
+    own — except for a job that completed from inside a running turn, whose
+    finalize tail retires them once that turn has ended and its cost is
+    recorded."""
     CHALLENGES.cancel_matching(engagement=rec.id, reason="engagement_ended")
+    if rec.id in _end_paint_deferred:
+        return                  # the finalize tail paints it after the turn ends
     channel = _channel_manager.get("telegram") if _channel_manager is not None else None
     retire = getattr(channel, "retire_job_keyboards", None)
     if callable(retire):

@@ -704,12 +704,6 @@ def _title(rec: Any) -> str:
     return (title.splitlines() or ["job"])[0][:80]
 
 
-def _last_progress(rec: Any) -> str:
-    job = (getattr(rec, "origin", None) or {}).get("job") or {}
-    summary = job.get("last_summary")
-    return f"\nLast progress: {summary}" if isinstance(summary, str) and summary else ""
-
-
 class JobRunner:
     """What Casa does around a job's session: the turn-end guard, parking,
     the one automatic resume after a session death, and the resume at boot.
@@ -834,12 +828,16 @@ class JobRunner:
     def park(self, rec: Any, line: str) -> None:
         """The job waits for the operator: ``awaiting = "stopped"`` and one
         line in their direct chat with the job's Cancel button. The operator's
-        reply to it continues the job. Nothing here ends the job."""
+        reply to it continues the job. Nothing here ends the job.
+
+        The line is Casa's own text only (the job's title, as on its start
+        line): the job's progress summaries are its words and stay in its
+        topic."""
         logger.info("job %s parked: %s", rec.id[:8], line)
         st = _state(rec.id)
         st.stops = 0
         mark_awaiting(rec.id, AWAITING_STOPPED)
-        self.spawn(self._post_parked(rec, line + _last_progress(rec)))
+        self.spawn(self._post_parked(rec, line))
 
     async def _post_parked(self, rec: Any, text: str) -> None:
         if was_quiet_run(rec):
@@ -907,10 +905,12 @@ class JobRunner:
             await self._end_error(rec, "could not be resumed after a restart")
 
     async def _end_error(self, rec: Any, reason: str) -> None:
+        """End the job ``error`` through the finalize funnel, which adds the
+        job's last progress to the text itself."""
         from tools import _finalize_engagement
         latest = self.registry.get(rec.id) or rec
         if latest.status not in ("active", "idle"):
             return
         await _finalize_engagement(
-            latest, outcome="error", text=reason + _last_progress(latest),
+            latest, outcome="error", text=reason,
             next_steps=[], driver=self.driver)

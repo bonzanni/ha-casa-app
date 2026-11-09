@@ -664,3 +664,101 @@ async def test_a_dead_session_is_resumed_once_then_a_second_death_ends_it(
     assert finalized[0]["outcome"] == "error"
     assert finalized[0]["text"].startswith("its session ended unexpectedly")
     assert len(FakeCLI.instances) == 2
+
+
+class _PaintChannel:
+    """The channel's end paint, as the real one reads it: the record's posts
+    retired with the outcome, time and cost the record holds at that moment."""
+
+    def __init__(self):
+        self.painted: list[str] = []
+
+    def retire_job_keyboards(self, rec):
+        import background_jobs as bj
+        self.painted.append(rec.status + bj.cost_suffix(rec))
+
+
+async def _completing_job(env, tmp_path, monkeypatch):
+    """A real registry and the real finalize funnel around the real driver:
+    a job whose brief turn is running, ready to call emit_completion from
+    inside it."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    import agent
+    from engagement_registry import EngagementRegistry
+
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
+    rec = await reg.create(
+        kind="specialist", role_or_type="finance", driver="in_casa",
+        task="rows", topic_id=None,
+        origin={"role": "assistant", "channel": "telegram", "chat_id": "100",
+                "job": {"brief_uuid": BRIEF_UUID, "title": "Rows"}})
+    rec.sdk_session_id = "sess-1"
+    channel = _PaintChannel()
+    manager = MagicMock()
+    manager.get = lambda name: channel
+    notices: list[str] = []
+
+    async def outcome(bus, *, complete, **kw):
+        notices.append(complete.text)
+
+    monkeypatch.setattr(tools, "send_engagement_outcome", outcome)
+    tools.init_tools(
+        channel_manager=manager, bus=MagicMock(notify=AsyncMock()),
+        specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+        trigger_registry=MagicMock(), engagement_registry=reg)
+    driver = drv.InCasaDriver(
+        topic_stream_factory=lambda topic: None, record_lookup=reg.get,
+        begin_turn_delivery=reg.begin_turn_delivery,
+        stamp_activity=lambda eid, ts: None)
+    monkeypatch.setattr(agent, "active_engagement_driver", driver, raising=False)
+    await driver.open(rec, ClaudeAgentOptions())
+    cli = FakeCLI.instances[-1]
+    driver.enqueue_brief(rec, "BRIEF")
+    await until(lambda: cli.written)
+    cli.echo(0)
+    await until(lambda: driver.turn_open(rec.id))
+    token = tools.engagement_var.set(rec)
+    try:
+        call = asyncio.create_task(tools.emit_completion.handler(
+            {"status": "ok", "text": "done"}))
+    finally:
+        tools.engagement_var.reset(token)
+    return SimpleNamespace(rec=rec, cli=cli, call=call, channel=channel,
+                           notices=notices)
+
+
+async def test_a_one_turn_job_s_end_carries_that_turn_s_cost(
+        env, tmp_path, monkeypatch):
+    """INV-BGJOB-020: a job that completes inside its only turn is torn down
+    only after that turn's ResultMessage, so the end paint and the end notice
+    carry the turn's cost. The tool call itself returns at once: the turn
+    cannot end before it has."""
+    job = await _completing_job(env, tmp_path, monkeypatch)
+    payload = json.loads((await asyncio.wait_for(job.call, 2))["content"][0]["text"])
+    assert payload["status"] == "acknowledged"
+    assert job.rec.status == "completed"
+    await settle()
+    assert job.channel.painted == [] and job.notices == []
+    assert not job.cli.disconnected
+    job.cli.result()                        # total_cost_usd=0.01
+    await until(lambda: job.channel.painted and job.notices)
+    assert job.channel.painted[0].startswith("completed")
+    assert job.channel.painted[0].endswith(" · $0.01")
+    assert job.notices[0].endswith(" · $0.01")
+    assert job.cli.disconnected
+
+
+async def test_a_completing_turn_that_never_ends_finalizes_after_the_bound(
+        env, tmp_path, monkeypatch):
+    """The completing turn's end is waited for, never required: past the
+    bound the job is torn down and painted with the last cost known (none,
+    for a job whose first turn never ended)."""
+    monkeypatch.setattr(tools, "_COMPLETION_TURN_END_WAIT_S", 0.05)
+    job = await _completing_job(env, tmp_path, monkeypatch)
+    await asyncio.wait_for(job.call, 2)
+    await until(lambda: job.channel.painted and job.notices)
+    assert job.channel.painted[0].startswith("completed")
+    assert "$" not in job.channel.painted[0]
+    assert "$" not in job.notices[0]
+    assert job.cli.disconnected

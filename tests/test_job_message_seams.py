@@ -130,7 +130,7 @@ async def test_a_resume_in_progress_does_not_block_a_message(rig):
 
 async def test_a_members_message_gets_one_line_and_never_reaches_the_job(rig):
     await rig.ch.handle_update(_topic_update("restate the task", user=MEMBER))
-    assert rig.topic == ["Only the operator can steer this job."]
+    assert rig.topic == ["Only the person who started this job can steer it."]
     assert job_inbox.load(rig.rec.id) == []
     assert rig.drv.inbound_unread_depth(rig.rec.id) == 0
     await asyncio.sleep(0.01)

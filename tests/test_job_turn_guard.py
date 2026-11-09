@@ -141,12 +141,17 @@ async def test_a_turn_ended_unfinished_is_nudged_once_then_parked(rig):
     assert rig.rec.status == "active" and rig.finalized == []
 
 
-async def test_the_parking_line_carries_the_last_progress(rig):
+async def test_the_parking_line_carries_no_model_text(rig):
+    """The parking line goes to the direct chat as a plain send, so it is
+    Casa's own text only: the job's progress summary (its words) stays in
+    its topic."""
     rig.rec.origin["job"]["last_summary"] = "12 of 40 rows classified"
     rig.runner.turn_ended(rig.rec, _result())
     rig.runner.turn_ended(rig.rec, _result())
     await settle()
-    assert rig.ch.parked[0].endswith("\nLast progress: 12 of 40 rows classified")
+    assert rig.ch.parked == [
+        "«Accounting check» stopped without finishing. Reply to continue it, "
+        "or Cancel."]
 
 
 async def test_operator_input_resets_the_nudge(rig):
@@ -305,13 +310,15 @@ async def test_a_session_death_is_resumed_once_with_the_restart_line(rig):
 
 
 async def test_a_second_death_ends_the_job_with_its_last_progress(rig):
+    """The second death ends the job ``error`` through the finalize funnel,
+    which appends the job's last progress itself — the runner hands it the
+    reason only, so the progress line appears once."""
     rig.rec.origin["job"]["last_summary"] = "half done"
     await rig.runner.session_lost(rig.rec)
     await rig.runner.session_lost(rig.rec)
     assert len(rig.drv.recovered) == 1
     assert rig.finalized[0]["outcome"] == "error"
-    assert rig.finalized[0]["text"] == (
-        "its session ended unexpectedly\nLast progress: half done")
+    assert rig.finalized[0]["text"] == "its session ended unexpectedly"
 
 
 async def test_a_failed_resume_ends_the_job(rig):

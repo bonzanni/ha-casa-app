@@ -437,6 +437,9 @@ class _JobSession:
     written: dict = field(default_factory=dict)
     retire_task: asyncio.Task | None = None
     retired: asyncio.Event = field(default_factory=asyncio.Event)
+    # Set, then replaced, at each turn end (once its cost is recorded) and
+    # when the stream ends: what :meth:`InCasaDriver.wait_turn_end` waits on.
+    turn_end: asyncio.Event = field(default_factory=asyncio.Event)
     # The job's cost before this client opened (the record's, at the open).
     # The CLI reports ``total_cost_usd`` cumulatively for its own process, so
     # the job's cost at a turn end is this plus that.
@@ -592,6 +595,32 @@ class InCasaDriver(DriverProtocol):
         idle sweep and the stale reap skip such a job."""
         session = self._sessions.get(engagement_id)
         return session is not None and session.turn_open
+
+    async def wait_turn_end(self, engagement_id: str, timeout: float) -> bool:
+        """Wait, at most ``timeout`` seconds, until the turn running in the
+        job's live session has ended — its ResultMessage handled and its cost
+        recorded — or the session is gone. ``True`` when nothing is left to
+        wait for; ``False`` when the bound passed first. A completion's
+        teardown waits on this so the job's end shows the completing turn's
+        cost."""
+        session = self._sessions.get(engagement_id)
+        if session is None:
+            return True
+
+        async def ended() -> None:
+            while session.turn_open and not (session.closing or session.lost):
+                await session.turn_end.wait()
+
+        try:
+            await asyncio.wait_for(ended(), timeout)
+        except asyncio.TimeoutError:
+            return False
+        return True
+
+    @staticmethod
+    def _signal_turn_end(session: _JobSession) -> None:
+        signal, session.turn_end = session.turn_end, asyncio.Event()
+        signal.set()
 
     def recovering(self, engagement_id: str) -> bool:
         """SYNCHRONOUS: is Casa recovering the job's session after it ended
@@ -1110,13 +1139,17 @@ class InCasaDriver(DriverProtocol):
                                    exc_info=True)
         except asyncio.CancelledError:
             session.closing = True
+            self._signal_turn_end(session)
             raise
         except Exception as exc:  # noqa: BLE001 — the stream raised: it ended
             logger.warning("job %s message stream raised: %s", eid[:8], exc)
-        await self._end_segment(session, engagement, None)
-        if session.closing:
-            return
-        self._begin_loss(session, engagement)
+        try:
+            await self._end_segment(session, engagement, None)
+            if session.closing:
+                return
+            self._begin_loss(session, engagement)
+        finally:
+            self._signal_turn_end(session)
 
     async def _on_frame(self, session: _JobSession, engagement: Any,
                         sdk_msg: Any) -> None:
@@ -1242,6 +1275,7 @@ class InCasaDriver(DriverProtocol):
                 except Exception:  # noqa: BLE001
                     logger.warning("result_observer raised for engagement %s",
                                    rec.id[:8], exc_info=True)
+            self._signal_turn_end(session)
         cut = segment.approval_cut.cut
         if cut is None:
             final = segment.accumulated.strip()
