@@ -445,8 +445,9 @@ ENGAGEMENTS_RECORD = "/data/engagements.json"
 def _reset_open_in_casa_sessions(root: str, counts: Counts) -> None:
     """Every open in_casa engagement's session transcript is gone with the
     transcript roots, so a resume of it cannot start. Each active or idle
-    in_casa record gets ``context_rebuild_pending``: its next turn opens a
-    fresh session, and its record is kept.
+    in_casa record gets ``context_rebuild_pending``: its session is never
+    resumed (the driver refuses), so the job ends as one that could not be
+    resumed, and its record is kept.
 
     The file is read strictly and never repaired: one that cannot be read or
     parsed, or that holds a malformed row, is left byte for byte as it is and

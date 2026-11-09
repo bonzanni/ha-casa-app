@@ -172,7 +172,7 @@ def env(tmp_path, monkeypatch):
             topic_stream_factory=lambda topic: None,
             record_lookup=reg.get, begin_turn_delivery=reg.begin_turn_delivery,
             stamp_activity=reg.stamp,
-            on_turn_end=lambda r, res: turn_ends.append(res), **kw)
+            on_turn_end=lambda r, res, err=None: turn_ends.append(res), **kw)
 
     return SimpleNamespace(reg=reg, rec=rec, make=make, transcript=transcript,
                            turn_ends=turn_ends, lost=lost)
@@ -513,21 +513,6 @@ async def test_turn_end_hands_the_result_to_the_handler(env):
     assert driver.turn_open(env.rec.id) is False
 
 
-async def test_the_legacy_turn_call_returns_when_its_turn_ends(env):
-    """A message absorbed mid-turn returns with the turn that absorbed it."""
-    driver = env.make()
-    cli = await open_job(env, driver)
-    call = asyncio.create_task(driver.send_user_turn(env.rec, "hi"))
-    await until(lambda: cli.written)
-    cli.say("still working")
-    await settle()
-    assert not call.done()
-    cli.echo(0)
-    cli.result()
-    await asyncio.wait_for(call, 2)
-    assert driver.inbound_unread_depth(env.rec.id) == 0
-
-
 async def test_context_usage_is_logged_at_open(env, caplog):
     import logging
     caplog.set_level(logging.INFO, logger=drv.__name__)
@@ -587,3 +572,95 @@ async def test_transcript_shapes_that_mean_taken_up(tmp_path):
     assert job_inbox.uuids_in_transcript(path) == {
         "u-own-turn", "u-absorbed", "u-removed"}
     assert job_inbox.uuids_in_transcript(tmp_path / "missing.jsonl") == set()
+
+
+async def test_the_job_cost_is_its_base_plus_the_cli_total_at_each_turn_end(env):
+    """INV-BGJOB-020: the CLI reports ``total_cost_usd`` cumulatively for its
+    own process (a resumed one starts again at 0), so the job's cost at a turn
+    end is the record's cost when this client opened plus that total."""
+    env.rec.origin["job"]["cost_usd"] = 1.5
+    driver = env.make()
+    cli = await open_job(env, driver)
+    driver.submit_casa(env.rec, "work")
+    await until(lambda: cli.written)
+    cli.echo(0)
+    cli.result()                        # total_cost_usd=0.01
+    await until(lambda: env.turn_ends)
+    assert env.rec.origin["job"]["cost_usd"] == pytest.approx(1.51)
+    cli.frames.put_nowait(ResultMessage(
+        subtype="success", duration_ms=1, duration_api_ms=1, is_error=False,
+        num_turns=1, session_id="sess-1", total_cost_usd=0.25, usage={}))
+    await until(lambda: len(env.turn_ends) == 2)
+    assert env.rec.origin["job"]["cost_usd"] == pytest.approx(1.75)
+
+
+async def _with_runner(env, monkeypatch):
+    """The real driver wired to the real job runner, as casa_core wires them."""
+    import background_jobs as bj
+    reg = env.reg
+
+    async def persist_origin(eid):
+        return None
+    reg.persist_origin = persist_origin
+    reg.terminal_pending = lambda eid: False
+    finalized = []
+
+    async def finalize(rec, **kw):
+        finalized.append(kw)
+        rec.status = kw["outcome"]
+    monkeypatch.setattr(tools, "_finalize_engagement", finalize)
+    runner = bj.JobRunner(registry=reg)
+    driver = drv.InCasaDriver(
+        topic_stream_factory=lambda topic: None, record_lookup=reg.get,
+        begin_turn_delivery=reg.begin_turn_delivery, stamp_activity=reg.stamp,
+        on_turn_end=runner.turn_ended, on_session_lost=runner.session_lost,
+        on_operator_written=bj.note_operator_input)
+    runner.driver = driver
+    bj.configure(runner)
+    return driver, finalized
+
+
+async def test_a_job_that_stops_twice_is_nudged_then_parked(env, monkeypatch):
+    """INV-BGJOB-017 end to end: the brief's turn ends unfinished — one nudge
+    is written into the session; the nudge's turn ends unfinished too — the
+    job is parked, still live."""
+    import background_jobs as bj
+    driver, finalized = await _with_runner(env, monkeypatch)
+    env.rec.kind = "specialist"
+    cli = await open_job(env, driver)
+    driver.enqueue_brief(env.rec, "BRIEF")
+    await until(lambda: cli.written)
+    cli.echo(0)
+    cli.result()
+    await until(lambda: len(cli.written) == 2)
+    assert cli.texts()[1] == bj._NUDGE_ASK
+    cli.echo(1)
+    cli.result()
+    await until(lambda: bj.awaiting(env.rec) == bj.AWAITING_STOPPED)
+    await settle()
+    assert len(cli.written) == 2 and finalized == []
+    # The operator's reply continues it: written, and the job no longer waits.
+    driver.submit_operator(env.rec, "carry on")
+    await until(lambda: len(cli.written) == 3)
+    assert bj.awaiting(env.rec) is None
+
+
+async def test_a_dead_session_is_resumed_once_then_a_second_death_ends_it(
+        env, monkeypatch):
+    """INV-BGJOB-018 end to end: the first death resumes the session with the
+    restart line; the replacement dying too ends the job error."""
+    import background_jobs as bj
+    driver, finalized = await _with_runner(env, monkeypatch)
+    cli = await open_job(env, driver)
+    transcript_line(env.transcript, type="user", uuid=BRIEF_UUID)
+    cli.die()
+    await until(lambda: len(FakeCLI.instances) == 2)
+    new = FakeCLI.instances[1]
+    await until(lambda: new.written)
+    assert new.texts() == [bj.SESSION_RESTART_LINE]
+    assert finalized == []
+    new.die()
+    await until(lambda: finalized)
+    assert finalized[0]["outcome"] == "error"
+    assert finalized[0]["text"].startswith("its session ended unexpectedly")
+    assert len(FakeCLI.instances) == 2

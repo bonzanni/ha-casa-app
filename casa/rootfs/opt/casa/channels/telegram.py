@@ -611,111 +611,15 @@ _PROBE_INTERVAL = 45.0
 _PROBE_TIMEOUT = 10.0
 
 _TURN_INCOMPLETE_NOTICE_TIMEOUT_S = 5.0
-"""#692: the bound on the ONE cut-off-turn notice attempt. Matches
-``_settle_lost_inbound``'s existing bound for the same reason — a bounded
-best-effort telling, never retried, because retry-until-posted on an
-engagement path is the INV-ENG-003 livelock class."""
+"""The bound on one best-effort direct chat line about a job (a lost-message
+notice, the cancel retry line, an answer mark) — attempted once, never
+retried: a retry-until-posted on a job's path would hold the message's
+completion veto forever (the INV-ENG-003 livelock class)."""
 
 _SETTLED_STATUS_TIMEOUT_S = 5.0
-"""#692: the bound on the registry's settled-status read.
-
-The registry lock is held across a tombstone write, and this read happens on a
-Telegram delivery task — which must not be able to wedge behind a wedged
-registry. On timeout the notice is posted ANYWAY: this issue is about silence,
-so the fail-open direction is toward telling the operator."""
-
-_TURN_ENDED_UNCONFIRMED_NOTICE = (
-    "This engagement has ended, and Casa could not confirm that its account of "
-    "the outcome reached this topic. If a summary appears above, that is it."
-)
-"""#678: what a cut-off follow-up turn's owner says when the engagement is
-already TERMINAL and its terminal path could not confirm a telling.
-
-A distinct sentence from :data:`_TURN_CUT_OFF_NOTICE`, on a reviewer's finding
-in the first diff round, because that one would be FALSE here. A Telegram
-``TimedOut`` can lose the acknowledgement of a completion summary the wire
-accepted: the operator then SEES the summary while the funnel recorded the
-telling as unconfirmed, and "this turn did not finish … anything it already
-posted above may be partial" contradicts what is on their screen. The turn
-also did not fail — it ended BECAUSE it completed the engagement.
-
-THE RULE THESE STRINGS OBEY, after the same finding shape three times. A notice
-posted from here may assert ONLY what its own site observed:
-
-  (a) the engagement's SETTLED terminal status, which is durable because the
-      strict transition commits memory and disk together or neither; and
-  (b) that the telling was NOT confirmed.
-
-Everything else was cut rather than reworded a fourth time. Three successive
-reviews found the same shape — prose asserting state the site cannot see: first
-"this turn did not finish … may be partial" (false when the stream carried
-text), then "the outcome was delivered to the engager and is in the engagement
-record" (the notify is best-effort and its failure is caught, and the record
-holds the terminal state rather than the summary text), then "this topic is
-closed … deleted with everything in it at its retention deadline" (the close
-can raise and the retention-ledger append is best-effort too). Sharpening the
-wording once more would have been the fourth patch on one mechanism. The
-mechanism is gone instead: there is no longer any sentence here about topic
-lifecycle, retention, the engager, or the record's contents.
-
-WHICH CONTROL HOLDS THIS, stated exactly, because a blacklist of forbidden
-phrases stood here and was CUT: the suite pins this sentence by WHOLE-SENTENCE
-EQUALITY, so it cannot change silently — a production-only reword fails a test.
-Nothing in the suite stops an author who edits this string and its expectation
-TOGETHER, and nothing can: whether a new sentence is TRUE is a judgment, and the
-blacklist that tried to encode it was bypassed three times by respelling the same
-false claims. So if you are editing this string, the rule above is the control,
-and it is on you. See `architecture/engagement-terminal-telling.md`.
-"""
-
-
-_FOLLOWUP_TEXT_NOT_DELIVERED = "followup_text_not_delivered"
-"""#665: the reason value ``drivers.in_casa_driver.FOLLOWUP_TEXT_NOT_DELIVERED``
-writes. A local literal rather than an import — the channel does not depend on
-a driver module — pinned equal to the driver's constant by test."""
-
-_TURN_NOT_DELIVERED_NOTICE = (
-    "This turn finished, but Casa could not deliver its response to this "
-    "topic."
-)
-"""#665: what a follow-up turn whose streamed text was wholly undelivered
-tells the operator, over a LIVE record.
-
-Obeys the same rule as its two siblings above — assert ONLY what the site
-observed. The site knows (a) the turn FINISHED (its result frame arrived; the
-cut-off sentence would be false) and (b) finalization ESTABLISHED that no part
-of the response reached the topic. It does NOT know why: a ``bot is None``
-outcome never reached Telegram at all, so naming a Telegram refusal here would
-attribute a cause the reason string does not carry (seam review, Sol). Pinned
-by whole-sentence equality like its siblings."""
-
-
-_TURN_CUT_OFF_NOTICE = (
-    "This turn did not finish: its stream stopped without ResultMessage, the "
-    "frame that marks a turn that ran to its end, so its outcome was never "
-    "confirmed. Anything it already posted above may be partial, and work it "
-    "started may already have taken effect \u2014 check before asking for it "
-    "again."
-)
-"""#692: the whole of what a cut-off follow-up turn tells the operator.
-
-It states the terminal-artifact FACT and not merely that something failed: the
-report exists to name why the outcome is unknown, and a notice that dropped
-that would be a different, weaker guarantee. Pinned by whole-sentence equality
-AND by an independent substring assertion, which protect different things — the
-first stops a silent rewording, the second stops a rewording that keeps the
-sentence's shape and loses its content.
-
-It also does NOT say nothing was reported, and does NOT invite a retry, and
-both of those are corrections of an earlier draft that said both. A cut-off
-turn can have streamed assistant text before the stream ended — the driver
-finalizes whatever it accumulated before recording the observation, deliberately
-so — so "nothing was reported back for it" was simply false whenever that
-happened, and "send your message again if you want it retried" invited the
-operator to repeat work that had already taken effect. For non-idempotent work
-that is the notice actively causing harm. What is always true is that the
-turn's outcome was never confirmed and that whatever it did may be partial, so
-that is what it says."""
+"""The bound on the registry's settled-status read that words a lost-message
+notice. The registry lock is held across a tombstone write; on timeout the
+plain wording is used."""
 
 _LOST_INBOUND_NOTICE = "Your message could not be delivered — please resend it."
 """#649: what a message the engagement never took up draws in its topic."""
@@ -729,47 +633,8 @@ direct chat as a reply to them: their typed reply, or the question or approval
 card their tap answered. The ended form is chosen when the record's settled
 status is terminal; Casa never forwards the words anywhere else."""
 
-_DM_TURN_CUT_OFF_NOTICE = (
-    "The job's turn for this message did not finish: its stream stopped "
-    "without ResultMessage, the frame that marks a turn that ran to its end, "
-    "so its outcome was never confirmed. Anything it already posted may be "
-    "partial, and work it started may already have taken effect \u2014 check "
-    "before asking for it again."
-)
-_DM_TURN_NOT_DELIVERED_NOTICE = (
-    "The job's turn for this message finished, but Casa could not deliver "
-    "its response to the job's topic."
-)
-_DM_TURN_ENDED_NOTICE = "The job ended while handling this message."
-"""The follow-up notices an operator-triggered turn draws in the direct chat,
-as a reply to the message that started it. Same rule as the topic notices
-above: each asserts only what its site observed — the settled status, and the
-driver's observation of the turn."""
-
 # Callback type for on_token streaming
 OnTokenCallback = Callable[[str], Awaitable[None]]
-
-
-class _Refusal:
-    """A falsy readiness refusal that says whether the refusing arm already
-    told the engagement's topic why (a failed context rebuild, a legacy record
-    that could not be resumed). A message from that topic then draws no second
-    notice; a message from the direct chat still gets its own."""
-
-    __slots__ = ("told",)
-
-    def __init__(self, told: bool) -> None:
-        self.told = told
-
-    def __bool__(self) -> bool:
-        return False
-
-
-_REFUSED_TOLD = _Refusal(True)
-
-
-def _refusal_told(result: Any) -> bool:
-    return getattr(result, "told", False) is True
 
 
 @dataclass(frozen=True)
@@ -781,6 +646,31 @@ class _NoticeTarget:
     chat_id: int
     message_id: int
     answer: bool = False
+
+
+def _notice_dict(target: "_NoticeTarget | None") -> "dict | None":
+    """A notice target as the job's message journal stores it."""
+    if target is None:
+        return None
+    return {"chat_id": target.chat_id, "message_id": target.message_id,
+            "answer": target.answer}
+
+
+def _notice_target_from(value: Any) -> "_NoticeTarget | None":
+    """A journaled notice target back as one; ``None`` (the topic) for
+    anything that is not one."""
+    if not isinstance(value, dict):
+        return None
+    chat, mid = value.get("chat_id"), value.get("message_id")
+    if type(chat) is not int or type(mid) is not int:
+        return None
+    return _NoticeTarget(chat_id=chat, message_id=mid,
+                         answer=value.get("answer") is True)
+
+
+_MEMBER_STEER_LINE = "Only the operator can steer this job."
+"""What a household member's message in a job's topic draws: it does not
+reach the job."""
 
 
 
@@ -1124,51 +1014,25 @@ class TelegramChannel(Channel):
         self._intake_locks: dict = {}
         # Injectable collaborators (wired at startup by Task 22; tests assign AsyncMocks).
         self._engagement_registry = None
-        self._driver_send_user_turn = None
-        # #649: in_casa admission-ticket seams (see casa_core). ``admit`` is
-        # SYNCHRONOUS and taken before the handler's first risky await;
-        # ``discharge`` is idempotent by exact token; ``held`` is the failure
-        # owner's peek before its one bounded notice attempt. None-safe.
-        self._driver_admit_inbound = None
-        self._driver_discharge_inbound = None
-        self._driver_inbound_held = None
-        # #649: producer-closing stop gate + the failure finalizers stop()
-        # must drain (visibility law — a live record's ticket is never
-        # discharged before one bounded visible-outcome attempt).
+        # #649: producer-closing stop gate — once stop() began, no message is
+        # handed to a job any more.
         self._stopping = False
-        self._inbound_cleanup_tasks: set[asyncio.Task] = set()
-        # #692: SYNCHRONOUS read of the in_casa driver's follow-up-turn
-        # observation for one exact admission ticket, wired by casa_core;
-        # None-safe. The driver OBSERVES that
-        # a ticketed turn ended with no ResultMessage; this channel's delivery
-        # task ADJUDICATES, because only it can tell that cutoff from a
-        # healthy in_casa self-emit completion.
-        self._driver_turn_incomplete = None
-        # #369: clearance-downgrade context revocation seams, wired by
-        # casa_core per driver; None-safe for tests. ``invalidate_session``
-        # tears the live session down (in_casa: close the client);
-        # ``context_rebuilder(rec) -> str`` establishes a FRESH session at the
-        # record's (clamped) markers and returns the preamble to prepend to
-        # the next delivered turn.
-        self._driver_invalidate_session = None
-        self._engagement_context_rebuilder = None
-        # Preamble stash, keyed by engagement id: in-memory only — losing it
-        # to a crash loses a courtesy note, never the rebuild itself (the
-        # durable flag is what refuses the old session).
-        self._rebuild_preambles: dict[str, str] = {}
         self._engagement_driver = None
         self._finalize_cancel = None
         self._finalize_complete_user = None
         self._session_registry = None   # wired in main() (Task 9); /new reset
         self._main_feed_redirect_seen: set[int] = set()
         # Per-topic handler lock (Bug 10, v0.14.7). aiohttp dispatches
-        # handle_update concurrently per Bot-API update; without this,
-        # /cancel racing a regular turn could route the turn to a driver
-        # that's already been torn down by _finalize_engagement. Keyed by
-        # message_thread_id (1:1 with engagement via _topic_index). Mirrors
-        # in_casa_driver._locks. Entries are not pruned — bounded growth,
-        # cleared on add-on restart.
+        # handle_update concurrently per Bot-API update; this serialises the
+        # updates of one topic (a /cancel and a message), never a job's
+        # session: no handler awaits one. Keyed by message_thread_id (1:1
+        # with engagement via _topic_index). Entries are not pruned —
+        # bounded growth, cleared on add-on restart.
         self._engagement_handler_locks: dict[Any, asyncio.Lock] = {}
+        # The per-engagement lifecycle locks every resume owner of a job's
+        # session takes (``engagement_lifecycle_lock``). Keyed by engagement
+        # id; never held by a Telegram handler.
+        self._engagement_lifecycle_locks: dict[str, asyncio.Lock] = {}
         # #317: per-chat serialization for the DM path (_handle). Handlers run
         # with block=False (H5), so /new and an immediately-following message
         # dispatch concurrently — the follow-up could resume the mid-reset
@@ -1300,24 +1164,17 @@ class TelegramChannel(Channel):
         for task in list(self._turn_tasks):
             task.cancel()
 
-        # #649: bounded, loop-until-stable drain of the cancelled turn tasks
-        # AND the ticket-cleanup finalizers their done_callbacks create —
-        # a single snapshot cannot see a finalizer born after it (Sol seam
-        # r8/r9). Bounded: shutdown never wedges on a notice; whatever the
-        # bound abandons is the accepted non-durable-ledger process-death
-        # limit.
+        # Bounded, loop-until-stable drain of the cancelled tasks: shutdown
+        # never wedges on a notice.
         loop = asyncio.get_running_loop()
         deadline = loop.time() + 5.0
         while True:
-            pending = [t for t in (
-                list(self._turn_tasks) + list(self._inbound_cleanup_tasks))
-                if not t.done()]
+            pending = [t for t in list(self._turn_tasks) if not t.done()]
             if not pending or loop.time() >= deadline:
                 break
             await asyncio.wait(
                 pending, timeout=max(0.1, deadline - loop.time()))
         self._turn_tasks.clear()
-        self._inbound_cleanup_tasks.clear()
 
         if self._probe_task and not self._probe_task.done():
             self._probe_task.cancel()
@@ -2909,227 +2766,89 @@ class TelegramChannel(Channel):
                 )
 
                 # #649: ONE mention-aware recognized-command classification,
-                # computed here and reused by the dispatch below — a
-                # recognized command is consumed by this handler itself
-                # (never delivered to the model) and gets no admission
-                # ticket; every other text does, HERE, before the clearance
-                # clamp / session-invalidation awaits a completion can race.
+                # reused by the dispatch below — a recognized command is
+                # consumed by this handler itself and never reaches the job.
                 recognized = self._classify_engagement_command(text)
-                inbound_token = None
-                if recognized is None and self._driver_admit_inbound is not None:
-                    try:
-                        inbound_token = self._driver_admit_inbound(rec, text)
-                    except Exception:  # noqa: BLE001
-                        logger.debug("admit_inbound failed", exc_info=True)
-
-                handed_off = False
-                try:
-                    # #336 (Terra, review r4): an engagement reads at the
-                    # clearance of the turn that CREATED it — but any member of
-                    # the engagement supergroup can steer it by messaging its
-                    # topic, and answering a steering turn at the creator's
-                    # clearance would hand a non-operator the operator's private
-                    # memory through the engagement. Clamp the engagement's
-                    # read-clearance DOWN to this sender's before their turn is
-                    # delivered, so it never reads above the least-privileged
-                    # person who has steered it. Monotonic: it only ever lowers,
-                    # so it is safe under concurrent steerers and idempotent for
-                    # the ordinary operator-only case (where it no-ops).
-                    moved = await self._engagement_registry.lower_origin_clearance(
-                        rec.id, self._origin_clearance_for_user_id(user_id))
-                    if moved:
-                        # #369: the clamp gates future reads, but the live session
-                        # still HOLDS what it fetched at the old tier — its
-                        # transcript and launch materials — and this steerer could
-                        # simply ask it to restate them. Tear the session down NOW
-                        # (under this same lock, before the turn is delivered) and
-                        # durably drop the resume pointer; _resume_and_ready's
-                        # rebuild branch establishes the fresh floor-context this
-                        # turn will be delivered into. Teardown failure is logged
-                        # and does not skip the pointer drop — the persisted
-                        # context_rebuild_pending flag (set by the clamp itself)
-                        # is what refuses the old session either way.
-                        # #1166: an in_casa turn running in the session is
-                        # not cut — the teardown and the pointer drop happen
-                        # after it ends, in the delivery task's rebuild,
-                        # outside this lock (see _rebuild_waits_for_turn).
-                        if not self._turn_running_in(rec):
-                            if self._driver_invalidate_session is not None:
-                                try:
-                                    await self._driver_invalidate_session(rec)
-                                except Exception:  # noqa: BLE001 — flag fails closed
-                                    logger.warning(
-                                        "engagement %s session invalidation "
-                                        "failed after clearance downgrade "
-                                        "(rebuild flag still blocks resume)",
-                                        rec.id[:8], exc_info=True,
-                                    )
-                            await self._engagement_registry.clear_session_id(
-                                rec.id)
-
-                    if recognized is not None:
-                        # M10 (v0.52.0): group command menus send "/cancel@botname"
-                        # — the mention-strip lives in the ONE classification
-                        # computed above (#649); a command addressed to a
-                        # DIFFERENT bot classified as None and falls through
-                        # to the user-turn path, matching PTB's
-                        # CommandHandler semantics.
-                        command = recognized
-                        # Bug 8 (v0.14.6): /cancel and /complete are originator-only.
-                        # Pre-fix any user in the supergroup could terminate any
-                        # engagement; user_id wasn't even checked. /help stays
-                        # open. A command NEVER becomes a delivered user turn.
-                        if command in ("/cancel", "/complete"):
-                            owner_id = rec.origin.get("user_id")
-                            if (
-                                owner_id is not None
-                                and user_id is not None
-                                and int(owner_id) != int(user_id)
-                            ):
-                                await self._post_engagement_notice(
-                                    rec,
-                                    f"Only the engagement originator can {command}. "
-                                    "Ask them, or start your own engagement.",
-                                )
-                                return
-                            if command == "/cancel":
-                                finalized = await self._finalize_cancel(
-                                    rec, reason="user")
-                            else:
-                                finalized = await self._finalize_complete_user(rec)
-                            # #649: a falsy finalize whose record is STILL
-                            # LIVE means the strict terminal persist rolled
-                            # back (or the stale-guard lost) — the operator's
-                            # command would otherwise be silently ignored
-                            # and a later agent completion could proceed.
-                            # (Already-terminal records re-read as terminal
-                            # and stay silent, as before.)
-                            if not finalized:
-                                latest = (
-                                    self._engagement_registry.get(rec.id)
-                                    if self._engagement_registry is not None
-                                    else None)
-                                if latest is not None and latest.status in (
-                                        "active", "idle"):
-                                    try:
-                                        await self._post_engagement_notice(
-                                            rec,
-                                            f"{command} could not be "
-                                            "finalized — please retry.")
-                                    except Exception:  # noqa: BLE001
-                                        logger.debug(
-                                            "command retry notice failed",
-                                            exc_info=True)
-                            return
-                        if command == "/help":
-                            # #1412: answered by Casa — the engaged CLI has
-                            # no /help of its own here.
+                if recognized is not None:
+                    # M10 (v0.52.0): group command menus send "/cancel@botname"
+                    # — the mention-strip lives in the ONE classification
+                    # above (#649); a command addressed to a DIFFERENT bot
+                    # classified as None and falls through to delivery,
+                    # matching PTB's CommandHandler semantics.
+                    command = recognized
+                    # Bug 8 (v0.14.6): /cancel and /complete are originator-only.
+                    # /help stays open. A command NEVER reaches the job.
+                    if command in ("/cancel", "/complete"):
+                        owner_id = rec.origin.get("user_id")
+                        if (
+                            owner_id is not None
+                            and user_id is not None
+                            and int(owner_id) != int(user_id)
+                        ):
                             await self._post_engagement_notice(
-                                rec, self._engagement_help_text())
+                                rec,
+                                f"Only the engagement originator can {command}. "
+                                "Ask them, or start your own engagement.",
+                            )
                             return
-
-                    # Resume-if-suspended + lifecycle gate + idle→active turn
-                    # stamp — the SINGLE shared core (``_resume_and_ready``),
-                    # run UNDER this per-topic lock. A False return means the
-                    # record went terminal, resume was exhausted (2-strike), or
-                    # it is an unresumable orphan (each already surfaced +
-                    # cleaned up inside the helper); do NOT deliver — the finally
-                    # discharges the admission ticket. The status
-                    # re-check inside still runs under the lock, preserving the
-                    # Bug-10 guarantee (a cancel that already finalised the
-                    # driver blanks the turn here before any task is spawned).
-                    # #1166: a pending rebuild over a running in_casa turn is
-                    # not run here — it would wait for the turn under this
-                    # lock (and a /cancel with it). The delivery task drains
-                    # the turn, then runs the readiness step itself.
-                    await_rebuild = self._rebuild_waits_for_turn(rec)
-                    ready = True if await_rebuild else await self._resume_and_ready(rec)
-                    if not ready:
-                        # The ticket's holder tells the one lost-message
-                        # notice — unless the refusing arm already told this
-                        # topic why; the finally's discharge then runs.
-                        if not _refusal_told(ready):
-                            await self._settle_lost_inbound(rec, inbound_token)
+                        if command == "/cancel":
+                            finalized = await self._finalize_cancel(
+                                rec, reason="user")
+                        else:
+                            finalized = await self._finalize_complete_user(rec)
+                        # #649: a falsy finalize whose record is STILL LIVE
+                        # means the strict terminal persist rolled back (or
+                        # the stale-guard lost) — the operator's command would
+                        # otherwise be silently ignored. (Already-terminal
+                        # records re-read as terminal and stay silent.)
+                        if not finalized:
+                            latest = (
+                                self._engagement_registry.get(rec.id)
+                                if self._engagement_registry is not None
+                                else None)
+                            if latest is not None and latest.status in (
+                                    "active", "idle"):
+                                try:
+                                    await self._post_engagement_notice(
+                                        rec,
+                                        f"{command} could not be "
+                                        "finalized — please retry.")
+                                except Exception:  # noqa: BLE001
+                                    logger.debug(
+                                        "command retry notice failed",
+                                        exc_info=True)
+                        return
+                    if command == "/help":
+                        # #1412: answered by Casa — the engaged CLI has no
+                        # /help of its own here.
+                        await self._post_engagement_notice(
+                            rec, self._engagement_help_text())
                         return
 
-                    # M9 (v0.52.0): deliver the user turn in a tracked background
-                    # task so the per-topic lock (and, in polling mode, PTB's
-                    # update fetcher) is NOT held across the whole multi-minute
-                    # SDK turn — a subsequent /cancel can then acquire the lock
-                    # and interrupt the in-flight turn.
-                    if self._driver_send_user_turn is not None:
-                        if self._stopping:
-                            # #649 producer-closing stop gate: no delivery
-                            # task after stop() began — one bounded telling,
-                            # then the finally's discharge no-ops.
-                            await self._settle_lost_inbound(rec, inbound_token)
-                            return
-                        # #649: belt-and-suspenders late admission — any
-                        # text reaching delivery without a ticket (seam not
-                        # wired, or a future path) is admitted before the
-                        # task exists.
-                        if (inbound_token is None
-                                and self._driver_admit_inbound is not None):
-                            try:
-                                inbound_token = self._driver_admit_inbound(
-                                    rec, text)
-                            except Exception:  # noqa: BLE001
-                                logger.debug(
-                                    "late admit_inbound failed", exc_info=True)
-                        # The message becomes a delivered user turn — the
-                        # background task owns the admission ticket from here.
-                        # ``handed_off`` stops the finally below from
-                        # discharging it. #649 (Terra seam r3): set ONLY after
-                        # the task exists and both callbacks are attached — a
-                        # create_task raise otherwise left the ticket with no
-                        # owner in existence.
-                        task = asyncio.create_task(
-                            self._deliver_turn_bg(
-                                rec, text,
-                                tg_message_id=getattr(msg, "message_id", None),
-                                inbound_token=inbound_token,
-                                await_rebuild=await_rebuild))
-                        self._turn_tasks.add(task)
-                        task.add_done_callback(self._turn_tasks.discard)
-                        # Task-end backstop for cancelled-before-first-step.
-                        task.add_done_callback(
-                            lambda t, r=rec, tok=inbound_token:
-                                self._schedule_inbound_cleanup(r, tok))
-                        handed_off = True
-                        # INV-MEM-044: what the operator typed here is his
-                        # message; memory keeps it when this specialist keeps
-                        # none (never the specialist's turn). Detached.
-                        from delegated_memory import capture_topic_message
-                        capture_topic_message(
-                            channel=self, engagement=rec, user_id=user_id,
-                            user_name=getattr(msg.from_user, "first_name", None)
-                            or "unknown",
-                            message_id=getattr(msg, "message_id", None),
-                            resident=self.default_agent, text=text)
+                # Only the operator steers a job: a message from someone who
+                # reads below the job's clearance gets one line and never
+                # reaches the job.
+                if self._steer_refused(rec, user_id):
+                    await self._post_engagement_notice(rec, _MEMBER_STEER_LINE)
                     return
-                except BaseException:
-                    # #649 visibility law: an exception/cancellation before
-                    # hand-off leaves the ticket with no task owner — one
-                    # bounded notice attempt while it is still ledgered,
-                    # then discharge (the finally's discharge is the
-                    # idempotent second half).
-                    if inbound_token is not None and not handed_off:
-                        await self._settle_lost_inbound(rec, inbound_token)
-                    raise
-                finally:
-                    if not handed_off:
-                        # #649: expected-non-delivery paths (a losing
-                        # _resume_and_ready, the stop gate) discharge the
-                        # ticket directly; exception paths already made
-                        # their telling above. Idempotent by exact token.
-                        if (inbound_token is not None
-                                and self._driver_discharge_inbound is not None):
-                            try:
-                                self._driver_discharge_inbound(
-                                    rec, inbound_token)
-                            except Exception:  # noqa: BLE001
-                                logger.debug(
-                                    "inbound discharge failed", exc_info=True)
+
+                # Journal, admit, queue and return: the job's delivery worker
+                # writes the message into the running session. Nothing here
+                # waits on the session.
+                if await self._deliver_to_job(
+                        rec, text,
+                        tg_message_id=getattr(msg, "message_id", None)):
+                    # INV-MEM-044: what the operator typed here is their
+                    # message; memory keeps it when this specialist keeps
+                    # none (never the specialist's turn). Detached.
+                    from delegated_memory import capture_topic_message
+                    capture_topic_message(
+                        channel=self, engagement=rec, user_id=user_id,
+                        user_name=getattr(msg.from_user, "first_name", None)
+                        or "unknown",
+                        message_id=getattr(msg, "message_id", None),
+                        resident=self.default_agent, text=text)
+                return
 
         # 3) Other chats. When telegram_chat_id is configured it is an
         #    allowlist (DOCS.md: "Telegram chat ID to restrict messages
@@ -3165,39 +2884,6 @@ class TelegramChannel(Channel):
         return command if command in (
             "/cancel", "/complete", "/help") else None
 
-    async def _settle_lost_inbound(self, rec, token,
-                                   notice_target: "_NoticeTarget | None" = None,
-                                   ) -> None:
-        """#649 visibility law: before a still-ledgered admission ticket is
-        discharged on a failure path, make ONE bounded, guarded notice
-        attempt — never gated on any record-status read. One attempt, then
-        discharge regardless: retry-until-posted would be an UNCLEARABLE
-        completion veto (the INV-ENG-003 livelock class).
-
-        The holder of the ticket is the only sender of that message's notice;
-        the callers of the delivery seams never post one. With a
-        ``notice_target`` (an operator's reply or tap) the notice is a reply
-        to their message in the direct chat, worded from the record's settled
-        status; without one it goes to the engagement's topic."""
-        if token is None or self._driver_discharge_inbound is None:
-            return
-        try:
-            held = (self._driver_inbound_held(rec, token)
-                    if self._driver_inbound_held is not None else False)
-            if held:
-                try:
-                    await asyncio.wait_for(
-                        self._post_lost_inbound_notice(rec, notice_target),
-                        5)
-                except BaseException:  # noqa: BLE001 — bounded best-effort
-                    logger.debug("lost-inbound notice failed for %s",
-                                 rec.id[:8], exc_info=True)
-        finally:
-            try:
-                self._driver_discharge_inbound(rec, token)
-            except Exception:  # noqa: BLE001
-                logger.debug("inbound discharge failed", exc_info=True)
-
     async def _post_lost_inbound_notice(
             self, rec, notice_target: "_NoticeTarget | None") -> None:
         if notice_target is None:
@@ -3221,6 +2907,26 @@ class TelegramChannel(Channel):
         await self._send_dm_reply(notice_target.chat_id,
                                   notice_target.message_id, text)
 
+    async def _tell_not_delivered(
+            self, rec, notice_target: "_NoticeTarget | None") -> None:
+        """The one bounded "not delivered, please resend" attempt for an
+        operator message a job did not accept. Never retried."""
+        try:
+            await asyncio.wait_for(
+                self._post_lost_inbound_notice(rec, notice_target),
+                _TURN_INCOMPLETE_NOTICE_TIMEOUT_S)
+        except BaseException:  # noqa: BLE001 — bounded best-effort
+            logger.debug("lost-message notice failed for %s", rec.id[:8],
+                         exc_info=True)
+
+    async def tell_journal_lost(self, rec, entry: dict) -> None:
+        """The lost-message notice for one journaled operator message an
+        ended job never read — the journal's terminal branch calls it once
+        per such entry. The entry's ``notice`` names the direct chat message
+        or tapped card to reply to; without one the notice goes to the
+        topic."""
+        await self._tell_not_delivered(rec, _notice_target_from(entry.get("notice")))
+
     async def _send_dm_reply(self, chat_id: int, message_id: int,
                              text: str) -> None:
         """One Casa line in the operator's direct chat as a reply to
@@ -3234,653 +2940,88 @@ class TelegramChannel(Channel):
 
     async def _post_turn_notice(self, rec, text: str,
                                 notice_target: "_NoticeTarget | None") -> None:
-        """A notice about one engagement turn: in the direct chat as a reply
-        to the message that triggered the turn, or, for a turn with no such
-        message (a batch, a message written in the topic), in the topic."""
+        """A notice about one operator message: in the direct chat as a reply
+        to it, or, for a message written in the topic, in the topic."""
         if notice_target is None:
             await self._post_engagement_notice(rec, text)
         else:
             await self._send_dm_reply(notice_target.chat_id,
                                       notice_target.message_id, text)
 
-    def _schedule_inbound_cleanup(self, rec, token,
-                                  notice_target: "_NoticeTarget | None" = None,
-                                  ) -> None:
-        """#649: task-end backstop, attached as a done_callback at both
-        spawn sites. On every normal path the ticket is already discharged
-        (held=False → pure no-op); its real work is the
-        cancelled-before-first-step task, whose coroutine never ran any
-        try/finally. Scheduled UNCONDITIONALLY (stop() included) and
-        tracked, so the shutdown drain awaits it."""
-        if token is None:
-            return
-        try:
-            t = asyncio.create_task(
-                self._settle_lost_inbound(rec, token, notice_target))
-        except RuntimeError:  # loop closing — process death; non-durable
-            return
-        self._inbound_cleanup_tasks.add(t)
-        t.add_done_callback(self._inbound_cleanup_tasks.discard)
+    def _steer_refused(self, rec, user_id) -> bool:
+        """A message in a job's topic from someone who reads below the job's
+        clearance — a household member, not the operator — does not reach
+        the job: the job read at the clearance of the turn that started it,
+        and its session holds what it fetched there."""
+        from sensitivity import TIERS
+        current = (getattr(rec, "origin", None) or {}).get("_origin_clearance")
+        sender = self._origin_clearance_for_user_id(user_id)
+        return (current in TIERS and sender in TIERS
+                and TIERS.index(sender) < TIERS.index(current))
 
-    async def _report_incomplete_turn(
-            self, rec, token, *, batch: int | None = None,
-            notice_target: "_NoticeTarget | None" = None) -> bool:
-        """#692/#678: tell the operator when THEIR turn ended without the
-        turn's own terminal artifact — or, #665, finished with its streamed
-        text wholly undelivered — and the engagement is still live.
-
-        A turn an operator triggered from the direct chat (``notice_target``)
-        is told there, as a reply to their message, whatever the record's
-        terminal state: nothing about the topic excuses it. A turn without
-        one — a batch, or a message written in the topic — is told in the
-        topic, under the rules below.
-
-        Called on ``_deliver_turn_bg``'s SUCCESS path only. Every exception
-        path already has an owner — the "Turn failed" notice, the terminal
-        absorb branch, or ``_settle_lost_inbound`` — and adding a telling
-        there too would be a second telling for one turn.
-
-        Three properties carry this:
-
-        1. **One bounded attempt, never retried.** Both awaits are bounded
-           independently (D21); a retry-until-posted here would be an
-           unclearable completion veto.
-        2. **The suppression reads the SETTLED record, not a lock-free
-           snapshot.** A healthy in_casa self-emit completion reaches here
-           looking exactly like a cutoff: ``emit_completion`` commits the
-           terminal transition and ``_finalize_engagement_tail`` then closes
-           the engagement's own SDK client, so the turn ends with no
-           ``ResultMessage``. The flip and the funnel's topic work both
-           precede that close, so a settled read sees them and this stays
-           quiet; a LOCK-FREE read could instead see the transient value of a
-           strict transition that then rolls back, and would swallow a notice
-           that was owed.
-        3. **It is an ATTEMPT, not an ordering guarantee.** Nothing orders an
-           in_casa notice against the finalize funnel's topic operations, so a
-           terminal writer that wins the flip after the read above can paint
-           and close first and this notice lands below the paint, or fails
-           against a closed topic. Installing that ordering needs the
-           in_casa turn-admission fence that does not exist and is
-           deliberately out of scope here. The
-           invariant is written as an attempt for that reason.
-        4. **R2: terminal STATUS is not the suppression predicate — a
-           CONFIRMED terminal telling is.** A seam reviewer reproduced the
-           composition this change would otherwise create with its own other
-           arm: the completion summary fails, the funnel's one bounded
-           disclosure fails too, the tail's ``driver.cancel`` then ends this
-           turn's iterator, and a status-only reader sees ``completed`` and
-           stays quiet — a terminal record over a topic that heard NOTHING,
-           and zero notices. So the read asks the whole question at once
-           (``settled_terminal_state``), and every way of NOT knowing that the
-           topic was told — no record of one, a read that raises, a read that
-           times out — falls through to the one attempt. The harm being fixed
-           is silence, so that is the direction to fail in.
-        """
-        # No ``token is None`` half: the seam is total over a ticket it does
-        # not hold and returns "" for one, so the guard would be unpinnable
-        # (see casa_core.read_followup_incomplete). The seam-wired check IS
-        # load-bearing — an unwired channel has no seam to call.
-        import background_jobs
-        if self._driver_turn_incomplete is None:
-            return False
-        try:
-            reason = self._driver_turn_incomplete(rec, token)
-        except Exception:  # noqa: BLE001 — an observation read is never fatal
-            logger.debug("follow-up observation read failed for %s",
-                         rec.id[:8], exc_info=True)
-            return False
-        # #1141: a turn that stopped at its turn limit arrives as a
-        # ``TurnLimitStop`` (duck-typed: the channel does not import a driver
-        # module) carrying the reason the slot would otherwise hold. A BATCH
-        # turn — the one ``start_next_batch`` delivers with its batch number —
-        # drops the limit fact and is handled on that reason exactly as before
-        # (ruling-1141: "background job batches are unchanged"). Every other
-        # turn — an operator's message, a reply or a tapped answer from the
-        # direct chat — is the limit's: the limit wins over the reason, so
-        # neither of the two WARNINGs nor any notice below is reached for it.
-        if not isinstance(reason, str):
-            limit_stop = reason
-            reason = getattr(limit_stop, "reason", "")
-            if not isinstance(reason, str):
-                reason = ""
-            if batch is None:
-                return await self._tell_turn_limit_stop(
-                    rec, limit_stop, notice_target=notice_target)
-        if not reason:
-            return False
-        status, told = "", False
-        if self._engagement_registry is not None:
-            try:
-                status, told = await asyncio.wait_for(
-                    self._engagement_registry.settled_terminal_state(rec.id),
-                    _SETTLED_STATUS_TIMEOUT_S)
-            except BaseException:  # noqa: BLE001 — fail TOWARD telling
-                status, told = "", False
-                logger.warning(
-                    "settled terminal-state read did not return for %s — "
-                    "telling the operator anyway", rec.id[:8], exc_info=True)
-        if (notice_target is None
-                and status in ("completed", "cancelled", "error") and told):
-            logger.info(
-                "turn %s ended incompletely on an already-terminal "
-                "engagement (%s) whose terminal path DID tell this topic — it "
-                "owns the telling", rec.id[:8], status)
-            return True
-        # #1310: a quiet scheduled run's completed end is told to no one by
-        # design (INV-BGJOB-010), so an untold completion is not a fault here.
-        if status == "completed" and background_jobs.is_quiet_run(rec):
-            logger.info(
-                "turn %s ended on a quiet scheduled run's completed end — "
-                "deliberately not told (reason=%s)", rec.id[:8], reason)
-            return True
-        terminal_untold = status in ("completed", "cancelled", "error")
-        if terminal_untold:
-            logger.warning(
-                "turn %s ended incompletely on a terminal "
-                "engagement (%s) whose terminal path told this topic nothing "
-                "— telling the operator", rec.id[:8], status)
-        logger.warning(
-            "engagement %s: a follow-up turn ended incompletely over a live "
-            "record (reason=%s) — telling the operator",
-            rec.id[:8], reason)
-        # WHICH telling depends on the state, and the two are not
-        # interchangeable: over a LIVE record the turn really was cut off, and
-        # over a TERMINAL one it ended because it completed the engagement,
-        # whose account may in fact be on the operator's screen already (a lost
-        # acknowledgement is indistinguishable from a failed send from here).
-        # #665: a live-record delivery failure gets its own sentence — the
-        # cut-off one ("stopped without ResultMessage") is false for a turn
-        # that finished. The terminal-untold arm keeps the unconfirmed notice:
-        # "could not confirm that its account ... reached this topic" is still
-        # true of a response that never arrived.
-        if notice_target is not None:
-            notice = (_DM_TURN_ENDED_NOTICE if terminal_untold
-                      else _DM_TURN_NOT_DELIVERED_NOTICE
-                      if reason == _FOLLOWUP_TEXT_NOT_DELIVERED
-                      else _DM_TURN_CUT_OFF_NOTICE)
-        elif terminal_untold:
-            notice = _TURN_ENDED_UNCONFIRMED_NOTICE
-        elif reason == _FOLLOWUP_TEXT_NOT_DELIVERED:
-            notice = _TURN_NOT_DELIVERED_NOTICE
-        else:
-            notice = _TURN_CUT_OFF_NOTICE
-        try:
-            await asyncio.wait_for(
-                self._post_turn_notice(rec, notice, notice_target),
-                _TURN_INCOMPLETE_NOTICE_TIMEOUT_S)
-        except BaseException:  # noqa: BLE001 — one bounded best-effort attempt
-            logger.warning("incomplete-turn notice failed for %s",
-                           rec.id[:8], exc_info=True)
-        return True
-
-    async def _tell_turn_limit_stop(
-            self, rec, limit_stop, *,
-            notice_target: "_NoticeTarget | None" = None) -> bool:
-        """#1141 (ruling-1141, INV-ENG-020): a non-batch follow-up turn that
-        stopped at its turn limit. Returns False — a limit stop is never "cut
-        off", so a job topic's operator turn goes on to the next batch.
-
-        Whatever the turn already posted stands; Casa makes ONE bounded attempt
-        to add C11's line — even when the turn posted nothing — unless the
-        settled read finds the record terminal (then nothing is posted: "say
-        'continue'" would be false). The limit WINS over an established
-        text-not-delivered reason on this arm, so that reason's notice is not
-        posted: one Casa telling per turn.
-
-        Exactly ONE WARNING, logged after the attempt and carrying its outcome
-        (``line=posted|failed|cancelled|terminal``; ``state=unread`` when the
-        settled read failed and the line was attempted anyway, the fail-toward-
-        telling direction this function's sibling takes). A failed read or post
-        therefore adds no WARNING of its own, and nothing retries the post. A
-        cancellation while awaiting is absorbed exactly as the sibling notice
-        absorbs it (one bounded best-effort attempt, then return).
-        """
-        from agent import _LIMIT_CONTINUE  # C11's ruled line (#1121)
-        status, state, line = "", "", "posted"
-        if self._engagement_registry is not None:
-            try:
-                status, _told = await asyncio.wait_for(
-                    self._engagement_registry.settled_terminal_state(rec.id),
-                    _SETTLED_STATUS_TIMEOUT_S)
-            except BaseException:  # noqa: BLE001 — fail TOWARD telling
-                status, state = "", "unread"
-        if status in ("completed", "cancelled", "error"):
-            line = "terminal"
-        else:
-            try:
-                await asyncio.wait_for(
-                    self._post_turn_notice(rec, _LIMIT_CONTINUE, notice_target),
-                    _TURN_INCOMPLETE_NOTICE_TIMEOUT_S)
-            except asyncio.CancelledError:
-                line = "cancelled"
-            except BaseException:  # noqa: BLE001 — one bounded attempt
-                line = "failed"
-        logger.warning(
-            "engagement %s turn limit reached: role=%s turns=%s line=%s%s",
-            rec.id[:8], getattr(rec, "role_or_type", "-"),
-            getattr(limit_stop, "turns", None), line,
-            f" state={state}" if state else "")
-        return False
-
-    async def _deliver_turn_bg(
+    async def _deliver_to_job(
         self, rec, text: str, *, tg_message_id: int | None = None,
-        inbound_token: object | None = None,
-        system_turn: bool = False,
-        await_rebuild: bool = False,
-        batch: int | None = None,
         notice_target: "_NoticeTarget | None" = None,
-    ) -> None:
-        """M9 (v0.52.0): run one engagement user-turn to completion.
+        inbound_reservation: "_InboundReservation | None" = None,
+        courtesy: bool = True,
+    ) -> bool:
+        """Hand one operator message to a job and return: the driver's
+        SYNCHRONOUS ``submit_operator`` journals it, admits it (a terminal
+        record refuses), stamps the job's activity and queues it for the
+        job's delivery worker, which writes it into the running session.
+        Nothing here waits on the session. ``True`` when the job accepted
+        the message.
 
-        Spawned by handle_update as a tracked background task so the
-        per-topic lock is released as soon as the turn is dispatched. If a
-        concurrent /cancel finalised the driver mid-turn, send_user_turn
-        raises (DriverNotAliveError / transport-closed) and we stay quiet —
-        that is the expected end of an interrupted turn, not a failure.
-
-        #692: staying quiet is right only when the turn RAISED. A turn cut off
-        mid-tool-loop RETURNS NORMALLY — the SDK's response iterator simply
-        ends without a ResultMessage — so the "Turn failed" notice below,
-        which lives inside ``except Exception``, could never fire for it and
-        the operator's message was consumed and answered with nothing. The
-        success path therefore asks ``_report_incomplete_turn``, which is that
-        shape's owner.
-
-        v0.79.0 (§3): ``tg_message_id`` threads the durable inbound envelope to
-        the operator's Telegram message (reply-quoting / receipts).
-
-        #1141: ``system_turn`` is True only when ``deliver_system_turn``
-        spawned this task. It reaches ``_report_incomplete_turn``, which
-        treats a system turn into a job engagement as a batch turn.
-
-        #1166: ``await_rebuild`` is True when the spawner found a clearance
-        rebuild pending over a running in_casa turn and left the readiness
-        step to this task (``_ready_after_drain``). The same step runs once
-        when the driver refuses the turn as sent to an invalidated session
-        (``SessionInvalidatedError``) — a turn admitted before the downgrade
-        and queued on the old session's lock — and the same text is sent again.
-        Neither ever reaches the job finalizer below: the readiness step owns
-        its own failures.
-
-        #1033: ``batch`` is the job batch number this turn delivers — passed
-        only through ``deliver_system_turn`` by ``start_next_batch`` — and goes
-        to the driver with the text, so a turn re-sent into the fresh session
-        is still that batch. ``system_turn`` is not batch identity: an authz
-        continuation or a tapped answer is a system turn too.
-
-        ``notice_target``: the operator's message in the direct chat that
-        triggered this turn (a reply, or the card a tap answered). Every
-        notice this task owes for the turn is a reply to it; without one they
-        go to the topic.
-        """
-        import background_jobs
-        background_jobs.turn_owner_started(rec.id)
-
-        async def _ready() -> bool:
-            try:
-                return await self._ready_after_drain(
-                    rec, inbound_token, notice_target, batch=batch)
-            except BaseException:
-                background_jobs.turn_owner_finished(rec.id)
-                raise
-
-        if await_rebuild and not await _ready():
-            background_jobs.turn_owner_finished(rec.id)
-            return
-
-        # The memory wipe's courtesy line for the operator's message: the
-        # Supervisor accepted the app restart, so the turn would only be cut
-        # off. The message is released as one that was not delivered.
-        from memory import maintenance as memory_maintenance
-        if not system_turn and memory_maintenance.restart_pending():
-            try:
-                await self._post_turn_notice(
-                    rec, memory_maintenance.courtesy_line(), notice_target)
-            except Exception:  # noqa: BLE001 — a notice fault is logged
-                logger.debug("courtesy line failed for %s", rec.id[:8],
-                             exc_info=True)
-            finally:
-                if (inbound_token is not None
-                        and self._driver_discharge_inbound is not None):
-                    try:
-                        self._driver_discharge_inbound(rec, inbound_token)
-                    except Exception:  # noqa: BLE001
-                        logger.debug("inbound discharge failed", exc_info=True)
-                background_jobs.turn_owner_finished(rec.id)
-            return
-
-        async def _send():
-            # #369: a just-rebuilt context gets its preamble (the
-            # context-reset note) prepended to the first delivered
-            # turn — popped only once the session it goes to is ready.
-            preamble = self._rebuild_preambles.pop(rec.id, None)
-            sent = f"{preamble}\n\n{text}" if preamble else text
-            extra = {}
-            if inbound_token is not None:
-                extra["inbound_token"] = inbound_token
-            if batch is not None:
-                extra["batch"] = batch
-            return await self._driver_send_user_turn(
-                rec, sent, tg_message_id=tg_message_id, **extra)
-
-        from drivers.in_casa_driver import SessionInvalidatedError
-        try:
-            try:
-                await _send()
-            except SessionInvalidatedError:
-                if not await self._ready_after_drain(
-                        rec, inbound_token, notice_target, batch=batch):
-                    return
-                try:
-                    await _send()
-                except SessionInvalidatedError as exc:
-                    logger.warning(
-                        "turn for %s refused twice by an invalidated session: "
-                        "%s", rec.id[:8], exc)
-                    await self._settle_lost_inbound(
-                        rec, inbound_token, notice_target)
-                    return
-            # #649: on the success path the driver already discharged the
-            # ticket at its evidence frame — this is the idempotent safety.
-            if (inbound_token is not None
-                    and self._driver_discharge_inbound is not None):
-                self._driver_discharge_inbound(rec, inbound_token)
-            # #692: the turn RETURNED, which is not the same as the turn
-            # having finished. Ask the driver whether this ticket's turn left
-            # the turn's own terminal artifact, and tell the operator if it
-            # did not. After the discharge above, so the ledger is in its
-            # final state either way.
-            turn_cut_off = await self._report_incomplete_turn(
-                rec, inbound_token, batch=batch, notice_target=notice_target)
-        except asyncio.CancelledError:
-            # #649 visibility law: one bounded notice attempt while the
-            # ticket is still held, then discharge (guarded — a shutdown
-            # cancellation's notice may fail; that is the bounded attempt).
-            await self._settle_lost_inbound(rec, inbound_token, notice_target)
-            raise
-        except Exception as exc:  # noqa: BLE001
-            latest = (
-                self._engagement_registry.get(rec.id)
-                if self._engagement_registry is not None else None
-            )
-            if latest is not None and latest.status in (
-                "completed", "cancelled", "error",
-            ):
-                logger.info(
-                    "turn delivery ended by finalize for %s: %s",
-                    rec.id[:8], exc,
-                )
-                # #649: the turn was refused or cut by the end of the
-                # engagement, so the ticket still held is told as lost — by
-                # this task, its owner, once.
-                await self._settle_lost_inbound(
-                    rec, inbound_token, notice_target)
-                return
-            logger.warning("turn delivery failed for %s: %s", rec.id[:8], exc)
-            try:
-                await self._post_turn_notice(
-                    rec, f"Turn failed: {exc}", notice_target)
-            except Exception:  # noqa: BLE001 — best-effort user notice
-                pass
-            finally:
-                # #649: the "Turn failed" notice above WAS this delivery's
-                # one visible-outcome attempt — discharge follows it.
-                if (inbound_token is not None
-                        and self._driver_discharge_inbound is not None):
-                    try:
-                        self._driver_discharge_inbound(rec, inbound_token)
-                    except Exception:  # noqa: BLE001
-                        logger.debug("inbound discharge failed", exc_info=True)
-            if latest is not None and latest.origin.get("job"):
-                from tools import _finalize_engagement
-                kind = getattr(exc, "kind", None)
-                kind = getattr(kind, "value", kind) or type(exc).__name__
-                await _finalize_engagement(
-                    latest, outcome="error",
-                    text=f"a batch failed: {kind}",
-                    next_steps=[], driver=self._engagement_driver)
-            return
-        finally:
-            background_jobs.turn_owner_finished(rec.id)
-        if rec.origin.get("job"):
-            task = asyncio.create_task(background_jobs.job_after_turn(
-                rec, self, turn_cut_off=turn_cut_off))
-            self._turn_tasks.add(task)
-            task.add_done_callback(self._turn_tasks.discard)
-
-    def _turn_running_in(self, rec) -> bool:
-        """#1166: is an in_casa turn running in this engagement's session?
-        An unwired or mock driver reads False."""
-        probe = getattr(self._engagement_driver, "turn_in_progress", None)
-        return probe is not None and probe(rec.id) is True
-
-    def _rebuild_waits_for_turn(self, rec) -> bool:
-        """#1166: a clearance rebuild is pending and a turn is still running
-        in the session it would tear down — the rebuild must wait for that
-        turn, and must not wait under the per-topic lock."""
-        if not self._turn_running_in(rec):
-            return False
+        A message the job did not accept draws one bounded "not delivered"
+        line, in reply to it (``notice_target``) or in the topic; the caller
+        posts nothing. ``inbound_reservation`` (a tapped continuation's
+        lease) is released in the same step the ticket is admitted, so the
+        completion gate never sees both empty. ``courtesy``: while a memory
+        wipe's restart is pending, the operator's own message is answered
+        with its courtesy line instead of being delivered into a session
+        that is about to stop."""
+        drv = self._engagement_driver
         reg = self._engagement_registry
-        latest = (reg.get(rec.id) if reg is not None else None) or rec
-        return bool(getattr(latest, "context_rebuild_pending", False))
-
-    async def _ready_after_drain(
-            self, rec, inbound_token,
-            notice_target: "_NoticeTarget | None" = None,
-            *, batch: int | None = None) -> bool:
-        """#1166: the readiness step a delivery task runs itself when the
-        session its turn is for was invalidated under a running turn — wait
-        for that turn to end, then run ``_resume_and_ready`` under the topic
-        lock (its rebuild branch tears the old session down and opens the
-        fresh one). True: deliver. Otherwise this step has settled the turn,
-        mirroring the seams' pre-hand-off paths: a False result for an
-        operator's message draws that message's one notice — in reply to it
-        in the direct chat (``notice_target``), or in the topic it was written
-        in — while a batch prompt (``batch``) is discharged with no telling; an exception gets the one
-        bounded lost-inbound telling. Never the job finalizer — nothing was
-        sent, so no batch failed."""
+        if courtesy:
+            from memory import maintenance as memory_maintenance
+            if memory_maintenance.restart_pending():
+                try:
+                    await self._post_turn_notice(
+                        rec, memory_maintenance.courtesy_line(), notice_target)
+                except Exception:  # noqa: BLE001 — a notice fault is logged
+                    logger.debug("courtesy line failed for %s", rec.id[:8],
+                                 exc_info=True)
+                return False
+        if reg is not None:
+            # A record whose strict terminal write is still pending counts as
+            # live until that write settles: a message in that window is
+            # accepted after a rollback and refused after a commit.
+            pending = getattr(reg, "terminal_pending", None)
+            if callable(pending) and pending(rec.id) is True:
+                await reg.settle_pending(rec.id)
+            rec = reg.get(rec.id) or rec
+        if self._stopping or drv is None:
+            await self._tell_not_delivered(rec, notice_target)
+            return False
         try:
-            wait = getattr(self._engagement_driver, "wait_turn_idle", None)
-            if wait is not None:
-                await wait(rec)
-            lock = self._engagement_handler_locks.setdefault(
-                _handler_lock_key(rec), asyncio.Lock())
-            async with lock:
-                ready = await self._resume_and_ready(rec)
-        except asyncio.CancelledError:
-            await self._settle_lost_inbound(rec, inbound_token, notice_target)
-            raise
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("engagement %s could not be readied after a "
-                           "clearance downgrade: %s", rec.id[:8], exc)
-            await self._settle_lost_inbound(rec, inbound_token, notice_target)
+            drv.submit_operator(rec, text, tg_message_id=tg_message_id,
+                                notice=_notice_dict(notice_target))
+        except Exception as exc:  # noqa: BLE001 — refused: nothing was accepted
+            logger.info("message for job %s not accepted: %s", rec.id[:8], exc)
+            await self._tell_not_delivered(rec, notice_target)
             return False
-        if ready:
-            return True
-        if batch is None and (notice_target is not None
-                              or not _refusal_told(ready)):
-            # An operator's message the job will not take up — it ended, or
-            # could not be resumed, while this task waited — is told once,
-            # here, by the ticket's holder: in the direct chat when it came
-            # from there, otherwise in the topic, unless the refusing arm has
-            # just told the topic itself. A batch prompt is Casa's own and is
-            # discharged silently below; the job's loop owns it.
-            await self._settle_lost_inbound(rec, inbound_token, notice_target)
-            return False
-        if (inbound_token is not None
-                and self._driver_discharge_inbound is not None):
-            try:
-                self._driver_discharge_inbound(rec, inbound_token)
-            except Exception:  # noqa: BLE001
-                logger.debug("inbound discharge failed", exc_info=True)
-        return False
+        if inbound_reservation is not None:
+            inbound_reservation.release()
+        return True
 
     def engagement_lifecycle_lock(self, rec) -> asyncio.Lock:
         """The per-engagement lifecycle lock: the one every resume owner of a
-        job's session takes — this channel's resume path and the driver's
-        (its delivery worker and its recoveries) alike — so at most one
-        client per job is ever opened."""
-        return self._engagement_handler_locks.setdefault(
-            _handler_lock_key(rec), asyncio.Lock())
-
-    async def _resume_and_ready(self, rec) -> bool:
-        """Resume-if-suspended + lifecycle gate for one engagement turn, run
-        UNDER the per-topic handler lock (``_engagement_handler_locks[topic]``).
-        Returns True when ``rec`` is live and deliverable; False when the caller
-        must NOT deliver — a terminal record, resume exhausted (2-strike), or an
-        unresumable orphan (each already surfaced + cleaned up here).
-
-        Bug 10 / v0.65.0 / §A3: this is the SINGLE resume+lifecycle core shared
-        by the operator-message path (``handle_update``) and the system-turn
-        path (``deliver_system_turn`` — v0.102.0 #217 post-consent auto-resume).
-        Keeping ONE copy under ONE lock is what stops a manual nudge and a
-        system resume from both observing a suspended in_casa driver and
-        double-opening its ``ClaudeSDKClient`` / lock. Operator-message-specific
-        bookkeeping (admission tickets, reply-threading) stays in
-        ``handle_update`` AROUND this call; only the
-        resume/lifecycle core lives here."""
-        # Re-resolve under the lock: a driver-side result-finalize can flip the
-        # record terminal between handler entry and here. Only active/idle
-        # records are deliverable; a terminal one aborts before any resume.
-        reg = self._engagement_registry
-        if reg is not None:
-            # A record whose strict terminal write is still pending counts as
-            # live until that write settles: wait for it, so a turn routed in
-            # that window is delivered after a rollback and refused after a
-            # commit.
-            pending = getattr(reg, "terminal_pending", None)
-            if pending is not None and pending(rec.id) is True:
-                await reg.settle_pending(rec.id)
-            latest = reg.get(rec.id)
-            if latest is None or latest.status not in ("active", "idle"):
-                return False
-            rec = latest
-
-        # #369: a clearance downgrade marked this engagement's context for
-        # rebuild — REFUSE to resume the recorded session (it holds transcript
-        # + archive fetched above the record's clamped floor) and establish a
-        # fresh one at the current markers instead. Runs before the resume
-        # block below so the stale sid is never handed to the driver; ordered
-        # for every caller (steering turn, system turn, post-crash next turn).
-        # Fail closed: if the rebuild cannot be established, the turn is not
-        # delivered and the flag stays set for the next attempt.
-        if getattr(rec, "context_rebuild_pending", False):
-            if self._engagement_context_rebuilder is None:
-                logger.warning(
-                    "engagement %s needs a context rebuild but no rebuilder "
-                    "is wired — refusing delivery", rec.id[:8])
-                return False
-            # #1166: drop the pre-clamp session pointer here too — a turn
-            # that was running at clamp time (and was waited for, not cut)
-            # can have re-persisted it or reported one first seen after the
-            # clamp; the registry retires the pointer it drops.
-            if reg is not None:
-                await reg.clear_session_id(rec.id)
-            try:
-                preamble = await self._engagement_context_rebuilder(rec)
-            except Exception as exc:  # noqa: BLE001 — fail closed, retry next turn
-                logger.warning(
-                    "engagement %s context rebuild failed: %s — refusing "
-                    "delivery (will retry on the next turn)", rec.id[:8], exc,
-                )
-                await self._post_engagement_notice(
-                    rec, "This engagement is re-establishing its context — "
-                         "please resend in a moment.")
-                return _REFUSED_TOLD
-            if preamble:
-                self._rebuild_preambles[rec.id] = preamble
-            if reg is not None:
-                await reg.clear_context_rebuild_pending(rec.id)
-            else:
-                rec.context_rebuild_pending = False
-
-        # Resume suspended client if needed.
-        if self._engagement_driver is not None:
-            drv = self._engagement_driver
-            # #1301: a quiet run (no topic) always takes the job arms — the
-            # direct-mark_error arms below tell only in the topic, which would
-            # end it untold.
-            continuing_job = bool(rec.origin.get("job")) and (
-                rec.topic_id is None or not any(
-                    handle.engagement_id == rec.id
-                    for handle in getattr(reg, "_launch_handles", {}).values()))
-            if not drv.is_alive(rec) and rec.sdk_session_id:
-                fail_count = rec.origin.get("_resume_fail_count", 0)
-                try:
-                    await drv.resume(rec, rec.sdk_session_id)
-                    # #326: persist the reset so a pre-restart strike cannot
-                    # combine with a later one across reboots. Skip the write
-                    # when the counter was already clean (the common path).
-                    if fail_count and reg is not None:
-                        await reg.set_resume_fail_count(rec.id, 0)
-                    else:
-                        rec.origin["_resume_fail_count"] = 0
-                except Exception as exc:  # noqa: BLE001
-                    if continuing_job:
-                        # Continuation failures belong to the job sweep's bound.
-                        logger.warning("job resume failed for %s: %s", rec.id[:8], exc)
-                        return False
-                    fail_count += 1
-                    # #326: durable two-strike counter — without persistence a
-                    # restart reset it and an unrecoverable engagement dodged
-                    # the error transition forever.
-                    if reg is not None:
-                        await reg.set_resume_fail_count(rec.id, fail_count)
-                    else:
-                        rec.origin["_resume_fail_count"] = fail_count
-                    logger.warning(
-                        "resume failed (%d/2) for engagement %s: %s",
-                        fail_count, rec.id[:8], exc,
-                    )
-                    won_error = reg is None
-                    if fail_count >= 2 and reg is not None:
-                        # #326: mark_error reports whether THIS call won the
-                        # terminal transition — a /cancel that finalized during
-                        # the resume await keeps its status, and the loser must
-                        # not run duplicate topic cleanup.
-                        won_error = await reg.mark_error(
-                            rec.id, kind="resume_failed", message=str(exc),
-                        )
-                    await self.send_to_topic(
-                        rec.topic_id,
-                        f"Could not resume this engagement: {exc}. "
-                        f"Start a fresh one if needed.",
-                    )
-                    if fail_count >= 2 and won_error:
-                        # [AR-1] (v0.65.0): this terminal path bypasses finalize
-                        # — title-mark, close + ledger the topic here
-                        # (best-effort, never raises). After the notice: posting
-                        # into a just-closed topic works only while the bot keeps
-                        # can_manage_topics — mirror the funnel's send-then-close
-                        # order.
-                        await self._cleanup_error_topic(rec)
-                    return _REFUSED_TOLD
-            elif not drv.is_alive(rec):
-                # No session to resume — orphan.
-                if continuing_job:
-                    from tools import _finalize_engagement
-                    await _finalize_engagement(
-                        rec, outcome="error", text="no sdk_session_id to resume with",
-                        next_steps=[], driver=drv)
-                    return False
-                if reg is not None:
-                    await reg.mark_error(
-                        rec.id, kind="orphan_no_session",
-                        message="no sdk_session_id to resume with",
-                    )
-                await self.send_to_topic(
-                    rec.topic_id, "This engagement can't be resumed.",
-                )
-                # [AR-1] (v0.65.0): terminal path bypasses finalize — see above.
-                await self._cleanup_error_topic(rec)
-                return _REFUSED_TOLD
-
-        # v0.79.0 (§3): stamp the idle→active user turn so idle-suspension +
-        # retention accounting see fresh activity before delivery.
-        if reg is not None:
-            import time as _time
-            await reg.update_user_turn(rec.id, _time.time())
-        return True
+        job's session takes — the driver's delivery worker, its recovery
+        after a session death and the boot resume — so at most one client
+        per job is ever opened. Keyed by engagement id and separate from the
+        topic's handler lock: no Telegram handler holds it, so a slow resume
+        never delays the next message being accepted."""
+        return self._engagement_lifecycle_locks.setdefault(rec.id, asyncio.Lock())
 
     def engagement_inbound_reservation(
         self, engagement_id: str,
@@ -3892,8 +3033,8 @@ class TelegramChannel(Channel):
         :meth:`deliver_system_turn` admits it, so between the operator's tap
         committing and that admission there is nothing for the completion gate
         to be vetoed on — and a successful ``emit_completion`` landing in that
-        window commits, the record goes terminal, and the resume turn is
-        dropped at INFO. The lease closes it by taking a reservation at the one
+        window commits, the record goes terminal, and the continuation is
+        dropped. The lease closes it by taking a reservation at the one
         SYNCHRONOUS instant inside the window (a challenge's
         ``on_commit_sync``, which runs with no await after ``BROKER.commit``)
         and handing it over to the ticket at the seam.
@@ -3905,39 +3046,24 @@ class TelegramChannel(Channel):
         inbound_reservation: "_InboundReservation | None" = None,
         notice_target: "tuple[int, int] | None" = None,
     ) -> bool:
-        """#400: resume a SPECIALIST ENGAGEMENT after an operator authorized (or
-        denied) a protected plugin tool over the DM authorization keyboard.
+        """#400: continue a job after the operator authorized (or denied) a
+        protected plugin tool over the direct chat authorization keyboard.
 
-        The authz finish hook (``authz_grants._make_finish_hook``) calls this
-        instead of ``_dispatch_button_continuation`` when the challenge was
-        engagement-origin. It looks up the record by id and hands the
-        ``[authorization approved|denied]`` turn to the SAME
-        ``deliver_system_turn`` seam the post-consent auto-resume uses (#217) —
-        which acquires the per-topic lock, runs the shared ``_resume_and_ready``
-        gate (fail-closed on a terminal / unresumable / idle-reaped engagement),
-        and spawns the turn as a tracked background task so this callback never
-        blocks for the turn's duration.
+        The authz finish hook calls this when the challenge was
+        engagement-origin. It looks the record up by id and hands the
+        ``[authorization approved|denied]`` message to
+        :meth:`deliver_system_turn`, which journals, admits and queues it and
+        returns at once.
 
-        Returns ``True`` when the turn was handed off, ``False`` when the
-        engagement is unknown (the finish hook then surfaces a delivery-failed
-        note on the DM keyboard).
-
-        #663: a record that RESOLVES but is non-deliverable now returns
-        ``False`` too. It used to return ``True`` — "still a successful hand-off
-        from this seam's perspective", on the ground that the grant was minted
-        and the operator saw the approval. That is a real behaviour change and
-        it is the point of the seam reporting an outcome at all: the finish
-        hook's existing "delivery … failed — say 'retry' in chat" edit is
-        exactly the right thing to show for a continuation that was never
-        spawned, and telling the operator nothing was the defect. What ``True``
-        means is narrow and unchanged: the turn was HANDED OFF to a background
-        delivery task. It is not a delivery receipt and not a turn outcome —
-        the driver's own admission fence runs later, inside the engagement's
-        per-turn lock, long after this returns.
+        Returns ``True`` when the job accepted the message, ``False`` when the
+        engagement is unknown (the finish hook then shows a delivery-failed
+        note on the card) or did not accept it (the seam told the operator,
+        in reply to the card). ``True`` is not a delivery receipt: the job's
+        delivery worker writes the message later.
 
         ``notice_target`` — ``(chat_id, message_id)`` of the approval card —
-        is where the continuation's one notice goes if the job never takes it
-        up; the seam or its delivery task posts it, never the caller."""
+        is where the continuation's one notice goes if the job never reads it;
+        the seam or the journal's terminal branch posts it, never the caller."""
         reg = self._engagement_registry
         rec = reg.get(engagement_id) if reg is not None else None
         if rec is None:
@@ -3958,150 +3084,38 @@ class TelegramChannel(Channel):
     async def deliver_system_turn(
         self, rec, text: str,
         *, inbound_reservation: "_InboundReservation | None" = None,
-        batch: int | None = None,
         notice_target: "_NoticeTarget | None" = None,
     ) -> bool:
-        """Resume-if-suspended (under the per-topic lock), then deliver a
-        synthetic system-authored turn to engagement ``rec`` — the seam a
-        background reconcile callback uses to PROCEED a paused configurator
-        engagement after an operator tap (v0.102.0 #217: post-consent install
-        auto-resume).
+        """An operator's tapped answer or an approval's continuation, into
+        the job: journaled, admitted, queued, and this returns
+        (:meth:`_deliver_to_job`). ``notice_target`` names the card the
+        operator tapped; such a message ends a quiet run's quietness first,
+        and if the job never reads it the one notice goes there.
 
-        Acquires the SAME ``_engagement_handler_locks[rec.topic_id]`` lock the
-        operator-message path holds, so a concurrent manual nudge and this
-        system turn can never both resume a suspended in_casa driver (no
-        duplicate ``ClaudeSDKClient``/parallel recipe). Inside the lock it runs
-        the shared ``_resume_and_ready`` gate — abandoning delivery (False) for
-        a terminal/unresumable engagement, which the helper already surfaced +
-        cleaned up — then hands the turn to the SAME ``_deliver_turn_bg`` task
-        the manual path uses, with the operator-message kwargs at their no-op
-        defaults (a system turn has no operator message, reply-thread, or answer
-        to carry). The turn is spawned as a tracked background task (in_casa
-        turns stream the whole recipe to completion), so the lock is released as
-        soon as the resume + dispatch is done — this never blocks the caller (a
-        tap-callback finish hook) for the turn's duration.
-
-        #663: returns the SYNCHRONOUS HAND-OFF DECISION — ``True`` once the
-        delivery task exists, ``False`` when ``_resume_and_ready`` refused or
-        stop() has begun. It is deliberately NOT the driver's admission-fence
-        result. The fence (#690) runs inside the engagement's per-turn lock,
-        which is held for a whole turn, so waiting for it here would park a
-        Telegram tap-callback finish hook behind an unbounded model turn and
-        leave the approval keyboard unedited for its duration — measured, and
-        the reason this reports a hand-off. The residual that leaves is on the
-        record: an UNGATED terminal writer (``/cancel``, ``/complete``, the
-        reap, a forced delete, a non-``completed`` emit_completion, a direct
-        ``mark_error``) can still terminalize between the hand-off and the
-        fence, after the operator has been told a continuation was requested —
-        which is what "requested" says, and what
-        ``architecture/specialist-lifecycle.md`` records.
-
-        ``notice_target`` marks a turn the operator triggered from the direct
-        chat — a tapped answer, an approval's continuation — and names the
-        card they tapped. Such a turn ends a quiet run's quietness before it is
-        delivered, and every way it is not taken up draws its one notice
-        there, from this seam before the hand-off or from the delivery task
-        after it; the caller never posts one. A turn without one (a batch) is
-        refused silently: the job's own loop and sweep own a batch that could
-        not start."""
-        # #649: admit the continuation SYNCHRONOUSLY at entry, before the
-        # topic-lock wait and every _resume_and_ready await — a completion
-        # racing any of those suspensions must already see it as unread.
-        inbound_token = (self._driver_admit_inbound(rec, text)
-                         if self._driver_admit_inbound is not None else None)
-        # #663: hand the tap-commit reservation over to the ticket that now
-        # exists, in the SAME event-loop step and with no await between, so the
-        # completion gate never observes both populations empty. Only once a
-        # ticket was actually admitted: an unwired channel admits nothing, and
-        # releasing there would leave the gate with nothing at all — so the
-        # lease stays held and its owner's ``finally`` disposes of it.
-        #
-        # Releasing HERE rather than in the finish hook is what keeps the
-        # reservation from outliving the turn it stands for: held to the end of
-        # the hook it would still be vetoing after the delivery task had run the
-        # whole turn and discharged its ticket, for as long as a slow DM edit
-        # takes — and in_casa has neither ``record_completion_refusal`` nor
-        # ``force_completion_turn_boundary``, so the completion gate's
-        # forced-boundary escalation cannot relieve it.
-        if inbound_reservation is not None and inbound_token is not None:
-            inbound_reservation.release()
-        handed_off = False
-        try:
-            if notice_target is not None and not await self._end_quiet_run(rec):
-                await self._settle_lost_inbound(rec, inbound_token, notice_target)
-                inbound_token = None
-                return False
-            lock = self._engagement_handler_locks.setdefault(
-                _handler_lock_key(rec), asyncio.Lock())
-            async with lock:
-                await_rebuild = self._rebuild_waits_for_turn(rec)
-                if not await_rebuild and not await self._resume_and_ready(
-                        rec):
-                    logger.info(
-                        "system turn for engagement %s not delivered — the "
-                        "record is terminal or could not be resumed",
-                        rec.id[:8])
-                    if notice_target is not None:
-                        await self._settle_lost_inbound(
-                            rec, inbound_token, notice_target)
-                        inbound_token = None
-                    return False
-                if self._stopping:
-                    # #649 producer-closing stop gate: no new delivery task
-                    # after stop() began; the failure owner's settle below
-                    # makes the drop visible (bounded, best-effort).
-                    await self._settle_lost_inbound(
-                        rec, inbound_token, notice_target)
-                    inbound_token = None
-                    return False
-                # #1141: the explicit system-turn marker — set here and only
-                # here. A job's batch turn is told apart by ``batch``.
-                task = asyncio.create_task(self._deliver_turn_bg(
-                    rec, text, inbound_token=inbound_token, system_turn=True,
-                    await_rebuild=await_rebuild, batch=batch,
-                    notice_target=notice_target))
-                self._turn_tasks.add(task)
-                task.add_done_callback(self._turn_tasks.discard)
-                # Task-end backstop for a cancelled-before-first-step task.
-                task.add_done_callback(
-                    lambda t, r=rec, tok=inbound_token, nt=notice_target:
-                        self._schedule_inbound_cleanup(r, tok, nt))
-                handed_off = True
-            return True
-        except BaseException:
-            # Raise/cancellation before hand-off (e.g. inside
-            # _resume_and_ready's strict writes): the ticket has no task
-            # owner — apply the visibility law here, then re-raise.
-            if inbound_token is not None and not handed_off:
-                await self._settle_lost_inbound(
-                    rec, inbound_token, notice_target)
-                inbound_token = None
-            raise
-        finally:
-            if (not handed_off and inbound_token is not None
-                    and self._driver_discharge_inbound is not None):
-                # Expected-False path (_resume_and_ready surfaced/cleaned
-                # up) — discharge directly, no second telling.
-                try:
-                    self._driver_discharge_inbound(rec, inbound_token)
-                except Exception:  # noqa: BLE001
-                    logger.debug("inbound discharge failed", exc_info=True)
+        Returns whether the job accepted it. ``inbound_reservation`` is the
+        tap's lease (#663), handed over to the ticket in the step that admits
+        it; its owner releases it on every other path."""
+        if notice_target is not None and not await self._end_quiet_run(rec):
+            await self._tell_not_delivered(rec, notice_target)
+            return False
+        return await self._deliver_to_job(
+            rec, text, notice_target=notice_target,
+            inbound_reservation=inbound_reservation, courtesy=False)
 
     def engagement_continuation_tells_its_loss(self, engagement_id: str) -> bool:
         """Whether a continuation into *engagement_id* that the job never
-        takes up is told by this channel's delivery seam itself — the record
-        resolves and the admission seam that gives its message a ticket is
-        wired. The approval card then shows no failure line of its own, so
-        the operator is told once."""
+        reads is told by this channel itself — the record resolves and a
+        driver is wired. The approval card then shows no failure line of its
+        own, so the operator is told once."""
         reg = self._engagement_registry
-        return (reg is not None and self._driver_admit_inbound is not None
+        return (reg is not None and self._engagement_driver is not None
                 and reg.get(str(engagement_id or "")) is not None)
 
     async def _end_quiet_run(self, rec) -> bool:
         """An operator's reply or tap into a quiet scheduled run ends its
-        quietness before the turn is delivered, so the run's end is told like
-        any job's. ``False`` refuses the interaction: the record went terminal
-        (a terminal job receives nothing) or the stamp could not be
+        quietness before the message is accepted, so the run's end is told
+        like any job's. ``False`` refuses the interaction: the record went
+        terminal (a terminal job receives nothing) or the stamp could not be
         persisted."""
         import background_jobs
         reg = self._engagement_registry
@@ -4122,78 +3136,34 @@ class TelegramChannel(Channel):
         user_id: int | None = None,
     ) -> bool:
         """The operator's reply to one of a live job's direct chat posts,
-        delivered into that job as an operator turn — the sibling of
-        :meth:`deliver_system_turn` for their own words.
+        into that job: a quiet run stops being quiet first, then the message
+        is journaled, admitted and queued, and this returns. The message
+        names the post it answers (``[replying to «…»]``).
 
-        The ticket is admitted SYNCHRONOUSLY at entry, before any await, so a
-        completion racing what follows is vetoed by it. A quiet run stops
-        being quiet first. Then the id-keyed handler lock, the shared
-        readiness step, and ONE tracked delivery task. The turn's text names
-        the post it answers (``[replying to «…»]``); the ticket holds their own
-        words, which is what memory and the completion gate see.
-
-        One notice per message, by whoever holds the ticket: this seam for
-        every refusal before the hand-off, the delivery task after it — a
-        reply to their message in the direct chat. Returns the hand-off
-        decision only; no caller posts anything on it."""
+        One notice per message: this seam when the job did not accept it,
+        the journal's terminal branch when the job ended without reading it —
+        a reply to their message in the direct chat. Returns whether the job
+        accepted it; no caller posts anything on it."""
         notice_target = _NoticeTarget(chat_id=int(chat_id),
                                       message_id=int(message_id))
-        inbound_token = (self._driver_admit_inbound(rec, text)
-                         if self._driver_admit_inbound is not None else None)
         first = ((quoted_text or "").strip().splitlines() or [""])[0].strip()
         sent = f"[replying to «{first[:200]}»]\n{text}" if first else text
-        handed_off = False
-        try:
-            if not await self._end_quiet_run(rec):
-                await self._settle_lost_inbound(rec, inbound_token, notice_target)
-                inbound_token = None
-                return False
-            lock = self._engagement_handler_locks.setdefault(
-                _handler_lock_key(rec), asyncio.Lock())
-            async with lock:
-                await_rebuild = self._rebuild_waits_for_turn(rec)
-                if not await_rebuild and not await self._resume_and_ready(rec):
-                    await self._settle_lost_inbound(
-                        rec, inbound_token, notice_target)
-                    inbound_token = None
-                    return False
-                if self._stopping or self._driver_send_user_turn is None:
-                    await self._settle_lost_inbound(
-                        rec, inbound_token, notice_target)
-                    inbound_token = None
-                    return False
-                task = asyncio.create_task(self._deliver_turn_bg(
-                    rec, sent, tg_message_id=int(message_id),
-                    inbound_token=inbound_token, await_rebuild=await_rebuild,
-                    notice_target=notice_target))
-                self._turn_tasks.add(task)
-                task.add_done_callback(self._turn_tasks.discard)
-                task.add_done_callback(
-                    lambda t, r=rec, tok=inbound_token, nt=notice_target:
-                        self._schedule_inbound_cleanup(r, tok, nt))
-                handed_off = True
-            # INV-MEM-044: the operator's words to a specialist that keeps
-            # no memory are their message, kept by memory. Detached.
-            from delegated_memory import capture_topic_message
-            capture_topic_message(
-                channel=self, engagement=rec,
-                user_id=user_id if user_id is not None else self.operator_user_id(),
-                user_name=user_name, message_id=int(message_id),
-                resident=self.default_agent, text=text)
-            return True
-        except BaseException:
-            if inbound_token is not None and not handed_off:
-                await self._settle_lost_inbound(
-                    rec, inbound_token, notice_target)
-                inbound_token = None
-            raise
-        finally:
-            if (not handed_off and inbound_token is not None
-                    and self._driver_discharge_inbound is not None):
-                try:
-                    self._driver_discharge_inbound(rec, inbound_token)
-                except Exception:  # noqa: BLE001
-                    logger.debug("inbound discharge failed", exc_info=True)
+        if not await self._end_quiet_run(rec):
+            await self._tell_not_delivered(rec, notice_target)
+            return False
+        if not await self._deliver_to_job(
+                rec, sent, tg_message_id=int(message_id),
+                notice_target=notice_target):
+            return False
+        # INV-MEM-044: the operator's words to a specialist that keeps no
+        # memory are their message, kept by memory. Detached.
+        from delegated_memory import capture_topic_message
+        capture_topic_message(
+            channel=self, engagement=rec,
+            user_id=user_id if user_id is not None else self.operator_user_id(),
+            user_name=user_name, message_id=int(message_id),
+            resident=self.default_agent, text=text)
+        return True
 
     # -- a job's posts in the direct chat ---------------------------------
 
@@ -4236,6 +3206,65 @@ class TelegramChannel(Channel):
         if type(mid) is not int:
             return None
         await self._file_job_keyboard(rec, mid, JOB_POST_START)
+        return mid
+
+    @staticmethod
+    def _job_start_post(rec) -> "int | None":
+        """The message id of the job's start line, while it is filed."""
+        from engagement_registry import JOB_POST_START
+        for post in getattr(rec, "ui_posts", None) or ():
+            if isinstance(post, (list, tuple)) and len(post) == 2 \
+                    and post[1] == JOB_POST_START and type(post[0]) is int:
+                return post[0]
+        return None
+
+    async def refresh_job_start_line(self, rec) -> None:
+        """Edit a live job's start line, silently, to show how long it has
+        run and its exact cost as of its last turn end (absent until a turn
+        has ended): ``📊 Finance started «Accounting check». · 40 min ·
+        $2.40``. The Cancel button stays. A job with no start line (scheduled
+        or agent-started) has nothing to edit."""
+        import background_jobs
+        chat = self._job_chat(rec)
+        mid = self._job_start_post(rec)
+        if chat is None or mid is None or self.bot is None:
+            return
+        if getattr(rec, "status", None) not in ("active", "idle"):
+            return
+        text = (f"📊 {self._job_agent_name(rec)} started «{self._job_title(rec)}»."
+                + background_jobs.cost_suffix(rec))
+        await self.edit_dm_message(
+            chat, mid, text, buttons=[("Cancel", job_cancel_callback(rec.id))])
+
+    async def post_job_parked(self, rec, text: str) -> "int | None":
+        """A parked job's one line in the operator's direct chat, with the
+        job's Cancel button: a reply to the start line when the job has one,
+        else a new post. Filed as the job's keyboard post, so a reply quoting
+        it reaches the job. Returns the message id, or ``None`` when nothing
+        landed."""
+        from telegram import (
+            InlineKeyboardButton, InlineKeyboardMarkup, ReplyParameters,
+        )
+        from engagement_registry import JOB_POST_PARKED
+        chat = self._job_chat(rec)
+        if chat is None or self.bot is None:
+            return None
+        kbd = InlineKeyboardMarkup([[InlineKeyboardButton(
+            text="Cancel", callback_data=job_cancel_callback(rec.id))]])
+        start = self._job_start_post(rec)
+        extra = ({"reply_parameters": ReplyParameters(
+            message_id=start, allow_sending_without_reply=True)}
+            if start is not None else {})
+        try:
+            msg = await self.bot.send_message(
+                chat_id=chat, text=text, reply_markup=kbd, **extra)
+        except Exception as exc:  # noqa: BLE001 — the record still says it waits
+            logger.warning("job parking line not posted: %s", type(exc).__name__)
+            return None
+        mid = getattr(msg, "message_id", None)
+        if type(mid) is not int:
+            return None
+        await self._file_job_keyboard(rec, mid, JOB_POST_PARKED)
         return mid
 
     async def post_job_question(self, rec, qid: str, body: Any,
@@ -4342,10 +3371,12 @@ class TelegramChannel(Channel):
         if chat is None:
             return
         if kind == JOB_POST_START:
+            import background_jobs
             mark = {"completed": "✅", "cancelled": "🛑"}.get(rec.status, "❌")
             await self.edit_dm_message(
                 chat, message_id,
-                f"{mark} {self._job_agent_name(rec)} «{self._job_title(rec)}»")
+                f"{mark} {self._job_agent_name(rec)} «{self._job_title(rec)}»"
+                + background_jobs.cost_suffix(rec))
         else:
             await self.clear_dm_keyboard(chat, message_id)
 
@@ -5797,60 +4828,6 @@ class TelegramChannel(Channel):
             message_thread_id=thread_id,
         )
 
-    async def _cleanup_error_topic(self, rec) -> None:
-        """[AR-1] (v0.65.0) Best-effort topic cleanup for the two direct-
-        ``mark_error`` terminal paths in ``handle_update``
-        (``resume_failed``, ``orphan_no_session``).
-
-        Those paths bypass the finalize funnel entirely, so pre-v0.65.0
-        their topics stayed open — and unrecorded — forever after every
-        restart-with-in-flight-engagement. ``rec.topic_id`` is guaranteed
-        non-None here: the record was resolved *by* topic id. Title-mark
-        (❌ failed, like every funnel-terminal topic), close and ledger
-        append each run in their own try/except (warn-and-continue) — a
-        Telegram or disk failure must never break the resume-failure
-        handling itself, and the append happens even when the close fails
-        (the sweep's not_found handling makes deleting an already-gone
-        topic safe).
-        """
-        try:
-            await self.update_topic_state(
-                engagement_id=rec.id, new_state="failed",
-            )
-        except Exception as exc:  # noqa: BLE001 — best-effort title mark
-            logger.warning(
-                "error-path topic cleanup: update_topic_state failed for "
-                "engagement %s (topic %s): %s",
-                rec.id[:8], rec.topic_id, exc,
-            )
-        try:
-            await self.close_topic(rec.topic_id)
-        except Exception as exc:  # noqa: BLE001 — best-effort close
-            logger.warning(
-                "error-path topic cleanup: close_topic failed for "
-                "engagement %s (topic %s): %s",
-                rec.id[:8], rec.topic_id, exc,
-            )
-        try:
-            await topic_ledger.append(
-                engagement_id=rec.id,
-                chat_id=self.engagement_supergroup_id,
-                topic_id=rec.topic_id,
-                outcome="error",
-            )
-        except Exception as exc:  # noqa: BLE001 — ledger raises on I/O failure
-            logger.warning(
-                "error-path topic cleanup: topic_ledger.append failed for "
-                "engagement %s (topic %s): %s",
-                rec.id[:8], rec.topic_id, exc,
-            )
-        # R5 (v0.89.0): drop the react target for this terminal engagement.
-        self.clear_inbound(rec.id)
-
-    # ------------------------------------------------------------------
-    # Outbound: block mode
-    # ------------------------------------------------------------------
-
     def create_topic_stream(self, topic_id: int) -> "TopicStreamHandle":
         """Build a per-turn streaming handle bound to this topic.
 
@@ -7162,7 +6139,7 @@ class _InboundReservation:
     the operator's tap-commit until the seam admits its text-bearing ticket.
 
     The window it closes is `[BROKER.commit() returns, deliver_system_turn's
-    admit_inbound]`. On the two install-consent arms that is the finish hook's
+    admission]`. On the two install-consent arms that is the finish hook's
     ``loop.create_task`` scheduling gap — one event-loop iteration, and
     unremovable; on the #400 authorization arm it is a whole Telegram
     ``edit_dm_message`` round trip, because the approval edit is awaited before

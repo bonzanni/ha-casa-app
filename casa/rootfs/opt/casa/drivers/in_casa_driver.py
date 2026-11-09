@@ -52,10 +52,8 @@ from claude_agent_sdk import (
 )
 
 from channels import DeliveryOutcome
-from drivers.driver_protocol import DriverProtocol, StaleLaunchError
-from error_kinds import (
-    ApiErrorTurn, ErrorKind, api_error_kind, result_api_error_kind,
-)
+from drivers.driver_protocol import DriverProtocol
+from error_kinds import ErrorKind, api_error_kind, result_api_error_kind
 from engagement_registry import LAUNCH_CWD_KEY, EngagementRecord
 import job_inbox
 import sdk_logging
@@ -85,12 +83,14 @@ observer. Called synchronously for every ``ResultMessage`` seen on an
 engagement turn; casa_core wires it to feed interactive specialist cost into
 ``SpecialistTelemetry`` (filtering by ``engagement.kind``). Must not raise."""
 
-TurnEndHandler = Callable[[EngagementRecord, ResultMessage], None]
-"""(engagement, ResultMessage) → None — what Casa does when a job's turn ends
-(the turn-end guard: continue, nudge or park). Called SYNCHRONOUSLY by the
+TurnEndHandler = Callable[[EngagementRecord, ResultMessage, "ErrorKind | None"], None]
+"""(engagement, ResultMessage, api_error) → None — what Casa does when a job's
+turn ends (the turn-end guard: continue, nudge or park). ``api_error`` is the
+API fault the turn ended on, or ``None``. Called SYNCHRONOUSLY by the
 session's reader at every ResultMessage, after the turn's stream is
-finalized, ``turn_open`` cleared and activity stamped. Must not raise; may
-enqueue Casa's own writes (:meth:`InCasaDriver.submit_casa`)."""
+finalized, ``turn_open`` cleared, activity stamped and the job's cost
+updated. Must not raise; may enqueue Casa's own writes
+(:meth:`InCasaDriver.submit_casa`)."""
 
 SessionLostHandler = Callable[[EngagementRecord], Awaitable[None]]
 """(engagement) → None — what Casa does when a job's session ended without
@@ -294,7 +294,7 @@ def _session_id_from_message(sdk_msg: Any) -> str | None:
 def _at_launch_cwd(engagement: EngagementRecord, options: Any) -> Any:
     """*options* run in the engagement's launch cwd: recorded at its first
     open (and persisted with the record's next write), then reused by every
-    later build — resume, a clearance rebuild, ``open_fresh`` — so a reload
+    later build — every resume — so a reload
     that changes the configured cwd never moves its sessions out of the
     folder its runs and its reaper use (engagement_registry.LAUNCH_CWD_KEY)."""
     cwd = getattr(options, "cwd", None)
@@ -320,18 +320,7 @@ class _WithheldStream:
 
 
 class DriverNotAliveError(RuntimeError):
-    """Raised when a turn is fed to a driver that has no open client, or the
-    session ended before the turn carrying it finished."""
-
-
-class SessionInvalidatedError(DriverNotAliveError):
-    """#1166: a turn reached a session a clearance downgrade has invalidated
-    (the record's ``context_rebuild_pending`` is set). Raised before the
-    ticket is written, so the message is still unread and its delivery owner
-    can wait for the fresh session and send it there.
-
-    TODO(single-session jobs): retired with the clearance-rebuild path when a
-    member's message in a job topic is no longer delivered into the job."""
+    """Raised when a job has no session that can be opened or resumed."""
 
 
 class EngagementTerminalError(DriverNotAliveError):
@@ -366,13 +355,10 @@ class _Ticket:
 
     Every write is stamped with ``uuid``; the CLI's replay echo of that uuid
     is take-up. ``text`` is the message as admitted; ``prefix`` is prepended
-    when it is redelivered after a restart. ``waiter`` serves the legacy
-    turn-at-a-time callers only (:meth:`InCasaDriver.send_user_turn`,
-    :meth:`InCasaDriver.run_launch_turn`): it resolves when the turn that
-    took the ticket up ends."""
+    when it is redelivered after a restart."""
 
     __slots__ = ("uuid", "text", "kind", "state", "tg_message_id", "notice",
-                 "journaled", "prefix", "memory_note", "batch", "waiter")
+                 "journaled", "prefix", "memory_note")
 
     def __init__(self, text: str, *, kind: str, uuid: str | None = None,
                  tg_message_id: int | None = None, notice: Any = None,
@@ -387,19 +373,9 @@ class _Ticket:
         self.journaled = journaled
         self.prefix = prefix
         self.memory_note = memory_note or kind == OPERATOR
-        self.batch: int | None = None
-        self.waiter: asyncio.Future | None = None
 
     def written_text(self) -> str:
         return f"{self.prefix}\n{self.text}" if self.prefix else self.text
-
-    def resolve(self, api_error: ErrorKind | None) -> None:
-        if self.waiter is not None and not self.waiter.done():
-            self.waiter.set_result(api_error)
-
-    def fail(self, exc: BaseException) -> None:
-        if self.waiter is not None and not self.waiter.done():
-            self.waiter.set_exception(exc)
 
 
 async def _one_message(payload: dict) -> Any:
@@ -461,12 +437,10 @@ class _JobSession:
     written: dict = field(default_factory=dict)
     retire_task: asyncio.Task | None = None
     retired: asyncio.Event = field(default_factory=asyncio.Event)
-    idle: asyncio.Event = field(default_factory=asyncio.Event)
-    # Legacy: the batch number of the last item written (running_batch).
-    batch: int | None = None
-
-    def __post_init__(self) -> None:
-        self.idle.set()
+    # The job's cost before this client opened (the record's, at the open).
+    # The CLI reports ``total_cost_usd`` cumulatively for its own process, so
+    # the job's cost at a turn end is this plus that.
+    cost_base: float = 0.0
 
 
 @dataclass(eq=False)
@@ -502,11 +476,6 @@ class InCasaDriver(DriverProtocol):
     rather than imported from ``channels.telegram`` to keep the driver
     pure/testable, as are the registry hooks and the job callbacks.
     """
-
-    #: §2.A: the launchers hand the launch to an anchored owner only for a
-    #: driver that declares the two-call launch. An explicit marker, not
-    #: ``hasattr``: a MagicMock answers ``hasattr`` for anything.
-    supports_split_launch = True
 
     def __init__(
         self,
@@ -636,55 +605,22 @@ class InCasaDriver(DriverProtocol):
         self,
         engagement: EngagementRecord,
         options: ClaudeAgentOptions,
-        expected_generation: int | None = None,
     ) -> None:
         """Open the job's session: enter the client, register it, start its
-        reader and the job's delivery worker. The brief is then enqueued by
-        the launch owner. A failure here, before the session is registered,
-        takes the launch-abort arms; once registered, session loss owns every
-        failure."""
-        await self._open_session(engagement, options,
-                                 launch_generation=expected_generation,
-                                 launch=True)
+        reader and the job's delivery worker. The launch owner then enqueues
+        the brief (:meth:`enqueue_brief`). A failure here, before the session
+        is registered, takes the launch-abort arms; once registered, session
+        loss owns every failure."""
+        await self._open_session(engagement, options)
 
-    async def run_launch_turn(
-        self, engagement: EngagementRecord, prompt: str,
-    ) -> None:
-        """Enqueue the launch prompt (the brief, stamped with the record's
-        brief uuid) and wait for the turn that took it up to end.
-
-        TODO(single-session jobs): the launch owner waits on the brief turn
-        only while the batch loop needs a launch turn's end; it then just
-        enqueues the brief. A raise closes and deregisters the client (the
-        M14 rollback), so no half-alive engagement is left behind."""
+    def enqueue_brief(self, engagement: EngagementRecord, prompt: str) -> None:
+        """SYNCHRONOUS: queue the job's brief, stamped with the record's brief
+        uuid so a later resume can tell from the session transcript whether
+        the job ever read it. Admitted at write time like every write: a job
+        cancelled between ``open`` and the write receives nothing."""
         job = (getattr(engagement, "origin", None) or {}).get("job") or {}
-        ticket = _Ticket(prompt, kind=CASA, uuid=job.get("brief_uuid"),
-                         memory_note=True)
-        try:
-            kind = await self._enqueue_and_wait(engagement, ticket)
-            if kind is not None:
-                raise ApiErrorTurn(kind)
-        except BaseException:
-            logger.warning("Engagement %s first turn failed; rolling back client",
-                           engagement.id[:8])
-            cleanup = asyncio.ensure_future(self.cancel(engagement))
-            try:
-                await asyncio.shield(cleanup)
-            except asyncio.CancelledError:
-                pass
-            raise
-
-    async def start(
-        self,
-        engagement: EngagementRecord,
-        prompt: str,
-        options: ClaudeAgentOptions,
-        expected_generation: int | None = None,
-    ) -> None:
-        """``open`` then ``run_launch_turn`` inline, for a driver-protocol
-        consumer that has not adopted the split launch."""
-        await self.open(engagement, options, expected_generation)
-        await self.run_launch_turn(engagement, prompt)
+        self.submit_casa(engagement, prompt, uuid=job.get("brief_uuid"),
+                         brief=True)
 
     async def _persist_applied_profiles(self, engagement: EngagementRecord) -> None:
         """S8: write the record's rows as ``build_engagement_resume_options``
@@ -705,7 +641,14 @@ class InCasaDriver(DriverProtocol):
         """Reopen the job's session with ``resume=session_id``, with the FULL
         option set rebuilt from the record (fail closed if the config is
         gone). Raises on failure. The caller holds the engagement's lifecycle
-        lock: this is the step every resume owner shares."""
+        lock: this is the step every resume owner shares.
+
+        A record marked ``context_rebuild_pending`` (a memory wipe removed
+        every session transcript) has nothing to resume and is refused."""
+        latest = self._latest(engagement.id, engagement)
+        if getattr(latest, "context_rebuild_pending", False):
+            raise DriverNotAliveError(
+                f"engagement {engagement.id[:8]}: its session was reset")
         if self.is_alive(engagement):
             logger.warning("resume() called on engagement %s that is already alive",
                            engagement.id[:8])
@@ -718,26 +661,8 @@ class InCasaDriver(DriverProtocol):
         logger.info("Engagement %s resumed (session=%s)",
                     engagement.id[:8], session_id)
 
-    async def open_fresh(self, engagement: EngagementRecord) -> None:
-        """#369: open a NEW session (no ``resume=``) for an engagement whose
-        context was invalidated by a clearance downgrade.
-
-        TODO(single-session jobs): retired with the clearance-rebuild path."""
-        if self.is_alive(engagement):
-            logger.warning("open_fresh() called on engagement %s that is already alive",
-                           engagement.id[:8])
-            return
-        from tools import build_engagement_resume_options
-        options = await asyncio.to_thread(
-            build_engagement_resume_options, engagement, None)
-        await self._persist_applied_profiles(engagement)
-        await self._open_session(engagement, options)
-        logger.info("Engagement %s reopened FRESH after clearance downgrade",
-                    engagement.id[:8])
-
     async def _open_session(
-        self, engagement: EngagementRecord, options: Any, *,
-        launch_generation: int | None = None, launch: bool = False,
+        self, engagement: EngagementRecord, options: Any,
     ) -> _JobSession:
         # E-E (v0.29.0): bind engagement_var BEFORE ClaudeSDKClient.__aenter__
         # so the SDK's inner read task — which dispatches tool callbacks —
@@ -757,26 +682,11 @@ class InCasaDriver(DriverProtocol):
             entered = entered or client
             latest = self._latest(engagement.id)
             refusal: BaseException | None = None
-            if launch:
-                # #369: LAST-instant gate before this launch registers
-                # anything — a clearance clamp that landed while __aenter__
-                # was suspended means the prompt in hand is pre-clamp.
-                stale = latest is not None and (
-                    getattr(latest, "context_rebuild_pending", False)
-                    or (launch_generation is not None
-                        and getattr(latest, "context_generation", 0)
-                        != launch_generation))
-                if stale:
-                    refusal = StaleLaunchError(
-                        f"engagement {engagement.id[:8]} was clearance-clamped "
-                        "during launch; aborting the pre-clamp prompt",
-                        record_live=not getattr(
-                            latest, "context_rebuild_pending", False))
             # The one-owner check, after the client is entered and before it
             # is registered: a job that went terminal meanwhile, or another
             # owner that registered first, means this client lost — closed,
             # never registered.
-            if refusal is None and getattr(latest, "status", None) in _TERMINAL:
+            if getattr(latest, "status", None) in _TERMINAL:
                 refusal = EngagementTerminalError(
                     f"engagement {engagement.id[:8]} ended while its session opened")
             if refusal is None and engagement.id in self._sessions:
@@ -789,7 +699,11 @@ class InCasaDriver(DriverProtocol):
                     logger.warning("losing client close failed for %s",
                                    engagement.id[:8], exc_info=True)
                 raise refusal
-            session = _JobSession(client=entered, ctx=client, holder=holder)
+            job = (getattr(latest or engagement, "origin", None) or {}).get("job")
+            base = job.get("cost_usd") if isinstance(job, dict) else None
+            session = _JobSession(
+                client=entered, ctx=client, holder=holder,
+                cost_base=float(base) if isinstance(base, (int, float)) else 0.0)
             self._sessions[engagement.id] = session
             # The reader is created in this context, so it carries the
             # engagement binding; it sets its own cid per turn.
@@ -857,13 +771,9 @@ class InCasaDriver(DriverProtocol):
         lane.stopped = True
         lane.wake.set()
         lane.recovery_done.set()
-        gone = EngagementTerminalError(
-            f"engagement {engagement_id[:8]} ended before its input was written")
-        for ticket in lane.queue:
-            ticket.fail(gone)
+        # What was still queued is the journal's: the terminal reconcile tells
+        # each operator message the transcript lacks as lost, once.
         lane.queue.clear()
-        for ticket in self._tickets.get(engagement_id, {}):
-            ticket.fail(gone)
 
     async def _retire(self, session: _JobSession) -> None:
         """Disconnect the session's client explicitly — the SDK's close
@@ -889,105 +799,7 @@ class InCasaDriver(DriverProtocol):
     def is_alive(self, engagement: EngagementRecord) -> bool:
         return engagement.id in self._sessions
 
-    # -- legacy turn-at-a-time surface --------------------------------------
-    #
-    # TODO(single-session jobs): the channel's delivery seams and the batch
-    # loop still deliver one turn at a time and wait for its end. These
-    # adapters serve them over the continuous session until the seams journal,
-    # admit and enqueue directly (submit_operator) and return.
-
-    async def send_user_turn(
-        self, engagement: EngagementRecord, text: str,
-        *, tg_message_id: int | None = None,
-        inbound_token: object | None = None,
-        batch: int | None = None,
-    ) -> None:
-        """Write *text* (the seam's admitted ticket, or a self-admitted one)
-        through the job's delivery worker and wait for the turn that took it
-        up to end. Raises :class:`ApiErrorTurn` when that turn ended on an API
-        fault, :class:`EngagementTerminalError` when the write was refused,
-        :class:`DriverNotAliveError` when the session ended first."""
-        self_owned = not isinstance(inbound_token, _Ticket)
-        ticket = (self.admit_inbound(engagement.id, text) if self_owned
-                  else inbound_token)
-        try:
-            if not self.is_alive(engagement) and not self.recovering(engagement.id):
-                if getattr(self._latest(engagement.id, engagement),
-                           "context_rebuild_pending", False):
-                    raise SessionInvalidatedError(
-                        f"engagement {engagement.id[:8]} is between sessions "
-                        "after a clearance downgrade")
-                raise DriverNotAliveError(
-                    f"engagement {engagement.id[:8]} has no live client")
-            ticket.text = str(text)
-            ticket.tg_message_id = tg_message_id
-            ticket.batch = batch
-            kind = await self._enqueue_and_wait(engagement, ticket)
-            if kind is not None:
-                raise ApiErrorTurn(kind)
-        finally:
-            if self_owned:
-                self.discharge_inbound(engagement.id, ticket)
-
-    async def _enqueue_and_wait(self, engagement: Any, ticket: _Ticket) -> Any:
-        ticket.waiter = asyncio.get_running_loop().create_future()
-        lane = self._ensure_worker(engagement)
-        lane.queue.append(ticket)
-        lane.wake.set()
-        try:
-            return await ticket.waiter
-        finally:
-            ticket.waiter = None
-            if ticket.state == TICKET_ADMITTED and ticket in lane.queue:
-                lane.queue.remove(ticket)
-
-    def turn_in_progress(self, engagement_id: str) -> bool:
-        """Legacy alias of :meth:`turn_open`."""
-        return self.turn_open(engagement_id)
-
-    async def wait_turn_idle(self, engagement: EngagementRecord) -> None:
-        """Legacy: wait until no turn is running in the live session."""
-        session = self._sessions.get(engagement.id)
-        if session is not None:
-            await session.idle.wait()
-
-    def running_batch(self, engagement_id: str) -> int | None:
-        """Legacy: the batch number of the last item written into the live
-        session while its turn runs."""
-        session = self._sessions.get(engagement_id)
-        if session is None or not session.turn_open:
-            return None
-        return session.batch
-
-    def launch_turn_incomplete(self, engagement_id: str) -> str:
-        """Legacy: nothing is observed per launch turn any more; a session
-        that ends unexpectedly is the session-lost handler's."""
-        return ""
-
-    def followup_turn_incomplete(self, engagement_id: str,
-                                 inbound_token: object) -> str:
-        """Legacy: as :meth:`launch_turn_incomplete`, per follow-up turn."""
-        return ""
-
-    async def invalidate_session(self, engagement: EngagementRecord) -> None:
-        """#369: teardown for a clearance downgrade: retire the session now.
-
-        TODO(single-session jobs): retired with the clearance-rebuild path."""
-        session = self._sessions.pop(engagement.id, None)
-        self._session_ids.pop(engagement.id, None)
-        if session is not None:
-            session.closing = True
-            await self._retire(session)
-
     # -- the admission ledger (INV-ENG-003) ---------------------------------
-
-    def admit_inbound(self, engagement_id: str, text: str) -> object:
-        """SYNCHRONOUS: register one admitted operator message; returns its
-        ticket, which its owner hands to :meth:`send_user_turn` or discharges.
-        Exact-token semantics — duplicate texts stay independent."""
-        ticket = _Ticket(text, kind=OPERATOR)
-        self._tickets.setdefault(engagement_id, {})[ticket] = None
-        return ticket
 
     def discharge_inbound(self, engagement_id: str, token: object) -> None:
         """SYNCHRONOUS + IDEMPOTENT: drop one ticket from the ledger (and the
@@ -1014,11 +826,6 @@ class InCasaDriver(DriverProtocol):
         """The unread tickets' exact texts, for the veto re-check inside the
         terminal transition and the dying-message disclosure."""
         return [t.text for t in self._tickets.get(engagement_id, ())]
-
-    def inbound_in_flight_texts(self, engagement_id: str) -> list[str]:
-        """Always empty: a written ticket stays unread until the CLI takes it
-        up, so :meth:`inbound_unread_texts` already holds it."""
-        return []
 
     def _take_up(self, engagement_id: str, ticket: _Ticket) -> None:
         ticket.state = TICKET_TAKEN_UP
@@ -1165,12 +972,16 @@ class InCasaDriver(DriverProtocol):
             ticket = lane.queue[0]
             try:
                 await self._write(lane, session, ticket)
-            except Exception as exc:  # noqa: BLE001 — the worker never dies on one item
+            except Exception:  # noqa: BLE001 — the worker never dies on one item
+                # Not a CLI death (that is handled inside the write): the item
+                # is dropped from the queue. An operator message stays in the
+                # journal, so a restart redelivers it and a terminal job tells
+                # it as lost.
                 logger.warning("job %s delivery step failed",
                                engagement_id[:8], exc_info=True)
                 if lane.queue and lane.queue[0] is ticket:
                     lane.queue.popleft()
-                ticket.fail(exc)
+                self.discharge_inbound(engagement_id, ticket)
 
     async def _resume_for_write(self, lane: _JobLane) -> None:
         """No live session and the job is not recovering: resume it, under
@@ -1191,13 +1002,12 @@ class InCasaDriver(DriverProtocol):
                 return
             except Exception as exc:  # noqa: BLE001 — handed to the owner below
                 logger.warning("job %s resume for a write failed: %s", eid[:8], exc)
-                failure = exc
         if self._on_session_lost is not None:
             self._begin_recovery(lane, rec)
             return
-        # No recovery owner: the waiting legacy callers own the failure.
-        for ticket in list(lane.queue):
-            ticket.fail(failure)
+        # No recovery owner (a rig without the job policy): nothing can be
+        # written, so the queue is dropped; the journal keeps the operator's
+        # messages.
         lane.queue.clear()
         lane.wake.clear()
 
@@ -1218,17 +1028,17 @@ class InCasaDriver(DriverProtocol):
             # before ``client.query`` — nothing awaits in between.
             if (self._begin_turn_delivery is not None
                     and not self._begin_turn_delivery(eid)):
+                # Terminal: nothing more is written. The journal's terminal
+                # branch tells an operator message the job never read.
                 lane.queue.popleft()
-                ticket.fail(EngagementTerminalError(
-                    f"engagement {eid[:8]} is terminal — not writing to it"))
+                logger.info("job %s is terminal; a queued write was dropped",
+                            eid[:8])
                 return
             opening = not session.turn_open
             session.turn_open = True
-            session.idle.clear()
             if opening and session.segment is None:
                 self._open_segment(session, rec)
             segment = session.segment
-            session.batch = ticket.batch
             try:
                 await session.client.query(_one_message(_user_payload(ticket, text)))
             except Exception as exc:  # noqa: BLE001 — the CLI died during the write
@@ -1241,8 +1051,6 @@ class InCasaDriver(DriverProtocol):
             logger.warning("job %s write failed: %s", eid[:8], failure)
             if self._on_session_lost is None:
                 lane.queue.popleft()
-                ticket.fail(DriverNotAliveError(
-                    f"engagement {eid[:8]}: the write failed: {failure}"))
             self._begin_loss(session, rec)
             return
         lane.queue.popleft()
@@ -1271,7 +1079,6 @@ class InCasaDriver(DriverProtocol):
         session.holder.value = cid
         session.holder.approvals = {}
         session.turn_open = True
-        session.idle.clear()
         stream = (_WithheldStream() if rec.topic_id is None
                   else self._topic_stream_factory(rec.topic_id))
         segment = _Segment(cid=cid, stream=stream)
@@ -1281,8 +1088,15 @@ class InCasaDriver(DriverProtocol):
             segment.capture_ready = self._spawn(
                 capture.register(self.get_session_id(rec)))
         session.segment = segment
-        logger.info("Engagement %s turn cid=%s engaged_by=%s", rec.id, cid,
-                    (getattr(rec, "origin", None) or {}).get("cid") or "-")
+        # The tie line is logged under the new turn's own cid, whichever task
+        # opened the turn (the reader at its first frame, or the delivery
+        # worker writing into an idle session).
+        token = cid_var.set(cid)
+        try:
+            logger.info("Engagement %s turn cid=%s engaged_by=%s", rec.id, cid,
+                        (getattr(rec, "origin", None) or {}).get("cid") or "-")
+        finally:
+            cid_var.reset(token)
         return segment
 
     async def _read(self, session: _JobSession, engagement: Any) -> None:
@@ -1299,8 +1113,6 @@ class InCasaDriver(DriverProtocol):
             raise
         except Exception as exc:  # noqa: BLE001 — the stream raised: it ended
             logger.warning("job %s message stream raised: %s", eid[:8], exc)
-        finally:
-            session.idle.set()
         await self._end_segment(session, engagement, None)
         if session.closing:
             return
@@ -1380,12 +1192,11 @@ class InCasaDriver(DriverProtocol):
         if not msg_text:
             return
         segment.messages.append(msg_text)
-        if segment.approval_cut.cut is not None:
-            return                  # #1207: nothing after a pending approval shows
         candidate = (f"{segment.accumulated}\n\n{msg_text}"
                      if segment.accumulated else msg_text)
         import specialist_limits
-        if (getattr(rec, "kind", "") == "specialist" and segment.accumulated
+        if (segment.approval_cut.cut is None
+                and getattr(rec, "kind", "") == "specialist" and segment.accumulated
                 and len(candidate) > specialist_limits._MAX_OUTPUT_CHARS):
             # One turn can run for hours: at the output cap the handle is
             # finalized and a new one started, instead of truncating.
@@ -1396,7 +1207,11 @@ class InCasaDriver(DriverProtocol):
             segment.approval_cut = ApprovalCut()
             candidate = msg_text
         segment.accumulated = candidate
-        await segment.stream.emit(segment.accumulated)
+        # #1207: nothing written after a call that is waiting on the
+        # operator's approval is shown; a consume of the same grant clears
+        # the cut, and the words written meanwhile are shown with the rest.
+        if segment.approval_cut.cut is None:
+            await segment.stream.emit(segment.accumulated)
 
     async def _end_segment(self, session: _JobSession, rec: Any,
                            result: Any) -> None:
@@ -1415,8 +1230,8 @@ class InCasaDriver(DriverProtocol):
         session.holder.approvals = None
         if result is not None:
             session.turn_open = False
-            session.idle.set()
             self._stamp(rec.id)
+            self._record_cost(session, rec, result)
             done = [t.uuid for t in segment.taken_up if t.journaled]
             if done:
                 job_inbox.remove(rec.id, done)
@@ -1431,12 +1246,9 @@ class InCasaDriver(DriverProtocol):
         if cut is None:
             final = segment.accumulated.strip()
         else:
-            import specialist_limits
-            kept = "\n\n".join(segment.messages[:cut])
-            if (getattr(rec, "kind", "") == "specialist"
-                    and len(kept) > specialist_limits._MAX_OUTPUT_CHARS):
-                kept = kept[:specialist_limits._MAX_OUTPUT_CHARS] + " … [truncated]"
-            final = kept.strip()
+            # The words written before the call still waiting on approval,
+            # finalized as they were shown.
+            final = "\n\n".join(segment.messages[:cut]).strip()
         if final:
             await _finalize_stream(segment.stream, final, rec)
         if segment.capture is not None:
@@ -1446,23 +1258,30 @@ class InCasaDriver(DriverProtocol):
                 pass
             segment.capture.close()
         if result is None:
-            cut_off = DriverNotAliveError(
-                f"engagement {rec.id[:8]}: the session ended before the turn finished")
-            for ticket in segment.taken_up:
-                ticket.fail(cut_off)
             return
         api_error = segment.api_error or result_api_error_kind(result)
         if api_error is not None:
             logger.warning("engagement %s: turn ended by an API fault kind=%s",
                            rec.id[:8], api_error.value)
-        for ticket in segment.taken_up:
-            ticket.resolve(api_error)
         if self._on_turn_end is not None:
             try:
-                self._on_turn_end(self._latest(rec.id, rec), result)
+                self._on_turn_end(self._latest(rec.id, rec), result, api_error)
             except Exception:  # noqa: BLE001 — the guard never kills the reader
                 logger.warning("turn-end handler failed for %s", rec.id[:8],
                                exc_info=True)
+
+    def _record_cost(self, session: _JobSession, rec: Any, result: Any) -> None:
+        """The job's cost at this turn end, in memory on the record's
+        ``origin["job"]["cost_usd"]``: the cost before this client opened plus
+        the CLI's cumulative ``total_cost_usd`` for its process. The turn-end
+        handler persists it. Shown to the operator; nothing reads it to
+        decide anything."""
+        job = (getattr(rec, "origin", None) or {}).get("job")
+        total = getattr(result, "total_cost_usd", None)
+        if (not isinstance(job, dict) or isinstance(total, bool)
+                or not isinstance(total, (int, float))):
+            return
+        job["cost_usd"] = round(session.cost_base + float(total), 6)
 
     # -- session loss and recovery ---------------------------------------------
 
@@ -1490,17 +1309,10 @@ class InCasaDriver(DriverProtocol):
         if policy:
             self._begin_recovery(lane, rec)
             return
-        # No recovery owner: the waiting legacy callers own the failure, for
-        # what was written and what was still queued alike. The queue is
-        # emptied, so no write resumes a session that keeps dying; the next
-        # input resumes it.
-        gone = DriverNotAliveError(
-            f"engagement {eid[:8]}: the session ended before the turn finished")
-        for ticket in list(session.written.values()):
-            ticket.fail(gone)
+        # No recovery owner (a rig without the job policy, or a terminal
+        # record): the queue is emptied, so no write resumes a session that
+        # keeps dying; the journal keeps the operator's messages.
         if lane is not None:
-            for ticket in list(lane.queue):
-                ticket.fail(gone)
             lane.queue.clear()
             lane.wake.set()
 
@@ -1600,7 +1412,6 @@ class InCasaDriver(DriverProtocol):
                 self._take_up(eid, ticket)
                 if ticket in lane.queue:
                     lane.queue.remove(ticket)
-                ticket.resolve(None)
             elif ticket.state == TICKET_WRITTEN:
                 ticket.state = TICKET_ADMITTED
                 ticket.prefix = prefix
@@ -1608,7 +1419,6 @@ class InCasaDriver(DriverProtocol):
         for ticket in list(lane.queue):
             if ticket.uuid in seen:
                 lane.queue.remove(ticket)
-                ticket.resolve(None)
         entries = job_inbox.load(eid)
         for entry in entries:
             if entry["uuid"] in seen or entry["uuid"] in known:
@@ -1623,10 +1433,6 @@ class InCasaDriver(DriverProtocol):
         if retiring is not None:
             # Casa's own writes the dead session never took up are not
             # redelivered: the restart line covers them.
-            for ticket in list(retiring.written.values()):
-                if ticket.kind == CASA:
-                    ticket.fail(DriverNotAliveError(
-                        f"engagement {eid[:8]}: the session restarted"))
             retiring.written.clear()
         return redeliver
 
