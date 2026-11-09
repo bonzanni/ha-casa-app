@@ -68,6 +68,12 @@ removes anything that does not follow the layout, and reclaims a publication a c
 half-done after an hour; it never deletes for space, so a full folder refuses the next
 publication instead. Its contract is [`plugin-handoff.md`](plugin-handoff.md).
 
+**A background job's unread operator messages have a file each.** `/data/job-inbox/<id>.json`
+(0700 directory, in the private-state inventory) holds the operator messages handed to one job
+until its session has read them, or until they were told as lost; the file goes with the job,
+and boot settles one a crash left behind. Its contract is
+[`background-job-message-journal.md`](background-job-message-journal.md).
+
 **Memory has a directory of its own, and a registry of everywhere else it lives.**
 `/data/memory/` (0700, in the private-state inventory) holds `memory.db`, a SQLite store in
 WAL mode reached only through one connection owner, one transaction per connection. Boot

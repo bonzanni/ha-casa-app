@@ -131,6 +131,9 @@ DIRS: tuple[Entry, ...] = (
     Entry("/data/agent-inbox", 0o700, PRIVATE,
           "Files the operator sent the assistant in Telegram — invoices, "
           "letters, screenshots — kept up to seven days."),
+    Entry("/data/job-inbox", 0o700, PRIVATE,
+          "Operator messages handed to a background job, kept until its "
+          "session has read them or they were told as lost."),
     Entry("/data/memory", 0o700, PRIVATE,
           "The memory store: every captured conversation turn verbatim, the "
           "ledgers written from them, and their exports."),

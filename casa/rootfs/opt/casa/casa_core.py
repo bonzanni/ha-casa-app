@@ -1908,6 +1908,25 @@ async def _resume_background_jobs(registry, channel, skip=frozenset()) -> None:
             except Exception:  # noqa: BLE001 — one job must not stop the boot
                 logger.warning("resuming background job %s failed", rec.id[:8],
                                exc_info=True)
+    await _settle_ended_job_journals(registry, runner.driver)
+
+
+async def _settle_ended_job_journals(registry, driver) -> None:
+    """A job that ended while Casa died before its message journal was
+    settled still has a journal file: settle it now, so each message its
+    transcript lacks is told as lost once. A file whose record is gone
+    altogether is removed."""
+    import job_inbox
+    import tools
+
+    for eid in job_inbox.journaled_ids():
+        rec = registry.get(eid)
+        if rec is None:
+            logger.warning("job inbox for unknown engagement %s removed",
+                           eid[:8])
+            job_inbox.discard(eid)
+        elif rec.status in ("completed", "cancelled", "error"):
+            await tools._settle_job_journal(rec, driver)
 
 
 async def _notify_recovered_engagement_outcomes(

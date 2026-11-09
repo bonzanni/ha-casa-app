@@ -112,6 +112,15 @@ def remove(engagement_id: str, uuids: Iterable[str]) -> None:
         _write_logged(engagement_id, kept)
 
 
+def journaled_ids() -> list[str]:
+    """Every engagement id that still has a journal file, sorted."""
+    try:
+        return sorted(p.stem for p in INBOX_ROOT.glob("*.json"))
+    except OSError as exc:
+        logger.warning("job inbox %s not listable: %s", INBOX_ROOT, exc)
+        return []
+
+
 def discard(engagement_id: str) -> None:
     """The job's file goes with its record."""
     _write_logged(engagement_id, [])

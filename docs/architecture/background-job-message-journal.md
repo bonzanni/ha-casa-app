@@ -60,7 +60,7 @@ ends:
 
 ## Contracts & invariants
 
-**INV-BGJOB-021**: An operator message is admitted for a job only after its journal entry is committed, and the entry stays until the turn that took it up has ended or it has been told as lost; at boot and at recovery from a session death each entry of a live job is checked against the session transcript by uuid — found means dropped, missing means redelivered once, marked as sent before the restart — and when a job ends, each entry its transcript lacks is told as lost once.
+**INV-BGJOB-021**: An operator message is admitted for a job only after its journal entry is committed, and the entry stays until the turn that took it up has ended or it has been told as lost; at boot and at recovery from a session death each entry of a live job is checked against the session transcript by uuid — found means dropped, missing means redelivered once, marked as sent before the restart — and when a job ends, each entry its transcript lacks is told as lost once, at the next boot if Casa died before the job's journal was settled.
 
 A journal write that fails before admission refuses the message with the seam's "not delivered,
 please resend" reply, and nothing was accepted: no ticket, no queue entry. A write after
@@ -74,8 +74,9 @@ death inside the tenth of a second between the CLI taking a message up and writi
 transcript line makes that message be redelivered once, marked as sent before the restart. A
 quiet run's promotion write, and the wait for a pending terminal write, happen in the seam before
 the commit, inside that same window. The terminal branch runs on the path that ends the job, after
-the terminal write: a Casa death between the two leaves that job's entries untold, and boot, which
-walks only live jobs, does not settle them.
+the terminal write: a Casa death between the two leaves that job's file behind, and the next boot
+settles it the same way (`casa_core._settle_ended_job_journals`, after the live jobs are resumed),
+removing any file whose record is gone.
 
 ## Failure behavior
 
