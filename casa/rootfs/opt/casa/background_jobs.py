@@ -45,18 +45,61 @@ JOB_MAX_TURNS: int = 1000
 
 def job_session_options(options: Any, rec: Any) -> Any:
     """*options* as every job session runs: the high step ceiling, the
-    long-session auto-compaction window, and the CLI's echo of each written
-    message at take-up. Applied by the three job options builders (launch,
+    long-session auto-compaction window, the CLI's echo of each written
+    message at take-up, and the ``SessionStart`` hook that re-states the job
+    after a compaction. Applied by the three job options builders (launch,
     resident-hosted worker, resume), so a resumed session runs exactly as the
     launched one did."""
     import dataclasses
     from claude_runtime import REPLAY_USER_MESSAGES_ARG, long_session_env
+    hooks = dict(options.hooks or {})
+    hooks["SessionStart"] = [*hooks.get("SessionStart", []),
+                             compaction_hook_matcher(rec)]
     return dataclasses.replace(
         options,
         max_turns=JOB_MAX_TURNS,
         env={**(options.env or {}), **long_session_env()},
         extra_args={**(options.extra_args or {}), REPLAY_USER_MESSAGES_ARG: None},
+        hooks=hooks,
     )
+
+
+def job_header(rec: Any) -> str:
+    """Who the job is, from its record: what a session re-reads after its
+    context was summarised. ``Started by:`` follows the first ``Job id:`` line
+    directly, as in the brief."""
+    job = (getattr(rec, "origin", None) or {}).get("job") or {}
+    return (
+        f'You are running the background job "{job.get("title")}" '
+        f'(skill {job.get("skill")}).\n'
+        f"Job id: {rec.id}\n"
+        + starter_line(job.get("started_by"))
+        + f"Request: {getattr(rec, 'task', '')}\n"
+        "Your context was just summarised; carry on."
+    )
+
+
+def compaction_hook_matcher(rec: Any) -> Any:
+    """The ``SessionStart`` SDK callback hook of a job session. The SDK's
+    ``HookEvent`` type does not list ``SessionStart``, but the pinned CLI
+    accepts it as a callback hook, fires it with ``source: "compact"`` after
+    every compaction (manual and automatic), and puts its
+    ``additionalContext`` into the model's context (measured). Any other
+    source adds nothing.
+
+    TODO(single-session jobs): the pad's shape and brief follow the header
+    once the job pad is integrated."""
+    from claude_agent_sdk import HookMatcher
+
+    async def re_state_job(hook_input: Any, tool_use_id: Any, context: Any) -> dict:
+        source = hook_input.get("source") if isinstance(hook_input, dict) else None
+        if source != "compact":
+            return {}
+        logger.info("job %s context compacted: job header re-stated", rec.id[:8])
+        return {"hookSpecificOutput": {"hookEventName": "SessionStart",
+                                       "additionalContext": job_header(rec)}}
+
+    return HookMatcher(matcher=None, hooks=[re_state_job])
 
 
 # A job that has not advanced for this long, with no turn queued and no delivery
