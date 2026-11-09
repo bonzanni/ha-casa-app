@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.353.1] - 2026-11-09
+
+### Security
+
+- **Casa's AppArmor profile now enforces its network rules.** Until now the kernel ignored them, so any process in the app could open any kind of socket. TCP and UDP stay open to any destination, over IPv4 and IPv6, so every connection Casa, its agents and its plugins make works as before. Socket kinds Casa does not use, such as raw IP and packet sockets, are now refused.
+
 ## [0.353.0] - 2026-11-08
 
 ### Changed

@@ -1,3 +1,5 @@
+abi <abi/3.0>,
+
 #include <tunables/global>
 
 profile casa flags=(attach_disconnected,mediate_deleted) {
@@ -52,13 +54,20 @@ profile casa flags=(attach_disconnected,mediate_deleted) {
   /data/** rwk,
   /opt/casa/** rix,
 
-  # Network
+  # Network. Enforced only because of the abi line at the top of this file;
+  # without it the kernel ignores these rules. TCP and UDP stay open to any
+  # destination, over IPv4 and IPv6. Socket kinds outside these rules, such as
+  # inet raw, packet and netlink dgram, are refused.
   network inet stream,
   network inet dgram,
   network inet6 stream,
   network inet6 dgram,
-  network unix stream,
+  # glibc getaddrinfo (Python and the claude CLI) reads addresses over NETLINK_ROUTE.
   network netlink raw,
+  # Pathname unix sockets fall under the file rules, and socketpairs between
+  # Casa's own processes under abstractions/base. This rule is kept as a margin
+  # for unix stream use that relies on neither.
+  network unix stream,
 
   # Proc and sys
   /proc/** r,
