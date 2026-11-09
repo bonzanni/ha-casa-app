@@ -16,6 +16,7 @@ The sends are the channel's real ones over a fake bot, against a real store.
 """
 from __future__ import annotations
 
+import asyncio
 import secrets
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -530,8 +531,15 @@ async def test_one_topic_message_is_one_event_whichever_seam_captures_it(
     await _say(ch, _topic_update("book it", message_id=901,
                                  thread_id=TOPIC + 1))
     assert topic.clients["browser"].query_prompts == ["Saturday please"] * 2
-    rows = await captured_events(mem)
-    ops = [e for e in rows if e["speaker_kind"] == "operator"]
+    # The finance specialist keeps its operator's words from the delivery
+    # worker, after the write, so the capture can still be landing once the
+    # turn has ended: wait for the second row, then assert the exact set.
+    for _ in range(400):
+        rows = await captured_events(mem)
+        ops = [e for e in rows if e["speaker_kind"] == "operator"]
+        if len(ops) >= 2:
+            break
+        await asyncio.sleep(0.005)
     assert [(e["eligibility"], e["role"], e["text"]) for e in ops] == [
         ("topic_message", "assistant", "Saturday please"),
         ("engagement_turn", "finance", "book it")]
