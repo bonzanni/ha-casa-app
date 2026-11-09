@@ -5855,15 +5855,6 @@ def _edit_failure_outcome(exc: TelegramError) -> DeliveryOutcome:
 _TG_MAX_LENGTH = 4096
 
 
-def _handler_lock_key(rec: Any) -> Any:
-    """The per-engagement handler lock's key: the topic id, which a topic
-    message resolves its record by. A record with no topic (a quiet scheduled
-    run, #1301) is reached only by id, so it keys by its own id and never
-    shares a lock with another topic-less record."""
-    topic_id = getattr(rec, "topic_id", None)
-    return topic_id if topic_id is not None else ("engagement", rec.id)
-
-
 def _require_topic(thread_id: Any) -> None:
     """#1301: a record with no topic (a quiet scheduled run) must never post.
     With ``message_thread_id=None`` the Bot API posts into the supergroup's

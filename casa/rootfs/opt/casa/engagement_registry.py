@@ -1098,17 +1098,6 @@ class EngagementRegistry:
                                engagement_id[:8], exc_info=True)
         return handle
 
-    def launch_in_flight(self, engagement_id: str) -> bool:
-        """Whether a launch for *engagement_id* is still enrolled.
-
-        The job sweep reads it: continuation eligibility begins only when launch
-        ownership has ended (INV-BGJOB-003), and a record whose acknowledgement
-        turn has not finished has no turn owner yet, so nothing else
-        distinguishes it from a stalled one.
-        """
-        return any(h.engagement_id == engagement_id
-                   for h in self._launch_handles.values())
-
     def unregister_launch(self, handle: LaunchCancellation | None) -> None:
         """Drop a handle by IDENTITY. Does NOT clear the cause.
 

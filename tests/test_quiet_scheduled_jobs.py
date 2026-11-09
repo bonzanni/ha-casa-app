@@ -13,7 +13,6 @@ import agent
 import background_jobs as jobs
 import tools
 from authz_grants import GrantIdentity, resolve_grant_identity
-from channels.telegram import _handler_lock_key
 from plugin_store import StoreError
 from test_background_jobs_declaration import _job
 from test_start_job import Client, DECL, drain_launch_turns, runtime  # noqa: F401 — the real launch runtime
@@ -78,13 +77,13 @@ async def test_a_quiet_scheduled_run_opens_no_topic_and_posts_nothing(runtime):
     assert rec.topic_id is None and jobs.is_quiet_run(rec)
     assert rec.status == "active"
     runtime.bot.create_forum_topic.assert_not_awaited()
-    # the launch turn ran (its acknowledgement was produced) and nothing was posted
+    # the brief's turn ran (its words were produced) and nothing was posted
     assert Client.instances and Client.instances[0].prompts
     runtime.bot.send_message.assert_not_awaited()
     runtime.bot.edit_message_text.assert_not_awaited()
 
 
-async def test_a_quiet_runs_batch_turn_and_progress_post_nothing(runtime):
+async def test_a_quiet_runs_later_turn_and_progress_post_nothing(runtime):
     """A later turn of a quiet run (here a continuation written into its
     session) and its progress line post nothing; the job goes on."""
     rec = await _launch(runtime, QUIET, scheduled=True)
@@ -106,7 +105,7 @@ async def test_every_other_run_opens_its_topic_as_today(runtime, decl, scheduled
     rec = await _launch(runtime, decl, scheduled=scheduled)
     assert rec.topic_id == 42 and not jobs.is_quiet_run(rec)
     runtime.bot.create_forum_topic.assert_awaited_once()
-    # the launch acknowledgement streams into the topic
+    # the brief's turn streams its words into the topic
     assert any(c.kwargs.get("message_thread_id") == 42
                for c in runtime.bot.send_message.await_args_list)
 
@@ -120,14 +119,6 @@ async def test_a_topic_send_without_a_topic_refuses_rather_than_post_to_general(
         await runtime.channel.close_topic(None)
     runtime.bot.send_message.assert_not_awaited()
     runtime.bot.close_forum_topic.assert_not_awaited()
-
-
-async def test_topic_less_records_never_share_a_handler_lock():
-    a = SimpleNamespace(id="a", topic_id=None)
-    b = SimpleNamespace(id="b", topic_id=None)
-    t = SimpleNamespace(id="c", topic_id=42)
-    assert _handler_lock_key(a) != _handler_lock_key(b)
-    assert _handler_lock_key(t) == 42  # the key a topic message resolves its record by
 
 
 # --- the plugin's delivered slots -------------------------------------------------------
