@@ -45,6 +45,7 @@ class FakeCLI:
     events: list[str] = []
     on_enter = None                 # called at each __aenter__
     hold_disconnect: asyncio.Event | None = None
+    hold_usage: asyncio.Event | None = None
 
     def __init__(self, options):
         self.options = options
@@ -93,6 +94,8 @@ class FakeCLI:
         self.frames.put_nowait(END)
 
     async def get_context_usage(self):
+        if type(self).hold_usage is not None:
+            await type(self).hold_usage.wait()
         return {"maxTokens": 200000, "autoCompactThreshold": 167000,
                 "autocompactSource": "env", "isAutoCompactEnabled": True}
 
@@ -154,6 +157,7 @@ def env(tmp_path, monkeypatch):
     FakeCLI.events = []
     FakeCLI.on_enter = None
     FakeCLI.hold_disconnect = None
+    FakeCLI.hold_usage = None
     monkeypatch.setattr(drv, "ClaudeSDKClient", FakeCLI)
     monkeypatch.setattr(job_inbox, "INBOX_ROOT", tmp_path / "job-inbox")
     transcript = tmp_path / "sess-1.jsonl"
@@ -805,3 +809,191 @@ async def test_two_settlements_of_one_ended_job_tell_a_lost_message_once(env):
     release.set()
     assert sorted([await first, await second]) == [0, 1]
     assert told == ["never read"]
+
+
+async def test_a_boot_reconcile_leaves_a_reply_written_to_the_live_session(env):
+    """Telegram is up before the boot resume: the operator's reply resumed
+    the job and was written into its live session, not yet taken up. The boot
+    reconcile that runs next must not redeliver it — one write, one uuid."""
+    driver = env.make()
+    cli = await open_job(env, driver)
+    ticket = driver.submit_operator(env.rec, "the reply")
+    await until(lambda: cli.written)
+    await driver.recover(env.rec, restart_line="RESTART", brief=None,
+                         redelivery_prefix="(Sent before Casa restarted:)")
+    await until(lambda: len(cli.written) == 2)
+    await settle()
+    assert cli.uuids().count(ticket.uuid) == 1
+    assert cli.texts() == ["the reply", "RESTART"]
+    assert len(FakeCLI.instances) == 1
+
+
+async def test_a_reply_taken_up_during_the_boot_transcript_read_is_not_redelivered(
+        env, monkeypatch):
+    """The live session takes the reply up (its echo arrives) while the boot
+    reconcile is still reading the transcript, whose snapshot lacks it: the
+    reply is still written once."""
+    import threading
+    driver = env.make()
+    cli = await open_job(env, driver)
+    ticket = driver.submit_operator(env.rec, "the reply")
+    await until(lambda: cli.written)
+    entered, gate = threading.Event(), threading.Event()
+
+    def slow_read(rec, sid):
+        entered.set()
+        gate.wait(2)
+        return set()
+
+    monkeypatch.setattr(drv, "_transcript_uuids", slow_read)
+    task = asyncio.create_task(driver.recover(
+        env.rec, restart_line="RESTART", brief=None,
+        redelivery_prefix="(Sent before Casa restarted:)"))
+    await until(entered.is_set)
+    cli.echo(0)
+    await settle()
+    gate.set()
+    await task
+    await until(lambda: len(cli.written) >= 2)
+    await settle()
+    assert cli.uuids().count(ticket.uuid) == 1
+    assert cli.texts() == ["the reply", "RESTART"]
+
+
+async def test_a_live_boot_reconcile_redelivers_only_messages_from_before_the_restart(env):
+    """A journal entry written before Casa restarted is redelivered once,
+    marked; a reply this process accepted and wrote is not."""
+    driver = env.make()
+    before = "dddddddd-0000-4000-8000-000000000001"
+    job_inbox.append(env.rec.id, uuid=before, text="sent before", notice=None)
+    cli = await open_job(env, driver)
+    ticket = driver.submit_operator(env.rec, "sent after")
+    await until(lambda: cli.written)
+    await driver.recover(env.rec, restart_line="RESTART", brief=None,
+                         redelivery_prefix="(Sent before Casa restarted:)")
+    await until(lambda: len(cli.written) == 3)
+    await settle()
+    assert cli.uuids().count(ticket.uuid) == 1
+    assert cli.uuids().count(before) == 1
+    assert cli.texts()[:2] == ["sent after", "RESTART"]
+    assert "sent before" in cli.texts()[2]
+
+
+async def test_a_session_death_during_the_boot_reconcile_leaves_recovery_to_its_own_owner(
+        env, monkeypatch):
+    """The live session dies while the boot reconcile reads the transcript:
+    the boot path stages nothing and leaves the retirement in place; the
+    death's own recovery disconnects the old client before opening the
+    replacement and redelivers the written-but-unread reply once."""
+    import threading
+    holder = {}
+
+    async def on_lost(rec):
+        await holder["driver"].recover(
+            rec, restart_line="RESTART-LOST", brief=None,
+            redelivery_prefix="(Sent before the job's session restarted:)")
+
+    driver = env.make(on_session_lost=on_lost)
+    holder["driver"] = driver
+    cli = await open_job(env, driver)
+    ticket = driver.submit_operator(env.rec, "the reply")
+    await until(lambda: cli.written)
+    entered, gate = threading.Event(), threading.Event()
+
+    def slow_read(rec, sid):
+        entered.set()
+        gate.wait(2)
+        return set()
+
+    monkeypatch.setattr(drv, "_transcript_uuids", slow_read)
+    FakeCLI.hold_disconnect = asyncio.Event()
+    boot = asyncio.create_task(driver.recover(
+        env.rec, restart_line="RESTART-BOOT", brief=None,
+        redelivery_prefix="(Sent before Casa restarted:)"))
+    await until(entered.is_set)
+    cli.die()
+    await settle()
+    gate.set()
+    await boot
+    await settle()
+    assert len(FakeCLI.instances) == 1
+    FakeCLI.hold_disconnect.set()
+    await until(lambda: len(FakeCLI.instances) == 2
+                and len(FakeCLI.instances[1].written) == 2)
+    await settle()
+    replacement = FakeCLI.instances[1]
+    assert FakeCLI.events.index("disconnect:0") < FakeCLI.events.index("enter:1")
+    assert replacement.texts()[0] == "RESTART-LOST"
+    assert replacement.uuids().count(ticket.uuid) == 1
+    assert cli.texts() == ["the reply"]
+
+
+async def test_a_death_while_recovery_waits_for_the_lock_still_retires_first(env):
+    """The worker is resuming a suspended job (holding the lifecycle lock)
+    when boot recovery queues on that lock; the session the worker opened
+    dies and its disconnect is still running when the lock is released.
+    Boot's resume opens its client only after that disconnect, and the
+    operator's reply is written exactly once."""
+    holder = {}
+
+    async def on_lost(rec):
+        await holder["driver"].recover(
+            rec, restart_line="RESTART-LOST", brief=None,
+            redelivery_prefix="(Sent before the job's session restarted:)")
+
+    driver = env.make(on_session_lost=on_lost)
+    holder["driver"] = driver
+    await open_job(env, driver)
+    await driver.cancel(env.rec)                # the idle suspension
+    FakeCLI.hold_usage = asyncio.Event()
+    ticket = driver.submit_operator(env.rec, "the reply")
+    await until(lambda: len(FakeCLI.instances) == 2)
+    boot = asyncio.create_task(driver.recover(
+        env.rec, restart_line="RESTART-BOOT", brief=None,
+        redelivery_prefix="(Sent before Casa restarted:)"))
+    await settle()
+    FakeCLI.hold_disconnect = asyncio.Event()
+    FakeCLI.instances[1].die()
+    await settle()
+    FakeCLI.hold_usage.set()
+    await settle(50)
+    assert len(FakeCLI.instances) == 2
+    FakeCLI.hold_disconnect.set()
+    await boot
+    await until(lambda: any(ticket.uuid in c.uuids() for c in FakeCLI.instances))
+    await settle(50)
+    assert FakeCLI.events.index("disconnect:1") < FakeCLI.events.index("enter:2")
+    assert sum(c.uuids().count(ticket.uuid) for c in FakeCLI.instances) == 1
+
+
+async def test_a_cancel_during_an_unfinished_suspension_keeps_the_barrier(
+        env, monkeypatch):
+    """The idle suspension is still disconnecting when a reply starts a
+    resume and the operator's Cancel ends the job and its lane: the resume's
+    client still opens only after the suspended client is disconnected."""
+    import threading
+    driver = env.make()
+    await open_job(env, driver)
+    FakeCLI.hold_disconnect = asyncio.Event()
+    suspension = asyncio.create_task(driver.cancel(env.rec))
+    await settle()
+    entered, gate = threading.Event(), threading.Event()
+
+    def slow_options(rec, sid):
+        entered.set()
+        gate.wait(2)
+        return ClaudeAgentOptions(resume=sid)
+
+    monkeypatch.setattr(tools, "build_engagement_resume_options", slow_options)
+    driver.submit_operator(env.rec, "the reply")
+    await until(entered.is_set)
+    env.rec.status = "cancelled"
+    await driver.cancel(env.rec)
+    gate.set()
+    await settle(50)
+    assert [e for e in FakeCLI.events if e.startswith("enter")] == ["enter:0"]
+    FakeCLI.hold_disconnect.set()
+    await suspension
+    await settle(50)
+    if "enter:1" in FakeCLI.events:
+        assert FakeCLI.events.index("disconnect:0") < FakeCLI.events.index("enter:1")

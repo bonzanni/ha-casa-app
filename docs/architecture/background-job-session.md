@@ -127,18 +127,23 @@ question tool.
 The dead reader marks the job recovering (the stale reap and the idle suspension skip a
 recovering job as they skip a running turn), removes its own session from the map with an
 identity check, and disconnects its client explicitly — the SDK's close cancels the session's
-outstanding hook and tool callbacks, which an EOF alone does not. Every resume path waits for
-that retirement first, so no callback of the old session acts after the new one exists. The
-idle suspension is Casa's own teardown and needs no recovery, but it holds the same rule: the
-suspended client is recorded on the job's lane while it disconnects, and `InCasaDriver.resume`
-waits for it to be retired before opening a replacement, so a message that arrives during the
-disconnect never runs on a second client alongside the first. A write
+outstanding hook and tool callbacks, which an EOF alone does not. Every path that opens a
+job's client goes through `InCasaDriver._open_session`, which first waits until no earlier
+client of that job is still disconnecting (`InCasaDriver._await_prior_clients`), whatever its
+caller waited on before — a lock, a transcript read, a resume. The driver keeps its own list of
+every client it registered for a job and has not yet seen retired, whatever took the client out
+— a death, the idle suspension, a cancel that ends the job — and no teardown path clears that
+list early; it is re-read after every wait. So no callback of the old session
+acts after the new one exists, and a message that arrives during a disconnect never runs on a
+second client alongside the first. A write
 that fails because the CLI died stays at the head of the queue and is written once into the
 replacement. The recovery takes the lifecycle lock, re-checks the record, opens the
 replacement, reconciles the journal
 ([`background-job-message-journal.md`](background-job-message-journal.md), INV-BGJOB-021) and
 stages its items at the head of the queue; it then clears the recovering mark without waiting
-for a write. The second death, or a resume that raises, ends the job through the finalize
+for a write. If the session it is reconciling dies while the transcript is read, it stages
+nothing and leaves the dead session's retirement in place: that death's own recovery runs next
+under the same lock, waits for the retirement and reconciles against a fresh replacement. The second death, or a resume that raises, ends the job through the finalize
 funnel with "its session ended unexpectedly" and its last progress.
 
 At boot, `casa_core._resume_background_jobs` hands each live job to `JobRunner.resume_at_boot`:

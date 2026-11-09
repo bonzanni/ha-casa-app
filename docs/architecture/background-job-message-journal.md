@@ -51,7 +51,11 @@ ends:
   original uuid, prefixed `(Sent before Casa restarted:)` or, after a CLI death,
   `(Sent before the job's session restarted:)`. One ticket per uuid: a ticket already written to
   the dead session is re-bound to the replacement, one still queued stays queued, and after a
-  Casa restart (no tickets in memory) the reconcile creates the only one. A job with entries is
+  Casa restart (no tickets in memory) the reconcile creates the only one. Telegram is up before
+  the boot resume, so an operator's message can resume the job first. When the session is
+  already running as the boot reconcile begins, every message this process accepted belongs to
+  that session — written, taken up or still queued, whatever it reaches meanwhile — and the
+  reconcile considers only the entries written before Casa restarted. A job with entries is
   resumed at boot even while it waits for the operator — an entry is operator input.
 - uuid missing, job ended: one lost-message notice, then the entry goes, and the file goes
   with it (`InCasaDriver.settle_journal_terminal`, run by every terminal path through

@@ -464,10 +464,6 @@ class _JobLane:
     recovery_done: asyncio.Event = field(default_factory=asyncio.Event)
     recovery_failed: bool = False
     retiring: _JobSession | None = None
-    # A live session Casa's own teardown (the idle suspension) took out of
-    # the map and is still disconnecting: every resume waits for it to be
-    # retired before opening a replacement, so two clients never overlap.
-    suspending: _JobSession | None = None
     stopped: bool = False
 
     def __post_init__(self) -> None:
@@ -526,6 +522,14 @@ class InCasaDriver(DriverProtocol):
         self._sessions: dict[str, _JobSession] = {}
         self._lanes: dict[str, _JobLane] = {}
         self._settle_locks: dict[str, asyncio.Lock] = {}
+        # Every client this driver registered for a job and has not yet
+        # seen retired, whatever took it out of the map (a death, the idle
+        # suspension, a cancel): what a new open of that job waits for.
+        self._clients: dict[str, list[_JobSession]] = {}
+        # Every journaled message uuid this process accepted (or re-issued
+        # from the journal), per job: what a live-session reconcile leaves to
+        # the running session.
+        self._issued: dict[str, set[str]] = {}
         # Casa-owned tasks (readers, workers, retirements, recoveries, a
         # completion's finalization): anchored here so none is collected.
         self._tasks: set[asyncio.Task] = set()
@@ -687,10 +691,6 @@ class InCasaDriver(DriverProtocol):
             logger.warning("resume() called on engagement %s that is already alive",
                            engagement.id[:8])
             return
-        lane = self._lanes.get(engagement.id)
-        old = lane.suspending if lane is not None else None
-        if old is not None:
-            await old.retired.wait()
         from tools import build_engagement_resume_options
         options = await asyncio.to_thread(
             build_engagement_resume_options, engagement, session_id)
@@ -699,9 +699,34 @@ class InCasaDriver(DriverProtocol):
         logger.info("Engagement %s resumed (session=%s)",
                     engagement.id[:8], session_id)
 
+    async def _await_prior_clients(self, engagement_id: str) -> None:
+        """No client opens while an earlier client of the same job is still
+        disconnecting, whatever took it out of the driver — a death, the idle
+        suspension, a cancel. The record is the driver's own list of every
+        client it registered for the job and has not seen retired, which no
+        teardown path clears early; it is re-read after every wait. A client
+        still registered as the live one is not waited for: the one-owner
+        check refuses the new client instead."""
+        while True:
+            live = self._sessions.get(engagement_id)
+            kept = [s for s in self._clients.get(engagement_id, ())
+                    if not s.retired.is_set()]
+            if kept:
+                self._clients[engagement_id] = kept
+            else:
+                self._clients.pop(engagement_id, None)
+            pending = [s for s in kept if s is not live]
+            if not pending:
+                return
+            await pending[0].retired.wait()
+
     async def _open_session(
         self, engagement: EngagementRecord, options: Any,
     ) -> _JobSession:
+        # Every path that opens a job's client comes through here, so this is
+        # where retirement-before-replacement is enforced, whatever the
+        # caller waited on before.
+        await self._await_prior_clients(engagement.id)
         # E-E (v0.29.0): bind engagement_var BEFORE ClaudeSDKClient.__aenter__
         # so the SDK's inner read task — which dispatches tool callbacks —
         # captures the engagement in its ContextVar copy. Lazy import: tools
@@ -743,6 +768,7 @@ class InCasaDriver(DriverProtocol):
                 client=entered, ctx=client, holder=holder,
                 cost_base=float(base) if isinstance(base, (int, float)) else 0.0)
             self._sessions[engagement.id] = session
+            self._clients.setdefault(engagement.id, []).append(session)
             # The reader is created in this context, so it carries the
             # engagement binding; it sets its own cid per turn.
             session.reader = self._spawn(
@@ -787,8 +813,6 @@ class InCasaDriver(DriverProtocol):
         session = self._sessions.pop(eid, None)
         lane = self._lanes.get(eid)
         retiring = lane.retiring if lane is not None else None
-        if lane is not None and session is not None:
-            lane.suspending = session
         self._session_ids.pop(eid, None)
         for s in (session, retiring):
             if s is not None and not s.retired.is_set():
@@ -800,9 +824,6 @@ class InCasaDriver(DriverProtocol):
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Engagement %s cancel: client close raised %s",
                                    eid[:8], exc)
-        if lane is not None and session is not None \
-                and lane.suspending is session:
-            lane.suspending = None
         if self._record_lookup is None or self._is_terminal(eid, engagement) \
                 or self._latest(eid) is None:
             self._end_lane(eid)
@@ -952,6 +973,7 @@ class InCasaDriver(DriverProtocol):
         ticket = _Ticket(text, kind=OPERATOR, tg_message_id=tg_message_id,
                          notice=notice, journaled=True)
         job_inbox.append(eid, uuid=ticket.uuid, text=ticket.text, notice=notice)
+        self._issued.setdefault(eid, set()).add(ticket.uuid)
         if (self._begin_turn_delivery is not None
                 and not self._begin_turn_delivery(eid)):
             job_inbox.remove(eid, [ticket.uuid])
@@ -1411,13 +1433,27 @@ class InCasaDriver(DriverProtocol):
                     raise EngagementTerminalError(
                         f"engagement {eid[:8]} ended before it could be resumed")
                 sid = self.get_session_id(rec)
-                if eid not in self._sessions:
+                already_live = eid in self._sessions
+                if not already_live:
                     if not sid:
                         raise DriverNotAliveError(
                             f"engagement {eid[:8]} has no session to resume")
                     await self.resume(rec, sid)
+                session = self._sessions.get(eid)
                 seen = await asyncio.to_thread(_transcript_uuids, rec, sid)
-                redeliver = self._reconcile_live(rec, seen, redelivery_prefix)
+                if session is None or self._sessions.get(eid) is not session:
+                    # The session died while the transcript was read: its
+                    # own loss handling marked it retiring and started the
+                    # recovery that will run next under this lock; nothing
+                    # is staged here, and the retirement it waits for stays.
+                    if self._on_session_lost is None:
+                        raise DriverNotAliveError(
+                            f"engagement {eid[:8]} session ended during recovery")
+                    logger.info("Engagement %s session ended during recovery; "
+                                "its own recovery takes over", eid[:8])
+                    return
+                redeliver = self._reconcile_live(rec, seen, redelivery_prefix,
+                                                 live=already_live)
                 job = (getattr(rec, "origin", None) or {}).get("job") or {}
                 brief_uuid = job.get("brief_uuid")
                 if brief is not None and brief_uuid and brief_uuid not in seen:
@@ -1443,14 +1479,23 @@ class InCasaDriver(DriverProtocol):
             raise
 
     def _reconcile_live(self, rec: Any, seen: set[str],
-                        prefix: str) -> list[_Ticket]:
+                        prefix: str, *, live: bool = False) -> list[_Ticket]:
         """The transcript is authoritative for the journal AND the ledger: a
         uuid it holds was read — its entry is dropped, its in-memory ticket
         discharged and any queued copy removed. A uuid it lacks gets exactly
         one ticket: one written to the dead session is re-bound (unwritten
         again) and redelivered; one still queued stays where it is; a
-        journaled entry with no ticket (a Casa restart) gets a new one."""
+        journaled entry with no ticket (a Casa restart) gets a new one.
+
+        *live*: the session was already running when the reconcile began
+        (Telegram is up before the boot resume, so the job's own worker can
+        resume it on an operator's message first). Every message this process
+        accepted is then that session's to settle, whatever state it has
+        reached meanwhile; the reconcile acts only on journal entries from
+        before this process started."""
         eid = rec.id
+        if live:
+            return self._reconcile_restart_entries(rec, seen, prefix)
         lane = self._lane(rec)
         ledger = self._tickets.get(eid, {})
         known = {t.uuid for t in ledger}
@@ -1471,11 +1516,7 @@ class InCasaDriver(DriverProtocol):
         for entry in entries:
             if entry["uuid"] in seen or entry["uuid"] in known:
                 continue
-            ticket = _Ticket(entry.get("text", ""), kind=OPERATOR,
-                             uuid=entry["uuid"], notice=entry.get("notice"),
-                             journaled=True, prefix=prefix)
-            self._tickets.setdefault(eid, {})[ticket] = None
-            redeliver.append(ticket)
+            redeliver.append(self._ticket_for_entry(eid, entry, prefix))
         job_inbox.remove(eid, [e["uuid"] for e in entries if e["uuid"] in seen])
         retiring = lane.retiring
         if retiring is not None:
@@ -1483,6 +1524,27 @@ class InCasaDriver(DriverProtocol):
             # redelivered: the restart line covers them.
             retiring.written.clear()
         return redeliver
+
+    def _reconcile_restart_entries(self, rec: Any, seen: set[str],
+                                   prefix: str) -> list[_Ticket]:
+        """The live-session reconcile: only journal entries this process
+        never accepted (written before Casa restarted) are considered — one
+        the transcript holds goes, one it lacks gets the only ticket."""
+        eid = rec.id
+        issued = self._issued.get(eid, set())
+        entries = [e for e in job_inbox.load(eid) if e["uuid"] not in issued]
+        redeliver = [self._ticket_for_entry(eid, e, prefix)
+                     for e in entries if e["uuid"] not in seen]
+        job_inbox.remove(eid, [e["uuid"] for e in entries if e["uuid"] in seen])
+        return redeliver
+
+    def _ticket_for_entry(self, eid: str, entry: dict, prefix: str) -> _Ticket:
+        ticket = _Ticket(entry.get("text", ""), kind=OPERATOR,
+                         uuid=entry["uuid"], notice=entry.get("notice"),
+                         journaled=True, prefix=prefix)
+        self._tickets.setdefault(eid, {})[ticket] = None
+        self._issued.setdefault(eid, set()).add(ticket.uuid)
+        return ticket
 
     async def settle_journal_terminal(
         self, engagement: EngagementRecord,
@@ -1524,6 +1586,7 @@ class InCasaDriver(DriverProtocol):
             if ticket.uuid in journaled:
                 self.discharge_inbound(eid, ticket)
         job_inbox.discard(eid)
+        self._issued.pop(eid, None)
         return told
 
     # -- internal ------------------------------------------------------------
