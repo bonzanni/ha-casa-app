@@ -48,7 +48,7 @@ listing that does not come back as a JSON object reads as one the plugin could n
 plugin declaring the tool, and `in_flight` (below).
 
 **One request, one flight, one telling** (`plugin_stop.stop`). The stops in flight in the
-process are keyed by plugin segment and ref: a second stop of the same request, by any path,
+process are keyed by plugin segment, bot and ref: a second stop of the same request, by any path,
 answers `in_flight` at once and tells nothing. The path that holds the flight marks the card
 and tells the operator while it still holds it (its `tell`), so two taps, or a tap and the
 resident, tell him once. On an outcome of `KEEPS_SEAL`, the request's queued continuations
@@ -59,7 +59,7 @@ turn once it holds it; one already started is the running session, left to end i
 ([`plugin-continuations.md`](plugin-continuations.md)).
 
 **The mark and the line** (`plugin_stop.MARKS`, `LINES`). The request's start or status card
-— the admission's `card_message_id`, if one landed — is edited to its recorded text plus a
+— the admission's `card` address, if one landed, so through the bot that posted it — is edited to its recorded text plus a
 mark and loses its keyboard (`settle_run_card`): `☑ Stopped` (also for `already_stopped`),
 `☑ Ended`, `☑ Stop asked` (`not_taken`). Any other outcome leaves the card with its Stop.
 The line is Casa's fixed text under the specialist's label, posted as a reply to the card

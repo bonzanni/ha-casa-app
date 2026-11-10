@@ -26,7 +26,10 @@ awaits the append, so every capture a turn made has returned by the time the tur
   is called. The text is stored raw: the time envelope and Casa's notes are composed into
   the prompt separately, so neither reaches the event (INV-MEM-022). That covers an
   operator's DM and every other turn on a write-trusted channel — scheduled, reminder and
-  trigger turns, and Casa's own turns such as a delegation's completion notice. Once an
+  trigger turns, and Casa's own turns such as a delegation's completion notice. An
+  operator's message is keyed with the bot that received it, read from the route its
+  endpoint stamped (`occurrence.message_key`); a context whose route is not a bot id is
+  logged as a failed opening and captures nothing, never a key without its bot. Once an
   operator's message is durable, its occurrence key goes on the turn's origin, where
   `correct_memory` finds the message to mark ([`memory-tools.md`](memory-tools.md)).
 - **Each text-bearing message the resident writes**, in the fold that streams it, before it

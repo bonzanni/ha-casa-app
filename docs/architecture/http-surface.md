@@ -19,7 +19,8 @@ Routes are registered on **two separate applications**, and which one a route la
 decides who can call it.
 
 The **public app** carries the externally-reachable routes: a dashboard, a health endpoint,
-agent invocation, the Telegram update sink, conditionally-registered voice routes, and
+agent invocation, the Telegram update sink (one route per bot, `/telegram/update/{bot_id}`,
+[`telegram-bots.md`](telegram-bots.md)), conditionally-registered voice routes, and
 inbound webhooks — which are a *single wildcard route* backed by a dynamically-maintained
 trigger allowlist, not per-trigger route registrations. This document does not enumerate the
 routes; the registration block is the authority and it changes.
@@ -70,7 +71,8 @@ mode before reasoning about what protects it.
 Scope matters as much as the modes. **`verify` is the webhook-trigger verifier, not the
 application's authentication layer.** Agent invocation, the voice transports and the
 Telegram update sink each perform their own route-specific check against the one shared
-configured webhook secret. Do not read
+configured webhook secret — the update sink against the secret derived from it for the bot its
+path names (INV-TG-001). Do not read
 this invariant as describing what protects any route other than a webhook trigger.
 
 **INV-HTTP-002**: Every secret comparison inside `verify` uses a constant-time primitive, and an absent or empty secret returns false rather than passing.
@@ -107,7 +109,9 @@ at the route's limit.
 The invoke route's concrete contract is easy to guess wrong: the global rate limit runs
 *before* authentication; no configured secret is a 403 and a failed body-HMAC a 401; only
 agents declaring the webhook capability are reachable; and the payload's `chat_id` decides
-session reuse — two invocations with the same chat id share a conversation. That rate
+session reuse — two invocations with the same chat id share a conversation. An invoked turn
+is born with its role's Telegram route (`route_for`), stamped by the server after the
+caller's context is cleaned, so a caller cannot choose which bot it answers through. That rate
 limiter is one shared token bucket across the invoke *and* webhook surfaces, answering 429
 with a Retry-After — a noisy webhook source throttles direct invocations too. The
 per-minute caps are environment-tunable per ingress class: `WEBHOOK_RATE_PER_MIN`

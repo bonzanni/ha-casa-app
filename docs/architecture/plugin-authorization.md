@@ -17,7 +17,7 @@ installed through, are [`plugins.md`](plugins.md).
 
 **Approval is per call, not per install, and it does not survive a restart.** A protected
 tool call by a resident or specialist consumes a single-use grant bound to a specific
-operator, chat, role, artifact, tool name and exact arguments, and it lives for the grant
+operator, bot, chat, role, artifact, tool name and exact arguments, and it lives for the grant
 TTL — the approve edit says so ("once with exactly these arguments in the next 5 minutes").
 The grant store is in process memory only.
 
@@ -26,9 +26,13 @@ The grant store is in process memory only.
 **INV-PLUG-004**: A protected tool call from a resident or specialist proceeds only by consuming an exact, single-use grant.
 
 Enforced by the authorization hook, with consumption made atomic in the grant store. The
-grant binds operator, chat, tier-stripped role, artifact, full tool name, and a hash of the
-canonical arguments — so an approval authorises one action with one argument set, not a
-capability.
+grant binds operator, bot, chat, tier-stripped role, artifact, full tool name, and a hash of
+the canonical arguments — so an approval authorises one action with one argument set, not a
+capability. The bot is the one the challenge is posted through, read from that endpoint when
+the identity is formed: the operator's chats with two bots share a chat id, and an approval
+given in one is not given in the other. Before that endpoint has a bot id, no identity is
+formed, nothing is registered, and the call is denied as when its challenge cannot be
+posted.
 
 What it does not cover: unprotected plugin tools. And
 "proceeds by consuming" applies to direct resident calls, ephemerally delegated

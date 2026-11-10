@@ -23,8 +23,9 @@ are [`engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md).
 job, `/data/job-inbox/<engagement id>.json`, rewritten atomically (temp file, fsync, rename, mode
 0600) on every change. An entry is `{"uuid", "text", "notice", "taken_up"}`: the uuid the message
 is written into the session with, the text as written, and the direct chat message or tapped card
-a lost-message notice would reply to. An entry without one is logged and discharged when it
-is told, never posted.
+a lost-message notice would reply to, by its bot, chat and message id. An entry without one, or
+with a notice target that does not name all three, is logged and discharged when it is told,
+never posted.
 Only operator messages are journaled; Casa's own writes (the brief, the nudge, the continue line,
 the restart line) are not — a restart re-derives them.
 

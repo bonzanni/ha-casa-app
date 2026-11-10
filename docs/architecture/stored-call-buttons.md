@@ -81,7 +81,7 @@ settled. Before the message is sent the proposal is
 registered with the verdict broker under the `proposal` namespace with a one-hour deadline
 and a live record (chat, operator, role, artifact, plugin segment, the stored calls, the
 text) — so a tap can never find a keyboard the broker does not know. At most 32 live
-proposals per chat; the 33rd deposit is withheld. A non-empty `revision` supersedes the
+proposals per bot and chat; the 33rd deposit is withheld. A non-empty `revision` supersedes the
 earlier live proposals of the same chat, plugin and role carrying the same revision (their
 keyboards are edited to `↻ replaced`, and a tap on one answers "replaced"). A post not proven is withheld and
 unregistered, unless its send broke off (a timeout, a lost link): its card may be on screen and stays. A Casa restart empties the broker: a tap on an older keyboard answers
@@ -89,7 +89,7 @@ unregistered, unless its send broke off (a timeout, a lost link): its card may b
 
 **The tap's admission is a chain, fail closed, nothing claimed before every check passes.**
 The callback's message and sender are present; the record is known (live, or settled and
-remembered — below); its chat is the callback's chat; the message id is the message the
+remembered — below); its bot and chat are the callback's; the message id is the message the
 keyboard was posted as (if none, the request id proves it and a live one is bound to it); the index names a button; the tapper is the operator the proposal was posted for and is still the configured
 operator; the deadline has not passed. Then one claim and one commit — a second tap is
 "already answered". The handler edits nothing and dispatches nothing: the finish hook the

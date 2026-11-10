@@ -75,7 +75,11 @@ note a delegation's brief owes the turn that narrates it is the second such fiel
 `output_note`, written by the registration adapter from the record origin's
 `_inherited_note`, restored onto the replay origin by boot recovery, and decoded as empty
 from a row written before the field ([`output-boundary.md`](output-boundary.md),
-INV-OUT-003).
+INV-OUT-003). The Telegram route is the third: the row's `route` keeps the creating turn's
+`_tg_bot`, and `specialist_registry.origin_from_job` spreads it back unchanged, so a completion
+owed across a restart goes through the bot the creating turn was routed to, never the one its
+role is bound to now; a Telegram row without a valid route is refused at load
+([`telegram-bots.md`](telegram-bots.md), INV-TG-018).
 
 **INV-JOB-009**: A live job that a graceful stop itself settles is not settled at all — the row is left as it stands, so the boot reconciliation treats it exactly as it treats a job lost to a crash. A settling the stop did not cause, and every success or non-cancellation verdict, still commits mid-stop.
 

@@ -55,6 +55,10 @@
   doc: architecture/telegram.md
 - item: casa/rootfs/opt/casa/channels/telegram_supervisor.py
   doc: architecture/telegram.md
+- item: casa/rootfs/opt/casa/channels/telegram_transport.py
+  doc: architecture/telegram-bots.md
+- item: casa/rootfs/opt/casa/channels/tg_address.py
+  doc: architecture/telegram-bots.md
 - item: casa/rootfs/opt/casa/channels/tg_richtext.py
   doc: architecture/telegram-rendering.md
 - item: casa/rootfs/opt/casa/channels/voice/channel.py
@@ -545,8 +549,8 @@
   doc: architecture/scratchpad.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/invoke/{agent}
   doc: architecture/http-surface.md
-- item: route:casa/rootfs/opt/casa/casa_core.py:POST:/telegram/update
-  doc: architecture/telegram.md
+- item: route:casa/rootfs/opt/casa/casa_core.py:POST:/telegram/update/{bot_id}
+  doc: architecture/telegram-bots.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/webhook/{name}
   doc: architecture/triggers.md
 - item: route:casa/rootfs/opt/casa/channels/voice/channel.py:GET:VOICE_AGENT_CATALOG_PATH

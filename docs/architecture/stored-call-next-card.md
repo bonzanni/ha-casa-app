@@ -44,7 +44,7 @@ object, the response may carry `"in_place": true` (JSON `true` only; anything el
 `next` object, is ignored). The capture keeps the flag beside the encoded `next`. In the
 same desk use, under the same lock, before any receipt is sent, `_post_next_card` judges the
 card exactly as above and `_post_proposal` registers it as above, but with the tapped
-message as its target: the synchronous block binds the new record to the tapped message id
+message as its target: the synchronous block binds the new record to the tapped message's address
 and files that message in the post map under the new card's post record — before the edit,
 whatever its outcome, so a supersede or the deadline marks the right message and a
 swipe-reply on it reaches the specialist. The channel then edits the tapped message to the

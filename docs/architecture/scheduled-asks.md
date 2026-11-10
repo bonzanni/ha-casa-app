@@ -27,6 +27,14 @@ policy (INV-JOB-013), and it is deliberately timid about the operator's attentio
 a machine-timed question yields to a human one in both directions, and only to a human
 one that actually reached the screen (INV-JOB-008).
 
+**A record names the bot its question is on.** The lane is the chat on one bot
+(`dm:<bot>:<chat>`), and the durable record carries that bot's id, read from the endpoint
+that posts the keyboard before the record is written. At boot each record is restored, or
+settled, through its own bot only; a record without a bot is refused at load, and one whose
+bot has no endpoint is dropped rather than posted through another bot
+([`telegram-bots.md`](telegram-bots.md)). Before that endpoint has a bot id, nothing is
+recorded or posted, and the question reports that it was not posted.
+
 ## Contracts & invariants
 
 **INV-JOB-013**: A scheduled question's durable record is written before its keyboard is posted, and the compare-and-set that moves it to `settling` carries the exact terminal text it decided — so a restart never re-dispatches a settled question, and replays exactly that one already-decided, idempotent keyboard edit for every record that carries both the text and a message id.

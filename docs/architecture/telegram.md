@@ -17,6 +17,12 @@ itself, nor what an agent does with a message once dispatched.
 
 ## Mental model
 
+**One channel per bot, one transport in front.** Each Telegram bot is one endpoint (a
+`TelegramChannel`) with its own state; the `"telegram"` channel is the transport that holds
+them, and every stored message carries its bot. Which bot a turn or a send goes through, and
+why a chat id and a message id are never used without the bot, is
+[`telegram-bots.md`](telegram-bots.md) (INV-TG-017 to INV-TG-021).
+
 **Two transports, chosen by configuration.** Polling is the default. Webhook mode is selected
 explicitly and additionally requires a public URL — without one, the system logs and falls
 back to polling rather than failing.
@@ -120,11 +126,14 @@ have ([`background-job-direct-chat.md`](background-job-direct-chat.md)).
 
 ## Contracts & invariants
 
-**INV-TG-001**: A webhook update is accepted only when a secret is configured and the request's secret-token header matches it exactly.
+**INV-TG-001**: A webhook update is accepted only when a secret is configured and the request's secret-token header matches, exactly, the secret derived from it for the bot its route names.
 
-Enforced in the update route before the payload is parsed or enqueued, using a constant-time
-comparison over the encoded bytes of both header and secret — so a non-ASCII value is
-handled without an error, and a matching non-ASCII secret is accepted.
+Enforced in the update route (`POST /telegram/update/{bot_id}`, one per bot) before the
+payload is parsed or enqueued: a bot with no endpoint is a 404, and the header is compared
+with that bot's own secret (`webhook_secret_for`, an HMAC of the configured secret over the
+bot id, the value the endpoint registered with `setWebhook`), so an update signed for one bot
+cannot enter another bot's route. The comparison is constant-time over the encoded bytes of
+both header and secret, so a non-ASCII header is refused without an error.
 
 What it does not cover: polling updates do not pass through this route at all, and the header
 establishes only that the sender knows the shared secret.

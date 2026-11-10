@@ -54,6 +54,15 @@ directories and a plugin job's working folder receive content from child process
 plugins. There is no
 closed inventory of what appears there.
 
+**A stored Telegram message names its bot.** Every record that keeps a Telegram message —
+a job's posts, a scheduled question, a stored confirmation's card, the job journal's notice —
+stores its address as `[bot_id, chat_id, message_id]`, and every stored Telegram origin or
+delegation row keeps its route (`_tg_bot`). Those loaders are strict: an entry without its bot
+is refused and logged, and the rest of the file loads. State written without the bot is not
+converted. `/data/telegram-casa-bot.json` (0600) holds the id Casa's bot last verified and a
+digest of its token, so a restart knows that id before the bot reconnects; a malformed file is
+ignored ([`telegram-bots.md`](telegram-bots.md)).
+
 **One tree holds content the operator sent, and it is kept by promise, not by space.**
 `/data/agent-inbox/<role>/` holds the files the operator sent in Telegram, each under a
 Casa-generated name beside a small display-name record. An hourly sweep deletes a file seven

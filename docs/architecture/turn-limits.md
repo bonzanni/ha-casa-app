@@ -79,6 +79,8 @@ nothing is raised, because the turn has already ended. A cancellation is not abs
 **A new surface a resident turn can arrive on** needs a destination for the line. The
 destination is chosen in one place, `Agent._limit_line_route`, from the server-stamped
 origin route, and a surface it does not name falls through to the operator's Telegram chat.
+A chat turn's line goes back through the turn's own Telegram route; every other line is Casa's
+notice and goes through Casa's own bot ([`telegram-bots.md`](telegram-bots.md)).
 
 ## Source & test map
 

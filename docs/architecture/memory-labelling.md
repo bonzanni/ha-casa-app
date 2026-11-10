@@ -21,8 +21,9 @@ read it back is [`architecture/memory-scoping.md`](memory-scoping.md).
 **A captured item is named by what occurred, never by what it says.** Every captured item's
 `source_key` comes from one constructor, `memory/occurrence.py`, in one of three forms. An
 operator message that carries a provider id — a Telegram DM, or the operator's reply into a
-job — is keyed by a hash of its channel, its chat and that id, so the same message
-delivered twice is one event. Everything else — a turn no person typed, each resident or
+job — is keyed by a hash of its channel, the bot that received it, its chat and that id
+(`message_key`), so the same message delivered twice is one event, and equal ids on two bots
+are two. The bot is the receiving endpoint's integer id; a route value is refused there. Everything else — a turn no person typed, each resident or
 specialist message, a delegated request and answer — is keyed by a random id minted once,
 when capture builds the item, and carried on its spool line. The same words said twice are
 two events; a retried attempt's output and a regenerated answer are new
@@ -67,10 +68,10 @@ turn was often answered instead of classified.
 
 ## Contracts & invariants
 
-**INV-MEM-026**: Every `source_key` of an item captured into the memory store is built by `memory/occurrence.py` from no positional counter and never from the log correlation id: an operator message with a provider id is keyed by its channel, chat and provider message id, so a redelivery collapses into one event; Casa's line for a specialist's post by its channel, chat and the post's owner, tool call and slot, so its pages and a re-landing are one event; and every other live item by an id minted once when capture builds it, so a spool drain re-run adds it once while a repeat, a retry's output or a regenerated answer is a new event.
+**INV-MEM-026**: Every `source_key` of an item captured into the memory store is built by `memory/occurrence.py` from no positional counter and never from the log correlation id: an operator message with a provider id is keyed by its channel, the bot that received it, its chat and provider message id, so a redelivery collapses into one event; Casa's line for a specialist's post by its channel, chat and the post's owner, tool call and slot, so its pages and a re-landing are one event; and every other live item by an id minted once when capture builds it, so a spool drain re-run adds it once while a repeat, a retry's output or a regenerated answer is a new event.
 
 The verbatim store keeps every occurrence. The form for a message handed to a job uses the
-engagement as its chat (`engagement_key`), since the driver that captures it knows the
+engagement as its chat (`engagement_key`, with the receiving bot), since the driver that captures it knows the
 engagement; the channel's seam for a specialist that keeps no memory builds the same key, so
 one such message is one event whichever seam captures it.
 

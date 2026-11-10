@@ -46,8 +46,11 @@ reference, the requester (the chain's element before the plugin's role), its kin
 (`operator_resident` when the resident asked directly, else `specialist`) and the chain.
 One binding is minted per plugin and turn; a continuation turn answers the binding it was
 queued for. Bindings are durable (`/data/plugin-bindings.json`, `0600`) because a run can
-outlive a restart, keep only plain origin markers — never the operator's words — and age
-out thirty days after their last use. A binding is honoured only for the plugin and
+outlive a restart, keep only plain origin markers — never the operator's words, always the
+turn's Telegram route (`_tg_bot`; a stored binding without one is refused at load) — and age
+out thirty days after their last use. The keys formed from a binding (its request, its
+continuations, its delivery keys, a stop) take their bot from the endpoint that route resolves
+to ([`telegram-bots.md`](telegram-bots.md), INV-TG-020). A binding is honoured only for the plugin and
 operator it was minted for. It also keeps its request's conversation, the session its
 continuation turns resume ([`plugin-continuations.md`](plugin-continuations.md)).
 
@@ -66,13 +69,13 @@ his, when his words ask for browsing at all. The kind of task is shown, not comp
 admission stays site-based because every change a run would make is asked per action by
 the action check below. Every run named
 answers `admitted`, with one `origin_ref` per spec digest. Each request carries a
-`request_key` the plugin chooses; a key this plugin and operator used before gets its first
+`request_key` the plugin chooses; a key this plugin and operator used before on the same bot gets its first
 answer again — no second reading and no second card — and requests with one key are decided
 one at a time, so a retry that overlaps the first waits for it and gets its answer. Otherwise — no words (a
 continuation, a narration, a tap), a reading that names nothing ("collect them"), a
 failed reading, or one run he did not name — Casa posts ONE question listing every run,
 one line each (`TelegramChannel.deliver_operator_question`, the resident-ask keyboard in
-the `ask:<chat>` scope) and answers `confirmation_pending` with its id. His tap settles it
+the `ask:<bot>:<chat>` scope) and answers `confirmation_pending` with its id. His tap settles it
 — "Start" admits all of them, anything else none — and so does the hour's timeout; either
 way Casa queues a continuation of `admission:<id>`, whose plugin call reads the state with
 `POST /internal/broker/run-admission-status`. Every answer — by his words or by his tap —
@@ -81,7 +84,7 @@ returned identically on every status read and key replay, across restarts; a car
 restart left behind reads `expired`. Each decision logs its model time and total
 time, the measurement the design asks for. When the call carries his words, admission keeps
 them for each requested run's spec digest — admitted by them or put to the card — in
-`action_judgement.WORDS`: memory-only, at most 500 for a day each, keyed by plugin,
+`action_judgement.WORDS`: memory-only, at most 500 for a day each, keyed by plugin, bot,
 operator and digest, because nothing durable keeps his words.
 
 **An admitted request's card carries its Stop.** When his tap on Start admits the runs, the
@@ -89,7 +92,7 @@ settled card keeps one button, Stop (`run_admission.stop_button`, callback data
 `v1|run_stop|<cid>|0`): `operator_calls.post_question`'s `after_choice` keeps that keyboard
 for the Start choice (`edit_dm_message`'s `buttons`), and that choice's `on_settle` runs
 before the edit that shows it, so the admission is already `admitted` — with the card's
-message id and its settled text (`Confirmation.card_message_id`, `card_text`) — when the
+address and its settled text (`Confirmation.card`, `[bot, chat, message]`, and `card_text`) — when the
 button appears. When his words admitted the runs there is no start card, so one status card
 (`compose_status`: `Browsing now:` over the same run lines, with the same Stop) is posted
 beside the answer in its own task, never awaited by it (`_spawn_status_card`,
