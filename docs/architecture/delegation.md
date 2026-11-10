@@ -26,8 +26,9 @@ durable record, which outlives the call that created it. Specialist
 delegation, `sync` or `async`, runs ephemerally, and so does a delegation to the
 configurator, which always runs `async` ([`configurator.md`](configurator.md)); starting a
 background job creates an engagement. The retired `mode='interactive'` is refused
-(`interactive_retired`) before any gate, with a message naming a `sync` delegation, after
-which the person talks with the specialist by replying to its message
+(`interactive_retired`) before any gate, with a message naming a `sync` delegation whose
+answer the resident tells the person in her own words, after which the person carries on by
+writing to her; a reply to one of the specialist's own posts still reaches it
 ([`specialist-desk.md`](specialist-desk.md)).
 
 **A delegated specialist's system prompt is its role prompt plus one line of Casa's.** The runner
