@@ -204,6 +204,14 @@ class _Budget:
     def paused(self) -> bool:
         return self._paused_until > self._monotonic()
 
+    def try_acquire(self) -> bool:
+        """Take a token only if one is free right now and no flood wait is in
+        force; never waits."""
+        if self._wait_time() > 0:  # includes any flood wait in force
+            return False
+        self._stamps.append(self._monotonic())
+        return True
+
     async def acquire(self, *, unless_paused: bool = False) -> bool:
         """Take a token, waiting for one. With *unless_paused*, give up and
         return ``False`` instead of waiting out a flood wait."""
@@ -390,9 +398,13 @@ class AgentLogs:
         bound group with the right to manage topics. Otherwise one WARNING
         (unless no group is configured at all) and :meth:`log` does nothing
         until the next check.
+
+        The check is a request to the group, so it spends a token from the
+        writer's budget, but it never waits for one: while a flood wait is in
+        force or the budget is spent, nothing is asked and the current state
+        stands until the next check.
         """
         self._bot = bot
-        self._unreachable = False
         if self._chat_id is None and chat_id:
             if chat_id != self._registry_chat:
                 if self._registry_chat is not None:
@@ -410,6 +422,11 @@ class AgentLogs:
         if self._chat_id is None:
             self._disable(None)
             return False
+        if not self._budget.try_acquire():
+            logger.debug("agent log: rights check skipped; the group budget is "
+                         "spent or paused")
+            return self._enabled
+        self._unreachable = False
         try:
             member = await bot.get_chat_member(chat_id=self._chat_id, user_id=bot.id)
         except Exception as exc:  # noqa: BLE001 - any failure means no logging

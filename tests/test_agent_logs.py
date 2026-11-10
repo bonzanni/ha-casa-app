@@ -272,8 +272,11 @@ def _max_in_any_window(times: list[float], window: float = 60.0) -> int:
     return best
 
 
-async def test_budget_caps_every_request_at_18_per_minute(logs, bot, clock) -> None:
-    """Creates, sends, edits and deletes all draw on one budget."""
+async def test_budget_caps_every_request_at_18_per_minute(clock, bot, tmp_path) -> None:
+    """The rights check, creates, sends, edits and deletes all draw on one
+    budget, counted from the check at start."""
+    logs = _make(clock, tmp_path)
+    assert await logs.check_enabled(bot, CHAT)
     for i in range(40):  # retention work: two batches due
         logs._posts.append([10_000 + i, clock.wall - 45 * HOUR])
     keys = [LogKey("agent", f"a{i}") for i in range(8)]
@@ -287,6 +290,8 @@ async def test_budget_caps_every_request_at_18_per_minute(logs, bot, clock) -> N
         for round_ in range(12):
             for key in keys:
                 logs.log(key, "run", f"line {round_} " + "x" * 700)
+            # A scheduled rights check now and then, while the writer is busy.
+            assert await logs.check_enabled(bot, CHAT)
             while logs._order:
                 await asyncio.sleep(0)
         done = True
@@ -297,10 +302,11 @@ async def test_budget_caps_every_request_at_18_per_minute(logs, bot, clock) -> N
                 await asyncio.sleep(0)
 
     await asyncio.gather(producer(), writer(), logs.retention_pass())
-    methods = set(bot.methods())
-    assert {"create_forum_topic", "send_message", "edit_message_text",
-            "delete_messages"} <= methods
-    times = [t for m, _, t in bot.calls if m != "get_chat_member"]
+    methods = {m for m, _, _ in bot.calls}
+    assert {"get_chat_member", "create_forum_topic", "send_message",
+            "edit_message_text", "delete_messages"} <= methods
+    assert len(bot.named("get_chat_member")) >= 2
+    times = [t for _, _, t in bot.calls]
     assert len(times) >= 100
     assert _max_in_any_window(times) == 18
 
@@ -681,6 +687,42 @@ async def test_no_group_is_silent(clock, bot, tmp_path, caplog) -> None:
         assert await sink.check_enabled(bot, None) is False
     assert caplog.records == []
     assert bot.calls == []
+
+
+async def test_a_check_during_a_flood_wait_asks_nothing(
+    logs, bot, clock, tmp_path,
+) -> None:
+    logs.log(FINANCE, "Q3", "a")
+    await logs.step()  # topic
+    bot.fail["send_message"] = [_retry_after(3600)]
+    await logs.step()
+    clock.advance(10)
+    calls, t = len(bot.calls), clock.mono
+    assert await logs.check_enabled(bot, CHAT) is True  # state unchanged
+    assert len(bot.calls) == calls and clock.mono == t
+
+    disabled = _make(clock, tmp_path, "other.json")
+    bot.member = _member()
+    assert await disabled.check_enabled(bot, CHAT) is False
+    disabled._budget.pause(3600)
+    bot.member = _admin(can_manage_topics=True)
+    calls = len(bot.calls)
+    assert await disabled.check_enabled(bot, CHAT) is False  # still off
+    assert len(bot.calls) == calls
+
+
+async def test_a_check_never_waits_for_the_budget(logs, bot, clock) -> None:
+    for i in range(9):
+        logs.log(LogKey("agent", f"a{i}"), "run", "x")
+    for _ in range(17):  # with the fixture's check: 18 requests at one instant
+        await logs.step()
+    assert len(bot.calls) == 17 and clock.mono == 1_000.0
+    assert await logs.check_enabled(bot, CHAT) is True
+    assert clock.mono == 1_000.0  # no sleep
+    assert bot.named("get_chat_member") == []
+    clock.advance(60)
+    assert await logs.check_enabled(bot, CHAT) is True
+    assert len(bot.named("get_chat_member")) == 1
 
 
 async def test_a_flood_wait_on_the_check_pauses_every_request(
