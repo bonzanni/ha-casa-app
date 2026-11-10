@@ -2654,6 +2654,58 @@ async def test_a_question_taken_back_does_not_say_the_operator_answered(rig):
     assert "The operator said not now" in rig.events(run.run_id, "question")[-1].text_masked
 
 
+async def _end_question(rig, run, qid, how):
+    """Ends an asked step's question the way ``how`` names; returns the reply of its last move."""
+    if how == "executed":
+        return await verdict(rig, run.run_id, await tap(rig, run.run_id, qid), SAME)
+    if how == "lapsed":
+        return await verdict(rig, run.run_id, await tap(rig, run.run_id, qid), CHANGED)
+    if how == "unchecked":
+        return await verdict(rig, run.run_id, await tap(rig, run.run_id, qid), None)
+    if how == "declined":
+        return await tap(rig, run.run_id, qid, "not_now")
+    if how == "taken_back":
+        q = await rig.ctl.get_question(run.run_id, qid)
+        return await rig.ctl.answer_question(run.run_id, qid, {
+            "revision": q["revision"], "digest": q["digest"], "choice": "not_now",
+            "operator_ref": "fido:replaced-by-plan"})
+    if how == "answered":
+        return await tap(rig, run.run_id, qid, {"extra": 0})
+    rig.clock.advance(3601)
+    await rig.ctl.expire_questions()
+    return None
+
+
+@pytest.mark.parametrize("how, said", [
+    ("executed", "the operator said Yes and it ran"),
+    ("lapsed", "the operator said Yes, but it did not run"),
+    ("unchecked", "the operator said Yes, but it did not run"),
+    ("declined", "the operator said Not now; it did not run"),
+    ("taken_back", "Fido took the question back before the operator answered; it did not run"),
+    ("answered", "the operator chose “Store credit” instead; it did not run"),
+    ("expired", "nobody answered within the hour; it did not run"),
+])
+async def test_the_check_reads_how_an_asked_step_ended(rig, how, said):
+    """An asked step's ``run_so_far`` entry says how its question ended, so the next check never
+    reads a step the operator's Yes ran as one still held. A step that was not asked carries
+    only its verdict, and nothing private to the app reaches the packet."""
+    run, els = await _gate_run(rig, [dict(role="button", name="Pay now"),
+                                     dict(role="link", name="Details", href=A_START + "#d")])
+    wire = await judged(rig, run.run_id, "Details")
+    assert (await verdict(rig, run.run_id, wire, GO))["outcome"] == "done"
+    qid = await asked(rig, run, els)
+    reply = await _end_question(rig, run, qid, how)
+    if how in ("lapsed", "unchecked"):
+        # the same step, judged again after the lapse, already reads how the Yes ended
+        packet = json.loads(reply["judgement"]["packet"])
+    else:
+        packet = json.loads((await judged(rig, run.run_id, "Pay now"))["judgement"]["packet"])
+    first, second = packet["run_so_far"]
+    assert first == {"action": first["action"], "verdict": "go"}
+    assert second == {"action": second["action"], "verdict": "ask", "outcome": said}
+    assert "Pay now" in second["action"] and qid not in json.dumps(packet)
+
+
 async def test_a_step_with_no_name_names_what_it_acted_on(rig):
     """A nameless page control keeps what the observation called it; an address the model gave
     names its host and path, its query dropped."""
