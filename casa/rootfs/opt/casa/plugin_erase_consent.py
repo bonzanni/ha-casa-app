@@ -37,11 +37,13 @@ QUESTION_TTL_S = 600
 
 @dataclass(frozen=True)
 class EraseChoiceKey:
-    """One uninstall question: who may answer it, what it uninstalls
+    """One uninstall question: who may answer it, on which bot's chat (Casa's:
+    the question is Casa's own card), what it uninstalls
     (``plugin:<name>`` / ``specialist:<slug>``), and the artifacts of the
     erasing plugins at question time — a choice made for one version does
     not authorize erasing another."""
     operator_id: int
+    bot_id: int
     chat_id: int
     subject: str
     artifacts: tuple
@@ -131,7 +133,8 @@ def prompt_erase_choice(
     choices: "tuple[int, ...]" = (KEEP, ERASE, CANCEL),
 ) -> Any:
     """Post the question with *choices* as its buttons, in order; every
-    callback below receives the choice id, never the button index."""
+    callback below receives the choice id, never the button index.
+    *channel* is the endpoint of ``key.bot_id`` (Casa's)."""
     grants = grants if grants is not None else CHOICES
     choices = tuple(choices)
 
@@ -173,7 +176,8 @@ def prompt_erase_choice(
         return _finish
 
     return coordinator.register_challenge(
-        key, chat_id=key.chat_id, operator_id=key.operator_id, channel=channel,
+        key, bot_id=key.bot_id, chat_id=key.chat_id,
+        operator_id=key.operator_id, channel=channel,
         challenge_text=text, options=[LABELS[c] for c in choices],
         on_commit_sync=_on_commit_sync, finish_factory=_finish_factory,
         kind="plugin_erase_choice", meta_extra={"subject": key.subject},

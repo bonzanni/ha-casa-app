@@ -504,14 +504,15 @@ def _fire_consent_prompts(pending: "list[dict]", *, role_configs: dict,
                           resolver: Any, entries: Any) -> None:
     import authz_grants
     import event_consent
+    import trigger_consent
 
-    channel = channel_manager.get("telegram") if channel_manager else None
-    if channel is None:
+    # Rule C: a consent card is Casa's own and goes to the operator's chat on
+    # Casa's bot, whichever bot the mutation that led here came from.
+    target = trigger_consent.casa_consent_target(channel_manager)
+    if target is None:
         return  # no DM reachable — pending_ack stands; re-prompted later
-    op = event_consent.operator_identity(channel)
-    if op is None:
-        return
-    chat_id, operator_id = op
+    channel, chat_id, operator_id = (
+        target.endpoint, target.address.chat_id, target.operator_id)
 
     async def _reconcile_again() -> None:
         # SOL-P2a: the reconcile fired at COMMIT time (when the operator
@@ -683,17 +684,17 @@ async def reprompt_pending(
     import authz_grants
     import consent_denials
     import event_consent
+    import trigger_consent
 
     if runtime is None:
         return
     channel_manager = getattr(runtime, "channel_manager", None)
-    channel = channel_manager.get("telegram") if channel_manager else None
-    if channel is None:
+    # Rule C: a consent card is Casa's own (see _fire_consent_prompts).
+    target = trigger_consent.casa_consent_target(channel_manager)
+    if target is None:
         return
-    op = event_consent.operator_identity(channel)
-    if op is None:
-        return
-    chat_id, operator_id = op
+    channel, chat_id, operator_id = (
+        target.endpoint, target.address.chat_id, target.operator_id)
     role_configs = getattr(runtime, "role_configs", None) or {}
     acks = acks if acks is not None else _default_acks()
 

@@ -16,9 +16,11 @@ import pytest
 
 import plugin_erase_consent as pec
 import plugin_erasure as pe
+from telegram_channel_double import make_transport
 
 ART = "e" * 64                           # test_plugin_tools._entry's artifact
 TOOL = "mcp__plugin_probe_srv__erase_all"
+CASA_BOT = 111                           # Casa's bot: the question is its card
 
 
 # --- the consent module ------------------------------------------------------------
@@ -38,8 +40,8 @@ class _EditChannel:
 
 
 def _key(subject="plugin:probe", artifacts=(ART,)):
-    return pec.EraseChoiceKey(operator_id=42, chat_id=42, subject=subject,
-                              artifacts=artifacts)
+    return pec.EraseChoiceKey(operator_id=42, bot_id=CASA_BOT, chat_id=42,
+                              subject=subject, artifacts=artifacts)
 
 
 async def _tap(idx, *, continued=True, answered=True):
@@ -51,6 +53,7 @@ async def _tap(idx, *, continued=True, answered=True):
     pec.prompt_erase_choice(coordinator=coord, channel=ch, key=_key(),
                             text="q", continue_cb=cont, grants=grants)
     assert coord.kw["options"] == ["Keep data", "Erase everything", "Cancel"]
+    assert (coord.kw["bot_id"], coord.kw["chat_id"]) == (CASA_BOT, 42)
     meta: dict = {}
     if answered:
         coord.kw["on_commit_sync"](idx, meta)
@@ -172,8 +175,11 @@ def flow(monkeypatch, tmp_path):
 
     class _Ch:
         chat_id = "42"
-    monkeypatch.setattr(tm, "_channel_manager",
-                        SimpleNamespace(get=lambda n: _Ch() if n == "telegram" else None),
+        default_agent = "assistant"
+        bot_id = CASA_BOT
+        has_bot_id = True
+        on_identity = None
+    monkeypatch.setattr(tm, "_channel_manager", make_transport(_Ch()),
                         raising=False)
 
     def fake_prompt(**kw):
@@ -217,7 +223,7 @@ async def test_an_eraser_asks_first_and_removes_nothing(flow):
     assert _still_registered(flow)
     [prompt] = flow.prompts
     assert prompt["key"] == pec.EraseChoiceKey(
-        42, 42, "plugin:probe", (ART,), pe.QUESTIONS.current("plugin:probe"))
+        42, CASA_BOT, 42, "plugin:probe", (ART,), pe.QUESTIONS.current("plugin:probe"))
     assert "erase_all" in prompt["text"]
 
 
@@ -241,7 +247,7 @@ async def test_erase_true_rejects_expired_and_reused_grant(flow):
     assert out["kind"] == "erase_not_confirmed" and _still_registered(flow)
     assert flow.episodes == []
     q = pe.QUESTIONS.open("plugin:probe")
-    key = pec.EraseChoiceKey(42, 42, "plugin:probe", (ART,), q)
+    key = pec.EraseChoiceKey(42, CASA_BOT, 42, "plugin:probe", (ART,), q)
     pec.CHOICES.mint(key, pec.ERASE)
     out = await _remove(flow.tm, erase_data=True)
     assert out["kind"] == "erasure_running" and _still_registered(flow)
@@ -495,7 +501,7 @@ def test_a_declared_eraser_with_no_server_still_counts(tmp_path, monkeypatch):
 # --- diff r4: every tap, run and record belongs to one question ---------------------
 
 def _current_key():
-    return pec.EraseChoiceKey(42, 42, "plugin:probe", (ART,),
+    return pec.EraseChoiceKey(42, CASA_BOT, 42, "plugin:probe", (ART,),
                               pe.QUESTIONS.current("plugin:probe"))
 
 
@@ -550,6 +556,10 @@ class _DeskChannel:
     def __init__(self):
         from unittest.mock import AsyncMock
         self.chat_id = "42"
+        self.default_agent = "assistant"
+        self.bot_id = CASA_BOT
+        self.has_bot_id = True
+        self.on_identity = None
         self._dispatch_desk_continuation = AsyncMock(return_value=True)
 
 
@@ -569,8 +579,7 @@ async def test_an_erase_choice_continuation_hands_off_the_question_lease(
                                     else "flow")
     tm = state.tm
     ch = _DeskChannel()
-    monkeypatch.setattr(tm, "_channel_manager",
-                        SimpleNamespace(get=lambda n: ch if n == "telegram" else None),
+    monkeypatch.setattr(tm, "_channel_manager", make_transport(ch),
                         raising=False)
     out = await (_uninstall(tm) if caller == "specialist_uninstall" else _remove(tm))
     assert out["kind"] == "erase_choice_pending", out
@@ -593,8 +602,7 @@ async def test_the_erasure_outcome_delivery_carries_no_reservation(flow, monkeyp
     configurator through its desk too — a second, separate desk turn."""
     tm = flow.tm
     ch = _DeskChannel()
-    monkeypatch.setattr(tm, "_channel_manager",
-                        SimpleNamespace(get=lambda n: ch if n == "telegram" else None),
+    monkeypatch.setattr(tm, "_channel_manager", make_transport(ch),
                         raising=False)
     assert (await _remove(tm))["kind"] == "erase_choice_pending"
     [prompt] = flow.prompts

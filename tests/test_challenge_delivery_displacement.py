@@ -34,6 +34,7 @@ from verdict_broker import VerdictBroker
 
 from test_scheduled_ask_attention_lane import OTHER, _ask_on, _dm_origin, _register
 from test_scheduled_ask_user import (
+    CASA_BOT,
     LABEL,
     OPERATOR,
     _FakeChannel,
@@ -89,7 +90,8 @@ class _GatedChannel(_FakeChannel):
 
 def _challenge(coordinator, channel, *, key, text="Approve send_email?"):
     return coordinator.register_challenge(
-        key, chat_id=OPERATOR, operator_id=OPERATOR, channel=channel,
+        key, bot_id=CASA_BOT, chat_id=OPERATOR, operator_id=OPERATOR,
+        channel=channel,
         challenge_text=text,
     )
 
@@ -110,9 +112,9 @@ async def test_delivered_challenge_displaces_exactly_the_scheduled_ask(
 
     finishes: dict[str, list] = {}
     _register(_fresh_broker, finishes, rid="interactive-same",
-              scope=f"dm:{OPERATOR}", chat_id=OPERATOR, scheduled=False)
+              scope=f"dm:{CASA_BOT}:{OPERATOR}", chat_id=OPERATOR, scheduled=False)
     _register(_fresh_broker, finishes, rid="scheduled-other",
-              scope=f"dm:{OTHER}", chat_id=OTHER, scheduled=True)
+              scope=f"dm:{CASA_BOT}:{OTHER}", chat_id=OTHER, scheduled=True)
 
     coordinator = authz_grants.ChallengeCoordinator()
     handle = _challenge(coordinator, channel, key=("tool", "args"))
@@ -120,13 +122,13 @@ async def test_delivered_challenge_displaces_exactly_the_scheduled_ask(
     await _fresh_broker.drain_hooks()
 
     assert len(_fresh_broker.pending(
-        namespace="resident_ask", scope=f"authz:{OPERATOR}")) == 1
-    same = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}")
+        namespace="resident_ask", scope=f"authz:{CASA_BOT}:{OPERATOR}")) == 1
+    same = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
     assert len(same) == 1
     assert sum(r == "interactive-same" for r in same) == 1
     assert sum(r == scheduled_rid for r in same) == 0
     assert len(_fresh_broker.pending(
-        namespace="resident_ask", scope=f"dm:{OTHER}")) == 1
+        namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OTHER}")) == 1
 
     assert len(channel.scheduled_dispatches) == 1
     assert sum("operator_challenge" in d["text"]
@@ -157,17 +159,17 @@ async def test_challenge_cancelled_while_posting_displaces_nothing(
     handle = _challenge(coordinator, channel, key=("a",), text="BLOCKED-A?")
     await asyncio.sleep(0)
 
-    _fresh_broker.cancel(namespace="resident_ask", scope=f"authz:{OPERATOR}",
+    _fresh_broker.cancel(namespace="resident_ask", scope=f"authz:{CASA_BOT}:{OPERATOR}",
                          request_id=handle._challenge.rid, reason="superseded")
     gate.set()
     assert await handle.settled_post() == "inactive"
     await _fresh_broker.drain_hooks()
 
-    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}")
+    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
     assert len(live) == 1
     assert sum(r == scheduled_rid for r in live) == 1
     assert len(_fresh_broker.pending(
-        namespace="resident_ask", scope=f"authz:{OPERATOR}")) == 0
+        namespace="resident_ask", scope=f"authz:{CASA_BOT}:{OPERATOR}")) == 0
     assert len(channel.scheduled_dispatches) == 0
     assert len(_fresh_store.all()) == 1
 
@@ -205,11 +207,11 @@ async def test_a_sibling_challenge_does_not_license_the_displacement(
     while len(channel.posts) < 3:
         await asyncio.sleep(0)
     assert len(_fresh_broker.pending(
-        namespace="resident_ask", scope=f"authz:{OPERATOR}")) == 2
+        namespace="resident_ask", scope=f"authz:{CASA_BOT}:{OPERATOR}")) == 2
 
     # Retire ONLY A, then let its post land an integer id. B stays live and
     # undelivered, which is exactly what the mutant would read.
-    _fresh_broker.cancel(namespace="resident_ask", scope=f"authz:{OPERATOR}",
+    _fresh_broker.cancel(namespace="resident_ask", scope=f"authz:{CASA_BOT}:{OPERATOR}",
                          request_id=handle_a._challenge.rid, reason="superseded")
     gate_a.set()
     assert await handle_a.settled_post() == "inactive"
@@ -221,8 +223,8 @@ async def test_a_sibling_challenge_does_not_license_the_displacement(
     await _fresh_broker.drain_hooks()
 
     assert len(_fresh_broker.pending(
-        namespace="resident_ask", scope=f"authz:{OPERATOR}")) == 0
-    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}")
+        namespace="resident_ask", scope=f"authz:{CASA_BOT}:{OPERATOR}")) == 0
+    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
     assert len(live) == 1
     assert sum(r == scheduled_rid for r in live) == 1
     assert len(channel.scheduled_dispatches) == 0
@@ -260,7 +262,7 @@ async def test_a_duplicate_arrival_posts_once_and_displaces_once(
     challenge_posts = [p for p in channel.posts if "BLOCKED-A?" in p[2]]
     assert len(challenge_posts) == 1
     assert len(_fresh_broker.pending(
-        namespace="resident_ask", scope=f"dm:{OPERATOR}")) == 0
+        namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")) == 0
     assert len(channel.scheduled_dispatches) == 1
     assert sum("operator_challenge" in d["text"]
                for d in channel.scheduled_dispatches) == 1
@@ -281,7 +283,7 @@ async def test_a_failing_displacement_leaves_the_delivered_challenge_live(
     scheduled = await _ask_on(channel, _scheduled_origin())
     scheduled_rid = scheduled["request_id"]
 
-    def _boom(chat_id, reason):
+    def _boom(bot_id, chat_id, reason):
         raise RuntimeError("broker exploded")
 
     monkeypatch.setattr(scheduled_asks, "displace_scheduled_for_chat", _boom)
@@ -292,8 +294,8 @@ async def test_a_failing_displacement_leaves_the_delivered_challenge_live(
     await _fresh_broker.drain_hooks()
 
     assert len(_fresh_broker.pending(
-        namespace="resident_ask", scope=f"authz:{OPERATOR}")) == 1
-    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}")
+        namespace="resident_ask", scope=f"authz:{CASA_BOT}:{OPERATOR}")) == 1
+    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
     assert len(live) == 1
     assert sum(r == scheduled_rid for r in live) == 1
     assert len(channel.scheduled_dispatches) == 0
@@ -329,16 +331,16 @@ async def test_the_liveness_check_and_the_displacement_share_one_loop_turn(
 
     def _probing_pending(*, namespace, scope):
         result = real_pending(namespace=namespace, scope=scope)
-        if scope == f"authz:{OPERATOR}":
+        if scope == f"authz:{CASA_BOT}:{OPERATOR}":
             asyncio.get_running_loop().call_soon(
                 lambda: order.append("next-scheduling-point"))
         return result
 
     real_displace = scheduled_asks.displace_scheduled_for_chat
 
-    def _probing_displace(chat_id, reason):
+    def _probing_displace(bot_id, chat_id, reason):
         order.append("displace")
-        return real_displace(chat_id, reason)
+        return real_displace(bot_id, chat_id, reason)
 
     monkeypatch.setattr(_fresh_broker, "pending", _probing_pending)
     monkeypatch.setattr(scheduled_asks, "displace_scheduled_for_chat",
@@ -353,4 +355,4 @@ async def test_the_liveness_check_and_the_displacement_share_one_loop_turn(
     assert order[0] == "displace"
     assert order[1] == "next-scheduling-point"
     assert len(_fresh_broker.pending(
-        namespace="resident_ask", scope=f"dm:{OPERATOR}")) == 0
+        namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")) == 0

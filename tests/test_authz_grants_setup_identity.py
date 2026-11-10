@@ -34,16 +34,32 @@ from test_agent_process import (
 from test_result_broker import _Origin
 
 OP = 42            # the configured operator: a private chat's id equals the user id
+CASA_BOT = 111     # Casa's bot: setup turns are stamped with its route
 
 
 class _Channel:
+    """Casa's Telegram endpoint, configured for operator *chat_id*."""
+
+    default_agent = "assistant"
+    bot_id = CASA_BOT
+    has_bot_id = True
+
     def __init__(self, chat_id="42"):
         self.chat_id = chat_id
+        self.on_identity = None
 
 
 class _Manager:
+    """A channel manager whose ``"telegram"`` channel is the transport over
+    *channel* as Casa's endpoint, as ``casa_core`` registers it."""
+
     def __init__(self, channel):
-        self._channel = channel
+        self._channel = None
+        if channel is not None:
+            from channels.telegram_transport import TelegramTransport
+            from telegram_channel_double import MemoryBotIdStore
+            self._channel = TelegramTransport(casa_bot_ids=MemoryBotIdStore())
+            self._channel.add_endpoint(channel, casa=True)
 
     def get(self, name):
         return self._channel if name == "telegram" else None
@@ -64,7 +80,7 @@ def _setup_origin(role="assistant", target="assistant", **over) -> dict:
             "cid": "c", "user_text": "[casa plugin setup]",
             "message_type": "channel_in", "source": "telegram",
             "execution_role": role, "synthetic": "plugin_setup",
-            "plugin_setup_target": target}
+            "plugin_setup_target": target, "_tg_bot": CASA_BOT}
     base.update(over)
     return base
 
@@ -76,7 +92,7 @@ def _dispatch_msg(target="assistant", context_extra=None) -> BusMessage:
     ids, a cid, and the worker's context (marker, episode, target)."""
     context = {"chat_id": OP, "user_id": OP, "cid": "cid-1",
                "synthetic": "plugin_setup", "setup_episode": "ep-1015",
-               "plugin_setup_target": target}
+               "plugin_setup_target": target, "_tg_bot": CASA_BOT}
     context.update(context_extra or {})
     return BusMessage(type=MessageType.CHANNEL_IN, source="telegram",
                       target="assistant", content="[casa plugin setup] run it",
@@ -113,7 +129,7 @@ async def test_the_dispatched_setup_turn_carries_the_stamp_and_has_an_identity(
     assert origin["synthetic"] == "plugin_setup"
     assert origin["plugin_setup_target"] == "assistant"      # the COPY under test
     assert why is None
-    assert identity == GrantIdentity(operator_id=OP, chat_id=OP,
+    assert identity == GrantIdentity(operator_id=OP, bot_id=CASA_BOT, chat_id=OP,
                                      enforcement_role="assistant",
                                      artifact_id="", engagement_id="")
     assert identity.target_role == "assistant"

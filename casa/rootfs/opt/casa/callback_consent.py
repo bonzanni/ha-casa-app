@@ -19,9 +19,10 @@ only "an unauthenticated GET may deposit a query blob into this plugin's
 spool". There is no target, no clearance and no auth policy to disclose.
 
 Taps ride the SAME validated Telegram DM callback path as authz grants and
-trigger consents (broker scope ``authz:{chat}``): the handler fail-closes on
-the meta's ``chat_id``/``operator_id``, so an unauthorized or stale tap can
-never ack.
+trigger consents (broker scope ``authz:<bot>:<chat>``): the handler
+fail-closes on the meta's ``bot_id``/``chat_id``/``operator_id``, so an
+unauthorized or stale tap can never ack. The card is Casa's own, posted on
+Casa's bot (``trigger_consent.casa_consent_target``).
 """
 from __future__ import annotations
 
@@ -29,10 +30,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from channels.tg_address import TgAddress
 from plugin_callbacks import ack_identity
-# The operator-DM rule is one rule for every consent kind — imported rather
-# than re-implemented so the two can never drift apart.
-from trigger_consent import operator_identity  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +56,7 @@ class CallbackConsentKey:
     artifact_id: str
     effective: str
     identity: str
+    address: TgAddress
 
 
 def render_callback_consent_message(*, plugin: str, effective: str) -> str:
@@ -89,8 +89,10 @@ def prompt_callback_consent(
     keyboard's late deny/expiry can never decide a re-prompted member.
     """
     identity = ack_identity(plugin, effective, declaration_digest)
+    address = TgAddress(channel.bot_id, chat_id)
     key = CallbackConsentKey(plugin=plugin, artifact_id=artifact_id,
-                             effective=effective, identity=identity)
+                             effective=effective, identity=identity,
+                             address=address)
     text = render_callback_consent_message(plugin=plugin, effective=effective)
 
     def _on_commit_sync(idx: int, meta: dict) -> None:
@@ -220,7 +222,8 @@ def prompt_callback_consent(
         return _finish
 
     return coordinator.register_challenge(
-        key, chat_id=chat_id, operator_id=operator_id, channel=channel,
+        key, bot_id=address.bot_id, chat_id=chat_id, operator_id=operator_id,
+        channel=channel,
         challenge_text=text, options=["Approve", "Deny"],
         on_commit_sync=_on_commit_sync, finish_factory=_finish_factory,
         kind="callback_consent",

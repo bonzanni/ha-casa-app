@@ -6,7 +6,8 @@ authz-grant challenges; the trigger-consent flavor supplies its OWN approve
 callback (record the consent ack — never a GrantKey mint) and its OWN finish
 hook (edit the DM + fire a reconcile — never an agent continuation dispatch).
 Taps ride the SAME validated Telegram callback path (broker scope
-``authz:{chat}``, fail-closed chat/operator checks).
+``authz:<bot>:<chat>``, fail-closed bot/chat/operator checks). The card is
+Casa's own and is posted on Casa's bot.
 """
 import asyncio
 
@@ -15,6 +16,7 @@ import pytest
 import trigger_consent as tc
 from authz_grants import ChallengeCoordinator
 from plugin_triggers import ack_identity
+from channels.tg_address import TgAddress
 from trigger_acks import TriggerAckStore
 
 AUTH = {"mode": "static_header", "header": "X-API-Key",
@@ -22,12 +24,29 @@ AUTH = {"mode": "static_header", "header": "X-API-Key",
 
 
 class _FakeChannel:
-    def __init__(self) -> None:
+    """A Telegram endpoint double: Casa's bot 111, operator chat 100."""
+
+    def __init__(self, *, bot_id: "int | None" = 111,
+                 role: str = "assistant") -> None:
         self.posts: list = []
         self.edits: list = []
         self.dispatches: list = []
         self.post_result: int | None = 55
         self.chat_id = "100"
+        self.default_agent = role
+        self.on_identity = None
+        self._bot_id = bot_id
+
+    @property
+    def has_bot_id(self) -> bool:
+        return self._bot_id is not None
+
+    @property
+    def bot_id(self) -> int:
+        from channels.tg_address import EndpointNotReady
+        if self._bot_id is None:
+            raise EndpointNotReady("no bot id yet")
+        return self._bot_id
 
     async def post_dm_keyboard(self, *, chat_id, request_id, text, options):
         self.posts.append((chat_id, request_id, text, tuple(options)))
@@ -92,21 +111,40 @@ def _tap(broker, coord, key, idx, *, actor=100):
 
 
 # ---------------------------------------------------------------------------
-# operator_identity — the configured operator, fail-closed
+# casa_consent_target — Casa's bot and the configured operator, fail-closed
 # ---------------------------------------------------------------------------
 
 
-def test_operator_identity_private_chat():
-    ch = _FakeChannel()
-    ch.chat_id = "1234"
-    assert tc.operator_identity(ch) == (1234, 1234)
+def _manager(*channels):
+    from telegram_channel_double import make_transport
+    return make_transport(*channels)
+
+
+def test_consent_target_is_the_operators_chat_on_casas_bot():
+    from channels.tg_address import TgAddress
+    casa = _FakeChannel()
+    casa.chat_id = "1234"
+    finance = _FakeChannel(bot_id=222, role="finance")
+    target = tc.casa_consent_target(_manager(casa, finance))
+    assert target.endpoint is casa
+    assert target.address == TgAddress(111, 1234)
+    assert target.operator_id == 1234
 
 
 @pytest.mark.parametrize("raw", ["-100123", "0", "", "not-a-number", None])
-def test_operator_identity_fails_closed(raw):
+def test_consent_target_fails_closed_without_a_private_operator_chat(raw):
     ch = _FakeChannel()
     ch.chat_id = raw
-    assert tc.operator_identity(ch) is None
+    assert tc.casa_consent_target(_manager(ch)) is None
+
+
+def test_consent_target_fails_closed_before_casas_bot_has_an_id():
+    # A first boot, or a replaced token, before getMe: no card can be keyed.
+    assert tc.casa_consent_target(_manager(_FakeChannel(bot_id=None))) is None
+
+
+def test_consent_target_without_a_channel_manager_is_none():
+    assert tc.casa_consent_target(None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +161,9 @@ async def test_prompt_posts_keyboard_with_binding_facts(monkeypatch, tmp_path):
     chat_id, _rid, text, options = channel.posts[0]
     assert chat_id == 100
     assert options == ("Approve", "Deny")
+    ch = next(iter(coord._entries.values()))
+    assert ch.scope == "authz:111:100"
+    assert ch.req.meta["bot_id"] == 111
     assert "elevenlabs" in text
     assert "/webhook/plg-elevenlabs--voicemail" in text
     assert "assistant" in text
@@ -250,7 +291,7 @@ async def test_lifecycle_cancel_by_artifact_kills_pending_consent(
     key = tc.TriggerConsentKey(
         plugin="elevenlabs", artifact_id="art-1",
         effective="plg-elevenlabs--voicemail", target="resident:assistant",
-        identity=_identity())
+        identity=_identity(), address=TgAddress(111, 100))
     assert key not in coord._entries
 
 

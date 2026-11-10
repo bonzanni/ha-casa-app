@@ -31,7 +31,7 @@ from authz_grants import (
 from test_authz_hook import _deny_reason
 from agent_log_double import RecordingLogs
 from test_in_casa_driver import _make_record
-from test_pending_approval_output import ARGS, PROTECTED, TOOL, _Channel
+from test_pending_approval_output import ARGS, CASA_BOT, PROTECTED, TOOL, _Channel
 
 try:
     from tests.test_job_session_driver import until
@@ -44,6 +44,16 @@ pytestmark = [pytest.mark.asyncio]
 
 ROLE = "finance"
 OPERATOR = 42
+
+
+def _transport(monkeypatch, channel):
+    """The Telegram transport with *channel* as Casa's endpoint, installed
+    where the grant identity resolves the job origin's route."""
+    import tools
+    from telegram_channel_double import make_transport
+    manager = make_transport(channel)
+    monkeypatch.setattr(tools, "_channel_manager", manager, raising=False)
+    return manager.get("telegram")
 TAIL = "TAIL-A6"
 
 
@@ -144,10 +154,11 @@ async def test_launch_pending_approval_keeps_prefix_from_sdk_context(
     from drivers.in_casa_driver import InCasaDriver, _EngagementTurn
     monkeypatch.setattr(verdict_broker, "BROKER", verdict_broker.VerdictBroker())
     channel = _Channel()
+    transport = _transport(monkeypatch, channel)
     grants, coord = GrantStore(), ChallengeCoordinator()
     hook = make_resident_authz_hook(
         ROLE, PROTECTED,
-        lambda: AuthzDeps(channel=channel, grants=grants, challenges=coord))
+        lambda: AuthzDeps(channel=transport, grants=grants, challenges=coord))
     answers: list = []
     monkeypatch.setattr(_EntryClient, "instances", [], raising=False)
     monkeypatch.setattr(_EntryClient, "script", [
@@ -161,7 +172,8 @@ async def test_launch_pending_approval_keeps_prefix_from_sdk_context(
     ends, on_turn_end = _turn_counter()
     drv = InCasaDriver(agent_logs=logs, on_turn_end=on_turn_end)
     rec = _make_record(kind=kind, role_or_type=ROLE,
-                       origin={"chat_id": str(OPERATOR), "user_id": OPERATOR})
+                       origin={"chat_id": str(OPERATOR), "user_id": OPERATOR,
+                               "_tg_bot": CASA_BOT})
     await drv.open(rec, ClaudeAgentOptions(model="sonnet"))
     _OPEN.append((drv, rec))
     drv.enqueue_brief(rec, "go")
@@ -262,10 +274,11 @@ class _Topic:
         monkeypatch.setattr(verdict_broker, "BROKER",
                             verdict_broker.VerdictBroker())
         self.channel = _Channel()
+        self.transport = _transport(monkeypatch, self.channel)
         self.grants, self.coord = GrantStore(), ChallengeCoordinator()
         self.hook = make_resident_authz_hook(
             ROLE, PROTECTED,
-            lambda: AuthzDeps(channel=self.channel, grants=self.grants,
+            lambda: AuthzDeps(channel=self.transport, grants=self.grants,
                               challenges=self.coord))
         self.session = _Session(self.hook)
         monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient",
@@ -276,10 +289,11 @@ class _Topic:
         self.rec = _make_record(id=rec_id, kind=kind, role_or_type=ROLE,
                                 task=rec_id,
                                 origin={"chat_id": str(OPERATOR),
-                                        "user_id": OPERATOR})
+                                        "user_id": OPERATOR,
+                                        "_tg_bot": CASA_BOT})
 
     def key(self, args=None) -> GrantKey:
-        return GrantKey(operator_id=OPERATOR, chat_id=OPERATOR,
+        return GrantKey(operator_id=OPERATOR, bot_id=CASA_BOT, chat_id=OPERATOR,
                         enforcement_role=ROLE, artifact_id="artifact-1",
                         tool_name=TOOL,
                         args_hash=canonical_args_hash(dict(ARGS if args is None else args)),

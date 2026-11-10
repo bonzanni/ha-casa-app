@@ -67,7 +67,9 @@ async def held_turn(tmp_path, monkeypatch):
     monkeypatch.setattr(verdict_broker, "BROKER", verdict_broker.VerdictBroker())
     agent = _make_agent(tmp_path)
     channel = _HeldPostChannel()
-    agent._channel_manager.register(channel)
+    from telegram_channel_double import make_transport
+    transport = make_transport(channel).get("telegram")
+    agent._channel_manager.register(transport)
     tools.init_tools(
         channel_manager=agent._channel_manager, bus=MagicMock(),
         specialist_registry=MagicMock(), mcp_registry=MagicMock(),
@@ -75,7 +77,7 @@ async def held_turn(tmp_path, monkeypatch):
     coord = ChallengeCoordinator()
     hook = make_resident_authz_hook(
         ROLE, PROTECTED,
-        lambda: AuthzDeps(channel=channel, grants=GrantStore(),
+        lambda: AuthzDeps(channel=transport, grants=GrantStore(),
                           challenges=coord))
     yield agent, channel, hook
     await agent.aclose()
@@ -99,7 +101,7 @@ async def test_reused_challenge_cuts_only_a_delivered_keyboard(
             # is in flight: a keyboard that then lands is already dead
             import verdict_broker
             assert verdict_broker.BROKER.cancel_scope(
-                namespace="resident_ask", scope=f"authz:{channel.chat_id}",
+                namespace="resident_ask", scope=f"authz:{channel.bot_id}:{channel.chat_id}",
                 reason="new") == 1
         channel.post_result = None if post == "fails" else 55
         channel.post_release.set()
