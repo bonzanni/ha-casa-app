@@ -50,10 +50,8 @@ opentelemetry-api>=1.43.0
 # resolvers on every bump.
 anyio>=4,<5
 pydantic>=2,<3
-# Declared for #665: channels/telegram.py imports httpx DIRECTLY (the
-# pre-send-cause classifier reads httpx.ConnectError/ConnectTimeout/
-# PoolTimeout off TelegramError.__cause__) while only python-telegram-bot's
-# transitive pin guaranteed it. Compatible range, not an exact pin, for the
+# Declared because agent_inbox.py imports httpx DIRECTLY, while only
+# python-telegram-bot's transitive pin guaranteed it. Compatible range, not an exact pin, for the
 # same reason as anyio/pydantic above: PTB owns the working version and an
 # exact pin here would fight its resolver on every bump.
 httpx>=0.27,<1
