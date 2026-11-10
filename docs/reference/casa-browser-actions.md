@@ -104,7 +104,10 @@ own block first, then **the other blocks of its record** — table row, list ite
 then its form or landmark, then the rest by distance, capped at 12,000 characters with
 `page_truncated`), `page.controls` (role, masked name and state of every control the reading
 lists, at most 400 a frame; what a tap compares past that is in
-[`casa-browser-approvals.md`](casa-browser-approvals.md)), and `run_so_far` (the last three judged actions). Text passes `masking.mask_text`.
+[`casa-browser-approvals.md`](casa-browser-approvals.md)), and `run_so_far` (the last three judged actions, each with its verdict; an asked one also says
+how its question ended — Yes and it ran, Yes but it did not run, Not now, taken back,
+another option, no answer — read from the question's stored state by
+`controller.py::_question_outcome`). Text passes `masking.mask_text`.
 **Every field's value is shown whole, once** (`gate.py::in_target_form`): masked and never cut, in
 `target.form.fields` when the target's form lists the field, else in the field's own `page.controls`
 line (a field with no form owner, another form's, a contenteditable). Elsewhere a value shows its

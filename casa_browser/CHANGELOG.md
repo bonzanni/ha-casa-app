@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.13] - 2026-11-10
+
+### Fixed
+
+- Casa's check now knows how each step it asked you about ended: you said Yes and it ran, you said Yes but it could not run, you said Not now, or nobody answered. Before, a step you had approved and that had run still looked held, so a later question could warn you that something you had already done was not done.
+
 ## [0.1.12] - 2026-11-10
 
 ### Added

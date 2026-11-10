@@ -2071,7 +2071,8 @@ class RunController:
             data["target"] = facts
         packet = gate.build_packet(data, facts, packet_action, task=active.spec.task_text,
                                    session="signed_in" if dest_kind == "account" else "public",
-                                   site=self._site_name(active, url), run_so_far=list(active.judged),
+                                   site=self._site_name(active, url),
+                                   run_so_far=self._run_so_far(active),
                                    download=download, plan=action.plan if action else None,
                                    approved=self._approved_here(active, url, data))
         body = gate.canonical(packet)
@@ -2495,9 +2496,26 @@ class RunController:
             return {"outcome": "credential_not_saved", "generation": gen, "site": name}
         return {"outcome": "not_saved", "generation": gen}
 
-    def _record_judgement(self, active: _Active, pending, verdict, latency_ms) -> None:
+    def _run_so_far(self, active: _Active) -> list[dict]:
+        """The packet's ``run_so_far``: the last three judged actions with the check's verdict,
+        and, for one the operator was asked about, how that question ended, read from its
+        stored state. Without it an asked step stays a bare ``ask`` and reads as still held
+        after the operator's Yes ran it."""
+        out = []
+        for entry in active.judged:
+            item = {"action": entry["action"], "verdict": entry["verdict"]}
+            qid = entry.get("question_id")
+            q = self.store.get_question(qid) if qid else None
+            said = _question_outcome(q) if q is not None else None
+            if said:
+                item["outcome"] = said
+            out.append(item)
+        return out
+
+    def _record_judgement(self, active: _Active, pending, verdict, latency_ms) -> dict | None:
         """Design §2.5 Record: every judgement is a run event (verdict, category, latency, the
-        check's one-line reason, masked); ``run_so_far`` keeps the last three."""
+        check's one-line reason, masked); ``run_so_far`` keeps the last three. Returns the
+        ``run_so_far`` entry (None for a re-judgement), which a question it raises names."""
         if verdict is None:
             text = f"Check of {pending.label}: no verdict."
             outcome = "no_verdict"
@@ -2508,10 +2526,13 @@ class RunController:
                     f"{seconds.lstrip(', ')}): {gate.one_line(verdict.get('reason'))}")
             outcome = verdict["verdict"]
         self._event(active.run_id, "judgement", outcome, text)
-        if pending.kind != "rejudge":
-            active.judged.append({"action": pending.label,
-                                  "verdict": verdict["verdict"] if verdict else "no_verdict"})
-            del active.judged[:-3]
+        if pending.kind == "rejudge":
+            return None
+        entry = {"action": pending.label,
+                 "verdict": verdict["verdict"] if verdict else "no_verdict"}
+        active.judged.append(entry)
+        del active.judged[:-3]
+        return entry
 
     async def _apply(self, active: _Active, pending, body: dict) -> tuple[dict, Any]:
         """S2-7, in order: F1, F2, look_first, ask, go. Returns (response, successor)."""
@@ -2519,20 +2540,20 @@ class RunController:
         verdict = body.get("verdict")
         if verdict is not None and not gate.verdict_within_bounds(kind, verdict):
             verdict = None     # F1: outside the reply bounds is no verdict
-        self._record_judgement(active, pending, verdict, body.get("latency_ms"))
+        entry = self._record_judgement(active, pending, verdict, body.get("latency_ms"))
         if kind == "rejudge":
             return await self._apply_rejudge(active, pending, verdict)
         gen = self._generation(active)
         if verdict is None:
             return {"outcome": "check_unavailable", "generation": gen}, None
         if verdict["verdict"] == "go" and not gate.go_allowed(verdict["category"], pending.packet):
-            return await self._ask(active, pending, verdict, f2=True)            # F2
+            return await self._ask(active, pending, verdict, f2=True, entry=entry)   # F2
         if verdict["verdict"] == "look_first":
             return {"outcome": "look_first", "generation": gen,
                     "note": gate.one_line(verdict.get("look_first") or verdict.get("reason"),
                                           gate.MAX_NOTE)}, None
         if verdict["verdict"] == "ask":
-            return await self._ask(active, pending, verdict, f2=False)
+            return await self._ask(active, pending, verdict, f2=False, entry=entry)
         return await self._go(active, pending, verdict)
 
     def _generation(self, active: _Active) -> int:
@@ -2924,10 +2945,12 @@ class RunController:
 
     # -- questions (S2-9) ----------------------------------------------------------------
 
-    async def _ask(self, active: _Active, pending, verdict, *, f2: bool) -> tuple[dict, Any]:
+    async def _ask(self, active: _Active, pending, verdict, *, f2: bool,
+                   entry: dict | None = None) -> tuple[dict, Any]:
         """An ask freezes a question: a confirmations row, the run waiting on it, and the
         frozen operation in memory. F2, F6, F6a and a blind reading decide whether a confirm
-        button is offered."""
+        button is offered. ``entry``, the step's ``run_so_far`` entry, is tied to the question
+        so a later step's packet says how it ended."""
         session = active.session
         gen = self._generation(active)
         question = None if f2 else verdict.get("question")
@@ -2962,6 +2985,8 @@ class RunController:
             self.store.create_question(qid, run_id, 1, pending.digest, view, self.clock())
             if not self.store.transition(run_id, "running", "waiting_approval"):
                 raise ProtocolError("not_ready")
+        if entry is not None:
+            entry["question_id"] = qid
         active.question = conf.FrozenQuestion(qid, 1, pending.digest, pending, verdict,
                                               pending.packet, pending.reading, shot,
                                               view["confirm_label"])
@@ -4122,6 +4147,27 @@ def _sign_in_address(url) -> tuple[str | None, str, str]:
     if len(start) > 2048:
         start = origin + "/"
     return origin, origin[len("https://"):], start
+
+
+def _question_outcome(q) -> str | None:
+    """How an asked step's question ended, in words for the check's ``run_so_far``; None while
+    it is still open."""
+    if q.state == "executed":
+        return "the operator said Yes and it ran"
+    if q.state == "outcome_unknown":
+        return "the operator said Yes; it may or may not have run"
+    if q.state == "lapsed":
+        # a lapse has several causes (a changed page, a target gone, no re-check): none is named
+        return "the operator said Yes, but it did not run"
+    if q.state == "declined":
+        if (q.operator_ref or "").startswith("fido:"):
+            return "Fido took the question back before the operator answered; it did not run"
+        return "the operator said Not now; it did not run"
+    if q.state == "answered":
+        return f"the operator chose “{gate.one_line(q.outcome)}” instead; it did not run"
+    if q.state == "expired":
+        return "nobody answered within the hour; it did not run"
+    return None
 
 
 def _declined_text(ref: str) -> str:
