@@ -26,8 +26,8 @@ QUIET = replace(DECL, quiet_when_scheduled=True)
 
 def _origin(*, scheduled: bool) -> dict:
     origin = {"role": "assistant", "execution_role": "assistant",
-              "channel": "telegram", "chat_id": "1", "user_id": "7",
-              "cid": "test", "user_name": "operator"}
+              "channel": "telegram", "_tg_bot": 111, "chat_id": "1",
+              "user_id": "7", "cid": "test", "user_name": "operator"}
     if scheduled:
         origin.update(source="scheduler", message_type="scheduled",
                       _scheduled_job=True)
@@ -135,7 +135,7 @@ def _identity(rec):
     token_o = agent.origin_var.set({"role": "finance", "execution_role": "finance",
                                     "channel": "telegram", "source": "telegram",
                                     "message_type": "channel_in", "chat_id": 1,
-                                    "user_id": 7})
+                                    "user_id": 7, "_tg_bot": 111})
     token_e = tools.engagement_var.set(rec)
     try:
         return resolve_grant_identity("finance")
@@ -145,15 +145,20 @@ def _identity(rec):
 
 
 @pytest.mark.parametrize("job", [{"quiet": True}, {}])
-async def test_a_job_keeps_the_operators_grant_identity_without_a_topic(job):
+async def test_a_job_keeps_the_operators_grant_identity_without_a_topic(job, monkeypatch):
     """No job has a topic any more: an active job whose origin names the
     operator and their chat binds its protected calls to them, quiet or not."""
+    from two_endpoints import build_two_endpoints
+    monkeypatch.setattr(tools, "_channel_manager", build_two_endpoints().manager)
     rec = SimpleNamespace(id="job-q", kind="specialist", status="active",
                           role_or_type="finance",
-                          origin={"chat_id": 1, "user_id": 7, "job": job})
+                          origin={"chat_id": 1, "user_id": 7, "_tg_bot": 111,
+                                  "job": job})
     identity, why = _identity(rec)
     assert why is None
-    assert identity == GrantIdentity(7, 1, "finance", "", "job-q", target_role="finance")
+    assert identity == GrantIdentity(operator_id=7, bot_id=111, chat_id=1,
+                                     enforcement_role="finance", artifact_id="",
+                                     engagement_id="job-q", target_role="finance")
     # without an operator in its origin it gets none
     rec.origin.pop("user_id")
     assert _identity(rec) == (None, "engagement_unavailable")

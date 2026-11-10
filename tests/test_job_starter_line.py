@@ -378,6 +378,8 @@ from output_boundary_testing import with_scope  # noqa: E402
 OPERATOR = 1          # the runtime channel's configured chat id
 STRANGER = 2
 LABEL = "cron-invoices"
+BOT = 111             # the runtime channel's bot (Casa's own)
+DM_SCOPE = f"dm:{BOT}:{OPERATOR}"
 
 
 class RecordingBus:
@@ -486,7 +488,7 @@ async def ask_scheduled(t, options=("Run now", "No")):
     """The resident's scheduled turn asks the operator through the real
     ``ask_user``; returns the request id."""
     origin = {"role": "assistant", "execution_role": "assistant", "channel": "telegram",
-              "chat_id": LABEL, "user_id": None, "message_type": "scheduled",
+              "_tg_bot": BOT, "chat_id": LABEL, "user_id": None, "message_type": "scheduled",
               "source": "scheduler", "_scheduled_delivery": True, "_scheduled_epoch": "0:0"}
     token = agent.origin_var.set(with_scope(origin))
     try:
@@ -496,7 +498,7 @@ async def ask_scheduled(t, options=("Run now", "No")):
         agent.origin_var.reset(token)
     payload = json.loads(envelope["content"][0]["text"])
     assert payload["status"] == "awaiting_user", payload
-    assert t.broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}") == [
+    assert t.broker.pending(namespace="resident_ask", scope=DM_SCOPE) == [
         payload["request_id"]]
     return payload["request_id"]
 
@@ -530,7 +532,7 @@ class TestScheduledAskTap:
     @pytest.mark.parametrize("option", [0, 1], ids=["run-now", "no"])
     async def test_the_operators_answer_marks_the_continuation(self, turns, option):
         rid = await ask_scheduled(turns)
-        assert deliver(turns.broker, namespace="resident_ask", scope=f"dm:{OPERATOR}",
+        assert deliver(turns.broker, namespace="resident_ask", scope=DM_SCOPE,
                        request_id=rid, option_index=option, actor_id=OPERATOR) == "delivered"
         msg = await settled_continuation(turns)
         assert msg.type.value == "scheduled"
@@ -542,7 +544,7 @@ class TestScheduledAskTap:
     @pytest.mark.parametrize("option", [0, 1], ids=["run-now", "no"])
     async def test_a_job_started_in_the_answered_turn_reads_operator(self, turns, option):
         rid = await ask_scheduled(turns)
-        assert deliver(turns.broker, namespace="resident_ask", scope=f"dm:{OPERATOR}",
+        assert deliver(turns.broker, namespace="resident_ask", scope=DM_SCOPE,
                        request_id=rid, option_index=option, actor_id=OPERATOR) == "delivered"
         msg = await settled_continuation(turns)
         origin, rec = await run_turn(turns, msg)
@@ -552,7 +554,7 @@ class TestScheduledAskTap:
 
     async def test_a_later_unmarked_turn_does_not_keep_the_marker(self, turns):
         rid = await ask_scheduled(turns)
-        deliver(turns.broker, namespace="resident_ask", scope=f"dm:{OPERATOR}",
+        deliver(turns.broker, namespace="resident_ask", scope=DM_SCOPE,
                 request_id=rid, option_index=0, actor_id=OPERATOR)
         msg = await settled_continuation(turns)
         _, first = await run_turn(turns, msg)
@@ -564,7 +566,7 @@ class TestScheduledAskTap:
         from bus import BusMessage, MessageType
         later = BusMessage(type=MessageType.SCHEDULED, source="scheduler", target="assistant",
                            content="weekly", channel="telegram",
-                           context={"chat_id": LABEL, "cid": "c-later",
+                           context={"chat_id": LABEL, "cid": "c-later", "_tg_bot": BOT,
                                     "_scheduled_delivery": True, "_scheduled_epoch": "0:0"})
         origin, rec = await run_turn(turns, later)
         assert ANSWER_KEY not in origin
@@ -582,18 +584,18 @@ class TestScheduledAskOutcomes:
         import scheduled_asks
         rid = await ask_scheduled(t)
         rec = next(r for r in t.store.all() if r["rid"] == rid)
-        t.broker.unregister(namespace="resident_ask", scope=f"dm:{OPERATOR}", request_id=rid)
+        t.broker.unregister(namespace="resident_ask", scope=DM_SCOPE, request_id=rid)
         await scheduled_asks.make_finish_hook(t.runtime.channel, rec)(outcome)
         assert len(t.bus.sent) == 1, t.bus.sent
         return t.bus.sent[0]
 
     async def _broker_terminal(self, t, how):
         rid = await ask_scheduled(t)
-        key = ("resident_ask", f"dm:{OPERATOR}", rid)
+        key = ("resident_ask", DM_SCOPE, rid)
         if how == "no_answer":
             t.broker._on_timeout(key)
         else:
-            assert t.broker.cancel(namespace="resident_ask", scope=f"dm:{OPERATOR}",
+            assert t.broker.cancel(namespace="resident_ask", scope=DM_SCOPE,
                                    request_id=rid, reason="superseded")
         return await settled_continuation(t)
 
@@ -633,6 +635,7 @@ class TestScheduledAskOutcomes:
         msg = BusMessage(type=MessageType.SCHEDULED, source="scheduled-ask",
                          target="assistant", content=content, channel="telegram",
                          context={"chat_id": LABEL, "cid": "c-words", "button_answer": "r1",
+                                  "_tg_bot": BOT,
                                   "_scheduled_delivery": True, "_scheduled_epoch": "0:0"})
         origin, rec = await run_turn(turns, msg)
         assert ANSWER_KEY not in origin
@@ -647,7 +650,7 @@ class TestBootReplay:
     def _rec(self, **overrides):
         import scheduled_asks
         rec = {"rid": "rid-boot", "state": scheduled_asks.STATE_LIVE, "role": "assistant",
-               "session_scope": LABEL, "scope": f"dm:{OPERATOR}", "chat_id": OPERATOR,
+               "session_scope": LABEL, "scope": DM_SCOPE, "bot_id": BOT, "chat_id": OPERATOR,
                "operator_id": OPERATOR, "message_id": 77, "options": ["Run now", "No"],
                "body": "Run the quarterly check now?", "epoch": 0, "created_at": 0.0,
                "expires_at": 1_000.0}
@@ -666,7 +669,8 @@ class TestBootReplay:
         if state == "settling":
             overrides["terminal_edit"] = "Run the quarterly check now?\n\nAnswered: Run now"
         await turns.store.put(self._rec(**overrides))
-        await scheduled_asks.reconcile_at_boot(turns.runtime.channel, now=99.0)
+        from channels.telegram_transport import telegram_transport
+        await scheduled_asks.reconcile_at_boot(telegram_transport(), now=99.0)
         assert len(turns.bus.sent) == dispatched
         assert sum(ANSWER_KEY in m.context for m in turns.bus.sent) == 0
 
@@ -772,7 +776,7 @@ class TestApprovalAndSetup:
         ``_dispatch_button_continuation``."""
         from authz_grants import ChallengeCoordinator, GrantKey, GrantStore, canonical_args_hash
         coord = ChallengeCoordinator()
-        key = GrantKey(operator_id=OPERATOR, chat_id=OPERATOR, enforcement_role="assistant",
+        key = GrantKey(operator_id=OPERATOR, bot_id=BOT, chat_id=OPERATOR, enforcement_role="assistant",
                        artifact_id="artifact-abc", tool_name="invoice_reset",
                        args_hash=canonical_args_hash({"x": 1}))
         handle = coord.get_or_create(
@@ -800,6 +804,7 @@ class TestApprovalAndSetup:
         msg = BusMessage(type=MessageType.CHANNEL_IN, source="telegram", target="assistant",
                          content="an event woke you", channel="telegram",
                          context={"chat_id": OPERATOR, "user_id": OPERATOR, "cid": "c-wake",
+                                  "_tg_bot": BOT,
                                   "synthetic": "event_wake", "emitter": "p", "event": "e"})
         origin, rec = await run_turn(turns, msg)
         assert origin.get("user_id") == OPERATOR

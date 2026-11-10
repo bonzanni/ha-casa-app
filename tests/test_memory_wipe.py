@@ -330,7 +330,7 @@ async def _wiped_job(tmp_path, monkeypatch, *, awaiting=None):
         id=JOB_ID, kind="specialist", role_or_type="finance",
         driver="in_casa", status="active", started_at=0.0,
         last_user_turn_ts=0.0, completed_at=None, sdk_session_id=w.SID,
-        origin={"channel": "telegram", "_origin_route": "telegram",
+        origin={"channel": "telegram", "_tg_bot": 111, "_origin_route": "telegram",
                 "_origin_clearance": "private", "job": job},
         task="Tidy the garden notes")
     await writer._write_tombstone_locked(strict=True)

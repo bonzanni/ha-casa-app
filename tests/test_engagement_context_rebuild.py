@@ -21,7 +21,7 @@ async def _make(tmp_path, **origin_extra):
     rec = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa",
         task="secret task",
-        origin={"channel": "telegram", "_origin_route": "telegram_dm",
+        origin={"channel": "telegram", "_tg_bot": 111, "_origin_route": "telegram_dm",
                 "_origin_clearance": "private", **origin_extra},
     )
     return reg, rec

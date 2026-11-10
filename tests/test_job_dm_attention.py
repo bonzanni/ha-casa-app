@@ -165,7 +165,7 @@ async def _rig(tmp_path, monkeypatch, *, quiet=False, started_by="operator",
               "job": _job_state(started_by="scheduled" if quiet else started_by,
                                 quiet=quiet)}
     r.rec = await r.reg.create(kind, "finance", "in_casa", "t", origin)
-    ch = TelegramChannel(bot=r.bot, chat_id=str(CHAT))
+    ch = TelegramChannel(bot=r.bot, chat_id=str(CHAT), known_bot_id=BOT)
     r.client = _Session()
     r.drv = InCasaDriver(
         record_lookup=r.reg.get,
@@ -194,8 +194,10 @@ async def _rig(tmp_path, monkeypatch, *, quiet=False, started_by="operator",
             next_steps=[], driver=r.drv)
     ch._finalize_cancel = _finalize_cancel
     r.ch = ch
-    cm = MagicMock()
-    cm.get.return_value = ch
+    # The channel is Casa's endpoint behind the transport, as casa_core
+    # registers it.
+    from telegram_channel_double import make_transport
+    cm = make_transport(ch)
     r.bus = MagicMock()
     r.bus.notify = AsyncMock()
     tools.init_tools(channel_manager=cm, bus=r.bus,
@@ -382,7 +384,7 @@ class TestOneNoticePerLostMessage:
         await r.reg.try_transition_terminal(r.rec.id, "error", strict=True)
         handed = await r.ch.deliver_system_turn(
             r.rec, "[operator answered «q»: A]",
-            notice_target=_NoticeTarget(CHAT, 812, answer=True))
+            notice_target=_NoticeTarget(A(812), answer=True))
         await _drain(r)
         assert handed is False
         assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
@@ -928,7 +930,7 @@ class TestApprovalLostToTermination:
         r = await _rig(tmp_path, monkeypatch)
         coord = ChallengeCoordinator()
         monkeypatch.setattr(tools, "CHALLENGES", coord)
-        key = GrantKey(operator_id=OPERATOR, chat_id=CHAT, enforcement_role="finance",
+        key = GrantKey(operator_id=OPERATOR, bot_id=BOT, chat_id=CHAT, enforcement_role="finance",
                        artifact_id="a1", tool_name="purge",
                        args_hash=canonical_args_hash({"x": 1}), engagement_id=r.rec.id)
         handle = coord.get_or_create(

@@ -32,7 +32,7 @@ CARD = "I'm posting its card now."
 
 
 def _origin(**over):
-    base = {"role": "assistant", "channel": "telegram", "chat_id": CHAT,
+    base = {"role": "assistant", "channel": "telegram", "_tg_bot": 111, "chat_id": CHAT,
             "user_id": CHAT, "cid": "c1"}
     base.update(over)
     return base
@@ -103,6 +103,7 @@ def _make_job(**changes):
         creating_role="assistant", specialist_role="finance",
         specialist_display_name="Alex",
         creator_peer="telegram", creator_user_id=None,
+        route={"_tg_bot": 111},
         scope_id=str(CHAT), origin_route_id="c1", origin_device_id=None,
         task="what did I spend on groceries", context="",
         created_at=100.0, started_at=101.0, terminal_at=None,

@@ -31,7 +31,7 @@ def _desk_turn_origin():
     """A desk turn's origin as the specialist's tool handler sees it: the
     desk's own origin, then the delegated runner's increment and role."""
     origin = specialist_desk._desk_origin(
-        resident_role="assistant", desk_role="finance", chat_id=1, user_id=1,
+        resident_role="assistant", desk_role="finance", bot_id=111, chat_id=1, user_id=1,
         user_name="operator", message_id=7, cid="desk-cid", text="run the check",
         turn_id="desk-turn-1")
     return {**origin, "delegation_depth": origin["delegation_depth"] + 1,
@@ -41,6 +41,7 @@ def _desk_turn_origin():
 def _delegated_turn_origin(*, clearance="private", channel="telegram"):
     """A turn the resident delegated to finance from a chat."""
     return {"role": "assistant", "execution_role": "finance", "channel": channel,
+            **({"_tg_bot": 111} if channel == "telegram" else {}),
             "chat_id": "1", "user_id": 1, "cid": "dlg-cid", "user_text": "classify",
             "_origin_route": "telegram", "_origin_clearance": clearance,
             "_operator_turn": True, "delegation_depth": 1,

@@ -19,6 +19,7 @@ from claude_agent_sdk import ClaudeAgentOptions
 
 import job_inbox
 from drivers import in_casa_driver as drv
+from channels.tg_address import TgAddress
 
 try:
     from tests.test_job_session_driver import FakeCLI, until
@@ -80,7 +81,7 @@ async def rig(tmp_path, monkeypatch):
     rec = await reg.create("specialist", "finance", "in_casa", "Check", origin)
     bot = _Bot()
     ch = TelegramChannel(bot=bot, chat_id=str(OPERATOR),
-                         engagement_supergroup_id=SUPERGROUP)
+                         engagement_supergroup_id=SUPERGROUP, known_bot_id=BOT)
     driver = drv.InCasaDriver(
         record_lookup=reg.get, begin_turn_delivery=reg.begin_turn_delivery,
         lifecycle_lock=ch.engagement_lifecycle_lock)
@@ -183,7 +184,7 @@ async def test_a_tapped_answer_hands_its_reservation_to_the_ticket(rig):
     from channels.telegram import _NoticeTarget
     ok = await rig.ch.deliver_system_turn(
         rig.rec, "[operator answered «Which?»: B]", inbound_reservation=lease,
-        notice_target=_NoticeTarget(chat_id=OPERATOR, message_id=40, answer=True))
+        notice_target=_NoticeTarget(TgAddress(BOT, OPERATOR, 40), answer=True))
     assert ok is True
     assert seen == [(1, 1)]                       # both held at admission
     assert rig.drv.inbound_reservations(rig.rec.id) == 0
@@ -216,10 +217,8 @@ async def test_the_finalize_funnel_tells_each_unread_message_once(rig, monkeypat
     — journaled, written, never echoed — tells that message as lost once, in
     reply to it; the journal goes with the record."""
     import tools
-    from unittest.mock import MagicMock
-    cm = MagicMock()
-    cm.get.return_value = rig.ch
-    monkeypatch.setattr(tools, "_channel_manager", cm)
+    from telegram_channel_double import make_transport
+    monkeypatch.setattr(tools, "_channel_manager", make_transport(rig.ch))
     monkeypatch.setattr(tools, "_engagement_registry", rig.reg)
     monkeypatch.setattr(tools, "_bus", None)
     monkeypatch.setattr(job_inbox, "transcript_path",

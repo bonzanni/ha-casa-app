@@ -93,7 +93,7 @@ def test_job_start_line_refresh_is_a_five_minute_coroutine_job():
     assert closure, ("casa_core.py no longer defines the "
                      "_refresh_job_start_lines closure right before its "
                      "scheduler.add_job registration")
-    assert "await telegram_channel.refresh_job_start_line(rec)" in closure.group("body")
+    assert "await tg_transport.refresh_job_start_line(rec)" in closure.group("body")
     job = re.search(
         r"scheduler\.add_job\(\s*_refresh_job_start_lines,"
         r"(?P<args>.*?)\n    \)",

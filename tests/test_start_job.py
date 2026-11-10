@@ -314,7 +314,9 @@ async def test_a_job_starts_acts_and_is_busy_refused_with_no_group(runtime):
         tools.engagement_var.reset(token_e)
         agent.origin_var.reset(token_o)
     assert why is None
-    assert identity == GrantIdentity(7, 1, 'finance', '', rec.id, target_role='finance')
+    assert identity == GrantIdentity(operator_id=7, bot_id=BOT, chat_id=1,
+                                    enforcement_role='finance', artifact_id='',
+                                    engagement_id=rec.id, target_role='finance')
 
     again = await call()
     assert again['kind'] == 'job_busy'

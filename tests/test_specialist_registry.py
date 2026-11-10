@@ -267,7 +267,7 @@ class TestDurableJobFacade:
         )
         await reg.register_delegation(DelegationRecord(
             id="d-1", agent="finance", started_at=1.0,
-            origin={"role": "assistant", "channel": "telegram",
+            origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111,
                     "chat_id": "chat-1", "cid": "route-1"},
         ))
 
@@ -299,7 +299,7 @@ class TestDurableJobFacade:
         )
         await seeded_reg.register_delegation(DelegationRecord(
             id="orphan-1", agent="finance", started_at=100.0,
-            origin={"role": "assistant", "channel": "telegram",
+            origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111,
                     "chat_id": "chat-1", "cid": "route-1"},
         ))
 
@@ -327,7 +327,7 @@ class TestDelegationLifecycle:
         reg = self._make_registry(tmp_path)
         rec = DelegationRecord(
             id="d-1", agent="finance", started_at=1.0,
-            origin={"role": "assistant", "channel": "telegram",
+            origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111,
                     "chat_id": "x", "cid": "c1", "user_text": "hi"},
         )
         await reg.register_delegation(rec)
@@ -341,7 +341,7 @@ class TestDelegationLifecycle:
         reg = self._make_registry(tmp_path)
         rec = DelegationRecord(
             id="d-2", agent="finance", started_at=1.0,
-            origin={"role": "assistant", "channel": "telegram",
+            origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111,
                     "chat_id": "x", "cid": "c1", "user_text": "hi"},
         )
         await reg.register_delegation(rec)
@@ -354,7 +354,7 @@ class TestDelegationLifecycle:
         reg = self._make_registry(tmp_path)
         rec = DelegationRecord(
             id="d-3", agent="finance", started_at=1.0,
-            origin={"role": "assistant", "channel": "telegram",
+            origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111,
                     "chat_id": "x", "cid": "c1", "user_text": "hi"},
         )
         await reg.register_delegation(rec)
@@ -471,7 +471,7 @@ class TestRegisterDelegationSpeakerProvenance:
         )
         record = DelegationRecord(
             id="d1", agent="finance", started_at=0.0,
-            origin={"role": "assistant", "channel": "telegram",
+            origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111,
                     "speaker_provenance": caller},
         )
         await reg.register_delegation(record)

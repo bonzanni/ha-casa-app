@@ -158,7 +158,7 @@ def _run_delegation_stop(monkeypatch, tmp_path, *, late_pair: bool,
     jobs_path = tmp_path / "jobs.json"
     ids = ["early"] + (["late-a", "late-b"] if late_pair else []) \
         + (["late-c"] if queued else [])
-    origin = {"role": "assistant", "channel": "telegram", "chat_id": "42",
+    origin = {"role": "assistant", "channel": "telegram", "_tg_bot": 111, "chat_id": "42",
               "cid": "x"}
 
     flags = {"aclose_entered": False, "begin_shutdown": False}

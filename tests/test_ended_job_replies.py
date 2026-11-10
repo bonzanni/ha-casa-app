@@ -57,14 +57,14 @@ async def _ended_job(tmp_path, *, role="finance", chat=OPERATOR, user=OPERATOR,
                      posts=(), outcome="completed", plugin=None):
     from engagement_registry import EngagementRegistry
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-    origin = {"role": "assistant", "channel": "telegram", "chat_id": str(chat),
+    origin = {"role": "assistant", "channel": "telegram", "_tg_bot": 111, "chat_id": str(chat),
               "user_id": user, "job": _job_state()}
     if plugin is not None:
         origin["plugin_job"] = {"plugin": plugin, "model": "m"}
     rec = await reg.create("plugin" if plugin else "specialist", role, "in_casa",
                            "t", origin)
     for mid, keyboard in posts:
-        assert reg.record_job_post(rec.id, mid, keyboard=keyboard) is True
+        assert reg.record_job_post(rec.id, TgAddress(BOT, chat, mid), keyboard=keyboard) is True
     assert await reg.try_transition_terminal(
         rec.id, outcome, completed_at=ENDED_AT, strict=True)
     return reg, rec
@@ -135,7 +135,7 @@ async def test_a_plugin_post_landing_after_the_end_is_the_ended_jobs(routed, tmp
     ch, bus = _channel()
     ch._engagement_registry = reg
     ch._record_post(OPERATOR, NS(message_id=650), _record(owner=rec.id))
-    assert reg.ended_job_post_owner(OPERATOR, 650) is rec
+    assert reg.ended_job_post_owner(TgAddress(BOT, OPERATOR, 650)) is rec
     [turn] = await _turns(ch, bus, _text_reply(quoted_id=650, quoted_text="📊 Finance\nrow 9"))
     assert spawned.await_count == 0
     assert turn.context["_reply_note"] == sd.reply_note(_note_for(), None, "📊 Finance\nrow 9")
@@ -288,10 +288,10 @@ async def test_the_ended_route_never_outranks_a_live_job(routed, tmp_path):
     import threading
     from engagement_registry import EngagementRegistry
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-    origin = {"role": "assistant", "channel": "telegram", "chat_id": str(OPERATOR),
+    origin = {"role": "assistant", "channel": "telegram", "_tg_bot": 111, "chat_id": str(OPERATOR),
               "user_id": OPERATOR, "job": _job_state()}
     rec = await reg.create("specialist", "finance", "in_casa", "t", origin)
-    reg.record_job_post(rec.id, 501)
+    reg.record_job_post(rec.id, TgAddress(BOT, OPERATOR, 501))
     while reg._deferred_persists:
         await asyncio.gather(*list(reg._deferred_persists), return_exceptions=True)
     real = reg._write_tombstone
@@ -310,7 +310,7 @@ async def test_the_ended_route_never_outranks_a_live_job(routed, tmp_path):
         await asyncio.sleep(0.005)
     ch, _bus = _channel()
     ch._engagement_registry = reg
-    assert reg.job_post_owner(501) is rec
+    assert reg.job_post_owner(TgAddress(BOT, OPERATOR, 501)) is rec
     assert ch._ended_job_quoted(str(OPERATOR), types.SimpleNamespace(id=OPERATOR),
                                 types.SimpleNamespace(message_id=501)) is None
     release.set()
@@ -329,7 +329,7 @@ async def test_a_pending_terminal_reply_goes_into_the_job_through_the_handler(
     from unittest.mock import AsyncMock
     from test_job_dm_attention import CHAT, _drain, _HeldWrite, _reply_update, _rig, _wait
     r = await _rig(tmp_path, monkeypatch)
-    r.reg.record_job_post(r.rec.id, 501)
+    r.reg.record_job_post(r.rec.id, TgAddress(r.ch.bot_id, CHAT, 501))
     await _drain(r)
     desk = AsyncMock(return_value=True)
     monkeypatch.setattr(r.ch, "_maybe_route_desk_reply", desk)
@@ -365,17 +365,17 @@ async def test_ended_jobs_of_two_chats_sharing_a_message_id_stay_apart(routed, t
     reg = EngagementRegistry(tombstone_path=path)
     recs = {}
     for chat, role in ((OPERATOR, "finance"), (99, "travel")):
-        origin = {"role": "assistant", "channel": "telegram", "chat_id": str(chat),
+        origin = {"role": "assistant", "channel": "telegram", "_tg_bot": 111, "chat_id": str(chat),
                   "user_id": OPERATOR, "job": _job_state()}
         recs[chat] = await reg.create("specialist", role, "in_casa", "t", origin)
-        assert reg.record_job_post(recs[chat].id, 501) is True
+        assert reg.record_job_post(recs[chat].id, TgAddress(BOT, chat, 501)) is True
         assert await reg.try_transition_terminal(
             recs[chat].id, "completed", completed_at=ENDED_AT, strict=True)
     pm.record(TgAddress(BOT, OPERATOR, 501), _record(owner=recs[OPERATOR].id))
     again = EngagementRegistry(tombstone_path=path)
     await again.load()
-    assert again.ended_job_post_owner(OPERATOR, 501).id == recs[OPERATOR].id
-    assert again.ended_job_post_owner(99, 501).id == recs[99].id
+    assert again.ended_job_post_owner(TgAddress(BOT, OPERATOR, 501)).id == recs[OPERATOR].id
+    assert again.ended_job_post_owner(TgAddress(BOT, 99, 501)).id == recs[99].id
     ch, bus = _channel()
     ch._engagement_registry = again
     [turn] = await _turns(ch, bus, _text_reply(quoted_id=501, quoted_text="row 7"))

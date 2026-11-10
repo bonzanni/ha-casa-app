@@ -28,6 +28,8 @@ from telegram.error import BadRequest
 
 CHAT = 4242
 MESSAGE_ID = 7007
+#: The bot the channel is: the scheduled ask's question was posted by it.
+BOT = 111
 
 # No markdown markers -> render() returns entities=None -> the plain branch.
 PLAIN_TEXT = "Invoice ready?\n\n(this question has expired)"
@@ -40,7 +42,7 @@ def _mk_channel():
 
     bot = MagicMock()
     bot.edit_message_text = AsyncMock(return_value=True)
-    ch = TelegramChannel(bot=bot, chat_id=CHAT)
+    ch = TelegramChannel(bot=bot, chat_id=CHAT, known_bot_id=BOT)
     return ch, bot
 
 
@@ -213,7 +215,8 @@ def _crash_record() -> dict:
     return {
         "rid": "rid-crash", "state": "live",
         "role": "assistant", "session_scope": "cron-invoices",
-        "scope": f"dm:{CHAT}", "chat_id": CHAT, "operator_id": CHAT,
+        "scope": f"dm:{BOT}:{CHAT}", "bot_id": BOT, "chat_id": CHAT,
+        "operator_id": CHAT,
         "message_id": MESSAGE_ID,
         "options": ["Confirm", "Wrong"], "body": "Invoice ready?",
         "epoch": "0:0", "created_at": 0.0, "expires_at": 1_000.0,
@@ -272,7 +275,9 @@ async def test_crash_after_settling_cas_replays_exact_edit_once_without_dispatch
 
     boot_ch, boot_bot = _mk_channel()
     boot_ch._dispatch_scheduled_continuation = AsyncMock(return_value=True)
-    counts = await scheduled_asks.reconcile_at_boot(boot_ch, now=0.0)
+    from telegram_channel_double import make_transport
+    transport = make_transport(boot_ch).get("telegram")
+    counts = await scheduled_asks.reconcile_at_boot(transport, now=0.0)
 
     assert counts.get("settled_before_crash", 0) == 1
     assert boot_bot.edit_message_text.await_count == 1

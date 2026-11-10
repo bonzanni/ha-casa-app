@@ -252,5 +252,5 @@ async def test_boot_does_not_resume_a_job_whose_disabled_close_failed(reg, monke
     await casa_core._resume_background_jobs(reg, object(), skip=left)
     assert resumed == [fine.id]
     src = inspect.getsource(casa_core.main)
-    assert src.count("await _resume_background_jobs(engagement_registry, telegram_channel, "
+    assert src.count("await _resume_background_jobs(engagement_registry, tg_transport, "
                      "skip=left_open, only=boot_job_ids)") == 1

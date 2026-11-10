@@ -35,7 +35,7 @@ async def job(tmp_path):
     decl = jobs.JobDecl("sample:work", "sample", "work", "sample:work", "Process rows", None)
     rec = await reg.create(
         "specialist", "worker", "in_casa", "Process rows",
-        {"role": "assistant", "channel": "telegram", "chat_id": "100", "user_id": 77,
+        {"role": "assistant", "channel": "telegram", "_tg_bot": 111, "chat_id": "100", "user_id": 77,
          "job": jobs.initial_job_state(decl)},
         tools_allowed=tools.SPECIALIST_CASA_GRANTS + jobs.JOB_CASA_GRANTS)
     channel = MagicMock()
