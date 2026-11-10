@@ -12,6 +12,7 @@ the runner asked of them; the real driver is exercised in
 from __future__ import annotations
 
 import asyncio
+import copy
 from types import SimpleNamespace
 
 import pytest
@@ -336,6 +337,16 @@ async def test_boot_resumes_a_working_job_with_the_restart_line(rig):
     assert rig.drv.recovered == [{
         "restart_line": bj.CASA_RESTART_LINE, "brief": bj.job_brief(rig.rec),
         "redelivery_prefix": bj.CASA_RESTART_PREFIX}]
+
+
+async def test_boot_skips_a_job_that_ended_before_its_turn_in_the_walk(rig):
+    """A Cancel lands while boot is still resuming earlier jobs: the job's
+    turn in the walk comes with a stale record, and the live one decides —
+    no resume notice, no recovery."""
+    stale = copy.copy(rig.rec)
+    rig.rec.status = "cancelled"
+    await rig.runner.resume_at_boot(stale)
+    assert rig.ch.notices == [] and rig.drv.recovered == []
 
 
 async def test_boot_leaves_a_waiting_job_with_an_empty_journal_alone(rig):

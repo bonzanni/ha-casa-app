@@ -886,6 +886,11 @@ class JobRunner:
         journaled message the transcript lacks. One attempt: a failed resume
         ends the job ``error``."""
         import job_inbox
+        # The boot walk can reach a job after it ended (a Cancel landed while
+        # earlier jobs were being resumed): the live record decides.
+        rec = self.registry.get(rec.id) or rec
+        if getattr(rec, "status", None) not in ("active", "idle"):
+            return
         if awaiting(rec) is not None and not job_inbox.load(rec.id):
             return
         notice = getattr(self.channel, "_post_engagement_notice", None)

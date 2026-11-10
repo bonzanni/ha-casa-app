@@ -150,7 +150,11 @@ nothing and leaves the dead session's retirement in place: that death's own reco
 under the same lock, waits for the retirement and reconciles against a fresh replacement. The second death, or a resume that raises, ends the job through the finalize
 funnel with "its session ended unexpectedly" and its last progress.
 
-At boot, `casa_core._resume_background_jobs` hands each live job to `JobRunner.resume_at_boot`:
+At boot, `casa_core._resume_background_jobs` hands each job that was open when Casa stopped —
+the set is taken right after the registry loads, before the channels and agent loops start, so
+a job launched in the first seconds after start-up belongs to its launch and is never resumed or
+ended by boot — to `JobRunner.resume_at_boot`, which re-reads the live record first (a job
+cancelled while boot was resuming earlier ones is skipped):
 `↻ Resuming "<title>" after a restart.` in the topic, then the same recovery with Casa's restart
 line ("Casa restarted. Your conversation is intact up to the restart; a tool call that was
 running may or may not have finished. Continue the job."). A job waiting for the operator with

@@ -1884,20 +1884,25 @@ async def _close_disabled_specialist_engagements(engagement_registry: Any,
     return left_open
 
 
-async def _resume_background_jobs(registry, channel, skip=frozenset()) -> None:
+async def _resume_background_jobs(registry, channel, skip=frozenset(),
+                                  only=None) -> None:
     """Resume open in-casa jobs once channels and residents are running: each
     through the job runner's boot path (the topic line, the resume, the
     message journal reconciled against the session transcript, then the
     brief or the restart line and every message the session never read).
     *skip*: engagements the boot close of a disabled specialist could not
     close (#1095) — a disabled specialist's job is never resumed; the next
-    ``agents`` sweep retries closing it."""
+    ``agents`` sweep retries closing it. *only*: the jobs that were open when
+    Casa stopped, taken right after the registry loaded — a job launched
+    after the channels started is its launch's, never resumed here."""
     import background_jobs
 
     runner = background_jobs._runner
     if channel is None or runner is None:
         return
     for rec in registry.active_and_idle():
+        if only is not None and rec.id not in only:
+            continue
         if rec.id in skip:
             logger.warning("not resuming job %s: its specialist is disabled and "
                            "closing it failed", rec.id[:8])
@@ -1908,7 +1913,7 @@ async def _resume_background_jobs(registry, channel, skip=frozenset()) -> None:
             except Exception:  # noqa: BLE001 — one job must not stop the boot
                 logger.warning("resuming background job %s failed", rec.id[:8],
                                exc_info=True)
-    await _settle_ended_job_journals(registry, runner.driver)
+    await _settle_ended_job_journals(registry, getattr(runner, "driver", None))
 
 
 async def _settle_ended_job_journals(registry, driver) -> None:
@@ -2598,6 +2603,12 @@ async def main() -> None:
         agent_spawn_limiter=agent_spawn_limiter,
     )
     await engagement_registry.load()
+    # The jobs that were open when Casa stopped, taken before anything can
+    # launch a new one: only these are resumed at boot. A job launched once
+    # the channels and agents are up belongs to its launch, not to boot.
+    boot_job_ids = frozenset(
+        r.id for r in engagement_registry.active_and_idle()
+        if r.driver == "in_casa" and (r.origin or {}).get("job"))
 
     # Scheduler + trigger registry constructed here so the get_schedule
     # tool can see the registry via init_tools. The per-role
@@ -3628,7 +3639,7 @@ async def main() -> None:
             telegram_channel.retire_ended_job_keyboards()
         except Exception:  # noqa: BLE001 — never fatal at boot
             logger.warning("retiring ended jobs' keyboards failed", exc_info=True)
-    await _resume_background_jobs(engagement_registry, telegram_channel, skip=left_open)
+    await _resume_background_jobs(engagement_registry, telegram_channel, skip=left_open, only=boot_job_ids)  # noqa: E501
 
     # 13c. Surface any default-sync overwrites to the operator (direct
     # telegram outbound — see notify_config_sync).
