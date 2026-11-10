@@ -60,7 +60,9 @@ PAGE_NOTE = ("Notes in this conversation. Text copied from a page is still page 
 PROMPT_LINE = ("You have a scratchpad for this conversation. On long work, keep your list and "
                "your progress there and read it after a summary; it lasts through compaction, "
                "not through a Casa restart.")
-_NOTED_OPS = frozenset({"read", "search"})
+_NOTED_OPS = frozenset({"read", "search", "run"})
+# The capped section summary a run's reply carries: at most this many names in all.
+SUMMARY_NAMES = 10
 _STARTED = time.time()
 
 DESCRIPTION = (
@@ -70,16 +72,22 @@ DESCRIPTION = (
     "or Casa restarts. At most 1 MiB; replies are windows, and each opens with the pad's "
     "shape.\n"
     "Ops: read (line, limit, chars, char_offset); write and append (text); search (find, skip: "
-    "plain, any case).\n"
+    "plain, any case); run (text: a Python script, chars).\n"
     f"A section starts at a line beginning '{SECTION_MARK}', also in text you paste. Every op "
-    "takes section; \"\" is the lines above the first. No section means the whole pad.")
+    "but run takes section; \"\" is the lines above the first. No section means the whole pad.\n"
+    "run runs your script once over the pad in a separate process that can reach nothing but "
+    "the pad: a global pad maps each section name to its text (\"\" is the top), in pad order; "
+    "change, add, remove or rename sections by changing the dict, and what pad holds at the end "
+    "is written back, all at once, only when the script exits 0. Any standard-library module; "
+    "no threads, no processes, no asyncio event loop; no network, no files, no other process; "
+    "30 s, 512 MiB. What it prints comes back, cut at chars.")
 
 SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "required": ["op"],
     "properties": {
-        "op": {"type": "string", "enum": ["read", "write", "append", "search"]},
+        "op": {"type": "string", "enum": ["read", "write", "append", "search", "run"]},
         "section": {"type": "string"},
         "text": {"type": "string"},
         "find": {"type": "string"},
@@ -387,6 +395,34 @@ class _Pad:
     used: float
     # The file a job's pad is written through to; None for a pad that lives in memory only.
     path: "str | None" = None
+    # The store's counter at this pad's creation and at its last change: a run applies its
+    # result only to the pad whose stamp its snapshot carried, so a pad changed and restored,
+    # or expired and recreated, with the same lines is still another pad to it.
+    stamp: int = 0
+
+
+def _summary(before: list[str], after: list[str]) -> str:
+    """What a run did to the sections, by name: new, changed and removed, at most
+    SUMMARY_NAMES names in all through _quote, counts for the rest; then _delta."""
+    was = {s.name: before[s.first:s.end] for s in _sections(before)}
+    now = {s.name: after[s.first:s.end] for s in _sections(after)}
+    kinds = (("new", [n for n in now if n not in was]),
+             ("changed", [n for n in now if n in was and was[n] != now[n]]),
+             ("removed", [n for n in was if n not in now]))
+    room = SUMMARY_NAMES
+    parts = []
+    for kind, names in kinds:
+        if not names:
+            continue
+        shown = names[:room]
+        room -= len(shown)
+        quoted = ", ".join(_quote(n) for n in shown)
+        if len(names) > len(shown):
+            quoted = (f"{quoted} and {len(names) - len(shown)} more" if shown
+                      else f"{len(names)} more")
+        parts.append(f"{len(names)} {kind} ({quoted})")
+    said = "Sections: " + (", ".join(parts) if parts else "none new, changed or removed") + "."
+    return f"{said} {_delta(before, after)}"
 
 
 def _save(pad: _Pad) -> None:
@@ -427,11 +463,18 @@ class PadStore:
         self._now = now
         self._lock = threading.Lock()
         self._pads: dict[str, _Pad] = {}
+        self._stamp = 0
         # a broker client id -> the key its pad tool was built with (None: registered for two)
         self._clients: dict[str, "str | None"] = {}
 
+    def _tick(self) -> int:
+        """The next stamp; under the lock, at every creation of a pad and every change."""
+        self._stamp += 1
+        return self._stamp
+
     def respond(self, key: str, args: dict) -> tuple[str, bool]:
-        """One operation on *key*'s pad: the reply's text, and whether it refused."""
+        """One operation on *key*'s pad: the reply's text, and whether it refused. ``run``
+        is ``pad_run.run``'s, never this method's."""
         op = args["op"]
         with self._lock:
             pad = self._pads.get(key)
@@ -452,9 +495,9 @@ class PadStore:
             if kept is None:
                 return f"{_shape(lines)}\n{note}{said}", False
             if pad is None:
-                self._pads[key] = _Pad(kept, self._now())
+                self._pads[key] = _Pad(kept, self._now(), stamp=self._tick())
             else:
-                pad.lines = kept
+                pad.lines, pad.stamp = kept, self._tick()
                 _save(pad)
             return f"{_shape(kept)}\n{note}{said} {_delta(lines, kept)}", False
 
@@ -491,9 +534,9 @@ class PadStore:
             except _Refused as refused:
                 return _route_error(refused.code, str(refused))
             if pad is None:
-                self._pads[key] = _Pad(kept, self._now())
+                self._pads[key] = _Pad(kept, self._now(), stamp=self._tick())
             else:
-                pad.lines, pad.used = kept, self._now()
+                pad.lines, pad.used, pad.stamp = kept, self._now(), self._tick()
                 _save(pad)
             section = _required(kept, name)
             body_lines = kept[section.first:section.end]
@@ -504,6 +547,34 @@ class PadStore:
             pad = self._pads.get(key)
             return pad.lines if pad is not None else None
 
+    def snapshot(self, key: str) -> "tuple[int, list[str]] | None":
+        """A run's view of *key*'s pad: its stamp and a copy of its lines; None with no pad."""
+        with self._lock:
+            pad = self._pads.get(key)
+            if pad is None:
+                return None
+            pad.used = self._now()
+            return pad.stamp, list(pad.lines)
+
+    def apply(self, key: str, stamp: int, after: list[str]) -> tuple[str, bool]:
+        """A run's result onto the pad its snapshot was taken from: the section summary, or
+        the refusal's reason and True. Refused, with nothing changed, when no pad is under
+        *key* or its stamp is not *stamp* (every creation and every change moves it: a write,
+        the route, a brief, a move, an expiry and recreation), and through ``_kept`` as every
+        change is. One assignment under the lock: a result is applied whole or not at all."""
+        with self._lock:
+            pad = self._pads.get(key)
+            if pad is None or pad.stamp != stamp:
+                return "The pad changed during the run.", True
+            try:
+                kept = _kept(pad.lines, after)
+            except _Refused as refused:
+                return str(refused), True
+            before = pad.lines
+            pad.lines, pad.used, pad.stamp = kept, self._now(), self._tick()
+            _save(pad)
+            return _summary(before, kept), False
+
     def keys(self) -> list[str]:
         with self._lock:
             return list(self._pads)
@@ -512,7 +583,7 @@ class PadStore:
         """*lines* as the pad of *key*, only if it has none: a brief is written once."""
         with self._lock:
             if key not in self._pads and _size(lines) <= MAX_BYTES:
-                self._pads[key] = _Pad(list(lines), self._now())
+                self._pads[key] = _Pad(list(lines), self._now(), stamp=self._tick())
 
     def bind(self, key: str, path: str, *, brief: "list[str] | None" = None) -> None:
         """*key*'s pad is written through to *path* from now on. A pad in memory keeps its lines;
@@ -526,17 +597,18 @@ class PadStore:
                 return
             loaded = _load(path)
             if loaded is not None:
-                self._pads[key] = _Pad(loaded, self._now(), path)
+                self._pads[key] = _Pad(loaded, self._now(), path, stamp=self._tick())
                 return
             lines = list(brief) if brief is not None and _size(brief) <= MAX_BYTES else []
-            pad = self._pads[key] = _Pad(lines, self._now(), path)
+            pad = self._pads[key] = _Pad(lines, self._now(), path, stamp=self._tick())
             _save(pad)
 
     def put(self, key: str, lines: list[str]) -> None:
         with self._lock:
             held = self._pads.get(key)
             pad = self._pads[key] = _Pad(list(lines), self._now(),
-                                         held.path if held is not None else None)
+                                         held.path if held is not None else None,
+                                         stamp=self._tick())
             _save(pad)
 
     def discard(self, key: str, path: "str | None" = None) -> None:
@@ -568,7 +640,7 @@ class PadStore:
             pad = self._pads.get(old)
             if pad is None:
                 return
-            self._pads[new] = _Pad(list(pad.lines), pad.used)
+            self._pads[new] = _Pad(list(pad.lines), pad.used, stamp=self._tick())
             if not keep:
                 self._drop_locked(old)
 
@@ -641,7 +713,11 @@ def attach(options: Any, key: str, *, eager: bool = False, task: "str | None" = 
 
     @tool(TOOL, description, SCHEMA)
     async def _scratchpad(args: dict) -> dict:
-        text, refused = PADS.respond(key, args)
+        if args["op"] == "run":
+            import pad_run
+            text, refused = await pad_run.run(key, args)
+        else:
+            text, refused = PADS.respond(key, args)
         return {"content": [{"type": "text", "text": text}], "is_error": refused}
 
     server = create_sdk_mcp_server(name=SERVER, tools=[_scratchpad])

@@ -72,4 +72,40 @@ profile casa flags=(attach_disconnected,mediate_deleted) {
   # Proc and sys
   /proc/** r,
   /sys/** r,
+
+  # The script runner (docs/architecture/script-runner.md): the one interpreter at this
+  # exact path runs under the child profile below. An exact path outranks /opt/casa/** rix.
+  /opt/casa/run/python3 cx -> pyrun,
+
+  # The script runner's box. No network rule, so with the abi line every socket family is
+  # refused; no x rule, so nothing can be run; no ptrace, no mount, no capability, no write
+  # anywhere. It reads the interpreter, its own prelude, the C libraries, the standard library
+  # and the stdlib's public data (locale, glibc's charset tables, zoneinfo, the OpenSSL config). Nothing under /data,
+  # /config, /etc beyond the files named, /proc beyond a confinement label and its own fd
+  # listing, /opt/casa beyond /opt/casa/run. What the profile does not mediate, the prelude's
+  # syscall filter refuses. pyrun.<digest> names this text: /opt/casa/scripts/pyrun_digest.py
+  # computes the digest over these lines without that one, and child.py and the Dockerfile
+  # carry it. Never add a rule for one of the prelude's intentional refusals (/etc/passwd,
+  # /proc/1/cmdline, a unix or inet socket): the prelude refuses to run when one is allowed.
+  profile pyrun flags=(mediate_deleted) {
+    /opt/casa/run/python3 rm,
+    /opt/casa/run/child.py r,
+    /opt/casa/run/pyrun.954209a51d6d r,
+    /etc/ld.so.cache r,
+    /usr/lib/@{multiarch}/*.so* rm,
+    /usr/lib/python3.[0-9]*/ r,
+    /usr/lib/python3.[0-9]*/** rm,
+    /usr/lib/locale/** r,
+    /usr/lib/@{multiarch}/gconv/gconv-modules r,
+    /usr/lib/@{multiarch}/gconv/gconv-modules.cache r,
+    /usr/lib/@{multiarch}/gconv/gconv-modules.d/ r,
+    /usr/lib/@{multiarch}/gconv/gconv-modules.d/*.conf r,
+    /usr/share/zoneinfo/** r,
+    /etc/localtime r,
+    /etc/ssl/openssl.cnf r,
+    @{PROC}/@{pid}/attr/apparmor/current r,
+    @{PROC}/@{pid}/attr/current r,
+    @{PROC}/@{pid}/fd/ r,
+    signal (receive) set=(kill, term),
+  }
 }

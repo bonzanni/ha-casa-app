@@ -1,7 +1,9 @@
 """Bounded, observed kill of every process running under one uid.
 
-Kept for the script runner, which kills by uid; the ladder depends on nothing
-s6-specific.
+The script runner (``pad_run``) kills its slot's uid with it after every run and
+at boot; the ladder depends on nothing s6-specific. It looks only at uids from
+``UID_FLOOR`` up: root and every service of the image sit below it, so a wrong
+number can never enumerate, let alone signal, one of them.
 
 **Why the ladder kills rather than freezes.** Two review rounds killed a
 freeze-then-verify design: signal *delivery* is not *stopped* (a target was still
@@ -35,7 +37,7 @@ import signal
 import time
 from dataclasses import dataclass, field
 
-UID_BASE = 200000
+UID_FLOOR = 199000
 
 # Poll cadence and budget. Module-level so tests drive the ladder with an
 # injected sleep — NEVER a patch of the shared ``<module>.asyncio.sleep``
@@ -167,10 +169,10 @@ class _Scan:
 def scan_uid(uid: int, *, proc_root: str = "/proc") -> _Scan:
     """Enumerate every process whose REAL uid is *uid*.
 
-    Only real allocated uids (``>= UID_BASE``) are ever enumerated, so root and
-    every container service are structurally out of range.
+    Only uids at or above ``UID_FLOOR`` are ever enumerated, so root and every
+    container service are structurally out of range.
     """
-    if uid < UID_BASE:
+    if uid < UID_FLOOR:
         return _Scan(ok=True)
     try:
         entries = os.listdir(proc_root)
@@ -254,9 +256,9 @@ async def kill_uid_until_empty(
     Returns a result whose ``extinct`` is True ONLY when an enumeration actually
     observed the set empty — never inferred from "we signalled everything we saw".
     """
-    if uid < UID_BASE:
+    if uid < UID_FLOOR:
         return QuiesceResult(
-            extinct=False, reason="uid is not an allocated engagement uid")
+            extinct=False, reason="uid is below the floor the ladder looks at")
     sigr = _resolve_signaller(pidfd_open, pidfd_send, close)
     if not sigr.available:
         # No race-free primitive → signal NOTHING rather than a bare numeric pid.

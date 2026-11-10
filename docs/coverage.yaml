@@ -100,7 +100,7 @@
 - item: casa/rootfs/opt/casa/engagement_transcript_reaper.py
   doc: architecture/engagement-transcript-reaping.md
 - item: casa/rootfs/opt/casa/uid_kill.py
-  doc: architecture/overview.md
+  doc: architecture/script-runner.md
 - item: casa/rootfs/opt/casa/trusted_path.py
   doc: architecture/overview.md
 - item: casa/rootfs/opt/casa/event_acks.py
@@ -253,6 +253,10 @@
   doc: architecture/overview.md
 - item: casa/rootfs/opt/casa/scratchpad.py
   doc: architecture/scratchpad.md
+- item: casa/rootfs/opt/casa/pad_run.py
+  doc: architecture/script-runner.md
+- item: casa/rootfs/opt/casa/run/child.py
+  doc: architecture/script-runner.md
 - item: casa/rootfs/opt/casa/sdk_client_pool.py
   doc: architecture/sdk-client-pool.md
 - item: casa/rootfs/opt/casa/sdk_logging.py
@@ -611,6 +615,8 @@
   doc: architecture/personality.md
 - item: casa/rootfs/opt/casa/plugin_env_extractor.py
   doc: architecture/plugins.md
+- item: casa/rootfs/opt/casa/scripts/pyrun_digest.py
+  doc: architecture/script-runner.md
 - item: casa/rootfs/opt/casa/scripts/reconcile_system_requirements.py
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/secrets_resolver.py

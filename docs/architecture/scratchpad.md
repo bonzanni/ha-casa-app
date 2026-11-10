@@ -73,12 +73,17 @@ longer than a day, and resume.
 **A job's pad is the same tool with a file behind it**, under the job's engagement id; the
 section below says how it differs.
 
-**Operations are plain Python on lines.** `read`, `write`, `append` and `search`, nothing more:
-the pad keeps and finds text, and computing over it is the model's. There is no pattern language:
-`search` matches a substring in any case. Only a newline ends a line. A section starts at a line
-beginning `## `, also in pasted text, and each change's reply says when one appeared; `section`
-names one and `""` is the lines above the first. A write replaces its section, so nothing needs
-deleting: a section is emptied by writing it with no text.
+**Operations are plain Python on lines, and one script.** `read`, `write`, `append` and
+`search`: the pad keeps and finds text. There is no pattern language: `search` matches a
+substring in any case. Only a newline ends a line. A section starts at a line beginning `## `,
+also in pasted text, and each change's reply says when one appeared; `section` names one and
+`""` is the lines above the first. A write replaces its section, so nothing needs deleting: a
+section is emptied by writing it with no text. Computing over the pad is `run`: a Python
+script the model writes, run once over the sections in a confined process and written back
+all at once, only on exit 0 and only when the pad did not change meanwhile
+([`script-runner.md`](script-runner.md), where `PadStore.snapshot` and `PadStore.apply` and the
+stamp each pad carries are described). `run` takes `text` and `chars`, never `section`, and
+its reply carries the page-text sentence like a read's.
 
 ## A job's pad
 

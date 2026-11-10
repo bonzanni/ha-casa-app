@@ -506,6 +506,18 @@ bounded by two app options:
   delegation to it logs an operator-visible warning (spend is not blocked,
   only flagged).
 
+### A script over a specialist's notes
+
+A specialist or a job keeps notes in a scratchpad for the conversation. When it has put a
+page or an export there and needs to compute from it — a paste for a site's bulk field, a
+total, a filtered list — it can run a short Python script over its notes: the script sees
+the pad's sections and nothing else, in a separate process that has no network, no files,
+no other process, 30 seconds and 512 MiB, and its result is written back to the pad all at
+once, only when the script finishes cleanly. The box is enforced by the app's AppArmor
+profile, so it works on x86_64 installs only; elsewhere, and whenever the profile has not
+loaded (after an update, the app must be updated, not just restarted, for the profile to
+load), the operation is unavailable and Casa tells you once, with the reason in its log.
+
 ### Sending files to the assistant (v0.325.0)
 
 Send the assistant a PDF, a photo, or a text or CSV file in your direct chat and she

@@ -96,6 +96,10 @@
   kind: meta
   summary: Manifest shard — the agent-logs document, born in its own shard because the A-D shard stands just under the 40 KB index ceiling.
 
+- doc: manifest.d/architecture-script-runner.yaml
+  kind: meta
+  summary: Manifest shard — the script runner document, born in its own shard because the S shard stands just under the 40 KB index ceiling.
+
 - doc: manifest.d/architecture-browser-core.yaml
   kind: meta
   summary: Manifest shard — the specialist hand-off and plugin operator-call documents, born in their own shard because the S and plugin-M-R shards stand near the index ceiling.
