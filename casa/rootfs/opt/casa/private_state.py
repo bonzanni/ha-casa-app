@@ -83,6 +83,9 @@ FILES: tuple[Entry, ...] = (
           "SDK session ids and per-channel bindings for the whole fleet."),
     Entry("/data/topic-ledger.json", 0o600, PRIVATE,
           "Terminal topic records across every channel."),
+    Entry("/data/log-topics.json", 0o600, PRIVATE,
+          "The agent-log group's topic ids and the ids and send times of "
+          "every log post still awaiting deletion."),
     Entry("/data/jobs.json", 0o600, PRIVATE,
           "Delegated job rows: creator identity, task, context, result and "
           "failure text for resident and specialist work."),
