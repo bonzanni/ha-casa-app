@@ -113,7 +113,7 @@ async def test_a_close_tap_removes_the_keyboard_and_leaves_the_text(tap_env, mon
     assert tap_env.taps == [] and reserved == []                     # no desk use, no pinned turn
     assert tap_env.bot.sent == []                                    # no notice
     assert OPERATOR not in tap_env.ch._armings
-    assert sd.drain_echo_lines(OPERATOR) == []                     # the resident learns nothing
+    assert sd.drain_echo_lines(BOT, OPERATOR) == []                     # the resident learns nothing
 
 
 async def test_any_later_tap_on_a_closed_card_is_already_answered_and_runs_nothing(tap_env):

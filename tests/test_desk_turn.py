@@ -19,7 +19,9 @@ import result_broker as rb
 import specialist_desk as sd
 import tools as tools_mod
 from channels import DeliveryOutcome
+from channels.tg_address import TgAddress
 from output_boundary import Admitted
+from telegram_channel_double import make_transport
 
 pytestmark = pytest.mark.asyncio
 
@@ -60,7 +62,13 @@ class _Limiter:
 
 
 class _Channel:
+    # An endpoint as the transport sees it: the bot it serves, its role and
+    # its operator's private chat.
     bot_id = BOT
+    has_bot_id = True
+    default_agent = "assistant"
+    chat_id = OPERATOR
+    on_identity = None
 
     def __init__(self, fail_send=False):
         self.replies = []
@@ -112,6 +120,10 @@ def env(monkeypatch):
     env = SimpleNamespace(clock=clock, limiter=limiter, calls=calls, respond=_default)
     monkeypatch.setattr(tools_mod, "_run_delegated_agent_bounded", runner)
     env.channel = _Channel()
+    # The desk's route names bot 111: the transport resolves it to this
+    # endpoint (a grant identity is formed for the endpoint's own bot).
+    monkeypatch.setattr(tools_mod, "_channel_manager", make_transport(env.channel),
+                        raising=False)
     env.desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     limiter.desk_holder.append(env.desk)
     return env
@@ -514,7 +526,7 @@ async def test_a_silent_turn_after_a_delivered_link_is_a_view_with_a_casa_line(e
     pm = rb.PostMap()
     monkeypatch.setattr(rb, "POST_MAP", pm)
     async def respond(call):
-        pm.record(OPERATOR, 501, rb.PostRecord(
+        pm.record(TgAddress(BOT, OPERATOR, 501), rb.PostRecord(
             role="finance", operator_id=OPERATOR, plugin="probe", slot="open",
             tool_use_id="c-link", owner=call.turn_id, posted_at=1.0, kind=rb.OPERATOR_LINK))
         return tools_mod.DelegatedOutput(text="<silent/>")
@@ -534,7 +546,7 @@ async def test_a_landed_message_post_echoes_exactly_its_s3_line(env, monkeypatch
     async def respond(call):
         rb.POSTS.record(call.turn_id, rb.PostEvent("c", "probe", "report", LABEL, 2, None))
         for mid in (601, 602):
-            pm.record(OPERATOR, mid, rb.PostRecord(
+            pm.record(TgAddress(BOT, OPERATOR, mid), rb.PostRecord(
                 role="finance", operator_id=OPERATOR, plugin="probe", slot="report",
                 tool_use_id="c", owner=call.turn_id, posted_at=1.0, kind=rb.OPERATOR_MESSAGE))
         return tools_mod.DelegatedOutput(text="<silent/>")

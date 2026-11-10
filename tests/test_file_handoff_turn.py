@@ -10,13 +10,13 @@ import pytest
 import result_broker as rb
 import specialist_desk as sd
 import tools as tools_mod
-from test_desk_turn import LABEL, OPERATOR, _reply, env  # noqa: F401 — the real desk harness
+from test_desk_turn import BOT, LABEL, OPERATOR, _reply, env  # noqa: F401 — the real desk harness
 
 FILE = "invoice.pdf"
 
 
 def _echo():
-    return sd.prompt_prefix(OPERATOR)
+    return sd.prompt_prefix(BOT, OPERATOR)
 
 
 async def test_a_file_turn_that_answers_echoes_the_receipt_before_the_answer(env):

@@ -160,7 +160,7 @@ async def test_a_swipe_reply_on_a_configurator_post_reaches_its_desk(monkeypatch
     monkeypatch.setattr(tools, "_agent_role_map", {"configurator": cfg})
     monkeypatch.setattr(tools, "declares_delegate", lambda res, role: role == "configurator")
     assert specialist_desk.desk_target_ok("assistant", "configurator") is True
-    origin = _origin(_operator_turn=True, chat_id=123)
+    origin = _origin(_operator_turn=True, chat_id=123, _tg_bot=BOT)
     desk = specialist_desk.desk_for_delegation(origin, cfg, "configurator")
     assert desk is not None
 
@@ -278,7 +278,7 @@ async def test_a_second_same_chat_delegation_is_refused_at_the_bound(lease_file,
     monkeypatch.setattr(tools, "_run_delegated_agent",
                         await _blocking_runner(started, release))
     cfg = _configurator_cfg()
-    desk = specialist_desk.DESKS.get_or_create(123, "configurator")
+    desk = specialist_desk.DESKS.get_or_create(BOT, 123, "configurator")
 
     async def _use(task, key):
         tok = agent_mod.origin_var.set(_origin(_delegation_id=key))
@@ -485,6 +485,9 @@ async def test_an_interrupted_runs_step_line_is_deleted_at_boot(lease_file, monk
     class _DM:
         chat_id = "123"
         default_agent, bot_id, has_bot_id, on_identity = "assistant", BOT, True, None
+
+        def address(self, chat_id, message_id=None):
+            return TgAddress(self.bot_id, int(chat_id), message_id)
 
         async def send_step_line(self, chat_id, text):
             return 77

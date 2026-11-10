@@ -120,11 +120,20 @@ async def test_the_hook_threads_the_identitys_desk_role_into_the_challenge(monke
             return SimpleNamespace(refused=None, created=True, settled_post=_settled,
                                    _challenge=SimpleNamespace(rid="r"))
 
-    hook = _mk_hook(role="finance", deps=AuthzDeps(channel=_HookChannel(), grants=GrantStore(),
-                                                   challenges=_Coord()))
+    import tools
+    from telegram_channel_double import make_transport
+    # The desk's route names bot 111, the transport's only endpoint: the
+    # identity is formed for it and the challenge raised through it.
+    endpoint = _HookChannel()
+    endpoint.default_agent, endpoint.bot_id, endpoint.has_bot_id = "assistant", 111, True
+    endpoint.chat_id = "42"
+    manager = make_transport(endpoint)
+    monkeypatch.setattr(tools, "_channel_manager", manager, raising=False)
+    hook = _mk_hook(role="finance", deps=AuthzDeps(channel=manager.get("telegram"),
+                                                   grants=GrantStore(), challenges=_Coord()))
     desk_origin = _origin(role="assistant", execution_role="finance", _delegation_id="d-1",
                           _origin_route="telegram", _origin_clearance="private",
-                          desk={"role": "finance", "chat_id": 42})
+                          desk={"role": "finance", "chat_id": 42}, _tg_bot=111)
     with _OriginCtx(desk_origin):
         await _call(hook, tool_name=TOOL, tool_input={"amount": 10})
     assert seen["desk_role"] == "finance" and seen["target_role"] == "assistant"

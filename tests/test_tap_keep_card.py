@@ -151,7 +151,7 @@ async def test_a_keep_tap_on_an_expired_card_runs_nothing(tap_env):
 
 async def test_a_keep_tap_on_a_full_desk_is_told_and_leaves_the_card(tap_env):
     tap_env.register(meta=_keep_meta())
-    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     held = [desk.reserve() for _ in range(64)]
     held = [h for h in held if h is not None]
     assert await _tap(tap_env, _cq(data=f"v1|proposal|{RID}|1")) == "✔"

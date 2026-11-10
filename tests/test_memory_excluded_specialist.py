@@ -20,6 +20,7 @@ import agent as agent_mod
 import plugin_continuations as pc
 import tools
 from bus import BusMessage, MessageType
+from channels.tg_address import TgAddress
 from test_agent_process import FakeClient, _make_agent
 from test_memory_capture import captured_events
 from test_memory_capture import mem  # noqa: F401 — fixture
@@ -229,7 +230,7 @@ async def test_an_excluded_specialists_engagement_turn_captures_nothing(
         sdk_session_id=None, task="t", origin={"channel": "telegram"})
     attach_session(drv, rec, _Session())
     try:
-        drv.submit_operator(rec, "find the invoice", tg_message_id=9)
+        drv.submit_operator(rec, "find the invoice", tg_message=TgAddress(111, 4242, 9))
         async with asyncio.timeout(2):
             while not ended:
                 await asyncio.sleep(0.001)

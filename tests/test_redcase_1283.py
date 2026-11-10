@@ -9,7 +9,7 @@ import pytest
 import agent as agent_mod
 import result_broker as rb
 import specialist_desk as sd
-from test_desk_turn import LABEL, OPERATOR, _reply, env  # noqa: F401
+from test_desk_turn import BOT, LABEL, OPERATOR, _reply, env  # noqa: F401
 from test_pending_approval_desk import _Scripted, _Step, _text, desk  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
@@ -32,7 +32,7 @@ async def test_a_closing_silence_after_narration_never_shows_the_sentinel(desk, 
     _Scripted.load(*items)
     await _reply(desk, text="the Snelstart Software one is wrong")
     shown = [str(m) for m, _ctx in desk.channel.replies]
-    print("REPLIES", shown, "NOTICES", desk.channel.notices, "ECHO", sd.prompt_prefix(OPERATOR))
+    print("REPLIES", shown, "NOTICES", desk.channel.notices, "ECHO", sd.prompt_prefix(BOT, OPERATOR))
     assert not any("<silent/>" in s for s in shown), shown
     # #1075 rule 2 (N2-1): with no proven outcome the earlier message is kept
     # and only the closing sentinel messages are dropped — one labelled reply,

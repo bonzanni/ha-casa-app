@@ -32,7 +32,7 @@ from test_pending_approval_desk import (  # noqa: F401 — the desk harness
     _Scripted, _ask as _desk_ask, _call as _desk_call, _result as _desk_result,
     _text as _desk_text, desk, env,
 )
-from test_pending_approval_desk import LABEL, OPERATOR as DESK_OPERATOR, _reply
+from test_pending_approval_desk import BOT as DESK_BOT, LABEL, OPERATOR as DESK_OPERATOR, _reply
 from test_pending_approval_output import (  # noqa: F401 — the resident harness
     ARGS, CASA_BOT, PROTECTED, TAIL, TOOL, _Factory, _Gate, _ask, _call, _drive,
     _key, _msg, _result, _text, turn,
@@ -168,7 +168,7 @@ async def test_desk_deny_then_consume_then_prose_is_posted_whole(desk):
 
     assert _deny_reason(desk.answers[0]) == _DENY_POSTED and desk.answers[1] == {}
     assert [str(m) for m, _ in desk.channel.replies] == [LABEL + "\nBEFORE\n\nFiled it."]
-    assert sd.prompt_prefix(DESK_OPERATOR) == (
+    assert sd.prompt_prefix(DESK_BOT, DESK_OPERATOR) == (
         "(front desk) " + LABEL + " answered your reply (1 page).\n\n")
 
 

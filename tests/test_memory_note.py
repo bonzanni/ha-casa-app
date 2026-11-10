@@ -20,6 +20,7 @@ import pytest
 import agent as agent_mod
 import tools
 from bus import BusMessage, MessageType
+from channels.tg_address import TgAddress
 from memory import capture, corrections, note, view, writer
 from memory_serving_support import fact, ledger_store, wire
 from memory_writer_support import (
@@ -214,7 +215,8 @@ class _JobRig:
     async def turn(self, text, message_id) -> None:
         """The operator's message, written and its turn ended."""
         count = len(self.ended) + 1
-        self.drv.submit_operator(self.rec, text, tg_message_id=message_id)
+        self.drv.submit_operator(self.rec, text,
+                                 tg_message=TgAddress(111, 4242, message_id))
         await self._ended(count)
 
     async def brief(self, text) -> None:

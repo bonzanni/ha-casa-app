@@ -48,7 +48,7 @@ async def test_a_turn_without_a_stored_call_reads_memory_and_keeps_its_prompt(
     cfg = _specialist_cfg()
     cfg.memory.token_budget = 4000
     if caller == "desk_reply":
-        origin = sd._desk_origin(resident_role="assistant", desk_role="finance", chat_id=42,
+        origin = sd._desk_origin(resident_role="assistant", desk_role="finance", bot_id=111, chat_id=42,
                                  user_id=42, user_name="Nicola", message_id=70, cid="c1",
                                  text="the second one is wrong", turn_id="t1")
     else:

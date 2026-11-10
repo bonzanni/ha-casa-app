@@ -131,10 +131,10 @@ def _build(*, tools=None, artifact=ART, plan=None, protected=None, plugins=None)
 
 
 def _meta(**over):
-    base = {"deadline": 10_000.0, "chat_id": OPERATOR, "operator_id": OPERATOR, "role": "finance",
-            "artifact_id": ART, "plugin_seg": SEG, "label": LABEL,
+    base = {"deadline": 10_000.0, "chat_id": OPERATOR, "bot_id": BOT, "operator_id": OPERATOR,
+            "role": "finance", "artifact_id": ART, "plugin_seg": SEG, "label": LABEL,
             "text": f"{LABEL}\nPair 17?", "options": ["Yes", "More"], "revision": "",
-            "message_id": 501, "owner": "d-1", "_scope": f"proposal:{OPERATOR}",
+            "message_id": 501, "owner": "d-1", "_scope": f"proposal:{BOT}:{OPERATOR}",
             "calls": [{"server": "probe", "wire_name": "apply", "runtime_name": APPLY,
                        "proposal": False, "arguments": {"choice": "yes"}, "canonical": CANON},
                       {"server": "probe", "wire_name": "more",

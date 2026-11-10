@@ -18,6 +18,9 @@ from memory_tools_support import (  # noqa: F401 — fixtures
 from test_agent_process import FakeClient, _make_agent
 from test_memory_capture import CHAT, _operator_msg, _system_msg
 
+#: the bot the operator wrote to
+BOT = 111
+
 pytestmark = [pytest.mark.asyncio]
 
 
@@ -42,7 +45,7 @@ def _operator_event(store, text: str, key: str) -> int:
 
 
 async def test_it_marks_his_message_and_queues_the_correction(mem, turn):
-    key = occurrence.provider_key("telegram", CHAT, "700")
+    key = occurrence.message_key("telegram", BOT, CHAT, "700")
     seq = _operator_event(mem, "no, my sister is called Anna", key)
     turn("private", **{agent_mod.MEMORY_OPENING_KEY: key})
     out = await _correct()
@@ -56,7 +59,7 @@ async def test_it_marks_his_message_and_queues_the_correction(mem, turn):
 
 
 async def test_a_turn_without_his_message_marks_nothing(mem, turn):
-    key = occurrence.provider_key("telegram", CHAT, "701")
+    key = occurrence.message_key("telegram", BOT, CHAT, "701")
     _operator_event(mem, "no, my sister is called Anna", key)
     turn("private")
     out = await _correct()
@@ -74,7 +77,7 @@ async def test_only_an_operator_event_is_marked(mem, turn):
 
 
 async def test_an_engagement_turn_marks_nothing(mem, turn):
-    key = occurrence.provider_key("telegram", CHAT, "702")
+    key = occurrence.message_key("telegram", BOT, CHAT, "702")
     _operator_event(mem, "no, it is Anna", key)
     turn("private", **{agent_mod.MEMORY_OPENING_KEY: key})
     token = tools.engagement_var.set(object())
@@ -93,7 +96,7 @@ async def test_a_spooled_message_is_marked_once_the_drain_stores_it(
     his message, the next call marks it."""
     monkeypatch.setattr(capture, "_background", set())
     monkeypatch.setattr(capture, "_drain", [None])
-    key = occurrence.provider_key("telegram", CHAT, "703")
+    key = occurrence.message_key("telegram", BOT, CHAT, "703")
     item = capture.event(role="assistant", channel="telegram",
                          speaker_kind="operator", origin_kind="operator",
                          text="no, it is Anna", eligibility="write_trusted_turn",
@@ -160,7 +163,7 @@ async def test_a_busy_store_answers_at_once_and_marks_nothing(mem, turn):
     import time
 
     from memory import corrections
-    key = occurrence.provider_key("telegram", CHAT, "705")
+    key = occurrence.message_key("telegram", BOT, CHAT, "705")
     _operator_event(mem, "no, it is Anna", key)
     turn("private", **{agent_mod.MEMORY_OPENING_KEY: key})
     holder = sqlite3.connect(mem.path, isolation_level=None)

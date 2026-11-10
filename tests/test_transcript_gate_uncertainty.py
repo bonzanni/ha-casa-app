@@ -33,7 +33,8 @@ pytestmark = [pytest.mark.asyncio]
 
 AGENT_HOME = "/config/agent-home/assistant"
 ORIGIN = {"role": "assistant", "channel": "telegram", "chat_id": "4242",
-          "_origin_route": "telegram", "_origin_clearance": "private"}
+          "_origin_route": "telegram", "_origin_clearance": "private",
+          "_tg_bot": 111}
 
 
 @pytest.fixture
@@ -180,6 +181,7 @@ from memory import capture as cap, transcript_runs
 import tools
 from drivers.in_casa_driver import InCasaDriver
 from engagement_registry import EngagementRegistry
+from channels.tg_address import TgAddress
 from test_agent_process import _mk_result
 from transcript_runs_support import write_transcript
 import job_inbox
@@ -226,7 +228,7 @@ async def main():
     open(os.path.join(os.path.dirname(marker), "engagement-id"), "w").write(rec.id)
     drv = InCasaDriver(persist_session_id=reg.persist_session_id)
     attach_session(drv, rec, Client())
-    drv.submit_operator(rec, "topic message", tg_message_id=55)
+    drv.submit_operator(rec, "topic message", tg_message=TgAddress(111, 4242, 55))
     await asyncio.Event().wait()    # the turn runs on the driver's tasks
 import json
 asyncio.run(main())

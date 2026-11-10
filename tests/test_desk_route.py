@@ -208,7 +208,7 @@ async def test_a_continuation_that_no_longer_qualifies_is_a_notice_not_a_turn(ro
 async def test_a_full_queue_reply_is_refused_inline_with_no_task(routed, monkeypatch):
     pm, spawned = routed
     ch, bus = _channel()
-    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     desk.waiting = sd.DESK_QUEUE_MAX
     await ch._handle(_update("more"), None)
     assert ch._turn_tasks == set() and spawned.await_count == 0
@@ -220,7 +220,7 @@ async def test_a_full_queue_reply_is_refused_inline_with_no_task(routed, monkeyp
 async def test_the_route_reserves_before_spawning_and_hands_the_reservation_over(routed):
     pm, spawned = routed
     ch, bus = _channel()
-    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     await ch._handle(_update("more"), None)
     await _settle(ch)
     assert spawned.await_args.kwargs["reservation"] is not None
@@ -240,7 +240,7 @@ async def test_a_guest_whose_own_retained_post_exists_is_not_routed_in_accept_al
 async def test_a_full_queue_continuation_is_refused_inline_with_no_task(routed):
     pm, spawned = routed
     ch, bus = _channel()
-    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     desk.waiting = sd.DESK_QUEUE_MAX
     ok = await ch._dispatch_desk_continuation(
         chat_id=OPERATOR, user_id=OPERATOR, desk_role="finance", request_id="r-1", text="go")
@@ -256,5 +256,5 @@ async def test_a_refused_continuation_also_echoes_to_the_resident(routed, monkey
     monkeypatch.setattr(sd, "desk_target_ok", lambda resident, role: False)
     await ch._dispatch_desk_continuation(
         chat_id=OPERATOR, user_id=OPERATOR, desk_role="finance", request_id="r-1", text="go")
-    prefix = sd.prompt_prefix(OPERATOR)
+    prefix = sd.prompt_prefix(BOT, OPERATOR)
     assert "could not continue" in prefix and "go" not in prefix

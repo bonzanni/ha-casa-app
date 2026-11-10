@@ -248,8 +248,19 @@ async def test_a_next_card_with_pages_is_never_an_edit_and_falls_back_to_receipt
 # --- the channel: one page is one message ----------------------------------------------
 
 def _channel_with_bot():
-    from telegram_channel_double import _mk_channel_with_fake_bot
-    return _mk_channel_with_fake_bot()
+    """A channel with a fake bot, known as bot BOT: a page it delivers is
+    filed under that bot's address."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from channels.telegram import TelegramChannel
+    bot = MagicMock()
+    bot.send_message = AsyncMock(return_value=MagicMock(message_id=12345))
+    bot.edit_message_text = AsyncMock()
+    ch = TelegramChannel(bot_token="x:y", chat_id=100, default_agent="assistant",
+                         engagement_supergroup_id=-1001, known_bot_id=BOT)
+    ch._app = MagicMock()
+    ch._app.bot = bot
+    return ch, bot
 
 
 async def test_a_page_is_one_rich_message_filed_under_its_post(monkeypatch):

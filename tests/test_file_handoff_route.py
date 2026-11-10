@@ -44,7 +44,7 @@ async def routed(wired, tmp_path, monkeypatch, fake_telegram_bot):
     spawned = AsyncMock(return_value=None)
     monkeypatch.setattr(sd, "handle_reply", spawned)
     echoes = []
-    monkeypatch.setattr(sd, "record_echo", lambda chat, line: echoes.append(line))
+    monkeypatch.setattr(sd, "record_echo", lambda bot, chat, line: echoes.append(line))
     fetched = []
 
     async def fetch(bot, file_id, cap):
@@ -152,7 +152,7 @@ async def test_delegability_lost_during_the_download_keeps_the_file_and_starts_n
 
 
 async def test_a_full_desk_keeps_the_file_and_tells_as_a_past_event(routed, monkeypatch):
-    desk = sd.DESKS.get_or_create(OPERATOR, FIN)
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, FIN)
     monkeypatch.setattr(desk, "reserve", lambda: None)
     await routed.ch._on_non_text_message(_update(_reply_msg()))
     assert len(ai.get_inbox(FIN).list_files()) == 1 and routed.spawned.await_count == 0

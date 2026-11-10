@@ -323,7 +323,7 @@ async def test_a_proposal_superseded_during_its_send_answers_replaced_on_the_lan
 
 async def test_a_full_desk_queue_refuses_the_tap_with_the_busy_line_and_no_task(env):
     env.register()
-    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     places = [desk.reserve() for _ in range(sd.DESK_QUEUE_MAX)]
     assert all(places)
     assert await _tap(env, _cq()) == "✔"
@@ -334,7 +334,7 @@ async def test_a_full_desk_queue_refuses_the_tap_with_the_busy_line_and_no_task(
     assert desk.waiting == sd.DESK_QUEUE_MAX
     # the resident's line records WHICH tap was refused and why (Astra B, diff round 4),
     # as the permit-refusal path does — never the operator's notice text
-    assert sd.drain_echo_lines(OPERATOR) == [f"{sd.label_for('finance')} refused your tap (Yes): busy."]
+    assert sd.drain_echo_lines(BOT, OPERATOR) == [f"{sd.label_for('finance')} refused your tap (Yes): busy."]
 
 
 # --- diff round 1 (Astra B S2): a supersede during a pending send -------------------------
