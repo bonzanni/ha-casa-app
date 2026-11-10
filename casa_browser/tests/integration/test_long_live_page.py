@@ -144,7 +144,8 @@ def test_a_window_full_of_pictures_has_its_picture(tmp_path):
 
 
 def test_a_select_with_more_options_than_the_list_keeps_its_handle(tmp_path):
-    """It stays with the options that fit, beside the controls that fit, and the rest are counted."""
+    """It stays with the options that fit, beside the controls that fit, and the rest are counted, in
+    the whole and on the select itself."""
     options = "".join(f"<option>Place {n}</option>" for n in range(450))
     html = (f"<!doctype html><title>Places</title><button>First</button><label>Where <select id=s>{options}"
             "</select></label><label>Size <select><option>Small</option><option>Large</option></select>"
@@ -160,13 +161,13 @@ def test_a_select_with_more_options_than_the_list_keeps_its_handle(tmp_path):
             {"wait_state": {"name": "r", "state": "running", "timeout": 150}},
             {"sleep": 1},
             {"observe": {"name": "r"}},
-            {"act": {"name": "r", "kind": "select", "label": "Where", "choice": "Place 7"}},
+            {"act": {"name": "r", "kind": "select", "label": "Where (394 of 450 options listed)", "choice": "Place 7"}},
             {"js": {"name": "r", "code": "document.getElementById('s').value"}},
             {"finish": {"name": "r"}},
         ], home=controller_home(tmp_path), broker_fixture=config)
     seen = out[4]
     places = [label for label in seen["labels"] if label.startswith("Place ")]
-    assert {"First", "Last"} <= set(seen["labels"]) and "Where" in seen["labels"], seen["labels"][:4]
+    assert {"First", "Last"} <= set(seen["labels"]) and "Where (394 of 450 options listed)" in seen["labels"], seen["labels"][:4]
     assert {"Small", "Large"} <= set(seen["labels"]), "the small select stays whole"
     assert len(places) == 394, len(places)          # the cap, less 4 controls and the 2 small options
     assert "56 more controls on this page are not listed" in seen["text"], seen["text"][:120]

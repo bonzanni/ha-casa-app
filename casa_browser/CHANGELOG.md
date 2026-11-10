@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.14] - 2026-11-10
+
+### Fixed
+
+- On a long page, Casa's browsing specialist can now choose any option of a dropdown even when the page shows only part of that dropdown's list. It used to take the same option from another row's dropdown, which Casa Browser refused, and then ask you to choose it in the live view. Now that choice picks the option of the same name in the dropdown the specialist meant. A dropdown whose list was shown only in part now says how many of its options are listed.
+- Casa Browser and Casa's check now name a dropdown option by the name the page shows for it, as the specialist sees it. A page can show an option under another name than its text, and before, the check read the text.
+
 ## [0.1.13] - 2026-11-10
 
 ### Fixed

@@ -489,8 +489,18 @@ class FakeOps:
         return "ok" if element.value == text else "changed_by_page"
 
     async def option_facts(self, select, option):
+        # an option given an ``owner`` belongs to that dropdown only (another row's list)
         pair = (option.name, option.facts.get("value", option.name))
-        return {"belongs": pair in select.options, "label": pair[0], "value": pair[1]}
+        mine = option.facts.get("owner") in (None, select.name)
+        return {"belongs": mine and pair in select.options, "label": pair[0], "value": pair[1]}
+
+    async def own_option(self, select, option):
+        same = [p for p in select.options if p[0] == option.name]
+        if option.role != "option" or len(same) != 1:
+            return None
+        self.log.append(("own_option", select.name, same[0][0]))
+        return FakeElement(select.page, role="option", name=same[0][0],
+                           facts={"value": same[0][1], "owner": select.name})
 
     async def select_one(self, select, option, label, value):
         if (label, value) not in select.options or option.facts.get("disabled"):

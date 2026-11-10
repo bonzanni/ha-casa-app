@@ -3627,6 +3627,64 @@ async def test_a_select_whose_choice_is_an_options_text_runs_nothing(rig):
     assert rig.ctl.active.pending is None and presses(rig) == []
 
 
+def _two_dropdowns(own_options):
+    """A row's dropdown with its options listed, and a form's dropdown whose list the observation
+    cut short: only its first option is listed."""
+    return [dict(role="combobox", name="Category of TRV-2120",
+                 options=[("Travel", "travel"), ("Parking", "parking")]),
+            dict(role="option", name="Parking", facts={"value": "parking",
+                                                       "owner": "Category of TRV-2120"}),
+            dict(role="combobox", name="New line category", options=own_options),
+            dict(role="option", name="Travel", facts={"value": "t", "owner": "New line category"})]
+
+
+@pytest.mark.parametrize("checked", [False, True], ids=["filling_in", "with_its_check"])
+async def test_an_option_listed_under_another_dropdown_chooses_its_namesake_in_this_one(rig, checked):
+    """A choice listed under another row's dropdown stands for the option of the same name in
+    the dropdown the step names; the other row's dropdown is never touched."""
+    run, els = await _gate_run(rig, _two_dropdowns([("Travel", "t"), ("Meals", "m"),
+                                                    ("Parking", "p")]))
+    obs = await observe(rig, run.run_id)
+    result = await rig.ctl.act(run.run_id, Action(
+        "select", handle_of(obs, "New line category"), obs.generation,
+        choice_handle=handle_of(obs, "Parking"), plan="The task" if checked else None))
+    if checked:
+        wire = result.to_wire()
+        assert json.loads(wire["judgement"]["packet"])["action"] == {"kind": "select",
+                                                                     "option": "Parking"}
+        result = await verdict(rig, run.run_id, wire, GO)
+        assert result["outcome"] == "done"
+    else:
+        assert result.to_wire()["outcome"] == "done"
+    assert els[2].selected == "Parking" and els[0].selected is None
+    assert [e for e in rig.log if e[0] == "select"] == [("select", "New line category", "Parking")]
+
+
+@pytest.mark.parametrize("own", [[("Travel", "t"), ("Meals", "m")],
+                                 [("Travel", "t"), ("Parking", "p1"), ("Parking", "p2")]],
+                         ids=["no_namesake", "two_namesakes"])
+async def test_an_option_of_another_dropdown_with_no_single_namesake_is_refused(rig, own):
+    run, els = await _gate_run(rig, _two_dropdowns(own))
+    obs = await observe(rig, run.run_id)
+    with pytest.raises(ProtocolError, match="unsupported"):
+        await rig.ctl.act(run.run_id, Action("select", handle_of(obs, "New line category"), obs.generation,
+                                             choice_handle=handle_of(obs, "Parking")))
+    assert els[0].selected is None and els[2].selected is None
+    assert rig.ctl.active.pending is None and presses(rig) == []
+
+
+async def test_an_option_of_the_dropdown_itself_is_chosen_even_with_a_namesake(rig):
+    """The dropdown's own option is never swapped: two options of one name stay two choices."""
+    run, els = await _gate_run(rig, [
+        dict(role="combobox", name="Plan", options=[("Basic", "b1"), ("Basic", "b2")]),
+        dict(role="option", name="Basic", facts={"value": "b2", "owner": "Plan"})])
+    obs = await observe(rig, run.run_id)
+    done = await rig.ctl.act(run.run_id, Action("select", handle_of(obs, "Plan"), obs.generation,
+                                                choice_handle=handle_of(obs, "Basic")))
+    assert done.to_wire()["outcome"] == "done" and els[0].selected == "Basic"
+    assert not [e for e in rig.log if e[0] == "own_option"]
+
+
 async def test_a_type_frozen_afresh_is_admitted_again(rig):
     """r3: a field that became a checkbox is neither clicked by the go nor frozen afresh."""
     run, els = await _gate_run(rig, [dict(role="textbox", name="Note", field=True,
