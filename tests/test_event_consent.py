@@ -34,6 +34,7 @@ class _FakeChannel:
         self.edits: list = []
         self.dispatches: list = []
         self.chat_id = "100"
+        self.bot_id = 111
 
     async def post_dm_keyboard(self, *, chat_id, request_id, text, options):
         self.posts.append((chat_id, request_id, text, tuple(options)))
@@ -166,11 +167,23 @@ async def test_duplicate_prompt_is_deduped(monkeypatch, tmp_path):
 
 async def test_operator_identity_is_the_trigger_consent_rule(monkeypatch,
                                                              tmp_path):
+    """Event consent cards go where trigger consent cards go: Casa's bot, the
+    operator's private chat on it (``trigger_consent.casa_consent_target``)."""
+    import trigger_consent
+    from channels import ChannelManager
+    from _fixture_a import transport_for
+
     ch = _FakeChannel()
+    ch.has_bot_id = True
+    ch.default_agent = "assistant"
     ch.chat_id = "-100123"       # a group chat: nobody is the operator
-    assert ec.operator_identity(ch) is None
+    cm = ChannelManager()
+    cm.register(transport_for(ch))
+    assert trigger_consent.casa_consent_target(cm) is None
     ch.chat_id = "4242"
-    assert ec.operator_identity(ch) == (4242, 4242)
+    target = trigger_consent.casa_consent_target(cm)
+    assert (target.address.chat_id, target.operator_id) == (4242, 4242)
+    assert target.address.bot_id == 111 and target.endpoint is ch
 
 
 # ---------------------------------------------------------------------------

@@ -31,14 +31,30 @@ import tools as tools_mod
 import provenance as provenance_mod
 import authz_grants
 from authz_grants import (
-    AuthzDeps, ChallengeCoordinator, GrantKey, GrantStore,
+    ChallengeCoordinator, GrantKey, GrantStore,
     canonical_args_hash, make_resident_authz_hook,
     _DENY_ENGAGEMENT_UNAVAILABLE, _DENY_UNSUPPORTED_ORIGIN, _DENY_ROLE_MISMATCH,
     _DENY_UNRENDERABLE, _DENY_PENDING, _DENY_DELIVERY_FAILED, _DENY_INACTIVE,
     _DENY_POSTED, _DENY_INTERNAL, _DENY_NOT_OPERATOR,
 )
 
+from _fixture_a import as_endpoint, install_transport, transport_for
+
 pytestmark = pytest.mark.unit
+
+
+def AuthzDeps(*, channel, **kw):
+    """``authz_grants.AuthzDeps`` with the recording *channel* registered as
+    bot 111's endpoint of a real transport, which becomes both the deps'
+    channel and the transport the identity is resolved through."""
+    transport = install_transport(transport_for(as_endpoint(channel)))
+    return authz_grants.AuthzDeps(channel=transport, **kw)
+
+
+@pytest.fixture(autouse=True)
+def _casa_bot(monkeypatch):
+    """Bot 111 serves the turn's route even in a test that builds no deps."""
+    install_transport(transport_for(_FakeChannel()), monkeypatch)
 
 
 TOOL = "mcp__plugin_p_p__invoice_reset"
@@ -64,6 +80,7 @@ def _origin(**overrides) -> dict:
         "message_type": "channel_in",
         "source": "telegram",
         "execution_role": "finance",
+        "_tg_bot": 111,
     }
     base.update(overrides)
     return base
@@ -76,7 +93,7 @@ def _engagement(**overrides):
     base = dict(
         id="eng-abc123", kind="specialist", status="active",
         role_or_type="finance",
-        origin={"user_id": 100, "chat_id": "42"},
+        origin={"user_id": 100, "chat_id": "42", "_tg_bot": 111},
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -134,7 +151,7 @@ def _deny_reason(out):
 
 def _expected_key(tool_input, *, role="finance", operator_id=100, chat_id=42,
                   artifact=ARTIFACT, tool=TOOL, engagement_id="") -> GrantKey:
-    return GrantKey(operator_id=operator_id, chat_id=chat_id,
+    return GrantKey(operator_id=operator_id, bot_id=111, chat_id=chat_id,
                     enforcement_role=role, artifact_id=artifact,
                     tool_name=tool, args_hash=canonical_args_hash(tool_input),
                     engagement_id=engagement_id)
@@ -544,7 +561,7 @@ class TestConsumeAndChallenge:
         # the broker record's meta names Ellen as the continuation target.
         ((chat_id, rid, _text, _opts),) = channel.posts
         meta = broker.get_meta(namespace="resident_ask",
-                               scope=f"authz:{chat_id}", request_id=rid)
+                               scope=f"authz:111:{chat_id}", request_id=rid)
         assert meta["target_role"] == "assistant"
         assert meta["enforcement_role"] == "finance"
 
@@ -640,7 +657,7 @@ class TestSettledPostOutcomes:
         with _OriginCtx(_origin()):
             task = asyncio.ensure_future(_call(hook))
             await asyncio.sleep(0)      # hook runs; post blocks
-            broker.cancel_scope(namespace="resident_ask", scope="authz:42",
+            broker.cancel_scope(namespace="resident_ask", scope="authz:111:42",
                                 reason="new_session")
             channel.post_gate.set()
             out = await task

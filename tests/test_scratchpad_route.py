@@ -37,7 +37,7 @@ def _open(client: str, tu: str = "tu") -> None:
     operator_calls.CALLS.open(
         client_id=client, tool_use_id=tu, tool_name="mcp__plugin_browser_api__run_read",
         role="browser", plugin="browser",
-        identity=GrantIdentity(operator_id=100, chat_id=42, enforcement_role="browser",
+        identity=GrantIdentity(operator_id=100, bot_id=111, chat_id=42, enforcement_role="browser",
                                artifact_id="1" * 64, engagement_id=""),
         origin=dict(ORIGIN))
 

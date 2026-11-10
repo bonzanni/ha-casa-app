@@ -48,7 +48,7 @@ def _writes(conv, text):  # noqa: F811
 
 
 def _ident():
-    return GrantIdentity(operator_id=100, chat_id=42, enforcement_role="browser",
+    return GrantIdentity(operator_id=100, bot_id=111, chat_id=42, enforcement_role="browser",
                          artifact_id="1" * 64, engagement_id="")
 
 
@@ -486,9 +486,9 @@ async def test_opening_a_client_expires_old_pads_but_not_a_requests(  # noqa: F8
 
 def _second_request(env, binding):  # noqa: F811
     c = run_admission.Confirmation(
-        cid="conf-" + "d" * 32, plugin="browser", operator_id=42, binding_ref=binding.ref,
-        request_key="k2", status="admitted", admissions=[], created_at=0.0,
-        card_message_id=CARD_MID + 1, card_text="card")
+        cid="conf-" + "d" * 32, plugin="browser", bot_id=111, operator_id=42,
+        binding_ref=binding.ref, request_key="k2", status="admitted", admissions=[],
+        created_at=0.0, card=[111, 42, CARD_MID + 1], card_text="card")
     run_admission.CONFIRMATIONS.add(c)
     return c
 
@@ -514,7 +514,7 @@ async def test_one_of_two_requests_ending_on_its_own_keeps_the_pad(env, pads):  
     plugin_bindings.BINDINGS.adopt(binding.ref, SID)
     await _call(_client(SID), op="write", text="both requests'")
     ref = plugin_stop.REF_PREFIX + first.request_key
-    assert await plugin_stop.settle_ended("browser", 42, ref) is True
+    assert await plugin_stop.settle_ended("browser", 111, 42, ref) is True
     assert run_admission.CONFIRMATIONS.peek(second.cid).status == "admitted"
     assert pads.lines(SID) == ["both requests'"]
 

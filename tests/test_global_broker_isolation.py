@@ -72,7 +72,7 @@ async def _register_pair_a(channel):
     (`tools.py:12529`) — polluted, and a leaker that registered through the
     dynamic name would hide exactly that."""
     handle = tools.CHALLENGES.register_challenge(
-        _PAIR_A_KEY, chat_id=100, operator_id=7, channel=channel,
+        _PAIR_A_KEY, bot_id=111, chat_id=100, operator_id=7, channel=channel,
         challenge_text="isolation probe", kind="trigger_consent",
     )
     # `settled_post` awaits the coordinator-owned setup driver; a bare

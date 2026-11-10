@@ -148,7 +148,8 @@ async def test_the_episodes_own_eraser_call_is_still_admitted(fenced_probe):
 
 def _tap(subject=SUBJECT, artifacts=(ART,), choice=pec.ERASE):
     q = pe.QUESTIONS.open(subject)
-    pec.CHOICES.mint(pec.EraseChoiceKey(42, 42, subject, artifacts, q), choice)
+    pec.CHOICES.mint(pec.EraseChoiceKey(operator_id=42, bot_id=111, chat_id=42, subject=subject,
+                                     artifacts=artifacts, question=q), choice)
     return q
 
 
