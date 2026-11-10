@@ -21,7 +21,14 @@ import threading
 
 import pytest
 
+from channels.tg_address import TgAddress
+
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
+
+
+def A(mid: int, *, chat: int = 100, bot: int = 111) -> TgAddress:
+    """A post's address: bot 111 in the operator's chat 100, by default."""
+    return TgAddress(bot, chat, mid)
 
 
 def _job(quiet: bool = False) -> dict:
@@ -36,7 +43,7 @@ async def _job_record(tmp_path, *, quiet: bool = False, job: bool = True):
     from engagement_registry import EngagementRegistry
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     origin = {"role": "assistant", "channel": "telegram", "chat_id": "100",
-              "user_id": 100}
+              "user_id": 100, "_tg_bot": 111}
     if job:
         origin["job"] = _job(quiet)
     rec = await reg.create("specialist", "finance", "in_casa", "t", origin)
@@ -90,37 +97,37 @@ class TestFilingAndIndex:
     async def test_a_live_jobs_post_is_filed_indexed_and_persisted(self, tmp_path):
         from engagement_registry import JOB_POST_START
         reg, rec = await _job_record(tmp_path)
-        assert reg.record_job_post(rec.id, 501, keyboard=JOB_POST_START) is True
-        assert reg.record_job_post(rec.id, 502) is True
-        assert reg.job_post_owner(501) is rec
-        assert reg.job_post_owner(502) is rec
+        assert reg.record_job_post(rec.id, A(501), keyboard=JOB_POST_START) is True
+        assert reg.record_job_post(rec.id, A(502)) is True
+        assert reg.job_post_owner(A(501)) is rec
+        assert reg.job_post_owner(A(502)) is rec
         await _flush(reg)
         row = _disk(tmp_path, rec.id)
-        assert row["dm_posts"] == [501, 502]
-        assert row["ui_posts"] == [[501, JOB_POST_START]]
+        assert row["dm_posts"] == [[111, 100, 501], [111, 100, 502]]
+        assert row["ui_posts"] == [[111, 100, 501, JOB_POST_START]]
 
     async def test_posts_are_uncapped_while_the_job_lives(self, tmp_path):
         reg, rec = await _job_record(tmp_path)
         for mid in range(1, 5001):
-            assert reg.record_job_post(rec.id, mid)
+            assert reg.record_job_post(rec.id, A(mid))
         assert len(rec.dm_posts) == 5000
-        assert reg.job_post_owner(1) is rec
+        assert reg.job_post_owner(A(1)) is rec
 
     async def test_a_record_that_is_not_a_job_files_nothing(self, tmp_path):
         reg, rec = await _job_record(tmp_path, job=False)
-        assert reg.record_job_post(rec.id, 501) is False
-        assert reg.job_post_owner(501) is None
-        assert reg.record_job_post("no-such-id", 502) is False
+        assert reg.record_job_post(rec.id, A(501)) is False
+        assert reg.job_post_owner(A(501)) is None
+        assert reg.record_job_post("no-such-id", A(502)) is False
 
     async def test_the_index_is_rebuilt_from_live_records_at_load(self, tmp_path):
         from engagement_registry import EngagementRegistry
         reg, rec = await _job_record(tmp_path)
-        reg.record_job_post(rec.id, 501)
+        reg.record_job_post(rec.id, A(501))
         qid = reg.new_job_question(rec.id, "Which account?", ["A", "B"])
         await _flush(reg)
         again = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         await again.load()
-        loaded = again.job_post_owner(501)
+        loaded = again.job_post_owner(A(501))
         assert loaded is not None and loaded.id == rec.id
         assert loaded.questions[qid] == {"text": "Which account?",
                                          "options": ["A", "B"]}
@@ -129,30 +136,30 @@ class TestFilingAndIndex:
             self, tmp_path):
         from engagement_registry import EngagementRegistry, JOB_POST_QUESTION
         reg, rec = await _job_record(tmp_path)
-        reg.record_job_post(rec.id, 501, keyboard=JOB_POST_QUESTION)
+        reg.record_job_post(rec.id, A(501), keyboard=JOB_POST_QUESTION)
         reg.new_job_question(rec.id, "Which?", ["A"])
         assert await reg.try_transition_terminal(rec.id, "completed", strict=True)
-        assert reg.job_post_owner(501) is None
+        assert reg.job_post_owner(A(501)) is None
         # The questions go; the posts stay as the ended job's (#1522).
-        assert rec.dm_posts == [501] and rec.questions == {}
+        assert rec.dm_posts == [A(501)] and rec.questions == {}
         # The keyboard is kept until it is retired.
-        assert rec.ui_posts == [[501, JOB_POST_QUESTION]]
+        assert rec.ui_posts == [(A(501), JOB_POST_QUESTION)]
         row = _disk(tmp_path, rec.id)
-        assert row["dm_posts"] == [501] and row["questions"] == {}
-        assert row["ui_posts"] == [[501, JOB_POST_QUESTION]]
+        assert row["dm_posts"] == [[111, 100, 501]] and row["questions"] == {}
+        assert row["ui_posts"] == [[111, 100, 501, JOB_POST_QUESTION]]
         # A terminal record files nothing more as live: its keyboard is the
         # filer's to retire.
-        assert reg.record_job_post(rec.id, 502, keyboard=JOB_POST_QUESTION) is False
-        assert rec.ui_posts == [[501, JOB_POST_QUESTION]]
+        assert reg.record_job_post(rec.id, A(502), keyboard=JOB_POST_QUESTION) is False
+        assert rec.ui_posts == [(A(501), JOB_POST_QUESTION)]
         again = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         await again.load()
-        assert again.job_post_owner(501) is None
+        assert again.job_post_owner(A(501)) is None
 
     async def test_a_direct_mutator_also_drops_the_posts(self, tmp_path):
         reg, rec = await _job_record(tmp_path)
-        reg.record_job_post(rec.id, 501)
+        reg.record_job_post(rec.id, A(501))
         assert await reg.mark_error(rec.id, kind="resume_failed", message="x")
-        assert reg.job_post_owner(501) is None
+        assert reg.job_post_owner(A(501)) is None
 
 
 class TestEndedJobPosts:
@@ -163,98 +170,99 @@ class TestEndedJobPosts:
             self, tmp_path):
         from engagement_registry import EngagementRegistry, JOB_POST_START
         reg, rec = await _job_record(tmp_path)
-        reg.record_job_post(rec.id, 501, keyboard=JOB_POST_START)
-        reg.record_job_post(rec.id, 502)
-        assert reg.ended_job_post_owner(100, 501) is None          # live: not ended
+        reg.record_job_post(rec.id, A(501), keyboard=JOB_POST_START)
+        reg.record_job_post(rec.id, A(502))
+        assert reg.ended_job_post_owner(A(501)) is None          # live: not ended
         assert await reg.try_transition_terminal(rec.id, "completed", strict=True)
-        assert reg.job_post_owner(501) is None
-        assert reg.ended_job_post_owner(100, 501) is rec
-        assert reg.ended_job_post_owner(100, 502) is rec
-        assert reg.ended_job_post_owner(100, 503) is None
-        assert reg.ended_job_post_owner(100, "501") is None
+        assert reg.job_post_owner(A(501)) is None
+        assert reg.ended_job_post_owner(A(501)) is rec
+        assert reg.ended_job_post_owner(A(502)) is rec
+        assert reg.ended_job_post_owner(A(503)) is None
+        assert reg.ended_job_post_owner((111, 100, 501)) is None
         again = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         await again.load()
-        loaded = again.ended_job_post_owner(100, 501)
+        loaded = again.ended_job_post_owner(A(501))
         assert loaded is not None and loaded.id == rec.id
-        assert again.ended_job_post_owner(100, 502) is loaded
-        assert again.job_post_owner(501) is None
+        assert again.ended_job_post_owner(A(502)) is loaded
+        assert again.job_post_owner(A(501)) is None
 
     async def test_a_direct_mutator_moves_them_too(self, tmp_path):
         reg, rec = await _job_record(tmp_path)
-        reg.record_job_post(rec.id, 501)
+        reg.record_job_post(rec.id, A(501))
         assert await reg.mark_error(rec.id, kind="resume_failed", message="x")
-        assert reg.ended_job_post_owner(100, 501) is rec
+        assert reg.ended_job_post_owner(A(501)) is rec
 
     async def test_a_post_landing_after_the_end_is_kept_as_the_ended_jobs(self, tmp_path):
         from engagement_registry import EngagementRegistry, JOB_POST_QUESTION
         reg, rec = await _job_record(tmp_path)
         assert await reg.try_transition_terminal(rec.id, "completed", strict=True)
         # not filed as live: the caller retires a keyboard itself
-        assert reg.record_job_post(rec.id, 777, keyboard=JOB_POST_QUESTION) is False
+        assert reg.record_job_post(rec.id, A(777), keyboard=JOB_POST_QUESTION) is False
         assert rec.ui_posts == []
-        assert reg.job_post_owner(777) is None
-        assert reg.ended_job_post_owner(100, 777) is rec
+        assert reg.job_post_owner(A(777)) is None
+        assert reg.ended_job_post_owner(A(777)) is rec
         await _flush(reg)
-        assert _disk(tmp_path, rec.id)["dm_posts"] == [777]
+        assert _disk(tmp_path, rec.id)["dm_posts"] == [[111, 100, 777]]
         again = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         await again.load()
-        assert again.ended_job_post_owner(100, 777).id == rec.id
+        assert again.ended_job_post_owner(A(777)).id == rec.id
 
     async def test_what_is_not_a_job_post_is_still_refused(self, tmp_path):
         reg, rec = await _job_record(tmp_path, job=False)
         assert await reg.try_transition_terminal(rec.id, "completed", strict=True)
-        assert reg.record_job_post(rec.id, 801) is False
-        assert reg.ended_job_post_owner(100, 801) is None
+        assert reg.record_job_post(rec.id, A(801)) is False
+        assert reg.ended_job_post_owner(A(801)) is None
         assert rec.dm_posts == []
         (tmp_path / "two").mkdir()
         reg2, job = await _job_record(tmp_path / "two")
         assert await reg2.try_transition_terminal(job.id, "completed", strict=True)
         assert reg2.record_job_post(job.id, "802") is False
-        assert reg2.record_job_post("no-such-id", 803) is False
-        assert reg2.ended_job_post_owner(100, 803) is None
+        assert reg2.record_job_post("no-such-id", A(803)) is False
+        assert reg2.ended_job_post_owner(A(803)) is None
         assert job.dm_posts == []
 
     async def test_a_pending_terminal_record_is_live_not_ended(self, tmp_path):
         reg, rec = await _job_record(tmp_path)
-        reg.record_job_post(rec.id, 501)
+        reg.record_job_post(rec.id, A(501))
         await _flush(reg)
         held = _HeldWrite(reg)
         transition = asyncio.ensure_future(
             reg.try_transition_terminal(rec.id, "completed", strict=True))
         await _wait_started(held)
-        assert reg.job_post_owner(501) is rec
-        assert reg.ended_job_post_owner(100, 501) is None
-        assert reg.record_job_post(rec.id, 502) is True        # filed as live
+        assert reg.job_post_owner(A(501)) is rec
+        assert reg.ended_job_post_owner(A(501)) is None
+        assert reg.record_job_post(rec.id, A(502)) is True        # filed as live
         held.release.set()
         assert await transition is True
         held.restore()
-        assert reg.ended_job_post_owner(100, 502) is rec
+        assert reg.ended_job_post_owner(A(502)) is rec
 
     async def test_a_direct_mutators_unsettled_end_is_ended_in_its_own_chat_only(
             self, tmp_path):
         """A direct terminal mutator flips the status before its write
         settles and the posts move: the post already counts as the ended
-        job's, and only in the job's own chat (message ids are per chat)."""
+        job's, and only at its own address (message ids are per bot and
+        chat)."""
         reg, rec = await _job_record(tmp_path)
-        reg.record_job_post(rec.id, 501)
+        reg.record_job_post(rec.id, A(501))
         await _flush(reg)
         held = _HeldWrite(reg)
         cancel = asyncio.ensure_future(reg.mark_cancelled(rec.id))
         await _wait_started(held)
-        assert reg.ended_job_post_owner(100, 501) is rec
-        assert reg.ended_job_post_owner(42, 501) is None
+        assert reg.ended_job_post_owner(A(501)) is rec
+        assert reg.ended_job_post_owner(A(501, chat=42)) is None
         held.release.set()
         await cancel
         held.restore()
-        assert reg.ended_job_post_owner(100, 501) is rec
-        assert reg.ended_job_post_owner(42, 501) is None
+        assert reg.ended_job_post_owner(A(501)) is rec
+        assert reg.ended_job_post_owner(A(501, chat=42)) is None
 
     async def test_a_record_aged_out_of_the_tombstone_leaves_the_index(self, tmp_path):
         import time
 
         from engagement_registry import _TERMINAL_RETENTION_DAYS, EngagementRegistry
         reg, rec = await _job_record(tmp_path)
-        reg.record_job_post(rec.id, 501)
+        reg.record_job_post(rec.id, A(501))
         old = time.time() - (_TERMINAL_RETENTION_DAYS + 1) * 86400
         assert await reg.try_transition_terminal(
             rec.id, "completed", completed_at=old, strict=True)
@@ -262,7 +270,7 @@ class TestEndedJobPosts:
         again = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         await again.load()
         assert again.get(rec.id) is None
-        assert again.ended_job_post_owner(100, 501) is None
+        assert again.ended_job_post_owner(A(501)) is None
 
 
 class TestPendingTerminalCountsAsLive:
@@ -270,7 +278,7 @@ class TestPendingTerminalCountsAsLive:
             self, tmp_path):
         from engagement_registry import JOB_POST_QUESTION
         reg, rec = await _job_record(tmp_path)
-        reg.record_job_post(rec.id, 501)
+        reg.record_job_post(rec.id, A(501))
         await _flush(reg)
         held = _HeldWrite(reg)
         held.fail = True
@@ -281,17 +289,17 @@ class TestPendingTerminalCountsAsLive:
         assert rec.status == "completed"
         assert reg.terminal_pending(rec.id) is True
         assert reg.counts_as_live(rec.id) is True
-        assert reg.job_post_owner(501) is rec
-        assert reg.record_job_post(rec.id, 502, keyboard=JOB_POST_QUESTION) is True
+        assert reg.job_post_owner(A(501)) is rec
+        assert reg.record_job_post(rec.id, A(502), keyboard=JOB_POST_QUESTION) is True
         held.release.set()
         with pytest.raises(OSError):
             await transition
         held.restore()
         # Rolled back: live again, both posts still steerable.
         assert rec.status == "active"
-        assert reg.job_post_owner(501) is rec
-        assert reg.job_post_owner(502) is rec
-        assert [502, JOB_POST_QUESTION] in rec.ui_posts
+        assert reg.job_post_owner(A(501)) is rec
+        assert reg.job_post_owner(A(502)) is rec
+        assert (A(502), JOB_POST_QUESTION) in rec.ui_posts
 
     async def test_a_post_filed_while_pending_is_among_the_keyboards_the_end_takes(
             self, tmp_path):
@@ -306,11 +314,11 @@ class TestPendingTerminalCountsAsLive:
         transition = asyncio.ensure_future(
             reg.try_transition_terminal(rec.id, "completed", strict=True))
         await _wait_started(held)
-        assert reg.record_job_post(rec.id, 777, keyboard=JOB_POST_QUESTION)
+        assert reg.record_job_post(rec.id, A(777), keyboard=JOB_POST_QUESTION)
         held.release.set()
         assert await transition is True
         held.restore()
-        assert taken == [[777, JOB_POST_QUESTION]]
+        assert taken == [(A(777), JOB_POST_QUESTION)]
         assert rec.ui_posts == []
         assert reg.terminal_pending(rec.id) is False
 
@@ -334,10 +342,10 @@ class TestKeyboardsAndQuestions:
     async def test_keyboard_posts_are_taken_exactly_once(self, tmp_path):
         from engagement_registry import JOB_POST_START
         reg, rec = await _job_record(tmp_path)
-        reg.record_job_post(rec.id, 501, keyboard=JOB_POST_START)
+        reg.record_job_post(rec.id, A(501), keyboard=JOB_POST_START)
         await reg.try_transition_terminal(rec.id, "cancelled", strict=True)
         assert reg.records_with_ui_posts() == [rec]
-        assert reg.take_ui_posts(rec.id) == [[501, JOB_POST_START]]
+        assert reg.take_ui_posts(rec.id) == [(A(501), JOB_POST_START)]
         assert reg.take_ui_posts(rec.id) == []
         assert reg.records_with_ui_posts() == []
         await _flush(reg)

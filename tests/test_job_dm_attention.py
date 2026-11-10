@@ -31,6 +31,14 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
 OPERATOR = 100
 CHAT = 100
+#: The bot the rig's channel is: every job post is addressed through it.
+BOT = 111
+
+
+def A(mid: int) -> "TgAddress":
+    """The address of message *mid* in the operator's chat on the rig's bot."""
+    from channels.tg_address import TgAddress
+    return TgAddress(BOT, CHAT, mid)
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +161,7 @@ async def _rig(tmp_path, monkeypatch, *, quiet=False, started_by="operator",
     r.bot = _Bot()
     r.reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     origin = {"role": "assistant", "channel": "telegram", "chat_id": str(CHAT),
-              "user_id": OPERATOR,
+              "user_id": OPERATOR, "_tg_bot": BOT,
               "job": _job_state(started_by="scheduled" if quiet else started_by,
                                 quiet=quiet)}
     r.rec = await r.reg.create(kind, "finance", "in_casa", "t", origin)
@@ -273,7 +281,7 @@ class TestReplyRoute:
     async def test_a_reply_to_a_live_jobs_post_goes_into_the_job(
             self, tmp_path, monkeypatch):
         r = await _rig(tmp_path, monkeypatch)
-        r.reg.record_job_post(r.rec.id, 501)
+        r.reg.record_job_post(r.rec.id, A(501))
         desk = AsyncMock(return_value=True)
         monkeypatch.setattr(r.ch, "_maybe_route_desk_reply", desk)
         await r.ch._handle_serialized(_reply_update("use the second account", 501),
@@ -289,7 +297,7 @@ class TestReplyRoute:
     async def test_a_reply_to_an_ended_jobs_post_falls_through(
             self, tmp_path, monkeypatch):
         r = await _rig(tmp_path, monkeypatch)
-        r.reg.record_job_post(r.rec.id, 501)
+        r.reg.record_job_post(r.rec.id, A(501))
         await r.reg.try_transition_terminal(r.rec.id, "completed", strict=True)
         desk = AsyncMock(return_value=True)
         monkeypatch.setattr(r.ch, "_maybe_route_desk_reply", desk)
@@ -303,7 +311,7 @@ class TestReplyRoute:
 
     async def test_another_sender_falls_through(self, tmp_path, monkeypatch):
         r = await _rig(tmp_path, monkeypatch)
-        r.reg.record_job_post(r.rec.id, 501)
+        r.reg.record_job_post(r.rec.id, A(501))
         assert await r.ch._maybe_route_job_reply(
             _reply_update("hello", 501, user=555), str(CHAT)) is False
 
@@ -316,7 +324,7 @@ class TestReplyRoute:
             slot="operator_message", tool_use_id="tu", owner=r.rec.id,
             posted_at=0.0)
         r.ch._record_post(CHAT, SimpleNamespace(message_id=640), post)
-        assert r.reg.job_post_owner(640) is r.rec
+        assert r.reg.job_post_owner(A(640)) is r.rec
         assert await r.ch._maybe_route_job_reply(
             _reply_update("skip that one", 640, quoted_text="📊 Finance\nrow 7"),
             str(CHAT)) is True
@@ -413,8 +421,8 @@ class TestAskAndTap:
                          f"v1|job_q|{r.rec.id}|{qid}|1",
                          f"v1|job_cancel|{r.rec.id}"]
         assert all(len(d.encode()) <= 64 for d in datas)
-        assert r.reg.job_post_owner(mid) is r.rec
-        assert [mid, JOB_POST_QUESTION] in r.rec.ui_posts
+        assert r.reg.job_post_owner(A(mid)) is r.rec
+        assert (A(mid), JOB_POST_QUESTION) in r.rec.ui_posts
 
     async def test_a_plugin_worker_cannot_ask(self, tmp_path, monkeypatch):
         r = await _rig(tmp_path, monkeypatch, kind="plugin")
@@ -526,8 +534,8 @@ class TestStartLineCancelAndRetirement:
         assert post["text"] == "📊 finance started «Process rows»."
         assert [b.callback_data for b in _buttons(post["markup"])] == [
             f"v1|job_cancel|{r.rec.id}"]
-        assert r.rec.ui_posts == [[post["message_id"], JOB_POST_START]]
-        assert r.reg.job_post_owner(post["message_id"]) is r.rec
+        assert r.rec.ui_posts == [(A(post["message_id"]), JOB_POST_START)]
+        assert r.reg.job_post_owner(A(post["message_id"])) is r.rec
 
     async def test_a_scheduled_job_gets_none(self, tmp_path, monkeypatch):
         import tools
@@ -591,13 +599,13 @@ class TestStartLineCancelAndRetirement:
         await r.ch._file_job_keyboard(r.rec, 950, JOB_POST_QUESTION)
         assert [m["message_id"] for m in r.bot.markups] == [950]
         assert r.rec.ui_posts == []
-        assert r.reg.ended_job_post_owner(100, 950) is r.rec
+        assert r.reg.ended_job_post_owner(A(950)) is r.rec
 
     async def test_boot_retires_what_an_ended_job_still_carries(
             self, tmp_path, monkeypatch):
         from engagement_registry import JOB_POST_START
         r = await _rig(tmp_path, monkeypatch)
-        r.reg.record_job_post(r.rec.id, 960, keyboard=JOB_POST_START)
+        r.reg.record_job_post(r.rec.id, A(960), keyboard=JOB_POST_START)
         r.reg._terminal_observer = None          # as if the edits never ran
         await r.reg.try_transition_terminal(r.rec.id, "completed", strict=True)
         assert r.ch.retire_ended_job_keyboards() == 1
@@ -610,7 +618,7 @@ class TestStartLineCancelAndRetirement:
         import tools
         from engagement_registry import JOB_POST_START
         r = await _rig(tmp_path, monkeypatch)
-        r.reg.record_job_post(r.rec.id, 970, keyboard=JOB_POST_START)
+        r.reg.record_job_post(r.rec.id, A(970), keyboard=JOB_POST_START)
         result = await tools._report_launch_death(
             None, r.rec, kind="launch_incomplete", detail="x", driver=None)
         assert result is tools.LaunchDeathResult.REPORTED
@@ -653,7 +661,7 @@ class TestQuietRunsEndOnInteraction:
         notice and the end stays told to no one."""
         import tools
         r = await _rig(tmp_path, monkeypatch, quiet=True)
-        r.reg.record_job_post(r.rec.id, 501)
+        r.reg.record_job_post(r.rec.id, A(501))
         await _drain(r)
         held = _HeldWrite(r.reg)
         fin = asyncio.ensure_future(tools._finalize_engagement(
@@ -679,7 +687,7 @@ class TestQuietRunsEndOnInteraction:
     async def test_a_reply_racing_a_quiet_completion_that_rolls_back_is_delivered(
             self, tmp_path, monkeypatch):
         r = await _rig(tmp_path, monkeypatch, quiet=True)
-        r.reg.record_job_post(r.rec.id, 501)
+        r.reg.record_job_post(r.rec.id, A(501))
         await _drain(r)
         held = _HeldWrite(r.reg)
         held.fail = True
@@ -706,7 +714,7 @@ class TestQuietRunsEndOnInteraction:
             self, tmp_path, monkeypatch):
         import tools
         r = await _rig(tmp_path, monkeypatch, quiet=True)
-        r.reg.record_job_post(r.rec.id, 501)
+        r.reg.record_job_post(r.rec.id, A(501))
         assert await r.ch._maybe_route_job_reply(
             _reply_update("also check May", 501), str(CHAT)) is True
         await _drain(r)
@@ -748,7 +756,7 @@ class TestPendingTerminalRoutesIntoTheJob:
     async def test_a_reply_routed_while_a_terminal_write_is_pending_is_delivered_after_a_rollback(
             self, tmp_path, monkeypatch):
         r = await _rig(tmp_path, monkeypatch)
-        r.reg.record_job_post(r.rec.id, 501)
+        r.reg.record_job_post(r.rec.id, A(501))
         await _drain(r)
         held = _HeldWrite(r.reg)
         held.fail = True
@@ -846,7 +854,7 @@ class TestSeamEdges:
         end."""
         import tools
         r = await _rig(tmp_path, monkeypatch, quiet=True)
-        r.reg.record_job_post(r.rec.id, 501)
+        r.reg.record_job_post(r.rec.id, A(501))
         await _drain(r)
         held = _FailFirstWrite(r.reg)
         reply = asyncio.ensure_future(r.ch._maybe_route_job_reply(
@@ -881,7 +889,7 @@ class TestSeamEdges:
         end."""
         import tools
         r = await _rig(tmp_path, monkeypatch, quiet=True)
-        r.reg.record_job_post(r.rec.id, 501)
+        r.reg.record_job_post(r.rec.id, A(501))
         await _drain(r)
         held = _FailFirstWrite(r.reg)
         ask = asyncio.ensure_future(_ask(r))

@@ -785,7 +785,9 @@ class JobRunner:
     the one automatic resume after a session death, and the resume at boot.
 
     Wired into the in_casa driver as its turn-end and session-lost handlers.
-    ``channel`` is the Telegram channel (the parking post, the start line);
+    ``channel`` is the Telegram transport (the parking post, the start
+    line): it posts through the bot named by the job's origin route and edits
+    a post through the bot that posted it, never through a bot it picks;
     ``agent_logs`` is the agent log sink (the resume line), when there is one.
     """
 

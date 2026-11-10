@@ -47,7 +47,7 @@ def make_job(**changes):
         result=None, failure=None, awaiting_input=False,
         continuable_until=None, delivery_sequence=0,
         delivery_attempt_id=None, lease_until=None,
-        cancel_pending=False,
+        cancel_pending=False, route={"_tg_bot": 111},
     )
     return replace(base, **changes)
 

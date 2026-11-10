@@ -28,6 +28,8 @@ except ImportError:  # pragma: no cover — direct-path collection
 pytestmark = pytest.mark.asyncio
 
 OPERATOR = 100
+#: The bot the rig's channel is: journaled notices name it.
+BOT = 111
 MEMBER = 555
 SUPERGROUP = -1001
 TOPIC = 77
@@ -72,7 +74,7 @@ async def rig(tmp_path, monkeypatch):
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     decl = jobs.JobDecl("q:run", "q", "run", "q:job", "Accounting check", None)
     origin = {"role": "assistant", "channel": "telegram",
-              "chat_id": str(OPERATOR), "user_id": OPERATOR,
+              "chat_id": str(OPERATOR), "user_id": OPERATOR, "_tg_bot": BOT,
               "_origin_clearance": "private",
               "job": jobs.initial_job_state(decl, started_by="operator")}
     rec = await reg.create("specialist", "finance", "in_casa", "Check", origin)
@@ -155,7 +157,7 @@ async def test_an_operator_reply_is_journaled_with_its_notice_target(rig):
         quoted_text="📊 Finance started «Accounting check»."), 2)
     assert ok is True
     [entry] = job_inbox.load(rig.rec.id)
-    assert entry["notice"] == {"chat_id": OPERATOR, "message_id": 31,
+    assert entry["notice"] == {"address": [BOT, OPERATOR, 31],
                                "answer": False}
     assert entry["text"] == (
         "[replying to «📊 Finance started «Accounting check».»]\ngo on")
@@ -195,10 +197,10 @@ async def test_a_lost_journal_entry_is_told_in_reply_to_its_message(rig, caplog)
     await rig.reg.try_transition_terminal(rig.rec.id, "completed", strict=True)
     await rig.ch.tell_journal_lost(
         rig.rec, {"uuid": "u", "text": "x",
-                  "notice": {"chat_id": OPERATOR, "message_id": 31, "answer": False}})
+                  "notice": {"address": [BOT, OPERATOR, 31], "answer": False}})
     await rig.ch.tell_journal_lost(
         rig.rec, {"uuid": "v", "text": "y",
-                  "notice": {"chat_id": OPERATOR, "message_id": 40, "answer": True}})
+                  "notice": {"address": [BOT, OPERATOR, 40], "answer": True}})
     with caplog.at_level("WARNING", logger="channels.telegram"):
         await rig.ch.tell_journal_lost(
             rig.rec, {"uuid": "w", "text": "z", "notice": None})

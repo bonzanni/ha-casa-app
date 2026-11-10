@@ -13,12 +13,14 @@ import logging
 import math
 import os
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any, Awaitable, Callable, Mapping
 
 from atomic_io import PRIVATE, atomic_write_json
+from channels.tg_address import is_route
 from personality_types import SpeakerProvenance
+from provenance import ROUTING_KEYS
 from speaker_provenance import provenance_from_mapping, provenance_mapping
 
 
@@ -161,6 +163,13 @@ class VoiceJob:
     # when nothing was cut away; a row written before the field decodes as
     # empty.
     closing_message: str = ""
+    # The creating turn's routing facts (``provenance.ROUTING_KEYS``): for a
+    # Telegram creator, ``{"_tg_bot": <bot id or CASA>}`` — the bot its
+    # completion is delivered through. The origin rebuilt from this row after
+    # a restart carries it unchanged, so the completion goes through that bot
+    # and never through whichever bot the role is bound to now. A Telegram row
+    # without a valid route is refused at load.
+    route: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1505,6 +1514,15 @@ class JobRegistry:
         jobs: dict[str, VoiceJob] = {}
         for row in raw:
             job = self._decode_job(row)
+            if job.creator_peer == "telegram" and not is_route(
+                    job.route.get("_tg_bot")):
+                # A Telegram delegation's completion goes through the bot
+                # its creator spoke to; a row that does not name it has
+                # nowhere to go, and no bot is guessed for it.
+                logger.error(
+                    "Skipping job %s: Telegram row without a valid route "
+                    "(%r)", job.id[:8], job.route.get("_tg_bot"))
+                continue
             if job.id in jobs:
                 raise JobRegistryError(f"duplicate job id {job.id!r} in snapshot")
             jobs[job.id] = job
@@ -1577,9 +1595,17 @@ class JobRegistry:
                 output_note=str(row.get("output_note") or ""),
                 # a string or nothing; a row written before it has no key
                 closing_message=str(row.get("closing_message") or ""),
+                route=JobRegistry._decode_route(row.get("route")),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise JobRegistryError(f"invalid job snapshot row: {exc}") from exc
+
+    @staticmethod
+    def _decode_route(value: Any) -> dict:
+        """A stored ``route``: the routing keys it holds, nothing else."""
+        if not isinstance(value, dict):
+            return {}
+        return {k: value[k] for k in ROUTING_KEYS if k in value}
 
     @staticmethod
     def _decode_speaker(row: dict, key: str) -> SpeakerProvenance:
@@ -1641,6 +1667,7 @@ class JobRegistry:
             "scheduled_delivery": job.scheduled_delivery,
             "output_note": job.output_note,
             "closing_message": job.closing_message,
+            "route": dict(job.route),
         }
 
     async def _write_snapshot_locked(

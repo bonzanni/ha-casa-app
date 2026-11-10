@@ -68,7 +68,8 @@ def _origin(**markers) -> dict:
     """A resident's Telegram turn origin as ``Agent._process`` builds it."""
     return dict(role="assistant", execution_role="assistant", channel="telegram",
                 chat_id="1", user_id=None, cid="test", user_text="classify",
-                message_type="channel_in", source="telegram", **markers)
+                message_type="channel_in", source="telegram", _tg_bot=111,
+                **markers)
 
 
 def _serve(monkeypatch, decl):
