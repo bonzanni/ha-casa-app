@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.355.1] - 2026-11-10
+
+### Fixed
+
+- A background job's turn could end while Casa was still saving your last message to it into memory. That turn's record was then never marked done, so its conversation log was kept for good instead of being cleared after the usual 30 days. Casa now waits for the save before closing the record.
+
 ## [0.355.0] - 2026-11-10
 
 Not backward compatible. A background job that is running when you upgrade does not carry over: cancel it first and start it again afterwards. Plugins with background jobs must be updated too: quarterly-accounting 0.12.0 and the finance specialist 0.28.0 (tx-classifier, bank-feed). Casa does not load the older versions, so quarterly accounting and Finance don't work until you update them. Ask Ellen to update them right after upgrading Casa.
