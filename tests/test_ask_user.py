@@ -832,15 +832,16 @@ class TestSameDmTextCancel:
         bus = MessageBus()
         bus.register("assistant", _noop)
         bot = _FakeBot()
-        ch = TelegramChannel(bot_token="T", chat_id="0", default_agent="assistant", bus=bus)
+        ch = TelegramChannel(bot_token="T", chat_id="0", default_agent="assistant", bus=bus,
+                             known_bot_id=111)
         ch._start_typing = lambda *a, **k: None
         ch._app = types.SimpleNamespace(bot=bot)
 
         req, created = _fresh_broker.register(
-            namespace="resident_ask", scope="dm:42", request_id="rid-typed",
+            namespace="resident_ask", scope="dm:111:42", request_id="rid-typed",
             timeout_s=30.0, meta={
                 "options": ["Yes", "No"], "chat_id": 42, "operator_id": 999,
-                "_scope": "dm:42",
+                "_scope": "dm:111:42",
             },
         )
         assert created is True
@@ -856,7 +857,7 @@ class TestSameDmTextCancel:
         await ch._handle(_fake_update("42", "No, actually do it now"), None)
 
         outcome = await asyncio.wait_for(
-            _fresh_broker.await_result(_first_req_stub(_fresh_broker, "dm:42", "rid-typed")),
+            _fresh_broker.await_result(_first_req_stub(_fresh_broker, "dm:111:42", "rid-typed")),
             0.5,
         )
         assert outcome == {"outcome": "cancelled", "reason": "typed_answer"}
@@ -881,13 +882,14 @@ class TestSameDmTextCancel:
         bus = MessageBus()
         bus.register("assistant", _noop)
         bot = _FakeBot()
-        ch = TelegramChannel(bot_token="T", chat_id="0", default_agent="assistant", bus=bus)
+        ch = TelegramChannel(bot_token="T", chat_id="0", default_agent="assistant", bus=bus,
+                             known_bot_id=111)
         ch._app = types.SimpleNamespace(bot=bot)
 
         req, _created = _fresh_broker.register(
-            namespace="resident_ask", scope="dm:42", request_id="rid-new",
+            namespace="resident_ask", scope="dm:111:42", request_id="rid-new",
             timeout_s=30.0, meta={"options": ["Yes", "No"], "chat_id": 42,
-                                   "operator_id": 999, "_scope": "dm:42"},
+                                   "operator_id": 999, "_scope": "dm:111:42"},
         )
         events = []
 
@@ -899,7 +901,7 @@ class TestSameDmTextCancel:
         await ch._handle(_fake_update("42", "/new"), None)
 
         outcome = await asyncio.wait_for(
-            _fresh_broker.await_result(_first_req_stub(_fresh_broker, "dm:42", "rid-new")),
+            _fresh_broker.await_result(_first_req_stub(_fresh_broker, "dm:111:42", "rid-new")),
             0.5,
         )
         assert outcome == {"outcome": "cancelled", "reason": "new_session"}
@@ -971,7 +973,7 @@ class TestRestartStaleToast:
         from channels.telegram import TelegramChannel
 
         bot = _FakeBot()
-        ch = TelegramChannel(bot=bot, chat_id=100)
+        ch = TelegramChannel(bot=bot, chat_id=100, known_bot_id=111)
         cq = types.SimpleNamespace(
             id="cq1", data="v1|resident_ask|old-rid-from-before-restart|0",
             message=types.SimpleNamespace(chat=types.SimpleNamespace(id=42)),
@@ -984,7 +986,7 @@ class TestRestartStaleToast:
         # _live nor _retired — proving this is genuinely a meta-is-None
         # path, distinct from a tombstoned/expired entry.
         assert _fresh_broker.get_meta(
-            namespace="resident_ask", scope="dm:42",
+            namespace="resident_ask", scope="dm:111:42",
             request_id="old-rid-from-before-restart",
         ) is None
 
@@ -1015,21 +1017,21 @@ class TestNewCommandOrdering:
 
         orig_purge_chat = _fresh_grants.purge_chat
 
-        def _spy_purge_chat(chat_id):
-            order.append(f"purge_chat:{chat_id}")
-            return orig_purge_chat(chat_id)
+        def _spy_purge_chat(bot_id, chat_id):
+            order.append(f"purge_chat:{bot_id}:{chat_id}")
+            return orig_purge_chat(bot_id, chat_id)
 
         monkeypatch.setattr(_fresh_grants, "purge_chat", _spy_purge_chat)
 
         # Seed both scopes + a REAL int-keyed grant.
         _fresh_broker.register(
-            namespace="resident_ask", scope="dm:42", request_id="r1", timeout_s=30.0,
+            namespace="resident_ask", scope="dm:111:42", request_id="r1", timeout_s=30.0,
         )
         _fresh_broker.register(
-            namespace="resident_ask", scope="authz:42", request_id="r2", timeout_s=30.0,
+            namespace="resident_ask", scope="authz:111:42", request_id="r2", timeout_s=30.0,
         )
         key = GrantKey(
-            operator_id=999, chat_id=42, enforcement_role="finance",
+            operator_id=999, bot_id=111, chat_id=42, enforcement_role="finance",
             artifact_id="art-1", tool_name="invoice_reset", args_hash="deadbeef",
         )
         _fresh_grants.mint(key)
@@ -1039,15 +1041,16 @@ class TestNewCommandOrdering:
                 order.append("send_message")
                 return types.SimpleNamespace(message_id=1)
 
-        ch = TelegramChannel(bot_token="T", chat_id="0", default_agent="assistant")
+        ch = TelegramChannel(bot_token="T", chat_id="0", default_agent="assistant",
+                             known_bot_id=111)
         ch._app = types.SimpleNamespace(bot=_RecordingBot())
 
         await ch._handle(_fake_update("42", "/new"), None)
 
         assert order == [
-            "cancel:dm:42:new_session",
-            "cancel:authz:42:new_session",
-            "purge_chat:42",
+            "cancel:dm:111:42:new_session",
+            "cancel:authz:111:42:new_session",
+            "purge_chat:111:42",
             "send_message",
         ]
         # the grant is gone (a fresh mint's consume would otherwise be True)
@@ -1056,7 +1059,8 @@ class TestNewCommandOrdering:
     async def test_new_with_no_pending_state_is_a_safe_noop(self, monkeypatch, _fresh_broker):
         from channels.telegram import TelegramChannel
 
-        ch = TelegramChannel(bot_token="T", chat_id="0", default_agent="assistant")
+        ch = TelegramChannel(bot_token="T", chat_id="0", default_agent="assistant",
+                             known_bot_id=111)
         bot = _FakeBot()
         ch._app = types.SimpleNamespace(bot=bot)
 

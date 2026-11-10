@@ -161,8 +161,8 @@ async def test_the_scheduled_ask_result_names_the_line(monkeypatch):
     body = s.admit(K.KEYBOARD, "Which one?\n\n1. a\n2. b")
     res = await tools._ask_user_scheduled(
         channel=ch, origin={"chat_id": "date-reminder-1", "_scheduled_epoch": "e1"},
-        rid="rid-1", scope="dm:500", body=body, options=["a", "b"], chat_id=500,
-        operator_id=7, target_role="assistant", timeout_s=60.0)
+        rid="rid-1", scope="dm:111:500", body=body, options=["a", "b"], chat_id=500,
+        operator_id=7, bot_id=111, target_role="assistant", timeout_s=60.0)
     payload = json.loads(res["content"][0]["text"])
     assert payload["status"] == "awaiting_user", payload
     assert payload["casa_prefixed"] == [ANSWERED]

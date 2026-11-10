@@ -13,6 +13,7 @@ import pytest
 
 import casa_core
 import reminders
+from _fixture_d import as_endpoint
 
 pytestmark = pytest.mark.asyncio
 
@@ -35,12 +36,17 @@ class _FakeChannel:
         return self._outcome
 
 
-class _FakeChannelManager:
-    def __init__(self, channel):
-        self._channel = channel
+def _FakeChannelManager(channel):
+    """The channel manager as ``casa_core`` builds it: *channel* is Casa's
+    endpoint behind the Telegram transport; ``None`` is no Telegram at all."""
+    from channels import ChannelManager
+    from telegram_channel_double import make_transport
 
-    def get(self, name):
-        return self._channel if name == "telegram" else None
+    if channel is None:
+        return ChannelManager()
+    if not hasattr(channel, "has_bot_id"):
+        as_endpoint(channel)
+    return make_transport(channel)
 
 
 @pytest.fixture(autouse=True)

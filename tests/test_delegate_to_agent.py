@@ -2721,9 +2721,12 @@ class TestHandoffLine:
         reg.load()
         bus = MessageBus()
         bus.register("assistant", None)
-        cm = ChannelManager()
-        ch = _HandoffChannel()
-        cm.register(ch)
+        from _fixture_d import as_endpoint, endpoint_manager
+
+        ch = as_endpoint(_HandoffChannel())
+        cm = endpoint_manager(ch)
+        # The turn carries the route of the bot it was born on.
+        origin = {**origin, "_tg_bot": 111}
         fin = _specialist_cfg()
         fin.character = CharacterConfig(name="Alex")
         init_tools(cm, bus, reg, agent_role_map={

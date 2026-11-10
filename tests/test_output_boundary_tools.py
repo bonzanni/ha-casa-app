@@ -21,6 +21,7 @@ import tools
 from channels import DeliveryOutcome
 from output_boundary import Admitted, IntentKind as K
 from output_boundary_testing import scope as _scope
+from _fixture_d import as_endpoint, endpoint_manager
 
 pytestmark = [pytest.mark.unit]
 
@@ -80,7 +81,7 @@ def armed():
                                       "chat_id": 500, "user_id": 7, "cid": "c",
                                       "message_type": "channel_in", "source": "telegram",
                                       "execution_role": "assistant",
-                                      "turn_scope": s})
+                                      "_tg_bot": 111, "turn_scope": s})
     yield s
     agent_mod.origin_var.reset(token)
 
@@ -152,8 +153,8 @@ async def test_ask_user_posts_an_admitted_body_carrying_the_line(monkeypatch, ar
     """The keyboard body is admitted under the turn's scope; its settle edits
     derive from that same body by construction (tools.py's finish hook closes
     over ``body``), so the line they carry is this one."""
-    ch = _Channel()
-    monkeypatch.setattr(tools, "_channel_manager", _CM(ch))
+    ch = as_endpoint(_Channel())
+    monkeypatch.setattr(tools, "_channel_manager", endpoint_manager(ch))
     res = await tools.ask_user.handler({"question": "Which one?", "options": ["a", "b"]})
     assert ch.posted, _text(res)
     body = ch.posted[0]

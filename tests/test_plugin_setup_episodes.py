@@ -2524,11 +2524,11 @@ def _real_seam(monkeypatch):
     """Wire the module's notifier to the real operator_notify over a real
     ChannelManager; every raise the seam produces is recorded, re-raised."""
     import casa_core
-    from channels import ChannelManager
+    from _fixture_d import as_endpoint, endpoint_manager
 
-    mgr = ChannelManager()
-    ch = _SeamChannel()
-    mgr.register(ch)
+    # Casa's endpoint behind the Telegram transport, as casa_core registers it.
+    ch = as_endpoint(_SeamChannel())
+    mgr = endpoint_manager(ch)
     raised: list[BaseException] = []
 
     async def notify(text):

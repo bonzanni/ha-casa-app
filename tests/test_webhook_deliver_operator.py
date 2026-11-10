@@ -133,12 +133,11 @@ class _FakeTelegram:
         return True
 
 
-class _FakeChannelManager:
-    def __init__(self, telegram):
-        self._telegram = telegram
+def _FakeChannelManager(telegram):
+    """*telegram* as Casa's endpoint behind the Telegram transport."""
+    from _fixture_d import as_endpoint, endpoint_manager
 
-    def get(self, name):
-        return self._telegram if name == "telegram" else None
+    return endpoint_manager(as_endpoint(telegram))
 
 
 async def _reconcile(tmp_path, p, *, acked: bool, telegram=None):
@@ -256,9 +255,15 @@ def _registry_with(deliver: str | None):
     return registry
 
 
+def _casa_bot_route(_role: str) -> int:
+    """The route a transport over Casa's bot 111 gives every role here."""
+    return 111
+
+
 async def _ingress(deliver: str | None, payload: dict | None = None,
-                   name: str = EFFECTIVE, route_for=None) -> BusMessage:
-    """One POST through the REAL wildcard handler; returns the bus message."""
+                   name: str = EFFECTIVE, route_for=_casa_bot_route) -> BusMessage:
+    """One POST through the REAL wildcard handler; returns the bus message.
+    *route_for* is the Telegram transport's, as ``casa_core`` passes it."""
     from casa_core import _make_webhook_handler
     from rate_limit import RateLimiter
 
@@ -446,10 +451,18 @@ class _RecordingBot:
 def _telegram():
     from channels.telegram import TelegramChannel
     ch = TelegramChannel(bot_token="T", chat_id=OPERATOR_CHAT,
-                         default_agent=ROLE)
+                         default_agent=ROLE, known_bot_id=111)
     bot = _RecordingBot()
     ch._app = SimpleNamespace(bot=bot)  # type: ignore[assignment]
     return ch, bot
+
+
+def _register_casa_endpoint(cm: ChannelManager, ch) -> None:
+    """Register *ch* in *cm* as ``casa_core`` does: Casa's endpoint behind
+    the one ``"telegram"`` channel, the transport."""
+    from telegram_channel_double import MemoryBotIdStore, make_transport
+
+    cm.register(make_transport(ch, casa_bot_ids=MemoryBotIdStore(111)).get("telegram"))
 
 
 def _resident(tmp_path, *, with_telegram: bool = True):
@@ -466,7 +479,7 @@ def _resident(tmp_path, *, with_telegram: bool = True):
     )
     ch, bot = _telegram()
     if with_telegram:
-        agent._channel_manager.register(ch)
+        _register_casa_endpoint(agent._channel_manager, ch)
     import tools
     tools.init_tools(
         channel_manager=agent._channel_manager, bus=MagicMock(),
@@ -711,13 +724,14 @@ async def test_5_the_handler_refuses_on_an_opted_in_scope(monkeypatch):
     import tools
     ch, bot = _telegram()
     cm = ChannelManager()
-    cm.register(ch)
+    _register_casa_endpoint(cm, ch)
     monkeypatch.setattr(tools, "_channel_manager", cm)
     for deliver, refused in (("operator", True), ("none", False)):
         msg = await _ingress(deliver)
         token = agent_mod.origin_var.set({
             "role": ROLE, "channel": "webhook",
-            "chat_id": msg.context["chat_id"], "turn_scope": _scope_of(msg)})
+            "chat_id": msg.context["chat_id"], "_tg_bot": msg.context["_tg_bot"],
+            "turn_scope": _scope_of(msg)})
         try:
             out = await tools.send_message.handler(
                 {"message": "hello", "channel": "telegram"})
