@@ -2088,6 +2088,16 @@ def _receipt_of(text: str) -> tuple[str, str, bool, bool]:
     return receipt, json.dumps(nxt, ensure_ascii=False), parsed.get("in_place") is True, False
 
 
+def _not_done_of(text: str) -> bool:
+    """The response's ``not_done`` is JSON ``true``: the tap ran and did not do what its button
+    says, so the tapped card must not read as a success."""
+    try:
+        parsed = _parse_object(text)
+    except RecursionError:
+        return False
+    return parsed is not None and parsed.get("not_done") is True
+
+
 def _capture_of(contract_map, tool_name: str, input_data, out, rewritten: bool):
     """S5 §5.4: the result hook's EFFECTIVE result as a ``Capture`` — never the
     raw response of a delivering tool (a broker reference must not be
@@ -2103,8 +2113,9 @@ def _capture_of(contract_map, tool_name: str, input_data, out, rewritten: bool):
         # the card); the ``More`` exception's no-post shape keeps its own path
         if kind != "receipt":
             nxt, in_place, on_card = "", False, False
-        return Capture(kind, receipt, rewritten, next=nxt, in_place=in_place, on_card=on_card)
-    body = (out.get("hookSpecificOutput") or {}).get("updatedToolOutput") if isinstance(out, dict) else None
+        return Capture(kind, receipt, rewritten, next=nxt, in_place=in_place, on_card=on_card,
+                       not_done=kind == "receipt" and _not_done_of(text))
+    body =(out.get("hookSpecificOutput") or {}).get("updatedToolOutput") if isinstance(out, dict) else None
     parsed = None
     if isinstance(body, str):
         # the hook's OWN replacement, not a raw response: no size ceiling (a

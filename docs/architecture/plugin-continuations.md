@@ -9,8 +9,8 @@ last_reviewed: 2026-11-04
 ## Scope
 
 How a plugin's work that outlives one turn — a browsing run waiting on the operator's tap,
-a live-view login, or simply running long — is carried on in fresh turns of its
-specialist: the continuation queue, the turn's origin rebuilt from a binding, the relay of
+a live-view login, or simply running long — is carried on in later turns of its
+specialist, all one conversation: the continuation queue, the turn's origin rebuilt from a binding, the relay of
 its answer back up the requester chain, and the once-a-minute driver sweep that finds work
 nothing is driving. Stopping such work at once — the plugin's declared stop tool, called
 directly with the sweep's own resolution and client — is [`plugin-stop.md`](plugin-stop.md).
@@ -24,7 +24,7 @@ is [`specialist-desk.md`](specialist-desk.md); the announcement its answer becom
 **A run is continued, never waited on inside a turn.** A specialist turn cannot wait for
 a tap on its own card: the tap is a use of the same desk the turn holds. So the plugin ends
 the turn when its run must wait or has run long enough, and the run is continued by a
-fresh turn. `CONTINUATIONS.request(binding, run_ref, reason)` keeps at most one pending
+new turn. `CONTINUATIONS.request(binding, run_ref, reason)` keeps at most one pending
 continuation per plugin, operator and `run_ref`; once its turn has started, a new request
 for the run queues the next one, so a tap that arrives while a turn still drives the run
 is applied after that turn.
@@ -43,7 +43,7 @@ dropped with one warning, as is one whose role is not loaded. The worker takes t
 the binding's chat and a concurrency slot (`_desk_turn`: the queue, the lock, a fault
 recheck under the lock, the permit after it, and on the way out the desk's own guard for a
 run still unwinding past its teardown bound, `Desk.hold_unwinding`), then runs one delegated turn of the
-specialist in a fresh session, through the bounded runner, with the fixed task
+specialist, resuming its binding's conversation, through the bounded runner, with the fixed task
 `Continue browsing run <run_ref>.`. Its origin carries the
 binding's chain, chat and operator and Casa's `synthetic: "continuation"` marker, which
 gives the turn the operator's grant identity (`provenance.turn_provenance`'s
@@ -51,7 +51,23 @@ gives the turn the operator's grant identity (`provenance.turn_provenance`'s
 tap ([`plugin-operator-calls.md`](plugin-operator-calls.md)). A role that declares
 `session.desk_context: false` in its `role.yaml` is shown no earlier desk exchanges in any
 desk use — a delegation, a swipe-reply or a continuation (`specialist_desk.desk_log`) — so
-an earlier run's text never enters another run's context; the desk still keeps its log.
+an earlier request's text never enters another request's context; the desk still keeps its log.
+
+**A request is one conversation** (`_conversation_for`). The binding keeps the session of the
+turn that minted it (`_delegated_session_id` on that turn's origin), and a continuation resumes
+it, so a turn's end loses nothing and what the specialist has read stays with it. `_chain` sets
+`tools._conversation` around this one turn; the runner reads and clears it, so a relay turn and
+any turn nested in this one stay fresh. Two things start a fresh session instead, which the
+binding then adopts (`BindingStore.adopt`): a transcript the SDK's own lookup cannot find
+(retention, a lost disk) and two resumed turns in a row that raised (`turn_ended`); a turn that
+raised on a session it could not get past has a good chance on a new one. A resumed turn that
+raises is quiet, since the sweep carries the run on; a fresh turn that raises is announced as
+always. A resumed session reports its running total, so `note_cost` counts each turn once. A role
+with `desk_context: false`, a mechanical stand-in for "its requests are long conversations", gets
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000`, so such a session compacts well before its model's whole
+window. A new request is a new binding and a new conversation. A binding owns its session's
+[scratchpad](scratchpad.md) (INV-PAD-003, INV-PAD-004), so a turn's end loses no notes and a
+fresh session takes them along.
 
 **Its answer climbs the chain one requester at a time** (`_relay_up`). The whole climb is
 registered as one asynchronous delegation of the chain's first specialist, so the resident
@@ -138,6 +154,16 @@ re-find; a relay a crash interrupts (the announced record is then reported to th
 resident as lost; a graceful stop instead fails it with `RelayInterrupted`, Casa's own
 message, durably announced); and whether the plugin's predicate is right — the browser
 app's run record keeps the run's result either way.
+
+**INV-PLUG-058**: A continuation turn resumes the session its binding keeps, in the specialist's working directory, unless the binding keeps none, its transcript is gone or two resumed turns in a row raised, when it starts fresh and the binding adopts the new session; only that turn resumes, never a relay turn or a turn nested in it; a resumed turn that raises is quiet because the sweep carries the run on, a fresh one is announced; each turn's cost is counted once.
+
+Enforced by `plugin_continuations._conversation_for` and `_chain`, by `tools._run_delegated_turn`,
+which clears the context variable before anything nested can start and resumes on its own copy of
+the options, and by `BindingStore`, whose fields survive a restart.
+
+What it does not cover: what compaction keeps of the conversation, which is the model's summary,
+not a record; and a transcript retention deletes at its oldest row's age while its request still
+runs, which costs that memory and starts fresh.
 
 **INV-PLUG-054**: A continuation turn whose answer is exactly `<silent/>` reaches no requester — no relay turn runs and its delegation record completes with no announcement owed — while any other answer, and every aborted or failed run, is announced as before.
 

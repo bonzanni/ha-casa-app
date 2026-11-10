@@ -30,6 +30,12 @@ background job creates an engagement. The retired `mode='interactive'` is refuse
 which the person talks with the specialist by replying to its message
 ([`specialist-desk.md`](specialist-desk.md)).
 
+**A delegated specialist's system prompt is its role prompt plus one line of Casa's.** The runner
+appends a sentence telling it about its [scratchpad](scratchpad.md), so every specialist knows with
+no plugin or role change, and a turn that is not a continuation opens that pad with its brief, the
+task and the operator's words (INV-PAD-007); a stored call, or a role that disallows the tool, has neither that line
+nor the tool (INV-PAD-005).
+
 **The operator sees a hand-off as it happens.** When the operator's own Telegram turn hands
 work on — a `sync` or `async` delegation once the delegate's run has been created — Casa
 posts one silent line in that chat recording it (`📊 Passed to Alex.`).

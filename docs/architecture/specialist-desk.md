@@ -79,7 +79,8 @@ notes block, after the desk lines ([`specialist-desk-reply.md`](specialist-desk-
 an ordered log of exchanges — the operator's words, the resident's brief when it delegated,
 the specialist's delivered text — injected into every desk turn's context as a plain
 `<desk>` block, oldest first. It is not an SDK session resume: the specialist runner runs
-every delegated turn in a fresh CLI session and gives the specialist its memory by prompt
+every delegated turn in a fresh CLI session, a plugin's continuation turn alone resuming its
+request's ([`plugin-continuations.md`](plugin-continuations.md)), and gives the specialist its memory by prompt
 injection, and the plugin's own store is the state a specialist works from. The desk keeps
 at most twelve exchanges (the oldest dropped), each side clipped to 400 characters with a
 visible `[…]`, the rendered block budgeted to 10,000 characters by dropping whole oldest

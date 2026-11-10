@@ -20,7 +20,11 @@ from authz_grants import GrantIdentity
 from config import AgentConfig, CharacterConfig, MemoryConfig
 from plugin_registry import ResolutionResult, ResolvedPlugin
 from tools import DelegatedOutput
+from error_kinds import ApiErrorTurn, ErrorKind
+from output_boundary import SILENCE_SENTINEL
+from test_delegated_transcript_retention import TRANSCRIPT, _Harness, _project, _write_session
 from test_memory_capture import captured_events, mem  # noqa: F401 — fixture
+from transcript_runs_support import rows
 
 try:
     from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
@@ -874,3 +878,251 @@ async def test_a_pass_in_flight_at_casas_stop_arms_nothing(roles, monkeypatch, t
     assert pc._extra["handle"] is None
     await pc.sweep_job()                          # the scheduler's next tick
     assert passes == [1]
+
+
+# -- one conversation per request (INV-PLUG-058) --------------------------------------
+#
+# The real runner over the CLI double, the SDK's real session lookup over real files.
+
+SID = "44444444-4444-4444-8444-444444444444"
+
+
+@pytest.fixture
+def conv(roles, desks, announce, monkeypatch, tmp_path, mem):  # noqa: F811 — the fixture
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-home"))
+    for role, cfg in roles.items():
+        cfg.cwd = str(tmp_path / "home" / role)
+        Path(cfg.cwd).mkdir(parents=True)
+    h = _Harness()
+    h.body = TRANSCRIPT
+    monkeypatch.setattr(tools_mod, "ClaudeSDKClient", h.client_cls())
+    monkeypatch.setattr(tools_mod, "_specialist_telemetry", None, raising=False)
+    reg, announced = announce
+    return SimpleNamespace(h=h, reg=reg, announced=announced, store=mem, roles=roles)
+
+
+def _kept(conv, binding, sid=SID):
+    """The binding keeps *sid*, whose transcript is on disk."""
+    plugin_bindings.BINDINGS.adopt(binding.ref, sid)
+    _write_session(_project(conv.roles[binding.chain[-1]].cwd), sid, TRANSCRIPT)
+
+
+async def _continue(conv, binding, run_ref="r-1"):
+    """One continuation; returns its announced task, not yet awaited past the turn."""
+    n = len(conv.announced)
+    await pc.run_continuation(pc.Pending(binding, run_ref, "sweep", 0.0), on_start=lambda: None)
+    return conv.announced[n][0]
+
+
+async def test_a_continuation_resumes_its_bindings_conversation(conv):
+    b = _binding()
+    _kept(conv, b)
+    await (await _continue(conv, b))
+    (opts,) = conv.h.launches
+    assert opts.resume == SID and opts.session_id is None
+    assert opts.cwd == conv.roles["browser"].cwd
+    await pc.asyncio.sleep(0)
+    from memory import transcript_runs
+    await transcript_runs.settle()
+    assert [r["session_id"] for r in rows(conv.store)] == [SID]
+    assert b.session_id == SID
+
+
+async def test_the_first_turn_gives_the_binding_its_session(conv):
+    """The binding minted during a delegated turn names that turn's session, through the
+    real call record, whose origin keeps only plain values."""
+    import operator_calls
+    minted: list = []
+
+    async def _ask():
+        ident = GrantIdentity(operator_id=100, chat_id=42, enforcement_role="browser",
+                              artifact_id="1" * 64, engagement_id="")
+        call = operator_calls.OperatorCalls().open(
+            client_id="c", tool_use_id="t", tool_name="x", role="browser", plugin="browser",
+            identity=ident, origin=agent_mod.origin_var.get())
+        minted.append(operator_calls.binding_for(call))
+
+    conv.h.on_receive = _ask
+    tok = agent_mod.origin_var.set(dict(ORIGIN))
+    try:
+        await tools_mod._run_delegated_agent(conv.roles["browser"], "go", "")
+    finally:
+        agent_mod.origin_var.reset(tok)
+    (opts,) = conv.h.launches
+    assert opts.resume is None and opts.session_id
+    assert minted[0].session_id == opts.session_id
+    # and it is not an origin marker a continuation is rebuilt from
+    assert "_delegated_session_id" not in minted[0].origin
+
+
+async def test_relay_turns_stay_fresh(conv):
+    b = _binding(("assistant", "finance", "browser"))
+    _kept(conv, b)
+    await (await _continue(conv, b))
+    browser, finance = conv.h.launches
+    assert browser.resume == SID and browser.cwd == conv.roles["browser"].cwd
+    assert finance.resume is None and finance.session_id and finance.session_id != SID
+    assert b.session_id == SID       # a relay's session is nobody's conversation
+
+
+async def test_a_turn_nested_in_a_resumed_one_stays_fresh(conv):
+    seen: list = []
+
+    async def _nested():
+        seen.append(tools_mod._conversation.get())
+        conv.h.on_receive = None
+        await tools_mod._run_delegated_agent(conv.roles["finance"], "nested", "")
+
+    conv.h.on_receive = _nested
+    b = _binding()
+    _kept(conv, b)
+    await (await _continue(conv, b))
+    assert seen == [None]
+    outer, inner = conv.h.launches
+    assert outer.resume == SID
+    assert inner.resume is None and inner.session_id and inner.session_id != SID
+    assert b.session_id == SID
+
+
+async def test_a_missing_transcript_starts_fresh_and_the_binding_adopts_it(conv):
+    b = _binding()
+    plugin_bindings.BINDINGS.adopt(b.ref, SID)      # kept, but no transcript on disk
+    await (await _continue(conv, b))
+    (opts,) = conv.h.launches
+    assert opts.resume is None and opts.session_id and opts.session_id != SID
+    assert b.session_id == opts.session_id
+    # the transcript it wrote is what the next one resumes
+    await (await _continue(conv, b))
+    assert conv.h.launches[1].resume == opts.session_id and conv.h.launches[1].session_id is None
+
+
+async def test_a_binding_with_no_session_starts_fresh_and_adopts_it(conv):
+    b = _binding()
+    assert b.session_id is None
+    await (await _continue(conv, b))
+    (opts,) = conv.h.launches
+    assert opts.resume is None and b.session_id == opts.session_id
+
+
+async def test_two_raised_resumed_turns_mean_the_next_is_fresh(conv):
+    b = _binding()
+    _kept(conv, b)
+    h = conv.h
+    h.mode = "raise"
+    await (await _continue(conv, b))
+    assert h.launches[-1].resume == SID and b.resume_failures == 1
+    h.mode = "return"                       # a success between them resets the count
+    await (await _continue(conv, b))
+    assert h.launches[-1].resume == SID and b.resume_failures == 0
+    h.mode = "raise"
+    await (await _continue(conv, b))
+    await (await _continue(conv, b))
+    assert [o.resume for o in h.launches[-2:]] == [SID, SID] and b.resume_failures == 2
+    h.mode = "return"
+    await (await _continue(conv, b))
+    fresh = h.launches[-1]
+    assert fresh.resume is None and fresh.session_id != SID
+    assert b.session_id == fresh.session_id and b.resume_failures == 0
+
+
+async def test_a_raised_resumed_turn_is_quiet_and_the_sweep_goes_on(conv):
+    b = _binding()
+    _kept(conv, b)
+    conv.h.mode = "raise"
+    out = await (await _continue(conv, b))
+    assert out.text == SILENCE_SENTINEL and conv.reg.quiet[0](out) is True
+    assert not out.run_aborted
+    # nothing is left pending: the sweep's next pass queues it
+    q = pc.Continuations()
+    assert q.request(b, "r-1", "sweep") == "queued"
+    await q.drain()
+
+
+async def test_a_raised_fresh_turn_is_announced_as_always(conv):
+    b = _binding()
+    conv.h.mode = "raise"
+    task = await _continue(conv, b)
+    with pytest.raises(ApiErrorTurn):
+        await task
+    assert b.resume_failures == 0
+
+
+async def test_a_cancelled_resumed_turn_is_cancelled_not_quiet(conv):
+    """A Casa stop is no failed resume: the count stands and nothing reads as progress."""
+    b = _binding()
+    _kept(conv, b)
+    conv.h.mode = "cancel"
+    run = asyncio.ensure_future(_continue(conv, b))
+    await conv.h.entered_receive.wait()
+    run.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    assert b.resume_failures == 0 and conv.announced[0][0].cancelled()
+
+
+def test_a_binding_keeps_its_conversation_across_a_restart(tmp_path, monkeypatch):
+    path = tmp_path / "b.json"
+    store = plugin_bindings.BindingStore(str(path))
+    ident = GrantIdentity(operator_id=100, chat_id=42, enforcement_role="browser",
+                          artifact_id="1" * 64, engagement_id="")
+    b = store.for_turn(plugin="browser", turn_key="d-1", identity=ident,
+                       chain=("assistant", "browser"), origin={"_delegated_session_id": SID})
+    assert b.session_id == SID
+    store.turn_ended(b.ref, raised=True)
+    assert store.note_cost(SID, 2.0) == 2.0
+    again = plugin_bindings.BindingStore(str(path)).peek(b.ref)
+    assert (again.session_id, again.resume_failures, again.cost_seen) == (SID, 1, 2.0)
+    # a row written before these fields loads
+    rows_ = json.loads(path.read_text())
+    for field in ("session_id", "resume_failures", "cost_seen"):
+        del rows_[0][field]
+    path.write_text(json.dumps(rows_))
+    old = plugin_bindings.BindingStore(str(path)).peek(b.ref)
+    assert (old.session_id, old.resume_failures, old.cost_seen) == (None, 0, 0.0)
+
+
+async def test_cost_counts_each_resumed_turn_once(conv, monkeypatch):
+    recorded: list = []
+    monkeypatch.setattr(tools_mod, "_specialist_telemetry", SimpleNamespace(
+        record_cost=lambda role, cost_usd, usage: recorded.append(cost_usd)), raising=False)
+    conv.h.costs = [2.0, 3.5]
+    b = _binding()
+    _kept(conv, b)
+    await (await _continue(conv, b))
+    await (await _continue(conv, b))
+    assert recorded == [2.0, 1.5]
+    # a session no binding holds reports its whole value
+    conv.h.costs = [0.7]
+    tok = agent_mod.origin_var.set(dict(ORIGIN))
+    try:
+        await tools_mod._run_delegated_agent(conv.roles["finance"], "go", "")
+    finally:
+        agent_mod.origin_var.reset(tok)
+    assert recorded[-1] == 0.7
+
+
+async def test_a_fresh_conversation_counts_its_cost_from_zero(conv, monkeypatch):
+    recorded: list = []
+    monkeypatch.setattr(tools_mod, "_specialist_telemetry", SimpleNamespace(
+        record_cost=lambda role, cost_usd, usage: recorded.append(cost_usd)), raising=False)
+    b = _binding()
+    plugin_bindings.BINDINGS.adopt(b.ref, SID)
+    assert plugin_bindings.BINDINGS.note_cost(SID, 9.0) == 9.0
+    conv.h.costs = [0.5]
+    await (await _continue(conv, b))        # no transcript: a new session, a new total
+    assert recorded == [0.5]
+
+
+async def test_the_compaction_window_is_set_only_for_a_role_without_desk_context(conv):
+    from config import SessionConfig
+    browser = conv.roles["browser"]
+    browser.session = SessionConfig(strategy="ephemeral", idle_timeout=0, desk_context=False)
+    tok = agent_mod.origin_var.set(dict(ORIGIN))
+    try:
+        await tools_mod._run_delegated_agent(browser, "go", "")
+        await tools_mod._run_delegated_agent(conv.roles["finance"], "go", "")
+    finally:
+        agent_mod.origin_var.reset(tok)
+    long_one, ordinary = conv.h.launches
+    assert long_one.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "200000"
+    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in ordinary.env

@@ -53,6 +53,11 @@ SIBLING = "22222222-2222-4222-8222-222222222222"
 FALLBACK = "33333333-3333-4333-8333-333333333333"
 
 
+#: A transcript shaped as the CLI writes it: the SDK's own lookup finds this session.
+TRANSCRIPT = ('{"type":"user","message":{"role":"user","content":"Task: question"},'
+              '"timestamp":"2026-11-06T10:00:00.000Z","cwd":"/x"}\n')
+
+
 def _project(cwd: str) -> Path:
     return _get_project_dir(_canonicalize_path(cwd))
 
@@ -91,6 +96,9 @@ class _Harness:
         self.hold_exit: asyncio.Event | None = None
         self.exit_written: asyncio.Event | None = None
         self.raised = ApiErrorTurn(ErrorKind.API_ERROR)
+        self.body = "own"               # what the CLI double writes as the transcript
+        self.costs: list[float] = []    # each result's cumulative total_cost_usd
+        self.on_receive = None          # awaited as the turn starts, inside its origin
 
     def client_cls(self):
         h = self
@@ -99,7 +107,8 @@ class _Harness:
             def __init__(self, options):
                 self.options = options
                 h.launches.append(options)
-                sid = getattr(options, "session_id", None)
+                sid = (getattr(options, "session_id", None)
+                       or getattr(options, "resume", None))
                 self.sid = sid if sid else FALLBACK
 
             async def __aenter__(self):
@@ -107,7 +116,7 @@ class _Harness:
 
             async def __aexit__(self, *exc):
                 # The CLI flushes its transcript as its process ends.
-                _write_session(_project(self.options.cwd), self.sid, "own")
+                _write_session(_project(self.options.cwd), self.sid, h.body)
                 h.written.append(self.sid)
                 if h.exit_written is not None:
                     h.exit_written.set()
@@ -125,6 +134,8 @@ class _Harness:
 
             async def receive_response(self):
                 h.entered_receive.set()
+                if h.on_receive is not None:
+                    await h.on_receive()
                 if h.mode == "raise":
                     raise h.raised
                 if h.mode == "cancel":
@@ -138,7 +149,8 @@ class _Harness:
                 for k, v in dict(subtype="success", duration_ms=1,
                                  duration_api_ms=1, is_error=False,
                                  num_turns=1, session_id=self.sid,
-                                 total_cost_usd=0.0, usage={}, result="answer",
+                                 total_cost_usd=h.costs.pop(0) if h.costs else 0.0,
+                                 usage={}, result="answer",
                                  stop_reason="end_turn",
                                  structured_output=None).items():
                     setattr(r, k, v)
@@ -420,6 +432,59 @@ async def test_a_non_memory_run_registers_confirmed(env, monkeypatch):
     await _finish(await _run(env.tools, env.cfg, h), h)
     assert seen == [[("delegation", True, h.launches[0].session_id)]]
     assert events(env.store) == []
+
+
+async def test_retention_of_an_older_row_means_the_next_turn_is_fresh(env, monkeypatch, tmp_path):
+    """One session, two rows: a conversation's first turn and a later one. Retention
+    deletes the session at the older row's age, as it always counted (unchanged), and the
+    next continuation finds no transcript, starts fresh and keeps the new session."""
+    import plugin_bindings
+    import plugin_continuations as pc
+    from authz_grants import GrantIdentity
+
+    store = env.store
+    h = _Harness()
+    h.body = TRANSCRIPT
+    _install(monkeypatch, env.tools, h)
+    await _finish(await _run(env.tools, env.cfg, h), h)
+    sid = h.launches[0].session_id
+    bindings = plugin_bindings.BindingStore(str(tmp_path / "b.json"))
+    monkeypatch.setattr(plugin_bindings, "BINDINGS", bindings)
+    ident = GrantIdentity(operator_id=100, chat_id=42, enforcement_role="finance",
+                          artifact_id="1" * 64, engagement_id="")
+    binding = bindings.for_turn(plugin="p", turn_key="d-1", identity=ident,
+                                chain=("assistant", "finance"), origin={})
+    bindings.adopt(binding.ref, sid)
+
+    async def _continue():
+        assert await pc._conversation_for(binding, env.cfg) == (sid if resumed else None)
+        tok = env.tools._conversation.set(env.tools.ConversationTurn(
+            binding.ref, sid if resumed else None))
+        try:
+            return await _with_origin(
+                env.tools._run_delegated_agent(env.cfg, "go on", ""), _origin())
+        finally:
+            env.tools._conversation.reset(tok)
+
+    resumed = True
+    await _continue()
+    assert h.launches[1].resume == sid
+    await transcript_runs.settle()
+    older, newer = rows(store)
+    assert older["session_id"] == newer["session_id"] == sid and older["run_id"] != newer["run_id"]
+
+    # past the older row's retention only: the session goes, whichever row named it
+    with store.transaction(write=True) as conn:
+        conn.execute("UPDATE transcript_runs SET ended_at = ? WHERE run_id = ?",
+                     ("2020-01-01T00:00:00+00:00", older["run_id"]))
+    counts = transcript_runs.retention_pass(store, now=datetime.fromisoformat(newer["ended_at"]))
+    assert counts["deleted"] == 1 and _artifacts(env.folder, sid) == 0
+
+    resumed = False
+    await _continue()
+    fresh = h.launches[2]
+    assert fresh.resume is None and fresh.session_id != sid
+    assert binding.session_id == fresh.session_id
 
 
 async def test_retention_counts_from_the_run_end(env, monkeypatch):

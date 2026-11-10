@@ -20,6 +20,8 @@ must be the client's only recorded one (the deposit route's rule):
 * ``POST /internal/broker/delivery-status``      (C9) — a delivered slot's outcome.
 * ``POST /internal/broker/action-judgement``     — the check of one browsing
   action (``action_judgement``).
+* ``POST /internal/broker/pad``                  — put text into the conversation's
+  pad, or read it back, with no model in between (``scratchpad``).
 
 The record is forgotten at the call's PostToolUse / PostToolUseFailure, or
 after ``OPERATOR_CALL_CAP_S``. The operator question Casa itself posts for run
@@ -42,6 +44,10 @@ ASK_MAX_LABEL_CHARS = 32
 ASK_SCOPE_PREFIX = "ask:"
 RUN_REF_MAX = 64
 CONTINUE_REASONS = ("operator_answer", "next_run", "sweep")
+# The internal app's body limit: a judgement carries a page's picture (2 MiB decoded, base64)
+# beside its packet (512 KiB, up to three times that JSON-escaped), over aiohttp's default
+# 1 MiB, which reads as ``bad_json``.
+INTERNAL_MAX_BODY_BYTES = 6 * 1024 * 1024
 
 
 @dataclasses.dataclass
@@ -227,20 +233,24 @@ def _reply(payload: dict):
     return web.json_response(payload)
 
 
-async def _call_and_body(request) -> "tuple[OperatorCall | None, dict, Any]":
+async def _found(request) -> "tuple[OperatorCall | None, dict, str | None]":
+    """The call in flight for the body's client, the body, and the error code if none."""
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
         body = None
     if not isinstance(body, dict):
-        return None, {}, _reply({"error": "bad_json"})
+        return None, {}, "bad_json"
     client = body.get("client")
     if not isinstance(client, str) or not client:
-        return None, body, _reply({"error": "bad_client"})
+        return None, body, "bad_client"
     call, err = CALLS.find(client)
-    if call is None:
-        return None, body, _reply({"error": err})
-    return call, body, None
+    return call, body, err
+
+
+async def _call_and_body(request) -> "tuple[OperatorCall | None, dict, Any]":
+    call, body, err = await _found(request)
+    return call, body, (None if call is not None else _reply({"error": err}))
 
 
 def build_requester_handler():
@@ -326,16 +336,39 @@ def build_delivery_status_handler():
 
 
 def build_action_judgement_handler():
-    """``{"client", "kind", "packet", "spec_digest"}`` ⇒ ``{"verdict",
+    """``{"client", "kind", "packet", "spec_digest", "picture"?}`` ⇒ ``{"verdict",
     "packet_sha256", "latency_ms"}`` | ``{"error"}`` (``bad_kind``,
     ``bad_packet``, ``bad_digest``, ``check_unavailable``). The packet is the
-    app's JSON text as a string; the words come from the call's plugin and
-    operator, never the body."""
+    app's JSON text as a string; the picture, base64 PNG, is outside its digest; the
+    words come from the call's plugin and operator, never the body."""
     async def handler(request):
         call, body, bad = await _call_and_body(request)
         if call is None:
             return bad
         import action_judgement
         return _reply(await action_judgement.judge(
-            call, body.get("kind"), body.get("packet"), body.get("spec_digest")))
+            call, body.get("kind"), body.get("packet"), body.get("spec_digest"),
+            picture=body.get("picture")))
+    return handler
+
+
+_PAD_REFUSALS = {
+    "bad_json": "The body is one JSON object.",
+    "bad_client": "client is the session's broker client id.",
+    "no_call_in_flight": "The pad answers only during a call of this client's tool.",
+    "ambiguous_call": "This client has two calls in flight; the pad answers one at a time.",
+}
+
+
+def build_pad_handler():
+    """``{"client", "op": "write"|"append"|"read", "section", "text"?, "offset"?}`` ⇒
+    ``{"lines", "bytes"}`` (the section after a write or append) | ``{"text", "next"}`` (at
+    most ``scratchpad.ROUTE_READ_CHARS`` from ``offset``) | ``{"error", "message"}``. The pad is
+    the one the client's own tool reaches, found by the client alone."""
+    async def handler(request):
+        call, body, err = await _found(request)
+        if call is None:
+            return _reply({"error": err, "message": _PAD_REFUSALS[err]})
+        import scratchpad
+        return _reply(scratchpad.PADS.from_plugin(body["client"], body))
     return handler

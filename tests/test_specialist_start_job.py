@@ -44,7 +44,8 @@ def _delegated_turn_origin(*, clearance="private", channel="telegram"):
             "chat_id": "1", "user_id": 1, "cid": "dlg-cid", "user_text": "classify",
             "_origin_route": "telegram", "_origin_clearance": clearance,
             "_operator_turn": True, "delegation_depth": 1,
-            "_delegation_id": "dlg-1", "_delegation_kind": "specialist"}
+            "_delegation_id": "dlg-1", "_delegation_kind": "specialist",
+            "_delegated_session_id": "the-calling-turns-session"}
 
 
 async def start_as(origin, job="ledger:classify"):
@@ -98,6 +99,8 @@ async def test_a_specialist_turn_starts_its_own_job_hosted_on_itself(
     assert rec.origin["_origin_clearance"] == "private"
     assert rec.origin["delegation_depth"] == 1
     assert "desk" not in rec.origin and "_delegation_id" not in rec.origin
+    # a binding the job mints must not name the calling turn's conversation
+    assert "_delegated_session_id" not in rec.origin
     assert _counts(runtime) == (1, 1, 1, 0)
 
 

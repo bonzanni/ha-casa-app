@@ -4,14 +4,17 @@ of the bytes received, and the operator's words kept per spec digest."""
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
 import sys
 import types
+from pathlib import Path
 
 import pytest
-from aiohttp.test_utils import make_mocked_request
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 import action_judgement as aj
 import operator_calls
@@ -36,6 +39,14 @@ ASK = {"verdict": "ask", "category": "payment", "reason": REASON_TEXT,
        "look_first": "", "question": QUESTION}
 
 
+PNG = b"\x89PNG\r\n\x1a\n"
+PICTURES: list = []     # the picture each check of the ``wired`` double was handed
+
+
+def _b64(raw: bytes) -> str:
+    return base64.b64encode(raw).decode("ascii")
+
+
 def _packet(**over) -> dict:
     p = {"task": "download the latest invoice",
          "where": {"session": "signed_in", "site": "Voorbeeld Energie"},
@@ -53,11 +64,13 @@ def _canonical(p: dict) -> str:
 def wired(monkeypatch):
     monkeypatch.setattr(operator_calls, "CALLS", operator_calls.OperatorCalls())
     monkeypatch.setattr(aj, "WORDS", aj.OperatorWords())
+    PICTURES.clear()
     seen: list[tuple[str, str]] = []
     replies: list = []
 
-    async def _ask(rulebook, body):
+    async def _ask(rulebook, body, picture=None):
         seen.append((rulebook, body))
+        PICTURES.append(picture)
         reply = replies.pop(0) if replies else json.dumps(GO)
         if isinstance(reply, BaseException):
             raise reply
@@ -381,8 +394,8 @@ def test_rulebook_files_are_the_measured_bytes():
         # slice 6b (a typed line break is text, never the Enter key), measured 2026-10-31
         "action_v1.txt": (8404, "abb21b7ddbc4ca11d22b761965780ec6"
                                 "3b1393b9b017fea78121af591656e702"),
-        "rejudge_v1.txt": (2198, "715552b0350e106c756d47ee20eec781"
-                                 "5d53c0b28046846109de14fa528108dd"),
+        "rejudge_v1.txt": (2417, "7584e517b40bf7ec9c4c0e6e11c60820"
+                                 "f68d8c9bd074b474d9e1f3397aca8eb0"),
         # slice 5, measured 2026-10-29
         "login_item_v1.txt": (1513, "6c31da11c895970fab24d82fc88e4c34"
                                     "b6576753235325ba706f8913670f6bc6"),
@@ -604,3 +617,198 @@ def test_a_sign_in_reply_parses_to_its_verdict_and_reason_only():
     assert aj.parse_reply("sign_in", '{"verdict": "sign_in", "reason": "r", "fields": '
                                      '{"username": "f2", "password": null}}') == \
         {"verdict": "sign_in", "reason": "r", "fields": {"username": "f2"}}
+
+
+# -- the picture and the two addenda (INV-PLUG-057) ------------------------------------
+
+def test_addenda_are_the_measured_bytes():
+    measured = {"picture_v1.txt": (1263, "26d45536f8ed4a879d40fecf60b711ec"
+                                         "edf2324ebc17e6e9f2fe6e0fefcbc5fa"),
+                "scope_v1.txt": (3366, "4eba6e3147aa5323a477ec696bf6141c"
+                                       "8519eef5c436169dab7a0fed11155ba0")}
+    for name, want in measured.items():
+        raw = (aj.RULEBOOK_DIR / name).read_bytes()
+        assert (len(raw), hashlib.sha256(raw).hexdigest()) == want
+    assert aj.PICTURE_ADDENDUM.encode("utf-8") == (aj.RULEBOOK_DIR / "picture_v1.txt").read_bytes()
+    assert aj.SCOPE_ADDENDUM.encode("utf-8") == (aj.RULEBOOK_DIR / "scope_v1.txt").read_bytes()
+    assert "picture_v1.txt" not in aj.RULEBOOK_FILES.values()
+    assert "scope_v1.txt" not in aj.RULEBOOK_FILES.values()
+
+
+def test_system_prompt_appends_only_what_the_call_carries():
+    A, P, S = aj.RULEBOOKS["action"], aj.PICTURE_ADDENDUM, aj.SCOPE_ADDENDUM
+    assert aj.system_prompt("action", {}, None) == A
+    assert aj.system_prompt("action", {}, "x") == A + P
+    assert aj.system_prompt("action", {"plan": "p"}, None) == A + S
+    assert aj.system_prompt("action", {"approved": "p"}, None) == A + S
+    assert aj.system_prompt("action", {"approved": "p"}, "x") == A + P + S
+    assert aj.system_prompt("action", {"plan": "p", "approved": "q"}, "x") == A + P + S
+    assert aj.system_prompt("rejudge", {"plan": "p"}, "x") == aj.RULEBOOKS["rejudge"]
+
+
+def _recording_sdk(monkeypatch, launches: list, *, reply: str = json.dumps(GO)):
+    """A ``claude_agent_sdk`` whose ``query`` records its prompt, read as the CLI would be
+    sent it, and its options, and answers one completed verdict."""
+    import claude_agent_sdk as real
+    fake = types.ModuleType("claude_agent_sdk")
+    fake.ClaudeAgentOptions = real.ClaudeAgentOptions
+    fake.AssistantMessage = real.AssistantMessage
+    fake.ResultMessage = real.ResultMessage
+
+    async def query(*, prompt, options):
+        sent = prompt if isinstance(prompt, str) else [m async for m in prompt]
+        launches.append((sent, options))
+        yield real.AssistantMessage(content=[real.TextBlock(text=reply)], model="m")
+        yield real.ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1,
+                                 is_error=False, num_turns=1, session_id="s",
+                                 stop_reason="end_turn", terminal_reason="completed")
+    fake.query = query
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake)
+
+
+async def test_picture_and_body_go_as_one_user_message(monkeypatch):
+    launches: list = []
+    _recording_sdk(monkeypatch, launches)
+    pic = _b64(PNG + b"rest")
+    assert await aj._ask_check("rb", '{"packet": 1}', pic) == json.dumps(GO)
+    sent, options = launches[0]
+    assert sent == [{"type": "user", "session_id": "", "parent_tool_use_id": None,
+                     "message": {"role": "user", "content": [
+                         {"type": "image", "source": {"type": "base64",
+                                                      "media_type": "image/png", "data": pic}},
+                         {"type": "text", "text": '{"packet": 1}'}]}}]
+    assert options.tools == [] and options.system_prompt == "rb"
+    # no picture: the prompt is the body string, as it was
+    await aj._ask_check("rb", '{"packet": 1}')
+    assert launches[1][0] == '{"packet": 1}'
+
+
+async def test_the_check_runs_with_the_measured_route_switches(monkeypatch):
+    launches: list = []
+    _recording_sdk(monkeypatch, launches)
+    await aj._ask_check("rb", "{}")
+    await aj._ask_check("rb", "{}", _b64(PNG))
+    for _sent, options in launches:
+        assert options.extra_args == {"no-session-persistence": None, "strict-mcp-config": None}
+        assert options.env == {"ENABLE_CLAUDEAI_MCP_SERVERS": "false"}
+
+
+@pytest.mark.parametrize("bad", [
+    5, b"bytes", ["x"], "", "not base64!", "é", _b64(b"GIF89a"), _b64(PNG)[:-1],
+    _b64(PNG + b"x" * (2 * 1024 * 1024 - len(PNG) + 1))], ids=[
+    "int", "bytes", "list", "empty", "not_base64", "not_ascii", "gif", "cut", "one_over_the_bound"])
+async def test_a_bad_picture_is_no_picture(wired, bad):
+    seen, _ = wired
+    out = await aj.judge(_call(), "action", _canonical(_packet()), DIGEST, picture=bad)
+    assert out["verdict"] == GO
+    assert seen[0][0] == aj.RULEBOOKS["action"] and PICTURES == [None]
+
+
+async def test_a_picture_at_the_bound_is_a_picture(wired):
+    seen, _ = wired
+    pic = _b64(PNG + b"x" * (aj.MAX_PICTURE_BYTES - len(PNG)))
+    await aj.judge(_call(), "action", _canonical(_packet()), DIGEST, picture=pic)
+    assert seen[0][0] == aj.RULEBOOKS["action"] + aj.PICTURE_ADDENDUM and PICTURES == [pic]
+
+
+@pytest.mark.parametrize("packet_extra, addenda", [
+    ({}, ""), ({"plan": "add 96 cards"}, "S"), ({"approved": "add 96 cards"}, "S")])
+async def test_the_check_is_sent_what_its_call_carries(wired, packet_extra, addenda):
+    seen, _ = wired
+    pic = _b64(PNG)
+    raw = _canonical(_packet(**packet_extra))
+    await aj.judge(_call(), "action", raw, DIGEST, picture=pic)
+    await aj.judge(_call(), "action", raw, DIGEST)
+    scope = aj.SCOPE_ADDENDUM if addenda else ""
+    assert seen[0][0] == aj.RULEBOOKS["action"] + aj.PICTURE_ADDENDUM + scope
+    assert seen[1][0] == aj.RULEBOOKS["action"] + scope
+    assert PICTURES == [pic, None]
+    # the digest binds the packet alone, picture or none
+    assert json.loads(seen[0][1]) == json.loads(seen[1][1])
+
+
+async def test_the_digest_does_not_move_with_the_picture(wired):
+    raw = _canonical(_packet())
+    with_pic = await aj.judge(_call(), "action", raw, DIGEST, picture=_b64(PNG + b"a"))
+    other = await aj.judge(_call(), "action", raw, DIGEST, picture=_b64(PNG + b"b"))
+    without = await aj.judge(_call(), "action", raw, DIGEST)
+    assert (with_pic["packet_sha256"] == other["packet_sha256"]
+            == without["packet_sha256"] == hashlib.sha256(raw.encode("utf-8")).hexdigest())
+
+
+@pytest.mark.parametrize("kind", ["rejudge", "login_item", "signin", "sign_in"])
+async def test_a_picture_on_another_kind_is_ignored(wired, kind):
+    seen, replies = wired
+    replies.append(json.dumps({"verdict": "same", "reason": "", "text_incomplete": False,
+                               "items": [], "evidence_blocks": []}))
+    await aj.judge(_call(), kind, _canonical({"plan": "p", "approved": "q"}), DIGEST,
+                   picture=_b64(PNG))
+    assert seen[0][0] == aj.RULEBOOKS[kind] and PICTURES == [None]
+
+
+async def test_log_line_carries_no_picture(wired, caplog):
+    _seen, replies = wired
+    caplog.set_level(logging.DEBUG)
+    pic = _b64(PNG + b"PictureBytesMarker")
+    await aj.judge(_call(), "action", _canonical(_packet()), DIGEST, picture=pic)
+    replies.append(RuntimeError("no"))
+    await aj.judge(_call(), "action", _canonical(_packet()), DIGEST, picture=pic)
+    await aj.judge(_call(), "action", _canonical(_packet()), DIGEST)
+    lines = [r.getMessage() for r in caplog.records]
+    assert pic not in "\n".join(lines)
+    judged = [ln for ln in lines if ln.startswith("action judgement:")]
+    assert len(judged) == 3
+    assert "picture=yes" in judged[0] and "picture=yes" in judged[1]
+    assert "picture=no" in judged[2]
+
+
+async def test_the_route_passes_the_picture_to_the_judge(wired):
+    seen, _ = wired
+    _call()
+    pic = _b64(PNG)
+    out = await _post({"client": "c1", "kind": "action", "packet": _canonical(_packet()),
+                       "spec_digest": DIGEST, "picture": pic})
+    assert out["verdict"] == GO and PICTURES == [pic]
+    assert seen[0][0] == aj.RULEBOOKS["action"] + aj.PICTURE_ADDENDUM
+
+
+async def test_a_large_picture_reaches_the_judge_route(wired):
+    """A rich signed-in page: a real 1.41 MB picture is over aiohttp's default 1 MiB body."""
+    _call()
+    pic = _b64(PNG + b"x" * 1_410_000)
+    body = {"client": "c1", "kind": "action", "packet": _canonical(_packet()),
+            "spec_digest": DIGEST, "picture": pic}
+
+    async def _posted(app):
+        app.router.add_post("/j", operator_calls.build_action_judgement_handler())
+        async with TestClient(TestServer(app)) as client:
+            return await (await client.post("/j", json=body)).json()
+
+    assert await _posted(web.Application()) == {"error": "bad_json"}
+    out = await _posted(web.Application(client_max_size=operator_calls.INTERNAL_MAX_BODY_BYTES))
+    assert out["verdict"] == GO and PICTURES == [pic]
+
+
+async def test_the_largest_picture_beside_the_largest_escaped_packet_gets_its_verdict(wired):
+    """Both members at their bounds, sent as the plugin's client sends them: ``json.dumps``
+    escapes an accented letter's two UTF-8 bytes to six."""
+    _call()
+    pic = _b64(PNG + b"x" * (aj.MAX_PICTURE_BYTES - len(PNG)))
+    pad = (aj.MAX_PACKET_BYTES - len(_canonical({"p": ""}).encode("utf-8"))) // 2
+    packet = _canonical({"p": "é" * pad})
+    assert len(packet.encode("utf-8")) <= aj.MAX_PACKET_BYTES
+    body = json.dumps({"client": "c1", "kind": "action", "packet": packet,
+                       "spec_digest": DIGEST, "picture": pic}).encode("utf-8")
+    assert len(body) > 4 * 1024 * 1024
+    app = web.Application(client_max_size=operator_calls.INTERNAL_MAX_BODY_BYTES)
+    app.router.add_post("/j", operator_calls.build_action_judgement_handler())
+    async with TestClient(TestServer(app)) as client:
+        out = await (await client.post("/j", data=body,
+                                       headers={"Content-Type": "application/json"})).json()
+    assert out["verdict"] == GO and PICTURES == [pic]
+
+
+def test_casa_core_internal_app_takes_the_bound():
+    import casa_core
+    source = Path(casa_core.__file__).read_text(encoding="utf-8")
+    assert "client_max_size=INTERNAL_MAX_BODY_BYTES" in source
