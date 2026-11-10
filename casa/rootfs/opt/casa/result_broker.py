@@ -1055,6 +1055,12 @@ _DENY_NO_IDENTITY = (
     "active engagement), and this turn was not started by him. This is Casa's "
     "rule, not the plugin's or its app's. Do not retry on this turn; if the "
     "work is still wanted, he can send the request again himself.")
+# The operator's own turn, on a bot whose id Casa has not verified yet (a first
+# boot, or a replaced token): the identity names the bot, so it cannot be
+# formed until the bot connects.
+_DENY_CHANNEL_UNAVAILABLE = (
+    "not executed: Casa's Telegram bot has not connected yet, so this call "
+    "cannot be tied to the operator's chat. Nothing ran; try again in a moment.")
 _DENY_STALE_REFERENCE = (
     "not executed: a capability reference passed to this call is not "
     "redeemable here (unknown, already used, expired, minted for another "
@@ -1255,10 +1261,11 @@ def make_plugin_admission_hook(
             identity = None
             if needs_identity:
                 from authz_grants import resolve_grant_identity
-                identity, _why = resolve_grant_identity(
+                identity, why = resolve_grant_identity(
                     role, artifact_id=entry.artifact_id)
                 if identity is None:
-                    return _deny(_DENY_NO_IDENTITY)
+                    return _deny(_DENY_CHANNEL_UNAVAILABLE
+                                 if why == "channel_unavailable" else _DENY_NO_IDENTITY)
             if asks:
                 # Browser executor §5.3–§5.6: recorded with the facts of this
                 # turn, for the plugin's own code to use during the call —

@@ -525,6 +525,18 @@ async def stop_work(args: dict) -> dict:
     chat_id, user_id = origin.get("chat_id"), origin.get("user_id")
     if _is_agent_context(origin) or not is_configured_operator(chat_id, user_id):
         return _text_result(f"Error: {STOP_WORK_ONLY_OPERATOR}", is_error=True)
+    # The requests are those admitted on the bot of this turn: its id is read
+    # from the endpoint the turn's route resolves to, never from the route.
+    transport = _transport()
+    bot_id = None
+    if transport is not None:
+        try:
+            bot_id = transport.endpoint_for_route(origin, site="stop_work").bot_id
+        except (RouteMissing, AddressError, EndpointUnavailable, EndpointNotReady) as exc:
+            logger.warning("stop_work: no Telegram endpoint for the turn: %s", exc)
+    if bot_id is None:
+        return _text_result("Error: the stop cannot be asked right now; try again in a "
+                            "moment.", is_error=True)
     plugins = await plugin_stop.stop_plugins()
     ref = args.get("ref")
     if not isinstance(ref, str) or not ref.strip():
@@ -537,7 +549,7 @@ async def stop_work(args: dict) -> dict:
             for r in listing.get("requests") or []:
                 ref = r.get("ref")
                 if not isinstance(ref, str) or plugin_stop.confirmation_for(
-                        seg, int(user_id), ref) is None:
+                        seg, bot_id, int(user_id), ref) is None:
                     continue            # not his: a request admitted for another operator
                 tasks = "; ".join(t for t in (r.get("tasks") or []) if isinstance(t, str))
                 lines.append(f"- {r.get('ref')}: {name} — {tasks} ({r.get('state')})")
@@ -548,15 +560,16 @@ async def stop_work(args: dict) -> dict:
                             "ref to see what is running.", is_error=True)
     operator_id = int(user_id)
     for role, _cfg, _rp, seg, _tool in plugins:
-        if plugin_stop.confirmation_for(seg, operator_id, ref) is None:
+        if plugin_stop.confirmation_for(seg, bot_id, operator_id, ref) is None:
             continue                    # no request of this plugin admitted for him has it
         async def _tell(outcome: dict, seg=seg) -> None:
             mark = plugin_stop.MARKS.get(outcome.get("outcome"))
             if mark is not None:
                 await plugin_stop.settle_run_card(
-                    plugin_stop.confirmation_for(seg, operator_id, ref), mark)
+                    plugin_stop.confirmation_for(seg, bot_id, operator_id, ref), mark)
 
-        out = await plugin_stop.stop(role, seg, ref, operator_id=operator_id, tell=_tell)
+        out = await plugin_stop.stop(role, seg, ref, bot_id=bot_id, operator_id=operator_id,
+                                     tell=_tell)
         o = out.get("outcome")
         if o in ("unknown", "unavailable"):
             continue
@@ -16636,8 +16649,8 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
         # an earlier question — or of an earlier installation of the same
         # artifact — is void, so only the answer to THIS question decides.
         question = questions.open(subject)
-        key = pec.EraseChoiceKey(operator_id=operator_id, chat_id=chat_id,
-                                 subject=subject, artifacts=artifacts,
+        key = pec.EraseChoiceKey(operator_id=operator_id, bot_id=address.bot_id,
+                                 chat_id=chat_id, subject=subject, artifacts=artifacts,
                                  question=question)
         choices = _offered_erase_choices(specs)
         erasers = []
@@ -16672,8 +16685,8 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
                            "you with their choice. End your turn now with one "
                            "short line saying what you asked.")}, []
     question = questions.current(subject)
-    key = pec.EraseChoiceKey(operator_id=operator_id, chat_id=chat_id,
-                             subject=subject, artifacts=artifacts,
+    key = pec.EraseChoiceKey(operator_id=operator_id, bot_id=address.bot_id,
+                             chat_id=chat_id, subject=subject, artifacts=artifacts,
                              question=question or "")
     choice = pec.CHOICES.consume_erase(key) if question is not None else None
     if choice is None:

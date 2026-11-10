@@ -2420,7 +2420,8 @@ class TelegramChannel(Channel):
             b = plugin_bindings.BINDINGS.peek(c.binding_ref)
             if b is None:
                 return
-            if (cq.message.chat.id != b.chat_id or cq.from_user.id != c.operator_id
+            if (c.bot_id != self.bot_id
+                    or cq.message.chat.id != b.chat_id or cq.from_user.id != c.operator_id
                     or c.operator_id != b.operator_id
                     or not is_configured_operator(b.chat_id, b.operator_id)):
                 toast = "not for you"
@@ -2435,12 +2436,13 @@ class TelegramChannel(Channel):
                 if mark is not None:
                     await plugin_stop.settle_run_card(c, mark)
                 if o in ("stopped", "ended", "not_taken", "unavailable"):
-                    await plugin_stop.tell_line(b.chat_id, role, o, reply_to=tapped)
+                    await plugin_stop.tell_line(c.bot_id, b.chat_id, role, o, reply_to=tapped)
 
             async def _run() -> None:
                 try:
                     await plugin_stop.stop(role, c.plugin, f"request:{c.request_key}",
-                                           operator_id=c.operator_id, tell=_tell)
+                                           bot_id=c.bot_id, operator_id=c.operator_id,
+                                           tell=_tell)
                 except Exception:  # noqa: BLE001 — logged; the card keeps its Stop
                     logger.exception("run stop failed (cid=%s)", cid[:13])
 
@@ -2654,6 +2656,7 @@ class TelegramChannel(Channel):
         if declared is None or call.get("wire_name") != declared:
             return False
         chat_id, operator_id = int(meta["chat_id"]), int(meta["operator_id"])
+        bot_id = self.bot_id            # the bot the tap arrived on, which holds the proposal
         ref = args["ref"]
         proposal_mid = meta.get("message_id")
 
@@ -2665,14 +2668,14 @@ class TelegramChannel(Channel):
                 await self.mark_proposal(meta, mark)
                 if o in plugin_stop.MARKS:
                     await plugin_stop.settle_run_card(
-                        plugin_stop.confirmation_for(seg, operator_id, ref), mark)
+                        plugin_stop.confirmation_for(seg, bot_id, operator_id, ref), mark)
             if o in ("stopped", "ended", "not_taken", "unavailable"):
-                await plugin_stop.tell_line(chat_id, role, o, reply_to=proposal_mid)
+                await plugin_stop.tell_line(bot_id, chat_id, role, o, reply_to=proposal_mid)
 
         async def _run() -> None:
             try:
-                out = await plugin_stop.stop(role, seg, ref, operator_id=operator_id,
-                                             tell=_tell)
+                out = await plugin_stop.stop(role, seg, ref, bot_id=bot_id,
+                                             operator_id=operator_id, tell=_tell)
                 if out.get("outcome") == "in_flight":
                     await self.mark_proposal(meta, "☑ Stop")
             except Exception:  # noqa: BLE001 — logged; the proposal says it failed

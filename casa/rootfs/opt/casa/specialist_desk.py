@@ -1467,8 +1467,8 @@ async def _post_next_card(value: str, *, meta: dict, build: Any, runtime: str, s
     from authz_grants import GrantIdentity
     entry = build.contract_map.tools.get(runtime)
     identity = GrantIdentity(
-        operator_id=int(meta["operator_id"]), chat_id=int(meta["chat_id"]),
-        enforcement_role=str(meta.get("role") or ""),
+        operator_id=int(meta["operator_id"]), bot_id=int(meta["bot_id"]),
+        chat_id=int(meta["chat_id"]), enforcement_role=str(meta.get("role") or ""),
         artifact_id=str(meta.get("artifact_id") or ""), engagement_id="")
     call = types.SimpleNamespace(identity=identity, entry=entry, tool_use_id=run_id,
                                  contract_map=build.contract_map, protected=build.protected)

@@ -3087,7 +3087,6 @@ async def main() -> None:
             default_agent=assistant_role,
             bus=bus,
             webhook_url=webhook_url,
-            webhook_secret=webhook_secret,
             rate_limiter=telegram_rate_limiter,
             engagement_supergroup_id=telegram_engagement_supergroup_id or None,
             webhook_secret_for=partial(webhook_secret_for, webhook_secret),

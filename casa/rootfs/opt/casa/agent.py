@@ -2250,7 +2250,8 @@ class Agent:
             memory_note = await self._memory_note(
                 channel=msg.channel, channel_key=channel_key)
             if msg.channel == "telegram":
-                desk_lines = specialist_desk.prompt_lines(msg.context.get("chat_id"))
+                desk_lines = specialist_desk.prompt_lines(
+                    msg.context.get("_tg_bot"), msg.context.get("chat_id"))
                 if desk_lines:
                     notes.append("\n".join(desk_lines))
                 reply_note = msg.context.get("_reply_note")

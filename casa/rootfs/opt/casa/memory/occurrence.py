@@ -31,8 +31,6 @@ from __future__ import annotations
 import hashlib
 import uuid
 
-from channels.tg_address import AddressError
-
 PROVIDER = "provider"
 EVENT = "event"
 POST = "post"
@@ -47,6 +45,9 @@ def _bot(bot: object) -> int:
     """The receiving bot's id. Only an int names a bot: a route value such as
     ``"casa"`` (an endpoint not yet verified) can never become part of a key."""
     if not isinstance(bot, int) or isinstance(bot, bool) or bot <= 0:
+        # Imported only here: the memory package is also imported by the
+        # container-start maintenance step, which loads no Casa channel code.
+        from channels.tg_address import AddressError
         raise AddressError(f"not a Telegram bot id: {bot!r}")
     return bot
 
