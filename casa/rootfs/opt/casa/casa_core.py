@@ -114,7 +114,9 @@ async def start_internal_unix_runner(
 
     # #467: gate the operator-only /admin/* family to a root peer via
     # SO_PEERCRED.
-    internal_app = web.Application(middlewares=[admin_peercred_middleware])
+    from operator_calls import INTERNAL_MAX_BODY_BYTES
+    internal_app = web.Application(middlewares=[admin_peercred_middleware],
+                                   client_max_size=INTERNAL_MAX_BODY_BYTES)
     # #792: the result broker's two routes — a plugin's MCP server (a child of
     # the SDK-spawned CLI, running as casa-main's user) deposits a capability
     # here during a declared tool call and a declared consumer redeems it.
@@ -148,6 +150,8 @@ async def start_internal_unix_runner(
     # the plugin's code during the same kind of call.
     internal_app.router.add_post("/internal/broker/action-judgement",
                                  _ops.build_action_judgement_handler())
+    # The conversation's pad, filled and read by the plugin's code during the same kind of call.
+    internal_app.router.add_post("/internal/broker/pad", _ops.build_pad_handler())
     # Task E.1 (granular-reload plan): casactl operator CLI POSTs here
     # over the unix socket. Same dispatch path as the casa_reload MCP tool.
     internal_app.router.add_post(

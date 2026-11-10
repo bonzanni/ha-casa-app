@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.354.0] - 2026-11-09
+
+### Added
+
+- Casa's check of a browsing step can now look at the page as well as read it. Fido's browser app can send a picture of the page beside the step, so a price, a charge or a button that only shows on screen counts in the decision. Password, code and card fields stay black in the picture; text printed on a page stays readable. Without a picture the check works as before.
+- The check can also weigh a whole task: a plan Fido proposes is put to you as one question, and later steps that plainly carry out what you approved can go ahead. Within that job, which version or detail fits a line of the plan is Fido's own call, and he shows you the comparison at the end. Deleting, another record, another site or anything the plan doesn't cover is still asked. A step that commits money (paying, a checkout, a bid, a listing for sale, a booking that charges later) always asks on its own, whatever the plan; putting something in a basket or typing an amount, such as an expense line that matches the plan, commits nothing and goes ahead with the rest of the plan. Both take effect once the browser app and Fido that use them are installed.
+
+### Changed
+
+- A long browsing request is now one conversation. When Fido hands a long task over to his next turn, that turn remembers what the last one read, rather than starting again from the page. If a remembered conversation is gone, or fails twice in a row, the next turn starts fresh and reads the site again. A turn that fails while carrying on says nothing and the work continues a minute later; a failure on a fresh start is still reported to you.
+
 ## [0.353.1] - 2026-11-09
 
 ### Security

@@ -45,7 +45,7 @@ from plugin_grants import (
     sanitized_env_for_resolution,
 )
 from authz_grants import CHALLENGES, GRANTS, normalize_role
-from handoff import child_chain, requester_of
+from handoff import child_chain, operator_words, requester_of
 from memory.eligibility import Source as _CaptureSource
 
 from claude_agent_sdk import (
@@ -79,6 +79,7 @@ from claude_runtime import (
 )
 from media_policies import MEDIA_POLICIES
 import plugin_outbox
+import scratchpad
 from error_kinds import (
     ApiErrorTurn, ErrorKind, _USER_MESSAGES, _classify_error, api_error_kind,
     result_api_error_kind,
@@ -1034,6 +1035,18 @@ _desk_run_sink: ContextVar["list | None"] = ContextVar("_desk_run_sink", default
 # the run it creates — set around that create_task and reset at once, read and
 # cleared by the run at its entry, so a run nested inside it gets its own. A
 # ContextVar for the same reason as ``_desk_run_sink``.
+@dataclass(frozen=True)
+class ConversationTurn:
+    """A continuation turn's conversation: the binding it belongs to, and the session
+    it resumes, or None for a fresh one the binding then adopts."""
+    binding_ref: str
+    resume: str | None
+
+
+# Set by ``plugin_continuations`` around its own turn alone; the runner reads and clears it.
+_conversation: ContextVar["ConversationTurn | None"] = ContextVar(
+    "_conversation", default=None)
+
 _bounded_tree: ContextVar["Any | None"] = ContextVar("_bounded_tree", default=None)
 
 # #1212: the post-teardown cleanups still running (a strong reference: a caller
@@ -2913,9 +2926,10 @@ def _build_specialist_options(
     profile name given to each withheld one — instead of re-reading a
     snapshot a mutation could move.
 
-    SDK-level session resume stays disabled (``resume=None``) — what a
+    SDK-level session resume stays disabled here (``resume=None``) — what a
     specialist knows enters via its prompt and its memory tools, not SDK
-    continuity. Hooks are
+    continuity; the one exception is a plugin continuation, which the
+    delegated runner resumes on its own copy of these options. Hooks are
     resolved from the specialist's own ``cfg.hooks``. MCP servers are
     resolved via the shared registry — same pattern as
     :meth:`Agent._process` (agent.py step 4). Degrades to empty-dict
@@ -4216,7 +4230,8 @@ async def _refresh_health_after_setup_cleared() -> None:
 async def _register_delegated_run(cfg, parent: dict):
     """A delegated run's row (``memory/transcript_runs.py``), registered
     before its request is captured and before its client starts, under the
-    session id Casa chooses for this launch, in the launch's own cwd. A role
+    session id Casa chooses for this launch, or for a continuation the one its
+    binding keeps, in the launch's own cwd. A role
     whose exchange is never captured (no memory budget, a stored call, an
     originating channel that is not write-trusted) registers confirmed: its
     row is only the retention pass's index."""
@@ -4224,9 +4239,11 @@ async def _register_delegated_run(cfg, parent: dict):
     from memory import transcript_runs
     captures = (cfg.memory.token_budget > 0 and not parent.get("stored_call")
                 and writes_to_bank(str(parent.get("channel", ""))))
+    conv = _conversation.get()
     return await transcript_runs.Run.start(
         transcript_runs.DELEGATION, role=cfg.role,
-        directory=specialist_cwd(cfg), session_id=str(uuid.uuid4()),
+        directory=specialist_cwd(cfg),
+        session_id=(conv.resume if conv is not None else None) or str(uuid.uuid4()),
         confirmed=not captures)
 
 
@@ -4369,6 +4386,11 @@ async def _run_delegated_agent(
             tool_counts, parent=parent, run=run)
     finally:
         run.close()
+        # The conversation ends with its run unless a binding can resume it: this also
+        # covers a binding minted during the run, which names this session from then on.
+        from plugin_bindings import BINDINGS
+        if not BINDINGS.holds_session(run.session_id):
+            scratchpad.PADS.discard(run.session_id)
 
 
 async def _run_delegated_turn(
@@ -4377,6 +4399,10 @@ async def _run_delegated_turn(
 ) -> DelegatedOutput:
     """The body of :func:`_run_delegated_agent`, as one registered run."""
     import agent as agent_mod
+    from plugin_bindings import BINDINGS
+
+    conv = _conversation.get()
+    _conversation.set(None)         # a turn nested in this one stays fresh
 
     # The EXECUTING agent's own identity, via the SAME cfg.kind-based fallback
     # policy SessionRegistry.register's callers use (Task 9): a resident (or a
@@ -4417,6 +4443,7 @@ async def _run_delegated_turn(
         # ending with this run's own role — the hand-off bounds read it and a
         # result returns to its element before the last.
         "_handoff_chain": child_chain(parent, cfg.role),
+        "_delegated_session_id": run.session_id,   # a binding minted here keeps it
     }
 
     # Resolve caller display name; fall back to role.
@@ -4557,9 +4584,32 @@ async def _run_delegated_turn(
         # collide with `resume`. The project folder is the launch's own cwd.
         # The cwd is the one the run registered (its row's directory): the
         # retention pass deletes in that folder, so the launch is held to it.
-        options = replace(options, session_id=run.session_id,
-                          cwd=run.directory or options.cwd)
-        own_sid = options.session_id
+        # A continuation resumes its binding's session (the CLI refuses a
+        # session id beside ``resume``); a fresh one becomes the binding's.
+        if conv is not None and conv.resume:
+            options = replace(options, resume=run.session_id, session_id=None,
+                              cwd=run.directory or options.cwd)
+        else:
+            options = replace(options, session_id=run.session_id,
+                              cwd=run.directory or options.cwd)
+            if conv is not None:
+                BINDINGS.adopt(conv.binding_ref, run.session_id)
+        # A mechanical stand-in for "this role's requests are one long conversation".
+        _long_conversation = (
+            getattr(getattr(cfg, "session", None), "desk_context", True) is False)
+        if _long_conversation:
+            options = replace(options, env={**options.env,
+                                            "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "200000"})
+        # This client's pad is this run's session, fixed here; a stored call runs Casa's one
+        # pinned call, so it has no tool. A conversation's first turn opens it with the brief;
+        # a continuation's pad is the request's, as the model left it.
+        if not parent.get("stored_call"):
+            options = scratchpad.attach(
+                options, run.session_id, eager=_long_conversation,
+                **({"task": task_text, "words": operator_words(child_origin)}
+                   if conv is None else {}))
+            scratchpad.PADS.expire(BINDINGS.holds_session)
+        own_sid = run.session_id
         _ph["options"] = time.monotonic()
         token = agent_mod.origin_var.set(child_origin)
         approval_scope = resolve_scope(child_origin)
@@ -4713,7 +4763,8 @@ async def _run_delegated_turn(
         # setup — or whose ResultMessage never arrived — is still counted;
         # here we only aggregate cost when a ResultMessage actually arrived.
         if _specialist_telemetry is not None and result_msg is not None:
-            cost_usd = float(getattr(result_msg, "total_cost_usd", 0.0) or 0.0)
+            cost_usd = BINDINGS.note_cost(
+                own_sid, float(getattr(result_msg, "total_cost_usd", 0.0) or 0.0))
             usage = extract_usage(result_msg)
             _specialist_telemetry.record_cost(
                 cfg.role, cost_usd=cost_usd, usage=usage,
@@ -7632,10 +7683,10 @@ async def start_job(args: dict) -> dict:
         hosts = background_jobs.own_job_hosts(caller)
         host = next((h for h in hosts
                      if h.decl.qualified_name == args.get("job", "")), None)
-        # the work's origin: the calling turn's, without the two markers that
-        # identify the calling turn (its desk use, its quota and echo key)
+        # the work's origin: the calling turn's, without the markers that identify
+        # the calling turn (its desk use, its quota and echo key, its conversation)
         origin = {k: v for k, v in origin.items()
-                  if k not in ("desk", "_delegation_id")}
+                  if k not in ("desk", "_delegation_id", "_delegated_session_id")}
     else:
         delegates = [d.agent for d in (getattr(cfg, "delegates", None) or [])]
         host = background_jobs.find_job_host(args.get("job", ""), caller, delegates)

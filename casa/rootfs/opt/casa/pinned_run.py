@@ -77,13 +77,18 @@ class Capture:
 
     ``on_card``: a ``receipt`` capture whose response also carried
     ``"on_card": true`` — the receipt is written as the tapped card's last line
-    instead of a message (``False`` beside a ``next`` card)."""
+    instead of a message (``False`` beside a ``next`` card).
+
+    ``not_done``: a ``receipt`` capture whose response also carried
+    ``"not_done": true`` — the tap did not do what its button says, so the tapped
+    card is marked ``✖``, never ``☑``."""
     kind: str
     text: str = ""
     rewritten: bool = False
     next: str = ""
     in_place: bool = False
     on_card: bool = False
+    not_done: bool = False
 
 
 # ---------------------------------------------------------------------------

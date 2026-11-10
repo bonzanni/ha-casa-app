@@ -249,6 +249,8 @@
   doc: architecture/personality.md
 - item: casa/rootfs/opt/casa/runtime.py
   doc: architecture/overview.md
+- item: casa/rootfs/opt/casa/scratchpad.py
+  doc: architecture/scratchpad.md
 - item: casa/rootfs/opt/casa/sdk_client_pool.py
   doc: architecture/sdk-client-pool.md
 - item: casa/rootfs/opt/casa/sdk_logging.py
@@ -541,6 +543,8 @@
   doc: architecture/plugin-operator-calls.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/broker/action-judgement
   doc: architecture/plugin-operator-calls.md
+- item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/broker/pad
+  doc: architecture/scratchpad.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/invoke/{agent}
   doc: architecture/http-surface.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/telegram/update

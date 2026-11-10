@@ -81,11 +81,14 @@ removed, already absent, or none it could ever find) and marked it `transcripts_
 only then ages out at its 30 days — so downtime past the retention, a failed removal or a
 held transcript keeps the record, and the pass deletes the transcript once it can.
 
-**INV-ENG-028**: An ephemeral delegation runs under a session id Casa chooses for that launch, registered in `transcript_runs` before its request is captured and before its client starts; the run is confirmed only once its request's and its answer's captures are durable or the live rules capture nothing; its transcript is deleted only by the delegated retention pass or a wipe — that one session, in its own project folder, once the run is confirmed and `TRANSCRIPT_RETENTION_DAYS` have passed since it ended — and an unconfirmed run's transcript never by retention; the utility one-shots (the tier classifier, `query_engager`'s synthesis, run admission's reading) persist no transcript at all.
+**INV-ENG-028**: An ephemeral delegation runs under the session id Casa chooses for that launch, or for a continuation the one its binding keeps, registered in `transcript_runs` before its request is captured and before its client starts; the run is confirmed only once its request's and its answer's captures are durable or the live rules capture nothing; its transcript is deleted only by the delegated retention pass or a wipe — that one session, in its own project folder, once the run is confirmed and `TRANSCRIPT_RETENTION_DAYS` have passed since it ended — and an unconfirmed run's transcript never by retention; the utility one-shots (the tier classifier, `query_engager`'s synthesis, run admission's reading) persist no transcript at all.
 
 Every delegation — synchronous, asynchronous, both voice paths and a stored-call tap — goes
 through one runner, which registers the run (`tools.py::_register_delegated_run`) and starts
-a fresh CLI session in the specialist's working directory. The folder is shared with the
+a fresh CLI session in the specialist's working directory, or for a plugin continuation resumes
+its binding's session ([`plugin-continuations.md`](plugin-continuations.md)), so a session can
+have several rows; the pass deletes it at the age of the oldest, and the next continuation then
+starts fresh. The folder is shared with the
 specialist's other sessions, so the runner names its session on its own copy of the options
 (the shared builder carries no id: engagements launch and resume through it). The runner's
 outermost `finally` encloses the answer's capture and confirms the run; its client's exit

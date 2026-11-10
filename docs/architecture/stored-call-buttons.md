@@ -127,7 +127,7 @@ role's scope or remit. Its one prompt opens with a `<stored_call_context>` block
 caller as the operator, by a tap on the specialist's own proposal, in place of the
 `<delegation_context>` lines a delegated turn opens with: a role prompt that limits which
 delegations it answers refused the call when the tap read as the resident's delegation
-(#1308). Then the task: Casa's note that the operator tapped the
+(#1308). It has no [scratchpad](scratchpad.md) and is not told of one (INV-PAD-005). Then the task: Casa's note that the operator tapped the
 button, the stored tool's runtime name and its canonical arguments, the instruction to make
 that call even if it looks out of date or already done because the plugin decides whether the
 tap still applies and its answer is what the operator sees, and to write nothing to the

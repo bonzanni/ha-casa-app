@@ -74,7 +74,8 @@ receipt, a `safe` tool's `next` object is the next card, posted after the receip
 deposit (#1302); and beside both, `"in_place": true` shows that card in place of the tapped one
 instead, with no receipt sent (#1339, [`stored-call-next-card.md`](stored-call-next-card.md)); and
 beside a `safe` tool's receipt with no `next`, `"on_card": true` writes that receipt as the tapped
-card's last line instead of a message.
+card's last line instead of a message; and beside a `safe` tool's receipt, `"not_done": true`
+says the tap did not do what its button says, so the tapped card is marked `✖`, never `☑`.
 None of them declares anything or changes the call's own validation or delivery.
 
 **What this is not.** It is not an outbound scrubber on the delivery path, not taint

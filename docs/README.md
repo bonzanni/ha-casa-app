@@ -115,6 +115,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | the removal disclosure — what plugin_remove, a specialist bundle's owned-set swap or its compensation says a committed removal left behind | [`architecture/plugin-removal.md`](architecture/plugin-removal.md) |
 | the response-shape or prompt-file write guards, or why an edit to a resident's per-agent file is refused | [`architecture/prompt-file-guards.md`](architecture/prompt-file-guards.md) |
 | the run controller — a run's start, sessions, actions, sources, plain reading, its ends, or the controller service | [`reference/casa-browser-runs.md`](reference/casa-browser-runs.md) |
+| the scratchpad tool, the casa-pad server, the pad broker route a plugin's code fills and reads it through, a pad's brief, what a delegated client's system prompt is told about its pad, or when a pad is moved or deleted | [`architecture/scratchpad.md`](architecture/scratchpad.md) |
 | the served memory view, its index levels or packing, where it sits in a prompt, the session view records, the correction note, or the memory doctrine texts | [`architecture/memory-serving.md`](architecture/memory-serving.md) |
 | the setup tool's dispatch obligation or its consent gating | [`architecture/plugin-setup.md`](architecture/plugin-setup.md) |
 | the setup-dispatch gate — the applied state it recomputes before a setup tool is dispatched, or the overlay reads that fence the send | [`architecture/plugin-setup-dispatch-gate.md`](architecture/plugin-setup-dispatch-gate.md) |

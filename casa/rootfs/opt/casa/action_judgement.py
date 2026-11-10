@@ -2,15 +2,19 @@
 action, asked by a plugin's own code during one of its ``callsCasa`` calls.
 
 ``POST /internal/broker/action-judgement`` takes ``{"client", "kind",
-"packet", "spec_digest"}``. The packet is the app's own canonical JSON text,
-relayed untouched as a JSON string; Casa hashes exactly the UTF-8 bytes it
-received (``packet_sha256``) and the app binds the verdict to its frozen
-action by that digest, so nothing on the way can change what was judged.
+"packet", "spec_digest", "picture"?}``. The packet is the app's own canonical
+JSON text, relayed untouched as a JSON string; Casa hashes exactly the UTF-8
+bytes it received (``packet_sha256``) and the app binds the verdict to its
+frozen action by that digest, so nothing on the way can change what was judged.
+The picture (kind ``action`` only, a base64 PNG of the page, never in the digest)
+travels beside the packet through code alone; a bad one is no picture, and the
+check then runs on the text as it always did.
 
 One clean-context model call judges it: Claude Opus 5.5 at effort high, fixed
 whatever ``MODEL_MAP`` says (operator ruling 5), the measured rulebook for the
-kind as the system prompt (``rulebooks/``, byte for byte), no tools, no
-settings sources, no session. The model sees the measured body: for
+kind as the system prompt (``rulebooks/``, byte for byte, with the measured addenda
+appended by ``system_prompt``), no tools, no settings sources, no session. The model
+sees the measured body: for
 ``action`` ``{"context": {"operator_words": …}, "packet": …}``, for
 ``rejudge`` the packet alone. Slice 5 adds two kinds the app starts itself:
 ``login_item`` (which vault items sign in to a site: 0–5 indexes) and
@@ -27,6 +31,8 @@ clipped: clipping could cut a material fact out of the operator's question."""
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import collections
 import hashlib
 import json
@@ -43,6 +49,8 @@ JUDGE_MODEL = "claude-opus-5-5"     # ruling 5: the judge is fixed, not MODEL_MA
 JUDGE_EFFORT = "high"
 CHECK_TIMEOUT_S = 90.0              # measured max 15.3 s, the CLI start included
 MAX_PACKET_BYTES = 512 * 1024
+MAX_PICTURE_BYTES = 2 * 1024 * 1024  # decoded; a rich signed-in page measured 1.41 MB
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 MAX_DIGEST_CHARS = 128
 MAX_WORDS_CHARS = 4000
 WORDS_MAX_ENTRIES = 500
@@ -77,6 +85,9 @@ RULEBOOK_FILES = {"action": "action_v1.txt", "rejudge": "rejudge_v1.txt",
 RULEBOOKS: dict[str, str] = {
     kind: (RULEBOOK_DIR / name).read_bytes().decode("utf-8")
     for kind, name in RULEBOOK_FILES.items()}
+# Appended to the action rulebook, never edited into it; measured as exactly this ``+``.
+PICTURE_ADDENDUM = (RULEBOOK_DIR / "picture_v1.txt").read_bytes().decode("utf-8")
+SCOPE_ADDENDUM = (RULEBOOK_DIR / "scope_v1.txt").read_bytes().decode("utf-8")
 
 
 # The terminal facts of a check that finished its answer. ALLOW-lists, as in
@@ -243,10 +254,21 @@ def parse_reply(kind: str, text: Any) -> "dict | None":
 # The model call
 # ---------------------------------------------------------------------------
 
-async def _ask_check(rulebook: str, body: str) -> str:
+async def _one_message(body: str, picture: str):
+    """The picture and the body as one user message, the picture first, as measured."""
+    yield {"type": "user", "session_id": "", "parent_tool_use_id": None,
+           "message": {"role": "user", "content": [
+               {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                            "data": picture}},
+               {"type": "text", "text": body}]}}
+
+
+async def _ask_check(rulebook: str, body: str, picture: "str | None" = None) -> str:
     """One clean-context call: Opus 5.5 at high, the rulebook as the system
     prompt, no tools, no settings sources, no session persisted — run
-    admission's posture with the measured options. Only *body* is sent."""
+    admission's posture with the measured options, and the measured route's two
+    switches, so a claude.ai connector of the login never sits beside a page. Only
+    *body* and *picture* are sent."""
     import claude_agent_sdk as sdk
     from claude_runtime import (
         CLAUDE_CLI_PATH, SDK_MAX_BUFFER_SIZE, cli_session_settings,
@@ -260,7 +282,8 @@ async def _ask_check(rulebook: str, body: str) -> str:
         max_turns=4, tools=[], allowed_tools=[],
         disallowed_tools=with_cross_session_tools_denied(["Bash", "Task", "Agent"]),
         settings=cli_session_settings(), setting_sources=ephemeral_setting_sources(),
-        extra_args=ephemeral_extra_args(), permission_mode="acceptEdits",
+        extra_args={**ephemeral_extra_args(), "strict-mcp-config": None},
+        env={"ENABLE_CLAUDEAI_MCP_SERVERS": "false"}, permission_mode="acceptEdits",
     )
     import sdk_logging
     reply = ""
@@ -269,7 +292,8 @@ async def _ask_check(rulebook: str, body: str) -> str:
     # diagnostics; nothing a check reads or answers is stored, so those records are dropped for
     # the call (slice 5, r6).
     with sdk_logging.suppress_structured_voice_sdk_payload_logs():
-        async for msg in sdk.query(prompt=body, options=opts):
+        prompt = body if picture is None else _one_message(body, picture)
+        async for msg in sdk.query(prompt=prompt, options=opts):
             if isinstance(msg, sdk.AssistantMessage):
                 # The CLI reports an API fault or a refusal as an ordinary
                 # assistant message carrying its own text (error_kinds).
@@ -333,7 +357,28 @@ def model_body(kind: str, packet: dict, words: "str | None") -> str:
     return json.dumps(packet, ensure_ascii=False)
 
 
-async def judge(call, kind: Any, packet: Any, spec_digest: Any) -> dict:
+def _usable_picture(kind: str, picture: Any) -> "str | None":
+    """*picture* when the check takes it: kind ``action``, a str that decodes strictly
+    to a PNG of at most ``MAX_PICTURE_BYTES``. Anything else is no picture."""
+    if kind != "action" or not isinstance(picture, str):
+        return None
+    try:
+        raw = base64.b64decode(picture, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    return picture if raw.startswith(PNG_MAGIC) and len(raw) <= MAX_PICTURE_BYTES else None
+
+
+def system_prompt(kind: str, packet: dict, picture: "str | None") -> str:
+    """The pinned rulebook; for ``action``, plus the picture addendum with a picture and
+    the scope addendum when the packet carries ``plan`` or ``approved``."""
+    if kind != "action":
+        return RULEBOOKS[kind]
+    return (RULEBOOKS[kind] + (PICTURE_ADDENDUM if picture is not None else "")
+            + (SCOPE_ADDENDUM if "plan" in packet or "approved" in packet else ""))
+
+
+async def judge(call, kind: Any, packet: Any, spec_digest: Any, picture: Any = None) -> dict:
     """The check for *call* (an ``operator_calls.OperatorCall``):
     ``{"verdict", "packet_sha256", "latency_ms"}``, ``{"error":
     "check_unavailable"}``, or a typed request error before any model call."""
@@ -353,11 +398,13 @@ async def judge(call, kind: Any, packet: Any, spec_digest: Any) -> dict:
         words = WORDS.get(plugin=call.plugin, operator_id=call.identity.operator_id,
                           spec_digest=spec_digest)
     body = model_body(kind, parsed, words)
+    picture = _usable_picture(kind, picture)
+    has_picture = "yes" if picture is not None else "no"
     started = time.monotonic()
     verdict, why = None, "unparsable"
     try:
         verdict = parse_reply(kind, await asyncio.wait_for(
-            _ask_check(RULEBOOKS[kind], body), CHECK_TIMEOUT_S))
+            _ask_check(system_prompt(kind, parsed, picture), body, picture), CHECK_TIMEOUT_S))
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 — any failure is no verdict (F1)
@@ -366,10 +413,10 @@ async def judge(call, kind: Any, packet: Any, spec_digest: Any) -> dict:
     if verdict is None:
         # Never the packet, the words, the reply or the exception's text: a
         # packet holds masked page text of the operator's accounts.
-        logger.warning("action judgement: kind=%s check_unavailable (%s) latency_ms=%d "
-                       "packet=%s", kind, why, latency_ms, digest[:12])
+        logger.warning("action judgement: kind=%s check_unavailable (%s) picture=%s "
+                       "latency_ms=%d packet=%s", kind, why, has_picture, latency_ms, digest[:12])
         return {"error": "check_unavailable"}
-    logger.info("action judgement: kind=%s verdict=%s category=%s latency_ms=%d packet=%s",
-                kind, verdict.get("verdict", f"{len(verdict.get('items', ()))}_items"),
-                verdict.get("category", "-"), latency_ms, digest[:12])
+    logger.info("action judgement: kind=%s verdict=%s category=%s picture=%s latency_ms=%d "
+                "packet=%s", kind, verdict.get("verdict", f"{len(verdict.get('items', ()))}_items"),
+                verdict.get("category", "-"), has_picture, latency_ms, digest[:12])
     return {"verdict": verdict, "packet_sha256": digest, "latency_ms": latency_ms}

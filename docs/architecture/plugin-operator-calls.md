@@ -13,7 +13,9 @@ serves (its binding), run admission — whether the operator's own words asked f
 browsing runs the plugin is about to start — and its confirmation's state, a continuation
 turn for a run, a delivered slot's outcome, and the check of one browsing action. It covers
 the `callsCasa` declaration, the record the admission hook makes, the six internal routes,
-the binding store, the confirmation card and the Stop it keeps, the admission decision and the action check. The continuation turn those routes queue,
+the binding store, the confirmation card and the Stop it keeps, the admission decision and the action check. A seventh route on the same
+call, `POST /internal/broker/pad`, fills and reads the conversation's pad, and is
+[`scratchpad.md`](scratchpad.md). The continuation turn those routes queue,
 and the driver sweep, are [`plugin-continuations.md`](plugin-continuations.md); the result
 contract and the hooks this extends are
 [`plugin-result-contract.md`](plugin-result-contract.md); the requester chain and the
@@ -46,7 +48,8 @@ One binding is minted per plugin and turn; a continuation turn answers the bindi
 queued for. Bindings are durable (`/data/plugin-bindings.json`, `0600`) because a run can
 outlive a restart, keep only plain origin markers — never the operator's words — and age
 out thirty days after their last use. A binding is honoured only for the plugin and
-operator it was minted for.
+operator it was minted for. It also keeps its request's conversation, the session its
+continuation turns resume ([`plugin-continuations.md`](plugin-continuations.md)).
 
 **Admission reads his words and nothing else.** `POST /internal/broker/run-admission`
 takes the runs the plugin wants to start — each with its spec digest, mode, task line and
@@ -98,22 +101,34 @@ card marked ended there too, after which the admission forgets the card
 (`Confirmations.clear_card`) so no later pass edits it again.
 
 **The action check judges one browsing action, bound to the bytes it judged.**
-`POST /internal/broker/action-judgement` takes `{"kind", "packet", "spec_digest"}`: the
-kind (`action`, or `rejudge` at a tapped question; `login_item`, `signin` and `sign_in` for the
+`POST /internal/broker/action-judgement` takes `{"kind", "packet", "spec_digest",
+"picture"}`: the kind (`action`, or `rejudge` at a tapped question; `login_item`, `signin` and `sign_in` for the
 judgements Casa Browser starts itself, each answered from its packet alone; `sign_in`: whether
 the page is the site's own sign-in, `{"verdict": "sign_in" | "not_sign_in", "fields", "reason"}`,
 `fields` naming the planned field ids the username and the password go into), the app's packet as its own JSON text
-relayed as a string, and the run's spec digest or null. Casa hashes exactly the UTF-8
+relayed as a string, the run's spec digest or null, and for `action` optionally a base64 PNG
+of the page. Casa hashes exactly the UTF-8
 bytes it received and runs one clean-context call (`action_judgement._ask_check`: Opus
 5.5 at effort high, fixed whatever the model map says; the measured rulebook for the kind,
 `rulebooks/*.txt`, byte for byte, as the system prompt; no tools, no settings sources, no
-session). For `action` the model reads `{"context": {"operator_words": …}, "packet": …}`,
+session, and `--strict-mcp-config` with `ENABLE_CLAUDEAI_MCP_SERVERS=false`, so a connector
+of the login never sits beside a page). For `action` the model reads `{"context": {"operator_words": …}, "packet": …}`,
 the words being the ones kept for this plugin, operator and digest; for `rejudge` the
 packet alone. It answers `{"verdict", "packet_sha256", "latency_ms"}`, so the caller can
 bind the verdict to the exact packet it froze. The log line carries the kind, the
-verdict, the category, the latency and the digest's first twelve characters — never the
-packet, the words or the reason, because a packet holds masked page text of his accounts; the
+verdict, the category, `picture=yes|no`, the latency and the digest's first twelve characters — never the
+packet, the picture, the words or the reason, because a packet holds masked page text of his accounts; the
 SDK's own payload diagnostics are dropped for the call (`sdk_logging`'s context-scoped filter).
+
+**The picture and the two addenda.** An `action` check may carry the page's picture
+(`action_judgement._usable_picture`: a str that decodes strictly to a PNG of at most 2 MiB);
+the image and the body then go as one user message, the image first. Anything else is no
+picture, and no picture is the text check as it always was. `action_v1.txt` keeps every byte:
+`system_prompt` appends `picture_v1.txt` when a picture is used and `scope_v1.txt` when the
+packet carries `plan` or `approved`, each measured as that plain `+`; a change to any of the
+three is a new measurement. The internal app's body limit is
+`operator_calls.INTERNAL_MAX_BODY_BYTES` (6 MiB, the largest picture beside the largest packet, JSON-escaped), because aiohttp's default 1 MiB reads a rich
+page's body as `bad_json`. A picture is not in `packet_sha256`: the digest binds the packet alone.
 
 **A continuation is queued, a delivery is looked up.** `POST /internal/broker/continue`
 queues one continuation turn for a run of a binding the plugin owns (reason
@@ -168,6 +183,16 @@ a well-formed check never costs a retry.
 
 What it does not cover: whether the verdict is right — the model judges; whether the packet describes the page — the app builds it; and the
 operator's words after a restart, which the check then lacks, as a continuation's does.
+
+**INV-PLUG-057**: The action check's system prompt is the pinned action rulebook, plus the picture addendum only with a valid picture, plus the scope addendum only when the packet carries `plan` or `approved`, in that order, appended byte for byte; a missing or bad picture leaves a text check; a picture is taken only for kind `action`, reaches the model through code alone and is never in the packet's digest or the log line.
+
+Enforced by `action_judgement._usable_picture` and `system_prompt`, and by `judge`, which hashes
+the packet before either is read. The rulebook row of `test_rulebook_files_are_the_measured_bytes`
+and `test_addenda_are_the_measured_bytes` pin the bytes.
+
+What it does not cover: what the picture shows (the app captures it, with password, code and card
+fields and child frames black; text printed on a page stays readable, an accepted exposure), and a
+control whose text and DOM state nothing, where the picture alone can turn `look_first` into `go`.
 
 ## Failure behavior
 

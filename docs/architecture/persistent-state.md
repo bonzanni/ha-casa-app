@@ -25,6 +25,9 @@ receipts, specialist instance tuples, installed stores, staging areas, agent hom
 environment file are all present, all operator-visible, and none of them admitted by it. If you are relying on git history to
 recover something there, check the whitelist first.
 
+**Not everything a turn keeps is state.** A [scratchpad](scratchpad.md) is memory alone: no file,
+no inventory entry, no corrupt-file policy, and every pad is gone after a restart.
+
 **A missing file is usually a valid empty state, not an error.** Most loaders treat absence
 as "nothing yet" and carry on. That is why a fresh install and a wiped state directory both
 boot cleanly.

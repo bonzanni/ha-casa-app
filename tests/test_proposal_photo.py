@@ -288,6 +288,24 @@ async def test_an_on_card_receipt_whose_line_did_not_land_is_posted(desk_env):
     assert str(message).endswith("Done: pay €84.20.")
 
 
+async def test_a_tap_that_did_not_do_its_button_is_never_marked_a_success(desk_env):
+    async def respond(call):
+        call.owner.resolve(pr.Capture("receipt", "Nothing was pressed.", not_done=True))
+        return tools_mod.DelegatedOutput(text="")
+    desk_env.respond = respond
+    await _desk_tap(desk_env)
+    assert len(desk_env.channel.marks) == 1
+    assert desk_env.channel.marks[0].startswith("✖ ")
+    (message, _), = desk_env.channel.replies                 # the receipt still says why
+    assert str(message).endswith("Nothing was pressed.")
+
+
+def test_not_done_is_read_only_as_json_true_and_only_on_a_safe_receipt():
+    assert rb._not_done_of(json.dumps({"receipt": "Nothing.", "not_done": True})) is True
+    assert rb._not_done_of(json.dumps({"receipt": "Nothing.", "not_done": "yes"})) is False
+    assert rb._not_done_of("plain text") is False
+
+
 def test_on_card_is_read_only_beside_a_receipt_and_never_beside_a_next_card():
     assert rb._receipt_of(json.dumps({"receipt": "Done.", "on_card": True})) == (
         "Done.", "", False, True)

@@ -482,8 +482,8 @@ def turn_frame(resident_name: str | None, continuation: bool = False, file: bool
 def desk_log(cfg: Any, desk: "Desk") -> list:
     """The exchanges a use of *desk* is shown: the desk's log, or none for a
     role that declares ``session.desk_context: false`` (browser executor
-    §5.4 — each run is a fresh context, so an earlier run's text never enters
-    another's). The log itself is kept either way."""
+    §5.4 — each request is a fresh context, so an earlier request's text never
+    enters another's). The log itself is kept either way."""
     session = getattr(cfg, "session", None)
     if getattr(session, "desk_context", True) is False:
         return []
@@ -1317,18 +1317,19 @@ async def handle_tap(
                         # new card's record; the tapped card is not marked over it
                         in_place_unknown = why == UNCONFIRMED
                 on_card = False
+                tick = "✖" if capture.not_done else "☑"
                 if (not replaced and not in_place_unknown and capture.kind == "receipt"
                         and capture.on_card and not capture.next and not tell):
                     # the plugin asked for its receipt as the card's last line: no
                     # message; a card line that did not land falls back to one
                     line = clip(str(capture.text or ""), STORED_CALL_RECEIPT_CHARS).split("\n", 1)[0]
-                    on_card = await _mark(f"☑ {line}")
+                    on_card = await _mark(f"{tick} {line}")
                     if on_card:
                         specialist_side = line
                         record_echo(chat_id, applied)
                 if (not replaced and not in_place_unknown and not on_card
                         and capture.kind in ("receipt", "no_post", "delivered")):
-                    await _mark(f"☑ {button}")          # #1341: the tap is applied
+                    await _mark(f"{tick} {button}")     # #1341: the tap is applied
                 if replaced or on_card:
                     pass
                 elif capture.kind in ("receipt", "no_post"):

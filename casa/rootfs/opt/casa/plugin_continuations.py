@@ -1,21 +1,22 @@
 """Browser executor §5.4–§5.6 (Plan 3 C4, C8, C11): continuing a plugin's long
-work in fresh turns, and the driver sweep that finds work nothing is driving.
+work in later turns, and the driver sweep that finds work nothing is driving.
 
 A browsing run outlives the turn that started it: it waits for the operator's
 tap, a live-view login, or simply runs longer than one turn should. The plugin
-ends the turn and the run is continued by a FRESH turn of its specialist, bound
+ends the turn and the run is continued by a new turn of its specialist, bound
 to the run's binding (``plugin_bindings``):
 
 * **The queue (C8).** ``CONTINUATIONS.request(binding, run_ref, reason)`` keeps
   at most one pending continuation per (plugin, operator, ``run_ref``). Its
   worker waits for the specialist's desk in the binding's chat (one desk use at
   a time, so it runs after any turn still driving the run), then runs ONE
-  delegated turn of the specialist in a fresh session whose task is the fixed
-  text ``Continue browsing run <run_ref>.`` under an origin rebuilt from the
+  delegated turn of the specialist, resuming the binding's conversation
+  (``_conversation_for``), whose task is the fixed text ``Continue browsing run <run_ref>.`` under an origin rebuilt from the
   binding: the chain of requesters, the chat and operator, Casa's
   ``synthetic: "continuation"`` marker — so the turn has the operator's grant
   identity but no operator words. Once the worker has started the turn, a new
-  request for the same run queues again.
+  request for the same run queues again. Only this turn resumes: relay turns,
+  and any turn nested in it, stay fresh.
 * **The relay (C4).** The continuation's answer goes back up the binding's
   chain: to the resident directly, as a delegation completion it narrates (the
   durable announcement every async delegation has); or, when a specialist
@@ -25,7 +26,8 @@ to the run's binding (``plugin_bindings``):
   (INV-MEM-032: only a resident's own task on a turn Casa did not compose is).
   A continuation answer that is exactly ``<silent/>`` (an empty one is not) is the specialist's own
   declaration of progress: it climbs no further and is announced to nobody
-  (C4a, INV-PLUG-054).
+  (C4a, INV-PLUG-054). A resumed turn that raises is quiet the same way: the sweep
+  carries the run on (operator ruling 2026-11-06).
 * **The sweep (C11).** Once a minute Casa calls, for every resolved plugin
   that declares ``casa.driverSweep``, that tool directly — Casa starts the
   plugin's stdio server itself, with no model and no session — and queues a
@@ -74,6 +76,8 @@ GIVE_UP_AFTER_S = 600.0
 # How long a cancelled continuation waits for its turn's bounded teardown
 # before releasing the desk (the runner's own teardown bound plus its reap).
 CANCEL_TEARDOWN_S = 45.0
+# Raised resumed turns in a row after which the next starts fresh.
+MAX_RESUME_FAILURES = 2
 RELAY_TASK = (
     "{name} has finished part of the work you handed it earlier (its run "
     "{run_ref}). Its answer:\n\n{answer}\n\nUse it to finish your part of that "
@@ -287,6 +291,20 @@ async def _relay_up(binding, run_ref: str, output, *, deadline: float):
     return output
 
 
+async def _conversation_for(binding, cfg) -> "str | None":
+    """The session this continuation resumes, or None for a fresh one: the binding keeps
+    none, two resumed turns in a row raised, or its transcript is gone (retention, a lost
+    disk), read with the SDK's own lookup in the folder the turn launches in."""
+    import claude_agent_sdk as sdk
+    import tools as tools_mod
+    sid = binding.session_id
+    if not sid or binding.resume_failures >= MAX_RESUME_FAILURES:
+        return None
+    found = await asyncio.to_thread(sdk.get_session_info, sid,
+                                    directory=tools_mod.specialist_cwd(cfg))
+    return sid if found is not None else None
+
+
 async def run_continuation(pending: Pending, *, on_start) -> None:
     """The continuation turn under its role's desk, registered as one async
     delegation of the chain's first specialist whose announced answer is the
@@ -295,6 +313,7 @@ async def run_continuation(pending: Pending, *, on_start) -> None:
     now."""
     import tools as tools_mod
     from operator_calls import is_configured_operator
+    from plugin_bindings import BINDINGS
     from specialist_registry import DelegationRecord
 
     binding = pending.binding
@@ -329,10 +348,30 @@ async def run_continuation(pending: Pending, *, on_start) -> None:
             await tools_mod._specialist_registry.register_delegation(record)
 
             async def _chain():
+                resume, tok = None, None
                 try:
+                    resume = await _conversation_for(binding, cfg)
+                    # around this turn only: relays and the requesters' turns stay fresh
+                    tok = tools_mod._conversation.set(
+                        tools_mod.ConversationTurn(binding.ref, resume))
                     out = await _run_turn(cfg, CONTINUE_TASK.format(run_ref=pending.run_ref),
                                           continuation_origin(binding), quota_key=record.id)
+                except Exception as exc:  # noqa: BLE001 — CancelledError is not one
+                    if resume is None:
+                        raise       # a fresh turn that raises is announced as always
+                    BINDINGS.turn_ended(binding.ref, raised=True)
+                    logger.warning("continuation of run_ref=%s: its resumed turn raised (%s); "
+                                   "the sweep carries it on", pending.run_ref[:24],
+                                   type(exc).__name__)
+                    out = tools_mod.DelegatedOutput(text=SILENCE_SENTINEL)
+                    progress_only.append(out)
+                    return out
+                else:
+                    if resume is not None:
+                        BINDINGS.turn_ended(binding.ref, raised=False)
                 finally:
+                    if tok is not None:
+                        tools_mod._conversation.reset(tok)
                     fido_done.set()
                 if not out.run_aborted and (out.text or "").strip() == SILENCE_SENTINEL:
                     progress_only.append(out)
