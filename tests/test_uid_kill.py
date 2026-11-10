@@ -5,10 +5,10 @@ Every test drives the ladder with an injected ``sleep``/``monotonic`` and a fake
 ``asyncio.sleep`` attribute (memory-cage rule).
 """
 from uid_kill import (
-    UID_BASE, QuiesceResult, kill_uid_until_empty, live_pids_for_uid,
+    UID_FLOOR, QuiesceResult, kill_uid_until_empty, live_pids_for_uid,
 )
 
-UID = UID_BASE + 7
+UID = UID_FLOOR + 7
 
 
 class FakeProc:
@@ -102,6 +102,29 @@ def test_an_unallocated_uid_enumerates_nothing(tmp_path):
     proc = FakeProc(tmp_path)
     proc.set({42: (0, "R")})
     assert live_pids_for_uid(-1, proc_root=proc.path) == []
+
+
+def test_the_floor_is_below_the_runners_band_and_above_every_image_uid(tmp_path):
+    """The script runner's slots are 199000 and 199001; the image's highest uid is
+    nobody (65534). A uid just under the floor is never looked at, the floor itself is."""
+    assert UID_FLOOR == 199000
+    proc = FakeProc(tmp_path)
+    proc.set({42: (UID_FLOOR - 1, "R"), 43: (UID_FLOOR, "R"), 44: (65534, "R")})
+    assert live_pids_for_uid(UID_FLOOR - 1, proc_root=proc.path) == []
+    assert live_pids_for_uid(UID_FLOOR, proc_root=proc.path) == [43]
+    assert live_pids_for_uid(65534, proc_root=proc.path) == []
+
+
+async def test_the_ladder_refuses_a_uid_below_the_floor(tmp_path):
+    """Red case: without the floor check the ladder would signal pid 42, an image uid."""
+    proc = FakeProc(tmp_path)
+    proc.set({42: (65534, "R")})
+    sigr = RecordingSignaller(proc, alive={42: (65534, "R")})
+    res = await kill_uid_until_empty(
+        65534, proc_root=proc.path, sleep=_nosleep, monotonic=_clock(),
+        pidfd_open=sigr.open, pidfd_send=sigr.send, close=sigr.close)
+    assert not res.extinct
+    assert sigr.sent == []
 
 
 # --- the kill loop ----------------------------------------------------------
