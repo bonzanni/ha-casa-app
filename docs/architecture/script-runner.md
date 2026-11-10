@@ -125,7 +125,9 @@ unavailable from the start), requires `x86_64`, runs the ladder on both slot uid
 `pass` over no sections through the whole box, which must answer the frame, exit 0 and an
 empty pad. Any failure leaves `run` unavailable with the fix named in one ERROR and one
 operator notice: update the app so the profile loads (label), remove the stale child profile
-(sentinel), or the box's self-check failed. The preflight is not trusted later: the prelude's
+(sentinel), or the box's self-check failed. A failure found before the Telegram channel's
+first connection keeps its notice until the channel is ready; the boot does not wait for it.
+The preflight is not trusted later: the prelude's
 checks are the first code of every run.
 
 ### The x86_64 syscall surface, by class
@@ -190,7 +192,8 @@ four refusals, the limits, the kill and the audit's four lines are observed.
 **INV-PAD-014**: Every run ends with a kill of its slot's uid, and a slot is reused only after a kill the ladder verified.
 
 Enforced by `pad_run._release_slot` after every `execute`, at boot for both uids, and by
-`_take_slot`, which retries the ladder on a parked slot and takes only a free one;
+`_take_slot`, which retries the ladder on a parked slot and takes only a free one (a retry
+cancelled or failed mid-ladder leaves the slot parked, never claimed and never free);
 `uid_kill.kill_uid_until_empty` claims extinction only on two consecutive empty scans.
 
 ## Failure behavior

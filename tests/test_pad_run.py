@@ -304,6 +304,28 @@ async def test_two_overlapping_takes_never_share_a_uid(runner):
     assert slow.calls == [199000]
 
 
+async def test_a_recovery_cancelled_mid_ladder_leaves_the_slot_parked_not_claimed(runner):
+    """Red case: a take cancelled while the ladder ran left the slot `recovering`, which no
+    later take revisits, so the slot was lost for the rest of the process."""
+    _, ladder, _ = runner
+    pad_run._state.slots = {199000: "parked", 199001: "busy"}
+    started = asyncio.Event()
+
+    async def stuck_ladder(uid, **kwargs):
+        started.set()
+        await asyncio.Event().wait()
+    pad_run.LADDER = stuck_ladder
+    take = asyncio.ensure_future(pad_run._take_slot())
+    await started.wait()
+    take.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await take
+    assert pad_run._state.slots == {199000: "parked", 199001: "busy"}
+    pad_run.LADDER = ladder
+    assert await pad_run._take_slot() == 199000
+    assert ladder.calls == [199000]
+
+
 async def test_two_runs_at_a_time_one_per_pad(runner):
     spawner, ladder, store = runner
     for key in ("a", "b", "c"):
@@ -809,6 +831,30 @@ async def test_boot_refuses_a_label_that_is_not_an_enforced_name(runner, monkeyp
     assert len(notices) == 1 and "profile" in notices[0]
     assert any(own in r.getMessage() for r in caplog.records)
     assert await pad_run.run("k", {"op": "run", "text": "pass"}) == (pad_run.UNAVAILABLE, True)
+
+
+async def test_a_boot_failure_before_the_channel_is_ready_is_told_once_it_is(runner, monkeypatch):
+    """Red case: the notice went to a channel that had not connected yet, was refused, and
+    counted as sent, so the operator never heard of it."""
+    spawner, _, _ = runner
+    pad_run.reset()
+    monkeypatch.setattr(pad_run, "own_label", lambda: "unconfined")
+    ready = asyncio.Event()
+    notices = []
+
+    async def notify(text):
+        if not ready.is_set():
+            return False
+        notices.append(text)
+        return True
+    assert await pad_run.boot(notify=notify, ready=ready) is False
+    await asyncio.sleep(0)
+    assert notices == [] and pad_run._state.ready and spawner.calls == []
+    ready.set()
+    await pad_run._state.notice_task
+    assert len(notices) == 1 and "profile" in notices[0]
+    await pad_run._unavailable("again", "x")
+    assert len(notices) == 1
 
 
 async def test_boot_refuses_an_unreadable_label_and_another_architecture(runner, monkeypatch):

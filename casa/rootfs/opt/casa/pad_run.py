@@ -91,7 +91,9 @@ class _State:
     slots: dict[int, str] = field(default_factory=lambda: {uid: "free" for uid in SLOT_UIDS})
     in_flight: set[str] = field(default_factory=set)
     notify: Callable[[str], Awaitable[Any]] | None = None
+    notify_ready: asyncio.Event | None = None   # the channel can send once this is set
     notified: bool = False
+    notice_task: asyncio.Task | None = None
 
 
 _state = _State()
@@ -111,11 +113,27 @@ async def _unavailable(reason: str, fix: str) -> None:
     if _state.notified or _state.notify is None:
         return
     _state.notified = True
+    text = f"The scratchpad's run operation is unavailable: {fix}. Casa's log has the detail."
+    ready = _state.notify_ready
+    if ready is None or ready.is_set():
+        await _send_notice(_state.notify, text)
+    else:
+        # A boot failure comes before the channel's first connection: the notice waits for
+        # it rather than being lost, and the boot does not wait for the notice.
+        _state.notice_task = asyncio.create_task(_notice_when_ready(_state.notify, ready, text))
+
+
+async def _send_notice(notify: Callable[[str], Awaitable[Any]], text: str) -> None:
     try:
-        await _state.notify(f"The scratchpad's run operation is unavailable: {fix}. "
-                            "Casa's log has the detail.")
+        await notify(text)
     except Exception:  # noqa: BLE001 — a notice fault never stops a boot or a run
         logger.warning("run unavailability notice not sent", exc_info=True)
+
+
+async def _notice_when_ready(notify: Callable[[str], Awaitable[Any]], ready: asyncio.Event,
+                             text: str) -> None:
+    await ready.wait()
+    await _send_notice(notify, text)
 
 
 # --- the box's outcome ---------------------------------------------------------------------
@@ -317,7 +335,14 @@ async def _retry_parked() -> None:
         if _state.slots[uid] != "parked":
             continue
         _state.slots[uid] = "recovering"
-        result = await LADDER(uid)
+        try:
+            result = await LADDER(uid)
+        except BaseException:
+            # Cancelled or failed mid-ladder: the slot is parked again, never left claimed
+            # and never freed without a verified extinction.
+            if _state.slots.get(uid) == "recovering":
+                _state.slots[uid] = "parked"
+            raise
         if _state.slots.get(uid) != "recovering":
             continue
         if result.extinct:
@@ -369,11 +394,13 @@ def _box_failure(outcome: Outcome) -> tuple[str, str]:
             "the box's self-check failed")
 
 
-async def boot(*, notify: Callable[[str], Awaitable[Any]] | None = None) -> bool:
+async def boot(*, notify: Callable[[str], Awaitable[Any]] | None = None,
+               ready: asyncio.Event | None = None) -> bool:
     """Casa's label, the architecture, the kill of both slot uids, then one run of ``pass``
     over no sections through the whole box. Any failure leaves ``run`` unavailable with the
     reason; ``run`` is not ready until this returns."""
     _state.notify = notify
+    _state.notify_ready = ready
     try:
         try:
             _state.label = expected_label(own_label())

@@ -3555,7 +3555,8 @@ async def main() -> None:
     import pad_run
     await pad_run.boot(
         notify=telegram_channel.notify_operator
-        if telegram_channel is not None else None)
+        if telegram_channel is not None else None,
+        ready=_telegram_ready)
 
     # #532: the event worker's boot pass (13d'' above) ran BEFORE the
     # channels started, so any operator notice it owed (an exhausted
