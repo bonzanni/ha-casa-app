@@ -164,7 +164,7 @@ async def _continue(client, binding_ref, run_ref="run-x"):
     return json.loads((await handler(req)).body)
 
 
-# -- run admission (T-17a) ----------------------------------------------------------------
+# -- run admission ----------------------------------------------------------------
 
 async def test_an_equal_request_key_on_two_bots_is_two_requests(two, monkeypatch):
     monkeypatch.setattr(run_admission, "_ask_model", _reading('{"runs": []}'))
@@ -255,7 +255,7 @@ async def test_a_stop_in_flight_on_one_bot_does_not_hold_the_other(two, monkeypa
     assert (await first)["outcome"] == "ended" and (await second)["outcome"] == "ended"
 
 
-# -- delivery keys (T-17b) ----------------------------------------------------------------
+# -- delivery keys ----------------------------------------------------------------
 
 def _map():
     tools = {REPORT: ToolContract(ARTIFACT, PLUGIN, "capability", (SLOT,), {},
@@ -291,7 +291,7 @@ async def test_an_equal_delivery_key_on_two_bots_delivers_on_both(two):
     assert len(_named(two.casa, "deliver_operator_message")) == 1
 
 
-# -- the continuation queue (T-17c) -------------------------------------------------------
+# -- the continuation queue -------------------------------------------------------
 
 async def test_an_equal_run_ref_on_two_bots_is_queued_twice_and_dropped_apart(two):
     b111 = operator_calls.binding_for(_call(CASA_BOT, client="c1"))
@@ -305,7 +305,7 @@ async def test_an_equal_run_ref_on_two_bots_is_queued_twice_and_dropped_apart(tw
     await pc.CONTINUATIONS.drain()
 
 
-# -- the operator's words (T-17d) ---------------------------------------------------------
+# -- the operator's words ---------------------------------------------------------
 
 async def test_words_recorded_on_one_bot_are_not_read_for_the_other(two, monkeypatch):
     monkeypatch.setattr(run_admission, "_ask_model", _reading('{"runs": [{"site": "RunPod"}]}'))
@@ -325,7 +325,7 @@ async def test_words_recorded_on_one_bot_are_not_read_for_the_other(two, monkeyp
     assert bodies == [None, "get my RunPod invoice"]
 
 
-# -- the stores keep the bot across a restart (I-12a) -------------------------------------
+# -- the stores keep the bot across a restart -------------------------------------
 
 def test_a_binding_keeps_its_route_including_casa(stores):
     path = str(stores / "bindings.json")

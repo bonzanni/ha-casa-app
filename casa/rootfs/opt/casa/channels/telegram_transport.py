@@ -345,7 +345,7 @@ class TelegramTransport(Channel):
         return TgAddress(bot_id, operator)
 
     # ------------------------------------------------------------------
-    # Route-bound reply methods (rule B)
+    # Reply methods that deliver through the turn's route
     # ------------------------------------------------------------------
 
     async def send(self, message: str, context: dict[str, Any]) -> DeliveryOutcome:

@@ -90,7 +90,7 @@ def _operator_item(key: str, text: str) -> capture.Event:
 
 
 async def test_equal_chat_and_message_on_two_bots_are_two_events(mem):
-    """I-6: the same (chat, message id) on bots 111 and 222 is two messages;
+    """The same (chat, message id) on bots 111 and 222 is two messages;
     the same message delivered twice on one bot stays one."""
     for bot, text in ((CASA_BOT, "to Ellen"), (FINANCE_BOT, "to Finance"),
                       (CASA_BOT, "to Ellen")):
@@ -101,7 +101,7 @@ async def test_equal_chat_and_message_on_two_bots_are_two_events(mem):
 
 
 async def test_a_job_reply_is_keyed_by_the_bot_that_received_it(mem):
-    """I-6 through a job reply: the endpoint hands ``submit_operator`` the
+    """Through a job reply: the endpoint hands ``submit_operator`` the
     address it received the message at; the engagement's own route (here
     ``CASA``, a turn born before Casa's bot was verified) is not used."""
     from drivers.in_casa_driver import InCasaDriver
@@ -285,7 +285,7 @@ async def test_no_telegram_no_route(monkeypatch):
 
 
 async def test_the_route_is_decided_at_birth_not_at_delivery(monkeypatch):
-    """I-14: a trigger fired for ``finance`` while it has no bot is stamped
+    """A trigger fired for ``finance`` while it has no bot is stamped
     with Casa's bot; binding ``finance`` to its own bot afterwards does not
     move that turn's delivery."""
     manager, transport, casa = _only_casa()
@@ -373,7 +373,7 @@ async def test_a_voice_turn_is_born_with_route_for_its_role_server_side(
 @pytest.mark.parametrize("turn", [_sse_turn, _ws_turn], ids=["sse", "ws"])
 async def test_with_one_bot_a_voice_turn_delivers_to_telegram_once(
         monkeypatch, voice_app, turn):  # noqa: F811
-    """T-14c (the voice slice): with one bot, what the voice turn's tools send
+    """With one bot, what the voice turn's tools send
     to Telegram resolves and is delivered exactly once, never ``RouteMissing``.
     Before Casa's bot is verified the route is ``CASA``, which resolves to
     the same endpoint."""

@@ -1587,7 +1587,7 @@ def _telegram(channel_manager: Any) -> Any:
 
 def _casa_endpoint(channel_manager: Any) -> Any:
     """Casa's own Telegram endpoint, ready or not, for a Casa-composed notice
-    (rule C); ``None`` when Telegram is not configured."""
+    (always Casa's own bot); ``None`` when Telegram is not configured."""
     transport = _telegram(channel_manager)
     return transport.casa_endpoint() if transport is not None else None
 

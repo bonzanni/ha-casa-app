@@ -1379,7 +1379,7 @@ def compose_operator_link_button(value: str, *, caption: str = "", label: str = 
 async def _post_operator_link(to: TgAddress, text: str, entities, plain: str,
                               post: "PostRecord | None" = None,
                               button: "tuple[str, str, str] | None" = None):
-    """Post to the chat *to* names through *to*'s bot (rule A); no Telegram ⇒
+    """Post to the chat *to* names through *to*'s bot (the bot its address names); no Telegram ⇒
     ``NOT_DELIVERED``. ``post`` (S4) is the record the channel files each
     landed message under; ``button`` (v0.347.3) is ``(text, button text, url)``,
     the message with the URL button."""
@@ -1561,7 +1561,7 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
     page that does not land sends no card and the record is unregistered. The
     proof — and the receipt's ``pages`` count — needs every page and the card.
 
-    The card goes through the bot the identity names (rule A). Its lane
+    The card goes through the bot the identity names. Its lane
     (``proposal:<bot>:<chat>``, the open-proposal cap) and the bot stored with
     it are that endpoint's id, read before the count and the register: an
     endpoint with no id yet posts nothing and registers nothing, and the
