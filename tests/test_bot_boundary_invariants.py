@@ -611,38 +611,80 @@ async def test_a_scheduled_job_born_on_casas_bot_keeps_it_after_its_role_gets_a_
 
 
 async def test_an_agents_conversation_survives_a_change_of_its_bot_and_is_its_own(
-        a_isolated, monkeypatch):
+        a_isolated, tmp_path):
     """The session a turn resumes is keyed by the agent and the chat, never
-    the bot: finance's DM through bot 222 and, after its token is replaced by
-    a new bot (333), through bot 333 resume one conversation, and ``/new``
-    on either resets that one; the assistant on the same chat has its own."""
-    import session_registry
-    from session_registry import build_scoped_session_key
+    the bot. Real endpoints hand their DM turns to real agents sharing one
+    session registry: finance's turn through bot 222 opens a conversation;
+    after finance's token is replaced by a new bot (333) and Casa restarts,
+    its turn through 333 resumes that same conversation; the assistant's
+    turn on the same chat through bot 111 opens its own. ``/new`` on an
+    endpoint resets exactly the conversation its agent uses."""
+    from session_registry import SessionRegistry
+    from test_agent_process import (
+        FakeClient, _make_agent_with_registry, _mk_assistant, _mk_result,
+        patch_retry_sleep,
+    )
 
-    resets: list[str] = []
+    resumes: list = []
+    sids = itertools.count(1)
 
-    async def _reset(key, registry):
-        resets.append(key)
-    monkeypatch.setattr(session_registry, "reset_channel", _reset)
+    class _Client(FakeClient):
+        """A resumed session keeps its id; a fresh one gets the next."""
 
-    def _key(msg) -> str:
-        # the key the agent resumes a turn under (``Agent._process``)
-        return build_scoped_session_key(msg.channel, msg.target,
-                                        msg.context.get("chat_id"))
+        def __init__(self, options):
+            self._resume = getattr(options, "resume", None)
+            resumes.append(self._resume)
+            super().__init__(options)
 
-    keys = {}
-    for bot, role in ((FINANCE_BOT, "finance"), (333, "finance"),
-                      (CASA_BOT, "assistant")):
+        async def connect(self):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def receive_response(self):
+            yield _mk_assistant("ok")
+            yield _mk_result(self._resume or f"sid-{next(sids)}")
+
+    registry = SessionRegistry(str(tmp_path / "sessions.json"))
+
+    async def turn_through(bot: int, role: str):
+        """The operator's DM through *bot*, handed by its endpoint to a fresh
+        agent for *role* (as after a restart); returns the endpoint."""
         bus = _A_Bus()
         ep = _a_endpoint(bot, bus, role=role)
-        ep._session_registry = object()
+        ep._session_registry = registry
         await ep._handle(_a_text_update("hello", message_id=5), None)
-        (turn,) = _a_turns(bus)
-        assert turn.context["_tg_bot"] == bot
-        keys[bot] = _key(turn)
-        await ep._handle(_a_text_update("/new", message_id=6), None)
-    assert keys[FINANCE_BOT] == keys[333] != keys[CASA_BOT]
-    assert resets == [keys[FINANCE_BOT], keys[333], keys[CASA_BOT]]
+        (msg,) = _a_turns(bus)
+        assert msg.context["_tg_bot"] == bot
+        agent = _make_agent_with_registry(registry, role=role)
+        agent._channel_manager = make_transport(ep, casa=ep)
+        try:
+            await agent.handle_message(msg)
+        finally:
+            await agent.aclose()
+        return ep
+
+    def conversations() -> dict:
+        return {key: entry.get("sdk_session_id")
+                for key, entry in registry.all_entries().items()}
+
+    FakeClient.reset()
+    with patch("sdk_client_pool._default_make_client", _Client), patch_retry_sleep():
+        await turn_through(FINANCE_BOT, "finance")
+        (finance_key,) = conversations()
+        on_333 = await turn_through(333, "finance")
+        assert conversations() == {finance_key: "sid-1"}
+        on_111 = await turn_through(CASA_BOT, "assistant")
+    # finance's second turn resumed its first; the assistant started its own
+    assert resumes == [None, "sid-1", None]
+    (assistant_key,) = set(conversations()) - {finance_key}
+
+    # /new through finance's new bot resets finance's conversation, and only it
+    await on_333._handle(_a_text_update("/new", message_id=6), None)
+    assert set(conversations()) == {assistant_key}
+    await on_111._handle(_a_text_update("/new", message_id=7), None)
+    assert conversations() == {}
 
 
 # ---------------------------------------------------------------------------
