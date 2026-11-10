@@ -394,7 +394,7 @@ READ = r"""([target, SALT]) => {
   const stateOf = (e) => {
     const tag = e.tagName.toLowerCase(), type = (e.getAttribute('type') || '').toLowerCase();
     const st = {};
-    const label = (o) => o.textContent.replace(/\s+/g,' ').trim();
+    const label = (o) => o.label.replace(/\s+/g,' ').trim();     // the name the option shows
     // slice 5j (r5): a secret control's state passes the one rule too, as every value does
     if (tag === 'input' && (type === 'checkbox' || type === 'radio')) st.checked = valueOf(e, () => e.checked);
     else if (tag === 'select' && hidesSecret(e)) st.selected = NOT_SHOWN;
@@ -1500,8 +1500,18 @@ _VALUE = r"""(e) => { /*SECRET*/
 # The chosen option's facts, and whether it belongs to the select.
 _OPTION_FACTS = r"""(s, o) => ({
   belongs: !!o && o.tagName === 'OPTION' && !!s.options && [...s.options].includes(o),
-  label: o ? o.textContent.replace(/\s+/g, ' ').trim() : null,
+  label: o ? o.label.replace(/\s+/g, ' ').trim() : null,     // the name the option shows
   value: o ? o.value : null})"""
+
+# The option of ``s`` whose visible name is the same as ``o``'s, when exactly one has it (none,
+# several, or not a select and an option: null). An observation cut short lists a long form's
+# dropdown only in part, and the same name listed under another row is how the agent reaches it.
+_OWN_OPTION = r"""(s, o) => {
+  if (!s || s.tagName !== 'SELECT' || !o || o.tagName !== 'OPTION' || !s.options) return null;
+  const name = (x) => x.label.replace(/\s+/g, ' ').trim();     // the name a dropdown shows
+  const same = [...s.options].filter((x) => name(x) === name(o));
+  return same.length === 1 ? same[0] : null;
+}"""
 
 # S2-8: a selection is one in-page step. In one JavaScript task (no page script can run in
 # between) it checks the select (attached, visible, enabled) and the option (attached, in that
@@ -1513,7 +1523,7 @@ _SELECT_ONE = r"""(s, [o, label, value]) => {
   if (!s.checkVisibility({checkOpacity: true, checkVisibilityCSS: true}) || s.matches(':disabled')) return 'select';
   if (!o || !o.isConnected || !s.options || ![...s.options].includes(o)) return 'option';
   if (o.disabled || (o.parentElement && o.parentElement.tagName === 'OPTGROUP' && o.parentElement.disabled)) return 'option_disabled';
-  if (o.textContent.replace(/\s+/g, ' ').trim() !== label || o.value !== value) return 'option_changed';
+  if (o.label.replace(/\s+/g, ' ').trim() !== label || o.value !== value) return 'option_changed';
   o.selected = true;
   s.dispatchEvent(new Event('input', {bubbles: true}));
   s.dispatchEvent(new Event('change', {bubbles: true}));
@@ -1775,6 +1785,14 @@ class PageOps:
 
     async def option_facts(self, select, option) -> dict:
         return await select.evaluate(_OPTION_FACTS, option)
+
+    async def own_option(self, select, option):
+        """``select``'s own option of ``option``'s visible name, or None (``_OWN_OPTION``)."""
+        handle = await select.evaluate_handle(_OWN_OPTION, option)
+        own = handle.as_element()
+        if own is None:
+            await handle.dispose()
+        return own
 
     async def select_one(self, select, option, label: str, value: str) -> str:
         return await select.evaluate(_SELECT_ONE, [option, label, value])

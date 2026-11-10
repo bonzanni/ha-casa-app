@@ -124,8 +124,10 @@ past it, what is in the viewport goes first (a menu appended to the body too), a
 left out makes a reading incomplete, the observation opens with `observe.py::CONTROLS_LEFT`, and
 `controls_left` counts every control and option left out, so the listed and the left out add up to
 what the page has. A visible
-select is followed by its options (role `option`, named by their text), each a `select`
-target even while the dropdown is closed; a select the secret rule recognises lists none, its
+select is followed by its options (role `option`, named by the label each shows), each a `select`
+target even while the dropdown is closed; a select whose options did not all fit is named with
+how many are listed (`Where (394 of 450 options listed)`), so a list cut short never reads as
+the whole list; a select the secret rule recognises lists none, its
 choice being refused to a model anyway. The real
 target stays in `casa_browser/rootfs/opt/casa_browser/handles.py::HandleRegistry`, bound to its
 run and page generation; `handles.py::StaleHandle` refuses it from another run or an older

@@ -1737,6 +1737,7 @@ class RunController:
             choice = self._resolve(active, session, action.choice_handle, action.generation)
             if choice.element is None:
                 raise ProtocolError("unsupported")
+            choice = await self._own_choice(target, choice)
         search_field, option = await self._admissible(kind, target, choice, action)
         # A step carrying a plan is the one the operator's Yes is asked on, and one Fido marks
         # ask_first may commit money: both go to the check.
@@ -1838,6 +1839,21 @@ class RunController:
                 raise ProtocolError("unsupported")
             return False, option
         return False, None
+
+    async def _own_choice(self, target, choice):
+        """A choice listed under another dropdown stands for the option of the same visible name
+        in the dropdown the step names, when that one holds exactly one such option: on a long
+        page an observation lists a dropdown's options only in part, and the same name under
+        another row is how the agent reaches the one it needs. Otherwise the choice stays as it
+        is, and ``_admissible`` refuses it."""
+        try:
+            facts = await self.ops.option_facts(target.element, choice.element)
+            if isinstance(facts, dict) and facts.get("belongs"):
+                return choice
+            own = await self.ops.own_option(target.element, choice.element)
+        except Exception:  # noqa: BLE001 — the choice stays, and is refused
+            return choice
+        return choice if own is None else replace(choice, element=own)
 
     async def _scroll(self, active: _Active, session, target, action) -> ActionResult:
         """``scroll`` is free everywhere (G1 c); the pacer checks every wheel step. The first

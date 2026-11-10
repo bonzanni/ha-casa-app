@@ -381,9 +381,16 @@ EXTRACT = r"""(ask) => {
     // a real <textarea> is multi-line (slice 6b), the one field that takes line breaks.
     const type = e.tagName === 'INPUT' ? (e.getAttribute('type') || '').toLowerCase() : '';
     const textarea = e.localName === 'textarea' && e.namespaceURI === 'http://www.w3.org/1999/xhtml';
-    data.push({role, name: nameOf(e), href: e.tagName === 'A' ? e.href : null, field,
-               kind: textarea ? %(MULTI_LINE)r : (KINDS.has(type) ? type : null), ...holds(e),
-               found: foundOnes.has(e)});
+    const item = {role, name: nameOf(e), href: e.tagName === 'A' ? e.href : null, field,
+                  kind: textarea ? %(MULTI_LINE)r : (KINDS.has(type) ? type : null), ...holds(e),
+                  found: foundOnes.has(e)};
+    // A dropdown whose options did not all fit says how many are listed, so a list cut short
+    // never reads as the whole list.
+    if (listsOptions(e) && listed.get(e) < e.options.length) {
+      item.options_listed = listed.get(e);
+      item.options_total = e.options.length;
+    }
+    data.push(item);
     els.push(e);
     // A visible select's options, each a target for ``select`` (action model S2-8): an option
     // has no box of its own while the dropdown is closed, so it is listed with its select.
@@ -919,7 +926,11 @@ class Observer:
                         value = _masked_value(info["value"])
                     if isinstance(info.get("checked"), bool):
                         checked = info["checked"]
-                elements.append(ElementView(handle, role, label[:300],
+                shown_label = label[:300]
+                total, listed = info.get("options_total"), info.get("options_listed")
+                if isinstance(total, int) and isinstance(listed, int) and listed < total:
+                    shown_label = f"{label[:270]} ({listed} of {total} options listed)"
+                elements.append(ElementView(handle, role, shown_label,
                                             kind if kind in FIELD_KINDS else None, value, checked,
                                             # one that answers secret now is not said to hold it
                                             bool(info.get("found")) and (

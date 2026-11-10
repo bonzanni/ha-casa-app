@@ -170,8 +170,9 @@ async def test_what_holds_the_words_in_a_field_or_an_option_past_the_cap_is_foun
     obs = await r.observe("Place 450")
     assert found(obs) == ["Place 450"], "an option past the room its select was given"
     labels = [e.label_masked for e in obs.elements]
-    assert labels[labels.index("Place 450") - 1] == "Where"   # it follows its select
-    assert found(await r.observe("Where")) == ["Where"]
+    where = labels[labels.index("Place 450") - 1]                # it follows its select,
+    assert where.startswith("Where (") and where.endswith(" of 500 options listed)")   # cut short
+    assert [w.split(" (")[0] for w in found(await r.observe("Where"))] == ["Where"]
 
 
 async def test_more_matches_than_fit_are_counted(show, rig):
@@ -531,3 +532,71 @@ async def test_a_page_that_scrolls_inside_a_box_reports_the_box(show, rig):
     where = await r.scroll(obs.page_handle, scrolling())
     assert where["moved"] is True and where["end"] == size
     assert where["top"] == await page.evaluate("() => Math.round(document.getElementById('b').scrollTop)")
+
+
+# -- a dropdown whose list was cut short ---------------------------------------------------------
+
+async def test_a_dropdown_whose_options_did_not_all_fit_says_how_many_are_listed(show, rig):
+    places = "".join(f"<option>Place {n}</option>" for n in range(500))
+    page = await show(f'<select aria-label="Where">{places}</select>' + rows())
+    obs = await rig(page).observe()
+    where = next(e for e in obs.elements if e.label_masked.startswith("Where"))
+    listed = sum(1 for e in obs.elements if e.role == "option" and e.label_masked.startswith("Place "))
+    assert 0 < listed < 500
+    assert where.label_masked == f"Where ({listed} of 500 options listed)"
+    whole = next(e for e in obs.elements if e.label_masked == "Who on day 0")   # all 6 listed
+    assert whole.role == "combobox"
+
+
+async def _choose(page, rig, select_label, option_handle):
+    """The controller's own ``_own_choice`` and the real ``PageOps`` over the real page: what the
+    step would select, or None when it is refused."""
+    r = rig(page)
+    ops = gate.PageOps()
+    ctl = SimpleNamespace(ops=ops)
+    obs = await r.observe()
+    select = r.target(next(e.handle for e in obs.elements if e.label_masked == select_label))
+    choice = await RunController._own_choice(ctl, select, r.target(option_handle(obs)))
+    facts = await ops.option_facts(select.element, choice.element)
+    if not facts["belongs"]:
+        return None
+    assert await ops.select_one(select.element, choice.element, facts["label"], facts["value"]) == "ok"
+    return facts
+
+
+@pytest.mark.parametrize("own,chosen", [
+    ("<option>Travel</option><option value='m'>Meals</option><option value='p'>Parking</option>", "p"),
+    ("<option>Travel</option><option>Meals</option>", None),
+    ("<option>Parking</option><option>Travel</option><option> Parking </option>", None)],
+    ids=["one_namesake", "none", "two"])
+async def test_an_option_of_another_row_chooses_its_namesake_in_the_named_dropdown(show, rig, own, chosen):
+    page = await show('<select aria-label="Row"><option>Travel</option><option value="rp">Parking</option></select>'
+                      f'<select aria-label="New">{own}</select>')
+
+    def row_parking(obs):
+        labels = [e.label_masked for e in obs.elements]
+        return obs.elements[labels.index("Row") + 2].handle            # the row's own "Parking"
+    facts = await _choose(page, rig, "New", row_parking)
+    values = await page.evaluate("() => [...document.querySelectorAll('select')].map(s => s.value)")
+    if chosen is None:
+        assert facts is None and values[0] == "Travel"
+    else:
+        assert facts == {"belongs": True, "label": "Parking", "value": chosen}
+        assert values == ["Travel", chosen]
+
+
+async def test_an_option_is_matched_by_the_name_it_shows(show, rig):
+    """An option's label attribute is the name the dropdown shows and the observation lists: the
+    match, the option's facts and the selection all go by it, never by the option's own text."""
+    page = await show('<select aria-label="Row"><option>Travel</option>'
+                      '<option label="Parking" value="rp">internal</option></select>'
+                      '<select aria-label="New"><option>Travel</option>'
+                      '<option label="Meals" value="m">internal</option>'
+                      '<option label="Parking" value="p">other</option></select>')
+
+    def row_parking(obs):
+        labels = [e.label_masked for e in obs.elements]
+        return obs.elements[labels.index("Row") + 2].handle
+    facts = await _choose(page, rig, "New", row_parking)
+    assert facts == {"belongs": True, "label": "Parking", "value": "p"}
+    assert await page.evaluate("() => [...document.querySelectorAll('select')].map(s => s.value)") == ["Travel", "p"]
