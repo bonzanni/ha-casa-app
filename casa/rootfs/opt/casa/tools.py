@@ -14664,8 +14664,8 @@ async def _settle_install_consent_post(handle) -> "dict | None":
 SPECIALIST_OPEN_CONVERSATION_NOTICE_TEMPLATE = (
     "When it resumes, it picks up Casa's updated settings, but it keeps its "
     "personality and the plugin versions it started with. To get everything "
-    "new, cancel it with the Cancel button on its start line and ask "
-    "{assistant} for a new conversation."
+    "new, cancel it (with its Cancel button, or ask {assistant}) and start it "
+    "again."
 )
 
 

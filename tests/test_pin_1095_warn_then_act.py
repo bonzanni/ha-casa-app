@@ -33,8 +33,8 @@ pytestmark = pytest.mark.asyncio
 
 RULED = ("When it resumes, it picks up Casa's updated settings, but it keeps its "
          "personality and the plugin versions it started with. To get everything "
-         "new, cancel it with the Cancel button on its start line and ask the "
-         "assistant for a new conversation.")
+         "new, cancel it (with its Cancel button, or ask the assistant) and "
+         "start it again.")
 # #1409: the ruling's sentence names the CONFIGURED assistant; with no persona
 # registered (these fixtures, and every tool description, built at import) it
 # says "the assistant".
