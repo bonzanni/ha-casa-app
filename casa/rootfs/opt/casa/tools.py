@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 if TYPE_CHECKING:
+    from datetime import datetime
     from trigger_registry import TriggerRegistry
 
 from plugin_env_conf import set_entry as _set_env_entry  # noqa: F401 — available for future use
@@ -3783,10 +3784,10 @@ def _int_or_none(value: object) -> int | None:
 
 class _DelegatedRunLog:
     """A delegated run of a specialist or the configurator, in that agent's
-    log: ``▶ started`` at its start (the run's name is already its task),
-    its words and its main loop's steps as
-    they come, and ``✓ answered`` or ``⚠️ aborted`` at its end. Any other
-    run (a resident's) logs nothing.
+    log, named ``Request HH:MM`` by its start in Casa's local time:
+    ``▶ started`` at its start, its words and its main loop's steps as they
+    come, and ``✓ answered`` or ``⚠️ aborted`` at its end. Any other run (a
+    resident's) logs nothing.
 
     #1207: words written after a call still waiting on the operator's
     approval are held; they are logged when a consume of the same grant
@@ -3794,13 +3795,16 @@ class _DelegatedRunLog:
     are not held: a step names the tool, never its outcome. Every call is
     synchronous and never waits on Telegram."""
 
-    def __init__(self, cfg: Any, task_text: str) -> None:
+    def __init__(self, cfg: Any, *, started: "datetime | None" = None) -> None:
+        from datetime import datetime
         from agent_logs import LogKey
+        from timekeeping import resolve_tz
         role = getattr(cfg, "role", None)
         self._key = (LogKey("agent", role)
                      if getattr(cfg, "kind", "") in ("specialist", "executor")
                      and isinstance(role, str) and role else None)
-        self._run = task_text or ""
+        when = started if started is not None else datetime.now(resolve_tz())
+        self._run = f"Request {when:%H:%M}"
         self._logged = 0
         self._ended = False
 
@@ -4550,7 +4554,7 @@ async def _run_delegated_turn(
     # operator's DM, removed when the run ends.
     _steps = _configurator_step_line(cfg, parent)
     # The run in its agent's log (a specialist's or the configurator's).
-    _log = _DelegatedRunLog(cfg, task_text)
+    _log = _DelegatedRunLog(cfg)
     _log.start()
     _raised = False
 

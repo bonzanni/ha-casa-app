@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from drivers.turn_progress import (
-    TurnProgressLine, activity_for_tool, format_elapsed,
+    TurnProgressLine, activity_for_tool, format_elapsed, step_log_line,
 )
 
 pytestmark = [pytest.mark.unit]
@@ -301,6 +301,53 @@ class TestActivityMapping:
         long = "s" * 100
         out = activity_for_tool(f"mcp__{long}__do")
         assert out == "using " + "s" * 32 + " tools"
+
+
+class TestStepLogLine:
+    """A step in an agent's log: Casa's own and built-in tools by activity,
+    any other MCP tool by its name and where it comes from."""
+
+    @pytest.mark.parametrize("tool,expected", [
+        ("Read", "🔧 Reading files"),
+        ("Bash", "🔧 Running commands"),
+        ("mcp__casa-framework__emit_completion", "🔧 Wrapping up"),
+        ("mcp__casa-framework__query_engager", "🔧 Using casa-framework tools"),
+        ("mcp__casa-pad__scratchpad", "🔧 Using casa-pad tools"),
+        ("mcp__homeassistant__get_state", "🔧 get state (homeassistant)"),
+        ("mcp__plugin_bank-feed_bank-feed__daily_sync", "🔧 daily sync (bank-feed)"),
+        # a plugin name and a server name may both hold underscores: the
+        # plugin is found among the known ones, never by counting
+        ("mcp__plugin_my_bank_feed_api__sync_now", "🔧 sync now (my_bank)"),
+        # a plugin tool of no known plugin names its whole segment
+        ("mcp__plugin_gone_srv__run", "🔧 run (gone_srv)"),
+        ("mcp__weird", "🔧 Using weird tools"),
+        ("", "🔧 Working"),
+    ])
+    def test_shapes(self, tool, expected):
+        assert step_log_line(tool, ["bank-feed", "my", "my_bank"]) == expected
+
+    def test_the_source_is_capped_at_32(self):
+        long = "s" * 100
+        assert step_log_line(f"mcp__{long}__do", []) == f"🔧 do ({'s' * 32})"
+        assert step_log_line(f"mcp__plugin_{long}_x__do", [long]) == f"🔧 do ({'s' * 32})"
+
+    def test_the_known_plugins_come_from_the_published_registry(self, monkeypatch):
+        import plugin_registry
+        from types import SimpleNamespace
+        entries = [{"name": "finance.bank-feed", "manifest_name": "bank-feed"},
+                   {"name": "mtg"}]
+        monkeypatch.setattr(plugin_registry, "_snapshot", SimpleNamespace(
+            registry=SimpleNamespace(entries=entries)))
+        assert step_log_line("mcp__plugin_bank-feed_bank-feed__daily_sync") == \
+            "🔧 daily sync (bank-feed)"
+        assert step_log_line("mcp__plugin_mtg_rules_db__lookup") == "🔧 lookup (mtg)"
+        monkeypatch.setattr(plugin_registry, "_snapshot", None)
+        assert step_log_line("mcp__plugin_mtg_rules_db__lookup") == \
+            "🔧 lookup (mtg_rules_db)"
+
+    def test_the_direct_chat_step_line_is_unchanged(self):
+        assert activity_for_tool("mcp__plugin_bank-feed_bank-feed__daily_sync") == \
+            "using plugin_bank-feed_bank-feed tools"
 
 
 class TestElapsedFormat:

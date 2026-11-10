@@ -3708,7 +3708,9 @@ class TelegramChannel(Channel):
         """The log group is read-only. A person who writes there (text, a
         command or a file, in any topic or in General) is pointed to the
         direct chat once per boot, in the thread they wrote in; nothing they
-        wrote reaches a job, memory or a model. Bots are ignored."""
+        wrote reaches a job, memory or a model. Bots are ignored. The
+        pointer is recorded with the log's posts, so retention deletes it
+        with them."""
         user = getattr(msg, "from_user", None)
         user_id = getattr(user, "id", None)
         if user_id is None or getattr(user, "is_bot", False):
@@ -3722,9 +3724,13 @@ class TelegramChannel(Channel):
         if isinstance(thread_id, int) and not isinstance(thread_id, bool):
             kwargs["message_thread_id"] = thread_id
         try:
-            await self.bot.send_message(**kwargs)
+            sent = await self.bot.send_message(**kwargs)
         except Exception as exc:  # noqa: BLE001
             logger.warning("log group redirect send failed: %s", exc)
+            return
+        if self._agent_logs is not None:
+            self._agent_logs.note_post(kwargs["chat_id"],
+                                       getattr(sent, "message_id", None))
 
     # ------------------------------------------------------------------
     # E-12 (v0.37.0) Task 20 / v0.75.0 (W5/Sol B3,B4): inline-keyboard

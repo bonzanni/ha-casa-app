@@ -131,6 +131,45 @@ class TestTheLogGroupIsReadOnly:
         assert drv.submitted == []
 
 
+class TestThePointerIsDeletedWithTheLogs:
+    """The pointer is sent directly, not through the log's writer, and is
+    recorded with the log's posts so retention deletes it 44 hours on."""
+
+    async def _channel(self, bot, tmp_path):
+        from agent_logs import AgentLogs
+
+        ch, _drv = _log_group_channel(bot)
+        wall = [1_800_000_000.0]
+        logs = AgentLogs(display_name=lambda role: role,
+                         path=str(tmp_path / "log-topics.json"),
+                         wall=lambda: wall[0])
+        await logs.check_enabled(bot, -1001)
+        ch._agent_logs = logs
+        return ch, logs, wall
+
+    async def test_the_pointer_is_deleted_after_44_hours(self, fake_telegram_bot,
+                                                         tmp_path):
+        bot = fake_telegram_bot
+        bot.delete_messages = AsyncMock(return_value=True)
+        ch, logs, wall = await self._channel(bot, tmp_path)
+        await ch.handle_update(_mk_update(chat_id=-1001, text="hi", thread_id=12,
+                                          user_id=7))
+        assert _redirects(bot) == [(12, REDIRECT)]
+        assert [p[0] for p in logs._posts] == [1]
+        wall[0] += 44 * 3600 + 1
+        await logs.retention_pass()
+        bot.delete_messages.assert_awaited_once_with(chat_id=-1001, message_ids=[1])
+        assert logs._posts == []
+
+    async def test_a_failed_pointer_records_nothing(self, fake_telegram_bot,
+                                                    tmp_path):
+        bot = fake_telegram_bot
+        ch, logs, _wall = await self._channel(bot, tmp_path)
+        bot.send_message = AsyncMock(side_effect=RuntimeError("down"))
+        await ch.handle_update(_mk_update(chat_id=-1001, text="hi", user_id=7))
+        assert logs._posts == []
+
+
 class TestOnlyANewMessageStartsATurn:
     """#1040: PTB delivers an edited message, a channel post and a business
     message with ``update.message`` unset and the content on another field

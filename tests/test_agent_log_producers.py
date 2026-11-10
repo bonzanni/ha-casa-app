@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -75,13 +77,14 @@ async def test_a_specialists_run_logs_its_start_words_steps_and_end(desk, logs):
     keys = {k for k, _r, _t in logs.lines}
     assert keys == {FINANCE}
     texts = logs.texts()
-    # the run is named by its task; its first line only says it started
-    assert texts[0] == "▶ started" and "March total" in logs.lines[0][1]
+    # the run is named by the time of the request, never by its words
+    assert texts[0] == "▶ started"
     # the main loop's step is logged; the sub-agent's is not
     assert texts[1:] == ["Looking.", "🔧 Reading files", "The total is 40.",
                          "✓ answered"]
     runs = {r for _k, r, _t in logs.lines}
-    assert len(runs) == 1 and "March total" in next(iter(runs))
+    assert len(runs) == 1
+    assert re.fullmatch(r"Request \d\d:\d\d", next(iter(runs)))
 
 
 async def test_words_written_after_a_waiting_call_are_never_logged(desk, logs):
@@ -144,7 +147,7 @@ async def test_a_run_ended_by_an_api_fault_logs_aborted(desk, logs):
 async def test_only_a_specialist_or_the_configurator_logs_a_delegated_run(
         logs, kind, key):
     run = tools_mod._DelegatedRunLog(SimpleNamespace(kind=kind, role="finance"),
-                                     "Plan Q2\nsecond line")
+                                     started=datetime(2026, 3, 4, 9, 7))
     run.start()
     run.words(["one"], None)
     run.step("Read")
@@ -154,15 +157,30 @@ async def test_only_a_specialist_or_the_configurator_logs_a_delegated_run(
         assert logs.lines == []
     else:
         assert logs.lines == [
-            (key, "Plan Q2\nsecond line", "▶ started"),
-            (key, "Plan Q2\nsecond line", "one"),
-            (key, "Plan Q2\nsecond line", "🔧 Reading files"),
-            (key, "Plan Q2\nsecond line", "✓ answered"),
+            (key, "Request 09:07", "▶ started"),
+            (key, "Request 09:07", "one"),
+            (key, "Request 09:07", "🔧 Reading files"),
+            (key, "Request 09:07", "✓ answered"),
         ]
 
 
+async def test_a_delegated_run_is_named_by_its_start_in_casas_time(
+        logs, monkeypatch):
+    """Casa's own clock and zone name the run, at its start."""
+    import timekeeping
+    from zoneinfo import ZoneInfo
+    zone = ZoneInfo("Pacific/Auckland")
+    monkeypatch.setattr(timekeeping, "resolve_tz", lambda: zone)
+    before = datetime.now(zone)
+    run = tools_mod._DelegatedRunLog(SimpleNamespace(kind="specialist", role="finance"))
+    after = datetime.now(zone)
+    run.start()
+    (_key, name, _text), = logs.lines
+    assert name in {f"Request {before:%H:%M}", f"Request {after:%H:%M}"}
+
+
 async def test_a_delegated_runs_end_is_logged_once(logs):
-    run = tools_mod._DelegatedRunLog(SimpleNamespace(kind="specialist", role="finance"), "t")
+    run = tools_mod._DelegatedRunLog(SimpleNamespace(kind="specialist", role="finance"))
     run.end(False)
     run.end(True)
     assert logs.texts() == ["⚠️ aborted"]

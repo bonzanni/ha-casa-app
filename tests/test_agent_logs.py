@@ -650,6 +650,53 @@ async def test_retention_runs_without_the_topics_right(clock, bot, tmp_path) -> 
     assert bot.named("delete_messages") == [{"chat_id": CHAT, "message_ids": [7]}]
 
 
+async def test_a_noted_pointer_is_deleted_after_44_hours(logs, bot, clock) -> None:
+    """The read-only pointer the channel sends into the group by itself is
+    recorded with the posts and deleted by retention like a log post; one
+    noted for any other chat is ignored."""
+    logs.note_post(CHAT, 77)
+    logs.note_post(CHAT - 1, 78)
+    logs.note_post(CHAT, None)
+    assert logs._posts == [[77, clock.wall]]
+    clock.advance(43 * HOUR)
+    await logs.retention_pass()
+    assert bot.named("delete_messages") == []
+    clock.advance(1 * HOUR + 1)
+    await logs.retention_pass()
+    assert bot.named("delete_messages") == [{"chat_id": CHAT, "message_ids": [77]}]
+    assert logs._posts == []
+
+
+async def test_a_noted_post_before_any_group_is_bound_is_ignored(
+    clock, tmp_path,
+) -> None:
+    sink = _make(clock, tmp_path)
+    sink.note_post(CHAT, 77)
+    assert sink._posts == []
+
+
+async def test_a_noted_post_reaches_the_registry_through_the_writer(
+    clock, bot, tmp_path,
+) -> None:
+    sink = _make(clock, tmp_path)
+    await sink.check_enabled(bot, CHAT)
+    sink.start()
+    try:
+        for _ in range(5):
+            await asyncio.sleep(0.005)  # the writer is idle, nothing to write
+        sent = clock.wall
+        sink.note_post(CHAT, 77)
+        for _ in range(100):
+            path = tmp_path / "log-topics.json"
+            if path.exists() and json.loads(path.read_text())["posts"]:
+                break
+            await asyncio.sleep(0.005)
+        assert json.loads(path.read_text())["posts"] == [[77, sent]]
+    finally:
+        await sink.stop()
+    assert bot.methods() == []  # recording a post asks Telegram nothing
+
+
 # ---------------------------------------------------------------------------
 # Enablement
 # ---------------------------------------------------------------------------

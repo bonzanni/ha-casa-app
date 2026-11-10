@@ -27,8 +27,9 @@ asks, is steered and ends in the direct chat whether or not a log group is confi
 under their role (`LogKey("agent", role)`); a resident that hosts plugin jobs logs them under
 `LogKey("plugins", resident)`, in a topic named `<Resident> · plugins`. A resident's own turns
 never log. The topic is named by the agent's display name, cut to 128 characters. Every line
-is prefixed with the run it belongs to — the first line of a job's title, or of a delegated
-run's task, cut to 40 characters — so one topic can hold several runs:
+is prefixed with the run it belongs to — the first line of a job's title, cut to 40
+characters, or `Request HH:MM` for a delegated run, its start in Casa's local time — so one
+topic can hold several runs:
 
 ```
 Q3 accounting · ▶ started
@@ -43,12 +44,18 @@ Q3 accounting · ✅ completed — Tagged 41 rows; 2 need your decision.
 | Producer | Line |
 |---|---|
 | A job's launch, after its brief is queued (quiet runs too) | `▶ started` |
-| A job's or plugin worker's session reader: each message's words, and each main-loop tool step (a sub-agent's steps are not logged) | the words; `🔧 <activity>` |
+| A job's or plugin worker's session reader: each message's words, and each main-loop tool step (a sub-agent's steps are not logged) | the words; `🔧 <step>` |
 | `report_job_progress` | `📊 <summary> · n done · m left` |
 | A job resumed after a restart | `↻ Resuming after a restart` |
 | The finalize funnel | `✅`/`🛑`/`❌ <outcome> — <first summary line, 300 characters>` |
 | The launch-death reporter; a cancellation whose terminal write rolled back | `⚠️ stopped before reporting a result`; `⚠️ could not be recorded` |
 | A delegated run of a specialist or the configurator (`_DelegatedRunLog`): a delegation, a desk turn, a plugin continuation | `▶ started`, its words and steps, `✓ answered` or `⚠️ aborted` |
+
+A step (`drivers/turn_progress.py::step_log_line`) of a built-in tool or one of Casa's own
+reads as its activity, `🔧 Reading files`; any other MCP tool names itself, underscores read as
+spaces, and where it comes from: `🔧 daily sync (bank-feed)` for a plugin's tool, the plugin
+found among the published registry's plugins, and `🔧 get state (homeassistant)` for another
+server's.
 
 The configurator's step line in the direct chat is posted only while the log is off; with the
 log on its steps go to its topic instead ([`configurator.md`](configurator.md)).
@@ -110,7 +117,8 @@ group (one WARNING per pass with the count).
 **INV-TG-016**: Anything a person writes in the log group — text, a command or a file, in any topic or in General, the operator or another member — draws at most one pointer to the direct chat per person per boot, posted in the thread they wrote in, and reaches nothing else: no job, no memory, no model; a bot's message draws nothing.
 
 The pointer is `This group is a read-only log. Talk to me in our direct chat.`, sent directly
-by the channel (`_redirect_from_log_group`), not through the writer. Its seen-set is shared by
+by the channel (`_redirect_from_log_group`), not through the writer; once sent, it is recorded
+with the log's posts (`AgentLogs.note_post`), so retention deletes it like a log post. Its seen-set is shared by
 the text and file paths and lives in memory, so a restart may point the same person once more.
 Logs are visible to every member of the group; the operator decides who is in it.
 

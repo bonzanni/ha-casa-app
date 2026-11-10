@@ -354,6 +354,21 @@ class AgentLogs:
         except Exception:  # noqa: BLE001 - a producer must never see a log failure
             self._warn_internal("could not queue a log line")
 
+    def note_post(self, chat_id: int | None, message_id: int | None) -> None:
+        """Record a message the bot sent into the log group by itself (the
+        read-only pointer), so the retention pass deletes it with the logs.
+        A message in any other chat is ignored. Never awaits, never raises."""
+        try:
+            if (self._chat_id is None or chat_id != self._chat_id
+                    or not isinstance(message_id, int)
+                    or isinstance(message_id, bool)):
+                return
+            self._posts.append([message_id, self._wall()])
+            self._dirty = True
+            self._wake.set()  # the writer schedules the coalesced write
+        except Exception:  # noqa: BLE001 - the caller must never see a log failure
+            self._warn_internal("could not record a post")
+
     def _append(self, key: LogKey, line: str) -> None:
         state = self._keys.get(key)
         if state is None:
