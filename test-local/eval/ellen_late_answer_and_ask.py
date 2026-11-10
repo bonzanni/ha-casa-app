@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""Ellen late-answer and ask eval (#1348): the two paths #1332's relay eval
-does not reach.
+"""Ellen late-answer and ask eval (#1348): a late answer and its holding
+line, and the silence after ``ask_user``.
 
 1. A sync delegation that outlives its 60 s wait returns ``pending``, and the
    answer comes back later as a NOTIFICATION that Casa turns into a fresh turn
-   (``agent.Agent._synthesize_delegation_turn``). The late answer must go out
-   exactly as a sync one does — "Alex: <its exact words>" — and the reply to
-   the ``pending`` result may be at most one short line.
+   (``agent.Agent._synthesize_delegation_turn``). The late answer is told the
+   way a sync one is — by the resident, in her own words, never under the
+   delegate's name, every fact and question kept (judged as in
+   ``ellen_own_words.py``) — and the reply to the ``pending`` result may be at
+   most one short line.
 2. After ``ask_user`` has posted a question, the person already sees it with
    its buttons: nothing the resident writes after the call may narrate it.
 
-Live-model gate, the shape of ``ellen_relay_fidelity.py``: the resident's REAL
+Live-model gate, the shape of ``ellen_own_words.py``, whose mechanical checks,
+judge and doctrine edits it imports (keep the two files side by side): the resident's REAL
 compiled text projection (``binding_commit=False``, nothing under /config or
 /data written) plus a ``<delegates>`` block, with side-effect-free FAKES of
 ``delegate_to_agent`` and ``ask_user`` carrying the production descriptions
@@ -24,13 +27,14 @@ once Casa showed its hand-off line: ``tools.PENDING_HANDOFF_SHOWN_NOTE`` after
 the note, and the reply to it must then be silence (no holding line).
 
 ``--variant baseline`` serves the projection as compiled. ``--variant
-doctrine`` inserts ``DOCTRINE_PARAGRAPH`` after the #1332 paragraph, where the
-change puts it, so a deployed image need not carry the change to measure it.
+doctrine`` applies the own-words doctrine edits of ``ellen_own_words.py``,
+after which the projection carries ``DOCTRINE_PARAGRAPH``, so a deployed image
+need not carry the change to measure it.
 
-Run inside the deployed container, one-shot, writing only under /tmp:
+Run inside the deployed container with both files copied under /tmp, or from a
+checkout against its default prompt and a logged-in Claude Code CLI:
 
-    cat test-local/eval/ellen_late_answer_and_ask.py \\
-        | ssh <host> -- sudo -n docker exec -i <container> python3 -u - --variant doctrine --runs 5
+    venv_test/bin/python test-local/eval/ellen_late_answer_and_ask.py --variant doctrine --runs 5
 
 Exit 0 = every run of every case passed.
 """
@@ -45,7 +49,9 @@ import sys
 import tempfile
 import traceback
 
-sys.path.insert(0, "/opt/casa")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import ellen_own_words as own_words  # noqa: E402  (also puts Casa's code on sys.path)
 
 ANCHOR = "When a delegate's result answers the person"
 
@@ -53,9 +59,7 @@ ANCHOR = "When a delegate's result answers the person"
 # prompt test pins the shipped text, this copy only feeds the doctrine variant.
 DOCTRINE_PARAGRAPH = (
     "A delegate's answer that comes back later, in a notification, is passed "
-    "on the same way. Passed on under the delegate's name, what it says about "
-    "a connection stays its own report: add no note of yours on whether it "
-    "has been checked. Casa's lines about a delegate's posts cover only those "
+    "on the same way. Casa's lines about a delegate's posts cover only those "
     "posts: an answer it wrote above them is not among them, and is passed on. "
     "A line above them that only announces those posts, points to them or says "
     "what they hold or propose, such as \"I'm posting its card now\" or \"it's "
@@ -121,17 +125,13 @@ LIVE_QUESTION = (
 LIVE_ANSWER = f"{LIVE_REASON} {LIVE_QUESTION}"
 CASES = [
     # The reasoning sentence carries a status code and an internal name, which
-    # the resident's other reply rules may translate (#1332 keeps them applying
-    # to what is passed on): it is judged by ``judge_carried``, the question
-    # verbatim.
-    {"id": "late-live", "user": LIVE_ASK, "late_echo": True, "late": LIVE_ANSWER,
-     "carried": (LIVE_REASON, LIVE_QUESTION)},
-    {"id": "late-answer", "user": "do Q1 2026", "late": Q1,
-     "expect": [f"Alex: {Q1}", f'Alex: "{Q1}"']},
+    # the resident's other reply rules may put in plain words; the judge counts
+    # only whether each fact, conclusion and question keeps its meaning.
+    {"id": "late-live", "user": LIVE_ASK, "late_echo": True, "late": LIVE_ANSWER},
+    {"id": "late-answer", "user": "do Q1 2026", "late": Q1},
     {"id": "late-data", "user": "how much did we spend on groceries in September?",
-     "late": DATA, "expect": [f"Alex: {DATA}", f'Alex: "{DATA}"']},
-    {"id": "late-question", "user": "check Q3", "late": GMAIL,
-     "expect": [f"Alex: {GMAIL}", f'Alex: "{GMAIL}"']},
+     "late": DATA},
+    {"id": "late-question", "user": "check Q3", "late": GMAIL},
     # A plain ask: the person asks for buttons, no delegate involved; the
     # first is the live #1348 ask.
     {"id": "ask-live", "ask": True,
@@ -150,52 +150,25 @@ HOLDING_LINE = re.compile(
     r"Alex(?: is|'s) still (?:on it|working on it|looking into it)\.?")
 
 
-def _seed_container_env(*names: str) -> None:
-    for name in names:
-        if os.environ.get(name):
-            continue
-        try:
-            with open(f"/run/s6/container_environment/{name}", encoding="utf-8") as fh:
-                os.environ[name] = fh.read().strip("\n\x00")
-        except OSError:
-            pass
-
-
-def _model(cfg) -> str:
-    model = cfg.model
-    if "${" in model:
-        from config import _substitute_env, resolve_model
-        try:
-            with open("/data/options.json", encoding="utf-8") as fh:
-                opts = json.load(fh)
-            os.environ.setdefault(
-                "PRIMARY_AGENT_MODEL", str(opts.get("primary_agent_model", "")))
-        except OSError:
-            pass
-        model = resolve_model(_substitute_env(model))
-    return model
-
-
 def _system_prompt(variant: str) -> tuple[str, str]:
     from agent_loader import load_agent_from_dir
     from policies import load_policies
     from prompt_compiler import projection_for
-    policies = load_policies("/config/policies/disclosure.yaml")
-    cfg = load_agent_from_dir("/config/agents/assistant", policies=policies,
+    agent_dir, policy = own_words._paths()
+    cfg = load_agent_from_dir(agent_dir, policies=load_policies(policy),
                               binding_commit=False)
     bundle = cfg.compiled_prompt_bundle
     if bundle is None:
         raise SystemExit("no compiled bundle: the eval measures the bundle-bound prompt")
     base = projection_for(bundle, channel="telegram", origin_route="telegram").system_prompt
     if variant == "doctrine":
-        start = base.find(ANCHOR)
-        if start < 0:
-            raise SystemExit(f"anchor not found in the projection: {ANCHOR!r}")
-        end = base.find("\n\n", start)
-        end = len(base) if end < 0 else end
-        base = base[:end] + "\n\n" + DOCTRINE_PARAGRAPH + base[end:]
+        base = own_words.apply_doctrine(base)
+    if _norm(DOCTRINE_PARAGRAPH) not in _norm(base):
+        raise SystemExit("the prompt served does not carry DOCTRINE_PARAGRAPH")
+    if own_words._RETIRED_TOOL.search(base):
+        raise SystemExit("the prompt served still names the retired relay tool")
     channel = "\n<channel_context>\nchannel: telegram\ntrust: authenticated (operator)\n</channel_context>"
-    return base + channel + SURFACE, _model(cfg)
+    return base + channel + SURFACE, own_words._model(cfg)
 
 
 def _norm(text: str) -> str:
@@ -219,71 +192,6 @@ def judge_holding(reply: str) -> tuple[bool, str]:
     if HOLDING_LINE.fullmatch(_norm(reply)):
         return True, "one short line"
     return False, "not the holding line"
-
-
-def judge_late(case: dict, reply: str) -> tuple[bool, str]:
-    ok = _norm(reply) in {_norm(e) for e in case["expect"]}
-    return ok, "exact" if ok else "not the attributed answer"
-
-
-# The reasoning sentence as it may be carried: verbatim, or with the status
-# code and the internal name put in plain words, as the resident's other reply
-# rules may do (#1332 keeps them applying). Every other word is the
-# specialist's, so a changed date, a reversed conclusion or a hedge of the
-# resident's own fails the match (#1348 x1). The renderings are the ones the
-# live runs produced.
-SYNC_FAILED = ("returned a 404", "failed", "been failing", "returned an error")
-FLAGGED = ("the vault flags this install", "this install is flagged",
-           "this setup is flagged", "the records flag this install")
-CARRIED_REASON = re.compile(
-    "The decision is the bank side, not a figure: every sync on the three "
-    "linked accounts has (?:" + "|".join(map(re.escape, SYNC_FAILED)) + ") "
-    "since 7 October, and (?:" + "|".join(map(re.escape, FLAGGED)) + ") as "
-    "restored from a backup, so those cached balances and transactions can no "
-    "longer be trusted as current\\.")
-
-
-def judge_carried(case: dict, reply: str) -> tuple[bool, str]:
-    """The attributed answer as ONE message: "Alex: ", the reasoning sentence
-    in one of its allowed renderings, then the question verbatim, and nothing
-    after."""
-    reason, question = case["carried"]
-    assert CARRIED_REASON.fullmatch(_norm(reason)), "the verbatim reason must match"
-    r = _norm(reply)
-    for quote in ('"', ""):
-        head, tail = f"Alex: {quote}", f"{_norm(question)}{quote}"
-        if r.startswith(head) and r.endswith(tail):
-            break
-    else:
-        return False, "not the attributed answer ending in its question"
-    middle = r[len(head):len(r) - len(tail)].strip()
-    if not CARRIED_REASON.fullmatch(middle):
-        return False, "the reasoning was not carried as written"
-    return True, "carried"
-
-
-def judge_late_turn(case: dict, late: str, asked: bool) -> tuple[bool, str]:
-    """The late turn: the attributed answer as text. Putting it to the person
-    as a button question instead is not passing it on, and silence after such
-    a question would hide the answer, so an ask fails (#1348 x1)."""
-    if asked:
-        return False, "asked instead of passing the answer on"
-    if "carried" in case:
-        return judge_carried(case, late)
-    return judge_late(case, late)
-
-
-def judge_relayed_late(late: str, asked: bool, relays: list) -> tuple[bool, str]:
-    """Slice 5l: the late answer relayed once, by the notice's full id, and
-    the resident's own text beside it silence."""
-    if asked:
-        return False, "asked instead of passing the answer on"
-    if len(relays) != 1:
-        return False, f"relayed {len(relays)} times"
-    if str(relays[0].get("delegation_id", "")).strip() != "0f3c9a2e-eval":
-        return False, "relayed another id"
-    ok = _silent(late)
-    return ok, "relayed" if ok else "relayed and spoke"
 
 
 def judge_after_ask(after: str) -> tuple[bool, str]:
@@ -315,8 +223,7 @@ def _notice_body(case: dict) -> str:
                  + casa_tools.POST_ECHO_SILENCE_NOTE)
     complete = DelegationComplete(
         delegation_id="0f3c9a2e-eval", agent="finance", status="ok",
-        text=text, origin={"user_text": case["user"]}, elapsed_s=74.0,
-        relayable=True)
+        text=text, origin={"user_text": case["user"]}, elapsed_s=74.0)
     msg = BusMessage(type=MessageType.NOTIFICATION, source="finance",
                      target="assistant", content=complete, channel="telegram",
                      context={"chat_id": 1})
@@ -349,33 +256,27 @@ async def _turn(client, text: str) -> tuple[str, str, str]:
     return "\n".join(texts), "\n".join(after), "\n".join(held)
 
 
-async def _one(case: dict, system_prompt: str, model: str) -> tuple[bool, str, list, str]:
+async def _one(case: dict, system_prompt: str, model: str,
+               cli: str | None) -> tuple[bool, str, list, str]:
     from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, create_sdk_mcp_server
-    from claude_runtime import CLAUDE_CLI_PATH
-    from config import effort_for
     import tools as casa_tools
     captured: list = []
     note = PENDING_NOTE + (" " + casa_tools.PENDING_HANDOFF_SHOWN_NOTE.format(name="Alex")
                            if HANDOFF_SHOWN else "")
     pending = json.dumps({"status": "pending", "delegation_id": "0f3c9a2e-eval",
                           "agent": "finance", "timeout_s": 60, "note": note})
-    relayed = ("Posted Alex's answer. "
-               + casa_tools.RELAY_SILENCE_NOTE.format(name="Alex"))
     fakes = [
         _fake(casa_tools.delegate_to_agent, captured, lambda _a: pending),
         _fake(casa_tools.ask_user, captured, lambda _a: json.dumps(AWAITING)),
-        _fake(casa_tools.relay_answer, captured, lambda _a: relayed),
     ]
     server = create_sdk_mcp_server(name="casa-framework", tools=fakes)
-    opts = ClaudeAgentOptions(
-        model=model, effort=effort_for(model), cli_path=CLAUDE_CLI_PATH,
-        system_prompt=system_prompt,
-        mcp_servers={"casa-framework": server}, tools=[],
-        allowed_tools=[f"mcp__casa-framework__{f.name}" for f in fakes],
-        strict_mcp_config=True, setting_sources=[], skills=[],
-        cwd=tempfile.mkdtemp(), max_turns=4,
-    )
-    async with ClaudeSDKClient(opts) as client:
+    kw = own_words._sdk_kw(model, cli)
+    kw.update(system_prompt=system_prompt,
+              mcp_servers={"casa-framework": server}, tools=[],
+              allowed_tools=[f"mcp__casa-framework__{f.name}" for f in fakes],
+              strict_mcp_config=True, setting_sources=[], skills=[],
+              cwd=tempfile.mkdtemp(), max_turns=4)
+    async with ClaudeSDKClient(ClaudeAgentOptions(**kw)) as client:
         first, after, holding = await _turn(client, case["user"])
         names = [n for n, _ in captured]
         if case.get("ask"):
@@ -392,24 +293,31 @@ async def _one(case: dict, system_prompt: str, model: str) -> tuple[bool, str, l
         if _norm(first) != _norm(holding):
             held_why += " (+lead-in)"
         late, _after, _held = await _turn(client, _notice_body(case))
-        transcript = f"{first!r} || {late!r}"
-        later = captured[len(names):]
-        ok, why = judge_relayed_late(
-            late, "ask_user" in [n for n, _ in later],
-            [a for n, a in later if n == "relay_answer"])
-        return (held and ok, f"holding: {held_why}; late: {why}",
-                captured, transcript)
+    transcript = f"{first!r} || {late!r}"
+    # The late answer is told as a sync one is: nothing under the delegate's
+    # name or Casa's post header, and every fact, conclusion and question kept.
+    ok, why = own_words.mechanical("Alex", f"{first}\n{late}")
+    if ok:
+        asked = [a for n, a in captured[len(names):] if n == "ask_user"]
+        ok, why = await own_words.judge(case["late"], late, asked, cli)
+    return (held and ok, f"holding: {held_why}; late: {why}",
+            captured, transcript)
 
 
-async def _run(variant: str, runs: int) -> bool:
-    _seed_container_env("CLAUDE_CODE_OAUTH_TOKEN")
+async def _run(variant: str, runs: int, cli: str | None) -> bool:
+    if own_words.IN_CONTAINER:
+        own_words._seed_container_env("CLAUDE_CODE_OAUTH_TOKEN")
+    else:
+        for k in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_EFFORT",
+                  "CLAUDE_CODE_SESSION_ID"):
+            os.environ.pop(k, None)
     system_prompt, model = _system_prompt(variant)
     print(f"variant={variant} model={model!r} runs={runs}")
     all_ok = True
     for case in CASES:
         passed = 0
         for i in range(runs):
-            ok, why, captured, reply = await _one(case, system_prompt, model)
+            ok, why, captured, reply = await _one(case, system_prompt, model, cli)
             passed += ok
             print(f"  [{case['id']} #{i + 1}] {'PASS' if ok else 'FAIL'} ({why}) "
                   f"calls={[n for n, _ in captured]} reply={reply!r}")
@@ -423,11 +331,12 @@ def main() -> int:
     parser.add_argument("--variant", choices=("baseline", "doctrine"), required=True)
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--handoff-shown", action="store_true")
+    parser.add_argument("--cli", default=None, help="Claude Code CLI to drive the model with")
     args = parser.parse_args()
     global HANDOFF_SHOWN
     HANDOFF_SHOWN = args.handoff_shown
     try:
-        ok = asyncio.run(_run(args.variant, args.runs))
+        ok = asyncio.run(_run(args.variant, args.runs, args.cli))
     except Exception:  # noqa: BLE001
         traceback.print_exc()
         ok = False

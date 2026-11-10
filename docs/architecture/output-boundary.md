@@ -147,8 +147,7 @@ judges closing silence itself before annotating; a classified-error reply is Cas
 health notice is prepended outermost over the admitted value. Every streamed cumulative
 `_emit` releases is admitted as `STREAM_UPDATE` after the INV-TURN-009 hold has judged the
 unannotated cumulative, so what is on screen is true at every moment and a failed final
-edit leaves the line there. `send_message` admits as `DISCRETE`, as does `relay_answer` over the delegate's labelled answer
-([`delegate-answer-relay.md`](delegate-answer-relay.md)), `ask_user` admits the body
+edit leaves the line there. `send_message` admits as `DISCRETE`, `ask_user` admits the body
 as `KEYBOARD` before its plain and scheduled arms branch — so the posted keyboard, the stored
 scheduled record and every settle edit derived from that body carry the same line — and
 `send_media` admits the caption as `CAPTION`, with the length cap applied to the model's body
@@ -196,8 +195,7 @@ engagement.
 
 **INV-OUT-005**: A tool that emits or stores annotated text reports the exact line in its result.
 
-`send_message` answers `Message sent via telegram. Casa prefixed: “…”`, and `relay_answer`
-names the line the same way; `set_reminder`'s
+`send_message` answers `Message sent via telegram. Casa prefixed: “…”`; `set_reminder`'s
 payload carries `note`; `ask_user`'s `awaiting_user` payload gains `casa_prefixed` when a
 line was added; `delegate_to_agent` reports the brief's note as `casa_note` on either
 pending result — the async one and a synchronous wait that degraded to pending — and

@@ -70,6 +70,13 @@ class DelegationRecord:
     permit: Any = None
 
 
+# The line a delegation notice puts between a result the length cap cut and
+# the delegate's closing message that follows it.
+CLOSING_MARKER = (
+    "(Casa: the result above was cut at the length limit; the delegate's "
+    "closing message follows in full.)")
+
+
 @dataclass
 class DelegationComplete:
     """Typed payload published on the bus as NOTIFICATION content when a
@@ -115,10 +122,11 @@ class DelegationComplete:
     # read only when that flag is True: a timestamp on its own never marks a
     # prompt.
     terminal_at: float | None = None
-    # Slice 5l: True when Casa holds this answer for ``relay_answer`` (a live
-    # notice of a resident's Telegram delegation); the synthesized turn then
-    # names the full delegation id. A replay never holds one.
-    relayable: bool = False
+    # The delegate's closing message when the length cap cut it from
+    # ``text`` (which keeps the start of the turn): rendered after the text
+    # under :data:`CLOSING_MARKER`. Empty when nothing was cut away, so the
+    # usual notice is unchanged. A boot replay carries the one its row kept.
+    closing_message: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +401,7 @@ class SpecialistRegistry:
     # callback, DO release in EngagementRegistry terminal transitions.)
     async def complete_delegation(
         self, delegation_id: str, result: str = "",
-        *, announce_creator: bool = False,
+        *, announce_creator: bool = False, closing_message: str = "",
     ) -> VoiceJob | None:
         """Persist the successful terminal; return the durable row.
 
@@ -409,10 +417,12 @@ class SpecialistRegistry:
         the synchronous arm has nothing to land: its answer went back to the
         caller in-band, it arms no obligation, and the registry refuses to
         store an answer on a row that owes no announcement (INV-JOB-015).
+        ``closing_message`` is retained beside ``result`` under the same rule.
         """
         await self._job_registry.load()
         return await self._job_registry.finish_compat(
-            delegation_id, result, announce_creator=announce_creator)
+            delegation_id, result, announce_creator=announce_creator,
+            closing_message=closing_message)
 
     async def fail_delegation(
         self, delegation_id: str, exc: Exception,

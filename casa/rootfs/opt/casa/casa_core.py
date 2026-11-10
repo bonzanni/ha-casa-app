@@ -2141,6 +2141,9 @@ async def _notify_recovered_delegations(
             agent=job.specialist_role,
             status="ok" if succeeded else "error",
             text=(job.result or "") if answer_available else "",
+            # the closing message the cap cut from that answer, retained
+            # beside it, renders after it as on the live notice
+            closing_message=job.closing_message if answer_available else "",
             kind="" if succeeded else job.failure.kind,
             message="" if succeeded else job.failure.message,
             result_available=answer_available,

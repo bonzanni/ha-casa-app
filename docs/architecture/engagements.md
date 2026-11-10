@@ -50,9 +50,10 @@ left behind loads like any other, and a resume of it fails closed
 
 **Interactive specialist engagements are retired; the desk replaced them.** A
 `delegate_to_agent` call naming `mode='interactive'` is refused with `interactive_retired`
-before any gate or side effect, and its message names the alternative: a `sync` delegation,
-after which the person carries on with the specialist by replying to its message
-([`architecture/specialist-desk.md`](specialist-desk.md)). The value stays in the tool
+before any gate or side effect, and its message names the alternative: a `sync` delegation
+(`async` for long work) whose answer the resident tells the person in her own words, after
+which the person carries on by writing to her. A reply to one of the specialist's own posts
+still reaches it ([`architecture/specialist-desk.md`](specialist-desk.md)). The value stays in the tool
 schema's enum only so a stale call — a model's, or a stored scheduled prompt's — reaches
 that refusal rather than the SDK's bare validation error. An interactive engagement an older
 install left open loads as any `specialist` record does: it is not resumed at boot (only

@@ -424,11 +424,6 @@ WRITES_TO_A_CHAT_ELSEWHERE = {
     "tools.py::consent_reprompt":
         "re-posts Casa's own consent keyboards to the operator's DM; none of "
         "them is the calling turn's message",
-    "tools.py::relay_answer":
-        "posts a delegate's held answer, under the delegate's name, to the "
-        "conversation that delegated it; it is the delegate's message, governed "
-        "by the resident's relay doctrine and its own silence note, not the "
-        "trigger prompt's ending",
     "tools.py::stop_work":
         "stops a specialist's own work (browsing) and may mark that request's card; it "
         "is refused on every turn but the operator's own live message, so it has no "

@@ -26,8 +26,9 @@ durable record, which outlives the call that created it. Specialist
 delegation, `sync` or `async`, runs ephemerally, and so does a delegation to the
 configurator, which always runs `async` ([`configurator.md`](configurator.md)); starting a
 background job creates an engagement. The retired `mode='interactive'` is refused
-(`interactive_retired`) before any gate, with a message naming a `sync` delegation, after
-which the person talks with the specialist by replying to its message
+(`interactive_retired`) before any gate, with a message naming a `sync` delegation whose
+answer the resident tells the person in her own words, after which the person carries on by
+writing to her; a reply to one of the specialist's own posts still reaches it
 ([`specialist-desk.md`](specialist-desk.md)).
 
 **A delegated specialist's system prompt is its role prompt plus one line of Casa's.** The runner
@@ -46,9 +47,10 @@ cap counts as the operator's own (`_operator_turn`, no bound engagement, depth 0
 scheduled, notice, nested and voice turns post nothing. An `async` delegation's `pending`
 result then carries a note telling the assistant the person already
 sees the line and to stay silent when it has nothing else; a `sync` result's answer is the
-reply, so it carries none (only, when Casa holds that answer, a `relay` field naming its id
-for [`relay_answer`](delegate-answer-relay.md), or, when the delegate closed its turn with
-`<silent/>`, Casa's note that it has nothing for the person). A `sync` delegation that outlives its 60-second wait and goes
+reply, which the assistant tells the person herself, in her own words, so it carries none
+(only, when the delegate closed its turn with `<silent/>`, Casa's note that it has nothing for
+the person, and, when the length cap cut the result text, the delegate's closing message
+beside it as `closing_message`: [`delegate-closing-message.md`](delegate-closing-message.md)). A `sync` delegation that outlives its 60-second wait and goes
 `pending` carries such a note too, worded to override the assistant's usual "still on it"
 line: the person has the hand-off line, and often a card the specialist already posted.
 

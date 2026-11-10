@@ -2889,3 +2889,17 @@ async def test_owed_note_kept_across_an_unreadable_store_read(
     assert len(pse.episodes("failed")) == 1
     await pse._worker_pass()
     assert ch.count(_RETIRED) == 1
+
+
+def test_the_setup_courier_turn_tells_the_resident_the_outcome():
+    """A specialist's setup outcome comes back to the resident through the
+    courier delegation; the resident tells the operator that outcome herself,
+    in one short line, and no relay tool is named on either branch."""
+    entry = {"granted_tools": ["mcp__plugin_x_srv"], "targets": ["specialist:browser"]}
+    role, text = pse._compose({"id": "ep1", "plugin": "x"}, entry, "setup")
+    assert role == "assistant"
+    assert text.endswith("Then tell the operator its outcome yourself, in one short line.")
+    assert "relay_answer" not in text
+    entry["targets"] = ["resident:assistant"]
+    _, text = pse._compose({"id": "ep1", "plugin": "x"}, entry, "setup")
+    assert "relay_answer" not in text

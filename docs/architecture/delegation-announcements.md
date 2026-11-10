@@ -42,11 +42,15 @@ synthesized prompt adds, after the result text, that the background job has ende
 person's replies no longer reach it, and that where the summary — the specialist's own words —
 says the job or the conversation is still open, that is not passed on as fact (#1411: a
 specialist's summary said its conversation "will stay open" in the very call that ended it,
-and the resident relayed it). A live notice whose answer Casa holds for relaying also names the full
-delegation id and `relay_answer` ([`delegate-answer-relay.md`](delegate-answer-relay.md)); a
-boot replay holds none, so that line is one of the in-process instructions INV-JOB-016
-allows. A delegation's notice carries no such line about an engagement, and a replayed engagement outcome takes the
+and the resident relayed it). A delegation's notice carries no such line about an engagement, and a replayed engagement outcome takes the
 answerless arm, so INV-JOB-016's live/replay pairs are unchanged.
+
+**A closing message the length cap cut away follows the result text.** When the delegate's
+closing message did not survive the cap on the result text, the notice renders it after that
+text, whole, under one Casa line saying the result was cut and the closing message follows
+([`delegate-closing-message.md`](delegate-closing-message.md)). The row retains it beside the
+answer, under the same rule as the answer (INV-JOB-015), so a boot replay renders it exactly
+as the live notice did; a row written before the field existed replays without it.
 
 ## Contracts & invariants
 

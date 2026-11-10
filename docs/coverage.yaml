@@ -471,8 +471,6 @@
   doc: architecture/plugin-mutation-tools.md
 - item: tool:query_engager
   doc: architecture/tools-interface.md
-- item: tool:relay_answer
-  doc: architecture/delegate-answer-relay.md
 - item: tool:remove_plugin_env_reference
   doc: architecture/plugin-mutation-tools.md
 - item: tool:resident_persona_reset

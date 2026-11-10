@@ -155,7 +155,6 @@ CHANNEL_METHOD_CALLERS = {
     ("channels/telegram.py", "finalize_stream"): "forward",
     ("channels/telegram.py", "send_response"): "forward",
     ("tools.py", "send_message"): "admitted",
-    ("tools.py", "relay_answer"): "admitted",          # slice 5l: the labelled delegate answer, admitted on the relaying turn
     ("tools.py", "_classify_send"): "admitted",                 # the caption, admitted by send_media
     ("tools.py", "_post"): "admitted",                          # ask_user (both arms) and wipe_memory (casa_text)
     ("tools.py", "ask_operator"): "admitted",                   # a job's question, admitted on the job's scope

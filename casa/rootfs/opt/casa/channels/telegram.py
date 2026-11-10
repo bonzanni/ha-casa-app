@@ -21,7 +21,6 @@ import os
 import re
 import time
 
-import httpx
 from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
@@ -5159,26 +5158,6 @@ class TelegramChannel(Channel):
 _SERVER_REFUSALS = (
     BadRequest, Forbidden, InvalidToken, RetryAfter, ChatMigrated, Conflict,
 )
-
-
-def _established_unsent(exc: TelegramError) -> bool:
-    """#665 (diff r2, Sol): the transport failure's CAUSE proves the request
-    never reached Telegram.
-
-    PTB 22.7 wraps httpx errors with ``raise ... from err``, so the cause
-    survives: a ``ConnectTimeout`` or ``ConnectError`` failed before a
-    connection existed, and a ``PoolTimeout``'s own PTB message says the
-    request "was *not* sent to Telegram". All three establish absence exactly
-    as a refusal does, even though PTB surfaces the first and third as
-    ``TimedOut`` — which is otherwise ambiguous (a read/write timeout can lose
-    the acknowledgement of a request Telegram accepted, and stays ``UNKNOWN``).
-    Not part of ``_edit_failure_outcome``'s taxonomy, which the DM paths share;
-    ``tools._proven_unsent`` reads it beside ``_SERVER_REFUSALS``.
-    """
-    return isinstance(
-        exc.__cause__,
-        (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout),
-    )
 
 
 def _edit_failure_outcome(exc: TelegramError) -> DeliveryOutcome:

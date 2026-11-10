@@ -15,6 +15,6 @@ delegates:
       To install an existing component (specialist, plugin or persona) from a repository, delegate to the configurator; Casa does not build a new plugin from scratch, so say so instead.
       For a read-only question about current config, answer directly. The exception: listing the installed personas is read-only too, but it goes to the configurator, since you hold no persona tool.
       Pass the person's request in their own words, and any instruction about how to work verbatim.
-      It runs by itself and its answer comes back to you: pass it on with relay_answer. When it asks
-      something, the person answers by replying to its message, or by telling you; then delegate
-      their answer to it with what it asked.
+      It runs by itself and its answer comes back to you: tell the person what it says, in your own
+      words. When it asks something, put it to the person, then delegate their answer to it with
+      what it asked.

@@ -748,15 +748,9 @@ async def test_retained_answer_replay_adds_only_the_restart_reannouncement(
     replay_body = replay_msg.content
 
     # THE PIN. At the base the first line fails: the bodies are byte-identical.
-    # Slice 5l: the live notice of an answer Casa holds names it for
-    # relay_answer — an instruction depending on in-process state, which
-    # INV-JOB-016 excepts; a replay holds nothing, so it never carries it.
-    relay_hint = ("\nTo pass this answer on to the person, call relay_answer with "
-                  "delegation_id job-1; Casa posts it under the delegate's name.\n")
-    assert live_notice.content.relayable is bool(answer)   # an empty answer is not held
-    assert replay_notice.content.relayable is False
-    assert live_body.count(relay_hint) == int(bool(answer))
-    live_body = live_body.replace(relay_hint, "", 1)
+    # Neither notice names a tool the resident must call to pass the answer
+    # on: she tells it herself, from the text both carry.
+    assert "relay_answer" not in live_body and "relay_answer" not in replay_body
     assert replay_body != live_body
     assert live_body.count(reannouncement) == 0
     assert replay_body.count(reannouncement) == 1

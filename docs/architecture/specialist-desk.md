@@ -41,7 +41,7 @@ Finance's turn, as text: it resets nothing, neither the resident nor the desk), 
 chat's rate decision, taken exactly as today's path takes it.
 
 **The configurator holds a desk as a specialist does.** A reply on a post Casa made for it,
-its answer the resident relayed or its own earlier desk reply, is the configurator's desk
+its own earlier desk reply included, is the configurator's desk
 turn, and the resident's DM delegation to it uses the same desk; each such run also takes the
 configurator lease ([`configurator.md`](configurator.md)). Everything below about a
 specialist's desk holds for it alike.
