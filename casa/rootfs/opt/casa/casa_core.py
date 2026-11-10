@@ -14,7 +14,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 # Ensure the Casa package root is on sys.path regardless of cwd
 _CASA_ROOT = str(Path(__file__).resolve().parent)
@@ -50,7 +50,7 @@ from mcp_registry import McpServerRegistry
 from policies import load_policies
 import private_state
 from output_boundary import casa_text
-from provenance import sanitize_external_context
+from provenance import carry_route, sanitize_external_context
 from session_registry import SessionRegistry
 from session_sweeper import SessionSweeper
 from rate_limit import RateLimiter, rate_limit_response
@@ -584,6 +584,7 @@ def _make_webhook_handler(
     default_role: str,
     bus: Any,
     secrets_dir: str | Path = "/data/webhook_secrets",
+    route_for: Callable[[str], Any] | None = None,
 ):
     """Build the wildcard ``/webhook/{name}`` handler.
 
@@ -597,6 +598,11 @@ def _make_webhook_handler(
     ``timestamped_hmac`` use a per-trigger secret under ``secrets_dir``). An
     empty/absent secret fails closed. 404 precedes auth (names are non-secret,
     r3 design decision) so the policy can be selected by name.
+
+    *route_for* (the Telegram transport's, when Telegram is configured)
+    gives every webhook turn its Telegram route at birth, server-side, for
+    the role it is dispatched to: whatever the turn later sends to Telegram
+    (its reply, a ``send_message``) goes through that bot.
 
     Extracted from ``main()`` so it is unit-testable; see
     ``tests/test_webhook_handler.py``.
@@ -770,6 +776,10 @@ def _make_webhook_handler(
                 # markers above; reserved, so no external context can set it.
                 "_webhook_deliver": deliver,
                 "chat_id": str(uuid.uuid4()),
+                # The Telegram route, decided once here for the role this
+                # turn runs as; server-set and reserved like the markers.
+                **({"_tg_bot": route_for(target_role)}
+                   if route_for is not None else {}),
             },
         )
         await bus.send(msg)
@@ -778,24 +788,35 @@ def _make_webhook_handler(
     return webhook_handler
 
 
-def _make_telegram_update_handler(*, get_telegram_channel, webhook_secret: str):
-    """Build the ``POST /telegram/update`` webhook handler.
+def _make_telegram_update_handler(*, get_endpoint, root_secret: str):
+    """Build the ``POST /telegram/update/{bot_id}`` webhook handler: one
+    route per Telegram bot, each with its own secret.
 
     Extracted from ``main()`` so it is unit-testable; see
-    ``tests/test_telegram_update_handler.py``.
+    ``tests/test_telegram_update_handler.py`` and
+    ``tests/test_bot_webhook_routes.py``.
+
+    *get_endpoint* maps the route's bot id to the endpoint serving that bot,
+    or ``None``; a bot with no endpoint is a 404. The expected header is that
+    bot's own secret, derived from the one configured secret
+    (:func:`channels.telegram_transport.webhook_secret_for`, the same value
+    the endpoint registers with ``setWebhook``), so an update signed for one
+    bot cannot enter another bot's route.
 
     L4: the ``X-Telegram-Bot-Api-Secret-Token`` header is compared with
     ``hmac.compare_digest`` (constant-time) rather than ``!=`` to avoid a
-    timing side-channel on the shared webhook secret. BOTH sides are
-    encoded to bytes: ``compare_digest`` raises ``TypeError`` on non-ASCII
-    ``str`` inputs, and the header value is attacker-controlled (and a
-    user-supplied ``webhook_secret`` may be non-ASCII), so a non-ASCII
+    timing side-channel on the webhook secret. BOTH sides are encoded to
+    bytes: ``compare_digest`` raises ``TypeError`` on non-ASCII ``str``
+    inputs, and the header value is attacker-controlled, so a non-ASCII
     header must yield 403, not a 500.
     """
+    from channels.telegram_transport import webhook_secret_for
 
     async def telegram_update_handler(request: web.Request) -> web.Response:
-        telegram_channel = get_telegram_channel()
-        if telegram_channel is None:
+        raw = request.match_info.get("bot_id", "")
+        bot_id = int(raw) if raw.isascii() and raw.isdigit() else 0
+        endpoint = get_endpoint(bot_id) if bot_id > 0 else None
+        if endpoint is None:
             return web.json_response({"error": "telegram not configured"}, status=404)
         # #193: fail-closed when no webhook secret is configured. The Telegram
         # webhook transport always carries an X-Telegram-Bot-Api-Secret-Token
@@ -805,22 +826,83 @@ def _make_telegram_update_handler(*, get_telegram_channel, webhook_secret: str):
         # but unused, so rejecting is harmless; in webhook mode a secret must be
         # set. Mirrors the /invoke fail-closed treatment (403 = route disabled,
         # not merely mis-signed).
-        if not webhook_secret:
+        expected = webhook_secret_for(root_secret, bot_id)
+        if not expected:
             return web.json_response(
                 {"error": "webhook auth disabled"}, status=403)
         token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
         if not hmac.compare_digest(
-            token.encode("utf-8"), webhook_secret.encode("utf-8"),
+            token.encode("utf-8"), expected.encode("utf-8"),
         ):
             return web.Response(status=403)
         payload = await request.json()
-        outcome = await telegram_channel.process_webhook_update(payload)
+        outcome = await endpoint.process_webhook_update(payload)
         # #428: keep the bare 200 (Telegram's redelivery contract; the body is
         # reserved for invoking a Bot API method) but tell programmatic
         # callers whether the update was queued, deduped, or ignored.
         return web.Response(status=200, headers={"X-Casa-Update": outcome})
 
     return telegram_update_handler
+
+
+def _telegram_update_endpoints(transport: Any) -> Callable[[int], Any]:
+    """The update route's lookup: the endpoint serving a bot id, ready or
+    not, or ``None`` for a bot with no endpoint (and when Telegram is not
+    configured)."""
+    from channels.tg_address import AddressError, EndpointUnavailable
+
+    def get_endpoint(bot_id: int) -> Any:
+        if transport is None:
+            return None
+        try:
+            return transport.endpoint(bot_id)
+        except (EndpointUnavailable, AddressError):
+            return None
+
+    return get_endpoint
+
+
+def _build_telegram_transport(*, token: str, store_path: Path,
+                              make_endpoint: Callable[..., Any],
+                              **endpoint_kwargs: Any) -> tuple[Any, Any]:
+    """Casa's Telegram transport and its own endpoint, built before the HTTP
+    server starts. Returns ``(transport, casa_endpoint)``.
+
+    The bot id Casa's endpoint verified at an earlier boot is read here,
+    trusted only for the token it was verified with, and handed to the
+    endpoint as its known id: a turn born before the bot reconnects already
+    carries that id as its route. With nothing trusted (a first boot, a
+    replaced token) the route is Casa's endpoint until its ``getMe``
+    succeeds. Registering the endpoint installs its identity callback, the
+    only path through which a verified id is mapped and persisted."""
+    from channels.telegram_transport import CasaBotIdStore, TelegramTransport
+
+    store = CasaBotIdStore(Path(store_path), token)
+    transport = TelegramTransport(casa_bot_ids=store)
+    endpoint = make_endpoint(bot_token=token, is_casa=True,
+                             known_bot_id=store.known_id(), **endpoint_kwargs)
+    transport.add_endpoint(endpoint, casa=True)
+    return transport, endpoint
+
+
+def _setup_turn_context(transport: Any, context: Mapping[str, Any]) -> dict | None:
+    """The context of a plugin-setup turn: the operator's private chat (its
+    id is the operator's user id), a fresh cid, the caller's reserved markers
+    and the Telegram route. ``None`` with no valid operator chat (or no
+    Telegram), so nothing is dispatched.
+
+    A setup turn is Casa's own conversation with the operator: it is born on
+    Casa's bot, whatever endpoint the role is bound to, and every reply and
+    post of it stays there."""
+    operator = transport.operator_user_id() if transport is not None else None
+    if operator is None:
+        return None
+    return {
+        "chat_id": operator, "user_id": operator, "cid": new_cid(),
+        **context,  # reserved synthetic/plugin_setup markers —
+                    # Casa-composed internal, never external ingress
+        "_tg_bot": transport.casa_route(),
+    }
 
 
 def _make_invoke_handler(
@@ -830,6 +912,7 @@ def _make_invoke_handler(
     bus: Any,
     assistant_role: str,
     role_configs: Mapping[str, Any],
+    route_for: Callable[[str], Any] | None = None,
 ):
     """Build the ``POST /invoke/{agent}`` direct-invocation handler.
 
@@ -842,6 +925,9 @@ def _make_invoke_handler(
 
     Fail-closed channel-capability gate (spec A3): only a resident that
     declares ``webhook`` in its ``channels:`` list is invoke-reachable.
+
+    *route_for*: as for the webhook handler, the invoked turn's Telegram
+    route, decided at its birth for the invoked role.
     """
 
     def _verify(request: web.Request, body: bytes) -> bool:
@@ -897,7 +983,9 @@ def _make_invoke_handler(
         if not (isinstance(caller_cid, str) and caller_cid.strip()):
             context["cid"] = request["cid"]
         payload["context"] = context
-        msg = build_invoke_message(agent_role, prompt, payload)
+        msg = build_invoke_message(
+            agent_role, prompt, payload,
+            tg_route=route_for(agent_role) if route_for is not None else None)
         try:
             result = await bus.request(msg, timeout=300)
             return web.json_response({"response": str(result.content)})
@@ -916,6 +1004,8 @@ def build_invoke_message(
     agent_role: str,
     prompt: str,
     payload: dict[str, Any],
+    *,
+    tg_route: Any = None,
 ) -> BusMessage:
     """Build a webhook invoke BusMessage with a guaranteed-unique session key.
 
@@ -934,6 +1024,10 @@ def build_invoke_message(
     keys (``chat_id``, ``cid``) are merged in, so a caller can never spoof
     ``execution_role``/``message_type``/``source``/etc. Every other
     caller-supplied key (e.g. a caller's own ``cid`` above) is preserved.
+
+    *tg_route*, when given, is stamped as the turn's Telegram route
+    (``_tg_bot``) after sanitization, so a caller can neither set nor
+    remove it.
     """
     context = sanitize_external_context(payload.get("context"))
     if not context.get("chat_id"):
@@ -945,6 +1039,8 @@ def build_invoke_message(
     # "invoke" route (private clearance, full runtime); distinct from the
     # "webhook_trigger" route stamped by the /webhook/{name} dispatch.
     context["_origin_route"] = "invoke"
+    if tg_route is not None:
+        context["_tg_bot"] = tg_route
     return BusMessage(
         type=MessageType.REQUEST,
         source="webhook",
@@ -1480,6 +1576,37 @@ def _setup_ack_lookup_union(identity: str) -> str | None:
     return None
 
 
+def _telegram(channel_manager: Any) -> Any:
+    """The Telegram transport registered in *channel_manager*, or ``None``
+    when there is no manager or Telegram is not configured."""
+    if channel_manager is None:
+        return None
+    from channels.telegram_transport import telegram_transport
+    return telegram_transport(channel_manager)
+
+
+def _casa_endpoint(channel_manager: Any) -> Any:
+    """Casa's own Telegram endpoint, ready or not, for a Casa-composed notice
+    (rule C); ``None`` when Telegram is not configured."""
+    transport = _telegram(channel_manager)
+    return transport.casa_endpoint() if transport is not None else None
+
+
+def _operator_notice_context(channel_manager: Any,
+                             base: Mapping[str, Any] | None = None) -> dict:
+    """The context of a Casa notice to the operator: *base* plus the
+    operator's chat. A notice names the chat and nothing else, so it reads no
+    bot id and goes wherever Casa's endpoint posts. With no valid operator
+    chat configured it carries no chat, and the endpoint posts to its
+    configured one, as before."""
+    ctx = dict(base or {})
+    transport = _telegram(channel_manager)
+    operator = transport.operator_user_id() if transport is not None else None
+    if operator is not None:
+        ctx["chat_id"] = operator
+    return ctx
+
+
 async def operator_notify(channel_manager: Any, text: str) -> None:
     """The operator-notice seam shared by the setup/callback/event episode
     workers (#532): deliver *text* to the operator DM, or RAISE.
@@ -1494,22 +1621,22 @@ async def operator_notify(channel_manager: Any, text: str) -> None:
     record un-noted and retry, and their advisory ``_note`` paths degrade
     to honest logging.
 
+    The notice goes through Casa's own bot, to the operator's chat.
+
     #930: before ``start_all`` has completed, the not-ready raise is
     :class:`OperatorNotifyBeforeStart` (a ``RuntimeError``), so those sites
     can log a designed retry at INFO. A manager that does not say whether
     its start completed gets the ordinary error."""
-    import trigger_consent as _tc
-    ch = channel_manager.get("telegram") if channel_manager else None
+    ch = _casa_endpoint(channel_manager)
     if ch is None or not getattr(ch, "is_ready", True):
         if getattr(channel_manager, "start_completed", True) is False:
             raise OperatorNotifyBeforeStart(
                 "operator notify: telegram channel not ready")
         raise RuntimeError("operator notify: telegram channel not ready")
-    # Address the operator DM explicitly (falls back to the channel's
+    # Address the operator DM explicitly (falls back to the endpoint's
     # default chat — also the operator — when identity is unresolvable).
-    op = _tc.operator_identity(ch)
-    ctx = {"chat_id": op[0]} if op is not None else {}
-    await ch.send_response(casa_text(text), ctx)
+    await ch.send_response(casa_text(text),
+                           _operator_notice_context(channel_manager))
 
 
 # #556: every out-of-band operator notice runs the same sequence — read state,
@@ -1554,8 +1681,7 @@ async def notify_placeholder_rewrites(channel_manager: Any) -> None:
     to get right ONCE.
     """
     import reminders
-    channel = (channel_manager.get("telegram")
-               if channel_manager is not None else None)
+    channel = _casa_endpoint(channel_manager)
     if channel is None or not getattr(channel, "is_ready", True):
         return  # nothing consumed — retried on the next rewrite
     async with _OPERATOR_NOTICE_LOCK:
@@ -1568,7 +1694,8 @@ async def notify_placeholder_rewrites(channel_manager: Any) -> None:
             outcome = await channel.send(casa_text(
                 f"⚠️ Updated {path}, which uses ${{...}} placeholders — a "
                 f"placeholder entry there may now resolve differently. "
-                f"Worth a look."), {"cid": new_cid()})
+                f"Worth a look."),
+                _operator_notice_context(channel_manager, {"cid": new_cid()}))
             if outcome is not DeliveryOutcome.NOT_DELIVERED:
                 _placeholder_notified.add(path)
                 reminders.clear_placeholder_notice(path)
@@ -1666,15 +1793,16 @@ async def _notify_plugin_health_locked(channel_manager: Any, path: str) -> None:
     # is never the one deferred behind a warning.
     named_fps = [e.get("fingerprint") for e in entries[:_DM_LIMIT]
                  if e.get("fingerprint")]
-    channel = (channel_manager.get("telegram")
-               if channel_manager is not None else None)
+    channel = _casa_endpoint(channel_manager)
     # Sol r1-2: channel.send() log-and-drops while the PTB app is not
     # started — is_ready must gate the "notified" mark too, or a
     # bring-up/reconnect window counts a dropped alert as delivered.
     if channel is None or not getattr(channel, "is_ready", True):
         return  # no deliverable channel — retry next boot/mutation
     try:
-        outcome = await channel.send(casa_text(content), {"cid": new_cid()})
+        outcome = await channel.send(
+            casa_text(content),
+            _operator_notice_context(channel_manager, {"cid": new_cid()}))
     except Exception as exc:  # noqa: BLE001
         logger.warning("plugin_health notify: send failed: %s", exc)
         return  # not marked → retried next boot/mutation
@@ -2094,6 +2222,7 @@ async def _notify_recovered_delegations(
     or, when it retained none, as a success whose answer is unavailable, which
     is what a legacy row and a row written by a non-announcing arm still do.
     """
+    import specialist_registry
     from specialist_registry import DelegationComplete
 
     for job in recovered_jobs:
@@ -2136,6 +2265,7 @@ async def _notify_recovered_delegations(
         # nothing.
         succeeded = job.failure is None
         answer_available = bool(succeeded and job.result_available)
+        origin = specialist_registry.origin_from_job(job)
         synthetic = DelegationComplete(
             delegation_id=job.id,
             agent=job.specialist_role,
@@ -2155,22 +2285,11 @@ async def _notify_recovered_delegations(
             # replay can say how old the outcome is (for an orphan, when the
             # loss was recorded). Same producer rule as the flag above.
             terminal_at=job.terminal_at,
-            origin={
-                "role": job.creating_role,
-                "channel": job.creator_peer,
-                "chat_id": job.scope_id,
-                "cid": job.origin_route_id or "-",
-                "user_text": job.task,
-                # #485: restored from the durable field, so a scheduled turn
-                # resumed after a restart can still deliver media. Added only
-                # when stored — a legacy row has no field and stays text-only.
-                **({"_scheduled_delivery": True}
-                   if job.scheduled_delivery is True else {}),
-                # #1038: the brief's resolved disclosure, restored from the
-                # row so the narration turn after a restart still carries it.
-                **({"_inherited_note": job.output_note}
-                   if job.output_note else {}),
-            },
+            # The one rebuilder of a delegation's origin from its row: the
+            # route the delegation was born with comes back with it, so the
+            # notice is delivered through the bot the conversation was on,
+            # whatever the role is bound to now.
+            origin=origin,
             elapsed_s=0.0,
         )
         try:
@@ -2184,6 +2303,7 @@ async def _notify_recovered_delegations(
                     "cid": job.origin_route_id or "-",
                     "chat_id": job.scope_id,
                     "delegation_id": job.id,
+                    **carry_route(origin),
                 },
                 on_delivery=_recovery_delivery_ack(job_registry, job),
             ))
@@ -2930,26 +3050,39 @@ async def main() -> None:
     if public_url:
         logger.info("Public URL: %s", public_url)
     telegram_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    # Casa's own Telegram endpoint (its bot is the one the operator talks
+    # to), and the transport that holds every endpoint by bot id and is the
+    # one channel registered as "telegram".
     telegram_channel = None
+    tg_transport = None
+    telegram_mode = "polling"
     if telegram_token:
+        from functools import partial
+
         from channels.telegram import TelegramChannel
+        from channels.telegram_transport import webhook_secret_for
 
         telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
         telegram_engagement_supergroup_id = _telegram_supergroup_id_from_env()
 
         # Derive transport: webhook only possible when public_url is set
-        telegram_transport = os.environ.get("TELEGRAM_TRANSPORT", "polling")
-        if telegram_transport == "webhook" and not public_url:
+        telegram_mode = os.environ.get("TELEGRAM_TRANSPORT", "polling")
+        if telegram_mode == "webhook" and not public_url:
             logger.warning(
                 "telegram_transport is 'webhook' but public_url is not set; "
                 "falling back to polling"
             )
-            telegram_transport = "polling"
+            telegram_mode = "polling"
 
-        webhook_url = public_url if telegram_transport == "webhook" else ""
+        webhook_url = public_url if telegram_mode == "webhook" else ""
 
-        telegram_channel = TelegramChannel(
-            bot_token=telegram_token,
+        # Before the HTTP server starts, so every turn born from the first
+        # request on reads Casa's known bot id (or Casa's endpoint, when no
+        # id is trusted yet) as its route.
+        tg_transport, telegram_channel = _build_telegram_transport(
+            token=telegram_token,
+            store_path=Path("/data/telegram-casa-bot.json"),
+            make_endpoint=TelegramChannel,
             chat_id=telegram_chat_id,
             default_agent=assistant_role,
             bus=bus,
@@ -2957,25 +3090,28 @@ async def main() -> None:
             webhook_secret=webhook_secret,
             rate_limiter=telegram_rate_limiter,
             engagement_supergroup_id=telegram_engagement_supergroup_id or None,
+            webhook_secret_for=partial(webhook_secret_for, webhook_secret),
         )
-        channel_manager.register(telegram_channel)
+        channel_manager.register(tg_transport)
         # The agent log's check needs the bot, which exists only once
         # channel_manager.start_all() runs _rebuild(); every successful
         # rebuild runs it.
         telegram_channel._agent_logs = agent_logs
         logger.info(
             "Telegram channel registered (transport=%s, chat_id=%s)",
-            telegram_transport,
+            telegram_mode,
             telegram_chat_id,
         )
 
     # Register "telegram" as a bus target for outbound routing
     async def _telegram_outbound(msg: BusMessage) -> None:
-        ch = channel_manager.get("telegram")
+        ch = _casa_endpoint(channel_manager)
         if ch is not None:
-            # Casa-composed notices only (config-sync and the like); a
-            # model turn's reply never reaches this bus target (#1038).
-            await ch.send(casa_text(str(msg.content)), msg.context)
+            # Casa-composed notices only (config-sync and the like), through
+            # Casa's own bot; a model turn's reply never reaches this bus
+            # target (#1038).
+            await ch.send(casa_text(str(msg.content)),
+                          _operator_notice_context(channel_manager, msg.context))
 
     bus.register("telegram", _telegram_outbound)
 
@@ -3002,7 +3138,7 @@ async def main() -> None:
     # session death, and the boot resume.
     import background_jobs
     job_runner = background_jobs.JobRunner(
-        registry=engagement_registry, channel=telegram_channel,
+        registry=engagement_registry, channel=tg_transport,
         agent_logs=agent_logs)
 
     engagement_driver = InCasaDriver(
@@ -3059,7 +3195,7 @@ async def main() -> None:
     # _rebuild, long after this point (start_all() below); a None channel yields
     # no event.
     _telegram_ready = (
-        telegram_channel.ready_event if telegram_channel is not None else None)
+        tg_transport.ready_event if tg_transport is not None else None)
 
     # #573: reconcile durable scheduled-ask records. Gated on the Telegram
     # readiness event — every disposition either edits a
@@ -3070,7 +3206,7 @@ async def main() -> None:
         async def _reconcile_scheduled_asks() -> None:
             try:
                 await _telegram_ready.wait()
-                await scheduled_asks.reconcile_at_boot(telegram_channel)
+                await scheduled_asks.reconcile_at_boot(tg_transport)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — never fatal at boot
@@ -3168,6 +3304,7 @@ async def main() -> None:
         trigger_registry=trigger_registry,
         default_role=assistant_role,
         bus=bus,
+        route_for=tg_transport.route_for if tg_transport is not None else None,
     )
 
     invoke_handler = _make_invoke_handler(
@@ -3176,15 +3313,15 @@ async def main() -> None:
         bus=bus,
         assistant_role=assistant_role,
         role_configs=role_configs,
+        route_for=tg_transport.route_for if tg_transport is not None else None,
     )
 
-    # 11. Telegram webhook route (only used when webhook_url is set).
+    # 11. Telegram webhook routes, one per bot (used only in webhook mode).
     # L4: constant-time secret-token comparison lives in the extracted
-    # factory. The lambda preserves the closure over the local
-    # ``telegram_channel`` (assigned earlier in main()).
+    # factory.
     telegram_update_handler = _make_telegram_update_handler(
-        get_telegram_channel=lambda: telegram_channel,
-        webhook_secret=webhook_secret,
+        get_endpoint=_telegram_update_endpoints(tg_transport),
+        root_secret=webhook_secret,
     )
 
     # 12. Status dashboard
@@ -3211,9 +3348,8 @@ async def main() -> None:
 
         # Channel rows
         channel_rows = ""
-        if telegram_channel is not None:
-            tg_mode = "webhook" if telegram_channel._webhook_url else "polling"
-            channel_rows += _row("Telegram", tg_mode, "on")
+        if tg_transport is not None:
+            channel_rows += _row("Telegram", telegram_mode, "on")
         else:
             channel_rows += _row("Telegram", "not configured", "off")
 
@@ -3280,7 +3416,7 @@ async def main() -> None:
         trigger_registry=trigger_registry,
     ))
     app.router.add_post("/invoke/{agent}", invoke_handler)
-    app.router.add_post("/telegram/update", telegram_update_handler)
+    app.router.add_post("/telegram/update/{bot_id}", telegram_update_handler)
     # 13b. Per-agent trigger registration. Registry + scheduler were
     # constructed earlier (needed by init_tools for get_schedule).
     # Register before runner.setup() so webhook routes land in *app*
@@ -3373,20 +3509,12 @@ async def main() -> None:
         return dict(entry) if entry is not None else None
 
     async def _setup_dispatch(role: str, text: str, context: dict) -> bool:
-        import trigger_consent as _tc
-        ch = channel_manager.get("telegram") if channel_manager else None
-        op = _tc.operator_identity(ch) if ch is not None else None
-        if op is None:
+        turn_context = _setup_turn_context(_telegram(channel_manager), context)
+        if turn_context is None:
             return False
-        op_chat, op_user = op
         msg = BusMessage(
             type=MessageType.CHANNEL_IN, source="telegram", target=role,
-            content=text, channel="telegram",
-            context={
-                "chat_id": op_chat, "user_id": op_user, "cid": new_cid(),
-                **context,  # reserved synthetic/plugin_setup markers —
-                            # Casa-composed internal, never external ingress
-            },
+            content=text, channel="telegram", context=turn_context,
         )
         return await bus.send_checked(msg) == "accepted"
 
@@ -3591,14 +3719,18 @@ async def main() -> None:
         recovered_jobs, job_registry, bus, assistant_role=assistant_role,
     )
     # The interrupted configurator run, once — unless the replay above already
-    # tells the operator about that same delegation.
+    # tells the operator about that same delegation. Its step line is deleted
+    # through the bot that posted it.
+    async def _delete_step_line(addr) -> Any:
+        return await tg_transport.endpoint(addr).delete_dm_message(
+            addr.chat_id, addr.message_id)
+
     await configurator_run.announce_interrupted(
         interrupted_configurator,
         recovered_ids={getattr(j, "id", None)
                        for j in recovered_jobs or ()},
         notify=lambda text: operator_notify(channel_manager, text),
-        delete=getattr(channel_manager.get("telegram") if channel_manager else None,
-                       "delete_dm_message", None))
+        delete=_delete_step_line if tg_transport is not None else None)
 
     # 13b'. #766: and every ENGAGEMENT outcome that still owes its engager a
     # telling. Beside the delegation replay for the same reason it sits here:
@@ -3618,12 +3750,12 @@ async def main() -> None:
         engagement_registry, specialist_registry)
     # An ended job whose keyboards in the direct chat were not retired before
     # the restart (the edits run on a task of their own) has them retired now.
-    if telegram_channel is not None:
+    if tg_transport is not None:
         try:
-            telegram_channel.retire_ended_job_keyboards()
+            tg_transport.retire_ended_job_keyboards()
         except Exception:  # noqa: BLE001 — never fatal at boot
             logger.warning("retiring ended jobs' keyboards failed", exc_info=True)
-    await _resume_background_jobs(engagement_registry, telegram_channel, skip=left_open, only=boot_job_ids)  # noqa: E501
+    await _resume_background_jobs(engagement_registry, tg_transport, skip=left_open, only=boot_job_ids)  # noqa: E501
 
     # 13c. Surface any default-sync overwrites to the operator (direct
     # telegram outbound — see notify_config_sync).
@@ -3694,13 +3826,13 @@ async def main() -> None:
     # A live job's start line shows how long it has run: refreshed every few
     # minutes (and at each turn end, with its cost).
     async def _refresh_job_start_lines() -> None:
-        if telegram_channel is None:
+        if tg_transport is None:
             return
         for rec in engagement_registry.active_and_idle():
             if not rec.origin.get("job"):
                 continue
             try:
-                await telegram_channel.refresh_job_start_line(rec)
+                await tg_transport.refresh_job_start_line(rec)
             except Exception:  # noqa: BLE001 — cosmetic
                 logger.debug("job %s start line not refreshed", rec.id[:8],
                              exc_info=True)

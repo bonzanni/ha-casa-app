@@ -97,6 +97,9 @@ FILES: tuple[Entry, ...] = (
           "Pending scheduled questions: the operator's chat and user id, the "
           "question body and its options, and which resident session is "
           "waiting on the answer."),
+    Entry("/data/telegram-casa-bot.json", 0o600, PRIVATE,
+          "Casa's own Telegram bot id and a digest of the token it was "
+          "verified for: which bot the operator talks to."),
     Entry("/data/plugin-health.json", 0o600, PRIVATE,
           "Per-plugin health state, regenerated every boot."),
     Entry("/data/plugin-setup-episodes.json", 0o600, PRIVATE,

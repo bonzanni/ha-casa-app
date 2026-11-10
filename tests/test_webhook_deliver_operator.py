@@ -257,7 +257,7 @@ def _registry_with(deliver: str | None):
 
 
 async def _ingress(deliver: str | None, payload: dict | None = None,
-                   name: str = EFFECTIVE) -> BusMessage:
+                   name: str = EFFECTIVE, route_for=None) -> BusMessage:
     """One POST through the REAL wildcard handler; returns the bus message."""
     from casa_core import _make_webhook_handler
     from rate_limit import RateLimiter
@@ -267,7 +267,7 @@ async def _ingress(deliver: str | None, payload: dict | None = None,
     handler = _make_webhook_handler(
         webhook_rate_limiter=RateLimiter(capacity=0, window_s=60.0),
         webhook_secret=GLOBAL_SECRET, trigger_registry=_registry_with(deliver),
-        default_role=ROLE, bus=bus)
+        default_role=ROLE, bus=bus, route_for=route_for)
     app = web.Application()
     app.router.add_post("/webhook/{name}", handler)
     body = json.dumps(payload if payload is not None
@@ -287,6 +287,36 @@ def _scope_of(msg: BusMessage):
     from output_boundary import TurnScope
     return TurnScope.mint(msg, SimpleNamespace(
         role=ROLE, character=SimpleNamespace(name="Test")))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deliver", ["operator", "operator_always", "none"])
+async def test_every_webhook_turn_is_born_with_its_telegram_route(deliver):
+    """Every webhook turn carries the Telegram route of the role it runs as,
+    decided server-side at ingress, whatever its delivery: a webhook turn
+    whose delivery is ``none`` may still send to the operator. The route
+    reaches the bot bound to the role, and a reply through it reaches no
+    other bot."""
+    from provenance import route_context
+    from two_endpoints import CASA_BOT, FINANCE_BOT, build_two_endpoints, calls
+
+    two = build_two_endpoints()
+    msg = await _ingress(deliver, route_for=two.transport.route_for)
+    assert msg.context["_tg_bot"] == two.transport.route_for(ROLE) == CASA_BOT
+    await two.transport.send("hi", route_context(msg.context))
+    assert [c[0] for c in calls(two.ep[CASA_BOT])] == ["send"]
+    assert calls(two.ep[FINANCE_BOT]) == []
+
+
+@pytest.mark.asyncio
+async def test_a_webhook_body_cannot_choose_the_route():
+    from two_endpoints import CASA_BOT, FINANCE_BOT, build_two_endpoints
+
+    two = build_two_endpoints()
+    msg = await _ingress("none", payload={"_tg_bot": FINANCE_BOT,
+                                          "context": {"_tg_bot": FINANCE_BOT}},
+                         route_for=two.transport.route_for)
+    assert msg.context["_tg_bot"] == CASA_BOT
 
 
 @pytest.mark.asyncio

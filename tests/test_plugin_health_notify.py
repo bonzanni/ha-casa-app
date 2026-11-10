@@ -14,6 +14,12 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
 
 class _FakeChannel:
+    # Casa's endpoint, its bot id not known yet: a notice needs none.
+    default_agent = "assistant"
+    has_bot_id = False
+    chat_id = "100"
+    on_identity = None
+
     def __init__(self, raise_on_send=False, is_ready=True):
         self.raise_on_send = raise_on_send
         self.is_ready = is_ready
@@ -35,9 +41,20 @@ class _FakeChannel:
 class _FakeChannelManager:
     def __init__(self, channel):
         self._channel = channel
+        self._transport = None if channel is None else _transport(channel)
 
     def get(self, name):
-        return self._channel if name == "telegram" else None
+        return self._transport if name == "telegram" else None
+
+
+def _transport(channel):
+    """The Telegram transport with *channel* as Casa's own endpoint."""
+    from channels.telegram_transport import TelegramTransport
+    from telegram_channel_double import MemoryBotIdStore
+
+    transport = TelegramTransport(casa_bot_ids=MemoryBotIdStore())
+    transport.add_endpoint(channel, casa=True)
+    return transport
 
 
 def _cm(raise_on_send=False):

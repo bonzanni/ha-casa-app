@@ -17,6 +17,13 @@ pytestmark = pytest.mark.unit
 
 
 class _Channel:
+    """Casa's endpoint: its id is not known yet, as on a first boot."""
+
+    default_agent = "assistant"
+    has_bot_id = False
+    chat_id = "100"
+    on_identity = None
+
     def __init__(self, ready: bool) -> None:
         self.is_ready = ready
         self.sent: list[tuple[str, dict]] = []
@@ -25,9 +32,21 @@ class _Channel:
         self.sent.append((text, context))
 
 
+def _transport(channel):
+    from channels.telegram_transport import TelegramTransport
+    from telegram_channel_double import MemoryBotIdStore
+
+    transport = TelegramTransport(casa_bot_ids=MemoryBotIdStore())
+    transport.add_endpoint(channel, casa=True)
+    return transport
+
+
 class _Manager:
+    """A manager that does not say whether its start completed, with the
+    Telegram transport over *channel* (or no Telegram at all)."""
+
     def __init__(self, channel) -> None:
-        self._channel = channel
+        self._channel = None if channel is None else _transport(channel)
 
     def get(self, name):
         return self._channel if name == "telegram" else None
@@ -56,6 +75,20 @@ async def test_notify_sends_when_ready():
     ch = _Channel(ready=True)
     await casa_core.operator_notify(_Manager(ch), "hello")
     assert len(ch.sent) == 1 and ch.sent[0][0] == "hello"
+    # To the operator's chat, through Casa's own endpoint: a notice names
+    # the chat and no bot, so it needs no bot id.
+    assert ch.sent[0][1] == {"chat_id": 100}
+
+
+async def test_notify_goes_through_casa_endpoint_only():
+    """With a second bot bound to another role, the notice still goes
+    through Casa's endpoint and nothing reaches the other one."""
+    from two_endpoints import CASA_BOT, FINANCE_BOT, build_two_endpoints, calls
+
+    two = build_two_endpoints()
+    await casa_core.operator_notify(two.manager, "hello")
+    assert [c[0] for c in calls(two.ep[CASA_BOT])] == ["send_response"]
+    assert calls(two.ep[FINANCE_BOT]) == []
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +97,10 @@ async def test_notify_sends_when_ready():
 
 class _StartChannel:
     name = "telegram"
+    default_agent = "assistant"
+    has_bot_id = False
+    chat_id = "100"
+    on_identity = None
 
     def __init__(self, fail: bool = False) -> None:
         self.fail = fail
@@ -83,7 +120,7 @@ async def test_930_start_completed_turns_true_only_when_start_all_returns():
     from channels import ChannelManager
 
     mgr = ChannelManager()
-    mgr.register(_StartChannel())
+    mgr.register(_transport(_StartChannel()))
     assert mgr.start_completed is False
     await mgr.start_all()
     assert mgr.start_completed is True
@@ -95,7 +132,7 @@ async def test_930_start_completed_stays_false_when_a_start_raises():
     from channels import ChannelManager
 
     mgr = ChannelManager()
-    mgr.register(_StartChannel(fail=True))
+    mgr.register(_transport(_StartChannel(fail=True)))
     with pytest.raises(RuntimeError, match="start failed"):
         await mgr.start_all()
     assert mgr.start_completed is False
@@ -106,7 +143,7 @@ async def test_930_not_ready_before_start_completed_raises_the_subclass():
 
     mgr = ChannelManager()
     ch = _StartChannel()
-    mgr.register(ch)
+    mgr.register(_transport(ch))
     with pytest.raises(OperatorNotifyBeforeStart):
         await casa_core.operator_notify(mgr, "hello")
     await mgr.start_all()

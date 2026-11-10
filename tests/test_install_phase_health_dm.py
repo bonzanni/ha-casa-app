@@ -23,6 +23,10 @@ pytestmark = [pytest.mark.asyncio]
 
 class _Channel:
     is_ready = True
+    default_agent = "assistant"
+    has_bot_id = False
+    chat_id = "100"
+    on_identity = None
 
     def __init__(self):
         self.sent: list[str] = []
@@ -35,10 +39,15 @@ class _Channel:
 
 class _CM:
     def __init__(self):
+        from channels.telegram_transport import TelegramTransport
+        from telegram_channel_double import MemoryBotIdStore
+
         self.channel = _Channel()
+        self.transport = TelegramTransport(casa_bot_ids=MemoryBotIdStore())
+        self.transport.add_endpoint(self.channel, casa=True)
 
     def get(self, name):
-        return self.channel if name == "telegram" else None
+        return self.transport if name == "telegram" else None
 
 
 def _issue(name, code, target=None):
