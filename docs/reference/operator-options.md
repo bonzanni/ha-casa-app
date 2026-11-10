@@ -50,7 +50,7 @@ container variable can survive an empty option elsewhere.
 | `claude_oauth_token` | `CLAUDE_CODE_OAUTH_TOKEN` | main startup secret resolution; inherited by CLI children | empty — but **boot-required**: validation refuses to start without a value | restart |
 | `telegram_bot_token` | `TELEGRAM_BOT_TOKEN` | main startup (channel construction) | empty | restart |
 | `telegram_chat_id` | `TELEGRAM_CHAT_ID` | main startup → Telegram channel | empty | restart |
-| `telegram_engagement_supergroup_id` | `TELEGRAM_ENGAGEMENT_SUPERGROUP_ID` | main startup; engagement configuration check | 0 | restart |
+| `telegram_engagement_supergroup_id` | `TELEGRAM_ENGAGEMENT_SUPERGROUP_ID` | main startup → Telegram channel → the agent log's group (`architecture/agent-logs.md`); 0 means no logs, and jobs need no group | 0 | restart |
 | `telegram_bot_api_base` | `TELEGRAM_BOT_API_BASE` | Telegram channel rebuild | unset | restart |
 | `telegram_transport` | `TELEGRAM_TRANSPORT` | main startup | polling | restart |
 | `onepassword_service_account_token` | `OP_SERVICE_ACCOUNT_TOKEN` | secret resolver (`op` CLI); setup's token blocks | empty | restart |
@@ -71,7 +71,7 @@ container variable can survive an empty option elsewhere.
 transport without a public URL** warns and falls back to polling; the same unset or
 non-`https` origin leaves the authorization-callback facility unavailable, surfacing
 `callback_base_url_invalid` on every otherwise-routable plugin. **A non-numeric
-supergroup id** fails startup — that conversion is unguarded. **A failed `op://`
+log group id** warns and reads as 0: no logs. **A failed `op://`
 resolution** warns and leaves the raw reference in place, so the downstream credential is
 rejected rather than the boot. **An invalid timezone** warns and falls back to the
 default. **An invalid reap value** falls back to seven days. **The specialist rails** are

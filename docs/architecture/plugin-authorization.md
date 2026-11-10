@@ -57,8 +57,8 @@ engagement that ends before the tap takes its unanswered
 challenges with it (INV-PLUG-033).
 [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) owns the
 reservation's lifetime. A non-authorizable engagement record still denies, fail-closed,
-before any grant lookup: authorizable means an active record with a topic and a reachable
-operator, and of a kind that carries an approval seam — a specialist, or a resident-hosted
+before any grant lookup: authorizable means an active record whose origin names the
+operator and their chat, and of a kind that carries an approval seam — a specialist, or a resident-hosted
 plugin-job worker whose identity is additionally bound to its host role and its pinned
 artifact ([`background-jobs.md`](background-jobs.md)).
 
@@ -172,12 +172,12 @@ The same holds on the paths #1207 named. When a resident's synchronous `delegate
 returns and its specialist's call was left waiting, the operator sees none of the words the
 resident wrote after the delegate's result: the child's outcome reaches the resident's turn
 by delegation id ([`delegation.md`](delegation.md)), even when the CLI rewrote the delegate's
-result before the turn read it (#1274), while the delegate's result is unchanged. On a specialist job's topic and a plugin
-background job's topic, the hook runs in the engagement client's SDK reader, so under an
-engagement it records on that client's running turn — the holder bound before the client was
-entered (`in_casa_driver._EngagementTurn`), live only while its turn runs — and the driver
-stops the topic stream at that call's result and finalizes only the words before it, under
-the same cap. A job turn whose every word was withheld this way is waiting on the operator:
+result before the turn read it (#1274), while the delegate's result is unchanged. On a
+specialist job and a plugin background job, the hook runs in the engagement client's SDK
+reader, so under an engagement it records on that client's running turn — the holder bound
+before the client was entered (`in_casa_driver._EngagementTurn`), live only while its turn
+runs — and the reader holds back from the agent's log every word written after that call's
+result (INV-TG-014). A job turn whose every word was withheld this way is waiting on the operator:
 the keyboard is what it showed, and the job's turn-end handler neither nudges nor parks it
 while the approval is outstanding
 ([`background-job-session.md`](background-job-session.md), INV-BGJOB-017).

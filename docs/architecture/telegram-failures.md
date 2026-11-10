@@ -9,8 +9,9 @@ last_reviewed: 2026-10-03
 ## Scope
 
 What the Telegram channel does when its inputs are wrong, late, duplicated or unavailable.
-How Telegram messages become turns — the transports, authentication, the per-topic log and
-the keyboards — is [`telegram.md`](telegram.md); this page was split out of it at the corpus
+How Telegram messages become turns — the transports, authentication, ordering and the
+keyboards — is [`telegram.md`](telegram.md); the agent log's own failures are
+[`agent-logs.md`](agent-logs.md); this page was split out of it at the corpus
 ceiling (#1206).
 
 ## Mental model
@@ -46,27 +47,27 @@ configured chat or in any chat when none is configured, draws a refusal saying f
 accepted only from the operator, and nothing is downloaded; an empty chat id therefore accepts
 no chat's files.
 
-**A tap is stale, expired, for the wrong topic, or from the wrong user.** Absorbed with a
+**A tap is stale, expired, for the wrong request, or from the wrong user.** Absorbed with a
 single best-effort acknowledgement; failures answering are themselves absorbed.
 
 **Posting a keyboard fails.** The request is unregistered and its waiter resolves with a
 delivery-failure outcome rather than hanging.
 
-**A message to a job is not accepted.** A message in a job's topic, a reply into a job or a
-tap the job does not accept — its record is terminal, its journal could not be written, Casa
-is stopping — draws one bounded "not delivered, please resend" notice, in the topic or in reply
-to the message, and goes no further; a message the job accepted and never read is told once
-when the job ends
-([`engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md), INV-ENG-029). A
-message from someone below the job's clearance — a household member in a job started at a
-higher one — gets one line, "This job can't take instructions from you, so your message didn't reach it.", and never
-reaches the job.
+**A message to a job is not accepted.** A reply into a job or a tap the job does not accept —
+its record is terminal, its journal could not be written, Casa is stopping — draws one bounded
+"not delivered, please resend" notice in reply to the message, and goes no further; a message
+the job accepted and never read is told once when the job ends
+([`engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md), INV-ENG-029).
+
+**Someone writes in the agent-log group.** The group is read-only: the person gets one pointer
+to the direct chat per boot, and nothing they wrote reaches a job, memory or a model
+(INV-TG-016).
 
 **A job's session ends in the middle of a turn.** No Telegram path waits on the session, so
 nothing at the edge sees it: the driver resumes the session once and redelivers what the
 transcript lacks, and a failed resume ends the job `error`
-([`background-job-session.md`](background-job-session.md), INV-BGJOB-018). Text a turn had
-already streamed into the topic stays there.
+([`background-job-session.md`](background-job-session.md), INV-BGJOB-018). Lines a turn had
+already put in the agent's log stay there.
 
 ## Extension points
 

@@ -7,6 +7,8 @@
   doc: architecture/turn-loop.md
 - item: casa/rootfs/opt/casa/agent_inbox.py
   doc: architecture/inbound-files.md
+- item: casa/rootfs/opt/casa/agent_logs.py
+  doc: architecture/agent-logs.md
 - item: casa/rootfs/opt/casa/agent_loader.py
   doc: architecture/agent-taxonomy.md
 - item: casa/rootfs/opt/casa/ask_retirement.py
@@ -49,8 +51,6 @@
   doc: architecture/observability.md
 - item: casa/rootfs/opt/casa/casa_eval/base.py
   doc: architecture/eval-framework.md
-- item: casa/rootfs/opt/casa/channels/state_emoji.py
-  doc: architecture/telegram.md
 - item: casa/rootfs/opt/casa/channels/telegram.py
   doc: architecture/telegram.md
 - item: casa/rootfs/opt/casa/channels/telegram_supervisor.py
@@ -305,8 +305,6 @@
   doc: architecture/observability.md
 - item: casa/rootfs/opt/casa/tools.py
   doc: architecture/tools-interface.md
-- item: casa/rootfs/opt/casa/topic_ledger.py
-  doc: architecture/persistent-state.md
 - item: casa/rootfs/opt/casa/trigger_acks.py
   doc: architecture/plugin-triggers.md
 - item: casa/rootfs/opt/casa/resident_trigger_secrets.py
@@ -397,8 +395,6 @@
   doc: architecture/tools-interface.md
 - item: tool:casa_restart_supervised
   doc: architecture/tools-interface.md
-- item: tool:cleanup_engagement_topics
-  doc: architecture/tools-interface.md
 - item: tool:config_git_commit
   doc: architecture/tools-interface.md
 - item: tool:consent_reprompt
@@ -470,8 +466,6 @@
 - item: tool:plugin_update
   doc: architecture/plugin-mutation-tools.md
 - item: tool:query_engager
-  doc: architecture/tools-interface.md
-- item: tool:react
   doc: architecture/tools-interface.md
 - item: tool:relay_answer
   doc: architecture/delegate-answer-relay.md
@@ -591,8 +585,6 @@
   doc: architecture/memory-scoping.md
 - item: casa/rootfs/opt/casa/channels/__init__.py
   doc: architecture/overview.md
-- item: casa/rootfs/opt/casa/channels/topic_icons.py
-  doc: architecture/telegram.md
 - item: casa/rootfs/opt/casa/channels/voice/__init__.py
   doc: architecture/voice.md
 - item: casa/rootfs/opt/casa/channels/voice/catalog.py

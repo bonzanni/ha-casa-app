@@ -30,7 +30,7 @@ the new job's record exists until the launch has created it or failed.
 one, which reads only `origin["job"]["name"]` — the text before its first `:` — because every
 job record carries it, old and new. Artifact rows cannot always name a record's plugin: a
 record written before `manifest_name` was recorded has no such key, and a plugin unassigned
-from its host while the launch awaited topic creation leaves no declaring row at all, and
+from its host while the launch awaited leaves no declaring row at all, and
 an older record holding only an incidental row looks like another plugin's. Each inference
 from those rows left some record invisible, and a second job beside it.
 The in-process claim that covers the window before a record exists is keyed by the
@@ -59,8 +59,8 @@ only live records.
 ## Failure behavior
 
 **A refused start is `job_busy`, stated with the invariant above.** A refusal that names a live
-job carries its engagement and topic ids; one that names a start still inside its pre-record
-window carries neither.
+job carries its engagement id; one that names a start still inside its pre-record window
+carries none.
 
 ## Extension points
 

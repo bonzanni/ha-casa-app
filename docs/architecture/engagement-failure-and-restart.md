@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-09
+last_reviewed: 2026-11-10
 ---
 
 # Engagement launch failure and restart
@@ -10,7 +10,7 @@ last_reviewed: 2026-11-09
 
 What happens when a launch does not become a live engagement, and what a restart does with
 the records left behind: which gate refused a delegation, which failure arms answer the
-calling turn rather than the operator's topic, what a graceful stop records against a launch
+calling turn and which are reported by the launch-death reporter, what a graceful stop records against a launch
 it cancels, and what a restart does with a record. The record itself, how a launch is
 admitted and the driver protocol are in [`architecture/engagements.md`](engagements.md); how a
 turn is admitted to a live engagement is
@@ -27,29 +27,27 @@ finds records whose launch succeeded and whose process did not survive.
 
 Two questions separate the arms below. *Who is owed the answer* — a named fault goes back to
 the calling turn, which still owns the launch and is the one answering for it, while an
-absence goes to the operator's topic, because a topic that says nothing is what needs
-explaining. And *what caused the end* — a launch failure and a graceful stop are different
+absence — a cancellation — has no caller left to answer, so its owner tells the engager
+itself. And *what caused the end* — a launch failure and a graceful stop are different
 events, and the record says which one it was.
 
 ## Contracts & invariants
 
-**INV-ENG-019**: A launch-failure arm aborts its engagement's topic only on the strength of a terminal transition this call both WON and durably persisted. A transition another writer won, and a transition whose persist rolled back leaving the record live, each leave the topic open and the record to its owner. The arm still answers its caller with its own named fault, and still posts no notice.
+**INV-ENG-031**: A named launch-failure arm settles its job only on the strength of a terminal transition this call both won and durably persisted; a transition another writer won, and one whose persist rolled back leaving the record live, leave the record and the job to their owner; on all three outcomes the arm answers its caller with its own named fault and posts nothing.
 
 The two refused cases are the two ways the ledger's best-effort mark used to mislead an arm.
 A LOST race means another writer already committed a terminal, and that writer owns every
-terminal side effect (INV-ENG-001) — so painting `failed` here contradicts the durable record
-and closes a topic its owner is about to close for its own reason. A ROLLED-BACK persist means
-the record is still live and disk agrees: an open topic over a live record is recoverable, a
-closed one is not, and the next turn that resumes that record would find its topic gone. All four named arms route through one owner that asks the transition exactly one
-question and lets its three outcomes decide; that owner is anchored and shielded, so a
-cancellation arriving after the durable commit cannot leave a terminal record behind a
-permanently open topic. The caller is told its own named fault on all three outcomes, because
-that fault is true of this launch whoever won the record.
+terminal side effect (INV-ENG-001). A ROLLED-BACK persist means the record is still live and
+disk agrees, so there is no ended job to settle. Every named arm routes through one owner that
+asks the transition exactly one question and lets its three outcomes decide; that owner is
+anchored and shielded, so a cancellation arriving after the durable commit cannot leave a
+terminal record whose job was never settled. The caller is told its own named fault on all
+three outcomes, because that fault is true of this launch whoever won the record.
 
 A launch that ends without a named fault — cancelled after its record exists, or caught by
 Casa's stop — is the launch-death reporter's instead (INV-ENG-030, in
-[`architecture/engagement-launch-detach.md`](engagement-launch-detach.md)), which posts the
-bounded notice these arms do not.
+[`architecture/engagement-launch-detach.md`](engagement-launch-detach.md)), which also writes
+the line in the agent's log these arms do not.
 
 ## Failure behavior
 
@@ -57,30 +55,30 @@ bounded notice these arms do not.
 and plugin-withholding refusals, and what each payload discloses, are described in
 [`architecture/delegation.md`](delegation.md).
 
-**A driver fails to start after the record exists.** The engagement is marked errored, topic
-cleanup is attempted, and the caller is told the start failed.
+**A driver fails to start after the record exists.** The engagement is marked errored, its
+job's message journal is settled, and the caller is told the start failed.
 
 These launch-failure arms — options that would not build (`options_build_failed`), a profile
 that would not persist (`profile_persist_failed`), a missing driver (`no_driver`), and a client
-that would not open (`driver_start_failed`) — deliberately do NOT take the launch-death path's
-bounded topic notice. The reason is that these arms carry a *named fault* and the death path
-carries only an *absence*. Each of the four is a fact about why the launch did not happen,
-returned synchronously to the turn that asked for it, in a kind string it can act on. The
-topic is aborted silently because the launch never reached the point where the job is handed
-over as live: the tool call still owns it, and is the one answering for it. A launch death has
-no such fact to hand back — the launch was cancelled — and an operator's topic that says
-nothing is what the notice exists to explain. Once the launch has answered `pending`, nothing
+that would not open (`driver_start_failed`) — deliberately do NOT take the launch-death path.
+The reason is that these arms carry a *named fault* and the death path carries only an
+*absence*. Each of the four is a fact about why the launch did not happen, returned
+synchronously to the turn that asked for it, in a kind string it can act on. The arm settles
+the job silently because the launch never reached the point where the job is handed over as
+live: the tool call still owns it, and is the one answering for it. A launch death has no such
+fact to hand back — the launch was cancelled — so its owner tells the engager itself. Once the
+launch has answered `pending`, nothing
 here applies: a fault on one of the job's turns is a turn end, continued once and then parked,
 and a session that ends is resumed once
 ([`background-job-session.md`](background-job-session.md), INV-BGJOB-017 and INV-BGJOB-018).
 
 The claim is bounded to what the tree provides, and it is a claim about the *caller*: the
 failure kind reaches the live invoking turn. Whether it then reaches the operator is that
-turn's own business, and nothing here relays it. The exemption is from the notice, and from
-nothing else — it does not extend to a cancellation, which stays on the launch-death path
+turn's own business, and nothing here relays it. The exemption is from the death path, and
+from nothing else — it does not extend to a cancellation, which stays on the launch-death path
 (INV-ENG-030). What it never extended to is the *strictness* of the mark behind the abort, and
-that is now settled the other way by INV-ENG-019 above: the exemption buys these arms their
-silence, never the authority to close a topic on a transition they did not win or did not
+that is settled the other way by INV-ENG-031 above: the exemption buys these arms their
+silence, never the authority to settle a job on a transition they did not win or did not
 persist.
 
 **A graceful stop cancels a launch.** This is a different event from a launch that failed,
@@ -92,13 +90,13 @@ applied here rather than folded into it. A terminal write that observes the caus
 `origin.shutdown_reason = "casa_shutdown"` beside its outcome, never in place of it, and the
 cancellation arm records a reason that says Casa was stopping instead of blaming a tool call
 nothing cancelled. The cleanup then waits for those launches and their death reports while
-Telegram, the bus and the registry are still up, so a dying launch's notice has a live
+Telegram, the bus and the registry are still up, so a dying launch's telling has a live
 transport.
 
 What it does not cover: a launch that becomes durable but is not yet enrolled when the stop
 latches carries no cause — it is still enrolled, tagged and cancelled when it does enrol, but
 the cleanup has already looked, so its death report is best-effort, as every death report is.
-The notice is *attempted*, never guaranteed: a wedged or failing transport still loses it,
+The telling is *attempted*, never guaranteed: a wedged or failing transport still loses it,
 bounded and logged.
 
 **A restart interrupts an engagement.** Persisted records load with `active` rewritten to
@@ -127,8 +125,7 @@ What such a notice can say is bounded by what the tombstone keeps, which is less
 path has. There is no completion text and no next steps on the record — no such
 fields exist — so the replay reports the FACT of the outcome and says plainly that the notice
 does not carry the report. It does not say the report is GONE, which would be a claim about
-storage this path cannot make: a finished engagement's completion text may well still stand
-in its closed topic. It never reconstructs an answer from the task. It does say that it is a replay: the notice tells the resident this is an
+storage this path cannot make. It never reconstructs an answer from the task. It does say that it is a replay: the notice tells the resident this is an
 earlier outcome reached before the restart, whose announcement was never confirmed, and gives
 the time the record went terminal, or says that time is unknown (INV-ENG-018).
 
@@ -139,13 +136,13 @@ before it answered is the launch-death reporter's (INV-ENG-030).
 ## Extension points
 
 **A new launch-failure arm** decides one thing first: does it carry a named fault the calling
-turn can act on, or only an absence? The first returns a kind string and aborts the topic
-silently; the second belongs on the launch-death path, with its bounded notice.
+turn can act on, or only an absence? The first returns a kind string and settles the job
+silently; the second belongs on the launch-death path, whose owner tells the engager.
 
 **A new terminal writer** decides whether it is the one telling the engager. If it announces
 the outcome, it arms the durable obligation in the same transition that commits the terminal
 — the finalization funnel does (except for the completed end of a quiet scheduled run nobody
-interacted with, which is told to no one, INV-BGJOB-010 and INV-BGJOB-015), and so do the cancellation owner's death report and the
+interacted with, which is told to no one, INV-BGJOB-025 and INV-BGJOB-015), and so do the cancellation owner's death report and the
 inline named-fault abort, the latter acknowledged by its launcher's own return when it won, and handed to the abort's own completion when the launcher was cancelled first; if it does not
 — a bare mark — it leaves the default and owes nothing; a reporter that asks to arm but loses its
 transition writes nothing, and so arms nothing. The
@@ -158,7 +155,7 @@ decide it.
 <!-- generated by scripts/verify_docs.py --write-nav; do not hand-edit -->
 
 **Source**
-- `casa/rootfs/opt/casa/tools.py::_abort_engagement_topic`
+- `casa/rootfs/opt/casa/tools.py::_abort_launch_with_fault`
 - `casa/rootfs/opt/casa/tools.py::stop_engagement_launches`
 - `casa/rootfs/opt/casa/casa_core.py::_notify_recovered_engagement_outcomes`
 

@@ -1,7 +1,7 @@
 """#1301 — a job declaring ``quietWhenScheduled`` that the scheduler started runs quietly:
 nothing in the direct chat, and a completed end told nowhere. Its plugin's delivered
 slots still reach the operator, a cancelled or failed end is still told, its agent log
-is written like any job's, and every other run is unchanged (INV-BGJOB-010)."""
+is written like any job's, and every other run is unchanged (INV-BGJOB-025)."""
 from __future__ import annotations
 
 from dataclasses import replace

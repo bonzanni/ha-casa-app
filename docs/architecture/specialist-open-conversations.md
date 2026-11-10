@@ -35,7 +35,7 @@ its background jobs and launches still in flight, and any interactive conversati
 install left open ([`engagements.md`](engagements.md)); plugin jobs are another kind and
 never listed, and the configurator, a delegated run, has no engagement at all. Each of the four
 tools commits on the call, so the warning can only come first as a pending result:
-`ok: false`, `kind: "open_conversations_unconfirmed"`, the conversations by topic and task,
+`ok: false`, `kind: "open_conversations_unconfirmed"`, the conversations by id and task,
 and a `warning` the configurator relays verbatim before asking. The operator's yes comes back
 as `acknowledged_conversations`, carried in the call itself: the check reads only the ids
 the call carries and matches no call to the configurator run that was warned, so a
@@ -44,8 +44,8 @@ one of that specialist's engagements, so a made-up list acknowledges nothing; th
 Casa's erase-question continuations tell the model to make carry the same ids. For a persona, upgrade or rollback the warning
 says, of each conversation, the one sentence `tools.py::SPECIALIST_OPEN_CONVERSATION_NOTICE_TEMPLATE`
 holds — it keeps its personality and the plugin versions it started with, picks up the new
-settings when it resumes, and switches only by closing it with `/complete` and asking for a
-new one — and that template also feeds the three tool descriptions, so no surface can drift.
+settings when it resumes, and to get everything new it is cancelled (with its Cancel button,
+or by asking the assistant) and started again — and that template also feeds the three tool descriptions, so no surface can drift.
 The sentence names whom to ask: `tools.py::specialist_open_conversation_notice` fills in the
 assistant's configured persona name at call time, while the descriptions, built at import
 before any persona is registered, say "the assistant".
@@ -68,7 +68,7 @@ because only `erase_data=true` calls consume one. After the sequencer reloaded a
 journal completed, `tools.py::close_specialist_engagements` reads the open conversations
 again — so one opened after the confirmation, while an eraser ran, is closed too and flagged
 `opened_after_confirmation` — and finalizes each through `_finalize_engagement` with outcome
-`cancelled`: the topic is told and closed and the engager notified, exactly as a cancel. It
+`cancelled`: its end is logged and the engager notified, exactly as a cancel. It
 runs inline in the shielded child; the funnel takes no reload or plugin-tools lock.
 
 What it does not cover. The model can acknowledge without asking; the carrier is a tool
@@ -76,8 +76,8 @@ result, as INV-PERS-018's notice is. A conversation launched after the close but
 delegation resolved before the reload is not closed, and dies on its next resume as a
 removed specialist's conversation does; no launch lock narrows that window further. A
 handler cancelled after the commit still closes the conversations, but its result — the
-closed list and any arrival — never reaches the configurator; the topics' tellings and the
-engager's notice are the record. A failed close is reported, not retried. A cancel at the
+closed list and any arrival — never reaches the configurator; the engager's notice is the
+record. A failed close is reported, not retried. A cancel at the
 warning leaves an upgrade's receipt and consent as any abandoned upgrade does.
 
 ## Failure behavior

@@ -54,10 +54,13 @@ restarts nothing and returns `deferred`; Casa follows the run's answer with a Re
 button, so the restart happens when the operator chooses and never cuts the run that asked
 for it.
 
-**While it works, the DM shows a step line.** `tools.py::_configurator_step_line` posts one
-silent line at the run's first tool call, edits it as steps start, and deletes it when the
-run ends, however it ends (`drivers/turn_progress.py::TurnProgressLine` with a `delete`).
-Writes are coalesced, spaced and bounded, and none is awaited by the run.
+**While it works, the DM shows a step line — unless its log does.** With no agent log on,
+`tools.py::_configurator_step_line` posts one silent line at the run's first tool call, edits
+it as steps start, and deletes it when the run ends, however it ends
+(`drivers/turn_progress.py::TurnProgressLine` with a `delete`). Writes are coalesced, spaced
+and bounded, and none is awaited by the run. With the agent log on, it posts no step line: the
+run writes its start, words, steps and end to the configurator's own topic like any delegated
+specialist run ([`agent-logs.md`](agent-logs.md)).
 
 ## Contracts & invariants
 

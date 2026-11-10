@@ -220,7 +220,7 @@ alongside the delegation map are not among the five states named.
 A disable cannot be confirmed beforehand — no tool disables a specialist, and Casa notices
 only when a reload or a boot reads the file — so its conversations are closed when it takes
 effect: the retirement's `close_engagements` step finalizes each through the same funnel an
-uninstall uses (outcome `cancelled`; the topic is told and closed, the engager notified).
+uninstall uses (outcome `cancelled`; its end is logged and the engager notified).
 Enforced by that step in `reload.py::_teardown_disabled_specialist`, which every retiring
 scope reaches; by the `agents` sweep also admitting a disabled role that has open
 conversations but no runtime Agent — boot constructs none for a specialist, so before any

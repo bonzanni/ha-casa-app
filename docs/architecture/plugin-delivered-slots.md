@@ -29,9 +29,9 @@ once and posts ONE message to the chat of the call's grant identity: a link whos
 the label and the destination host, the host printed by Casa from the URL and never
 supplied by the plugin, with the caption beneath. That chat is the operator's chat with
 the resident on a direct turn, a sync delegation from it, or a Casa-dispatched setup turn;
-for a specialist engagement it is the chat the operator asked in, never the engagement's
-topic — an engagement's topic is closed by finalisation and can never show what came of
-the link. Proven delivery replaces the result with a receipt (`casa_delivery.status` is
+for a specialist engagement it is the chat the operator asked in, never the agent's log —
+the log is read-only and best effort, and its posts are deleted after about two days.
+Proven delivery replaces the result with a receipt (`casa_delivery.status` is
 `delivered`, every producer field and the reference intact); anything short of proven
 delivery — the channel down, a refused send, an exception, a bound of twenty seconds —
 withholds the result and drops the deposit. The producer's own result is
@@ -149,8 +149,8 @@ deposit is atomic and once — a taken reference is used, so `arm`, `redeem` and
 take all refuse it — and the broker's three matchers carry an explicit sixty-second timeout.
 
 What it does not cover: Casa's process logs. The boundary is the model — keeping the link
-out of the model's context is what stops it being echoed into whatever chat or topic the
-model is in — not the log. A sign-in or approval link is not a bearer credential: opening
+out of the model's context is what stops it being echoed into whatever chat or agent log the
+model's words reach — not the process log. A sign-in or approval link is not a bearer credential: opening
 it still requires the account holder's own login at the provider, it expires, and it
 authorises once. So the client library's own loggers (request parameters at debug level,
 an error body that quotes the request) are not policed; Casa's own two warnings on the

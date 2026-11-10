@@ -111,9 +111,9 @@ of the same response, whose result folds at the same point (#1274). Records an e
 failed attempt of the turn had left by the time this attempt began are never fed there. A
 record such an attempt's handler wrote after this attempt began would be fed. On the routes
 measured none is written then; a handler that ignored the cancellation of a failed attempt's
-calls was not measured, and could only withhold more. An engagement topic and a plugin
-background job apply the same cut in their driver
-([`plugin-authorization.md`](plugin-authorization.md)). What it does not cover: the transcript
+calls was not measured, and could only withhold more. A job's session reader and a delegated
+run apply the same cut to what they write in the agent's log
+([`agent-logs.md`](agent-logs.md), INV-TG-014). What it does not cover: the transcript
 and memory keep the words on every turn.
 
 Two facts ride out of admission for the durable-announcement discharge (#1079,

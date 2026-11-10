@@ -23,7 +23,8 @@ are [`engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md).
 job, `/data/job-inbox/<engagement id>.json`, rewritten atomically (temp file, fsync, rename, mode
 0600) on every change. An entry is `{"uuid", "text", "notice", "taken_up"}`: the uuid the message
 is written into the session with, the text as written, and the direct chat message or tapped card
-a lost-message notice would reply to (none for a topic message, whose notice goes to the topic).
+a lost-message notice would reply to. An entry without one is logged and discharged when it
+is told, never posted.
 Only operator messages are journaled; Casa's own writes (the brief, the nudge, the continue line,
 the restart line) are not — a restart re-derives them.
 
@@ -82,7 +83,7 @@ the commit, inside that same window. The terminal branch runs on the path that e
 the terminal write: a Casa death between the two leaves that job's file behind, and the next boot
 settles it the same way (`casa_core._settle_ended_job_state`, before the live jobs are resumed
 and also when there is no channel or job runner to resume them with; a job counts as ended only by
-its durable status, `settled_terminal_state`, and without a driver the file waits for a later
+its durable status, `settled_status`, and without a driver the file waits for a later
 boot), removing any file whose record is gone. Settlements of one job run one at a time, each reading
 the file under that job's lock, so a boot settle racing a live terminal path tells each entry
 once.

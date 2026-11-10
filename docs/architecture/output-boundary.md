@@ -80,8 +80,8 @@ specialist desk turn after a proven post too, #1433, applied by the desk —
 (#1252) the words written after a protected call that is waiting on the operator's approval,
 on a resident's DM, button or setup turn and on a specialist desk turn — on a resident's turn
 also after a synchronous delegate whose specialist left such a call waiting (#1207), whatever
-the CLI did to that delegate's result (#1274). An
-engagement or plugin-job topic withholds the same words in its driver, not in admission.
+the CLI did to that delegate's result (#1274). The
+agent log withholds the same words in its producers, not in admission (INV-TG-014).
 
 **Evidence is the runtime's own call, not an inference from the model's text.**
 `hooks.read_evidence_matchers(role)` adds `PostToolUse` and `PostToolUseFailure` matchers on
@@ -133,7 +133,7 @@ consent body, and each caller is recorded and classified in
 public channel coroutine with a text parameter. A new site fails those tests until someone
 records it and, in doing so, answers who authored the words.
 
-What it does not cover: the engagement-topic methods, which carry no scope; the arrival replies and a plugin's delivered posts — the link
+What it does not cover: the agent log, which is no channel method and carries no scope ([`agent-logs.md`](agent-logs.md)); the arrival replies and a plugin's delivered posts — the link
 message, a message and a file, each Casa-composed from plugin-authored bytes — which the
 recorded lists class as notices (a desk's notice too; its reply is admitted,
 [`specialist-desk-reply.md`](specialist-desk-reply.md)); and the voice channel, which has not adopted the contract. The recorded lists
@@ -238,8 +238,8 @@ the operator configured, and the caption cap stays meaningful.
 scheduled-delivery marker: the line is prepended to whatever that turn emits, and the
 channel's own rules decide what it may deliver.
 
-**An engagement topic receives output.** The sequencer's methods take plain text and apply
-no scope; an in-casa engagement's DM sends — `send_media` from a bound engagement — resolve
+**An agent's log receives output.** The log's producers hand it plain text and apply no
+scope; an in-casa engagement's DM sends — `send_media` from a bound engagement — resolve
 the engagement's persisted note and nothing else.
 
 ## Extension points

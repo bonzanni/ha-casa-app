@@ -30,9 +30,10 @@ asking, sent with the file: the stored file's caption becomes one ordinary turn 
 which is why the size cap is set by the request, not by Telegram's download limit.
 
 **Only the operator's direct chat, only a closed set of kinds.** A file is downloaded only
-from the operator in the direct chat. In the engagement supergroup a person's content — a
-file, a photo, a sticker, a voice message and the like — draws a reply pointing at the direct
-chat, while topic notices and bot messages draw nothing. An update from any other chat is
+from the operator in the direct chat. In the agent-log group a person's content — a file, a
+photo, a sticker, a voice message and the like — draws the log group's one pointer to the
+direct chat per person per boot and is never fetched, while chat notices and bot messages draw
+nothing (INV-TG-016, [`agent-logs.md`](agent-logs.md)). An update from any other chat is
 logged and dropped, exactly as a text message from it is; a sender who is not the operator
 in the configured chat is refused. In the direct chat a document is accepted when its final filename suffix is one of `.pdf`, `.png`,
 `.jpg`, `.jpeg`, `.txt`, `.md` or `.csv`, and a photo is accepted as its largest size. Each
@@ -201,7 +202,7 @@ outcome is unknown rather than that nothing was kept. Display metadata is writte
 publication and is best-effort: a missing display name falls back to Casa's name and is never
 a failure.
 
-**INV-FILE-001**: A non-text message in the operator's chat is ADDRESSED to a specialist when it is a swipe-reply on a retained post of that specialist for this operator, or when it arrives while this operator's `📎` arming for that specialist is live; an addressed file is judged under the per-(chat, specialist) intake lock — delegable now, an inbox, an accepted kind, the download into THAT specialist's inbox, delegable still, a desk place — and starts exactly one desk turn of that specialist, never a resident turn; when any step refuses, the file is stored in no other inbox and the operator is told once, labelled, as a completed event; files addressed to one specialist from one chat take their desk places in the order they were sent; every non-text message addressed to nobody takes the default agent's path, which starts a resident turn only for a stored file's caption (INV-FILE-004).
+**INV-FILE-001**: A non-text message in the operator's chat is ADDRESSED to a specialist when it is a swipe-reply on a retained post of that specialist for this operator — unless that post is one of an ended job this operator started in this chat (INV-BGJOB-024) — or when it arrives while this operator's `📎` arming for that specialist is live; an addressed file is judged under the per-(chat, specialist) intake lock — delegable now, an inbox, an accepted kind, the download into THAT specialist's inbox, delegable still, a desk place — and starts exactly one desk turn of that specialist, never a resident turn; when any step refuses, the file is stored in no other inbox and the operator is told once, labelled, as a completed event; files addressed to one specialist from one chat take their desk places in the order they were sent; every non-text message addressed to nobody takes the default agent's path, which starts a resident turn only for a stored file's caption (INV-FILE-004).
 
 The address is resolved before the classification refusal, synchronously, and an arming is
 consumed there whatever follows; for a file without a caption the default agent's path is
@@ -218,7 +219,9 @@ for the specialist's tools and not for its reply, and the operator's caption las
 operator's words — and the specialist files it with its own tools, as the default agent
 does today. The resident learns of each outcome by the same body-free line.
 
-What it does not cover: a file sent in an engagement topic (refused today, unchanged); files
+What it does not cover: a file sent in the agent-log group (never fetched, INV-TG-016); a
+file sent as a reply to a post of a job that has ended, which is the default agent's
+(INV-BGJOB-024); files
 for residents other than the Telegram default agent; a `📎` arming across a restart (memory-only,
 like the proposal keyboards — the next file is the default agent's).
 

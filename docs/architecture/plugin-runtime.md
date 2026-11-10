@@ -70,15 +70,15 @@ on the old value even though the binding passes the gate. Both heal through the 
 seams, and neither is something verification can fully see: a plain-value rotation shows
 as reload-pending only until the plugin-env reload lands, and an unchanged `op://`
 reference cannot be compared at all — a warm session on a rotated credential reports
-ready. A specialist job's engagement records the plugin set *admitted when its
-topic exists* (one filter feeding the record and the launch), and every later build —
+ready. A specialist job's engagement records the plugin set *admitted just before its
+record is created* (one filter feeding the record and the launch), and every later build —
 including resume — re-applies current-environment admission control; an environment
 change after that admission point — even one that RESOLVES a variable moments later — is
 not re-admitted into this engagement, and a change during the engagement can still make a
 build differ from the record. For a specialist that declares `requires:`, the set that
-filter receives is the one its requires gate admitted before the topic was created plus
-each plugin a resolve taken once the topic exists returns beyond it (by registry name and
-by runtime name), so a plugin assigned while the topic is being created joins the
+filter receives is the one its requires gate admitted before the launch's earlier awaits plus
+each plugin a resolve taken just before the record is created returns beyond it (by registry
+name and by runtime name), so a plugin assigned while the launch awaits joins the
 engagement, and nothing the gate admitted is re-checked against `requires:` or dropped
 for having been unassigned meanwhile — only that environment filter can still withhold
 one (#1179); a plugin assigned after that resolve joins the next engagement, as for every

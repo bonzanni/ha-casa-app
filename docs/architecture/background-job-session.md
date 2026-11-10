@@ -24,7 +24,7 @@ the job puts in the operator's direct chat is
 **A job is one long session.** Casa writes one brief into the job's `ClaudeSDKClient` at
 launch. The brief's turn does the work, and the model decides when to post progress, when to
 ask and when to finish with `emit_completion`. Casa never serialises turns: everything else
-— an operator's reply or topic message, a tapped answer, an approval's continuation, Casa's
+— an operator's reply, a tapped answer, an approval's continuation, Casa's
 nudge, "Continue the job.", the restart line — is written into the running session as it
 arrives. The pinned CLI absorbs input written mid-turn at its next tool boundary, and runs it
 as the next turn when no boundary is left.
@@ -40,9 +40,10 @@ queues the brief at the head of the queue, and anything that arrived meanwhile w
 until the launcher lets go. The worker admits each write immediately before `client.query`,
 removes exactly the ticket it wrote (the head can change while a write is awaited), and
 stamps it with its ticket's uuid. One reader task per session (`InCasaDriver._read`) consumes
-`receive_messages()` for the session's whole life: it streams each turn's text to the topic
-(a new topic message when the text reaches the output cap), logs, detects API faults, and at
-each `ResultMessage` records the turn's cost and calls the turn-end handler.
+`receive_messages()` for the session's whole life: it hands each message's words and each
+main-loop tool step to the agent's log, synchronously and never waiting on Telegram
+([`agent-logs.md`](agent-logs.md), INV-TG-011), detects API faults, and at each
+`ResultMessage` records the turn's cost and calls the turn-end handler.
 
 **Take-up is the CLI's own word.** Every job client runs with `--replay-user-messages`: the CLI
 echoes each written message once, with the uuid it was written with, at the moment it takes
@@ -90,7 +91,7 @@ compaction or a restart, and operator messages between any two steps.
 
 ## Contracts & invariants
 
-**INV-BGJOB-016**: A job's session receives Casa's brief once, at launch, and every later input — operator reply, tapped answer, topic message, approval continuation, nudge, continue line, restart line — as it arrives, from one writer per job and never held for a turn to end; each write is preceded synchronously by the registry's admission, and the brief and the post-compaction header carry `Started by:` immediately after their first `Job id:` line.
+**INV-BGJOB-016**: A job's session receives Casa's brief once, at launch, and every later input — operator reply, tapped answer, approval continuation, nudge, continue line, restart line — as it arrives, from one writer per job and never held for a turn to end; each write is preceded synchronously by the registry's admission, and the brief and the post-compaction header carry `Started by:` immediately after their first `Job id:` line.
 
 The brief (`background_jobs.launch_prompt`) is the job's title and skill, `Job id: <engagement
 id>` — by which a plugin claims work and matches the job-end notice, whose delegation id is the
@@ -131,7 +132,7 @@ start over on any operator input and on restart; `awaiting` is persisted, becaus
 it. A parking post replies to the start line when the job has one and is otherwise a new post;
 either way it is filed as a job post, so a reply quoting it reaches the job
 ([`background-job-direct-chat.md`](background-job-direct-chat.md), INV-BGJOB-012). The line is
-Casa's own text (the job's title); the job's progress summaries stay in its topic. A quiet run
+Casa's own text (the job's title); the job's progress summaries stay in its log. A quiet run
 that parks stops being quiet ([`background-job-quiet-runs.md`](background-job-quiet-runs.md)).
 The nudge offers `ask_operator` only to a specialist's job; a resident's plugin worker has no
 question tool.
@@ -165,7 +166,7 @@ the set is taken right after the registry loads, before the channels and agent l
 a job launched in the first seconds after start-up belongs to its launch and is never resumed or
 ended by boot — to `JobRunner.resume_at_boot`, which re-reads the live record first (a job
 cancelled while boot was resuming earlier ones is skipped):
-`↻ Resuming "<title>" after a restart.` in the topic, then the same recovery with Casa's restart
+`↻ Resuming after a restart` in the agent's log, then the same recovery with Casa's restart
 line ("Casa restarted. Your conversation is intact up to the restart; a tool call that was
 running may or may not have finished. Continue the job."). A job waiting for the operator with
 nothing journaled is not resumed until their next input reaches it. One attempt: a failure ends
@@ -217,7 +218,8 @@ resume — so a wiped job's next resume fails and the job ends as one that could
 **A completing turn never ends.** The teardown proceeds after the bound with the last cost known;
 nothing is reported as an error.
 
-**Text streamed to the topic is best effort.** A refused send is logged and not told.
+**The agent log is best effort.** A line the log could not post is dropped and not told
+([`agent-logs.md`](agent-logs.md)).
 
 ## Extension points
 

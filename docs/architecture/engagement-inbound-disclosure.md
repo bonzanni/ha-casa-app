@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-09
+last_reviewed: 2026-11-10
 ---
 
 # Messages a job never read
@@ -9,8 +9,7 @@ last_reviewed: 2026-11-09
 ## Scope
 
 What the operator is told about a message to a job that the job never read — their reply into
-it, a tapped answer, an approval's continuation, a message written in its topic — and who tells
-it. What a *successful* completion is refused over, and what the driver counts, is in
+it, a tapped answer, an approval's continuation — and who tells it. What a *successful* completion is refused over, and what the driver counts, is in
 [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md). How each message
 is journaled, matched against the session transcript and redelivered after a restart is
 [`architecture/background-job-message-journal.md`](background-job-message-journal.md)
@@ -20,7 +19,7 @@ is journaled, matched against the session transcript and redelivered after a res
 ## Mental model
 
 **Each message is told once, by the one place that knows it was lost.** A seam that hands a
-message to a job (`deliver_operator_reply`, `deliver_system_turn`, the topic handler) journals
+message to a job (`deliver_operator_reply`, `deliver_system_turn`) journals
 it, admits it and queues it for the job's delivery worker in one synchronous step, and returns.
 If the job does not accept it — the record went terminal, the journal could not be written,
 Casa is stopping, no driver is wired, a quiet run's quietness could not be ended — the seam
@@ -32,18 +31,19 @@ which every terminal path runs after the job's client is closed
 message instead of telling it lost (INV-BGJOB-018). The callers of the seams never post a
 notice: they get a bare acceptance boolean for their own bookkeeping, a toast or a card edit.
 
-**The notice goes where the message came from.** A message from the operator's direct chat — a
-reply into a job, or the card a tap answered — is told there, as a reply to it: "The job had
+**The notice goes where the message came from.** Every message to a job comes from the
+operator's direct chat — a reply into a job, or the card a tap answered — and is told there,
+as a reply to it: "The job had
 just ended — not delivered, please resend." (or "Your message could not be delivered — please
 resend it." while the job is live) for their words, and "The job had already ended; your answer
 wasn't used." (or "Your answer could not be passed to the job — please answer again.") for a
-tap. The ended form is chosen from the record's settled status. A message written in a topic is
-told in that topic. While a memory wipe's restart is pending, a reply or a topic message is
-answered with the wipe's courtesy line instead, which is that message's one notice. Nothing is
-forwarded anywhere else.
+tap. The ended form is chosen from the record's settled status. While a memory wipe's restart
+is pending, a reply is answered with the wipe's courtesy line instead, which is that message's
+one notice. Nothing is forwarded anywhere else, and nothing written in the agent-log group is
+a message to a job (INV-TG-016).
 
-**No end-of-job list.** A terminal outcome — the finalize funnel's completion post, the
-launch-death notice — lists no inbound messages. The messages that died with the job are each
+**No end-of-job list.** A terminal outcome — the end notice to the resident, the end's line in
+the agent's log, the launch-death line — lists no inbound messages. The messages that died with the job are each
 told by the journal's terminal branch, so a list would tell them twice. The driver's teardown
 leaves the journal in place, so the terminal branch still finds each entry when it runs.
 
@@ -52,7 +52,7 @@ line are Casa's; none is journaled, and none draws a notice when it is never wri
 
 ## Contracts & invariants
 
-**INV-ENG-029**: A message to a job — a reply into it, a tapped answer, an approval's continuation, a message in its topic — that the job never reads draws exactly one bounded notice attempt, made by the seam when the job did not accept it and otherwise by the job's message journal once the job ended without reading it, never by a caller of the seam; a message from the operator's direct chat is told there in reply to their message or the tapped card, worded from the record's settled status, and no terminal outcome lists such messages.
+**INV-ENG-029**: A message to a job — a reply into it, a tapped answer, an approval's continuation — that the job never reads draws exactly one bounded notice attempt, made by the seam when the job did not accept it and otherwise by the job's message journal once the job ended without reading it, never by a caller of the seam; a message from the operator's direct chat is told there in reply to their message or the tapped card, worded from the record's settled status, and no terminal outcome lists such messages.
 
 What it does not cover: the notice is one attempt — a Telegram failure or a crash at that point
 loses it, and the message is discharged regardless, because retrying would hold an unclearable

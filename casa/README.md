@@ -3,7 +3,7 @@
 An always-on fleet of Claude-powered AI agents inside your Home Assistant.
 
 - **Ellen** — the assistant: chat with her on Telegram (streaming replies,
-  interactive engagements in forum topics, inline permission prompts). She passes
+  background jobs you steer from the same chat, inline permission prompts). She passes
   house control to Tina and bigger jobs to specialists and to Casa's configurator.
 - **Tina** — the butler: voice-first house control in fast, concise responses,
   tuned for Home Assistant Assist voice pipelines (SSE / WebSocket).

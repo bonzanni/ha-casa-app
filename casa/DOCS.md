@@ -38,7 +38,7 @@ A fresh install ships with no specialists installed; see [Installing a specialis
 |--------|-------------|
 | `telegram_bot_token` | Telegram bot token from @BotFather. Enables the Telegram channel. |
 | `telegram_chat_id` | Telegram chat ID to restrict messages to. Leave empty to accept all chats. **Setting it is a security control**, not just a filter: this id is the operator identity, so only the sender whose Telegram user id matches it is attributed as the operator and reads memory at private clearance — any other accepted sender is recorded under its own `telegram:<id>` identity and reads at public clearance only, as does any engagement they start. Protected plugin tools (v0.139.0) can only be authorized by the configured operator: a non-operator sender's protected call is denied outright, and with the option empty (accept-all) no sender is the operator, so protected tools are denied for everyone — the add-on logs a warning at startup in that mode. Set this id unless you specifically want an open bot. |
-| `telegram_engagement_supergroup_id` | Chat ID of the dedicated Telegram forum supergroup used for engagements (specialists' background jobs). Must be a negative integer. Leave at 0 to disable engagements. |
+| `telegram_engagement_supergroup_id` | Optional forum group where each agent keeps a read-only log (see [Optional: agent logs](#optional-agent-logs)). A negative integer. `0` = no logs; everything else works without it. |
 
 ### Memory
 
@@ -65,11 +65,11 @@ no option to set: Casa keeps its own memory store under `/data/memory`.
   index of them that the agent can open. Within one conversation that view
   does not change. An agent whose budget is 0 (the concierge as shipped), a
   conversation with someone other than you at `public` clearance, and a
-  specialist's own engagement topic start with no notes.
+  specialist's background job start with no notes.
 - **Correct me.** When you tell Ellen that something she remembers is wrong,
   she marks your message as a correction. Her notes are refiled from it in the
   background, and from its next turn every open conversation of a
-  memory-enabled agent — a specialist's engagement topic included — is told
+  memory-enabled agent — a specialist's background job included — is told
   about the correction, where that conversation's clearance may read it (the
   butler is not told a private one).
 - **Search, browse and open.** Ellen can search what was said by its words,
@@ -146,7 +146,7 @@ just its name inside `/data/memory/exports/`.
 |--------|-------------|
 | `enable_terminal` | Enable a web terminal accessible via the ingress panel. Default: `false`. |
 | `webhook_secret` | Optional manual override for the HMAC secret that authenticates webhook, invoke and voice requests. Leave empty and Casa generates one in `/data/webhook_secret`, retrievable through the web terminal. Authentication is always on. |
-| `engagement_reap_days` | Auto-close engagements after this many days without activity (daily sweep cancels them and closes their Telegram topic; the engaging agent is notified). Set `0` to disable. Default: `7`. |
+| `engagement_reap_days` | Auto-close background jobs after this many days without activity (a daily sweep cancels them; the assistant is told). Set `0` to disable. Default: `7`. |
 | `log_level` | Log verbosity: `debug`, `info`, `warning`, or `error`. Default: `info`. Flip to `debug` for verbose troubleshooting without rebuilding the image. |
 | `specialist_max_concurrency` | Max specialist delegations in flight fleet-wide at once (see [Delegation limits](#delegation-limits)). Range 1-20. Default: `2`. |
 | `specialist_cost_alert_threshold` | Cumulative per-specialist USD spend past which Casa logs a warning on further delegations (see [Delegation limits](#delegation-limits)). Default: `5.0`. |
@@ -405,22 +405,21 @@ bundled plugins (manage those through the specialist's own upgrade/uninstall).
 
 Some plugins declare long work — classifying a year of transactions, say — as a
 background job. Ask the assistant for it as usual: she starts the job and replies
-straight away. The job runs in the specialist's topic in the Engagements
-supergroup (so `telegram_engagement_supergroup_id` must be set) as one long
-session: it keeps working until it is finished, posting a progress line in the
-topic when it has something worth telling. A job you asked for also puts one
+straight away. The job runs as one long session: it keeps working until it is
+finished. Everything that needs you happens in your DM; if you set up a log group,
+you can also watch the job work there (see [Optional: agent logs](#optional-agent-logs)).
+A job you asked for puts one
 silent line in your DM — "📊 Finance started «…»." — with a **Cancel** button; the
 line shows how long the job has been running and, once its first stretch of work
 has ended, what it has cost so far ("· 40 min · $2.40"). When a specialist's job
 needs a decision from you it asks in your DM, with a button per choice: tap one,
 or reply to the question in words. To steer a running job, reply in your DM to any
-of its messages there (its start line, a question, something its plugin posted), or
-write in its topic; your words reach the job while it works, at its next step. A
-household member with less access than the job was started with cannot steer it:
-they are told so in its topic, and their message does not reach the job. You can also send `/cancel` in
-the topic, or ask the assistant to cancel it. If the job ended before it read your
+of its messages there (its start line, a question, something its plugin posted);
+your words reach the job while it works, at its next step. To stop it, tap
+**Cancel**, or ask the assistant to cancel it. If the job ended before it read your
 message, Casa answers it once: "The job had just ended — not delivered, please
-resend."
+resend." A reply to a message of a job that has already ended goes to the assistant,
+with a note saying which job it was and how and when it ended.
 
 If a job stops without finishing, Casa nudges it once to carry on. If it stops
 again, or hits trouble (repeated errors from Claude, or a very long run with no
@@ -431,30 +430,30 @@ on its own because it is slow or expensive; the cost is shown, never capped.
 
 When the job ends its DM buttons go away and the start line shows how it ended,
 how long it ran and what it cost; the assistant tells you the outcome, with the same
-time and cost. A specialist runs one engagement at a time, but quick questions to it
-still work while a job is open. When the job ends the topic closes. After a restart
-an open job posts a short "resuming" line and continues where it was; a message you
+time and cost. A specialist runs one job at a time, but quick questions to it
+still work while a job is open. A job that is not working and has heard nothing from
+you for `engagement_reap_days` is cancelled. After a restart an open job continues where it was; a message you
 sent that it had not read yet reaches it after the restart, marked as sent before
 the restart. If the job's own process stops unexpectedly, Casa restarts it once the
 same way; if that fails, or it stops again, the job ends and you are told.
 
-Jobs come from two places (v0.323.0). A specialist's plugins run their jobs in the
-specialist's own topic, as above. Plugins you installed on a resident directly run
-theirs as a worker of their own, in a topic named after the resident, with nothing
-but that plugin's own tools — so the resident stays free for you meanwhile. Such a
+Jobs come from two places (v0.323.0). A specialist's plugins run their jobs on the
+specialist, as above. Plugins you installed on a resident directly run
+theirs as a worker of their own, with nothing but that plugin's own tools — so the
+resident stays free for you meanwhile; its log is named after the resident
+("Ellen · plugins"). Such a
 worker does not ask questions: it sets aside what needs an answer and reports it, and
 you answer by replying to its messages in your DM. One job
 runs per installed plugin.
 
 A plugin can mark a job quiet when scheduled (v0.344.36). A run of it that a
-schedule started opens no topic, posts no start or progress line, and tells you
-nothing when it completes; the plugin's own messages still reach your DM, so a run
+schedule started posts nothing in your DM and tells you nothing when it completes; the plugin's own messages still reach your DM, so a run
 that finds something new can still say so. An approval it needs still reaches your
 DM, and a run that is cancelled or fails is still reported. A quiet run that asks you
 something, or that you answer — a reply to one of its messages, a tap on its question
-— stops being quiet, and its end is then reported like any job's. You cannot write in
-or `/cancel` a quiet run, since it has no topic; ask the assistant to cancel it. Runs
-you or the assistant start are unchanged.
+— stops being quiet, and its end is then reported like any job's. A quiet run has no
+start line, so no Cancel button: ask the assistant to cancel it. Runs you or the
+assistant start are unchanged.
 
 A specialist can also start its own plugins' jobs itself (v0.344.0). When you reply
 to one of its posts, or the assistant passes it your request, and the work is a job
@@ -481,11 +480,31 @@ and `context`:
 ```
 
 When it fires the job simply starts, as if you had asked for it: no assistant turn runs
-first. The job runs with your own access and posts in its topic as usual. A job entry
+first. The job runs with your own access, as usual. A job entry
 must use `channel: telegram` and may not carry `clearance`. The Configurator refuses a job
 the assistant cannot start. If the job cannot start when its time comes — its plugin was
 unassigned, the same job is still running, Casa was at its work limit — you get one
 labelled line saying it did not start and why, and it tries again at the next occurrence.
+
+### Delegation limits
+
+Every `delegate_to_agent` call, and every specialist's background job, is
+bounded by two app options:
+
+- `specialist_max_concurrency` (default `2`) — the total number of
+  specialist delegations allowed in flight fleet-wide at once. Once the cap
+  is reached, further delegation attempts are denied as "busy" until a slot
+  frees up. A given calling scope (one voice session or chat) may also only
+  have one active delegation to the same specialist at a time — that
+  per-scope cap is fixed at 1 and is not configurable. When a specialist
+  hands part of its work to another specialist, the hand-off runs inside
+  the delegation that started it: a chain of hand-offs counts once against
+  the fleet-wide cap, while the per-scope rule still applies to each
+  specialist in it.
+- `specialist_cost_alert_threshold` (default `5.0`, in USD) — once a
+  specialist's cumulative delegated spend passes this figure, every further
+  delegation to it logs an operator-visible warning (spend is not blocked,
+  only flagged).
 
 ### Sending files to the assistant (v0.325.0)
 
@@ -509,7 +528,7 @@ Files can be up to 8 MB, and she holds up to 50 files and 200 MB in all. When th
 full a new file is refused rather than an old one dropped — the oldest go after seven days.
 Anything else you send, such as a sticker, a voice message, a `.zip` or a `.docx`, gets
 a short reply saying what she can take. Files work only in the direct chat, not in
-engagement topics, and only the assistant can read them — except a file you send to a
+the agent-log group, and only the assistant can read them — except a file you send to a
 specialist on purpose, which goes to that specialist instead (see *A file for a specialist*
 below).
 
@@ -703,15 +722,20 @@ The terminal is an unauthenticated **root** shell, so it is reachable only throu
 
 - **App won't start**: Check the log for "claude_oauth_token is required". You must set the token before starting.
 - **No Telegram messages**: Verify `telegram_bot_token` and `telegram_chat_id` are correct. The bot must have been started (`/start` in Telegram).
-- **Engagements won't open (`engagement_not_configured`)**: See the "Troubleshooting engagements" subsection under [Engagements (v0.11.0)](#engagements-v0110) — most common cause is the bot missing "Manage topics" admin permission in the engagement supergroup.
+- **No agent logs**: see [Optional: agent logs](#optional-agent-logs). Background jobs work without them.
+- **Ellen doesn't tell you a job ended**: how she narrates a job's result comes from
+  the prompt she is actually served, compiled from her persona and her role — not from
+  any file in her agent folder. Editing `prompts/system.md` there does nothing (Casa
+  refuses the edit through its file tools); how loudly she narrates is part of her
+  persona.
 - **502 errors on ingress**: The Python process may still be starting. Wait up to 60 seconds after app start.
 
 ## DM button questions (v0.76.0)
 
 Ellen (and the specialists she delegates to) can pause a turn to ask you a
 quick multiple-choice question, posted as inline buttons right in your 1:1
-Telegram DM — the same tap-to-answer pattern engagements use, without
-opening a topic. Short answer choices appear on the buttons in their own
+Telegram DM — the same tap-to-answer pattern a background job's questions
+use. Short answer choices appear on the buttons in their own
 words. Longer ones are spelled out (numbered) in the message itself, and the
 buttons carry a few words for each ("1 · Plumber today"), written by the
 agent; only when it gives none does a button read "Option 1", "Option 2", ….
@@ -731,258 +755,46 @@ schedule that asked it is edited away, the agent is told what happened instead
 of waiting on an answer that will never arrive. Your tap is reported to the
 agent as part of that scheduled run, not as a message from you.
 
-## Engagements (v0.11.0)
+## Optional: agent logs
 
-Casa supports **engagements** — bounded threads where a specialist's
-background job (Tier 2) works on a specific task,
-separate from your 1:1 chat with Ellen. Each engagement lives in its own
-Telegram forum topic inside a dedicated supergroup.
-
-To talk with a specialist yourself, ask Ellen ("let me talk to Alex"):
-she passes your words on and the specialist's answer arrives in your chat
-under its name. Reply to that message to carry on with the specialist
-directly. (Interactive specialist engagements, which opened a topic for
-such a conversation, are retired.)
-
-The setup is a one-time Telegram configuration. Skip this section to
-keep Casa running in 1:1-only mode (Ellen delegates and returns the
-answer; a background job returns `engagement_not_configured`).
-
-### Delegation limits
-
-Every `delegate_to_agent` call, and every specialist's background job, is
-bounded by two app options:
-
-- `specialist_max_concurrency` (default `2`) — the total number of
-  specialist delegations allowed in flight fleet-wide at once. Once the cap
-  is reached, further delegation attempts are denied as "busy" until a slot
-  frees up. A given calling scope (one voice session or chat) may also only
-  have one active delegation to the same specialist at a time — that
-  per-scope cap is fixed at 1 and is not configurable. When a specialist
-  hands part of its work to another specialist, the hand-off runs inside
-  the delegation that started it: a chain of hand-offs counts once against
-  the fleet-wide cap, while the per-scope rule still applies to each
-  specialist in it.
-- `specialist_cost_alert_threshold` (default `5.0`, in USD) — once a
-  specialist's cumulative delegated spend passes this figure, every further
-  delegation to it logs an operator-visible warning (spend is not blocked,
-  only flagged).
-
-### Setup
-
-#### 1. Create a dedicated forum supergroup
-
-This must be a **different** chat from your 1:1 DM with the Casa bot.
-Engagement topics live here, not in your personal chat.
-
-1. In Telegram, tap the **✏️ pencil icon** (top right, most clients) → **New Group**.
-2. Pick any co-owners you want (or just yourself) and give the group a name
-   (e.g. "Casa Engagements"). Confirm.
-3. Open the group's settings (tap the group name at top). Telegram will
-   usually auto-convert small groups to a supergroup on first edit;
-   if you see a **"Convert to supergroup"** button, tap it.
-4. In group settings, find **"Topics"** (sometimes under "Group Type" or
-   "Permissions"). Toggle it **ON**. The chat now shows individual topic
-   threads instead of a single linear feed.
-
-#### 2. Add the Casa bot as a topic-managing admin
-
-1. Open the group → tap the group name → **Add Members** → search for your
-   bot's `@username` → add it.
-2. Tap the bot in the members list → **Promote to admin**.
-3. Turn ON **"Manage topics"**. This permission is **required** —
-   Casa refuses to enable engagements without it and logs
-   `bot lacks can_manage_topics; engagements disabled`.
-4. Other permissions ("Delete messages", pin, etc.) are optional —
-   Casa does not require them; topic cleanup works with "Manage
-   topics" alone (see step 6). Leave unused ones off to minimise the
-   bot's surface.
-5. Confirm. The bot is now a topic-managing admin.
-
-#### 3. Find the supergroup's chat ID
-
-Casa needs the **negative integer** Telegram assigns to the supergroup.
-
-1. Post any message in the supergroup (e.g. "setup probe").
-2. In a browser, open:
-   `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates`
-   (substitute your bot token from @BotFather — same one you put in
-   `telegram_bot_token`).
-3. Find the most recent `message` object. `message.chat.id` is your
-   supergroup chat ID. It will be a negative integer starting with
-   `-100`, e.g. `-1001234567890`.
-
-Alternatives:
-- Add a helper bot like `@getidsbot` or `@RawDataBot` to the supergroup
-  temporarily; it will reply with the chat ID.
-- If you already run Casa on the 1:1 chat, the app log also echoes
-  the ID under the `CHANNEL_IN` traces when the bot sees any message
-  in the supergroup.
-
-#### 4. Configure Casa
-
-1. Home Assistant → **Settings** → **Apps** (formerly Add-ons) → **Casa** → **Configuration**.
-2. Set `telegram_engagement_supergroup_id` to the negative integer from step 3.
-   Leave it at `0` to disable engagements (Casa still boots; a background
-   job returns `engagement_not_configured`).
-3. **Save** → **Restart** the app.
-
-#### 5. Verify
-
-Once the app has restarted, check the log for:
+If you want to watch your agents work, Casa can keep a read-only log for each of
+them in a Telegram forum group: one topic per specialist, one for the configurator,
+and one per resident that runs plugin jobs ("Ellen · plugins"). Each line names the
+run it belongs to — what it says, each step it takes, how it ended:
 
 ```
-Engagement supergroup -100…: commands registered (['cancel', 'complete', 'silent'])
+Q3 accounting · ▶ started
+Q3 accounting · 🔧 Searching memory
+Q3 accounting · 📊 Classified 25 · 25 done · 16 left
+Q3 accounting · ✅ completed — Tagged 41 rows; 2 need your decision.
 ```
 
-If you see this line, engagements are live. If you see:
+Everything that needs you stays in your direct chat: a job's start line and its
+**Cancel** button, its questions, approvals, its result. Reply to a job's message
+there to steer it. Nothing you write in the log group reaches an agent: anyone who
+writes there gets one pointer back to the direct chat.
 
-```
-Engagement supergroup -100…: bot lacks can_manage_topics; engagements disabled
-```
+To set it up:
 
-the bot wasn't promoted correctly — go back to step 2 and re-check the
-**Manage topics** toggle. The log line uses Ellen's level-ERROR — it's
-easy to grep for.
+1. Create a Telegram group, turn **Topics** on in its settings (Telegram makes it a
+   supergroup).
+2. Add your Casa bot and make it an admin with **Manage topics**.
+3. Find the group's chat ID — a negative number starting with `-100`. Post a message
+   in the group and open
+   `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates`; it is `message.chat.id`.
+4. Set `telegram_engagement_supergroup_id` to that number and restart the app.
 
-In Telegram, inside the engagement supergroup, type `/` in any topic.
-The autocomplete should list `/cancel` and `/complete`.
-These commands are registered via Telegram's `setMyCommands` scoped to
-the supergroup only — they do NOT appear in your 1:1 DM with Ellen.
+Casa creates the topics as agents start working. Each post disappears about two days
+after it was sent. The logs are visible to every member of the group, and an agent's
+words can mention private things, so choose who is in it. Leave the option at `0` and
+there are no logs; everything else works the same.
 
-#### 6. Automatic topic cleanup (works out of the box)
-
-Since v0.65.0 Casa deletes a finished engagement's topic automatically
-**7 days after the engagement ends**, so the sidebar doesn't fill up with
-dead topics.
-
-**No extra admin right is needed** (v0.65.1 correction): Telegram lets a
-topic's *creator* delete it with the "Manage topics" right the bot
-already has from step 2, and every engagement topic is created by the
-bot. The **"Delete messages"** admin right is optional insurance — if a
-deletion is ever refused for rights reasons, Casa keeps the topic
-scheduled, retries at the next sweep, and Ellen asks you once per boot
-to grant it.
-
-Notes:
-
-- **Deletion is irreversible.** Deleting a topic removes the topic and
-  **all its messages for every member**. Casa's durable record of each
-  engagement is its memory summary plus Ellen's completion message in
-  your 1:1 chat.
-- **On-demand cleanup:** ask Ellen to *"clean up the engagement group"*
-  and she deletes the finished topics already past the 7-day window. Ask
-  her in Telegram to *"remove all the closed topics"* and she removes
-  every finished topic at once: she first counts them, asks you with the
-  number, and deletes only after you tap to confirm. Only topics Casa has on record are
-  deleted; active engagements are never touched.
-- **Topics from before v0.65.0** are unknown to Casa (the Telegram Bot
-  API cannot enumerate a group's topics), so the existing pile needs
-  **one manual cleanup** in the Telegram UI. From this release on, Casa
-  keeps the sidebar clean automatically.
-
-### Starting an engagement
-
-Ask Ellen in the main 1:1 chat for something multi-turn, e.g.
-*"let's work through Q2 invoicing with Alex"*. Ellen may open an
-engagement — if so she'll tell you which topic to head to. The
-specialist is waiting there, already primed with context.
-
-You do **not** post in the main supergroup feed — always open an
-existing topic thread. Casa automatically creates new topics as new
-engagements start; they're named `#[<role>] <task> · <engagement-id>`.
-If you accidentally post in the main feed, the bot will reply once
-per boot with a redirect hint, then silently ignore further main-feed
-messages.
-
-### While the engagement runs (v0.81.0)
-
-A pinned summary message sits at the top of the topic for the whole
-engagement, leading with the current status — `⚙️ working` (with what it's
-doing right now and elapsed time) or `⏳ waiting for your reply` while it's
-your turn — followed by a short 2-3 word title, plan progress, and any
-questions still waiting on you. The topic itself is named after that same
-short title, so the topic list and the pinned summary always agree. Everything
-else — the agent's narration and your exchange with it — reads below the
-summary in strict chat order: as the agent works, its running narration
-streams live and rolls to a new message rather than editing above anything
-newer, so the topic always reads top-to-bottom in the order things actually
-happened.
-
-Every message you send gets an instant receipt, and the agent's reply is
-quoted back to yours so it's always clear what it's responding to. If it
-needs a decision from you, it asks one question at a time — via tappable
-inline buttons when the options are enumerable, or a numbered free-text
-question otherwise — and won't ask another while your last message is still
-waiting to be read. Short answer choices appear on the buttons in their own
-words; longer ones are spelled out in the message itself (numbered), with
-short labels on the buttons underneath, so long options are never truncated
-to the point of being unpickable. Once you answer, the question visibly settles (its buttons disappear) instead of just
-showing a toast.
-
-Need to interrupt? Send `STOP` as the first line of a message to make the
-agent drop what it's doing and check in with you, or prefix a message with
-`redirect:` to both interrupt and tell it what to do instead.
-
-### In-topic slash commands
-
-| Command | What it does |
-|---------|--------------|
-| `/cancel` | End this engagement now. Topic is closed, the engaged agent's client is torn down, Ellen is notified in the main chat. |
-| `/complete` | Mark this engagement complete without requesting an agent summary. Same cleanup as `/cancel` but with a neutral status. |
-| `/help` | List the commands that work in this topic. |
-
-The engaged agent can also end the engagement itself by calling the
-`emit_completion` MCP tool — that produces a structured summary
-(text + next_steps) which Ellen relays to you.
-
-### Idle engagements
-
-Engagements have no hard timeout, and Casa does not nudge you about one
-that sits idle. Suspend/resume is automatic — after 24 hours of inactivity Casa tears
-down the underlying SDK client to free resources. It resumes seamlessly
-on your next message in the topic (the conversation-session state is
-persisted and reloaded). If two consecutive resume attempts fail (e.g.
-the SDK session was rotated server-side), Casa marks the engagement
-as errored and tells you to start a fresh one.
-
-### Troubleshooting engagements
-
-- **"Engagements disabled" / `engagement_not_configured` on delegate call.**
-  Most common: the bot wasn't promoted to admin with **Manage topics**.
-  Re-check step 2 of Setup. Also check `telegram_engagement_supergroup_id`
-  is not `0` and the app was restarted after the option was set.
-- **`/cancel` / `/complete` don't appear in autocomplete.**
-  They're scoped to the supergroup only. Make sure you're typing `/` in
-  a topic inside the engagement supergroup, not your 1:1 DM with Ellen.
-  Also: Telegram caches `setMyCommands` client-side — restart the
-  Telegram client if they don't show up within 30 seconds of app boot.
-- **"No active engagement in this topic" reply in a topic.**
-  The engagement for that topic has already completed, cancelled, or
-  errored (registry status transition). Start a fresh engagement from
-  your 1:1 DM with Ellen — do not reuse old topics.
-- **"Could not resume this engagement" reply after 24h+ idle.**
-  The suspended SDK session rotated before you came back. The
-  engagement is marked as errored after two failed resumes. Start a
-  new one; your prior conversation is still in Ellen's long-term
-  memory. The same reply, mentioning a config that was not found, means
-  the specialist itself is gone — it failed to load, a conversation
-  started just as it was being uninstalled, or Casa could not close the
-  conversation when the specialist was uninstalled; Casa closes a
-  removed or disabled specialist's conversations itself, so this is the rare
-  case.
-- **Ellen doesn't narrate completion in the main chat.**
-  Ellen receives the `ENGAGEMENT_COMPLETION` notification but chooses
-  how to surface it based on the prompt she is actually served — which
-  is compiled from her persona and her role, not from any file in her
-  agent folder. Editing `prompts/system.md` there does nothing (Casa
-  refuses the edit through its file tools rather than letting it look
-  like it worked, and an edit made any other way is just as inert);
-  how loudly she narrates is part of her persona.
+If no logs appear, check the app log for `agent log: logging is off:` — it says why
+(most often, the bot lacks **Manage topics**). Casa checks again every half hour.
 
 ## Configurator (v0.12.0)
 
-The `configurator` knows Casa's configuration surface and changes it on your behalf. It ships with Casa (you cannot edit it in `/config`) and needs no engagement supergroup: it works in your 1:1 chat with Ellen.
+The `configurator` knows Casa's configuration surface and changes it on your behalf. It ships with Casa (you cannot edit it in `/config`) and needs no log group: it works in your 1:1 chat with Ellen.
 
 ### What's supported
 
@@ -1246,7 +1058,7 @@ plugin says so by adding `delivers` to the capability tool that produces it:
 The tool deposits the `https` URL as any capability, optionally with a
 `label` (up to 40 characters) and a `caption` (up to 200), and returns the
 reference. Casa itself then posts **one message to the chat you asked in** —
-your chat with the assistant, never a specialist's task topic — as a link
+your chat with the assistant, never an agent's log — as a link
 whose text is the label and the real destination host, with the caption
 beneath. The assistant's tool result is replaced by a receipt saying the link
 was delivered; if Casa could not confirm delivery, the result is withheld and
@@ -1752,7 +1564,7 @@ while the bundled persona is still the one kept for rollback, so not after a sec
 persona or an upgrade.
 
 **Changing a specialist while you are talking to it.** A conversation already
-open with a specialist — in its topic, or a background job it is running — is
+open with a specialist — a background job it is running — is
 not switched by a change to that specialist. Before a persona is applied to it,
 or it is upgraded or rolled back, Casa holds the change back and gives the
 configurator a list of its open conversations, which the configurator's
@@ -1760,16 +1572,16 @@ instructions say to show you before asking you to confirm; of each one it says:
 
 > When it resumes, it picks up Casa's updated settings, but it keeps its
 > personality and the plugin versions it started with. To get everything new,
-> close it with `/complete` and ask Ellen for a new conversation.
+> cancel it (with its Cancel button, or ask Ellen) and start it again.
 
 Saying no changes nothing. New conversations get the new setup once Casa has
 loaded it: an upgrade or a rollback that completes loads it during the change,
 and applying a persona reloads the specialist right away. An **uninstall** asks the same
 way, and once the specialist is removed Casa closes the conversations still
-open, telling each topic why. A specialist you **disable**
+open, and Ellen is notified. A specialist you **disable**
 (its `enabled: false`) cannot be confirmed beforehand: Casa closes its open
 conversations when the disable takes effect — at the reload that reads it, or at
-the next start if Casa was down — and each topic is told. If a close fails, Casa
+the next start if Casa was down — and Ellen is notified. If a close fails, Casa
 tells you which conversation is still open and tries again at the next reload
 of the agents.
 
