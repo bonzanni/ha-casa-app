@@ -1046,7 +1046,7 @@ _UNCOMMITTED_1084 = (
     "(id job-1) ended, and its outcome could not be recorded]\n\n"
     "The engagement is still open and can be resumed; it did not fail. Tell "
     "the user that the first turn ended without a recorded outcome and that "
-    "the topic is still there — do NOT say the work failed or ended.\n"
+    "the job is still open — do NOT say the work failed or ended.\n"
 )
 
 

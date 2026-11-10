@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-08
+last_reviewed: 2026-11-10
 ---
 
 # The Telegram channel
@@ -29,24 +29,23 @@ the route would otherwise accept forged updates from anyone who found the URL. P
 unaffected, because it does not use that route.
 
 **Two kinds of inbound message go to different places.** A direct message becomes an ordinary
-turn on the bus. A message in an engagement topic is delivered to that engagement's driver
-instead — it is input to running work, not a new conversation. Both are *text*: the text
+turn on the bus. A message a person writes in the optional agent-log group reaches nothing: it
+draws one pointer to the direct chat per person per boot (INV-TG-016, in
+[`agent-logs.md`](agent-logs.md)). Both are *text*: the text
 handler is one of two message handlers, and the other takes every new non-text message — a
 file, a photo, a sticker, a pin. In the operator's chat it stores an accepted file and
 acknowledges it, files sent together in one edited message (INV-FILE-005) — or, when the file carries a caption, runs one ordinary turn with the caption
 as the operator's words, admitted through the text handler's own dispatch tail
 (`_dispatch_dm_turn`, INV-FILE-004) — and answers everything else with a one-line refusal;
-outside that chat it follows the text path, and in the engagement supergroup only a person's
-content draws a reply or, for a file addressed to a specialist, one specialist desk turn
-([`inbound-files.md`](inbound-files.md), INV-FILE-001). The two filters
+outside that chat it follows the text path, and in the log group it draws the same one
+pointer ([`inbound-files.md`](inbound-files.md)). The two filters
 are disjoint, so each update reaches exactly one handler. Both take new messages only: an
 edited message, a channel post and a business message reach neither, so editing a message
 already sent never starts a second turn. For a job,
-the topic handler, the reply seam (`deliver_operator_reply`) and the system-continuation seam
+the reply seam (`deliver_operator_reply`) and the system-continuation seam
 (`deliver_system_turn`) each hand the message over in one synchronous step — journaled,
 admitted as a ticket the completion gate reads, queued for the job's delivery worker — and
-return without waiting on the session; recognized commands are consumed by the handler itself
-and are never ticketed, and a message the job does not accept, or never reads, draws one
+return without waiting on the session, and a message the job does not accept, or never reads, draws one
 bounded notice ([`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md)
 owns that notice, and
 [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) what the gate
@@ -62,10 +61,8 @@ a delivery receipt; the delivery worker asks the registry again immediately befo
 the message ([`architecture/engagement-turn-admission.md`](engagement-turn-admission.md)).
 
 **Update dispatch is concurrent; ordering is re-imposed per scope, not globally.** Handlers
-run non-blocking, so nothing about arrival order survives dispatch on its own. Engagement
-topics re-serialize under a per-topic handler lock, held only while the handler routes the
-message, never while the job works on it, and direct messages re-serialize per
-chat: `/new` holds its chat's lock across the whole reset (the pool close, then the pointer
+run non-blocking, so nothing about arrival order survives dispatch on its own. Direct
+messages re-serialize per chat: `/new` holds its chat's lock across the whole reset (the pool close, then the pointer
 removal, INV-MEM-013),
 so once the reset holds the lock, no same-chat follow-up can be enqueued — let alone resume
 the dying session — until it finished. Distinct chats never contend. Two boundaries to keep
@@ -75,10 +72,10 @@ can in principle swap; and a message dispatched *before* the `/new` is not order
 lock at all — an already-in-flight turn races the reset and is handled by the session
 registry's session-id checks instead: the reset removes only the session it snapshotted.
 
-**No single writer orders a topic's output.** An engagement topic's posts — a turn's
-stream, platform and completion notices — are each sent directly, so
-their relative order is the order in which their sends complete. Nothing mechanically orders
-one direct send against another; the per-topic handler lock orders the *inbound* side only.
+**The agent log has one writer of its own.** A background agent's words and steps go to
+its topic in the optional log group through a synchronous sink and one writer task with its
+own request budget; nothing on the direct-chat path waits on it
+([`agent-logs.md`](agent-logs.md), INV-TG-011).
 
 **Text leaves for the Bot API through one request seam, and a character the platform cannot
 carry is replaced there.** The client library sends every request as UTF-8 form data, so a
@@ -99,8 +96,9 @@ is left for the platform to judge; a bot injected for a test is outside the seam
 Casa's own `casa_text` — and refuse a bare string with an `ERROR` log, zero Bot API calls
 and the method's own failure value: `NOT_DELIVERED`, `None`, or `UnadmittedText` from
 `send_media`. `edit_dm_message` stays string-typed, because it re-renders a body admitted
-when it was posted or replaces it with a Casa status; the engagement-topic methods, the
-arrival replies and the delivered-link message are outside the contract. When a streamed
+when it was posted or replaces it with a Casa status; the arrival replies and the
+delivered-link message are outside the contract, and so is the agent log, which is no channel
+method and posts plain text. When a streamed
 reply's page-1 unit did not land, both finalizers send the admission's lines once, as their
 own message, before the overflow pages, which go untouched. The contract is INV-OUT-001 in
 [`output-boundary.md`](output-boundary.md), which also records every call site.
@@ -139,10 +137,6 @@ claim itself, which rejects any actor that does not match the identity the reque
 to at registration — fail-closed on both sides, so a request registered without a bound
 identity is claimable by nobody, and a future delivery path cannot forget the check. There
 is no other verdict writer: the internal socket carries no verdict route.
-
-What it does not cover: topic commands are authorised separately and to different rules —
-some are originator-only and at least one is open to topic participants. Do not generalise
-this invariant to commands.
 
 **INV-TG-003**: A live request is resolved exactly once.
 
@@ -184,23 +178,6 @@ naive reading:
 A raise carries the same question and cannot answer it through a return value, so the head
 fact is stamped on the turn context and consulted on the exception path.
 
-The engagement-topic stream handle joins the contract at finalize, with the head keyed
-differently — and the difference is the rule's own rationale applied, not an exception to
-it. No one-shot notice rides the topic stream, so the question its consumer (the `in_casa`
-driver) asks is whether the turn was *wholly invisible*, not whether the final edit landed:
-the first successful topic output latches `delivered`, and a failed final edit or overflow
-page cannot un-show it (those failures stay warnings). `not delivered` remains a claim —
-reported only when every attempted output was positively refused or provably never sent (a
-transport failure whose preserved cause shows the request never reached Telegram — a
-connection or pool failure), or when no Bot API call was possible before any output was
-attempted. An earlier attempt that failed *ambiguously*
-(a lost acknowledgement) weakens the claim to `unknown` — its text may be on screen, so a
-later refusal cannot establish that the turn was wholly invisible. A finalize with no prior
-emit and several pages sends each page on its own, as the overflow pages are sent, so a failed page
-never drops a later one (where a question usually sits). Any page that lands latches
-`delivered`; one imprecision is deliberate: when none lands the outcome is `unknown`, never
-a claim that would hand a false death to a turn one of whose pages may have been accepted.
-
 What it does not cover: channels that have not adopted the contract. They return nothing,
 which reads as `UNKNOWN` and preserves their existing behavior. That case is deliberately
 distinct from a negative — treating "cannot report" as "failed" would re-offer a notice on
@@ -220,8 +197,7 @@ supersession, a shutdown. There is no mid-question repaint on this path, and an 
 is a thing the next call site forgets. The one exception names its buttons explicitly
 (`edit_dm_message(buttons=...)`): the start card of a browsing request, answered Start,
 keeps the request's Stop, because the question is closed but the work it started is not
-([`plugin-stop.md`](plugin-stop.md)). The topic path is
-different — it has genuine mid-question edits — and keeps its explicit opt-in.
+([`plugin-stop.md`](plugin-stop.md)).
 
 An edit is idempotent, so a DM settle edit that fails transiently is tried once more: after
 flood control's stated wait (at most ten seconds), or a second after a network error. Any
@@ -305,7 +281,7 @@ none of which will tell you the others were missed.
 - `tests/test_verdict_broker.py`
 - `tests/test_telegram_new_reset.py`
 - `tests/test_telegram_supervisor.py`
-- `tests/test_telegram_topic_stream.py`
+- `tests/test_telegram_delivery_outcome.py`
 - `tests/test_telegram_reconnect.py`
 - `tests/test_telegram_surrogate_boundary.py`
 

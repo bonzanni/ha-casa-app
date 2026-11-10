@@ -194,7 +194,6 @@ class _JobRig:
 
     def __init__(self, rec):
         from drivers.in_casa_driver import InCasaDriver
-        from test_memory_capture import _TopicStream
         from turn_scripted_session import TurnScriptedSession, attach_session
 
         class _Session(TurnScriptedSession, _EngagementClient):
@@ -203,7 +202,6 @@ class _JobRig:
         self.rec = rec
         self.ended: list = []
         self.drv = InCasaDriver(
-            topic_stream_factory=lambda tid: _TopicStream(),
             on_turn_end=lambda r, result, api_error: self.ended.append(r))
         _EngagementClient.prompts = []
         attach_session(self.drv, rec, _Session())
@@ -238,7 +236,7 @@ async def test_an_in_casa_engagement_turn_carries_the_note(
     monkeypatch.setattr(tools, "_agent_role_map", {}, raising=False)
     rec = EngagementRecord(
         id="e" * 32, kind="specialist", role_or_type="finance",
-        driver="in_casa", status="active", topic_id=99, started_at=0.0,
+        driver="in_casa", status="active", started_at=0.0,
         last_user_turn_ts=0.0, completed_at=None,
         sdk_session_id=None, task="t",
         origin={"channel": "telegram", "_origin_route": "telegram",
@@ -266,7 +264,7 @@ async def test_an_engagement_sees_corrections_filed_between_its_turns(
     monkeypatch.setattr(tools, "_agent_role_map", {}, raising=False)
     rec = EngagementRecord(
         id="f" * 32, kind="specialist", role_or_type="finance",
-        driver="in_casa", status="active", topic_id=99, started_at=0.0,
+        driver="in_casa", status="active", started_at=0.0,
         last_user_turn_ts=0.0, completed_at=None,
         sdk_session_id=None, task="t",
         origin={"channel": "telegram", "_origin_route": "telegram",
@@ -436,7 +434,7 @@ async def test_an_engagement_owes_a_correction_committed_as_it_started(
     await _run_jobs(store, no_change_all)          # stamped just before the start
     rec = EngagementRecord(
         id="b" * 32, kind="specialist", role_or_type="finance",
-        driver="in_casa", status="active", topic_id=99,
+        driver="in_casa", status="active",
         started_at=_time.time(), last_user_turn_ts=0.0,
         completed_at=None, sdk_session_id=None,
         task="t", origin={"channel": "telegram", "_origin_route": "telegram",
@@ -471,7 +469,7 @@ async def test_an_engagement_owes_every_correction_filed_since_it_started(
     _backdate_commits(store, 3600)                 # filed long before the start
     rec = EngagementRecord(
         id="a" * 32, kind="specialist", role_or_type="finance",
-        driver="in_casa", status="active", topic_id=99,
+        driver="in_casa", status="active",
         started_at=_time.time(), last_user_turn_ts=0.0,
         completed_at=None, sdk_session_id=None,
         task="t", origin={"channel": "telegram", "_origin_route": "telegram",

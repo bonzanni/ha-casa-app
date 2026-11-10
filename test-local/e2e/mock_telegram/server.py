@@ -1,14 +1,12 @@
 """Minimal Telegram Bot API mock for engagement e2e.
 
-Implements just enough of the Bot API for TelegramChannel's engagement path:
-- createForumTopic → assigns incrementing message_thread_id, stores state
-- editForumTopic → updates icon/name/closed flag
-- closeForumTopic → marks topic closed
-- sendMessage → stores message under thread_id
-- setMyCommands → stores per-scope commands
-- getMyCommands → returns stored commands
-- getChatMember → returns can_manage_topics=True (default)
+Implements just enough of the Bot API for TelegramChannel and the agent log:
 - getMe → returns a stub bot user
+- getChatMember → an administrator with can_manage_topics=True (default)
+- createForumTopic → assigns incrementing message_thread_id, stores state
+- sendMessage → stores message under thread_id (or the main feed)
+- editMessageText → records the edit
+- deleteMessages / deleteMessage → records the deleted ids
 
 State is in-memory; server restart clears it. POST /_inspect returns a JSON
 dump of state so the e2e script can assert on it.
@@ -28,7 +26,8 @@ STATE: dict = {
     "topics": {},
     "messages_by_thread": {},
     "main_feed_messages": [],
-    "commands_by_scope": {},
+    "edits": [],
+    "deleted": [],
     "can_manage_topics": True,
     "pending_updates": [],
     "next_update_id": 1,
@@ -115,31 +114,9 @@ async def handle_method(request: web.Request) -> web.Response:
     if method == "createForumTopic":
         tid = STATE["next_thread_id"]
         STATE["next_thread_id"] += 1
-        STATE["topics"][tid] = {
-            "name": payload.get("name", ""),
-            "icon_custom_emoji_id": payload.get("icon_custom_emoji_id"),
-            "closed": False,
-        }
+        STATE["topics"][tid] = {"name": payload.get("name", "")}
         return web.json_response({"ok": True, "result": build_createforumtopic_result(
             tid, payload.get("name", ""))})
-
-    if method == "editForumTopic":
-        tid = int(payload.get("message_thread_id", 0))
-        topic = STATE["topics"].get(tid)
-        if topic is None:
-            return web.json_response({"ok": False, "description": "topic not found"}, status=400)
-        if "name" in payload:
-            topic["name"] = payload["name"]
-        if "icon_custom_emoji_id" in payload:
-            topic["icon_custom_emoji_id"] = payload["icon_custom_emoji_id"]
-        return web.json_response({"ok": True, "result": True})
-
-    if method == "closeForumTopic":
-        tid = int(payload.get("message_thread_id", 0))
-        topic = STATE["topics"].get(tid)
-        if topic is not None:
-            topic["closed"] = True
-        return web.json_response({"ok": True, "result": True})
 
     if method == "sendMessage":
         tid = payload.get("message_thread_id")
@@ -156,21 +133,29 @@ async def handle_method(request: web.Request) -> web.Response:
         )
         return web.json_response({"ok": True, "result": result})
 
-    if method == "setMyCommands":
-        scope = json.dumps(payload.get("scope") or {"type": "default"})
-        STATE["commands_by_scope"][scope] = payload.get("commands", [])
+    if method == "editMessageText":
+        STATE["edits"].append({"chat_id": int(payload.get("chat_id", 0)),
+                               "message_id": int(payload.get("message_id", 0)),
+                               "text": payload.get("text", "")})
         return web.json_response({"ok": True, "result": True})
 
-    if method == "getMyCommands":
-        scope = json.dumps(payload.get("scope") or {"type": "default"})
-        return web.json_response({"ok": True, "result": STATE["commands_by_scope"].get(scope, [])})
+    if method == "deleteMessages":
+        ids = payload.get("message_ids") or []
+        if isinstance(ids, str):
+            ids = json.loads(ids)
+        STATE["deleted"].extend(int(i) for i in ids)
+        return web.json_response({"ok": True, "result": True})
+
+    if method == "deleteMessage":
+        STATE["deleted"].append(int(payload.get("message_id", 0)))
+        return web.json_response({"ok": True, "result": True})
 
     if method == "getUpdates":
         updates = list(STATE["pending_updates"])
         STATE["pending_updates"].clear()
         return web.json_response({"ok": True, "result": updates})
 
-    # Swallow all other methods (deleteForumTopic, etc.)
+    # Swallow all other methods.
     return web.json_response({"ok": True, "result": True})
 
 
@@ -182,7 +167,8 @@ async def handle_reset(request: web.Request) -> web.Response:
     STATE["topics"].clear()
     STATE["messages_by_thread"].clear()
     STATE["main_feed_messages"].clear()
-    STATE["commands_by_scope"].clear()
+    STATE["edits"].clear()
+    STATE["deleted"].clear()
     STATE["pending_updates"].clear()
     STATE["next_thread_id"] = 1001
     STATE["next_update_id"] = 1
@@ -192,8 +178,8 @@ async def handle_reset(request: web.Request) -> web.Response:
 
 async def handle_inject_update(request: web.Request) -> web.Response:
     """Test-only endpoint: inject an incoming Telegram Update into the
-    getUpdates pipeline. Used by e2e scripts to simulate user messages
-    in engagement topics.
+    getUpdates pipeline. Used by e2e scripts to simulate incoming
+    messages.
 
     Body: JSON - an Update payload.
     """

@@ -310,29 +310,31 @@ async def test_a_dm_after_a_failed_request_is_an_ordinary_turn(supervisor):
     assert channel._app.bot.sent == []
 
 
-async def test_an_engagement_topic_message_gets_the_line_and_no_turn(
-        supervisor):
-    from channels.telegram import TelegramChannel
+async def test_a_reply_into_a_job_gets_the_line_and_no_turn(supervisor):
+    from channels.telegram import TelegramChannel, _NoticeTarget
 
     channel = TelegramChannel(bot_token="T", chat_id="42",
                               default_agent="assistant", bus=None)
     notices, turns = [], []
 
-    async def notice(rec, text):
+    async def reply(chat_id, message_id, text):
         notices.append(text)
 
     class _Driver:
         def submit_operator(self, rec, text, **kw):
             turns.append(text)
 
-    channel._post_engagement_notice = notice
+    channel._send_dm_reply = reply
     channel._engagement_driver = _Driver()
     rec = types.SimpleNamespace(id="e" * 32, origin={})
+    target = _NoticeTarget(chat_id=42, message_id=7)
 
-    assert await channel._deliver_to_job(rec, "first") is True
+    assert await channel._deliver_to_job(rec, "first",
+                                         notice_target=target) is True
     assert (turns, notices) == (["first"], [])
     assert await _answered()
-    assert await channel._deliver_to_job(rec, "second") is False
+    assert await channel._deliver_to_job(rec, "second",
+                                         notice_target=target) is False
     assert turns == ["first"]
     assert notices == [maintenance.COURTESY_LINE]
     # a system turn into the engagement is not the operator's message

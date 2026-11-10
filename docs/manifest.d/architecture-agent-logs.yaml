@@ -1,0 +1,26 @@
+# Manifest shard: the agent-logs document (born in its own shard: the A-D shard stands just
+# under the index ceiling).
+- doc: architecture/agent-logs.md
+  summary: The optional read-only agent logs in a Telegram forum group — when they are on, one topic per agent, the producers and their lines, the synchronous sink and the writer's request budget, the registry and the retention that deletes each post within Telegram's 48 hours, and the one pointer anything written in the group draws.
+  when_changing: an agent's log or its topic, a log line or its producer, the log writer or its request budget, the log registry or its retention, when the log is on, or what happens to a message written in the log group
+  covers:
+    - casa/rootfs/opt/casa/agent_logs.py
+    - casa/rootfs/opt/casa/background_jobs.py::job_log_key
+    - casa/rootfs/opt/casa/background_jobs.py::log_job_line
+    - casa/rootfs/opt/casa/tools.py::_DelegatedRunLog
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.check_agent_logs
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._redirect_from_log_group
+    - casa/rootfs/opt/casa/casa_core.py::_agent_log_retention
+  tests:
+    - tests/test_agent_logs.py
+    - tests/test_agent_log_producers.py
+    - tests/test_telegram_engagement_routing.py
+  related: [architecture/background-job-direct-chat.md, architecture/background-jobs.md, architecture/telegram.md, architecture/output-scope-properties.md, architecture/configurator.md, reference/operator-options.md]
+  defines_invariants: [INV-TG-011, INV-TG-012, INV-TG-013, INV-TG-014, INV-TG-015, INV-TG-016]
+  invariant_tests:
+    INV-TG-011: [tests/test_agent_logs.py::test_log_is_synchronous, tests/test_agent_logs.py::test_log_never_raises_and_warns_at_most_once_a_minute, tests/test_in_casa_driver.py::TestInCasaStart::test_the_reader_never_awaits_the_log, tests/test_agent_logs.py::test_budget_caps_every_request_at_18_per_minute, tests/test_agent_logs.py::test_a_check_never_waits_for_the_budget, tests/test_agent_logs.py::test_retry_after_pauses_the_whole_writer]
+    INV-TG-012: [tests/test_agent_logs.py::test_send_refuses_without_a_thread_id, tests/test_agent_logs.py::test_first_post_creates_the_topic_then_sends_into_it]
+    INV-TG-013: [tests/test_agent_log_producers.py::test_only_a_specialist_or_the_configurator_logs_a_delegated_run, tests/test_agent_log_producers.py::test_a_jobs_log_key, tests/test_in_casa_driver.py::TestInCasaStart::test_a_plugin_jobs_lines_go_to_its_residents_plugin_log, tests/test_agent_logs.py::test_run_name_and_topic_name, tests/test_agent_logs.py::test_a_lost_topic_is_recreated_once_then_lines_drop, tests/test_agent_logs.py::test_a_lost_topic_recreated_once_delivers_the_lines, tests/test_agent_logs.py::test_registry_is_written_privately_and_reloads]
+    INV-TG-014: [tests/test_agent_log_producers.py::test_words_written_after_a_waiting_call_are_never_logged, tests/test_agent_log_producers.py::test_a_consume_of_the_same_grant_logs_the_held_words_at_once, tests/test_pending_approval_topic.py::test_a_cleared_cut_logs_the_held_words_at_once, tests/test_pending_approval_topic.py::test_a_turn_that_ends_under_the_cut_never_logs_the_held_words, tests/test_pending_approval_topic.py::test_a_consume_of_the_same_grant_releases_the_words]
+    INV-TG-015: [tests/test_agent_logs.py::test_retention_deletes_only_posts_older_than_44_hours, tests/test_agent_logs.py::test_retention_batches_at_most_100_ids, tests/test_agent_logs.py::test_a_failed_batch_falls_back_to_one_id_at_a_time, tests/test_agent_logs.py::test_posts_past_47_5_hours_are_forgotten_without_a_call, tests/test_agent_logs.py::test_a_flood_wait_ends_the_retention_pass]
+    INV-TG-016: [tests/test_telegram_engagement_routing.py::TestTheLogGroupIsReadOnly::test_general_draws_one_pointer_per_person, tests/test_telegram_engagement_routing.py::TestTheLogGroupIsReadOnly::test_a_topic_message_or_command_reaches_no_job, tests/test_telegram_engagement_routing.py::TestTheLogGroupIsReadOnly::test_each_person_is_told_once_in_their_thread, tests/test_telegram_engagement_routing.py::TestTheLogGroupIsReadOnly::test_a_bot_is_ignored, tests/test_telegram_engagement_routing.py::TestTheLogGroupIsReadOnly::test_a_file_in_the_group_draws_the_same_pointer, tests/test_memory_specialist_post.py::test_a_message_in_the_log_group_reaches_no_job_and_no_memory, tests/test_job_message_seams.py::test_a_message_in_the_log_group_never_reaches_the_job, tests/test_inbound_files.py::test_a_file_in_the_log_group_draws_the_pointer_in_its_thread]

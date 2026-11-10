@@ -147,7 +147,7 @@ async def test_a_bindings_chain_ends_with_the_agent_that_made_the_call():
     sync delegation's, a desk turn's and a resident's own facts are unchanged."""
     hook = rb.make_plugin_admission_hook("browser", _map(), client_id="c1",
                                          store=rb.ReferenceStore())
-    engagement = SimpleNamespace(id="e-1", kind="specialist", status="active", topic_id=7,
+    engagement = SimpleNamespace(id="e-1", kind="specialist", status="active",
                                  role_or_type="browser",
                                  origin={**ENGAGEMENT_TURN, "chat_id": 42})
     with _Origin(ENGAGEMENT_TURN):

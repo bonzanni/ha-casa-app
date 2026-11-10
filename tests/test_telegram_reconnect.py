@@ -398,13 +398,6 @@ class TestLogOnceAtChannelLevel:
         assert len(infos) == 1, [r.message for r in infos]
 
 
-# ---------------------------------------------------------------------------
-# E-F (v0.30.0): setup_engagement_features must run inside _rebuild AFTER
-# self._app is set, so a transient first-boot setWebhook NetworkError no
-# longer leaves engagement_permission_ok=False forever.
-# ---------------------------------------------------------------------------
-
-
 class TestTeardownPerStep:
     """M8 (v0.52.0): a failing teardown step must not skip the others, and a
     partial bring-up in _rebuild must roll back the started Application."""
@@ -466,18 +459,17 @@ class TestTeardownPerStep:
         assert ch._app is None
 
 
-class TestSetupEngagementFeaturesInRebuild:
-    async def test_first_set_webhook_fails_then_recovers_engagement_permission_flips_true(
-        self, mock_bus,
+class TestAgentLogCheckInRebuild:
+    async def test_first_set_webhook_fails_then_recovers_and_the_log_turns_on(
+        self, mock_bus, tmp_path,
     ):
-        """E-F regression: pre-fix, casa_core.py:1483 invoked
-        setup_engagement_features() once at boot. If the first _rebuild
-        raised on set_webhook (transient), self._app stayed None and the
-        boot call hit `None.get_me()`, leaving engagement_permission_ok
-        permanently False. With the fix, setup_engagement_features() is
-        wired into _rebuild() as a tail step after `self._app = app`, so
-        the supervisor's recovery rebuild flips the flag automatically.
+        """E-F regression: if the first _rebuild raised on set_webhook
+        (transient), self._app stayed None and a check made once at boot
+        could never see the bot. The agent log's check is a tail step of
+        _rebuild() after `self._app = app`, so the supervisor's recovery
+        rebuild turns the log on without any external retry step.
         """
+        from agent_logs import AgentLogs
         from channels.telegram import TelegramChannel
         import channels.telegram as telegram_mod
         telegram_mod._RECONNECT_INITIAL_MS = 1
@@ -491,13 +483,11 @@ class TestSetupEngagementFeaturesInRebuild:
 
             def build_once():
                 app = _make_fake_application()
-                # Wire engagement helpers on every built app's bot:
-                # the channel's setup_engagement_features() will call
-                # bot.get_me, bot.get_chat_member, bot.set_my_commands.
+                app.bot.id = 4242
                 app.bot.get_chat_member = AsyncMock(
-                    return_value=MagicMock(can_manage_topics=True),
+                    return_value=MagicMock(status="administrator",
+                                           can_manage_topics=True),
                 )
-                app.bot.set_my_commands = AsyncMock()
                 if len(built) == 0:
                     # First build: set_webhook raises → _rebuild aborts
                     # before self._app = app. The supervisor will retry.
@@ -521,32 +511,31 @@ class TestSetupEngagementFeaturesInRebuild:
             webhook_url="https://casa.example",
             engagement_supergroup_id=-1001,
         )
+        logs = AgentLogs(display_name=lambda role: role,
+                         path=str(tmp_path / "log-topics.json"))
+        ch._agent_logs = logs
 
         await ch.start()
         # Wait for supervisor to retry _rebuild successfully.
         for _ in range(400):
             await asyncio.sleep(0.005)
-            if ch.engagement_permission_ok:
+            if logs.enabled:
                 break
         await ch.stop()
+        await logs.stop()
 
         assert len(built) >= 2, (
             "supervisor should have rebuilt the Application at least once"
         )
-        # Recovery rebuild flipped the engagement permission flag without
-        # any external retry step — no need for `ha apps restart`.
-        assert ch.engagement_permission_ok is True
-        # The recovery build's set_my_commands was called exactly once
-        # (engagement features registered on the rebuild).
-        assert built[1].bot.set_my_commands.await_count == 1
+        assert logs.enabled is True
+        built[1].bot.get_chat_member.assert_awaited_with(
+            chat_id=-1001, user_id=4242)
 
-    async def test_setup_engagement_features_runs_after_app_is_published(
+    async def test_the_log_check_runs_after_app_is_published(
         self, patched_application_builder, mock_bus,
     ):
-        """E-F invariant: setup_engagement_features() must observe
-        self._app already set (so `self.bot` resolves). Spy on the
-        method to verify it sees a non-None app at invocation time.
-        """
+        """E-F invariant: the agent log's check must observe self._app
+        already set (so `self.bot` resolves)."""
         from channels.telegram import TelegramChannel
 
         seen_app: list[object] = []
@@ -560,25 +549,20 @@ class TestSetupEngagementFeaturesInRebuild:
             engagement_supergroup_id=-1001,
         )
 
-        original = ch.setup_engagement_features
-
         async def spy():
             seen_app.append(ch._app)
-            # Don't actually run setup — the bot mocks may not be wired.
-            return None
+            return False
 
-        ch.setup_engagement_features = spy  # type: ignore[method-assign]
+        ch.check_agent_logs = spy  # type: ignore[method-assign]
 
         await ch.start()
         await ch.stop()
 
-        assert seen_app, "setup_engagement_features was never called"
+        assert seen_app, "the agent log check was never called"
         assert seen_app[0] is not None, (
-            f"expected self._app to be set before setup_engagement_features, "
+            f"expected self._app to be set before the agent log check, "
             f"got {seen_app[0]!r}"
         )
-        # Restore (paranoia).
-        ch.setup_engagement_features = original  # type: ignore[method-assign]
 
 
 class TestRebuildCancellation:

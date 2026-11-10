@@ -30,7 +30,7 @@ def test_create_transfers_spawn_token_to_record_and_terminal_releases(tmp_path):
         tok = lim.try_acquire()
         rec = await reg.create(
             kind="executor", role_or_type="configurator", driver="in_casa",
-            task="t", origin={"_agent_spawned": True}, topic_id=None,
+            task="t", origin={"_agent_spawned": True},
             agent_spawn_permit=tok,
         )
         assert rec.agent_spawn_permit is tok
@@ -47,7 +47,7 @@ def test_create_refuses_marked_record_without_reservation(tmp_path):
         with pytest.raises(ValueError):
             await reg.create(
                 kind="executor", role_or_type="configurator", driver="in_casa",
-                task="t", origin={"_agent_spawned": True}, topic_id=None,
+                task="t", origin={"_agent_spawned": True},
             )
 
     asyncio.run(run())
@@ -58,7 +58,7 @@ def test_create_unmarked_needs_no_reservation(tmp_path):
         reg = _mk_registry(tmp_path, AgentSpawnLimiter(max_spawns=3))
         rec = await reg.create(
             kind="executor", role_or_type="configurator", driver="in_casa",
-            task="t", origin={}, topic_id=None,
+            task="t", origin={},
         )
         assert rec.agent_spawn_permit is None
 
@@ -79,7 +79,7 @@ def test_release_both_permits_on_terminal(tmp_path):
         tok = lim.try_acquire()
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t", origin={"_agent_spawned": True}, topic_id=None,
+            task="t", origin={"_agent_spawned": True},
             agent_spawn_permit=tok,
         )
         fake = _FakePermit()
@@ -98,7 +98,7 @@ def test_load_restores_occupancy_for_live_marked_rows_as_debt(tmp_path):
         base = dict(
             kind="executor", role_or_type="configurator", driver="in_casa",
             started_at=1.0, last_user_turn_ts=1.0, completed_at=None,
-            sdk_session_id=None, task="t", topic_id=None,
+            sdk_session_id=None, task="t",
         )
         # Four live marked rows (debt beyond cap 3), one terminal marked row
         # (must not count), one live unmarked row (must not count).
@@ -131,7 +131,7 @@ def test_load_without_limiter_keeps_working(tmp_path):
         path = tmp_path / "engagements.json"
         path.write_text(json.dumps([{
             "id": "m0", "kind": "executor", "role_or_type": "c",
-            "driver": "in_casa", "status": "active", "topic_id": None,
+            "driver": "in_casa", "status": "active",
             "started_at": 1.0, "last_user_turn_ts": 1.0,
             "completed_at": None, "sdk_session_id": None, "task": "t",
             "origin": {"_agent_spawned": True},

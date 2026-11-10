@@ -107,7 +107,7 @@ class _FakeForbidden(_FakeTelegramError):
 
 class _FakeRetryAfter(_FakeTelegramError):
     # Real PTB 22.7: RetryAfter -> TelegramError, carrying a .retry_after attr
-    # (topic_ledger's sweep reads exc.retry_after to size its backoff).
+    # (the agent log's writer reads exc.retry_after to size its wait).
     def __init__(self, retry_after=0, *a, **k):
         super().__init__(f"Flood control exceeded. Retry in {retry_after} seconds")
         self.retry_after = retry_after
@@ -319,7 +319,7 @@ _install_telegram_stubs()
 
 
 # ---------------------------------------------------------------------------
-# Forum supergroup fakes — used by telegram engagement tests.
+# Forum group fakes — used by the telegram channel's tests.
 # ---------------------------------------------------------------------------
 
 
@@ -327,8 +327,6 @@ _install_telegram_stubs()
 class _FakeTopicState:
     thread_id: int
     name: str
-    icon_emoji: str | None = None
-    closed: bool = False
 
 
 @dataclass
@@ -337,7 +335,6 @@ class _FakeForumSupergroup:
     topics: dict = field(default_factory=dict)
     _next_thread_id: int = 1001
     messages_by_thread: dict = field(default_factory=lambda: defaultdict(list))
-    my_commands_by_scope: dict = field(default_factory=dict)
     bot_can_manage_topics: bool = True
 
 
@@ -351,26 +348,12 @@ class _FakeTelegramBot:
             self._supergroups[chat_id] = _FakeForumSupergroup(chat_id=chat_id)
         return self._supergroups[chat_id]
 
-    async def create_forum_topic(self, chat_id, name, icon_custom_emoji_id=None, **kw):
+    async def create_forum_topic(self, chat_id, name, **kw):
         sg = self._require_supergroup(chat_id)
         tid = sg._next_thread_id
         sg._next_thread_id += 1
-        sg.topics[tid] = _FakeTopicState(thread_id=tid, name=name, icon_emoji=icon_custom_emoji_id)
+        sg.topics[tid] = _FakeTopicState(thread_id=tid, name=name)
         return MagicMock(message_thread_id=tid)
-
-    async def edit_forum_topic(self, chat_id, message_thread_id, name=None, icon_custom_emoji_id=None, **kw):
-        sg = self._require_supergroup(chat_id)
-        topic = sg.topics[message_thread_id]
-        if name is not None:
-            topic.name = name
-        if icon_custom_emoji_id is not None:
-            topic.icon_emoji = icon_custom_emoji_id
-        return True
-
-    async def close_forum_topic(self, chat_id, message_thread_id, **kw):
-        sg = self._require_supergroup(chat_id)
-        sg.topics[message_thread_id].closed = True
-        return True
 
     async def send_message(self, chat_id, text, message_thread_id=None, **kw):
         # Always register the supergroup so tests can inspect _supergroups[chat_id].
@@ -380,19 +363,6 @@ class _FakeTelegramBot:
         else:
             self.messages.append((chat_id, text))
         return MagicMock(message_id=1)
-
-    async def set_my_commands(self, commands, scope=None, **kw):
-        chat_id = getattr(scope, "chat_id", None) if scope is not None else None
-        if chat_id is None and self._supergroups:
-            chat_id = next(iter(self._supergroups))
-        if chat_id is None:
-            return True
-        sg = self._require_supergroup(chat_id)
-        scope_key = repr(scope) if scope is not None else "default"
-        sg.my_commands_by_scope[scope_key] = [
-            {"command": c.command, "description": c.description} for c in commands
-        ]
-        return True
 
     async def get_chat_member(self, chat_id, user_id, **kw):
         sg = self._require_supergroup(chat_id)
@@ -418,7 +388,7 @@ async def engagement_fixture(tmp_path):
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
-        task="t", origin={"role": "assistant"}, topic_id=555,
+        task="t", origin={"role": "assistant"},
     )
 
     class _Fx:

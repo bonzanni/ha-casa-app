@@ -109,7 +109,7 @@ async def test_an_engagement_transcript_lives_its_retention_after_its_terminal_r
     _specialists(monkeypatch, researcher=SimpleNamespace(role="researcher", cwd=cwd))
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(kind="specialist", role_or_type="researcher",
-                           driver="in_casa", task="t", origin={}, topic_id=None)
+                           driver="in_casa", task="t", origin={})
     sid = str(uuid.uuid4())
     await reg.persist_session_id(rec.id, sid)
     done = time.time()
@@ -137,7 +137,7 @@ async def _terminal_engagement(tmp_path, monkeypatch, *, cwd, days_ago):
     path = str(tmp_path / "e.json")
     reg = EngagementRegistry(tombstone_path=path)
     rec = await reg.create(kind="specialist", role_or_type="researcher",
-                           driver="in_casa", task="t", origin={}, topic_id=None)
+                           driver="in_casa", task="t", origin={})
     sid = str(uuid.uuid4())
     await reg.persist_session_id(rec.id, sid)
     done = time.time() - days_ago * 86400
@@ -156,7 +156,7 @@ async def _rewrite(reg) -> None:
     """Any write re-runs the tombstone's expiry over every record (startup
     reconciliation, a new engagement)."""
     await reg.create(kind="specialist", role_or_type="researcher",
-                     driver="in_casa", task="later", origin={}, topic_id=None)
+                     driver="in_casa", task="later", origin={})
 
 
 def _on_disk(path, rec_id) -> bool:

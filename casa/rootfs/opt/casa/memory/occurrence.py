@@ -5,7 +5,7 @@ counts, and the short log correlation id is never an input. There are three
 live forms.
 
 * ``provider:<h>`` — an operator message that carries a provider message id
-  (a Telegram DM, or a message in an engagement topic). ``h`` is the sha256 of
+  (a Telegram DM, or the operator's reply into a job). ``h`` is the sha256 of
   the channel, the chat and the provider's message id, joined by NUL bytes and
   truncated to 128 bits, so the same message delivered twice collapses into
   one event.
@@ -45,8 +45,8 @@ def provider_key(channel: str, chat: str, provider_message_id: str) -> str:
 
 def engagement_key(channel: str, engagement_id: str,
                    provider_message_id: str) -> str:
-    """The key of an operator message in an engagement's topic: one key per
-    topic message, whichever seam captures it."""
+    """The key of an operator message handed to an engagement: one key per
+    message, whichever seam captures it."""
     return provider_key(channel, f"engagement:{engagement_id}",
                         provider_message_id)
 

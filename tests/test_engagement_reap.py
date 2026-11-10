@@ -47,16 +47,6 @@ def _wire(tmp_path):
 
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     telegram = MagicMock()
-    telegram.send_to_topic = AsyncMock()
-    # #678: the paged rich sender is the one the funnel PREFERS, and a bare
-    # MagicMock fabricates it — so `hasattr` found it, awaiting its
-    # non-awaitable return raised TypeError, the funnel swallowed that and
-    # closed the topic anyway. This test's close assertion was passing because
-    # the double was broken. The real TelegramChannel has this method; the
-    # double now has it too, and returns a message id, which is what the
-    # funnel reads as confirmation.
-    telegram.send_response_to_topic = AsyncMock(return_value=4242)
-    telegram.close_topic = AsyncMock()
     cm = MagicMock()
     cm.get.return_value = telegram
     bus = MagicMock()
@@ -71,11 +61,11 @@ def _wire(tmp_path):
     return reg, telegram, bus, driver
 
 
-async def _stale_record(reg, *, days: float, topic_id: int = 42,
+async def _stale_record(reg, *, days: float,
                         status: str = "active", driver: str = "in_casa"):
     rec = await reg.create(
         "executor", "configurator", driver, "install plugin X",
-        {"role": "assistant", "channel": "telegram", "chat_id": "123"}, topic_id,
+        {"role": "assistant", "channel": "telegram", "chat_id": "123"},
     )
     rec.started_at = time.time() - days * 86400
     rec.last_user_turn_ts = time.time() - days * 86400
@@ -92,7 +82,6 @@ class TestReapStaleEngagements:
         rec = await _stale_record(reg, days=8)
         assert await reap_stale_engagements(ttl_days=7) == 1
         assert rec.status == "cancelled"
-        telegram.close_topic.assert_awaited_once_with(thread_id=42)
         bus.notify.assert_awaited_once()
 
     async def test_reaps_idle_past_ttl(self, tmp_path):
@@ -133,7 +122,7 @@ class TestReapStaleEngagements:
         # Reaped count is 0 and the engagement is left live.
         assert reaped == 0
         assert rec.status == "active"
-        telegram.close_topic.assert_not_awaited()
+        bus.notify.assert_not_awaited()
 
     async def test_skips_young_records(self, tmp_path):
         from tools import reap_stale_engagements
@@ -142,7 +131,7 @@ class TestReapStaleEngagements:
         rec = await _stale_record(reg, days=2)
         assert await reap_stale_engagements(ttl_days=7) == 0
         assert rec.status == "active"
-        telegram.close_topic.assert_not_awaited()
+        bus.notify.assert_not_awaited()
 
     async def test_ttl_zero_disables_reap(self, tmp_path):
         from tools import reap_stale_engagements
@@ -165,8 +154,8 @@ class TestReapStaleEngagements:
         from tools import reap_stale_engagements
 
         reg, telegram, bus, driver = _wire(tmp_path)
-        young = await _stale_record(reg, days=3, topic_id=42)
-        old = await _stale_record(reg, days=8, topic_id=43)
+        young = await _stale_record(reg, days=3)
+        old = await _stale_record(reg, days=8)
         monkeypatch.setenv("ENGAGEMENT_REAP_DAYS", "banana")
         await reap_stale_engagements()
         assert young.status == "active"
@@ -176,12 +165,12 @@ class TestReapStaleEngagements:
         from tools import reap_stale_engagements
 
         reg, telegram, bus, driver = _wire(tmp_path)
-        bad = await _stale_record(reg, days=10, topic_id=44)
-        good = await _stale_record(reg, days=10, topic_id=45)
-        # First close_topic explodes; the second record must still be reaped.
-        telegram.close_topic.side_effect = [RuntimeError("tg down"), None]
+        bad = await _stale_record(reg, days=10)
+        good = await _stale_record(reg, days=10)
+        # The first teardown explodes; the second record must still be reaped.
+        driver.cancel.side_effect = [RuntimeError("driver down"), None]
         await reap_stale_engagements(ttl_days=7)
-        assert bad.status == "cancelled"   # registry transition precedes channel I/O
+        assert bad.status == "cancelled"   # registry transition precedes teardown
         assert good.status == "cancelled"
 
 

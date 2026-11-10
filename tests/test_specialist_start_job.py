@@ -5,7 +5,7 @@ Every launch case runs ``start_job`` on the real launch, engagement registry,
 in-casa driver and Telegram channel (``test_start_job.runtime``) with the real
 plugin registry and the real host discovery restored over that fixture's
 seams, from an origin built the way a desk turn and a delegated turn build
-theirs. Each asserts counts — live records, SDK clients, topics opened,
+theirs. Each asserts counts — live records, SDK clients,
 pending start claims — never only a status.
 """
 from __future__ import annotations
@@ -101,7 +101,7 @@ async def test_a_specialist_turn_starts_its_own_job_hosted_on_itself(
     assert "desk" not in rec.origin and "_delegation_id" not in rec.origin
     # a binding the job mints must not name the calling turn's conversation
     assert "_delegated_session_id" not in rec.origin
-    assert _counts(runtime) == (1, 1, 1, 0)
+    assert _counts(runtime) == (1, 1, 0)
 
 
 async def test_a_member_turn_starts_the_job_at_the_members_clearance(
@@ -114,7 +114,7 @@ async def test_a_member_turn_starts_the_job_at_the_members_clearance(
     await drain_launch_turns()
     rec = _the_live_record(runtime)
     assert rec.origin["_origin_clearance"] == "household"
-    assert _counts(runtime) == (1, 1, 1, 0)
+    assert _counts(runtime) == (1, 1, 0)
 
 
 @pytest.mark.parametrize("targets", [("specialist:backup",), ("resident:assistant",)])
@@ -128,7 +128,7 @@ async def test_a_job_the_specialists_own_plugins_do_not_declare_is_not_startable
     result = await start_as(_desk_turn_origin())
     assert result["kind"] == "job_not_declared", result
     assert result["message"] == "Startable jobs: none"
-    assert _counts(runtime) == (0, 0, 0, 0)
+    assert _counts(runtime) == (0, 0, 0)
 
 
 async def test_an_unknown_job_names_only_the_specialists_own_jobs(
@@ -139,7 +139,7 @@ async def test_an_unknown_job_names_only_the_specialists_own_jobs(
     result = await start_as(_desk_turn_origin(), job="ledger:nope")
     assert result["kind"] == "job_not_declared"
     assert result["message"] == "Startable jobs: ledger:classify"
-    assert _counts(runtime) == (0, 0, 0, 0)
+    assert _counts(runtime) == (0, 0, 0)
 
 
 async def test_a_start_inside_a_desk_turn_takes_the_engagement_permit_without_waiting(
@@ -155,7 +155,7 @@ async def test_a_start_inside_a_desk_turn_takes_the_engagement_permit_without_wa
         assert "finance:engagement" in runtime.limiter._active_scopes
     finally:
         desk_permit.release()
-    assert _counts(runtime) == (1, 1, 1, 0)
+    assert _counts(runtime) == (1, 1, 0)
 
 
 async def test_a_voice_delegation_cannot_start_a_job(
@@ -165,7 +165,7 @@ async def test_a_voice_delegation_cannot_start_a_job(
     _own_ledger(tmp_path)
     result = await start_as(_delegated_turn_origin(channel="voice"))
     assert result["kind"] == "job_needs_text_channel"
-    assert _counts(runtime) == (0, 0, 0, 0)
+    assert _counts(runtime) == (0, 0, 0)
 
 
 async def test_the_resident_start_of_a_specialist_job_is_unchanged(
@@ -180,7 +180,7 @@ async def test_the_resident_start_of_a_specialist_job_is_unchanged(
     rec = runtime.registry.get(result["engagement_id"])
     assert rec.origin["execution_role"] == "assistant"
     assert rec.origin["delegation_depth"] == 1
-    assert _counts(runtime) == (1, 1, 1, 0)
+    assert _counts(runtime) == (1, 1, 0)
 
 
 async def test_a_specialist_engagement_turn_is_refused_at_dispatch(finance_is_specialist):
@@ -259,11 +259,11 @@ async def test_own_plugins_are_those_assigned_and_loadable_at_the_call(
                         lambda rp, environ=None: missing.get(rp.name, []))
     withheld = await start_as(_desk_turn_origin())
     assert withheld["kind"] == "job_not_declared", withheld
-    assert _counts(runtime) == (0, 0, 0, 0)
+    assert _counts(runtime) == (0, 0, 0)
     missing.clear()
     wired = await start_as(_desk_turn_origin())
     assert wired["status"] == "pending", wired
-    assert _counts(runtime) == (1, 1, 1, 0)
+    assert _counts(runtime) == (1, 1, 0)
 
 
 async def test_a_specialists_own_start_during_its_jobs_pending_terminal_write_is_refused(
@@ -282,7 +282,7 @@ async def test_a_specialists_own_start_during_its_jobs_pending_terminal_write_is
     reg = runtime.registry
     rec = await reg.create("specialist", "finance", "in_casa", "classify",
                            {"job": {"name": "ledger:classify", "title": "Classify"},
-                            "plugin_job": {"plugin": "ledger"}}, 7)
+                            "plugin_job": {"plugin": "ledger"}})
     entered, release = threading.Event(), threading.Event()
     real_write = reg._write_tombstone
 
@@ -307,4 +307,4 @@ async def test_a_specialists_own_start_during_its_jobs_pending_terminal_write_is
     assert result.get("kind") == "job_busy", result
     assert "engagement_id" not in result and "topic_id" not in result, result
     assert rec.status == "active"
-    assert _counts(runtime) == (1, 0, 0, 0)
+    assert _counts(runtime) == (1, 0, 0)

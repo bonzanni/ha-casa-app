@@ -33,7 +33,8 @@ pytestmark = pytest.mark.asyncio
 
 RULED = ("When it resumes, it picks up Casa's updated settings, but it keeps its "
          "personality and the plugin versions it started with. To get everything "
-         "new, close it with `/complete` and ask the assistant for a new conversation.")
+         "new, cancel it (with its Cancel button, or ask the assistant) and "
+         "start it again.")
 # #1409: the ruling's sentence names the CONFIGURED assistant; with no persona
 # registered (these fixtures, and every tool description, built at import) it
 # says "the assistant".
@@ -58,7 +59,7 @@ async def _open(reg, *, slug="fin", topic=101, task="Review household budget",
     if job is not None:
         origin["job"] = job
     return await reg.create(kind=kind, role_or_type=slug, driver="in_casa", task=task,
-                            origin=origin, topic_id=topic)
+                            origin=origin)
 
 
 def _out(r) -> dict:

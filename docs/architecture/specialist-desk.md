@@ -140,7 +140,7 @@ opens it or shares it with a plugin, whatever else the inbox holds
 
 ## Contracts & invariants
 
-**INV-DESK-005**: An operator's Telegram message that quotes a message Casa posted for an agent that holds a desk (a specialist or the configurator) in that chat, for that operator, and still retained in its post map, reaches that agent as one desk turn carrying the operator's exact words — never a resident turn — when it is one the chat's resident may delegate to, unless the quoted message is a post of a background job whose record still counts as live, which goes into that job instead (INV-BGJOB-012); every other message, quoting or not, takes the resident's path.
+**INV-DESK-005**: An operator's Telegram message that quotes a message Casa posted for an agent that holds a desk (a specialist or the configurator) in that chat, for that operator, and still retained in its post map, reaches that agent as one desk turn carrying the operator's exact words — never a resident turn — when it is one the chat's resident may delegate to, unless the quoted message is a post of a background job — one whose record still counts as live goes into that job instead (INV-BGJOB-012), and one of an ended job this operator started in this chat goes to the resident with the job's end named (INV-BGJOB-024); every other message, quoting or not, takes the resident's path.
 
 The four conditions are positive and read from Casa's own state — the authenticated
 operator check the ingress already makes, the post map the channel filed, the chat's default
@@ -148,7 +148,8 @@ resident, the live delegate map the ACL reads — never from text. The route run
 serialised DM handler right after a live job's reply route
 ([`background-job-direct-chat.md`](background-job-direct-chat.md)) and after the chat's rate
 decision; a job's plugin post the desk would otherwise take reaches the job while it lives, and
-the desk once it has ended; the desk task is tracked like an
+the resident, told how the job ended, once it has ended — the ended-job check runs ahead of
+this route, since the desk cannot see the job; the desk task is tracked like an
 engagement turn's so the per-chat serial lock is released at once and a stop can drain it.
 The map's retention is the invariant's edge: a restart or eviction makes the reply a
 resident message carrying Casa's note (INV-DESK-004), by design.
@@ -171,7 +172,7 @@ The key is in `provenance.RESERVED_CONTEXT_KEYS`, so no external ingress can set
 channel stamps it after sanitization; the resident's turn reads it only on a Telegram turn.
 What it does not cover: a Casa message with no record — the resident's own reply, a file a
 specialist sent, a Casa notice, a post the map has forgotten — is named by no author; a file
-sent as a reply, and a message in an engagement topic, carry no note.
+sent as a reply without a caption starts no turn and so carries no note.
 
 ## Failure behavior
 

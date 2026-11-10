@@ -9,9 +9,7 @@ text.
 
 A bare ``edit_message_text`` does NOT do that: PTB drops an omitted
 ``reply_markup``, so ``editMessageText`` never touches the markup and the
-buttons stay tappable under the settled text (the same defect v0.79.0 fixed for
-the TOPIC path in ``edit_topic_message(clear_keyboard=True)`` — see
-``test_telegram_ask_settle.py``; the DM path was left behind). A tap on a
+buttons stay tappable under the settled text. A tap on a
 settled keyboard is refused by the broker (``stale``/``duplicate``) so nothing
 wrong commits, but the operator keeps a live-looking control for a closed
 question.

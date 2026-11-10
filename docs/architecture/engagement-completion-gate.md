@@ -48,9 +48,9 @@ condition is re-evaluated at the moment the state changes rather than only befor
 hook is where the invariant actually lives: delivery can happen during the finalize path's
 own awaits, long after the pre-check found the inbox clean.
 
-What it does not cover: failed and cancelled outcomes intentionally skip the gate, and so
-does the operator's own complete command — only the completion *tool* arms the gate, so an
-operator marking an engagement complete finalizes past unread input deliberately. The gate
+What it does not cover: failed and cancelled outcomes intentionally skip the gate — only the
+completion *tool* arms it, so an operator's cancellation finalizes past unread input
+deliberately. The gate
 exists where the driver implements the inbound accessors, which the in-casa driver does. Its
 ticket ledger is in memory; after a restart or a session death it is rebuilt from the job's
 message journal for every message the session transcript lacks (INV-BGJOB-021, in

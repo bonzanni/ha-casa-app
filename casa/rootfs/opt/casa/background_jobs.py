@@ -169,8 +169,9 @@ class JobDecl:
     title: str
     summary: str | None
     host: str | None = None        # "specialist" = never hosted by a resident
-    # #1301: a run the scheduler started is quiet — no topic, no
-    # acknowledgement, no progress line, no telling of a completed end.
+    # #1301: a run the scheduler started is quiet — no start line in the
+    # direct chat and no telling of a completed end. Its log, when a log group
+    # is set up, is written like any job's.
     quiet_when_scheduled: bool = False
 
 
@@ -282,16 +283,17 @@ def _job_busy_refusal(plugin: str, job: str, title: str, rec: Any | None) -> dic
         return {"status": "error", "kind": "job_busy", "plugin": plugin,
                 "job": job,
                 "message": f"{plugin} is already starting {title}."}
-    if getattr(rec, "topic_id", None) is None:
-        # #1301: a quiet scheduled run has no topic to cancel it in.
+    if is_quiet_run(rec):
+        # #1301: a quiet scheduled run has no start line to cancel it from.
         return {"status": "error", "kind": "job_busy", "plugin": plugin,
                 "job": job, "engagement_id": rec.id,
                 "message": (f"{plugin} is already running {title} on its "
                             "schedule. Wait for it to finish.")}
     return {"status": "error", "kind": "job_busy", "plugin": plugin, "job": job,
-            "engagement_id": rec.id, "topic_id": rec.topic_id,
+            "engagement_id": rec.id,
             "message": (f"{plugin} already has a running job: {title}. "
-                        "Wait for it to finish or /cancel it in its topic.")}
+                        "Wait for it to finish, or cancel it with the Cancel "
+                        "button on its start line or by asking me.")}
 
 
 def claim_job_start(host: "JobHost", registry: Any) -> dict | None:
@@ -520,9 +522,9 @@ def initial_job_state(decl: JobDecl, *, started_by: str | None = None,
 
 def is_quiet_run(rec: Any) -> bool:
     """Whether *rec* is a quiet run (#1301): a job declaring
-    ``quietWhenScheduled`` that the scheduler started. It has no topic, posts
-    no progress line, and a completed end is told nowhere; the plugin's
-    delivered slots still reach the operator."""
+    ``quietWhenScheduled`` that the scheduler started. A completed end is told
+    nowhere in the direct chat; the plugin's delivered slots still reach the
+    operator, and the job's log is written like any job's."""
     return is_quiet_origin(getattr(rec, "origin", None))
 
 
@@ -540,6 +542,45 @@ def is_quiet_origin(origin: Any) -> bool:
     """``is_quiet_run`` over a record's origin (or a frozen copy of it)."""
     job = origin.get("job") if isinstance(origin, dict) else None
     return isinstance(job, dict) and job.get("quiet") is True
+
+
+# ---------------------------------------------------------------------------
+# The agent log
+# ---------------------------------------------------------------------------
+
+def job_log_key(rec: Any) -> Any:
+    """Whose log a job's lines go to: the specialist running it, or, for a
+    job a resident's plugin worker runs, that resident's plugin log. ``None``
+    for any other record (a resident's own turns never log)."""
+    from agent_logs import LogKey
+    role = getattr(rec, "role_or_type", None)
+    if not isinstance(role, str) or not role:
+        return None
+    kind = getattr(rec, "kind", None)
+    if kind == "specialist":
+        return LogKey("agent", role)
+    if kind == "plugin":
+        return LogKey("plugins", role)
+    return None
+
+
+def job_run_name(rec: Any) -> str:
+    """The run's name in its log lines: the job's title, else its task."""
+    job = (getattr(rec, "origin", None) or {}).get("job") or {}
+    return str(job.get("title") or getattr(rec, "task", "") or "job")
+
+
+def log_job_line(logs: Any, rec: Any, text: str) -> None:
+    """One line in the job's log. Synchronous: it queues the line and never
+    waits on Telegram. Nothing happens without a log sink or a log key."""
+    if logs is None:
+        return
+    try:
+        key = job_log_key(rec)
+        if key is not None:
+            logs.log(key, job_run_name(rec), text)
+    except Exception:  # noqa: BLE001 — a log line is never worth a job
+        logger.debug("job log line not queued", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -586,9 +627,10 @@ def _job_rules(*, can_ask: bool = True) -> str:
     return (
         "- Load the skill and do the work. The job is one long session: keep "
         "going until it is finished.\n"
-        "- report_job_progress posts a one-line progress note in the job's "
-        "topic. Use it when there is something worth telling; pass done and "
-        "remaining only when the work has a real unit and a known total.\n"
+        "- report_job_progress records a one-line progress note; it appears "
+        "in your log when a log group is set up. Use it when there is "
+        "something worth telling; pass done and remaining only when the work "
+        "has a real unit and a known total.\n"
         + ("- When something needs the operator's decision or information only "
            "they have, call ask_operator with the question and, when there are "
            "clear choices, the options. Carry on with other work if there is "
@@ -743,14 +785,16 @@ class JobRunner:
     the one automatic resume after a session death, and the resume at boot.
 
     Wired into the in_casa driver as its turn-end and session-lost handlers.
-    ``channel`` is the Telegram channel (the parking post, the start line).
+    ``channel`` is the Telegram channel (the parking post, the start line);
+    ``agent_logs`` is the agent log sink (the resume line), when there is one.
     """
 
     def __init__(self, *, registry: Any, channel: Any = None,
-                 driver: Any = None) -> None:
+                 driver: Any = None, agent_logs: Any = None) -> None:
         self.registry = registry
         self.channel = channel
         self.driver = driver
+        self.agent_logs = agent_logs
         self._tasks: set[asyncio.Task] = set()
 
     # -- small helpers -----------------------------------------------------
@@ -866,7 +910,7 @@ class JobRunner:
 
         The line is Casa's own text only (the job's title, as on its start
         line): the job's progress summaries are its words and stay in its
-        topic."""
+        log."""
         logger.info("job %s parked: %s", rec.id[:8], line)
         st = _state(rec.id)
         st.stops = 0
@@ -914,7 +958,7 @@ class JobRunner:
 
     async def resume_at_boot(self, rec: Any) -> None:
         """Boot, for one live job. A job waiting for the operator with nothing
-        journaled resumes lazily, on their next input. Otherwise: the topic
+        journaled resumes lazily, on their next input. Otherwise: the log
         line, the resume, the journal reconcile, then the brief (when the
         transcript shows it was never read) or the restart line, then every
         journaled message the transcript lacks. One attempt: a failed resume
@@ -927,13 +971,7 @@ class JobRunner:
             return
         if awaiting(rec) is not None and not job_inbox.load(rec.id):
             return
-        notice = getattr(self.channel, "_post_engagement_notice", None)
-        if callable(notice):
-            try:
-                await notice(rec, f'↻ Resuming "{_title(rec)}" after a restart.')
-            except Exception:  # noqa: BLE001
-                logger.warning("job %s resume notice failed", rec.id[:8],
-                               exc_info=True)
+        log_job_line(self.agent_logs, rec, "↻ Resuming after a restart")
         try:
             await self.driver.recover(
                 rec, restart_line=CASA_RESTART_LINE, brief=job_brief(rec),

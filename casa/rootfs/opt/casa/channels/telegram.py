@@ -23,6 +23,7 @@ import time
 
 import httpx
 from dataclasses import dataclass
+from datetime import datetime
 from io import BytesIO
 from typing import Any, Awaitable, Callable
 
@@ -73,8 +74,6 @@ from provenance import (
 )
 from rate_limit import RateLimiter
 from timekeeping import resolve_tz
-
-import topic_ledger
 
 logger = logging.getLogger(__name__)
 
@@ -621,10 +620,7 @@ _SETTLED_STATUS_TIMEOUT_S = 5.0
 notice. The registry lock is held across a tombstone write; on timeout the
 plain wording is used."""
 
-_LOST_INBOUND_NOTICE = "Your message could not be delivered — please resend it."
-"""#649: what a message the engagement never took up draws in its topic."""
-
-_LOST_REPLY_NOTICE = _LOST_INBOUND_NOTICE
+_LOST_REPLY_NOTICE = "Your message could not be delivered — please resend it."
 _LOST_REPLY_ENDED_NOTICE = "The job had just ended — not delivered, please resend."
 _LOST_ANSWER_NOTICE = "Your answer could not be passed to the job — please answer again."
 _LOST_ANSWER_ENDED_NOTICE = "The job had already ended; your answer wasn't used."
@@ -657,8 +653,8 @@ def _notice_dict(target: "_NoticeTarget | None") -> "dict | None":
 
 
 def _notice_target_from(value: Any) -> "_NoticeTarget | None":
-    """A journaled notice target back as one; ``None`` (the topic) for
-    anything that is not one."""
+    """A journaled notice target back as one; ``None`` for anything that is
+    not one."""
     if not isinstance(value, dict):
         return None
     chat, mid = value.get("chat_id"), value.get("message_id")
@@ -668,9 +664,9 @@ def _notice_target_from(value: Any) -> "_NoticeTarget | None":
                          answer=value.get("answer") is True)
 
 
-_MEMBER_STEER_LINE = "This job can't take instructions from you, so your message didn't reach it."
-"""What a household member's message in a job's topic draws: it does not
-reach the job."""
+_LOG_GROUP_REDIRECT = ("This group is a read-only log. Talk to me in our "
+                       "direct chat.")
+"""The one line a person who writes in the log group gets, once per boot."""
 
 
 
@@ -978,16 +974,10 @@ class TelegramChannel(Channel):
         # Reconnect supervisor + health probe task.
         self._supervisor: ReconnectSupervisor | None = None
         self._probe_task: asyncio.Task | None = None
-        # Test-injection bot and engagement supergroup.
+        # Test-injection bot and the optional forum group the agent log
+        # writes to.
         self._bot = bot
         self.engagement_supergroup_id = engagement_supergroup_id
-        self.engagement_permission_ok = False
-        # M10 (v0.52.0): the bot's own @username, cached at setup so
-        # handle_update can strip a trailing "@botname" off engagement
-        # commands (group command menus send "/cancel@casabot"). None until
-        # setup_engagement_features resolves it; while None the suffix is
-        # stripped unconditionally (safe inside Casa's own supergroup).
-        self._bot_username: str | None = None
         # H5 (v0.52.0): bounded LRU of recently-seen webhook update_ids so a
         # Telegram redelivery (retry after a slow ACK) is processed at most
         # once. OrderedDict used as an insertion-ordered ring buffer.
@@ -1002,11 +992,9 @@ class TelegramChannel(Channel):
         self._proposal_settled: "collections.OrderedDict[str, tuple[dict, str]]" = (
             collections.OrderedDict()
         )
-        # M9 (v0.52.0): strong refs to in-flight engagement-turn delivery
-        # tasks. handle_update spawns the SDK turn in the background (so the
-        # per-topic lock is not held across a multi-minute turn and /cancel
-        # can interrupt it); each task keeps a ref here + a done-callback that
-        # discards it. Cancelled in stop().
+        # M9 (v0.52.0): strong refs to in-flight background turn and
+        # continuation tasks the handlers spawn; each task keeps a ref here +
+        # a done-callback that discards it. Cancelled in stop().
         self._turn_tasks: set[asyncio.Task] = set()
         # S6 §2.4 / §5: the 📎 armings (one per chat, memory-only) and the per-(chat, specialist)
         # file-intake locks (FIFO) — a file is judged, stored and given its desk place under one
@@ -1019,16 +1007,12 @@ class TelegramChannel(Channel):
         self._stopping = False
         self._engagement_driver = None
         self._finalize_cancel = None
-        self._finalize_complete_user = None
         self._session_registry = None   # wired in main() (Task 9); /new reset
-        self._main_feed_redirect_seen: set[int] = set()
-        # Per-topic handler lock (Bug 10, v0.14.7). aiohttp dispatches
-        # handle_update concurrently per Bot-API update; this serialises the
-        # updates of one topic (a /cancel and a message), never a job's
-        # session: no handler awaits one. Keyed by message_thread_id (1:1
-        # with engagement via _topic_index). Entries are not pruned —
-        # bounded growth, cleared on add-on restart.
-        self._engagement_handler_locks: dict[Any, asyncio.Lock] = {}
+        # The agent log sink (agent_logs.AgentLogs), wired in main(); its
+        # check runs at every successful rebuild.
+        self._agent_logs = None
+        # The people already told, this boot, that the log group is read-only.
+        self._log_group_redirect_seen: set[int] = set()
         # The per-engagement lifecycle locks every resume owner of a job's
         # session takes (``engagement_lifecycle_lock``). Keyed by engagement
         # id; never held by a Telegram handler.
@@ -1041,26 +1025,12 @@ class TelegramChannel(Channel):
         # same-chat message ENQUEUE restores the ordering M29 assumed from
         # PTB's default serialized dispatch; other chats keep flowing. Keyed
         # by chat_id; entries are not pruned — bounded growth (DM chats),
-        # cleared on add-on restart, mirroring _engagement_handler_locks.
+        # cleared on add-on restart.
         self._chat_serial_locks: dict[str, asyncio.Lock] = {}
         # #1379: the files of the operator's chat being acknowledged together,
         # and the lock that keeps their one message's sends and edits in order.
         self._ack_bursts: dict[tuple[str, str | None], _AckBurst] = {}
         self._ack_locks: dict[str, asyncio.Lock] = {}
-        # #347: per-engagement topic-STATE edit serialization (see
-        # update_topic_state) — orders every state repaint against
-        # terminal-transition edits so a closed topic can never be
-        # repainted active.
-        self._topic_state_locks: dict[str, asyncio.Lock] = {}
-        # R5 (v0.89.0): NON-PERSISTENT current-inbound target for the `react`
-        # framework tool. Maps engagement_id -> (chat_id, topic_id, message_id)
-        # of the LATEST operator message seen in that engagement's topic.
-        # Deliberately in-memory (NOT a registry field): it must NOT survive a
-        # restart — after a restart there is no known "latest" message to react
-        # to, and the react tool's non-live gate makes an empty map fail soft.
-        # Recorded SYNCHRONOUSLY in handle_update from the trusted
-        # msg.message_id; MONOTONIC (never regresses to an older id).
-        self._current_inbound: dict[str, tuple[int, int, int]] = {}
         # Jobs whose Cancel button started a cancellation that has not
         # finished: a second tap answers "already finishing" instead of
         # starting a second funnel run.
@@ -1069,59 +1039,6 @@ class TelegramChannel(Channel):
         self._job_ui_tasks: set[asyncio.Task] = set()
         # Default routing: forward to the existing PTB handler.
         self._route_to_assistant = self._route_to_assistant_default
-
-    # ------------------------------------------------------------------
-    # R5 (v0.89.0): current-inbound target + emoji reaction (react tool)
-    # ------------------------------------------------------------------
-
-    def _record_inbound_target(
-        self, engagement_id: str, chat_id: int, topic_id: int,
-        message_id: int | None,
-    ) -> None:
-        """Record the LATEST operator message for an engagement (react target).
-
-        MONOTONIC: replaces the stored target ONLY when ``message_id`` is
-        strictly greater than the stored one. ``handle_update`` runs
-        concurrently per Bot-API update; the per-topic lock serialises routing
-        but NOT Telegram delivery order, so an unconditional write could let a
-        delayed older update clobber a newer target. Telegram message ids are
-        monotonically increasing per chat, so the greatest id is the newest.
-        """
-        if not engagement_id or message_id is None:
-            return
-        prev = self._current_inbound.get(engagement_id)
-        if prev is not None and message_id <= prev[2]:
-            return
-        self._current_inbound[engagement_id] = (chat_id, topic_id, message_id)
-
-    def get_current_inbound(
-        self, engagement_id: str,
-    ) -> tuple[int, int, int] | None:
-        """Return ``(chat_id, topic_id, message_id)`` for the engagement's
-        latest operator message, or ``None`` (restart / no inbound / cleared)."""
-        return self._current_inbound.get(engagement_id)
-
-    def clear_inbound(self, engagement_id: str) -> None:
-        """Best-effort drop of a finished engagement's target (map hygiene).
-        A missed clear is harmless: react's non-live gate rejects it anyway."""
-        self._current_inbound.pop(engagement_id, None)
-
-    async def set_reaction(
-        self, chat_id: int, message_id: int, emoji: str,
-    ) -> None:
-        """Set a single emoji reaction on a message (PTB set_message_reaction).
-
-        Raises when the channel isn't started (RuntimeError) and lets
-        TelegramError propagate — the ``react`` tool classifies both."""
-        from telegram import ReactionTypeEmoji
-        bot = self.bot
-        if bot is None:
-            raise RuntimeError("Telegram channel not started; cannot set reaction")
-        await bot.set_message_reaction(
-            chat_id=chat_id,
-            message_id=message_id,
-            reaction=[ReactionTypeEmoji(emoji=emoji)],
-        )
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -1251,18 +1168,16 @@ class TelegramChannel(Channel):
         # version and timeouts the builder would have installed (PTB 22.7).
         builder.request(_SurrogateSafeRequest())
         app = builder.build()
-        # E-13: dispatch to handle_update (engagement-aware router) so
-        # that /cancel, /complete, /help in engagement topics are
-        # intercepted. handle_update internally calls _handle for
-        # non-engagement chats (assistant DM via _route_to_assistant).
+        # E-13: dispatch to handle_update, which routes by chat: the
+        # operator's direct chat to _handle (via _route_to_assistant), the
+        # log group to its read-only pointer.
         #
         # H5 (v0.52.0): block=False dispatches each update via
         # Application.create_task rather than awaiting it inline, so one
-        # long engagement turn cannot stall PTB's sequential update fetcher
+        # long turn cannot stall PTB's sequential update fetcher
         # (default max_concurrent_updates=1) — which in polling mode would
-        # otherwise freeze assistant DMs too. Same-topic ordering stays
-        # serialized by _engagement_handler_locks; PTB routes task
-        # exceptions to the registered error handler.
+        # otherwise freeze assistant DMs too. PTB routes task exceptions to
+        # the registered error handler.
         app.add_handler(
             MessageHandler(_text_filter(), self.handle_update, block=False)
         )
@@ -1370,23 +1285,26 @@ class TelegramChannel(Channel):
         self._typing_suspended = False
         self._typing_consecutive_failures = 0
 
-        # E-F (v0.30.0): engagement-feature setup MUST run after
-        # `self._app = app`. Pre-fix, casa_core.py invoked this once at
-        # boot — but if that first `_rebuild` raised on `set_webhook`
-        # (transient network blip), `self._app` was never set, the boot
-        # call to `setup_engagement_features()` saw `self.bot is None`,
-        # raised AttributeError on `None.get_me()`, and left
-        # `engagement_permission_ok=False` permanently. Every subsequent
-        # supervisor-driven `_rebuild` succeeded, but no path re-ran the
-        # engagement setup. Tying it to `_rebuild` makes it self-healing
-        # on every successful rebuild. Idempotent — line 647 resets the
-        # flag at the start of each call.
+        # E-F (v0.30.0): the agent log's check MUST run after
+        # `self._app = app` (it needs the bot). Tied to every successful
+        # rebuild, so a first rebuild that failed on a transient network
+        # blip cannot leave the log off for the life of the process.
+        await self.check_agent_logs()
+
+    async def check_agent_logs(self) -> bool:
+        """Turn the agent log on when the forum group is configured and the
+        bot may manage its topics, and start its writer; otherwise it stays
+        off. Never raises."""
+        logs = self._agent_logs
+        if logs is None or self._app is None:
+            return False
         try:
-            await self.setup_engagement_features()
-        except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "setup_engagement_features failed during _rebuild: %s", exc,
-            )
+            if await logs.check_enabled(self.bot, self.engagement_supergroup_id):
+                logs.start()
+                return True
+        except Exception as exc:  # noqa: BLE001 — the log is optional
+            logger.warning("agent log check failed: %s", exc)
+        return False
 
     # ------------------------------------------------------------------
     # Health probe + PTB error handler (spec 5.2 §4.2)
@@ -1756,7 +1674,12 @@ class TelegramChannel(Channel):
             # desk: the job is the one that is waiting on the operator.
             if await self._maybe_route_job_reply(update, chat_id):
                 return
-            if await self._maybe_route_desk_reply(update, chat_id):
+            # #1522: a reply to an ended job's post is the resident's turn,
+            # with the job's end in its note — never the desk, which cannot
+            # see the job.
+            ended = self._ended_job_quoted(
+                chat_id, update.effective_user, update.message.reply_to_message)
+            if ended is None and await self._maybe_route_desk_reply(update, chat_id):
                 return
         # /new reset — intercept before rate-limiting or bus dispatch (spec §4.2 #2, C2).
         text = (update.message.text or "").strip()
@@ -1903,9 +1826,9 @@ class TelegramChannel(Channel):
         # reserved.
         context = sanitize_external_context({
             "chat_id": chat_id,
-            # Bug 8 (v0.14.6): user_id is needed downstream to enforce
-            # originator-only /cancel and /complete on engagement topics.
-            # Stored as int when present (Telegram user ids are ints).
+            # Bug 8 (v0.14.6): the sender's user id, for the attribution
+            # and clearance decisions downstream. Stored as int when present
+            # (Telegram user ids are ints).
             "user_id": user.id if user else None,
             "user_name": user_name,
             "message_id": str(update.message.message_id),
@@ -1978,7 +1901,12 @@ class TelegramChannel(Channel):
             bot_id = getattr(bot, "id", None)
         except Exception:  # noqa: BLE001 — an uninitialised bot has no id yet
             bot_id = None
-        if record is not None:
+        ended_job = self._ended_job_quoted(chat_id, sender, quoted)
+        if ended_job is not None:
+            # #1522: ahead of the post map, which names a specialist-hosted
+            # job's plugin post as that specialist's
+            who = self._ended_job_phrase(ended_job)
+        elif record is not None:
             who = ("a message Casa posted on your behalf" if record.role == self.default_agent
                    else f"a message Casa posted for {specialist_desk.label_for(record.role)}")
         elif (getattr(quoted, "sender_chat", None) is not None
@@ -2026,13 +1954,7 @@ class TelegramChannel(Channel):
             return False
         quoted = update.message.reply_to_message
         rec = owner_of(getattr(quoted, "message_id", None))
-        origin = getattr(rec, "origin", None)
-        if not isinstance(origin, dict):
-            return False
-        owner = strict_positive_id(origin.get("user_id"))
-        job_chat = origin.get("chat_id")
-        if owner is None or owner != user.id or (
-                job_chat is not None and strict_positive_id(job_chat) != chat):
+        if not self._job_is_theirs(rec, user, chat):
             return False
         if self._rate_limiter is not None and self._rate_limiter.enabled:
             decision = self._rate_limiter.check(chat_id)
@@ -2050,6 +1972,54 @@ class TelegramChannel(Channel):
             user_name=getattr(user, "first_name", None) or "unknown",
             user_id=user.id)
         return True
+
+    @staticmethod
+    def _job_is_theirs(rec, user, chat: "int | None") -> bool:
+        """The job record was started by *user* in *chat*: its origin names
+        that user, and that chat when it names one."""
+        origin = getattr(rec, "origin", None)
+        if not isinstance(origin, dict) or user is None or chat is None:
+            return False
+        owner = strict_positive_id(origin.get("user_id"))
+        job_chat = origin.get("chat_id")
+        return owner is not None and owner == getattr(user, "id", None) and (
+            job_chat is None or strict_positive_id(job_chat) == chat)
+
+    def _ended_job_quoted(self, chat_id: Any, user: Any, quoted: Any):
+        """#1522: the ended job record whose direct chat post *quoted* is,
+        when the sender is the authenticated operator who started that job in
+        this chat — the live route's own checks; otherwise ``None``. Such a
+        reply is the resident's, with the job's end named, never the desk's:
+        the desk cannot see the job."""
+        reg = self._engagement_registry
+        owner_of = getattr(reg, "ended_job_post_owner", None) if reg is not None else None
+        chat = strict_positive_id(chat_id)
+        if (owner_of is None or quoted is None or chat is None
+                or not self._sender_is_operator(user)):
+            return None
+        rec = owner_of(chat, getattr(quoted, "message_id", None))
+        return rec if self._job_is_theirs(rec, user, chat) else None
+
+    def _ended_job_phrase(self, rec) -> str:
+        """#1522: who posted a quoted message of an ended job, and how and when
+        the job ended — every fact read from its record."""
+        if rec.role_or_type == self.default_agent:
+            whose = "your"
+        else:
+            whose = f"{self._job_agent_name(rec)}'s"
+        plugin_job = (getattr(rec, "origin", None) or {}).get("plugin_job")
+        plugin = plugin_job.get("plugin") if isinstance(plugin_job, dict) else None
+        via = f" (run by the plugin {plugin})" if isinstance(plugin, str) and plugin else ""
+        ended = f"which ended ({rec.status})"
+        completed_at = getattr(rec, "completed_at", None)
+        if isinstance(completed_at, (int, float)) and not isinstance(completed_at, bool):
+            try:
+                ended += " at " + datetime.fromtimestamp(
+                    completed_at, tz=resolve_tz()).strftime("%Y-%m-%d %H:%M")
+            except (OverflowError, OSError, ValueError):
+                pass
+        return (f"a message Casa posted for {whose} background job "
+                f"«{self._job_title(rec)}»{via}, {ended}")
 
     # ------------------------------------------------------------------
     # S4: the specialist desk — a swipe-reply on a specialist's post
@@ -2667,21 +2637,11 @@ class TelegramChannel(Channel):
         """Default behavior for non-engagement chats: feed into existing _handle."""
         await self._handle(update, None)
 
-    async def _post_engagement_notice(self, rec, text: str) -> None:
-        """Post a platform-origin notice (command replies, resume errors) into
-        an engagement topic. A record with no topic (a quiet scheduled run,
-        #1301) posts nothing."""
-        if getattr(rec, "topic_id", None) is None:
-            logger.debug("engagement %s has no topic; notice not posted",
-                         str(getattr(rec, "id", ""))[:8])
-            return
-        # v0.109.0 (G3): notices carry agent/platform markdown — render.
-        await self.send_to_topic_rich(rec.topic_id, text)
-
     async def handle_update(
         self, update, _context: ContextTypes.DEFAULT_TYPE | None = None
     ) -> None:
-        """PTB MessageHandler entry-point. Routes by chat_id to engagement or the assistant.
+        """PTB MessageHandler entry-point. Routes by chat_id: the operator's
+        direct chat to the assistant; the log group to its read-only pointer.
 
         The optional ``_context`` parameter exists so PTB's
         ``Application.process_update`` can call this callback with its
@@ -2694,8 +2654,6 @@ class TelegramChannel(Channel):
         if msg is None:
             return
         chat_id = msg.chat.id
-        text = (msg.text or "").strip()
-        thread_id = getattr(msg, "message_thread_id", None)
         user_id = msg.from_user.id if msg.from_user else None
 
         # 1) 1:1 chat with the assistant — existing behaviour
@@ -2703,160 +2661,19 @@ class TelegramChannel(Channel):
         if str(chat_id) == str(self.chat_id):
             return await self._route_to_assistant(update)
 
-        # 2) Engagement supergroup
+        # 2) The log group is read-only: a person's message there, in any
+        #    topic, gets one pointer to the direct chat and reaches nothing
+        #    else.
         if self.engagement_supergroup_id and chat_id == self.engagement_supergroup_id:
-            if not thread_id:
-                await self._maybe_redirect_main_feed(user_id)
-                return
-            if self._engagement_registry is None:
-                return  # not wired yet; ignore silently
-            # Bug 10 (v0.14.7): per-topic lock serialises updates landing
-            # in the same engagement so a /cancel can't finish tearing
-            # down the driver while a concurrent regular turn is still
-            # mid-routing. Different topics still run in parallel.
-            lock = self._engagement_handler_locks.setdefault(
-                thread_id, asyncio.Lock(),
-            )
-            async with lock:
-                rec = self._engagement_registry.by_topic_id(thread_id)
-                if rec is None or rec.status in ("completed", "cancelled", "error"):
-                    await self.send_to_topic(thread_id, "No active engagement in this topic.")
-                    return
-
-                # #324: engagement-topic turns consult the same inbound rate
-                # limit as the DM route (previously they spooled unthrottled).
-                # Keyed per TOPIC — one topic is one conversation; a
-                # supergroup-wide key would let one busy topic starve the
-                # others. Commands are EXEMPT (mirroring /new-before-limiter
-                # in the DM route): a /cancel must never be refused by
-                # throttling, or a runaway engagement could not be stopped.
-                # Checked before ANY side effect (clearance clamp, admission
-                # ticket) so a dropped message leaves no state behind.
-                if (self._rate_limiter is not None
-                        and self._rate_limiter.enabled
-                        and not text.startswith("/")):
-                    decision = self._rate_limiter.check(
-                        f"{chat_id}:{thread_id}")
-                    if not decision.allowed:
-                        if decision.should_notify:
-                            logger.info(
-                                "Telegram rate limit hit for engagement "
-                                "topic %s (chat_id=%s); replying with "
-                                "one-shot notice", thread_id, chat_id,
-                            )
-                            try:
-                                await self._post_engagement_notice(
-                                    rec, _RATE_LIMIT_REPLY)
-                            except Exception:  # noqa: BLE001 — advisory
-                                logger.warning(
-                                    "rate-limit notice to topic %s failed",
-                                    thread_id, exc_info=True,
-                                )
-                        return
-
-                # R5 (v0.89.0): record this operator message as the react
-                # target — SYNCHRONOUSLY, from the TRUSTED msg.message_id and
-                # the authoritative topic/chat identity, BEFORE the first await
-                # below. Monotonic (see _record_inbound_target): a delayed older
-                # update cannot clobber a newer target. Only ACTIVE records
-                # reach here (the status check above returned otherwise).
-                self._record_inbound_target(
-                    rec.id, chat_id, thread_id,
-                    getattr(msg, "message_id", None),
-                )
-
-                # #649: ONE mention-aware recognized-command classification,
-                # reused by the dispatch below — a recognized command is
-                # consumed by this handler itself and never reaches the job.
-                recognized = self._classify_engagement_command(text)
-                if recognized is not None:
-                    # M10 (v0.52.0): group command menus send "/cancel@botname"
-                    # — the mention-strip lives in the ONE classification
-                    # above (#649); a command addressed to a DIFFERENT bot
-                    # classified as None and falls through to delivery,
-                    # matching PTB's CommandHandler semantics.
-                    command = recognized
-                    # Bug 8 (v0.14.6): /cancel and /complete are originator-only.
-                    # /help stays open. A command NEVER reaches the job.
-                    if command in ("/cancel", "/complete"):
-                        owner_id = rec.origin.get("user_id")
-                        if (
-                            owner_id is not None
-                            and user_id is not None
-                            and int(owner_id) != int(user_id)
-                        ):
-                            await self._post_engagement_notice(
-                                rec,
-                                f"Only the engagement originator can {command}. "
-                                "Ask them, or start your own engagement.",
-                            )
-                            return
-                        if command == "/cancel":
-                            finalized = await self._finalize_cancel(
-                                rec, reason="user")
-                        else:
-                            finalized = await self._finalize_complete_user(rec)
-                        # #649: a falsy finalize whose record is STILL LIVE
-                        # means the strict terminal persist rolled back (or
-                        # the stale-guard lost) — the operator's command would
-                        # otherwise be silently ignored. (Already-terminal
-                        # records re-read as terminal and stay silent.)
-                        if not finalized:
-                            latest = (
-                                self._engagement_registry.get(rec.id)
-                                if self._engagement_registry is not None
-                                else None)
-                            if latest is not None and latest.status in (
-                                    "active", "idle"):
-                                try:
-                                    await self._post_engagement_notice(
-                                        rec,
-                                        f"{command} could not be "
-                                        "finalized — please retry.")
-                                except Exception:  # noqa: BLE001
-                                    logger.debug(
-                                        "command retry notice failed",
-                                        exc_info=True)
-                        return
-                    if command == "/help":
-                        # #1412: answered by Casa — the engaged CLI has no
-                        # /help of its own here.
-                        await self._post_engagement_notice(
-                            rec, self._engagement_help_text())
-                        return
-
-                # A message from someone who reads below the job's
-                # clearance (a household member in a job started at a higher
-                # one) gets one line and never reaches the job.
-                if self._steer_refused(rec, user_id):
-                    await self._post_engagement_notice(rec, _MEMBER_STEER_LINE)
-                    return
-
-                # Journal, admit, queue and return: the job's delivery worker
-                # writes the message into the running session. Nothing here
-                # waits on the session.
-                if await self._deliver_to_job(
-                        rec, text,
-                        tg_message_id=getattr(msg, "message_id", None)):
-                    # INV-MEM-044: what the operator typed here is their
-                    # message; memory keeps it when this specialist keeps
-                    # none (never the specialist's turn). Detached.
-                    from delegated_memory import capture_topic_message
-                    capture_topic_message(
-                        channel=self, engagement=rec, user_id=user_id,
-                        user_name=getattr(msg.from_user, "first_name", None)
-                        or "unknown",
-                        message_id=getattr(msg, "message_id", None),
-                        resident=self.default_agent, text=text)
-                return
+            await self._redirect_from_log_group(msg)
+            return
 
         # 3) Other chats. When telegram_chat_id is configured it is an
         #    allowlist (DOCS.md: "Telegram chat ID to restrict messages
         #    to. Leave empty to accept all chats.") — drop updates from
         #    any other chat. Empty chat_id = accept all (documented opt-in).
-        #    Route 1 (the configured DM) and route 2 (the engagement
-        #    supergroup + its topics) already returned above, so reaching
-        #    here means this chat is neither.
+        #    Route 1 (the configured DM) and route 2 (the log group) already
+        #    returned above, so reaching here means this chat is neither.
         if str(self.chat_id or "").strip():
             logger.info(
                 "Dropping Telegram update from unauthorized chat_id=%s "
@@ -2866,35 +2683,21 @@ class TelegramChannel(Channel):
             return
         return await self._route_to_assistant(update)
 
-    def _classify_engagement_command(self, text: str) -> str | None:
-        """#649: THE one mention-aware recognized-command classification,
-        computed once per update and reused by admission accounting AND the
-        command dispatch below — never re-derived (a second, slightly
-        different predicate is how a borrowed predicate answers a different
-        question). Returns '/cancel' | '/complete' | '/help' | None (#1412:
-        /help is Casa's, never the engaged CLI's); a command explicitly
-        addressed to a DIFFERENT bot is None (it falls through to delivery,
-        exactly as the historical dispatch treated it)."""
-        if not text.startswith("/"):
-            return None
-        token = text.split()[0].lower()
-        command, _, mention = token.partition("@")
-        if mention and self._bot_username and mention != self._bot_username:
-            return None  # addressed to another bot — not ours
-        return command if command in (
-            "/cancel", "/complete", "/help") else None
-
     async def _post_lost_inbound_notice(
             self, rec, notice_target: "_NoticeTarget | None") -> None:
         if notice_target is None:
-            await self._post_engagement_notice(rec, _LOST_INBOUND_NOTICE)
+            # Every operator message a job is handed names the direct chat
+            # message or card to reply to; one without is logged and
+            # discharged.
+            logger.warning("lost-message notice for %s has no direct chat "
+                           "message to reply to; not posted", rec.id[:8])
             return
         ended = False
         reg = self._engagement_registry
         if reg is not None:
             try:
-                status, _told = await asyncio.wait_for(
-                    reg.settled_terminal_state(rec.id),
+                status = await asyncio.wait_for(
+                    reg.settled_status(rec.id),
                     _SETTLED_STATUS_TIMEOUT_S)
                 ended = status in ("completed", "cancelled", "error")
             except Exception:  # noqa: BLE001 — the plain wording is still true
@@ -2923,8 +2726,8 @@ class TelegramChannel(Channel):
         """The lost-message notice for one journaled operator message an
         ended job never read — the journal's terminal branch calls it once
         per such entry. The entry's ``notice`` names the direct chat message
-        or tapped card to reply to; without one the notice goes to the
-        topic."""
+        or tapped card to reply to; an entry without one is logged and
+        discharged."""
         await self._tell_not_delivered(rec, _notice_target_from(entry.get("notice")))
 
     async def _send_dm_reply(self, chat_id: int, message_id: int,
@@ -2940,24 +2743,14 @@ class TelegramChannel(Channel):
 
     async def _post_turn_notice(self, rec, text: str,
                                 notice_target: "_NoticeTarget | None") -> None:
-        """A notice about one operator message: in the direct chat as a reply
-        to it, or, for a message written in the topic, in the topic."""
+        """A notice about one operator message, in the direct chat as a reply
+        to it. Without a message to reply to it is logged, not posted."""
         if notice_target is None:
-            await self._post_engagement_notice(rec, text)
-        else:
-            await self._send_dm_reply(notice_target.chat_id,
-                                      notice_target.message_id, text)
-
-    def _steer_refused(self, rec, user_id) -> bool:
-        """A message in a job's topic from someone who reads below the job's
-        clearance — a household member, not the operator — does not reach
-        the job: the job read at the clearance of the turn that started it,
-        and its session holds what it fetched there."""
-        from sensitivity import TIERS
-        current = (getattr(rec, "origin", None) or {}).get("_origin_clearance")
-        sender = self._origin_clearance_for_user_id(user_id)
-        return (current in TIERS and sender in TIERS
-                and TIERS.index(sender) < TIERS.index(current))
+            logger.warning("notice for %s has no direct chat message to "
+                           "reply to; not posted", rec.id[:8])
+            return
+        await self._send_dm_reply(notice_target.chat_id,
+                                  notice_target.message_id, text)
 
     async def _deliver_to_job(
         self, rec, text: str, *, tg_message_id: int | None = None,
@@ -2973,8 +2766,7 @@ class TelegramChannel(Channel):
         the message.
 
         A message the job did not accept draws one bounded "not delivered"
-        line, in reply to it (``notice_target``) or in the topic; the caller
-        posts nothing. ``inbound_reservation`` (a tapped continuation's
+        line, in reply to it (``notice_target``); the caller posts nothing. ``inbound_reservation`` (a tapped continuation's
         lease) is released in the same step the ticket is admitted, so the
         completion gate never sees both empty. ``courtesy``: while a memory
         wipe's restart is pending, the operator's own message is answered
@@ -3018,9 +2810,9 @@ class TelegramChannel(Channel):
         """The per-engagement lifecycle lock: the one every resume owner of a
         job's session takes — the driver's delivery worker, its recovery
         after a session death and the boot resume — so at most one client
-        per job is ever opened. Keyed by engagement id and separate from the
-        topic's handler lock: no Telegram handler holds it, so a slow resume
-        never delays the next message being accepted."""
+        per job is ever opened. Keyed by engagement id; no Telegram handler
+        holds it, so a slow resume never delays the next message being
+        accepted."""
         return self._engagement_lifecycle_locks.setdefault(rec.id, asyncio.Lock())
 
     def engagement_inbound_reservation(
@@ -3157,8 +2949,8 @@ class TelegramChannel(Channel):
             return False
         # INV-MEM-044: the operator's words to a specialist that keeps no
         # memory are their message, kept by memory. Detached.
-        from delegated_memory import capture_topic_message
-        capture_topic_message(
+        from delegated_memory import capture_job_reply
+        capture_job_reply(
             channel=self, engagement=rec,
             user_id=user_id if user_id is not None else self.operator_user_id(),
             user_name=user_name, message_id=int(message_id),
@@ -3582,13 +3374,10 @@ class TelegramChannel(Channel):
                     return
 
         if self.engagement_supergroup_id and chat_id == self.engagement_supergroup_id:
-            # Only a person's content draws the refusal. Topic lifecycle notices
-            # — many caused by Casa's own topic actions — and bot messages are
-            # not something anyone sent Casa, and a reply to each would be noise.
-            if not getattr(user, "is_bot", False) and _carries_content(msg):
-                await reply("I can't take files in an engagement — send it in "
-                            "our direct chat.",
-                            thread=getattr(msg, "message_thread_id", None))
+            # Only a person's content draws the pointer. Chat notices (a topic
+            # Casa created, a member joining) are not something anyone sent.
+            if _carries_content(msg):
+                await self._redirect_from_log_group(msg)
             return
         configured = str(self.chat_id or "").strip()
         if configured and str(chat_id) != configured:
@@ -3807,7 +3596,8 @@ class TelegramChannel(Channel):
         """S6 §2.1 step 1 — exactly one of: a swipe-reply on a retained specialist post for
         this operator (``("reply", record, role)``); a live 📎 arming in this chat for this
         operator (``("armed", None, role)``, consumed here — expired or not — before any
-        await); or ``None``: the file is the default agent's, today's path."""
+        await); or ``None``: the file is the default agent's, today's path — always for a
+        reply to an ended job's post (#1522)."""
         import result_broker
         chat = strict_positive_id(chat_id)
         if chat is None or user is None:
@@ -3817,6 +3607,10 @@ class TelegramChannel(Channel):
         # later file (INV-FILE-003; diff round 1, Terra)
         arming = self._armings.pop(chat, None)
         quoted = getattr(msg, "reply_to_message", None)
+        if self._ended_job_quoted(chat_id, user, quoted) is not None:
+            # #1522: a file sent as a reply to an ended job's post is the
+            # default agent's, never the desk's, which cannot see the job
+            return None
         if quoted is not None:
             record = result_broker.POST_MAP.get(chat, getattr(quoted, "message_id", None))
             if (record is not None and record.operator_id == getattr(user, "id", None)
@@ -3909,22 +3703,33 @@ class TelegramChannel(Channel):
             record=record, desk_role=role, continuation=False, reservation=reservation,
             file_name=name, file_path=stored_path)
 
-    async def _maybe_redirect_main_feed(self, user_id: int | None) -> None:
-        if user_id is None:
+    async def _redirect_from_log_group(self, msg: Any) -> None:
+        """The log group is read-only. A person who writes there (text, a
+        command or a file, in any topic or in General) is pointed to the
+        direct chat once per boot, in the thread they wrote in; nothing they
+        wrote reaches a job, memory or a model. Bots are ignored. The
+        pointer is recorded with the log's posts, so retention deletes it
+        with them."""
+        user = getattr(msg, "from_user", None)
+        user_id = getattr(user, "id", None)
+        if user_id is None or getattr(user, "is_bot", False):
             return
-        if user_id in self._main_feed_redirect_seen:
+        if user_id in self._log_group_redirect_seen:
             return
-        self._main_feed_redirect_seen.add(user_id)
+        self._log_group_redirect_seen.add(user_id)
+        kwargs: dict[str, Any] = {"chat_id": self.engagement_supergroup_id,
+                                  "text": _LOG_GROUP_REDIRECT}
+        thread_id = getattr(msg, "message_thread_id", None)
+        if isinstance(thread_id, int) and not isinstance(thread_id, bool):
+            kwargs["message_thread_id"] = thread_id
         try:
-            await self.bot.send_message(
-                chat_id=self.engagement_supergroup_id,
-                text=(
-                    "This supergroup is for engagement topics. Start one by "
-                    "talking to me in our DM."
-                ),
-            )
+            sent = await self.bot.send_message(**kwargs)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("main-feed redirect send failed: %s", exc)
+            logger.warning("log group redirect send failed: %s", exc)
+            return
+        if self._agent_logs is not None:
+            self._agent_logs.note_post(kwargs["chat_id"],
+                                       getattr(sent, "message_id", None))
 
     # ------------------------------------------------------------------
     # E-12 (v0.37.0) Task 20 / v0.75.0 (W5/Sol B3,B4): inline-keyboard
@@ -3963,14 +3768,13 @@ class TelegramChannel(Channel):
             await _safe_answer(cq, "expired")
             return
 
-        # v0.76.0 (W5b, r1-B2): resident_ask is DM-scoped (dm:/authz:), NOT
-        # topic-scoped — it is handled fully by its own single-owner branch
-        # BEFORE any engagement/topic lookup and returns.
+        # v0.76.0 (W5b, r1-B2): resident_ask is DM-scoped (dm:/authz:) — it
+        # is handled fully by its own single-owner branch and returns.
         if ns == "resident_ask":
             await self._on_resident_callback(cq, request_id, idx)
             return
         # S5 §4.1: a proposal keyboard is DM-scoped too — its own single-owner
-        # branch BEFORE any topic lookup; it owns every presence check.
+        # branch; it owns every presence check.
         if ns == "proposal":
             await self._on_proposal_callback(cq, request_id, idx)
             return
@@ -4072,46 +3876,8 @@ class TelegramChannel(Channel):
                 raise
 
     # ------------------------------------------------------------------
-    # Plain topic-message edit helper.
-    # ------------------------------------------------------------------
-
-    async def edit_topic_message(
-        self, topic_id: int | None, message_id: int, text: str,
-    ) -> bool:
-        """Plain (no parse_mode) text edit of a posted topic message.
-
-        "Message is not modified" (JC4 — an identical re-edit) is tolerated as
-        success, not an error, since it means the desired end state already
-        holds.
-        """
-        if not self.engagement_supergroup_id:
-            return False
-        try:
-            await self.bot.edit_message_text(
-                chat_id=self.engagement_supergroup_id,
-                message_id=message_id,
-                text=text,
-            )
-            return True
-        except BadRequest as exc:
-            if "not modified" in str(exc).lower():
-                return True
-            logger.warning(
-                "edit_topic_message failed (topic=%s message_id=%s): %s",
-                topic_id, message_id, exc,
-            )
-            return False
-        except Exception as exc:  # noqa: BLE001 — best-effort, never raise
-            logger.warning(
-                "edit_topic_message failed (topic=%s message_id=%s): %s",
-                topic_id, message_id, exc,
-            )
-            return False
-
-    # ------------------------------------------------------------------
     # v0.76.0 (W5b/resident_ask): DM keyboard composer + plain DM-message
-    # edit helper + button-continuation dispatch. Chat-addressed analogues
-    # of the v0.75.0 engagement-topic helpers (no topic thread) — the
+    # edit helper + button-continuation dispatch. Chat-addressed — the
     # resident-tap spine [A:§2, r1-B2/r3-B1].
     # ------------------------------------------------------------------
 
@@ -4211,8 +3977,7 @@ class TelegramChannel(Channel):
         """Plain (no parse_mode, no reply_markup) text edit of a posted DM
         message — resident_ask finish-hook target.
 
-        DM analogue of ``edit_topic_message`` (chat-addressed, no supergroup
-        guard). "Message is not modified" (an identical re-edit) is tolerated
+        Chat-addressed. "Message is not modified" (an identical re-edit) is tolerated
         as success, not an error, since the desired end state already holds.
 
         v0.109.0 (G1): the edited body renders rich (the settle-edit rewrites
@@ -4483,359 +4248,6 @@ class TelegramChannel(Channel):
         gate reconcile EXECUTION on transport readiness without blocking replay."""
         return self._ready_event
 
-    # ------------------------------------------------------------------
-    # Engagement topic helpers
-    # ------------------------------------------------------------------
-
-    ENGAGEMENT_COMMANDS = [
-        ("cancel", "Cancel this engagement and close the topic"),
-        ("complete", "Mark this engagement complete (no agent summary)"),
-    ]
-
-    def _engagement_help_text(self) -> str:
-        """#1412: the /help reply in an engagement topic — the commands this
-        topic actually handles, read from the registered menu list."""
-        lines = [f"/{c} — {d}" for c, d in self.ENGAGEMENT_COMMANDS]
-        return ("Commands in this topic:\n" + "\n".join(lines)
-                + "\nAnything else you write goes to the agent.")
-
-    async def setup_engagement_features(self) -> None:
-        """Idempotent startup wiring for forum-supergroup engagements.
-
-        - Verifies the bot has ``can_manage_topics`` in the supergroup.
-        - Registers slash commands scoped to that supergroup.
-        Safe to call when ``engagement_supergroup_id`` is unset — no-op.
-        """
-        self.engagement_permission_ok = False
-        if not self.engagement_supergroup_id:
-            return
-        # Bot-permissions check
-        try:
-            me = await self.bot.get_me()
-            # M10 (v0.52.0): cache the bot's own @username so handle_update
-            # can strip "@botname" off menu-selected group commands. The
-            # isinstance guard keeps MagicMock get_me() fakes in tests from
-            # poisoning the cache (leaves it None → strip unconditionally).
-            _u = getattr(me, "username", None)
-            if isinstance(_u, str) and _u:
-                self._bot_username = _u.lower()
-            member = await self.bot.get_chat_member(
-                chat_id=self.engagement_supergroup_id,
-                user_id=me.id,
-            )
-            if not getattr(member, "can_manage_topics", False):
-                logger.error(
-                    "Engagement supergroup %s: bot lacks can_manage_topics; "
-                    "engagements disabled",
-                    self.engagement_supergroup_id,
-                )
-                return
-            self.engagement_permission_ok = True
-            # v0.37.1 D-1: boot-time diagnostic for the topic-icon map.
-            # Non-fatal — logged only if any of our IDs rotated out of
-            # Telegram's curated set.
-            try:
-                from channels import topic_icons
-                await topic_icons.verify_against_telegram(self.bot)
-            except Exception as exc:  # noqa: BLE001 — diagnostic only
-                logger.info(
-                    "Engagement supergroup %s: topic_icons verifier "
-                    "failed (%s); proceeding", self.engagement_supergroup_id, exc,
-                )
-        except Exception as exc:
-            logger.error(
-                "Engagement supergroup %s: bot-permissions check failed: %s",
-                self.engagement_supergroup_id, exc,
-            )
-            return
-
-        # setMyCommands — scoped to the supergroup chat
-        from telegram import BotCommand, BotCommandScopeChat  # type: ignore
-        commands = [BotCommand(c, d) for c, d in self.ENGAGEMENT_COMMANDS]
-        scope = BotCommandScopeChat(chat_id=self.engagement_supergroup_id)
-        await self.bot.set_my_commands(commands, scope=scope)
-        logger.info(
-            "Engagement supergroup %s: commands registered (%s)",
-            self.engagement_supergroup_id,
-            [c for c, _ in self.ENGAGEMENT_COMMANDS],
-        )
-
-    async def open_engagement_topic(
-        self, *, name: str, role: str = "",
-    ) -> int:
-        """Create a Telegram forum topic in the engagement supergroup.
-
-        v0.37.1 D-1: ``role`` resolves to a numeric ``custom_emoji_id``
-        via ``channels.topic_icons.icon_id_for_role`` and is sent as
-        ``icon_custom_emoji_id``. Unknown roles fall back to the
-        default (🤖) icon — the helper never returns None.
-
-        Returns the ``message_thread_id``. Raises ``RuntimeError`` if
-        the supergroup is not configured.
-        """
-        if not self.engagement_supergroup_id:
-            raise RuntimeError("engagement supergroup not configured")
-        from channels.topic_icons import icon_id_for_role
-        topic = await self.bot.create_forum_topic(
-            chat_id=self.engagement_supergroup_id,
-            name=name,
-            icon_custom_emoji_id=icon_id_for_role(role),
-        )
-        return topic.message_thread_id
-
-    async def send_to_topic(
-        self, thread_id: int, text: str, **kwargs,
-    ) -> int:
-        """Post a message into the given forum-supergroup topic.
-
-        Returns the Telegram ``message_id`` of the posted message.
-        ``kwargs`` is forwarded to ``bot.send_message`` (used by Phase 2+
-        callers passing ``reply_markup`` for inline keyboards, etc.).
-        """
-        _require_topic(thread_id)
-        if not self.engagement_supergroup_id:
-            raise RuntimeError("engagement supergroup not configured")
-        msg = await self.bot.send_message(
-            chat_id=self.engagement_supergroup_id,
-            text=text,
-            message_thread_id=thread_id,
-            **kwargs,
-        )
-        return msg.message_id
-
-    async def send_to_topic_rich(
-        self, thread_id: int, text: str, **kwargs,
-    ) -> int:
-        """R2a (v0.89.0): post agent output into a topic WITH rich text.
-
-        Platform notices and the block-mode reply finalize
-        (``send_response_to_topic``) route through here so markdown
-        (``**bold**``, `` `code` ``, fenced-pre) renders as ``MessageEntity``
-        spans instead of leaking literal markers. ``render()`` recomputes from
-        the COMPLETE current string on every call.
-
-        Plain (no markup / over limits ⇒ ``entities is None``) → send
-        ``plain_text`` through the plain ``send_to_topic`` (#1330: escapes
-        consumed, a text over the limits as authored). On an entity
-        ``BadRequest`` the ORIGINAL text is resent plain once (fail-literal); a
-        duplicate is harmless for narration, which is not under the cancellation
-        gate. ``kwargs`` (e.g. ``reply_parameters``) forward to both paths.
-
-        Accepted, documented residuals (render-every-edit, NOT fixed — YAGNI):
-        a throttled INTERMEDIATE edit can catch a half-open span (``**bold``
-        before the closing ``**`` streams in) and briefly show literal markers;
-        it self-heals at the next edit. A rollover split can bisect a span
-        across messages and each half degrades to literal independently —
-        degraded, never corrupt.
-        """
-        display, entities = render(text)
-        if entities is None:
-            return await self.send_to_topic(thread_id, _plain(text), **kwargs)
-        _require_topic(thread_id)
-        if not self.engagement_supergroup_id:
-            raise RuntimeError("engagement supergroup not configured")
-        try:
-            msg = await self.bot.send_message(
-                chat_id=self.engagement_supergroup_id, text=display,
-                message_thread_id=thread_id, entities=entities, **kwargs,
-            )
-        except BadRequest as exc:
-            logger.warning("topic narration rich-text fell back to plain: %s", exc)
-            msg = await self.bot.send_message(
-                chat_id=self.engagement_supergroup_id, text=text,
-                message_thread_id=thread_id, **kwargs,
-            )
-        return msg.message_id
-
-    async def update_topic_state(
-        self, *, engagement_id: str, new_state: str,
-    ) -> None:
-        """E-12 (v0.37.0) Task 23: re-render the topic title with ``new_state``.
-
-        Reuses the existing role_or_type + ``task`` stored on the
-        ``EngagementRecord``. Idempotent — when ``new_state`` is identical to
-        the persisted ``current_state_emoji`` it's a no-op. Unknown
-        ``new_state`` values are also no-ops (defensive).
-
-        #529 sentinel scheme: the persisted emoji is made UNCERTAIN (``""``,
-        strict write-ahead) BEFORE the wire await and settled to the real
-        value only after it. A cancellation landing anywhere between the two
-        persists therefore leaves a value the no-op guard above can never
-        match — the next serialized paint (any state, including the one that
-        was persisted before the cancel) goes through and re-converges the
-        wire. The pre-#529 order (persist only after a successful edit) left
-        wire=new/persisted=old on a cancel in the window, and the guard then
-        swallowed every paint requesting the persisted state: a PERMANENT
-        divergence. An identical-title ``"not modified"`` rejection counts as
-        wire success (the desired title already holds — the landed-but-
-        unpersisted case) so the sentinel converges instead of looping.
-        """
-        from channels.state_emoji import (
-            STATE_EMOJI, compose_topic_title, concise_task,
-        )
-        if self._engagement_registry is None:
-            return
-        # #347 (Sol+Terra r4): ONE per-engagement lock totally orders every
-        # state edit — all writers (the active repaints AND the
-        # terminal-transition paths) go through this
-        # method, so under the lock the record re-read below is authoritative
-        # for the whole check→wire-edit→persist span. A terminal transition
-        # marks the registry BEFORE calling here, so any ``active`` repaint
-        # ordered after it observes the terminal status and refuses; one
-        # ordered before it is simply overwritten by the terminal edit that
-        # queued behind the lock. This closes the check-to-edit interleaving
-        # a caller-side status gate cannot (the wire call was already in
-        # flight).
-        lock = self._topic_state_locks.setdefault(engagement_id, asyncio.Lock())
-        async with lock:
-            rec = self._engagement_registry.get(engagement_id)
-            if rec is None or rec.topic_id is None:
-                return
-            # Terra r5: EVERY non-terminal paint (active 🟢 / awaiting 🟡) is
-            # refused over a terminal record — a delayed authenticated
-            # update_state request must not repaint a closed topic; terminal
-            # paints (completed/failed/cancelled) remain allowed.
-            if (
-                getattr(rec, "status", None)
-                in ("completed", "cancelled", "error")
-                and new_state not in ("completed", "failed", "cancelled")
-            ):
-                return  # never repaint a terminal engagement live
-            new_emoji = STATE_EMOJI.get(new_state)
-            if new_emoji is None or new_emoji == rec.current_state_emoji:
-                return
-
-            # W-R6 (v0.81.0): read the persisted short topic title
-            # (engager-supplied or Casa-derived at ingest); legacy rows with
-            # no persisted title fall back to the concise_task label so old
-            # tombstones never crash.
-            short_title = (
-                getattr(rec, "topic_title", "") or concise_task(rec.task or "")
-            )
-            title = compose_topic_title(
-                state=new_state,
-                short_task=short_title,
-            )
-            if not self.engagement_supergroup_id:
-                return
-            # #529 step 1: durable uncertainty BEFORE the wire. Strict — a
-            # swallowed write failure would proceed to the wire with a record
-            # a restart reloads as the OLD emoji (the original stuck state).
-            # On failure the registry rolled the in-memory field back; never
-            # touch the wire with an unpersistable record.
-            try:
-                await self._engagement_registry.set_channel_state(
-                    engagement_id, current_state_emoji="", strict=True,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "U3 update_topic_state sentinel persist failed "
-                    "(engagement=%s state=%s): %s — skipping wire edit",
-                    engagement_id[:8], new_state, exc,
-                )
-                return
-            try:
-                await self.bot.edit_forum_topic(
-                    chat_id=self.engagement_supergroup_id,
-                    message_thread_id=rec.topic_id,
-                    name=title,
-                )
-            except asyncio.CancelledError:
-                raise  # wire state unknown; the sentinel stays (self-heals)
-            except Exception as exc:  # noqa: BLE001
-                if "not modified" not in str(exc).lower():
-                    logger.warning(
-                        "U3 update_topic_state edit_forum_topic failed "
-                        "(engagement=%s state=%s): %s",
-                        engagement_id[:8], new_state, exc,
-                    )
-                    return  # sentinel stays; the next paint retries
-                # "not modified": the wire already carries this title —
-                # treat as success and settle the real emoji below.
-            # #529 step 2: settle the real value. Strict so a failed write
-            # rolls the in-memory field back to the sentinel (memory=new with
-            # disk="" would re-arm the no-op guard against the repair paint).
-            try:
-                await self._engagement_registry.set_channel_state(
-                    engagement_id, current_state_emoji=new_emoji, strict=True,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "U3 set_channel_state(%s, %s) failed: %s — sentinel "
-                    "kept; next paint re-converges",
-                    engagement_id[:8], new_emoji, exc,
-                )
-
-    async def close_topic(self, thread_id: int) -> None:
-        """Close a forum topic (v0.37.1 D-1 rename + simplification).
-
-        Previously named ``close_topic_with_check`` and flipped the
-        bubble icon to ``"✅"`` on close. That was a literal-char value
-        rather than the required numeric ``custom_emoji_id``, so it
-        silently failed and also stripped the leading char from the
-        topic name. v0.37.1: bubble stays as the role icon for the
-        engagement's whole lifecycle; state lives in the title (set
-        by ``update_topic_state`` upstream). Body simplifies to a
-        plain ``close_forum_topic``.
-        """
-        _require_topic(thread_id)
-        if not self.engagement_supergroup_id:
-            raise RuntimeError("engagement supergroup not configured")
-        try:
-            await self.bot.close_forum_topic(
-                chat_id=self.engagement_supergroup_id,
-                message_thread_id=thread_id,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "close_forum_topic failed for thread=%s: %s",
-                thread_id, exc,
-            )
-
-    async def delete_topic(self, thread_id: int) -> None:
-        """Delete a forum topic and all its messages (v0.65.0 topic
-        retention, [AR-3]/[AR-9]).
-
-        Deliberately UNLIKE :meth:`close_topic`, this PROPAGATES every
-        Telegram exception to the caller — it mirrors close_topic ONLY in
-        the RuntimeError-when-unconfigured guard, NOT in its
-        swallow-everything except. The topic-ledger sweep classifies the
-        real error (not_found / permission / transient / unknown) to
-        decide whether an entry is resolved or retained; a swallow here
-        would make every failure look like success and silently drop
-        ledger entries even under permission denial [AR-3].
-
-        Refuses ``thread_id in (None, 0, 1)`` with a ValueError — 1 is
-        the supergroup's General topic and None/0 mean "no topic"; an
-        accidental call must never touch General [AR-9]. Requires the
-        ``can_delete_messages`` admin right; without it Telegram raises
-        BadRequest, which the sweep records as a permission failure and
-        keeps the entry for retry.
-        """
-        if not self.engagement_supergroup_id:
-            raise RuntimeError("engagement supergroup not configured")
-        if thread_id in (None, 0, 1):
-            raise ValueError(
-                f"refusing to delete General/invalid topic "
-                f"(thread_id={thread_id})"
-            )
-        await self.bot.delete_forum_topic(
-            chat_id=self.engagement_supergroup_id,
-            message_thread_id=thread_id,
-        )
-
-    def create_topic_stream(self, topic_id: int) -> "TopicStreamHandle":
-        """Build a per-turn streaming handle bound to this topic.
-
-        Used by InCasaDriver to emit AssistantMessage chunks
-        progressively rather than buffering the whole turn (Bug 1).
-        """
-        return TopicStreamHandle(self, topic_id)
-
     @property
     def is_ready(self) -> bool:
         """True once the PTB application is started and sends can reach
@@ -4910,7 +4322,7 @@ class TelegramChannel(Channel):
     # ------------------------------------------------------------------
     # Rich-text response delivery (v0.70.0). ONLY reached via the
     # response-provenant methods below (agent.py gates on error_kind is None);
-    # send()/send_to_topic()/finalize_stream() stay plain for tools, bus
+    # send()/finalize_stream() stay plain for tools, bus
     # routing, notices, permission prompts, and error text.
     # ------------------------------------------------------------------
 
@@ -4927,9 +4339,7 @@ class TelegramChannel(Channel):
         inline form would cut a url across two messages and lose it again.
 
         Only the MULTI-PAGE senders use this. Every single-page path keeps
-        retrying with its authored text, and widening the reconstruction to the
-        single-page topic path would make a failed tail send classify a visible
-        turn as NOT_DELIVERED (refutation round, cluster U attempt 2).
+        retrying with its authored text.
         """
         text = plain_with_link_targets(display, entities)
         if utf16_len(text) <= _TG_MAX_LENGTH:
@@ -5561,60 +4971,6 @@ class TelegramChannel(Channel):
                 logger.warning("Final stream overflow send failed: %s", exc)
         return outcome
 
-    async def send_response_to_topic(
-        self, thread_id: int, text: str, **kwargs,
-    ) -> int:
-        """Post an agent response into an engagement topic with rich text.
-
-        Used by TopicStreamHandle's finalize and the completion post. v2 (2026-07-19, Sol+Terra D3): THIS is the paginating rich
-        helper — an oversized response becomes several rendered messages via
-        ``render_paged()`` (each ≤4096 UTF-16 units and ≤100 entities), so a
-        long reply never ships raw markdown (the RC3 leak) and never 400s on
-        length. ``send_to_topic_rich`` stays the ONE-message primitive and is
-        only used here for the single-page case.
-
-        Single page keeps the v0.89.0 contract (no entities → ``plain_text``,
-        #1330; BadRequest → raw resend). Multi-page: every page sends its DISPLAY
-        slice (markers already consumed — raw source offsets no longer
-        correspond), falling back to the same display plain on an entity
-        BadRequest; ``kwargs`` (e.g. ``reply_parameters``) attach to the FIRST
-        page only. Returns the LAST page's ``message_id`` (the bottom-most
-        message — the correct reply anchor for subsequent traffic)."""
-        pages = render_paged(text)
-        if len(pages) == 1:
-            return await self.send_to_topic_rich(thread_id, text, **kwargs)
-        _require_topic(thread_id)
-        if not self.engagement_supergroup_id:
-            raise RuntimeError("engagement supergroup not configured")
-        last_mid: int | None = None
-        page_kwargs = kwargs
-        for display, entities in pages:
-            if entities is None:
-                last_mid = await self.send_to_topic(
-                    thread_id, display, **page_kwargs)
-            else:
-                try:
-                    msg = await self.bot.send_message(
-                        chat_id=self.engagement_supergroup_id, text=display,
-                        message_thread_id=thread_id, entities=entities,
-                        **page_kwargs,
-                    )
-                    last_mid = msg.message_id
-                except BadRequest as exc:
-                    logger.warning(
-                        "topic response page fell back to plain: %s", exc)
-                    # #831: the plain retry carries this page's link
-                    # destinations; kwargs stay on the first message only.
-                    chunk_kwargs = page_kwargs
-                    for chunk in self._plain_fallback_chunks(
-                            display, entities):
-                        last_mid = await self.send_to_topic(
-                            thread_id, chunk, **chunk_kwargs)
-                        chunk_kwargs = {}
-            page_kwargs = {}
-        assert last_mid is not None  # pages is never empty
-        return last_mid
-
     async def turn_finished(self, context: dict[str, Any]) -> None:
         """L7 (v0.52.0): teardown for turns that end WITHOUT delivery.
 
@@ -5816,8 +5172,8 @@ def _established_unsent(exc: TelegramError) -> bool:
     as a refusal does, even though PTB surfaces the first and third as
     ``TimedOut`` — which is otherwise ambiguous (a read/write timeout can lose
     the acknowledgement of a request Telegram accepted, and stays ``UNKNOWN``).
-    Scoped to the topic stream on purpose: the DM paths' shared
-    ``_edit_failure_outcome`` taxonomy is not widened by this cluster.
+    Not part of ``_edit_failure_outcome``'s taxonomy, which the DM paths share;
+    ``tools._proven_unsent`` reads it beside ``_SERVER_REFUSALS``.
     """
     return isinstance(
         exc.__cause__,
@@ -5853,242 +5209,6 @@ def _edit_failure_outcome(exc: TelegramError) -> DeliveryOutcome:
 
 
 _TG_MAX_LENGTH = 4096
-
-
-def _require_topic(thread_id: Any) -> None:
-    """#1301: a record with no topic (a quiet scheduled run) must never post.
-    With ``message_thread_id=None`` the Bot API posts into the supergroup's
-    General topic, so a topic send without a topic refuses instead."""
-    if thread_id is None:
-        raise ValueError("engagement has no topic")
-
-
-class TopicStreamHandle:
-    """Per-engagement-topic streaming primitive used by InCasaDriver.
-
-    Mirrors the (chat_id-keyed) on_token / finalize_stream pattern that
-    the assistant uses on direct DMs (lines 739-859) but parameterised by
-    topic_id and bound to the engagement supergroup chat. State
-    (message_id, last_edit) lives for the duration of one SDK turn —
-    each turn opens a fresh Telegram message in the topic.
-    """
-
-    def __init__(self, channel: "TelegramChannel", topic_id: int) -> None:
-        self._channel = channel
-        self._topic_id = topic_id
-        self._message_id: int | None = None
-        self._last_edit: float = 0.0
-        # #665 (diff r1, Sol+Terra): a first send that failed AMBIGUOUSLY
-        # (non-refusal — e.g. TimedOut, where Telegram may have accepted the
-        # message with only the acknowledgement lost) leaves ``_message_id``
-        # unset, but the text may be on the operator's screen. A later refusal
-        # therefore cannot establish that the turn was wholly invisible, so
-        # this latch downgrades every would-be NOT_DELIVERED to UNKNOWN.
-        self._maybe_delivered: bool = False
-
-    async def emit(self, accumulated_text: str) -> None:
-        """Throttled cumulative-text emit. First call sends a new
-        message in the topic; subsequent calls edit-in-place,
-        throttled at _STREAM_THROTTLE seconds."""
-        bot = (
-            getattr(self._channel._app, "bot", None)
-            if self._channel._app else None
-        )
-        if bot is None:
-            return
-
-        now = time.monotonic()
-
-        if self._message_id is None:
-            # #305 (Sol r1): first-send UTF-16 guard, sibling of the DM
-            # streaming closure — finalize() splits/paginate what emit skips.
-            if utf16_len(accumulated_text) > _TG_MAX_LENGTH:
-                return
-            try:
-                result = await bot.send_message(
-                    chat_id=self._channel.engagement_supergroup_id,
-                    message_thread_id=self._topic_id,
-                    text=accumulated_text,
-                )
-                self._message_id = result.message_id
-                self._last_edit = now
-            except TelegramError as exc:
-                if (not isinstance(exc, _SERVER_REFUSALS)
-                        and not _established_unsent(exc)):
-                    self._maybe_delivered = True
-                logger.warning("Stream send failed: %s", exc)
-            return
-
-        if now - self._last_edit < _STREAM_THROTTLE:
-            return
-
-        # #305: UTF-16 units, Telegram's unit.
-        if utf16_len(accumulated_text) > _TG_MAX_LENGTH:
-            return
-
-        try:
-            await bot.edit_message_text(
-                chat_id=self._channel.engagement_supergroup_id,
-                message_id=self._message_id,
-                text=accumulated_text,
-            )
-            self._last_edit = now
-        except TelegramError as exc:
-            if "not modified" not in str(exc).lower():
-                logger.warning("Stream edit failed: %s", exc)
-
-    async def finalize(self, full_text: str) -> DeliveryOutcome:
-        """Final edit (or send) once the SDK loop has drained. Handles
-        overflow by editing the first chunk and sending subsequent
-        chunks as fresh topic messages.
-
-        #665: returns a :class:`DeliveryOutcome` so the driver can see a
-        wholly undelivered streamed turn. The outcome keys on the FIRST
-        unit of output (INV-TG-006): a prior successful emit latches
-        ``DELIVERED`` whatever the final edit and the overflow pages then
-        do — a later failure cannot un-show the head, and their failures
-        keep today's WARNs. The DM "final edit decides" rule does NOT
-        apply here because no one-shot notice rides this path; the
-        consumer's question is "was the turn wholly invisible".
-        """
-        bot = (
-            getattr(self._channel._app, "bot", None)
-            if self._channel._app else None
-        )
-        if bot is None:
-            # No API call possible. A landed emit still means the head is
-            # on the operator's screen — NOT_DELIVERED is a CLAIM that
-            # nothing reached them, and here it would be false. An
-            # ambiguously-failed emit weakens the claim the same way.
-            if self._message_id is not None:
-                return DeliveryOutcome.DELIVERED
-            return (DeliveryOutcome.UNKNOWN if self._maybe_delivered
-                    else DeliveryOutcome.NOT_DELIVERED)
-
-        if self._message_id is None and len(render_paged(full_text)) > 1:
-            # No prior emit and several pages (an executor's closing text is
-            # never streamed, so it always arrives here): each page is sent
-            # on its own, as the overflow pages below are, so one failed page
-            # never drops the pages after it — where a question usually is.
-            landed = False
-            for display, entities in render_paged(full_text):
-                landed = await self._send_page(
-                    bot, display, entities) or landed
-            # A page that landed is on screen; with none landed the raises
-            # cannot say whether one was accepted (#665, declared residual).
-            return (DeliveryOutcome.DELIVERED if landed
-                    else DeliveryOutcome.UNKNOWN)
-
-        if self._message_id is None:
-            # No prior emit, one page: a fresh rendered message.
-            try:
-                await self._channel.send_response_to_topic(
-                    self._topic_id, full_text,
-                )
-            except TelegramError as exc:
-                logger.warning("Stream finalize rich send failed: %s", exc)
-                if len(render_paged(full_text)) == 1:
-                    # A single rendered page performs only its head send, so
-                    # the raise is necessarily the head's — but a prior
-                    # ambiguously-failed emit may already be on screen, and
-                    # then a refusal here cannot claim the turn invisible.
-                    if self._maybe_delivered:
-                        return DeliveryOutcome.UNKNOWN
-                    if _established_unsent(exc):
-                        return DeliveryOutcome.NOT_DELIVERED
-                    return _edit_failure_outcome(exc)
-                # Multi-page: the raise cannot say whether page 1 landed, and
-                # claiming NOT_DELIVERED for a partially-visible turn would
-                # hand a false kill to its owner (#665, declared residual).
-                return DeliveryOutcome.UNKNOWN
-            return DeliveryOutcome.DELIVERED
-
-        # v2 (RC3): page 1 rich-edits the streamed message; the rest are rich
-        # sends. Entity BadRequest degrades to that page's DISPLAY plain (the
-        # single-page case keeps the v0.89.0 raw-fallback contract).
-        pages = render_paged(full_text)
-        display0, entities0 = pages[0]
-        # #831: a rejected multi-page page-1 edit carries its link destinations.
-        chunks0 = ([full_text] if len(pages) == 1
-                   else self._channel._plain_fallback_chunks(
-                       display0, entities0))
-        fallback0 = chunks0[0]
-        tail0: tuple[str, ...] | list[str] = ()
-        try:
-            if entities0 is not None:
-                try:
-                    await bot.edit_message_text(
-                        chat_id=self._channel.engagement_supergroup_id,
-                        message_id=self._message_id,
-                        text=display0, entities=entities0,
-                    )
-                except BadRequest:
-                    tail0 = chunks0[1:]
-                    await bot.edit_message_text(
-                        chat_id=self._channel.engagement_supergroup_id,
-                        message_id=self._message_id,
-                        text=fallback0,
-                    )
-            else:
-                # #1330: a single page with no entities shows its escapes
-                # consumed; a later page's display already has them consumed.
-                await bot.edit_message_text(
-                    chat_id=self._channel.engagement_supergroup_id,
-                    message_id=self._message_id,
-                    text=_plain(full_text) if len(pages) == 1 else fallback0,
-                )
-        except TelegramError as exc:
-            if "not modified" not in str(exc).lower():
-                logger.warning("Stream finalize edit failed: %s", exc)
-        # An edit cannot be split, so page 1's overflow destinations follow as
-        # ordinary messages, under the same log-and-continue policy.
-        for chunk in tail0:
-            try:
-                await bot.send_message(
-                    chat_id=self._channel.engagement_supergroup_id,
-                    message_thread_id=self._topic_id,
-                    text=chunk,
-                )
-            except TelegramError as exc:
-                logger.warning(
-                    "Stream finalize link-target send failed: %s", exc,
-                )
-        for display, entities in pages[1:]:
-            await self._send_page(bot, display, entities)
-        # An emit landed (this branch requires ``_message_id``), so the head
-        # of the turn's output reached the topic: DELIVERED by the latch,
-        # whatever the final edit and the overflow pages did above.
-        return DeliveryOutcome.DELIVERED
-
-
-    async def _send_page(self, bot: Any, display: str, entities: Any) -> bool:
-        """Send one rendered page as its own topic message; an entity
-        BadRequest falls back to the page's plain chunks. A failure is logged
-        and returned as False, never raised, so the next page is still sent."""
-        chat_id = self._channel.engagement_supergroup_id
-        try:
-            if entities is not None:
-                try:
-                    await bot.send_message(
-                        chat_id=chat_id, message_thread_id=self._topic_id,
-                        text=display, entities=entities,
-                    )
-                except BadRequest:
-                    for chunk in self._channel._plain_fallback_chunks(
-                            display, entities):
-                        await bot.send_message(
-                            chat_id=chat_id, message_thread_id=self._topic_id,
-                            text=chunk,
-                        )
-            else:
-                await bot.send_message(
-                    chat_id=chat_id, message_thread_id=self._topic_id,
-                    text=display,
-                )
-        except TelegramError as exc:
-            logger.warning("Stream finalize page send failed: %s", exc)
-            return False
-        return True
 
 
 def _split_message(text: str) -> list[str]:

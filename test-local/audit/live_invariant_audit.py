@@ -13,7 +13,8 @@ Invariants:
   C schema-valid   — validate_config_repo(/config) returns no errors
                      (env-substituted, so model placeholders resolve).
   D sessions.json  — parses; no 'active' entry missing sdk_session_id.
-  E engagements    — engagements.json parses; no active/idle entry missing topic_id.
+  E engagements    — engagements.json parses; no active/idle entry whose origin
+                     names no direct chat (a job's posts go there).
 """
 from __future__ import annotations
 
@@ -162,8 +163,12 @@ def check_engagements():
     if not isinstance(recs, list) or any(not isinstance(r, dict) for r in recs):
         _fail("E/engagements", "records is not a list of objects")
         return
+    def _chat(r):
+        origin = r.get("origin")
+        return origin.get("chat_id") if isinstance(origin, dict) else None
+
     bad = [str(r.get("id", "?"))[:8] for r in recs
-           if r.get("status") in ("active", "idle") and not r.get("topic_id")]
+           if r.get("status") in ("active", "idle") and not _chat(r)]
     # D-4 (v0.69.0): the daily sweep auto-reaps active/idle records past
     # ENGAGEMENT_REAP_DAYS (default 7). Anything older than TTL + 2d grace
     # means the reap is not running — the block-M stale-engagement gap.
@@ -185,7 +190,7 @@ def check_engagements():
                  if r.get("status") in ("active", "idle")
                  and _last_turn(r) < cutoff]
     if bad:
-        _fail("E/engagements", f"active/idle without topic_id: {bad}")
+        _fail("E/engagements", f"active/idle without a direct chat: {bad}")
     elif stale:
         _fail("E/engagements",
               f"active/idle older than reap TTL+2d — reap not running? {stale}")

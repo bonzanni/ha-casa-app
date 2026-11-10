@@ -58,12 +58,9 @@ configuration:
     description: >-
       Expose a web terminal in the ingress panel for shell access to the container.
   telegram_engagement_supergroup_id:
-    name: "Telegram engagement supergroup chat ID"
-    description: |
-      Chat ID of the dedicated Telegram forum supergroup used to host
-      engagements (specialists' background jobs). Must be a negative integer
-      (Telegram supergroup chat IDs are always negative). Leave at 0
-      to disable engagement features; Casa still boots.
+    name: "Agent log group chat ID"
+    description: >-
+      Optional forum group where each agent keeps a read-only log. 0 = no logs.
   telegram_bot_api_base:
     name: "Telegram Bot API base URL"
     description: "Override the Telegram Bot API endpoint (e.g. a self-hosted Bot API server). Leave blank for api.telegram.org."
@@ -77,8 +74,7 @@ configuration:
     name: Engagement Auto-Close Days
     description: >-
       Engagements with no activity for this many days are automatically
-      cancelled and their Telegram topic closed (daily sweep). Set 0 to
-      disable. Defaults to 7.
+      cancelled (daily sweep). Set 0 to disable. Defaults to 7.
   log_level:
     name: Log Level
     description: >-

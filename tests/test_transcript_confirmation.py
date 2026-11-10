@@ -331,19 +331,11 @@ async def test_ineligible_turns_register_nothing(home):
 
 # --- the engagement turn -----------------------------------------------------------
 
-class _TopicStream:
-    async def emit(self, text):
-        return None
-
-    async def finalize(self, text):
-        return None
-
-
 def _engagement_record(kind="specialist", role="finance", sid=None):
     from engagement_registry import EngagementRecord
     return EngagementRecord(
         id=uuid.uuid4().hex, kind=kind, role_or_type=role,
-        driver="in_casa", status="active", topic_id=99, started_at=0.0,
+        driver="in_casa", status="active", started_at=0.0,
         last_user_turn_ts=0.0, completed_at=None,
         sdk_session_id=sid, task="t", origin=dict(ORIGIN))
 
@@ -362,8 +354,7 @@ async def _engagement_turn(kind="specialist", sid=None, script=None):
                 yield m
 
     ended: list = []
-    drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream(),
-                       on_turn_end=lambda r, result, api_error: ended.append(r))
+    drv = InCasaDriver(on_turn_end=lambda r, result, api_error: ended.append(r))
     rec = _engagement_record(kind=kind)
     attach_session(drv, rec, _Client())
     try:
@@ -491,8 +482,7 @@ async def test_every_run_kind_registers_before_its_first_capture(
     from engagement_registry import EngagementRegistry
     reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"))
     rec = await reg.create(kind="executor", role_or_type="configurator",
-                           driver="in_casa", task="t", origin=dict(ORIGIN),
-                           topic_id=None)
+                           driver="in_casa", task="t", origin=dict(ORIGIN))
     tools.init_tools(channel_manager=MagicMock(), bus=MagicMock(notify=AsyncMock()),
                      specialist_registry=MagicMock(), mcp_registry=MagicMock(),
                      trigger_registry=MagicMock(), engagement_registry=reg)
@@ -561,7 +551,7 @@ async def test_a_run_cancelled_during_its_registration_confirms_its_row(
             async def receive_response(self):
                 await asyncio.Event().wait()   # the turn runs on
                 yield None
-        drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream())
+        drv = InCasaDriver()
         rec = _engagement_record()
         session = attach_session(drv, rec, _Client())
         drv.submit_operator(rec, "m", tg_message_id=55)

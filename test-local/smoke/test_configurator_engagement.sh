@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Manual smoke for Plan 3 configurator against the live Telegram Bot API.
-# Requires .env.smoke with TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
-# TELEGRAM_ENGAGEMENT_SUPERGROUP_ID.
+# Manual smoke for the configurator against the live Telegram Bot API.
+# Requires .env.smoke with TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, and
+# optionally TELEGRAM_ENGAGEMENT_SUPERGROUP_ID (the log group).
 
 set -euo pipefail
 
@@ -14,30 +14,31 @@ fi
 
 : "${TELEGRAM_BOT_TOKEN:?set in .env.smoke}"
 : "${TELEGRAM_CHAT_ID:?set in .env.smoke}"
-: "${TELEGRAM_ENGAGEMENT_SUPERGROUP_ID:?set in .env.smoke}"
+: "${TELEGRAM_ENGAGEMENT_SUPERGROUP_ID:=0}"
 
 API="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}"
 
 echo "=== Configurator smoke test (v0.12.0) ==="
 echo "Bot:        $(curl -s "$API/getMe" | jq -r .result.username)"
 echo "User chat:  $TELEGRAM_CHAT_ID"
-echo "Engagement: $TELEGRAM_ENGAGEMENT_SUPERGROUP_ID"
+echo "Log group:  $TELEGRAM_ENGAGEMENT_SUPERGROUP_ID (0 = none)"
 echo ""
 
 echo "Step 1: Send config request to Ellen (1:1 chat)"
 echo "  'Please add a hourly_check trigger to assistant that fires every hour'"
 read -p "    Press enter after you send the message in Telegram... "
 
-echo "Step 2: Watch for new topic in the engagement supergroup"
-echo "  Expected: '#[configurator] add hourly_check trigger...'"
-read -p "    Press enter after you see the topic... "
+echo "Step 2: Watch the configurator's run"
+echo "  With the log group set up: its steps and words appear in the"
+echo "  configurator's log topic there. Without it: a step line in the 1:1 chat."
+read -p "    Press enter after you see the run's steps... "
 
-echo "Step 3: Configurator should ask a confirmation question in the topic"
-echo "  Reply 'yes do it' in the engagement topic."
+echo "Step 3: When the configurator asks to confirm, Ellen puts the question"
+echo "  to you in the 1:1 chat. Reply 'yes do it' there."
 read -p "    Press enter after you reply... "
 
-echo "Step 4: Wait for emit_completion + casa_reload_triggers (~5-10s)"
-read -p "    Press enter after you see the completion summary... "
+echo "Step 4: Wait for the run to finish + casa_reload_triggers (~5-10s)"
+read -p "    Press enter after Ellen tells you it is done... "
 
 echo "Step 5: Verify trigger landed (SSH to the HA host):"
 echo "  ssh <ha-host> sudo -n docker exec addon_91d4d4c8_casa \\"

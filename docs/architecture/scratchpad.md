@@ -113,7 +113,7 @@ through the funnel — runs `tools._settle_job_journal` after the client is clos
 discards the pad with its path whatever the journal's settle did, so a job that ended before any
 session of this process opened its pad still loses its file. At boot,
 `casa_core._settle_ended_job_state` removes each `.pad` file whose record is gone or durably
-ended, read through `settled_terminal_state`, so a terminal write that rolls back leaves the
+ended, read through `settled_status`, so a terminal write that rolls back leaves the
 pad in place; it runs even when there is no channel or runner to resume jobs with. A tool call
 from a retired client after the discard makes a pad in memory with no path, which idle expiry
 takes like a delegated one.

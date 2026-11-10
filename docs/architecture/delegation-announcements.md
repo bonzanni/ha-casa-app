@@ -38,12 +38,11 @@ never quote the body, the caption or the file name.
 
 **An engagement's live completion says the engagement has ended.** When a successful
 completion notice belongs to an engagement (its context carries `engagement_id`), the
-synthesized prompt adds, after the result text, that the engagement has ended and the person
-can no longer talk with the specialist in its topic, and that where the summary — the
-specialist's own words — says the topic or the conversation is still open, that is not passed
-on as fact (#1411: a specialist's summary said its topic "will stay open" in the very call
-that ended it, and the resident relayed it). It claims nothing about the topic's close, which
-is best-effort. A live notice whose answer Casa holds for relaying also names the full
+synthesized prompt adds, after the result text, that the background job has ended and the
+person's replies no longer reach it, and that where the summary — the specialist's own words —
+says the job or the conversation is still open, that is not passed on as fact (#1411: a
+specialist's summary said its conversation "will stay open" in the very call that ended it,
+and the resident relayed it). A live notice whose answer Casa holds for relaying also names the full
 delegation id and `relay_answer` ([`delegate-answer-relay.md`](delegate-answer-relay.md)); a
 boot replay holds none, so that line is one of the in-process instructions INV-JOB-016
 allows. A delegation's notice carries no such line about an engagement, and a replayed engagement outcome takes the

@@ -25,7 +25,7 @@ def test_plugin_job_offers_and_admits_only_its_two_casa_tools():
 def test_plugin_job_identity_is_bound_to_its_host_and_artifact():
     artifact = "a" * 64
     rec = SimpleNamespace(
-        id="job-1", kind="plugin", status="active", topic_id=42,
+        id="job-1", kind="plugin", status="active",
         role_or_type="assistant", origin={"chat_id": 42, "user_id": 7},
         plugin_artifacts=({"artifact_id": artifact},),
     )

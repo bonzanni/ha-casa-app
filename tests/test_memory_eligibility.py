@@ -16,7 +16,7 @@ DQ, DA = Source.DELEGATED_REQUEST, Source.DELEGATED_ANSWER
 ET, EA = Source.ENGAGEMENT_TURN, Source.ENGAGEMENT_ANSWER
 SP = Source.SPECIALIST_POST
 DR = Source.DESK_REPLY
-TM = Source.TOPIC_MESSAGE
+TM = Source.JOB_REPLY
 
 MATRIX = [
     # source, channel, facts, admitting rule
@@ -69,13 +69,13 @@ MATRIX = [
     ("blank desk reply", DR, "telegram",
      {"role_writes_memory": False, "text": " "}, None),
     ("desk reply on voice", DR, "voice", {"role_writes_memory": False}, None),
-    ("topic message to a no-memory specialist", TM, "telegram",
+    ("job reply to a no-memory specialist", TM, "telegram",
      {"role_writes_memory": False}, "topic_message"),
-    ("topic message to a specialist that keeps memory", TM, "telegram", {},
+    ("job reply to a specialist that keeps memory", TM, "telegram", {},
      None),
-    ("blank topic message", TM, "telegram",
+    ("blank job reply", TM, "telegram",
      {"role_writes_memory": False, "text": " "}, None),
-    ("topic message on voice", TM, "voice", {"role_writes_memory": False},
+    ("job reply on voice", TM, "voice", {"role_writes_memory": False},
      None),
 ]
 

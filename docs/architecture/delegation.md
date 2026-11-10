@@ -22,7 +22,7 @@ is in [`architecture/engagement-completion-gate.md`](engagement-completion-gate.
 
 **A delegated turn and an engagement are different things.** Delegation in its ordinary form
 is a task handed to a specialist that runs and returns — ephemeral. An engagement is a
-durable record with its own topic, which outlives the call that created it. Specialist
+durable record, which outlives the call that created it. Specialist
 delegation, `sync` or `async`, runs ephemerally, and so does a delegation to the
 configurator, which always runs `async` ([`configurator.md`](configurator.md)); starting a
 background job creates an engagement. The retired `mode='interactive'` is refused
@@ -138,8 +138,8 @@ not "agent-created work cannot exist".
 Agent context is anything that is not a positively-marked live operator turn: a bound
 engagement turn, a delegated turn, or any turn without the reserved `_operator_turn`
 marker. The engagement-creating call site, the job launch owner, acquires an occupancy reservation from one
-global limiter *synchronously, before any await with external effects* — before the
-channel-setup retry and topic creation — so a refused spawn
+global limiter *synchronously, before any await with external effects* — before the record is
+created — so a refused spawn
 performs no Telegram traffic at all, and parallel calls cannot pass a shared count check
 (the reservation, not a count read, is the permit). The reservation transfers to the
 record at successful creation, rides a dedicated field distinct from the specialist
@@ -223,7 +223,7 @@ registry global no reload refreshes.
 A specialist-hosted `start_job` launch uses a role-wide `<role>:engagement` limiter
 scope. Before acquiring it, admission checks active and
 idle specialist records across all chats. An existing record produces `engagement_busy`
-with its engagement id, topic id and job title (or the first 80 task characters).
+with its engagement id and job title (or the first 80 task characters).
 Quick sync/async delegations retain their chat-and-role scope, independently of the
 engagement slot; the global cap still applies. Boot does not restore permits, so the
 record check also covers resumed engagements.
@@ -277,8 +277,7 @@ is caller-supplied and the check runs before authorization.
 distinct kind that lists the candidate roles, rather than picking one (INV-ENG-006).
 
 **An agent-context spawn arrives at the cap.** Refused with its own kind
-(`agent_spawn_cap_exceeded`) before any external side effect — no topic is created, no
-channel setup retried. The remediation names the way out: finish or cancel a live
+(`agent_spawn_cap_exceeded`) before any external side effect — no record is created. The remediation names the way out: finish or cancel a live
 engagement, or have the operator start it.
 
 **A required plugin is withheld because its environment is unresolved.** The refusal names

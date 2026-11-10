@@ -56,7 +56,7 @@ the appliance a household agent should be.
   - [1. Install the app](#1-install-the-app)
   - [2. Get your Claude token](#2-get-your-claude-token)
   - [3. Connect Telegram](#3-connect-telegram)
-  - [4. Enable engagements](#4-enable-engagements)
+  - [4. Agent logs *(optional)*](#4-agent-logs-optional--watch-your-agents-work)
   - [5. Add voice *(optional)*](#5-add-voice-optional--talk-to-the-fleet-through-home-assistant-assist)
   - [6. Reference secrets from 1Password *(optional)*](#6-reference-secrets-from-1password-optional--for-the-security-conscious)
   - [Requirements recap](#requirements-recap)
@@ -86,8 +86,9 @@ the appliance a household agent should be.
 
 ### 💬 Channels
 
-- **Telegram** — streaming replies, slash commands, tappable buttons, and dedicated forum
-  topics for longer-running work.
+- **Telegram** — streaming replies, slash commands, tappable buttons, background jobs you
+  steer from the same chat, and optional read-only logs of your agents' work in a forum
+  group.
 - **Voice** — talk to the fleet from any room with an Assist satellite; slow answers still
   reach the right speaker after the fact.
 - **Not just humans** — an authenticated invoke API lets Home Assistant automations and
@@ -181,7 +182,7 @@ the appliance a household agent should be.
 
 Strictly speaking, Casa boots with just a Home Assistant installation that can run apps
 and a Claude token — but the fleet is meant to be reached, so a real install includes
-Telegram and engagements (steps 1–4). Voice and secrets are optional extras you
+Telegram (steps 1–3). Agent logs, voice and secrets are optional extras you
 can add later, one step at a time.
 
 ### 1. Install the app
@@ -216,22 +217,21 @@ actually talk to the fleet.
    protected tools and read private memory. Empty means an open bot where nobody is the
    operator.
 
-### 4. Enable engagements
+### 4. Agent logs *(optional — watch your agents work)*
 
-Longer-running work — the configurator, a specialist's background
-jobs — happens in dedicated topics inside a Telegram forum supergroup:
+Everything that needs you — a job's start line and Cancel button, its questions, its
+result — comes to your 1:1 chat. If you also want to watch your agents work, Casa can
+keep a read-only log for each of them in a Telegram forum group:
 
 1. Create a new Telegram group (separate from your 1:1 chat with the bot) and enable
    **Topics** in its settings — that makes it a forum supergroup.
-2. Add your Casa bot to it and promote it to admin with **Manage topics** — the one
-   permission Casa requires.
+2. Add your Casa bot to it and promote it to admin with **Manage topics**.
 3. Find the group's chat ID (a negative number starting `-100…`): post a message in the
    group and check `https://api.telegram.org/bot<TOKEN>/getUpdates`, or add
    [@getidsbot](https://t.me/getidsbot) temporarily.
 4. Set `telegram_engagement_supergroup_id` to that ID.
 
-The [full walkthrough](casa/DOCS.md#engagements-v0110) covers each step in detail,
-including verification and automatic topic cleanup.
+[Optional: agent logs](casa/DOCS.md#optional-agent-logs) has the details.
 
 ### 5. Add voice *(optional — talk to the fleet through Home Assistant Assist)*
 
@@ -268,8 +268,8 @@ startup; plaintext never lands in your config. Details:
   Home Assistant 2025.4 or newer, on an **amd64** (x86-64) or **aarch64** (arm64)
   machine.
 - A **Claude Max subscription** for the OAuth token the agents run on.
-- A **Telegram bot** (free, two minutes with @BotFather) and a forum supergroup for
-  engagements.
+- A **Telegram bot** (free, two minutes with @BotFather); optionally a forum group for
+  agent logs.
 - Optional, per the steps above: the companion voice integration and a 1Password service
   account.
 
@@ -296,9 +296,9 @@ Beyond them, two tiers exist so the fleet can grow without the residents growing
   answer the resident that called them, and they are
   [installed, upgraded, rolled back and uninstalled](docs/architecture/specialist-lifecycle.md)
   from git repositories — [several are public today](#specialists).
-- **Executors** — task-bounded agents that get a dedicated Telegram topic to work in,
-  through [engagements](docs/architecture/engagements.md). One ships: the
-  **configurator**, which edits Casa's own configuration on your behalf and reloads it.
+- **Executors** — task-bounded agents a resident hands a change to. One ships: the
+  [**configurator**](docs/architecture/configurator.md), which edits Casa's own
+  configuration on your behalf and reloads it.
 
 The full tier model — what each tier may do and what it takes to add an agent — is
 specified in the [agent taxonomy](docs/architecture/agent-taxonomy.md).
@@ -322,7 +322,7 @@ repository you name (`owner/repo@ref`) and each acknowledged before anything is 
   sounds; capability comes from the role and the tool layer, never from prose.
 
 Because the configurator is itself an agent, all of this is conversational: you describe
-what you want, it opens a topic, makes the change, and reloads Casa.
+what you want, it makes the change, and reloads Casa.
 The install and identity mechanics are documented in the
 [architecture corpus](docs/README.md); feature direction is tracked in the open —
 [issues](https://github.com/bonzanni/ha-casa-app/issues) are where it is discussed.

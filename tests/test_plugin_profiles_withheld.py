@@ -135,10 +135,7 @@ async def test_launch_withheld_profiled_plugin_stays_profiled_after_unassign(
 
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     tch = MagicMock()
-    tch.engagement_permission_ok = True
     tch.engagement_supergroup_id = -1001
-    tch.open_engagement_topic = AsyncMock(return_value=1186)
-    tch.send_to_topic = AsyncMock()
     cm = MagicMock(); cm.get.return_value = tch
     specialist_reg = MagicMock(); specialist_reg.get.return_value = alex
     bus = MagicMock(); bus.notify = AsyncMock()
@@ -163,9 +160,10 @@ async def test_launch_withheld_profiled_plugin_stays_profiled_after_unassign(
     monkeypatch.setattr(tools_mod, "_build_specialist_options", build_after_the_secret_went)
     from test_delegate_to_agent_interactive import launch_job
     res = await launch_job("Plan Q2")
-    assert json.loads(res["content"][0]["text"])["status"] == "pending", res
+    payload = json.loads(res["content"][0]["text"])
+    assert payload["status"] == "pending", res
     assert len(built) == 1 and built[0].plugins == [], "the builder withheld gmail"
-    rec = reg.by_topic_id(1186)
+    rec = reg.get(payload["engagement_id"])
     assert [(r["name"], r.get("profile")) for r in rec.plugin_artifacts] == [("gmail", "read")]
     reloaded = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     await reloaded.load()
@@ -269,7 +267,6 @@ async def test_withheld_profile_survives_a_build_that_loads_another_plugin(tmp_p
     plugin with the fallback while ledger stays full."""
     import tools as tools_mod
     from drivers.in_casa_driver import InCasaDriver
-    from test_in_casa_driver import _mk_noop_factory
 
     store = tmp_path / "store"
 
@@ -322,11 +319,10 @@ async def test_withheld_profile_survives_a_build_that_loads_another_plugin(tmp_p
          "path": str(store / e["name"] / e["artifact_id"]),
          "manifest_name": e["name"], "profile": None} for e in (g, m2, led))
     rec = await reg.create(kind="specialist", role_or_type="finance", driver="in_casa",
-                           task="t", origin={}, topic_id=1, plugin_artifacts=rows)
+                           task="t", origin={}, plugin_artifacts=rows)
 
     monkeypatch.delenv(VAR, raising=False)
-    drv = InCasaDriver(topic_stream_factory=_mk_noop_factory(),
-                       persist_plugin_profiles=reg.update_plugin_profiles)
+    drv = InCasaDriver(persist_plugin_profiles=reg.update_plugin_profiles)
     await drv.resume(rec, "sess-1")
     (first,) = _FakeClient.instances
     assert [p["path"] for p in first.options.plugins] == [rows[2]["path"]]

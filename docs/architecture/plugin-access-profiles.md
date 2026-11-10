@@ -95,7 +95,7 @@ Enforced by `profile_plan`, which every builder calls at construction, and by th
 matcher it injects: a call under a guarded namespace is denied unless its exact name is in
 the plan, so an undeclared tool, a renamed server's tool and a config-level allow are all
 denied before permission rules are evaluated. Pinned over the three builders, the recorded
-resume, a launch whose assignment is created during its topic await, an unprofiled build
+resume, a launch whose assignment is created during its awaits, an unprofiled build
 whose option fields are compared with today's, and a profiled plugin withheld at a build —
 a fresh launch or a resume — then unassigned and loaded from the record by a later resume,
 which gets the guarded fallback rather than full access. A build from that fallback permits

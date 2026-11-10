@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-08
+last_reviewed: 2026-11-10
 ---
 
 # Engagement finalization
@@ -16,8 +16,7 @@ finished `in_casa` engagement's CLI transcripts are deleted is
 [`architecture/engagement-transcript-reaping.md`](engagement-transcript-reaping.md). What a
 *successful* completion is refused over, and what each driver counts to answer that, are in
 [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md). What a terminal
-engagement's topic and its engager are told — the outcome mark, the unconfirmed-post
-disclosure and the durable obligation to notify — is in
+engagement's engager is told — the durable obligation to notify — is in
 [`architecture/engagement-terminal-telling.md`](engagement-terminal-telling.md). The record
 itself, how one is launched and the driver protocol are in
 [`architecture/engagements.md`](engagements.md); how a write is admitted to it is in
@@ -28,9 +27,9 @@ itself, how one is launched and the driver protocol are in
 
 **Ending an engagement is a race with exactly one winner, and that is the load-bearing
 design.** The terminal transition is attempted against the registry; only the caller that
-wins it performs the external effects — closing the topic, tearing down the driver, notifying
+wins it performs the external effects — logging the end, tearing down the driver, notifying
 the resident. Everything else is a loser that does nothing. This is what stops a completion
-racing a cancellation from producing two closures and two notifications.
+racing a cancellation from producing two endings and two notifications.
 
 Casa itself is one of those callers: removing a specialist closes its open conversations
 through the same funnel, outcome `cancelled`, exactly as a cancel does — after an uninstall
@@ -45,8 +44,7 @@ retry.
 
 **Completion is gated on unread input, and that gate is its own contract.** A *successful*
 completion requested through the completion tool is refused while inbound messages are
-unread or reserved; failure, cancellation and the operator's own complete command
-deliberately bypass it. What the driver counts is in
+unread or reserved; failure and cancellation deliberately bypass it. What the driver counts is in
 [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) (INV-ENG-003). No
 terminal outcome lists the messages it committed past: each one the job never read is told
 once by the job's message journal, whose terminal branch this funnel runs after the driver
@@ -65,8 +63,8 @@ the notification on that same decision.
 **INV-ENG-001**: A terminal transition has exactly one winner, and only the winner performs the finalization side effects.
 
 Enforced by the registry's terminal transition, which refuses a missing or already-terminal
-record and returns failure; the finalize path performs topic closure, driver teardown and
-notification only on success. The winning transition — and only it, so a strict transition that rolled back tells nobody — hands the record to one
+record and returns failure; the finalize path logs the end, tears down the driver and
+notifies only on success. The winning transition — and only it, so a strict transition that rolled back tells nobody — hands the record to one
 optional observer, which may only schedule work: the tools layer uses it to withdraw the
 engagement's unanswered authorization challenges (INV-PLUG-033, in
 [`architecture/plugin-authorization.md`](plugin-authorization.md)).
@@ -74,13 +72,13 @@ engagement's unanswered authorization challenges (INV-PLUG-033, in
 The direct status mutators honour the same boundary: each re-checks for a prior terminal
 state under the registry lock and declines to overwrite one — the idle sweep cannot flip a
 concurrently-cancelled engagement back to resumable, and a failed resume that loses the
-race to a cancel neither overwrites the status nor runs its duplicate topic cleanup (the
-error mutator reports whether it won, and only a winner cleans up).
+race to a cancel does not overwrite the status (the error mutator reports whether it
+won).
 
 What it does not cover: exclusivity covers the *post-transition* side effects only; what a
 caller does before it attempts the transition is its own.
 
-**INV-ENG-010**: Once the terminal transition is won, the funnel's post-topic tail — driver teardown, the completion notification and the finalized log — survives cancellation of the task that ran the funnel, and its payloads carry the record values frozen at the flip.
+**INV-ENG-010**: Once the terminal transition is won, the funnel's tail — driver teardown, the completion notification and the finalized log — survives cancellation of the task that ran the funnel, and its payloads carry the record values frozen at the flip.
 
 An `in_casa` engagement's own `emit_completion` runs inside a child task of the very SDK
 client the teardown closes, so the close cancels the funnel's host. For that caller the tail
@@ -91,16 +89,10 @@ unchanged. Payload inputs (the origin, the role, the start time) are snapshotted
 funnel's first post-flip await, so a post-terminal record rewrite (clearance lowering)
 cannot alter what the completion notice says.
 
-**Read the scope narrowly: "post-topic" excludes the topic.** The completion post, the
-terminal mark and the close all run before the detach, on the caller's own task, and every
-await after the commit is cancellable. A cancellation there commits the terminal record with
-the topic left open and empty — recoverable, since nothing was closed and nothing was
-marked, and the engager is still told from the surviving tail, but the topic carries no
-account of what happened. This is a known open exposure, not an oversight: closing it means
-moving operator-visible effects across a cancellation boundary in the one funnel that four
-other terminal writers race. `in_casa` write admission does not close it: admission decides
-whether a write is *delivered*; it orders nothing against a finalization's own topic
-operations, which is what would have to be ordered.
+**Nothing cancellable stands between the flip and the tail.** Once the transition returns a
+win, the funnel releases the concurrency permit, freezes the payload inputs and queues the
+end's line in the agent's log ([`agent-logs.md`](agent-logs.md)) — all synchronous — and then
+runs or detaches the tail. The log line is no telling: it is optional and best effort.
 
 **INV-ENG-002**: A strict terminal transition never leaves the persisted and in-memory records disagreeing; on a write failure it restores the prior state and raises.
 
@@ -114,9 +106,10 @@ before the cancellation propagates — no durable active record whose driver nev
 
 That compensation covers the record; the launch path compensates the rest of the window
 around it, since a cancellation lands at whichever await is pending and ordinary
-`except Exception` handlers never see it. Before the record exists, a cancellation closes the
-already-opened topic; after it exists but before the driver is confirmed live, the
-compensation also marks the record errored and runs the driver's own terminal teardown —
+`except Exception` handlers never see it. Before the record exists nothing else has been
+opened, so there is nothing more to compensate; after it exists but before the driver is
+confirmed live, the compensation also marks the record errored and runs the driver's own
+terminal teardown —
 necessary because a driver can be *partly* live before its final awaits. The compensation is scheduled, not awaited (a cancelled
 task cannot await network round-trips); its steps run in order in that background task.
 
@@ -128,8 +121,8 @@ remains until the boot reconcile and reap TTL retire it.
 
 **The completion gate is INV-ENG-003, and it lives in its own document.** A successful
 completion requested through the completion tool is refused over unread or reserved inbound
-input when the driver exposes its inbound state; the operator's own
-complete command is not gated and finalizes past it — see
+input when the driver exposes its inbound state; a cancellation is not gated and
+finalizes past it — see
 [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md).
 
 **One terminal path deliberately stays outside this funnel.** A launch cancelled after its
@@ -148,8 +141,8 @@ Two properties of the primitive make that direct use correct rather than a short
 both are the reason it is the primitive and not the best-effort marker. Strictness means the
 in-memory flip and its persistence stand or fall together, so a caller that acts on the
 returned win is acting on a record that reached disk — the best-effort marker returns a win
-over a swallowed write failure, and an irreversible topic close taken on that answer would
-sit over a record disk still calls live. And the single-winner contract means the caller
+over a swallowed write failure, and an irreversible telling taken on that answer would
+announce an end disk does not hold. And the single-winner contract means the caller
 learns, in the same operation, whether the engagement had already reported itself: a lost
 transition is the instruction to do nothing, because the winner owns every side effect.
 
@@ -221,12 +214,12 @@ than being handed a success for a transition that did not happen. Distinguishing
 retryable outcome from the precondition failure matters where it is surfaced: one says
 "read your messages", the other says "try again".
 
-**Two callers race.** The loser is absorbed as already-terminal. No duplicate topic closure
+**Two callers race.** The loser is absorbed as already-terminal. No duplicate end line
 and no duplicate notification.
 
-**Topic sends and driver teardown fail after the transition.** All are caught and
+**Driver teardown or the log line fails after the transition.** Both are caught and
 logged. **The terminal state stays committed** — so an engagement can be genuinely finished
-while no completion message ever reached its topic. Those are best-effort effects *after* the
+while its agent's log never shows the end. Those are best-effort effects *after* the
 authoritative state change, by design.
 
 **The notification is no longer among them.** It used to be: the outcome went to the bus
@@ -235,12 +228,7 @@ with no record anywhere that anything was owed. The outcome now carries INV-ENG-
 obligation, so a notification that does not reach the transport is not lost but outstanding,
 and the next boot replays it — at lower fidelity, because the record keeps no completion text.
 What is guaranteed is that the party who asked is told THAT their work ended and how; what is
-not guaranteed is that they are told it in the words the engagement used. What the topic then SAYS about it is INV-ENG-013's subject: the outcome mark is
-withheld and a plain disclosure is attempted, so a closed topic with no outcome mark is the
-signal that a terminal engagement's summary did not land. Read it as a prompt to check, not
-as proof: the mark and the close are independent best-effort operations, so a confirmed
-summary whose mark failed looks the same, and the returned message id — not the topic's
-appearance — is the delivery fact.
+not guaranteed is that they are told it in the words the engagement used.
 
 ## Extension points
 

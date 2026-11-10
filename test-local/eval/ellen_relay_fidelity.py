@@ -103,8 +103,7 @@ SURFACE = (
     "\n<jobs>\n"
     "- quarterly-accounting:work — Accounting check: Checks the bank and Gmail, "
     "matches invoices, keeps the bank ledger's notes current (Alex's own job: in "
-    "text, ask Alex with a sync delegation; Alex starts it itself and it runs in "
-    "Alex's topic)\n"
+    "text, ask Alex with a sync delegation; Alex starts it itself and runs it)\n"
     "</jobs>"
 )
 

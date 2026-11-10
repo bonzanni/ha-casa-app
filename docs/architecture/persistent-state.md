@@ -82,6 +82,13 @@ left in place and read as an empty pad, which the next change overwrites. The fi
 job ends, and boot removes one whose job is unknown or durably ended. Its contract is
 [`scratchpad.md`](scratchpad.md) (INV-PAD-010).
 
+**The agent log keeps a small registry, and its posts are deleted by age.**
+`/data/log-topics.json` (0600, in the private-state inventory) holds the log group's id, each
+agent's topic id and the id and send time of every log post not yet deleted, written through
+`atomic_write_json` at most once per ten seconds and once at stop. A corrupt file is set aside
+as `.casabak` and read as empty. The 30-minute retention pass deletes posts before Telegram
+stops allowing it. Its contract is [`agent-logs.md`](agent-logs.md) (INV-TG-015).
+
 **Memory has a directory of its own, and a registry of everywhere else it lives.**
 `/data/memory/` (0700, in the private-state inventory) holds `memory.db`, a SQLite store in
 WAL mode reached only through one connection owner, one transaction per connection. Boot
@@ -244,7 +251,6 @@ the code writes.
 - `casa/rootfs/opt/casa/atomic_io.py::atomic_write_json`
 - `casa/rootfs/opt/casa/atomic_io.py::atomic_write_text`
 - `casa/rootfs/opt/casa/session_registry.py::SessionRegistry`
-- `casa/rootfs/opt/casa/topic_ledger.py`
 - `casa/rootfs/opt/casa/explanation_store.py`
 - `casa/rootfs/opt/casa/config_git.py::init_repo`
 - `casa/rootfs/opt/casa/private_state.py::enforce`

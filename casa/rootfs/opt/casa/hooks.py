@@ -891,8 +891,8 @@ def make_casa_config_guard_hook(
                 return _deny(
                     "casa_config_guard: Bash blocked - command looks like "
                     "a resident agent deletion. Residents are very "
-                    "destructive to remove; ask the user explicitly in the "
-                    "engagement topic and retry only if they say yes."
+                    "destructive to remove; ask the user explicitly and "
+                    "retry only if they say yes."
                 )
         return {}
 

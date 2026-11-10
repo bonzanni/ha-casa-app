@@ -1,13 +1,10 @@
 """v0.109.0 — close the remaining rich-text delivery gaps (G1-G5).
 
 Operator-reported symptom: literal ``**`` and unstructured tables in the
-assistant's DMs and engagement topics. Root causes (Sol+Terra design round):
+assistant's DMs. Root causes:
 
 * G1: ``post_dm_keyboard`` / ``edit_dm_message`` sent/edited plain — the
   assistant's dominant DM ask surface never rendered.
-* G2/G5: engagement completion summaries posted plain for in_casa
-  engagements, and raw-fallback (no pagination) over the render caps.
-* G3: engagement notices posted plain on the non-driver fallback paths.
 * Table detector: separator-less bordered tables stayed proportional.
 """
 
@@ -20,7 +17,7 @@ from telegram import InlineKeyboardMarkup, MessageEntity
 from telegram.error import BadRequest
 
 from channels.tg_richtext import render
-from test_telegram_topic_stream import _mk_channel_with_fake_bot
+from telegram_channel_double import _mk_channel_with_fake_bot
 from output_boundary_testing import admitted
 
 
@@ -103,78 +100,6 @@ async def test_edit_dm_message_not_modified_tolerated():
     assert await ch.edit_dm_message(100, 5, "**same**") is True
     assert bot.edit_message_text.await_count == 1
 
-
-# ===========================================================================
-# G3 · engagement-notice fallback renders
-# ===========================================================================
-
-@pytest.mark.asyncio
-async def test_post_engagement_notice_fallback_rich():
-    ch, bot = _mk_channel_with_fake_bot()
-    ch._driver_post_notice = None
-    rec = MagicMock(topic_id=42)
-    await ch._post_engagement_notice(rec, "**resumed**")
-    kw = bot.send_message.await_args.kwargs
-    assert kw["text"] == "resumed"
-    assert kw["entities"][0].type == MessageEntity.BOLD
-
-
-# ===========================================================================
-# G5 · the completion summary uses the paged rich sender when the channel has one
-# ===========================================================================
-
-async def _finalize_with_channel(tmp_path, tch):
-    from engagement_registry import EngagementRegistry
-    from tools import _finalize_engagement, init_tools
-
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-    rec = await reg.create(
-        kind="executor", role_or_type="configurator", driver="in_casa",
-        task="t", origin={"role": "assistant", "channel": "telegram"},
-        topic_id=42,
-    )
-    cm = MagicMock()
-    cm.get.return_value = tch
-    init_tools(
-        channel_manager=cm, bus=MagicMock(notify=AsyncMock()),
-        specialist_registry=MagicMock(), mcp_registry=MagicMock(),
-        trigger_registry=MagicMock(), engagement_registry=reg,
-    )
-    await _finalize_engagement(
-        rec, outcome="completed", text="**summary**",
-        next_steps=[], driver=None,
-    )
-
-
-@pytest.mark.asyncio
-async def test_completion_summary_uses_paged_rich_sender(tmp_path):
-    tch = MagicMock()
-    tch.send_to_topic = AsyncMock(return_value=1)
-    tch.send_response_to_topic = AsyncMock(return_value=33)
-    tch.close_topic = AsyncMock()
-    await _finalize_with_channel(tmp_path, tch)
-    tch.send_response_to_topic.assert_awaited_once()
-    topic, text = tch.send_response_to_topic.await_args.args
-    assert topic == 42
-    assert "**summary**" in text
-    assert not any("**summary**" in str(c.args)
-                   for c in tch.send_to_topic.await_args_list)
-
-
-@pytest.mark.asyncio
-async def test_completion_summary_without_paged_sender_falls_back(tmp_path):
-    tch = MagicMock()
-    del tch.send_response_to_topic   # a channel without the paged rich sender
-    tch.send_to_topic = AsyncMock(return_value=11)
-    tch.close_topic = AsyncMock()
-    await _finalize_with_channel(tmp_path, tch)
-    assert any(c.args[0] == 42 and "**summary**" in c.args[1]
-               for c in tch.send_to_topic.await_args_list)
-
-
-# ===========================================================================
-# Table detector · narrow separator-less acceptance
-# ===========================================================================
 
 def _pre_spans(text: str):
     display, entities = render(text)

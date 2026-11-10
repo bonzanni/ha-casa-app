@@ -66,7 +66,7 @@ at the end of the run. A completion text is written for him too: it says in plai
 found or changed and what is left for him, and a commit SHA, a result field or a reload scope stays
 out of it. It is also all the engaging agent reads of the
 engagement, so a task that only asks for information completes as soon as it is answered,
-with the findings in that text rather than in a turn's closing words left waiting in the topic.
+with the findings in that text rather than in a turn's closing words, which only the agent's log shows.
 The configurator's prompt carries this rule (its Output discipline,
 `casa/rootfs/opt/casa/defaults/configurator/prompt.md`) and, for how a run ends, its
 completion doctrine (`casa/rootfs/opt/casa/defaults/configurator/doctrine/completion.md`), and the setup
@@ -108,13 +108,10 @@ either way. See `architecture/engagement-completion-gate.md`.
 completion message never reached anyone. If it matters that a person *knows*, confirm rather
 than inferring it from your own success.
 
-**Do not read delivery off the topic's appearance.** Casa's delivery fact is the message id
-the wire returned for the completion post; the outcome mark on the topic and the closing of
-it are separate, best-effort operations that can each fail on their own. So a terminal topic
-carrying no outcome mark is Casa telling you that *something* in that sequence did not
-confirm — the post, or the mark — and it is a prompt to go and check, never proof that the
-summary is missing. A marked topic is not proof anyone read it either. When it matters that
-a person knows, confirm it with them. See `architecture/engagement-terminal-telling.md`.
+**The agent log is not a delivery.** A line in an agent's log, when a log group is set up, is
+best effort and read-only: it can be dropped, it disappears after about two days, and nothing
+is decided from it. Whatever needs the operator goes to their direct chat. See
+`architecture/agent-logs.md`.
 
 **Do not infer your capabilities from your persona.** Persona text is presentation and is not
 validated against what you can actually do — it can name a tool you do not have. What you can

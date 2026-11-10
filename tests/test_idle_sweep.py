@@ -15,7 +15,7 @@ class TestSweep:
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create("specialist", "finance", "in_casa", "t",
-                               {"role": "assistant"}, topic_id=1)
+                               {"role": "assistant"})
         now = rec.started_at + 30 * 3600  # 30h later
         rec.last_user_turn_ts = rec.started_at
         driver = MagicMock()
@@ -33,7 +33,7 @@ class TestSweep:
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create("specialist", "finance", "in_casa", "t",
-                               {"role": "assistant"}, topic_id=1)
+                               {"role": "assistant"})
         await reg.mark_completed(rec.id, completed_at=rec.started_at + 1)
         now = rec.started_at + 10 * 86400
         driver = MagicMock()
@@ -52,7 +52,7 @@ async def test_a_working_job_session_is_not_suspended(tmp_path, probe):
 
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create("specialist", "finance", "in_casa", "t",
-                           {"role": "assistant"}, topic_id=1)
+                           {"role": "assistant"})
     rec.last_user_turn_ts = rec.started_at
     driver = MagicMock()
     driver.is_alive = MagicMock(return_value=True)

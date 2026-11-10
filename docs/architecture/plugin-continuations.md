@@ -130,8 +130,8 @@ this plugin's and the operator's as configured now, and marks that request's car
 (`plugin_stop.settle_ended`, [`plugin-stop.md`](plugin-stop.md)). A failure there is logged
 and leaves the continuations the pass queued as they are.
 
-**Such a specialist's work never runs in a topic.** A continuation's answer reaches the
-resident's DM, never a topic, and the specialist asks the person itself, with its own cards,
+**Such a specialist's work runs in the direct chat.** A continuation's answer reaches the
+resident's DM, and the specialist asks the person itself, with its own cards,
 whenever it needs them; the whole task is one `sync` delegation, also when the person asked
 to be asked first.
 

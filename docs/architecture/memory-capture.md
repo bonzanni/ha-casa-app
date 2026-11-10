@@ -35,11 +35,11 @@ awaits the append, so every capture a turn made has returned by the time the tur
 - **A delegated run's request**, raw (the task, not the assembled prompt), when its prompt is
   assembled and before its client starts; and **its answer**, the whole live fold, when the
   run completes.
-- **An engagement turn of a memory-writing specialist**: the operator's message in the
-  topic, as it was admitted (never the line Casa prefixes when it redelivers the message
-  after a restart), once it is written into the job's session, and each message the
-  specialist writes, before it is streamed and whatever the stream's output bound clips.
-  Plugin jobs are not memory-writing specialists.
+- **An engagement turn of a memory-writing specialist**: the operator's message handed to
+  the job — a reply in their direct chat to one of its posts — as it was admitted (never the
+  line Casa prefixes when it redelivers the message after a restart), once it is written into
+  the job's session, and each message the specialist writes. Plugin jobs are not
+  memory-writing specialists.
 - **Casa's line that a specialist which keeps no memory posted to the operator's chat**, in
   the Telegram channel's `_record_post`, where every message Casa sends on a specialist's
   behalf lands: a plugin's link, message, page, proposal or file, a desk reply, a stored-call
@@ -62,12 +62,12 @@ awaits the append, so every capture a turn made has returned by the time the tur
   Casa composed — an approval's continuation, a file's hand-off — captures nothing here. Like
   the post line, the write is detached: his words come from no run's transcript, so no run's
   confirmation waits on it, and the desk turn never waits for or fails on it.
-- **The operator's message in the engagement topic of a specialist that keeps no memory**, in
-  `TelegramChannel.handle_update`, where it is handed to the engagement as a turn. Such an
+- **The operator's reply to a job of a specialist that keeps no memory**, in
+  `TelegramChannel.deliver_operator_reply`, where it is handed to the job as a turn. Such an
   engagement captures nothing of its own, so his words were lost; they are captured as his
-  message, the text he typed and nothing else (INV-MEM-044). A command Casa consumes, a
-  message the topic refuses (rate limit, an engagement that cannot take a turn) and anyone
-  else's message capture nothing here. Detached, like the desk reply, and for the same reason.
+  message, the text he typed and nothing else (INV-MEM-044). A reply the job does not accept
+  captures nothing here. Detached, like the desk reply, and for the same reason. Nothing
+  anyone writes in the agent-log group reaches memory (INV-TG-016).
 
 **A receipt means durable, and the receipt is all a turn waits for.**
 `memory.capture.append` makes one item durable and returns a receipt: committed in one
@@ -153,7 +153,7 @@ answer only while that answer is owed to its creator, and drops it on delivery
 (INV-JOB-015). One rule, two purposes — memory keeps what happened, the row keeps what has
 not yet been said.
 
-**INV-MEM-032**: No row of the memory store's `events` holds output authored by a specialist that writes no memory — a loaded specialist whose `memory.token_budget` is 0, or a role no longer loaded — whether it would arrive as its delegated answer, Casa's notice carrying it, a hand-off or relay task it wrote, or its engagement topic turns; the resident's own words relaying it are captured.
+**INV-MEM-032**: No row of the memory store's `events` holds output authored by a specialist that writes no memory — a loaded specialist whose `memory.token_budget` is 0, or a role no longer loaded — whether it would arrive as its delegated answer, Casa's notice carrying it, a hand-off or relay task it wrote, or its job's turns; the resident's own words relaying it are captured.
 
 The switch is the specialist's own declaration: a role that reads no memory writes none,
 and a role Casa no longer has loaded — whose switch it cannot read — writes none either
@@ -162,8 +162,8 @@ and a role Casa no longer has loaded — whose switch it cannot read — writes 
 notice header: the opening of a resident turn that is Casa's notice naming such
 a role is not captured, while the resident's reply in that turn is; a delegated run of such
 a role captures neither side; a request is captured only with the chain's resident shape;
-an engagement of such a specialist captures no topic turn of its own, and the requester is
-still told; the operator's own messages in its topic are his
+an engagement of such a specialist captures no turn of its own, and the requester is
+still told; the operator's own replies into its job are his
 (INV-MEM-044). A delegated run's task is captured only as a resident's own words:
 a chain of at most the resident and one specialist (`len(_handoff_chain) <= 2`) on a turn
 Casa did not compose (`synthetic != "continuation"`).
@@ -199,30 +199,32 @@ the eligibility rule is `desk_reply`. Pinned through the real `handle_reply` ove
 Telegram channel and a real store: a canary in the quoted post and in the specialist's reply
 reaches no row.
 
-What it does not cover: the operator's messages in such a specialist's engagement topic,
+What it does not cover: the operator's replies into such a specialist's job,
 which are INV-MEM-044's, and a desk turn's words for a specialist that writes memory,
 which its own delegated capture decides. A desk reply is not marked for `correct_memory`. The
 write is detached: a crash between the desk task's start and the write loses his words, never
 the desk turn.
 
-**INV-MEM-044**: When the operator's message to the engagement of a specialist that writes no memory — written in its topic, or a reply in their direct chat to one of its job's posts — is handed to that engagement as a turn, exactly their typed words are captured once as their message — speaker `operator`, origin `operator`, no floor, the chat's resident as its role, their user id as its speaker id, keyed by their message with the key a memory-writing specialist's engagement gives it (`memory.occurrence.engagement_key`) — never the specialist's turn; nothing is captured for a specialist that writes memory, a plugin job's topic, a command Casa consumes, a sender other than the configured operator or a channel with none, and a capture that fails never fails the turn.
+**INV-MEM-044**: When the operator's reply in their direct chat to one of a job's posts, the job being the engagement of a specialist that writes no memory, is handed to that engagement as a turn, exactly their typed words are captured once as their message — speaker `operator`, origin `operator`, no floor, the chat's resident as its role, keyed by their message with the key a memory-writing specialist's engagement gives it (`memory.occurrence.engagement_key`) — never the specialist's turn; nothing is captured for a specialist that writes memory.
 
 The specialist's engagement captures nothing (INV-MEM-032), and the operator's words went down
-with it: what he asked Fido in the topic left no trace for the writer. They are his, so they
-are classified like any message of his; the eligibility rule is `topic_message`. One key per
-topic message, whichever seam captures it: a redelivery, or a specialist whose memory switch
-changed between the hand-off and its turn, adds nothing twice; a desk reply is a message in the
-operator's chat and a topic message one in the engagement supergroup, so no message reaches
-both. Pinned through the real `handle_update` over a real channel and a real `in_casa` driver
-whose specialist answers with a canary, against a real store: the canary reaches no row.
+with it: what he told Fido's job left no trace for the writer. They are his, so they are
+classified like any message of his; the eligibility rule is stored as `topic_message`, the
+name it was first stored under (`Source.JOB_REPLY`). One key per message, whichever seam
+captures it: a redelivery, or a specialist whose memory switch changed between the hand-off
+and its turn, adds nothing twice. Pinned through the real `_handle_serialized` over a real
+channel and a real `in_casa` driver whose specialist answers with a canary, against a real
+store: the canary reaches no row.
 
 A reply into a job carries Casa's `[replying to «…»]` line for the job; the captured words are
-theirs alone, the text their admission ticket holds.
+theirs alone, the text their admission ticket holds. The capture (`capture_job_reply`) takes
+a specialist's engagement only and never raises: a failure is logged and the reply still
+reaches the job.
 
-What it does not cover: the operator's messages in a plugin job's topic, and
-the rest of the engagement: the specialist's turns, Casa's cards in the topic and the taps
-answering them stay out. A topic message is not marked for `correct_memory`. The write
-is detached: a crash between the hand-off and the write loses his words, never the turn.
+What it does not cover: a plugin job's replies, and the rest of the engagement: the
+specialist's turns, Casa's cards and the taps answering them stay out. A job reply is not
+marked for `correct_memory`. The write is detached: a crash between the hand-off and the write
+loses his words, never the turn.
 
 ## Failure behavior
 
@@ -288,7 +290,7 @@ that writes it ([`memory-store.md`](memory-store.md)).
 - `casa/rootfs/opt/casa/delegated_memory.py::notice_from_excluded_role`
 - `casa/rootfs/opt/casa/delegated_memory.py::capture_post_line`
 - `casa/rootfs/opt/casa/delegated_memory.py::capture_desk_reply`
-- `casa/rootfs/opt/casa/delegated_memory.py::capture_topic_message`
+- `casa/rootfs/opt/casa/delegated_memory.py::capture_job_reply`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._record_post`
 
 **Tests**

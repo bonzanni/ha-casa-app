@@ -91,10 +91,8 @@ async def _mk_driver_rec(tmp_path, client):
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         "specialist", "configurator", "in_casa", "t",
-        {"role": "assistant", "channel": "telegram", "user_id": 77},
-        topic_id=555)
-    drv = InCasaDriver(topic_stream_factory=lambda tid: _Stream(),
-                       record_lookup=reg.get,
+        {"role": "assistant", "channel": "telegram", "user_id": 77})
+    drv = InCasaDriver(record_lookup=reg.get,
                        begin_turn_delivery=reg.begin_turn_delivery)
     attach_session(drv, rec, client)
     return reg, rec, drv
@@ -302,9 +300,6 @@ async def _mk_ctx(tmp_path, fake_telegram_bot):
     reg, rec, drv = await _mk_driver_rec(tmp_path, client)
 
     tch = MagicMock()
-    tch.send_to_topic = AsyncMock()
-    tch.send_response_to_topic = AsyncMock()
-    tch.close_topic = AsyncMock()
     cm = MagicMock()
     cm.get.return_value = tch
     bus = MagicMock()
@@ -321,7 +316,7 @@ async def _mk_ctx(tmp_path, fake_telegram_bot):
     ch._engagement_registry = reg
     ch._engagement_driver = drv
     ch._driver_advance_high_water = AsyncMock()
-    ch._post_engagement_notice = AsyncMock()
+    ch._send_dm_reply = AsyncMock()
     ch.edit_dm_message = AsyncMock()
     return ch, reg, rec, drv, client, tch
 
@@ -368,9 +363,8 @@ class TestACompletionRacingTheContinuationIsRefused:
 
             payload = await _emit_ok(rec)
             facts = (payload.get("status"), payload.get("kind"),
-                     len(transitions), reg.get(rec.id).status,
-                     tch.close_topic.await_count)
-            assert facts == ("error", "unread_inbound", 0, "active", 0), (
+                     len(transitions), reg.get(rec.id).status)
+            assert facts == ("error", "unread_inbound", 0, "active"), (
                 f"pre-check veto facts: {facts!r}")
         finally:
             agent_mod.active_engagement_driver = None
@@ -403,8 +397,8 @@ class TestACompletionRacingTheContinuationIsRefused:
 
             payload = await _emit_ok(rec)
             facts = (payload.get("status"), payload.get("kind"), at_entry,
-                     reg.get(rec.id).status, tch.close_topic.await_count)
-            assert facts == ("error", "unread_inbound", [(0, 0)], "active", 0), (
+                     reg.get(rec.id).status)
+            assert facts == ("error", "unread_inbound", [(0, 0)], "active"), (
                 f"terminal-hook veto facts: {facts!r}")
         finally:
             agent_mod.active_engagement_driver = None
@@ -491,7 +485,10 @@ class TestTheHandOffOutcomeAndTheTransfer:
             tmp_path, fake_telegram_bot)
         try:
             await _hold_the_worker(drv, rec, client)
-            handed = await ch.deliver_system_turn(rec, "continue")
+            from channels.telegram import _NoticeTarget
+            handed = await ch.deliver_system_turn(
+                rec, "continue",
+                notice_target=_NoticeTarget(chat_id=1, message_id=5, answer=True))
             # Terminal writer wins after the hand-off, before the write.
             assert await reg.try_transition_terminal(
                 rec.id, "cancelled", strict=True) is True
@@ -503,10 +500,9 @@ class TestTheHandOffOutcomeAndTheTransfer:
             await drv.cancel(rec)
             await drv.settle_journal_terminal(rec, ch.tell_journal_lost)
 
-            notices = [c.args[1] for c in
-                       ch._post_engagement_notice.await_args_list]
+            notices = [c.args[2] for c in ch._send_dm_reply.await_args_list]
             facts = (handed, client.query_prompts.count("continue"),
-                     sum("could not be delivered" in n for n in notices),
+                     len(notices),
                      drv.inbound_unread_depth(rec.id))
             assert facts == (True, 0, 1, 0), f"late-refusal facts: {facts!r}"
         finally:

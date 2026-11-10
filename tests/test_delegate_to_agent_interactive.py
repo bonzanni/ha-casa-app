@@ -81,17 +81,14 @@ async def launch_job(task="Plan Q2", context="", *, origin=None, job=None,
 
 
 class TestJobLaunchEngagement:
-    async def test_opens_topic_and_creates_engagement(self, tmp_path, monkeypatch):
+    async def test_creates_the_engagement_and_opens_no_topic(self, tmp_path, monkeypatch):
         import agent as agent_mod
         from engagement_registry import EngagementRegistry
         from tools import init_tools
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
-        tch.engagement_permission_ok = True
         tch.engagement_supergroup_id = -1001
-        tch.open_engagement_topic = AsyncMock(return_value=555)
-        tch.send_to_topic = AsyncMock()
         cm = MagicMock(); cm.get.return_value = tch
         specialist_reg = MagicMock()
         specialist_reg.get.return_value = _make_alex_cfg()
@@ -109,10 +106,9 @@ class TestJobLaunchEngagement:
         res = await launch_job("Plan Q2")
         payload = json.loads(res["content"][0]["text"])
         assert payload["status"] == "pending"
-        assert payload["topic_id"] == 555
-        tch.open_engagement_topic.assert_awaited_once()
+        assert "topic_id" not in payload
         driver.open.assert_awaited_once()
-        rec = reg.by_topic_id(555)
+        rec = reg.get(payload["engagement_id"])
         assert rec is not None
         # the brief is the session's first write, queued once
         assert driver.enqueue_brief.call_count == 1
@@ -143,10 +139,7 @@ class TestJobLaunchEngagement:
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
-        tch.engagement_permission_ok = True
         tch.engagement_supergroup_id = -1001
-        tch.open_engagement_topic = AsyncMock(return_value=556)
-        tch.send_to_topic = AsyncMock()
         cm = MagicMock(); cm.get.return_value = tch
         specialist_reg = MagicMock()
         specialist_reg.get.return_value = _make_alex_cfg()
@@ -164,20 +157,19 @@ class TestJobLaunchEngagement:
         res = await launch_job("Plan Q2")
         payload = json.loads(res["content"][0]["text"])
         assert payload["status"] == "pending"
-        rec = reg.by_topic_id(556)
+        rec = reg.get(payload["engagement_id"])
         assert rec is not None
         assert all(a["name"] != "finplug" for a in rec.plugin_artifacts)
 
-    async def test_kind_engagement_not_configured_when_supergroup_empty(
-        self, tmp_path, monkeypatch,
-    ):
+    async def test_a_job_launches_with_no_log_group(self, tmp_path, monkeypatch):
+        """No forum group configured and no right to manage topics: the job
+        launches all the same."""
         import agent as agent_mod
         from engagement_registry import EngagementRegistry
         from tools import init_tools
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
-        tch.engagement_permission_ok = False
         tch.engagement_supergroup_id = 0
         cm = MagicMock(); cm.get.return_value = tch
         specialist_reg = MagicMock()
@@ -188,96 +180,54 @@ class TestJobLaunchEngagement:
             trigger_registry=MagicMock(), engagement_registry=reg,
             agent_role_map={"assistant": _make_assistant_cfg()},
         )
+        driver = MagicMock(); driver.open = AsyncMock()
+        agent_mod.active_engagement_driver = driver
         res = await launch_job("x")
         payload = json.loads(res["content"][0]["text"])
-        assert payload["kind"] == "engagement_not_configured"
+        assert payload["status"] == "pending", payload
+        assert driver.enqueue_brief.call_count == 1
 
-    async def test_long_task_topic_name_fits_telegram_budget(
-        self, tmp_path, monkeypatch,
-    ):
-        """E-9 regression: a 500-char job title must not produce a topic
-        name >128 UTF-8 bytes (Telegram createForumTopic limit) AND
-        must not slice mid-word.
-
-        v0.37.1 D-1: the post-create edit_forum_topic rename block is
-        gone — the specialist path now uses the U3 title format
-        directly at open_engagement_topic time. concise_task() already
-        bounds the body to U3_TASK_BYTE_BUDGET; truncate_for_topic
-        appends '…' inside concise_task when truncation kicks in.
-        """
+    @pytest.mark.parametrize("channel", ["webhook", "voice_ws"])
+    async def test_a_request_from_another_channel_is_refused(
+            self, tmp_path, monkeypatch, channel):
+        """A job talks to the operator in their Telegram direct chat: a
+        request that came from another channel cannot start one."""
         import agent as agent_mod
         from engagement_registry import EngagementRegistry
         from tools import init_tools
 
-        reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"),
-        )
-        tch = MagicMock()
-        tch.engagement_permission_ok = True
-        tch.engagement_supergroup_id = -1001
-        tch.open_engagement_topic = AsyncMock(return_value=555)
-        tch.send_to_topic = AsyncMock()
-        tch.bot = MagicMock()
-        tch.bot.edit_forum_topic = AsyncMock()
-        cm = MagicMock(); cm.get.return_value = tch
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
+        cm = MagicMock(); cm.get.return_value = MagicMock()
         specialist_reg = MagicMock()
         specialist_reg.get.return_value = _make_alex_cfg()
-        bus = MagicMock(); bus.notify = AsyncMock()
         init_tools(
-            channel_manager=cm, bus=bus,
+            channel_manager=cm, bus=MagicMock(),
             specialist_registry=specialist_reg, mcp_registry=MagicMock(),
             trigger_registry=MagicMock(), engagement_registry=reg,
             agent_role_map={"assistant": _make_assistant_cfg()},
         )
         driver = MagicMock(); driver.open = AsyncMock()
         agent_mod.active_engagement_driver = driver
+        res = await launch_job("x", origin={
+            "role": "assistant", "channel": channel, "chat_id": "c1",
+            "cid": "x", "user_text": "hi"})
+        payload = json.loads(res["content"][0]["text"])
+        assert payload["kind"] == "engagement_wrong_origin", payload
+        assert reg.active_and_idle() == []
+        driver.open.assert_not_awaited()
 
-        long_task = (
-            "Add a one-line personality trait to Ellen's agent config. "
-            "Something like: \"TRAIT_NAME\" or any other identifier "
-            "you find suitable for the experiment, considering the "
-            "downstream impact on tone, register, and the conversation "
-            "patterns used by Ellen across her supported channels."
-        )
-        assert len(long_task) > 128
-
-        # the topic is named after the job's title
-        await launch_job(job=_job(title=long_task))
-
-        # open_engagement_topic was called; assert byte budget.
-        tch.open_engagement_topic.assert_awaited_once()
-        open_kwargs = tch.open_engagement_topic.await_args.kwargs
-        open_name = open_kwargs["name"]
-        assert len(open_name.encode("utf-8")) <= 128
-        # E-9: when the task is longer than the budget, the topic name
-        # MUST end with the '…' ellipsis added by truncate_for_topic
-        # (invoked indirectly via concise_task).
-        assert open_name.endswith("…"), (
-            f"E-9: helper not invoked (no ellipsis); got {open_name!r}"
-        )
-
-        # v0.37.1 D-1: post-create edit_forum_topic rename is gone —
-        # the U3 title is set at open time, no follow-up rename.
-        tch.bot.edit_forum_topic.assert_not_called()
-
-    async def test_driver_start_failure_flips_and_closes_topic(
+    async def test_driver_start_failure_ends_the_record(
         self, tmp_path, monkeypatch,
     ):
-        """L23 leak guard: a failed driver.open in the job launch
-        path must not leave the just-created topic open
-        forever — it must be flipped to 'failed' and closed."""
+        """L23 leak guard: a failed driver.open in the job launch path ends
+        its record ``error`` and writes nothing into the session."""
         import agent as agent_mod
         from engagement_registry import EngagementRegistry
         from tools import init_tools
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
-        tch.engagement_permission_ok = True
         tch.engagement_supergroup_id = -1001
-        tch.open_engagement_topic = AsyncMock(return_value=555)
-        tch.send_to_topic = AsyncMock()
-        tch.update_topic_state = AsyncMock()
-        tch.close_topic = AsyncMock()
         cm = MagicMock(); cm.get.return_value = tch
         specialist_reg = MagicMock()
         specialist_reg.get.return_value = _make_alex_cfg()
@@ -298,12 +248,9 @@ class TestJobLaunchEngagement:
         assert payload["kind"] == "driver_start_failed"
         assert driver.enqueue_brief.call_count == 0
 
-        rec = reg.by_topic_id(555)
-        assert rec is not None
-        tch.update_topic_state.assert_awaited_once_with(
-            engagement_id=rec.id, new_state="failed",
-        )
-        tch.close_topic.assert_awaited_once_with(thread_id=555)
+        [rec] = list(reg._records.values())
+        assert rec.status == "error"
+        assert rec.origin["error_kind"] == "driver_start_failed"
 
 
 class TestInteractiveModeRetired:
@@ -319,9 +266,7 @@ class TestInteractiveModeRetired:
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
-        tch.engagement_permission_ok = True
         tch.engagement_supergroup_id = -1001
-        tch.open_engagement_topic = AsyncMock(return_value=555)
         cm = MagicMock(); cm.get.return_value = tch
         specialist_reg = MagicMock()
         specialist_reg.get.return_value = _make_alex_cfg()
@@ -366,7 +311,6 @@ class TestInteractiveModeRetired:
         assert "mode='sync'" in payload["message"]
         assert "reply" in payload["message"]
         # nothing launched, nothing silently coerced into another mode
-        tch.open_engagement_topic.assert_not_awaited()
         driver.open.assert_not_awaited()
         assert driver.enqueue_brief.call_count == 0
         assert reg.active_and_idle() == []
@@ -406,8 +350,7 @@ class TestInteractiveModeRetired:
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="Walk me through Q2",
             origin={"role": "assistant", "channel": "telegram", "chat_id": "c1",
-                    "delegation_depth": 1},
-            topic_id=777)
+                    "delegation_depth": 1})
 
         reg, tch, driver = self._wire(tmp_path)
         await reg.load()
@@ -427,4 +370,3 @@ class TestInteractiveModeRetired:
         payload = json.loads((await launch_job("Classify"))["content"][0]["text"])
         assert payload["kind"] == "engagement_busy"
         assert payload["engagement_id"] == legacy.id
-        tch.open_engagement_topic.assert_not_awaited()

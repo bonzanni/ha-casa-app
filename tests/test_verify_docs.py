@@ -1850,7 +1850,7 @@ def test_engagement_finalization_is_named_when_job_registry_changes():
 _DECLARED_OWNERSHIP = [
     ("casa/rootfs/opt/casa/delegated_memory.py", "architecture/memory-capture.md",
      ["role_writes_memory", "notice_from_excluded_role", "capture_post_line",
-      "capture_desk_reply", "capture_topic_message"]),
+      "capture_desk_reply", "capture_job_reply"]),
     ("casa/rootfs/opt/casa/config.py", "architecture/configuration.md",
      ["AgentConfig"]),
     ("casa/rootfs/opt/casa/config.py", "architecture/config-reconciliation.md",
@@ -1864,7 +1864,7 @@ _DECLARED_OWNERSHIP = [
     ("casa/rootfs/opt/casa/tools.py", "architecture/memory-scoping.md",
      ["_origin_clearance_markers"]),
     ("casa/rootfs/opt/casa/channels/telegram.py", "architecture/memory-scoping.md",
-     ["TelegramChannel.handle_update", "TelegramChannel._steer_refused"]),
+     ["TelegramChannel.handle_update"]),
 ]
 # (The internal_handlers.py row — the /internal/tools/call handler — went with
 # that route when the claude_code driver was removed.)

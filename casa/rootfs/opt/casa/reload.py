@@ -1373,7 +1373,7 @@ async def _teardown_disabled_specialist(
     async def close_engagements() -> None:
         # #1095 (INV-CFG-013): the disable takes effect here, so the
         # specialist's open conversations are closed now, through the terminal
-        # funnel (which tells each topic). Awaited inline: the funnel takes no
+        # funnel (which tells each engager). Awaited inline: the funnel takes no
         # reload or plugin-tools lock, so holding the RW reader and
         # `agent:<role>` here cannot wedge. A failed close is told to the
         # operator by the helper, named by raising, and retried by the next

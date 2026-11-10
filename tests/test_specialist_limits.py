@@ -757,7 +757,7 @@ class TestInteractiveEngagementPermitRelease:
 
         rec = await eng_reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t", origin=_origin(chat_id="room-1"), topic_id=None,
+            task="t", origin=_origin(chat_id="room-1"),
         )
         rec.permit = permit
 
@@ -787,10 +787,7 @@ class TestInteractiveEngagementPermitRelease:
         limiter = SpecialistLimiter(max_global=1)
         eng_reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
-        tch.engagement_permission_ok = True
         tch.engagement_supergroup_id = -1001
-        tch.open_engagement_topic = AsyncMock(return_value=555)
-        tch.send_to_topic = AsyncMock()
         cm = MagicMock()
         cm.get.return_value = tch
         bus = MagicMock()
@@ -815,7 +812,7 @@ class TestInteractiveEngagementPermitRelease:
         payload = json.loads(result["content"][0]["text"])
         assert payload["status"] == "pending"
 
-        rec = eng_reg.by_topic_id(555)
+        rec = eng_reg.get(payload["engagement_id"])
         assert rec is not None
         assert rec.permit is not None
         # The scope is held — a second job launch on the same specialist
@@ -841,12 +838,7 @@ class TestInteractiveEngagementPermitRelease:
         limiter = SpecialistLimiter(max_global=1)
         eng_reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
-        tch.engagement_permission_ok = True
         tch.engagement_supergroup_id = -1001
-        tch.open_engagement_topic = AsyncMock(return_value=555)
-        tch.send_to_topic = AsyncMock()
-        tch.update_topic_state = AsyncMock()
-        tch.close_topic = AsyncMock()
         cm = MagicMock()
         cm.get.return_value = tch
         bus = MagicMock()
@@ -896,7 +888,7 @@ class TestInteractiveEngagementPermitRelease:
 
         rec = await eng_reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t", origin=_origin(chat_id="room-1"), topic_id=None,
+            task="t", origin=_origin(chat_id="room-1"),
         )
         rec.permit = permit
 
@@ -928,67 +920,40 @@ class TestInteractiveEngagementPermitRelease:
         client = _FakeDriverClient(
             total_cost_usd=0.07, usage={"input_tokens": 30, "output_tokens": 9})
         await _run_one_turn(_engagement("e1", "specialist", "finance"), client,
-                            lambda tid: _FakeTopicStream(),
                             result_observer=_observer)
 
         snap = telem.snapshot("finance")
         assert snap.total_cost_usd == pytest.approx(0.07)
         assert snap.total_input_tokens == 30
 
-    async def test_interactive_specialist_stream_output_capped(
+    async def test_a_long_specialist_turn_logs_every_message_whole(
         self, monkeypatch,
     ):
-        """IMPORTANT 2: no topic message of a SPECIALIST turn grows past
-        `_MAX_OUTPUT_CHARS`. A job's turn can run for hours, so at the cap the
-        turn's stream is finalized and a new one started: every message is
-        delivered whole, none is dropped, and no stream holds more than the
-        cap."""
+        """A job's turn can run for hours: every message of it is logged
+        whole, one entry each, whatever the output cap; none is dropped."""
         import specialist_limits as sl
+        from agent_log_double import RecordingLogs
 
         monkeypatch.setattr(sl, "_MAX_OUTPUT_CHARS", 20)
-        streams: list[_CapturingStream] = []
+        logs = RecordingLogs()
         parts = ["a" * 15, "b" * 15, "c" * 15]
         await _run_one_turn(_engagement("e1", "specialist", "finance"),
-                            _FakeDriverClient(texts=parts),
-                            _stream_collector(streams))
+                            _FakeDriverClient(texts=parts), agent_logs=logs)
 
-        assert [st.final for st in streams] == parts
-        assert all(len(st.final) <= 20 for st in streams)
-
-    async def test_interactive_executor_stream_not_capped(self, monkeypatch):
-        """The stream cap is specialist-only — executor engagements stream
-        unrestricted (their output surface is a different concern)."""
-        import specialist_limits as sl
-
-        monkeypatch.setattr(sl, "_MAX_OUTPUT_CHARS", 20)
-        streams: list[_CapturingStream] = []
-        parts = ["y" * 15, "z" * 15]
-        await _run_one_turn(_engagement("e2", "executor", "configurator"),
-                            _FakeDriverClient(texts=parts),
-                            _stream_collector(streams))
-
-        assert len(streams) == 1
-        assert streams[0].final == "\n\n".join(parts)  # one stream, not split
+        assert logs.texts() == parts
 
 
 def _engagement(eid, kind, role):
     from engagement_registry import EngagementRecord
     return EngagementRecord(
         id=eid, kind=kind, role_or_type=role,
-        driver="in_casa", status="active", topic_id=99,
+        driver="in_casa", status="active",
         started_at=0.0, last_user_turn_ts=0.0,
         completed_at=None, sdk_session_id=None, origin={}, task="t",
     )
 
 
-def _stream_collector(streams):
-    def factory(topic_id):
-        streams.append(_CapturingStream())
-        return streams[-1]
-    return factory
-
-
-async def _run_one_turn(rec, client, stream_factory, **driver_kw):
+async def _run_one_turn(rec, client, **driver_kw):
     """Run one turn of *rec*'s job session on a real InCasaDriver with
     *client* attached as its live session: Casa writes one line, the client
     plays its scripted turn, and this returns once the turn has ended."""
@@ -999,34 +964,13 @@ async def _run_one_turn(rec, client, stream_factory, **driver_kw):
         from turn_scripted_session import attach_session
 
     ended = asyncio.Event()
-    drv = InCasaDriver(topic_stream_factory=stream_factory,
-                       on_turn_end=lambda r, res, err: ended.set(), **driver_kw)
+    drv = InCasaDriver(on_turn_end=lambda r, res, err: ended.set(), **driver_kw)
     attach_session(drv, rec, client)
     drv.submit_casa(rec, "hello")
     try:
         await asyncio.wait_for(ended.wait(), 5)
     finally:
         await drv.cancel(rec)
-
-
-class _FakeTopicStream:
-    async def emit(self, text):  # noqa: D401
-        pass
-
-    async def finalize(self, text):
-        pass
-
-
-class _CapturingStream:
-    def __init__(self):
-        self.emitted: list[str] = []
-        self.final: str | None = None
-
-    async def emit(self, text):
-        self.emitted.append(text)
-
-    async def finalize(self, text):
-        self.final = text
 
 
 try:

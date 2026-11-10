@@ -12,7 +12,7 @@ How an answer becomes Telegram messages: the markdown grammar the rich renderer 
 and how a table is judged, pagination to the platform's message-length and entity budgets,
 what a page whose formatting is refused or cannot be expressed still carries, and the unit
 both rendering paths measure in. How a message arrives and is dispatched, ordering in a
-topic, callbacks, and the delivery outcome of an answer are
+chat, callbacks, and the delivery outcome of an answer are
 [`architecture/telegram.md`](telegram.md).
 
 ## Mental model

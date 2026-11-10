@@ -77,9 +77,9 @@ def test_system_prompt_teaches_talking_with_a_specialist(system_md_text):
     assert "talk with a specialist" in text and "replying to its message" in text, (
         "system prompt must say how the person talks with a specialist."
     )
-    assert "engagements supergroup" in text, (
-        "system prompt must reference the Engagements supergroup as "
-        "the destination for jobs and executor engagements."
+    assert "engagements supergroup" not in text and "a job lives in this chat" in text, (
+        "system prompt must say a job lives in the direct chat, and name no "
+        "supergroup as its destination."
     )
 
 
@@ -1168,13 +1168,28 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # run that job, its batches included" becomes "A delegation does run that whole
 # job". One sentence changed on `assistant:text`; the eight other carriers
 # byte-identical. No retention claim.
+# MOVED (agent logs; jobs without the forum group), `assistant:text` only: the
+# Text projection's first line drops "topic" from "never invent Telegram topic
+# links"; the job paragraph says progress appears in the agent's log when the
+# result's message says so, not in the specialist's topic; the unopened-topic
+# paragraph becomes "A job lives in this chat: its questions, its result and
+# its Cancel button come here." followed by the unchanged talk-with-a-specialist
+# sentences, its topic sentences gone. Measured with `difflib` over
+# base-vs-new compiled text, word by word: eight non-equal opcodes on
+# `assistant:text`, all inside those three paragraphs; the eight other carriers
+# byte-identical. No retention claim.
+# REMOVED (the topic cleanup tool is gone), all three `assistant` carriers:
+# the core paragraph limiting the purge to a Telegram text conversation goes
+# from every assistant projection, and the text projection also loses the
+# purge paragraph. Nothing added; the six other carriers byte-identical. No
+# retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
-        "1f07ca5b5a3318b184d76f1f51a764caf873a9ec67cc9c51b8fc82a493c65978",
+        "c2c249fe7a34c5e33409f0114550920554ca15892b7f652b631ebbff53cc7111",
     "assistant:text":
-        "86455991a89c70977f08151764600d85671dc6decb9ce505713d1a04be6b6655",
+        "86161cbf376db0c1052fe75f6fa82e5814fbe0d548a5ef23c1970091d2ab80f4",
     "assistant:voice":
-        "6f3e93bc630acee568ba20dfeece54e5260903f3de398358cc2dc5736f14be02",
+        "7379e0d5b817c09b0c6cf4ad2a69e0a1ca3a668c791d66211bcc6d1584e646a4",
     "butler:restricted_webhook":
         "817241ec5da254b2fef07d2d0e6c7db0073bf1965a28be8d9b6818e59bc7f60b",
     "butler:text":
@@ -1486,16 +1501,12 @@ _KERNEL_DROP_OFF_CLAUSE = (
 )
 
 _UNOPENED_TOPIC_DOCTRINE = (
-    "Point someone to a topic in the Engagements supergroup only when a call "
-    "you made returned an engagement for it and no completion has closed it "
-    "since, or when a delegate's result says it started one of its own jobs, "
-    "whose topic then exists; a delegation otherwise opens no topic. When the "
-    "person wants to talk with a specialist themselves, or a step needs them "
-    "to, delegate their words to it in `sync` mode and pass its answer on with "
-    "relay_answer; in Telegram they carry on with it directly by replying to "
-    "its message, and if they ask how to go on with it, tell them that. There "
-    "is no separate topic for such a conversation; never refer to a topic you "
-    "have not opened."
+    "A job lives in this chat: its questions, its result and its Cancel button "
+    "come here. When the person wants to talk with a specialist themselves, or "
+    "a step needs them to, delegate their words to it in `sync` mode and pass "
+    "its answer on with relay_answer; in Telegram they carry on with it "
+    "directly by replying to its message, and if they ask how to go on with "
+    "it, tell them that."
 )
 
 
@@ -2091,76 +2102,14 @@ def test_the_late_answer_eval_judges_text_after_an_ask(after, ok):
 
 
 # ---------------------------------------------------------------------------
-# #1373: asked to remove all the closed topics, the assistant purges every
-# finished topic Casa recorded herself — a dry run, the count in an ask_user
-# question, and the real purge only after the person confirms. The rule
-# reaches only the assistant's text projection and the legacy carrier, once
-# each. Its live effect is measured by test-local/eval/ellen_topic_purge.py
-# (without the rule, the model purged straight after the dry run: 0/6).
+# No carrier names the removed topic cleanup tool any more.
 # ---------------------------------------------------------------------------
 
-_TOPIC_PURGE_DOCTRINE = (
-    "When the person asks to remove all the closed or finished topics, delete "
-    "them yourself with `cleanup_engagement_topics` and the scope "
-    "`all_terminal`, which deletes every finished topic Casa has recorded, "
-    "whatever its age; to tidy only the old ones, the default scope `due` "
-    "deletes those past the 7-day window. A deleted topic goes with all its "
-    "messages and cannot be brought back, so the request is never itself the "
-    "confirmation, however plainly it is worded. First call it with `dry_run` "
-    "true. If nothing would go, say so and stop. Otherwise ask with "
-    "`ask_user`, the count in the question, such as \"Delete all 12 finished "
-    "topics? This can't be undone.\" with the options \"Delete\" and \"Keep\", "
-    "and end your turn there without deleting. Delete for real, with the same "
-    "scope, only when the person's answer to that question confirms: first "
-    "send one line with `send_message`, such as \"Deleting 12 topics…\", then "
-    "delete, then say how many went; any other answer deletes nothing. Open "
-    "engagements are never deleted, nor are topics Casa never recorded, such "
-    "as ones from an older install; mention those only if the person asks, "
-    "and then say they remove them in Telegram."
-)
 
-
-def test_the_topic_purge_rule_reaches_only_the_assistant_text_projection():
-    needle = _collapse_ws(_TOPIC_PURGE_DOCTRINE)
-    compiled = _compiled_resident_carriers()
-    assert {name: _collapse_ws(body).count(needle) for name, body in compiled} == {
-        f"{slot}:{surface}": int(slot == "assistant" and surface == "text")
-        for slot in _RESIDENT_SLOTS
-        for surface in ("text", "voice", "restricted_webhook")}
-    assert {slot: _collapse_ws(body).count(needle)
-            for slot, body in _legacy_prompt_carriers()} == {
-        slot: int(slot == "assistant") for slot in _RESIDENT_SLOTS}
-
-
-def test_no_assistant_carrier_still_sends_the_full_purge_to_the_configurator():
-    """Before #1373 the legacy prompt said the full purge was configurator-only
-    and to engage the configurator for it; no carrier may keep that."""
+def test_no_carrier_names_the_removed_topic_cleanup_tool():
     for _name, body in [*_compiled_resident_carriers(), *_legacy_prompt_carriers()]:
+        assert "cleanup_engagement_topics" not in body
         assert "configurator-only" not in body
-
-
-_TOPIC_PURGE_CHANNEL_DOCTRINE = (
-    "Delete every finished engagement topic at once (`cleanup_engagement_topics` "
-    "with the scope `all_terminal`) only in a Telegram text conversation, as "
-    "your text rules describe. On a voice call or any other channel, do not run "
-    "it: ask the person to make that request to you in Telegram."
-)
-
-
-def test_the_topic_purge_channel_rule_reaches_every_assistant_projection():
-    """#1373 r1: the purge's confirmation is asked with buttons, which only a
-    Telegram DM has; on voice (where the caller need not be the operator) and
-    any other channel the assistant does not run it. The core doctrine reaches
-    all three assistant projections and the legacy carrier, no other role."""
-    needle = _collapse_ws(_TOPIC_PURGE_CHANNEL_DOCTRINE)
-    compiled = _compiled_resident_carriers()
-    assert {name: _collapse_ws(body).count(needle) for name, body in compiled} == {
-        f"{slot}:{surface}": int(slot == "assistant")
-        for slot in _RESIDENT_SLOTS
-        for surface in ("text", "voice", "restricted_webhook")}
-    assert {slot: _collapse_ws(body).count(needle)
-            for slot, body in _legacy_prompt_carriers()} == {
-        slot: int(slot == "assistant") for slot in _RESIDENT_SLOTS}
 
 
 # ---------------------------------------------------------------------------

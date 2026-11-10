@@ -25,7 +25,7 @@ async def _pending_record(tmp_path):
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
-        task="secret task", topic_id=7,
+        task="secret task",
         origin={"channel": "telegram", "_origin_route": "telegram",
                 "_origin_clearance": "private"},
     )
@@ -97,7 +97,7 @@ class TestInFlightReFilter:
             tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t", topic_id=7,
+            task="t",
             origin={"channel": "telegram", "_origin_route": "telegram",
                     "_origin_clearance": "private"},
         )
@@ -163,7 +163,7 @@ class TestInCasaClampMidRead:
                   "_origin_route": "telegram", "_origin_clearance": "private"}
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t", topic_id=7, origin=dict(parent))
+            task="t", origin=dict(parent))
         module = importlib.import_module(seam[0])
         real = getattr(module, seam[1])
         reads = []

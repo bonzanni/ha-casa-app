@@ -48,14 +48,6 @@ def test_session_registry_snapshot_is_private(tmp_path: Path) -> None:
     assert _mode(path) == 0o600
 
 
-def test_topic_ledger_is_private(tmp_path: Path) -> None:
-    import topic_ledger
-
-    path = tmp_path / "topic-ledger.json"
-    topic_ledger._write_entries(str(path), [{"topic": "x"}])
-    assert _mode(path) == 0o600
-
-
 def test_plugin_health_report_is_private(tmp_path: Path) -> None:
     import plugin_health
 

@@ -222,10 +222,9 @@ async def main():
     reg = EngagementRegistry(tombstone_path=tombstone)
     rec = await reg.create(kind="specialist", role_or_type="finance",
                            driver="in_casa", task="t",
-                           origin=json.loads(sys.argv[8]), topic_id=99)
+                           origin=json.loads(sys.argv[8]))
     open(os.path.join(os.path.dirname(marker), "engagement-id"), "w").write(rec.id)
-    drv = InCasaDriver(topic_stream_factory=lambda tid: Stream(),
-                       persist_session_id=reg.persist_session_id)
+    drv = InCasaDriver(persist_session_id=reg.persist_session_id)
     attach_session(drv, rec, Client())
     drv.submit_operator(rec, "topic message", tg_message_id=55)
     await asyncio.Event().wait()    # the turn runs on the driver's tasks
@@ -278,8 +277,7 @@ async def test_an_unnamed_row_holds_a_shared_folder_until_it_is_confirmed(
                                    role="finance", directory=cwd)
     reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"))
     sibling = await reg.create(kind="specialist", role_or_type="finance",
-                               driver="in_casa", task="t", origin={},
-                               topic_id=None)
+                               driver="in_casa", task="t", origin={})
     other = str(uuid.uuid4())
     await reg.persist_session_id(sibling.id, other)
     await reg.mark_completed(sibling.id, time.time())
@@ -388,9 +386,8 @@ async def test_a_cwd_reload_never_moves_where_an_engagement_is_held(
     _specialists(monkeypatch, finance=SimpleNamespace(role="finance", cwd=a))
     reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"))
     rec = await reg.create(kind="specialist", role_or_type="finance",
-                           driver="in_casa", task="t", origin=dict(ORIGIN),
-                           topic_id=None)
-    await InCasaDriver(topic_stream_factory=lambda tid: None).open(
+                           driver="in_casa", task="t", origin=dict(ORIGIN))
+    await InCasaDriver().open(
         rec, ClaudeAgentOptions(cwd=a))
     sid = str(uuid.uuid4())
     await reg.persist_session_id(rec.id, sid)          # persists the origin
@@ -478,10 +475,8 @@ async def test_a_rebuilt_or_resumed_engagement_stays_in_its_launch_folder(
     _specialists(monkeypatch, finance=SimpleNamespace(role="finance", cwd=a))
     reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"))
     rec = await reg.create(kind="specialist", role_or_type="finance",
-                           driver="in_casa", task="t", origin=dict(ORIGIN),
-                           topic_id=None)
-    drv = InCasaDriver(topic_stream_factory=lambda tid: None,
-                       record_lookup=reg.get)
+                           driver="in_casa", task="t", origin=dict(ORIGIN))
+    drv = InCasaDriver(record_lookup=reg.get)
     drv._persist_applied_profiles = lambda engagement: asyncio.sleep(0)
     await drv.open(rec, ClaudeAgentOptions(cwd=a))
     sid = str(uuid.uuid4())

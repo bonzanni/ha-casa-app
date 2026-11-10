@@ -21,8 +21,8 @@ session, its one-per-manifest-name rule and the resident's own `start_job` — i
 **A specialist owns its plugins' work.** When the operator asks a specialist for something
 its plugin does as a job — in a desk turn, or in a turn the resident delegated to it — the
 specialist starts the job itself, on itself, with `start_job(job, task, context)`. The job is
-exactly the job the resident would have started on that specialist: the same topic, session,
-refusals and end notice.
+exactly the job the resident would have started on that specialist: the same session, direct
+chat posts, log, refusals and end notice.
 
 **Offered by the build, decided at the call.** A specialist's desk, delegated or tap build is
 offered `start_job` when the plugins it loads (after env withholding) declare at least one job;
@@ -47,13 +47,14 @@ lock.
 **The resident is pointed at the delegate (#1228).** The resident keeps `start_job` for
 every job it lists; what changes is what it is shown and told. Its `<jobs>` block marks a
 delegate's job as that delegate's own (`Alex's own job: in text, ask Alex with a sync
-delegation; Alex starts it itself and it runs in Alex's topic`) only when the delegate's own
+delegation; Alex starts it itself and runs it`) only when the delegate's own
 start would accept it now, the same `own_job_hosts` resolution the call makes, so a job
 whose plugin is withheld keeps its plain line. The assistant's text doctrine sends such a
 request to the delegate through a sync delegation, says a
 delegation does run the job, and keeps `start_job` for such a job as the fallback when the
-delegation reports that it could not start it. A sync delegation's reported job start counts
-as a topic the assistant may point to. Its voice doctrine says no job starts on a call. The
+delegation reports that it could not start it. Its text doctrine says a job lives in the
+direct chat — its questions, its result and its Cancel button come there — and names no topic.
+Its voice doctrine says no job starts on a call. The
 `start_job` description names the delegation route.
 
 **The work's origin is the turn's.** The job records the calling turn's origin, without the
@@ -76,15 +77,15 @@ scheduled or webhook turn), whether the resident waited for the delegation or no
 branch is chosen only when no engagement is bound and the calling role's loaded `kind` is
 `specialist`; every other caller resolves hosts exactly as before.
 
-What it does not cover: a plugin unassigned from the specialist while the launch awaits topic
-creation — the launch then records the post-unassign resolution for a specialist with no
+What it does not cover: a plugin unassigned from the specialist while the launch awaits —
+the launch then records the post-unassign resolution for a specialist with no
 `requires:` block, and for one that declares `requires:` keeps every plugin its requires gate
 admitted, the environment filter aside ([`plugin-runtime.md`](plugin-runtime.md),
 INV-PLUG-008) — in both cases exactly as a resident's start of the same job does
 ([`background-job-occupancy.md`](background-job-occupancy.md), INV-BGJOB-006). A tap never starts a job
 ([`stored-call-buttons.md`](stored-call-buttons.md)).
 
-**INV-BGJOB-009**: The resident's `<jobs>` listing marks a job as a delegate's own, to be started through a sync text delegation to that delegate, only when that delegate's own `start_job` would accept it at render time; the assistant's served text projection tells it to delegate such a job and that a delegation runs it, and its voice projection that no job starts on a call; it keeps `start_job` for every job it lists; and a specialist's own start returns no engagement or topic id, while the resident's results still carry them.
+**INV-BGJOB-009**: The resident's `<jobs>` listing marks a job as a delegate's own, to be started through a sync text delegation to that delegate, only when that delegate's own `start_job` would accept it at render time; the assistant's served text projection tells it to delegate such a job and that a delegation runs it, and its voice projection that no job starts on a call; it keeps `start_job` for every job it lists; and a specialist's own start returns no engagement id, while the resident's results still carry it.
 
 The listing and the call share one resolution, `own_job_hosts`. One withholding is measured
 at render time and another at the call, so a secret wired or lost between them changes what
@@ -101,8 +102,8 @@ an unknown name, a plugin withheld for an unresolved secret — returns `job_not
 naming only the specialist's own startable jobs, and nothing is launched. **A voice
 delegation** returns `job_needs_text_channel`. Every other refusal is the launch's own, with
 the kinds a resident's start returns (`job_busy`, `busy`, `engagement_busy`,
-`agent_spawn_cap_exceeded`, a topic or launch failure), minus the engagement and topic ids
-those carry for the resident (#1229).
+`agent_spawn_cap_exceeded`, a launch failure), minus the engagement id those carry for the
+resident (#1229).
 
 ## Extension points
 

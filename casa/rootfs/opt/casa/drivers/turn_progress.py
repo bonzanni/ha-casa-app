@@ -23,7 +23,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Iterable
+
+from scratchpad import SERVER as _PAD_SERVER
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +42,12 @@ _ACTIVITY_RESEARCH = frozenset({"WebFetch", "WebSearch"})
 
 
 # #1350: Casa's own tools, in the operator's words — "using casa-framework
-# tools" told a configurator topic nothing about what was happening. Keyed on
+# tools" told the operator nothing about what was happening. Keyed on
 # the tool name after the ``mcp__casa-framework__`` prefix: exact names first,
 # then name prefixes; anything unlisted keeps the generic phrase.
 _CASA_TOOL_PREFIX = "mcp__casa-framework__"
+# Casa's own MCP servers: an agent log names their steps by activity too.
+_CASA_SERVERS = frozenset({"casa-framework", _PAD_SERVER})
 _CASA_ACTIVITY_EXACT: dict[str, str] = {
     "config_git_commit": "committing the change",
     "casa_reload": "reloading Casa",
@@ -105,6 +109,52 @@ def activity_for_tool(tool_name: str) -> str:
         # line can never blow the 4096 wire bound.
         return f"using {server[:_MCP_SERVER_CAP]} tools"
     return "working"
+
+
+def _plugin_segments() -> list[str]:
+    """The namespace segment of every plugin in the registry snapshot Casa
+    has published (its runtime name, sanitized as in a tool name); empty
+    when none is published. Never publishes one, never raises."""
+    try:
+        from plugin_registry import published_snapshot
+        from text_util import sanitize_segment
+        snap = published_snapshot()
+        if snap is None:
+            return []
+        return [sanitize_segment(e.get("manifest_name") or e["name"])
+                for e in snap.registry.entries]
+    except Exception:  # noqa: BLE001 - a log line never fails a turn
+        return []
+
+
+def step_log_line(tool_name: str,
+                  plugin_segments: "Iterable[str] | None" = None) -> str:
+    """One tool step as an agent log line.
+
+    Casa's own tools and the built-in ones read as their activity
+    (``🔧 Reading files``). Any other MCP tool names itself and where it
+    comes from: ``🔧 daily sync (bank-feed)`` for a plugin's tool
+    (``mcp__plugin_<plugin>_<server>__<tool>``), ``🔧 get state
+    (homeassistant)`` for another server's. The plugin is found among
+    *plugin_segments*, by default the plugins of the published registry; a
+    plugin tool of no known plugin names its whole namespace segment."""
+    name = tool_name or ""
+    server = (name.split("__")[1]
+              if name.startswith("mcp__") and name.count("__") >= 2 else "")
+    if server and server not in _CASA_SERVERS:
+        from authz_grants import short_tool_name
+        from plugin_grants import plugin_seg_of
+        tool = short_tool_name(name).replace("_", " ").strip()
+        source = server
+        if name.startswith("mcp__plugin_"):
+            segments = (_plugin_segments() if plugin_segments is None
+                        else plugin_segments)
+            source = (plugin_seg_of(name, segments)
+                      or server[len("plugin_"):] or server)
+        if tool:
+            return f"🔧 {tool} ({source[:_MCP_SERVER_CAP]})"
+    phrase = activity_for_tool(name)
+    return f"🔧 {phrase[:1].upper()}{phrase[1:]}"
 
 
 def format_elapsed(seconds: float) -> str:

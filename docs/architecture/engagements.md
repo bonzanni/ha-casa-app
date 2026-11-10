@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-09
+last_reviewed: 2026-11-10
 ---
 
 # Engagements
@@ -15,8 +15,7 @@ abort rolls back and what survives a restart are in
 [`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md). How an
 engagement *ends* — the single-winner
 terminal transition, the strictness that keeps creation and the terminal flip from leaving
-the persisted and in-memory records disagreeing, the finalization side effects and topic
-output ordering — is
+the persisted and in-memory records disagreeing, and the finalization side effects — is
 [`architecture/engagement-finalization.md`](engagement-finalization.md); the completion gate
 that refuses a success over input nobody read is
 [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md). How agents
@@ -32,7 +31,9 @@ turn loop itself, nor what a driver's underlying runtime does once started.
 
 **A delegated turn and an engagement are different things.** Delegation in its ordinary form
 is a task handed to a specialist that runs and returns — ephemeral. An engagement is a
-durable record with its own topic, which outlives the call that created it.
+durable record, which outlives the call that created it. It talks to the operator in their
+direct chat ([`background-job-direct-chat.md`](background-job-direct-chat.md)) and, when a log
+group is set up, writes its work to its agent's log ([`agent-logs.md`](agent-logs.md)).
 
 One launch path creates an engagement: `start_job` launches a background job through the
 one job launch owner (`tools.py::_launch_interactive_engagement`), as a `specialist` record
@@ -56,8 +57,8 @@ schema's enum only so a stale call — a model's, or a stored scheduled prompt's
 that refusal rather than the SDK's bare validation error. An interactive engagement an older
 install left open loads as any `specialist` record does: it is not resumed at boot (only
 jobs are), it stays one of its specialist's open conversations (a job on that specialist
-is refused `engagement_busy` meanwhile), the operator may still write in its topic, and
-`/complete`, `/cancel` or the stale-engagement reap ends it.
+is refused `engagement_busy` meanwhile), nothing written in Telegram reaches it any more,
+and the resident's `cancel_engagement` or the stale-engagement reap ends it.
 
 **A specialist's engagements are its open conversations, and a change to the specialist
 does not reach them.** One keeps the personality and the plugin versions it started with
@@ -91,7 +92,7 @@ and its death report in
 ## Failure behavior
 
 What a launch abort rolls back and how far it gets, which launch-failure arms answer the
-calling turn rather than the operator's topic, and what a restart replays or refuses, are in
+calling turn with a named fault, and what a restart replays or refuses, are in
 [`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md). A launch
 cancelled before it answered is reported by the launch-death reporter (INV-ENG-030, in
 [`architecture/engagement-launch-detach.md`](engagement-launch-detach.md)); a job's session that
@@ -125,7 +126,7 @@ tombstone's worth of obligations at the first boot after an upgrade.
 **A new origin value that may hold a live object** must be registered as non-persistable, or
 serialization will either fail or persist something meaningless.
 
-**A new terminal path, and a new topic output**, belong with the finalize funnel in
+**A new terminal path, and a new end-of-job output**, belong with the finalize funnel in
 [`architecture/engagement-finalization.md`](engagement-finalization.md).
 Whether a terminal writer needed authority to assert *that* outcome — and why neither
 persisting ledger checks it — is answered in the same document.

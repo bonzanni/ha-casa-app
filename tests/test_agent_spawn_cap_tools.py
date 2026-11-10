@@ -34,10 +34,6 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 def _channel(ok=True):
     ch = MagicMock()
     ch.engagement_supergroup_id = -100123 if ok else 0
-    ch.engagement_permission_ok = ok
-    ch.setup_engagement_features = AsyncMock()
-    ch.open_engagement_topic = AsyncMock(return_value=42)
-    ch.send_to_topic = AsyncMock()
     return ch
 
 
@@ -94,26 +90,25 @@ class TestEngageExecutorSpawnCap:
         ch = _wire(tmp_path, limiter=lim)
         payload = await _engage(_AGENT_ORIGIN)  # no _operator_turn = agent
         assert payload["kind"] == "agent_spawn_cap_exceeded"
-        ch.setup_engagement_features.assert_not_awaited()
-        ch.open_engagement_topic.assert_not_awaited()
         assert lim.occupancy == 1  # nothing acquired for the refused call
 
     async def test_operator_marked_turn_takes_no_occupancy(self, tmp_path):
         lim = AgentSpawnLimiter(max_spawns=1)
         held = lim.try_acquire()  # cap saturated — operator must not care
         assert held is not None
-        _wire(tmp_path, limiter=lim, channel_ok=False)
-        payload = await _engage({**_AGENT_ORIGIN, "_operator_turn": True})
+        _wire(tmp_path, limiter=lim)
+        payload = await _engage({**_AGENT_ORIGIN, "channel": "webhook",
+                                 "_operator_turn": True})
         # Sailed past the cap gate (else agent_spawn_cap_exceeded) and
-        # failed later on the unconfigured channel.
-        assert payload["kind"] == "engagement_not_configured"
+        # failed later on its non-Telegram origin.
+        assert payload["kind"] == "engagement_wrong_origin"
         assert lim.occupancy == 1
 
     async def test_post_acquire_failure_releases_reservation(self, tmp_path):
         lim = AgentSpawnLimiter(max_spawns=3)
-        _wire(tmp_path, limiter=lim, channel_ok=False)
-        payload = await _engage(_AGENT_ORIGIN)
-        assert payload["kind"] == "engagement_not_configured"
+        _wire(tmp_path, limiter=lim)
+        payload = await _engage({**_AGENT_ORIGIN, "channel": "webhook"})
+        assert payload["kind"] == "engagement_wrong_origin"
         assert lim.occupancy == 0  # leak-free: wrapper finally released it
 
     async def test_engagement_bound_turn_is_agent_context_despite_marker(
@@ -157,13 +152,12 @@ class TestEngageExecutorSpawnCap:
             agent_mod.origin_var.reset(token)
         payload = json.loads(r["content"][0]["text"])
         assert payload["kind"] == "agent_spawn_cap_exceeded"
-        ch.open_engagement_topic.assert_not_awaited()
         assert lim.occupancy == 1
 
     async def test_no_limiter_wired_means_cap_off(self, tmp_path):
-        _wire(tmp_path, limiter=None, channel_ok=False)
-        payload = await _engage(_AGENT_ORIGIN)
-        assert payload["kind"] == "engagement_not_configured"
+        _wire(tmp_path, limiter=None)
+        payload = await _engage({**_AGENT_ORIGIN, "channel": "webhook"})
+        assert payload["kind"] == "engagement_wrong_origin"
 
 
 class TestDepthRecordFallback:
@@ -236,7 +230,6 @@ class TestJobEngagementSpawn:
             tombstone_path=str(tmp_path / "e.json"),
             agent_spawn_limiter=lim)
         tch = _channel(ok=True)
-        tch.open_engagement_topic = AsyncMock(return_value=555)
         cm = MagicMock(); cm.get.return_value = tch
         specialist_reg = MagicMock()
         specialist_reg.get.return_value = self._alex_cfg()
@@ -258,7 +251,7 @@ class TestJobEngagementSpawn:
         res = await launch_job("Plan Q2", origin=dict(_AGENT_ORIGIN))  # agent context
         payload = json.loads(res["content"][0]["text"])
         assert payload["status"] == "pending"
-        rec = reg.by_topic_id(555)
+        rec = reg.get(payload["engagement_id"])
         assert rec is not None
         assert rec.origin["delegation_depth"] == 1
         assert rec.origin["_agent_spawned"] is True
@@ -280,7 +273,6 @@ class TestJobEngagementSpawn:
             tombstone_path=str(tmp_path / "e.json"),
             agent_spawn_limiter=lim)
         tch = _channel(ok=True)
-        tch.open_engagement_topic = AsyncMock(return_value=556)
         cm = MagicMock(); cm.get.return_value = tch
         specialist_reg = MagicMock()
         specialist_reg.get.return_value = self._alex_cfg()
@@ -302,7 +294,7 @@ class TestJobEngagementSpawn:
         res = await launch_job("Plan Q2", origin={**_AGENT_ORIGIN, "_operator_turn": True})
         payload = json.loads(res["content"][0]["text"])
         assert payload["status"] == "pending"
-        rec = reg.by_topic_id(556)
+        rec = reg.get(payload["engagement_id"])
         # Depth stamps for EVERY job child (operator included) so the
         # child cannot delegate onward; the spawn marker/occupancy is
         # agent-context-only.

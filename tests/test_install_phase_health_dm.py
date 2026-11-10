@@ -211,8 +211,7 @@ async def test_a_failing_observer_never_fails_the_transition(tmp_path):
 
     reg.set_terminal_observer(_boom)
     rec = await reg.create(kind="specialist", role_or_type="finance",
-                           driver="in_casa", task="job", origin={},
-                           topic_id=None)
+                           driver="in_casa", task="job", origin={})
     await reg.mark_cancelled(rec.id)
     assert rec.status == "cancelled"
 

@@ -245,7 +245,7 @@ async def test_a_next_card_with_pages_is_never_an_edit_and_falls_back_to_receipt
 # --- the channel: one page is one message ----------------------------------------------
 
 def _channel_with_bot():
-    from test_telegram_topic_stream import _mk_channel_with_fake_bot
+    from telegram_channel_double import _mk_channel_with_fake_bot
     return _mk_channel_with_fake_bot()
 
 

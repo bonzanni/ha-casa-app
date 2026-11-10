@@ -18,7 +18,7 @@ from telegram.error import BadRequest
 
 from channels.tg_richtext import plain_text, render
 from output_boundary_testing import admitted
-from test_telegram_topic_stream import _mk_channel_with_fake_bot
+from telegram_channel_double import _mk_channel_with_fake_bot
 
 pytestmark = pytest.mark.asyncio
 
@@ -99,12 +99,6 @@ async def test_a_plain_dm_edit_shows_no_backslash():
     assert bot.edit_message_text.await_args.kwargs["text"] == SHOWN
 
 
-async def test_a_plain_narration_post_shows_no_backslash():
-    ch, bot = _mk_channel_with_fake_bot()
-    await ch.send_to_topic_rich(42, ESCAPED)
-    assert bot.send_message.await_args.kwargs["text"] == SHOWN
-
-
 async def test_a_plain_reply_shows_no_backslash():
     ch, bot = _mk_channel_with_fake_bot()
     await ch.send_response(admitted(ESCAPED), {"chat_id": "42"})
@@ -119,25 +113,6 @@ async def test_a_plain_streamed_reply_finalizes_without_backslash():
     await ch.finalize_response_stream(admitted(ESCAPED), ctx, on_token)
     assert bot.edit_message_text.await_args.kwargs["text"] == SHOWN
 
-
-async def test_a_plain_topic_stream_finalizes_without_backslash():
-    ch, bot = _mk_channel_with_fake_bot()
-    handle = ch.create_topic_stream(topic_id=42)
-    await handle.emit("partial")
-    await handle.finalize(ESCAPED)
-    assert bot.edit_message_text.await_args.kwargs["text"] == SHOWN
-
-
-async def test_a_plain_topic_stream_with_no_emit_posts_without_backslash():
-    ch, bot = _mk_channel_with_fake_bot()
-    handle = ch.create_topic_stream(topic_id=42)
-    await handle.finalize(ESCAPED)
-    assert bot.send_message.await_args.kwargs["text"] == SHOWN
-
-
-# ---------------------------------------------------------------------------
-# What stays authored
-# ---------------------------------------------------------------------------
 
 async def test_a_refused_card_still_retries_with_the_authored_text():
     ch, bot = _mk_channel_with_fake_bot()

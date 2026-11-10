@@ -1,13 +1,13 @@
-"""#1179: a plugin assigned while a job's engagement launch awaits topic creation.
+"""#1179: a plugin assigned after a job's requires gate resolved, before its session
+is built.
 
-The session is built after ``open_engagement_topic`` returns, and ``plugin_assign``
-promises an assignment applies to sessions built from then on. A target with no
-``requires:`` block already resolves its plugins after the topic await. A target that
-declares ``requires:`` used to reuse the requires gate's resolution, taken before the
-await, so a plugin assigned in between was neither recorded on the engagement nor
-launched — and resume, which reads the record, kept it out for the engagement's life.
+``plugin_assign`` promises an assignment applies to sessions built from then on. A
+target with no ``requires:`` block resolves its plugins when the session is built. A
+target that declares ``requires:`` used to reuse the requires gate's resolution, so a
+plugin assigned in between was neither recorded on the engagement nor launched — and
+resume, which reads the record, kept it out for the engagement's life.
 
-The launch now keeps every plugin the gate admitted and adds the ones the post-topic
+The launch now keeps every plugin the gate admitted and adds the ones the later
 resolution returns beyond them; the one resulting resolution is both recorded and handed
 to the session build.
 """
@@ -50,8 +50,8 @@ def _plugin(name: str, manifest_name: str = "") -> ResolvedPlugin:
 async def _launch(monkeypatch, *, requires: RequiresConfig | None,
                   before: list, after, ):
     """Drive one job launch on ``finance``. ``resolve_for`` returns
-    *before* until ``open_engagement_topic`` runs, then *after* (a list of plugins,
-    or an exception instance to raise). Returns the observations."""
+    *before* until the requires gate has returned, then *after* (a list of
+    plugins, or an exception instance to raise). Returns the observations."""
     import agent as agent_mod
     import tools as tm
 
@@ -66,16 +66,8 @@ async def _launch(monkeypatch, *, requires: RequiresConfig | None,
             raise after
         return ResolutionResult(registry_valid=True, plugins=list(after))
 
-    async def _open_topic(**_kw):
-        # The assignment lands while the launch awaits topic creation.
-        state["phase"] = "after"
-        return 555
-
     tch = MagicMock()
-    tch.engagement_permission_ok = True
     tch.engagement_supergroup_id = -1001
-    tch.open_engagement_topic = AsyncMock(side_effect=_open_topic)
-    tch.set_channel_state = AsyncMock()
     cm = MagicMock()
     cm.get.return_value = tch
     reg = MagicMock()
@@ -85,8 +77,6 @@ async def _launch(monkeypatch, *, requires: RequiresConfig | None,
     rec.id = "eng1"
     eng_reg.create = AsyncMock(return_value=rec)
     eng_reg.update_plugin_profiles = AsyncMock()
-    eng_reg.set_channel_state = AsyncMock()
-    eng_reg.set_initial_state_emoji = AsyncMock()
     eng_reg.launch_shutdown_active.return_value = False
 
     tm.init_tools(
@@ -99,8 +89,17 @@ async def _launch(monkeypatch, *, requires: RequiresConfig | None,
         },
     )
     monkeypatch.setattr(tm.plugin_registry, "resolve_for", _resolve_for)
+    real_gate = tm._requires_gate
+
+    async def _gate_then_assign(*a, **kw):
+        # The assignment lands right after the requires gate resolved.
+        result = await real_gate(*a, **kw)
+        state["phase"] = "after"
+        return result
+
+    monkeypatch.setattr(tm, "_requires_gate", _gate_then_assign)
     abort = AsyncMock()
-    monkeypatch.setattr(tm, "_abort_engagement_topic", abort)
+    monkeypatch.setattr(tm, "_abort_launch_with_fault", abort)
 
     built: list = []
 
@@ -122,7 +121,7 @@ async def _launch(monkeypatch, *, requires: RequiresConfig | None,
     })
     return {
         "payload": json.loads(res["content"][0]["text"]),
-        "topic": tch.open_engagement_topic, "create": eng_reg.create,
+        "create": eng_reg.create,
         "abort": abort, "built": built, "resolves": resolves,
         "driver": driver,
     }
@@ -142,7 +141,6 @@ class TestLateAssignmentDuringTopicAwait:
             before=[mtg], after=[mtg, late])
 
         assert obs["payload"]["status"] == "pending"
-        assert obs["topic"].await_count == 1
         assert obs["create"].await_count == 1
         assert obs["abort"].await_count == 0
         assert len(obs["built"]) == 1
@@ -159,12 +157,11 @@ class TestLateAssignmentDuringTopicAwait:
         obs = await _launch(monkeypatch, requires=None, before=[mtg], after=[mtg, late])
 
         assert obs["payload"]["status"] == "pending"
-        assert obs["topic"].await_count == 1
         assert obs["create"].await_count == 1
         assert obs["abort"].await_count == 0
         assert len(obs["built"]) == 1
         assert _recorded_names(obs) == [rp.name for rp in obs["built"][0].plugins] == [
             "mtg", "late"]
         # With no requires gate, the session is built from the one resolve,
-        # taken after the topic exists.
+        # taken after the gate returned.
         assert obs["resolves"] == [("after", "specialist:finance")]

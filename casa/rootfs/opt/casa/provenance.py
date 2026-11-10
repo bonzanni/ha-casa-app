@@ -235,7 +235,7 @@ class Provenance:
     synthetic turn replaying an inline-button answer), "setup" (the turn
     Casa itself dispatches to run a plugin's setup tool, addressed to the
     configured operator's chat — #1015), or "other" (anything else — voice,
-    webhook, group/engagement-topic traffic, malformed/missing ids, ...).
+    webhook, group traffic, malformed/missing ids, ...).
 
     ``execution``: "direct" (the resident handling its own turn),
     "delegated" (a specialist/executor running on behalf of a different

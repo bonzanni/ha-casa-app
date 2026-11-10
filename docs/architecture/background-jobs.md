@@ -16,10 +16,11 @@ they arrive, turn ends, parking, resuming after a restart or a CLI death, compac
 survives a restart is [`background-job-message-journal.md`](background-job-message-journal.md).
 How many jobs of one plugin may run at once is
 [`background-job-occupancy.md`](background-job-occupancy.md). The engagement a job runs in —
-its topic, admission, completion gate and finalization — is described by
+its admission, completion gate and finalization — is described by
 [`engagements.md`](engagements.md) and the documents it routes to; the per-role engagement
 slot is in [`delegation.md`](delegation.md). What a job puts in the operator's direct chat is
-[`background-job-direct-chat.md`](background-job-direct-chat.md).
+[`background-job-direct-chat.md`](background-job-direct-chat.md); what it writes in its
+agent's log, when a log group is set up, is [`agent-logs.md`](agent-logs.md).
 
 ## Mental model
 
@@ -60,15 +61,15 @@ apply. Its working directory is `/data/engagements/<id>/plugin-job`.
 Casa then writes the brief and lets the job work: one long session that keeps going until
 the job calls `emit_completion`. It posts progress with `report_job_progress` when it has
 something worth telling, and a specialist's job asks the operator through `ask_operator`.
-Messages the operator writes in the topic, and their replies in their direct chat to the job's
-posts, are written into the running session as they arrive. When a turn ends without the job
+The operator's replies in their direct chat to the job's posts are written into the running
+session as they arrive. When a turn ends without the job
 finishing, Casa continues it, nudges it once, or parks it to wait for the operator
 ([`background-job-session.md`](background-job-session.md)). The job ends when it calls
-`emit_completion`, when the operator cancels it (`/cancel` in the topic, the Cancel button in
-their direct chat, or through the resident's `cancel_engagement`), when the stale-job reap
+`emit_completion`, when the operator cancels it (the Cancel button in their direct chat, or
+through the resident's `cancel_engagement`), when the stale-job reap
 ends it, or when its session cannot be resumed (INV-BGJOB-022). A job declaring
-`quietWhenScheduled` runs without a topic or progress lines when its schedule started it,
-until it interacts with the operator
+`quietWhenScheduled` says nothing in the direct chat when its schedule started it, until it
+interacts with the operator
 ([`background-job-quiet-runs.md`](background-job-quiet-runs.md)).
 
 ## Contracts & invariants
@@ -80,18 +81,18 @@ plugin's protected tools reach Casa's ordinary approval challenge rather than be
 for want of a specialist record. For the same reason the declaring plugin's
 result contract applies unchanged: a tool whose result declares an operator link still has
 that link delivered by Casa into the operator's chat. Casa delivers it, as it posts the
-approval challenge — the worker itself holds no tool that reaches outside its topic.
+approval challenge — the worker itself holds no tool that reaches the operator.
 
 How many jobs of one plugin may be live or starting at once — one per installed plugin
 and one per plugin manifest name — is
 [`architecture/background-job-occupancy.md`](background-job-occupancy.md) (INV-BGJOB-006).
 
-**INV-BGJOB-022**: Casa never ends a live job on its own judgement of the work — stopping without finishing, the step ceiling, API faults and cost continue or park it; the job runner ends a job only when its session cannot be resumed after a restart or after its first unexpected end, or ends unexpectedly a second time, and then `error` through the engagement finalize funnel with its reason; every `cancelled` or `error` end of a job appends `Last progress: <summary>` to the text its topic and resident receive, once.
+**INV-BGJOB-022**: Casa never ends a live job on its own judgement of the work — stopping without finishing, the step ceiling, API faults and cost continue or park it; the job runner ends a job only when its session cannot be resumed after a restart or after its first unexpected end, or ends unexpectedly a second time, and then `error` through the engagement finalize funnel with its reason; every `cancelled` or `error` end of a job appends `Last progress: <summary>` to the text its resident receives, once.
 
 The reasons are "could not be resumed after a restart" and "its session ended unexpectedly"
 (INV-BGJOB-018 in [`background-job-session.md`](background-job-session.md)). The summary is
-the first line of the job's latest `report_job_progress`, so `/cancel` also reports what the
-job had done. What it does not cover: the job itself may finish `failed` or `cancelled`
+the first line of the job's latest `report_job_progress`, so a cancellation also reports
+what the job had done. What it does not cover: the job itself may finish `failed` or `cancelled`
 through `emit_completion`, the operator may cancel it, the stale-job reap cancels a job idle
 and waiting past its expiry, and a launch that fails before its session is registered takes
 the launch-abort paths ([`engagement-launch-detach.md`](engagement-launch-detach.md)).
@@ -125,17 +126,18 @@ slot. Resident-plugin launches keep input bounds, depth, the setup-turn restrict
 spawn cap and channel checks, but do not use the delegate ACL, specialist registry or
 specialist slot. Both use `_launch_interactive_engagement` for record creation, driver
 opening and the detached launch owner. A successful start returns its `pending` envelope
-plus the job, title, host role and a one-line message. Resident-plugin topics persist a
-`<resident display name> · <job title>` label, shortened with the existing topic helper,
-so later state paints retain the name; they use the default topic bubble.
+plus the job, title, host role and a one-line message, which names the agent's log
+(`<Agent>'s log`, or its `plugins log` for a resident's plugin worker) only while the log is
+on.
 
 `report_job_progress(summary, done=None, remaining=None)` is granted only to a job
 engagement's session and may be called at any time in a live job. Outside one it returns
 `not_a_job`; a summary that is not a string, or a negative or boolean count, returns
 `invalid_arguments`. It records the summary's first line (at most 300 characters) as the
-job's `last_summary`, marks progress for the step-ceiling rule, posts
-`📊 <summary> · <done> done · <remaining> left` in the topic (counts only when given — they
-are the worker's own unit and decide nothing) and persists `origin["job"]`.
+job's `last_summary`, marks progress for the step-ceiling rule, logs
+`📊 <summary> · <done> done · <remaining> left` in the agent's log (counts only when given —
+they are the worker's own unit and decide nothing) and persists `origin["job"]`. Nothing is
+posted in the direct chat.
 
 Resume options rebuild the job session and its grants from `origin["job"]`, so a resumed
 session runs exactly as the launched one did. Plugin workers additionally rebuild from the
@@ -149,8 +151,8 @@ environment withholding, refuses resume rather than building an empty worker.
 
 ## Failure behavior
 
-**A plugin worker cannot launch.** Environment withholding is checked before topic
-creation; the same admitted resolution supplies the record and options. Options-building
+**A plugin worker cannot launch.** Environment withholding is checked before the record is
+created; the same admitted resolution supplies the record and options. Options-building
 failures after record creation use the shared named launch-abort path. Once the session is
 registered, a failure — the CLI dying before or during the brief's write included — is a
 session loss, recovered once ([`background-job-session.md`](background-job-session.md)).

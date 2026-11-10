@@ -52,7 +52,7 @@ def reg(tmp_path, monkeypatch):
 async def _open(reg, slug="fin", *, topic=101, task="Review household budget"):
     origin = {"channel": "telegram", "chat_id": "42", "user_id": 42, "role": "assistant"}
     return await reg.create(kind="specialist", role_or_type=slug, driver="in_casa",
-                            task=task, origin=origin, topic_id=topic)
+                            task=task, origin=origin)
 
 
 # --- the plugin harness ---------------------------------------------------------------

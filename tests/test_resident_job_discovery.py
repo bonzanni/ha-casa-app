@@ -44,7 +44,7 @@ def test_resident_job_is_listed_only_for_its_host(tmp_path, monkeypatch) -> None
     assert block == (
         "<jobs>\n"
         "- finance:classify — Classify transactions: Classify unreviewed "
-        "transactions in batches (runs as a plugin job in Ellen's topic)\n"
+        "transactions in batches (runs as a plugin job of Ellen)\n"
         "</jobs>"
     )
     assert _render_jobs_block(

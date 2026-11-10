@@ -22,7 +22,7 @@ Two things follow from that, and both are load-bearing:
 **The pass is what repairs a deployed install.** Correct write sites alone do
 not: on an upgraded instance every affected file already exists at ``0644``, and
 ``mode=None`` preserves an existing file's mode, so a file whose next write is
-days away (``topic-ledger.json``) would stay exposed until then. :func:`enforce`
+days away (``log-topics.json``) would stay exposed until then. :func:`enforce`
 runs on every boot and repairs what it finds.
 
 **Directories are tightened, never walked.** Removing ``x`` for others on
@@ -81,8 +81,9 @@ FILES: tuple[Entry, ...] = (
 
     Entry("/data/sessions.json", 0o600, PRIVATE,
           "SDK session ids and per-channel bindings for the whole fleet."),
-    Entry("/data/topic-ledger.json", 0o600, PRIVATE,
-          "Terminal topic records across every channel."),
+    Entry("/data/log-topics.json", 0o600, PRIVATE,
+          "The agent-log group's topic ids and the ids and send times of "
+          "every log post still awaiting deletion."),
     Entry("/data/jobs.json", 0o600, PRIVATE,
           "Delegated job rows: creator identity, task, context, result and "
           "failure text for resident and specialist work."),
@@ -120,7 +121,7 @@ FILE_GLOBS: tuple[Entry, ...] = (
           "aside with os.replace, which PRESERVES the pre-upgrade 0644 inode "
           "under a name no per-file entry covers."),
     Entry("/data/*.casabak", 0o600, PRIVATE,
-          "Quarantine alias, as above (topic_ledger). config_sync's own "
+          "Quarantine alias, as above (agent_logs). config_sync's own "
           ".casabak sidecars live under /config and are unaffected."),
 )
 

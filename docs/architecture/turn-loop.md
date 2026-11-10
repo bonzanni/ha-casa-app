@@ -118,8 +118,8 @@ a job's session reader records the fault's kind on the turn and hands it to the 
 turn-end handler at the turn's result, which waits and continues the job once and parks it on
 a second consecutive fault — never ends it, because one declined turn is not the job's verdict
 ([`background-job-session.md`](background-job-session.md)). Its detection runs before the
-branch that streams text, so the CLI's error prose is never streamed into the topic, however
-much the turn has already written.
+branch that logs text, so the CLI's error prose never reaches the agent's log, however much
+the turn has already written.
 
 **INV-TURN-008**: A turn carrying server-stamped trusted user ingress that consumes SDK retries and still ends in silence ends as a classified error instead of silence, unless it stopped at its turn limit (INV-TURN-014); and a conversation whose resumed trusted-ingress turns repeatedly evidence SDK faults is not resumed past a bounded streak — it starts fresh with the old session retained.
 

@@ -61,8 +61,8 @@ once cannot overwrite each other.
 **The window before the restart has no admission guarantee.** Nothing is refused, drained
 or fenced: turns, reminders, triggers, jobs, delegations and engagements run as usual, and
 whatever they write to memory is erased at the next container start. One courtesy check
-remains: once the restart is requested, an operator message on the DM path or in an
-engagement topic gets "Restarting to wipe memory — send it again in a minute." and no
+remains: once the restart is requested, an operator message on the DM path or a reply into
+a job gets "Restarting to wipe memory — send it again in a minute." and no
 turn, for at most five minutes. The Supervisor answers a restart only after it has stopped
 the container, so the request is sent detached: the door answers at once (the terminal
 door included) and the in-process flag is set when the request is sent. If the
@@ -125,7 +125,7 @@ session id yet. The driver refuses to resume a record so marked
 tool fence refuses its tool calls (`casa/rootfs/opt/casa/tools.py::_engagement_rebuild_fence`).
 What the operator sees depends on what the job was doing:
 
-- **Working**: at boot its topic gets the usual `↻ Resuming "<title>" after a restart.`, the
+- **Working**: at boot its agent's log gets the usual `↻ Resuming after a restart`, the
   resume is refused, and the job ends as an error, "could not be resumed after a restart",
   with its last reported progress, if any (`background_jobs.py::JobRunner.resume_at_boot`).
 - **Waiting for the operator with nothing journaled**: boot leaves it alone, as it leaves

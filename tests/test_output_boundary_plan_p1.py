@@ -26,7 +26,7 @@ import tools
 from channels import DeliveryOutcome
 from output_boundary import Admitted, IntentKind as K
 from output_boundary_testing import scope as _scope
-from test_telegram_topic_stream import _mk_channel_with_fake_bot
+from telegram_channel_double import _mk_channel_with_fake_bot
 from text_util import utf16_len
 
 pytestmark = [pytest.mark.unit]

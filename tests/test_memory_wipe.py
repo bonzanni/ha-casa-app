@@ -235,7 +235,7 @@ async def _record_file(path):
                                 ("e4" * 16, "in_casa", "idle")):
         reg._records[eid] = EngagementRecord(
             id=eid, kind="executor", role_or_type="configurator",
-            driver=driver, status=status, topic_id=7, started_at=0.0,
+            driver=driver, status=status, started_at=0.0,
             last_user_turn_ts=0.0,
             completed_at=None if status == "active" else time.time(),
             # e4 was persisted before its first session id was recorded
@@ -257,8 +257,7 @@ async def _resume(path, eid, monkeypatch):
     built: list = []
     monkeypatch.setattr(tools, "build_engagement_resume_options",
                         lambda rec, sid: built.append(sid))
-    driver = InCasaDriver(topic_stream_factory=lambda tid: None,
-                          record_lookup=reg.get)
+    driver = InCasaDriver(record_lookup=reg.get)
     rec = reg.get(eid)
     try:
         await driver.resume(rec, rec.sdk_session_id or "")
@@ -329,7 +328,7 @@ async def _wiped_job(tmp_path, monkeypatch, *, awaiting=None):
     writer = EngagementRegistry(tombstone_path=str(record))
     writer._records[JOB_ID] = EngagementRecord(
         id=JOB_ID, kind="specialist", role_or_type="finance",
-        driver="in_casa", status="active", topic_id=7, started_at=0.0,
+        driver="in_casa", status="active", started_at=0.0,
         last_user_turn_ts=0.0, completed_at=None, sdk_session_id=w.SID,
         origin={"channel": "telegram", "_origin_route": "telegram",
                 "_origin_clearance": "private", "job": job},
@@ -358,19 +357,27 @@ async def _wiped_job(tmp_path, monkeypatch, *, awaiting=None):
 
     class Channel:
         def __init__(self):
-            self.notices: list[str] = []
+            self.notices: list = []
 
-        async def _post_engagement_notice(self, rec, text):
-            self.notices.append(text)
+        def __getattr__(self, name):
+            # Any post or send is recorded, so "nothing posted" is checked.
+            if not name.lstrip("_").startswith(("send", "post", "deliver")):
+                raise AttributeError(name)
+
+            async def _record(*a, **kw):
+                self.notices.append((name, a, kw))
+            return _record
 
     reg = EngagementRegistry(tombstone_path=str(record))
     await reg.load()
     channel = Channel()
     monkeypatch.setattr(bj, "_states", {})
     monkeypatch.setattr(bj, "_runner", None)
-    runner = bj.JobRunner(registry=reg, channel=channel)
+    from agent_log_double import RecordingLogs
+    runner = bj.JobRunner(registry=reg, channel=channel,
+                          agent_logs=RecordingLogs())
     driver = drv.InCasaDriver(
-        topic_stream_factory=lambda topic: None, record_lookup=reg.get,
+        record_lookup=reg.get,
         begin_turn_delivery=reg.begin_turn_delivery,
         on_turn_end=runner.turn_ended, on_session_lost=runner.session_lost,
         on_operator_written=bj.note_operator_input)
@@ -382,7 +389,7 @@ async def _wiped_job(tmp_path, monkeypatch, *, awaiting=None):
 async def test_a_wiped_job_is_not_resumed_at_boot_and_ends_as_an_error(
         tmp_path, monkeypatch):
     """The wipe deleted the job's session transcript, so the one long session
-    cannot continue. Boot's resume of every open job tells the topic it is
+    cannot continue. Boot's resume of every open job logs that it is
     resuming, opens no session for the job and ends it as an error: "could
     not be resumed after a restart"."""
     import casa_core
@@ -391,7 +398,9 @@ async def test_a_wiped_job_is_not_resumed_at_boot_and_ends_as_an_error(
 
     await casa_core._resume_background_jobs(reg, channel)
 
-    assert channel.notices == ['↻ Resuming "Garden notes" after a restart.']
+    import background_jobs
+    assert background_jobs._runner.agent_logs.texts() == ["↻ Resuming after a restart"]
+    assert channel.notices == []
     assert cli.instances == []
     assert [(f["outcome"], f["text"]) for f in finalized] == [
         ("error", "could not be resumed after a restart")]

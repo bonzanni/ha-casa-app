@@ -1,4 +1,4 @@
-"""Tests for InCasaDriver — open, the session's turns streamed to the topic,
+"""Tests for InCasaDriver — open, the session's turns put in the agent log,
 cancel, resume, the engagement binding, the session id, and the API-fault
 kind a turn ends with.
 
@@ -14,6 +14,7 @@ import pytest
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock
 
+from agent_log_double import RecordingLogs
 from turn_scripted_session import TurnScriptedSession
 
 pytestmark = pytest.mark.asyncio
@@ -52,42 +53,12 @@ def _mk_system_init(session_id: str):
         return m
 
 
-def _mk_factory_with_fake_handle():
-    """Return (factory, handle) where factory(topic_id) → handle.
-
-    handle.emit and handle.finalize are AsyncMocks for assertion."""
-    from unittest.mock import MagicMock as _MagicMock
-    handle = _MagicMock()
-    handle.emit = AsyncMock()
-    handle.finalize = AsyncMock()
-
-    def _factory(topic_id):
-        handle._topic_id_seen = topic_id
-        return handle
-
-    return _factory, handle
-
-
-def _mk_noop_factory():
-    """Factory that returns a fresh no-op handle each call. Used by
-    tests that don't care about output (cancel, resume, is_alive)."""
-    from unittest.mock import MagicMock as _MagicMock
-
-    def _factory(topic_id):
-        h = _MagicMock()
-        h.emit = AsyncMock()
-        h.finalize = AsyncMock()
-        return h
-
-    return _factory
-
-
 def _make_record(**overrides):
     from engagement_registry import EngagementRecord
 
     base = dict(
         id="e1", kind="specialist", role_or_type="finance", driver="in_casa",
-        status="active", topic_id=42,
+        status="active",
         started_at=0.0, last_user_turn_ts=0.0,
         completed_at=None, sdk_session_id=None, origin={}, task="t",
     )
@@ -189,7 +160,7 @@ async def _say(drv, rec, session, text):
 
 
 # ---------------------------------------------------------------------------
-# open, and the turn streamed to the topic
+# open, and the turn put in the agent log
 # ---------------------------------------------------------------------------
 
 class TestInCasaStart:
@@ -199,7 +170,7 @@ class TestInCasaStart:
         client = _client_of(_mk_result_msg())
         monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient", client)
 
-        drv = InCasaDriver(topic_stream_factory=_mk_noop_factory())
+        drv = InCasaDriver()
         rec = _make_record()
 
         await drv.open(rec, ClaudeAgentOptions(model="sonnet"))
@@ -207,30 +178,44 @@ class TestInCasaStart:
         assert len(client.instances) == 1
         await drv.cancel(rec)
 
-    async def test_start_posts_initial_response_to_topic(self, monkeypatch):
+    async def test_start_logs_the_initial_response(self, monkeypatch):
+        from agent_logs import LogKey
         from drivers.in_casa_driver import InCasaDriver
 
         monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient",
                             _client_of(_mk_assistant("Hello from Alex"),
                                        _mk_result_msg()))
 
-        factory, handle = _mk_factory_with_fake_handle()
-        drv = InCasaDriver(topic_stream_factory=factory)
-        rec = _make_record()
+        logs = RecordingLogs()
+        drv = InCasaDriver(agent_logs=logs)
+        rec = _make_record(origin={"job": {"title": "Q3 accounting\nsecond"}})
 
         await _launch(drv, rec)
-        # Streaming → emit per-AssistantMessage + finalize once.
-        handle.emit.assert_awaited_once_with("Hello from Alex")
-        handle.finalize.assert_awaited_once_with("Hello from Alex")
-        assert handle._topic_id_seen == 42
+        # One entry per message, under the specialist's key and the job's title.
+        assert logs.lines == [
+            (LogKey("agent", "finance"), "Q3 accounting\nsecond", "Hello from Alex")]
+
+    async def test_a_plugin_jobs_lines_go_to_its_residents_plugin_log(
+            self, monkeypatch):
+        from agent_logs import LogKey
+        from drivers.in_casa_driver import InCasaDriver
+
+        monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient",
+                            _client_of(_mk_assistant("working"), _mk_result_msg()))
+        logs = RecordingLogs()
+        drv = InCasaDriver(agent_logs=logs)
+        rec = _make_record(kind="plugin", role_or_type="assistant",
+                           origin={"job": {"title": "Sync"}})
+
+        await _launch(drv, rec)
+        assert logs.lines == [(LogKey("plugins", "assistant"), "Sync", "working")]
 
     async def test_start_separates_multiple_assistant_messages_with_double_newline(
         self, monkeypatch,
     ):
         """E-8: when the SDK emits multiple AssistantMessages in one turn
-        (typical executor with tool calls), the final text posted to topic
-        must have \\n\\n between AssistantMessage boundaries — not a glued
-        paragraph."""
+        (typical executor with tool calls), each one is its own log entry —
+        never a glued paragraph."""
         from drivers.in_casa_driver import InCasaDriver
 
         monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient", _client_of(
@@ -239,36 +224,23 @@ class TestInCasaStart:
             _mk_assistant("The trait belongs in character.yaml."),
             _mk_result_msg()))
 
-        factory, handle = _mk_factory_with_fake_handle()
-        drv = InCasaDriver(topic_stream_factory=factory)
+        logs = RecordingLogs()
+        drv = InCasaDriver(agent_logs=logs)
         rec = _make_record()
 
         await _launch(drv, rec)
 
-        # 3 emits (cumulative) + 1 finalize with full text.
-        assert handle.emit.await_count == 3
-        emits = [c.args[0] for c in handle.emit.await_args_list]
-        assert emits[0] == "Reading the doctrine files first."
-        assert emits[1] == (
-            "Reading the doctrine files first."
-            "\n\nNow let me look at Ellen's config files."
-        )
-        assert emits[2] == (
-            "Reading the doctrine files first."
-            "\n\nNow let me look at Ellen's config files."
-            "\n\nThe trait belongs in character.yaml."
-        )
-        handle.finalize.assert_awaited_once()
-        text = handle.finalize.await_args.args[0]
-        assert "first.Now let me" not in text
-        assert "first.\n\nNow let me look" in text
-        assert "config files.\n\nThe trait belongs" in text
+        assert logs.texts() == [
+            "Reading the doctrine files first.",
+            "Now let me look at Ellen's config files.",
+            "The trait belongs in character.yaml.",
+        ]
 
     async def test_start_streams_skips_assistant_message_with_no_text(
         self, monkeypatch,
     ):
-        """An AssistantMessage with no TextBlocks (e.g. only ToolUseBlocks)
-        produces no emit and no inserted blank line."""
+        """An AssistantMessage with no TextBlocks and no tool use logs
+        nothing."""
         from drivers.in_casa_driver import InCasaDriver
 
         empty = _mk_assistant("ignored")
@@ -277,34 +249,28 @@ class TestInCasaStart:
             _mk_assistant("Before tool call."), empty,
             _mk_assistant("After tool call."), _mk_result_msg()))
 
-        factory, handle = _mk_factory_with_fake_handle()
-        drv = InCasaDriver(topic_stream_factory=factory)
+        logs = RecordingLogs()
+        drv = InCasaDriver(agent_logs=logs)
         rec = _make_record()
 
         await _launch(drv, rec)
 
-        assert handle.emit.await_count == 2
-        emits = [c.args[0] for c in handle.emit.await_args_list]
-        assert emits[1] == "Before tool call.\n\nAfter tool call."
-        handle.finalize.assert_awaited_once_with(
-            "Before tool call.\n\nAfter tool call."
-        )
+        assert logs.texts() == ["Before tool call.", "After tool call."]
 
-    async def test_start_empty_turn_skips_finalize(self, monkeypatch):
-        """A turn with no text → no emit, no finalize."""
+    async def test_start_empty_turn_logs_nothing(self, monkeypatch):
+        """A turn with no text logs nothing."""
         from drivers.in_casa_driver import InCasaDriver
 
         monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient",
                             _client_of(_mk_result_msg()))
 
-        factory, handle = _mk_factory_with_fake_handle()
-        drv = InCasaDriver(topic_stream_factory=factory)
+        logs = RecordingLogs()
+        drv = InCasaDriver(agent_logs=logs)
         rec = _make_record()
 
         await _launch(drv, rec)
 
-        handle.emit.assert_not_awaited()
-        handle.finalize.assert_not_awaited()
+        assert logs.lines == []
 
     async def test_start_logs_per_message(self, monkeypatch, caplog):
         """Each SDK message kind triggers an sdk_logging dispatch.
@@ -361,8 +327,8 @@ class TestInCasaStart:
         monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient", _client_of(
             sys_init, assistant, user_with_tool_result, result))
 
-        factory, _ = _mk_factory_with_fake_handle()
-        drv = InCasaDriver(topic_stream_factory=factory)
+        logs = RecordingLogs()
+        drv = InCasaDriver(agent_logs=logs)
         rec = _make_record()
 
         with caplog.at_level(logging.DEBUG, logger="sdk"):
@@ -378,28 +344,62 @@ class TestInCasaStart:
         assert "/x.yaml" not in caplog.text
         assert any("tool_result idx=1" in m and "ok=True" in m for m in msgs), msgs
         assert any("turn_done" in m and "turns=1" in m for m in msgs), msgs
+        # The main loop's step is logged after the words written before it.
+        assert logs.texts() == ["Reading config.", "🔧 Reading files"]
 
-    async def test_start_streaming_unchanged_after_phase4b(
-        self, monkeypatch,
-    ):
-        """The logging dispatch must NOT regress the per-AssistantMessage
-        stream.emit + finalize semantics."""
+    async def test_a_sub_agents_steps_are_not_logged(self, monkeypatch):
+        """Only the main loop's tool steps are logged; a sub-agent's (its
+        message carries ``parent_tool_use_id``) are not."""
+        from claude_agent_sdk import ToolUseBlock
         from drivers.in_casa_driver import InCasaDriver
 
-        monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient", _client_of(
-            _mk_assistant("First."), _mk_assistant("Second."), _mk_result_msg()))
-
-        factory, handle = _mk_factory_with_fake_handle()
-        drv = InCasaDriver(topic_stream_factory=factory)
+        main = AssistantMessage(
+            content=[ToolUseBlock(id="t1", name="Bash", input={})],
+            model="m", parent_tool_use_id=None)
+        sub = AssistantMessage(
+            content=[ToolUseBlock(id="t2", name="Read", input={})],
+            model="m", parent_tool_use_id="t0")
+        monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient",
+                            _client_of(main, sub, _mk_result_msg()))
+        logs = RecordingLogs()
+        drv = InCasaDriver(agent_logs=logs)
         rec = _make_record()
 
         await _launch(drv, rec)
+        assert logs.texts() == ["🔧 Running commands"]
 
-        assert handle.emit.await_count == 2
-        emits = [c.args[0] for c in handle.emit.await_args_list]
-        assert emits[0] == "First."
-        assert emits[1] == "First.\n\nSecond."
-        handle.finalize.assert_awaited_once_with("First.\n\nSecond.")
+    async def test_the_reader_never_awaits_the_log(self, monkeypatch):
+        """The log is a synchronous call: whatever the sink's ``log`` returns
+        is dropped, never awaited, so no Telegram wait can reach the reader.
+        Here it returns a coroutine that records being awaited."""
+        from drivers.in_casa_driver import InCasaDriver
+
+        calls: list = []
+        awaited: list = []
+        returned: list = []
+
+        async def _would_wait():
+            awaited.append(True)
+
+        class _Sink:
+            enabled = True
+
+            def log(self, key, run, text):
+                calls.append(text)
+                coro = _would_wait()
+                returned.append(coro)
+                return coro
+
+        monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient", _client_of(
+            _mk_assistant("First."), _mk_assistant("Second."), _mk_result_msg()))
+        drv = InCasaDriver(agent_logs=_Sink())
+        rec = _make_record()
+
+        await _launch(drv, rec)
+        for coro in returned:
+            coro.close()
+        assert calls == ["First.", "Second."]
+        assert awaited == []
 
     async def test_start_injects_stderr_callback(self, monkeypatch):
         """Bug 4: open() must inject the stderr callback on the options
@@ -409,7 +409,7 @@ class TestInCasaStart:
         client = _client_of(_mk_result_msg())
         monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient", client)
 
-        drv = InCasaDriver(topic_stream_factory=_mk_noop_factory())
+        drv = InCasaDriver()
         rec = _make_record()
 
         await drv.open(rec, ClaudeAgentOptions(model="sonnet"))
@@ -423,26 +423,24 @@ class TestInCasaStart:
 
 
 class TestInCasaSendUserTurn:
-    async def test_send_user_turn_streams_reply_to_topic(self, monkeypatch):
+    async def test_send_user_turn_logs_the_reply(self, monkeypatch):
         """An operator's message is written into the live session and its
-        turn's reply streams to the topic."""
+        turn's reply is logged."""
         from drivers.in_casa_driver import InCasaDriver
 
         client = _session_of([_mk_assistant("launch reply"), _mk_result_msg()],
                              [_mk_assistant("re:user said X"), _mk_result_msg()])
         monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient", client)
 
-        factory, handle = _mk_factory_with_fake_handle()
-        drv = InCasaDriver(topic_stream_factory=factory)
+        logs = RecordingLogs()
+        drv = InCasaDriver(agent_logs=logs)
         rec = _make_record()
         session = await _launch(drv, rec, "system prompt")
-        handle.emit.reset_mock()
-        handle.finalize.reset_mock()
+        logs.lines.clear()
 
         await _say(drv, rec, session, "user said X")
         assert client.instances[0].prompts == ["system prompt", "user said X"]
-        handle.finalize.assert_awaited_once()
-        assert handle.finalize.await_args.args[0] == "re:user said X"
+        assert logs.texts() == ["re:user said X"]
 
 
 class TestInCasaCancel:
@@ -452,7 +450,7 @@ class TestInCasaCancel:
         client = _client_of(_mk_result_msg())
         monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient", client)
 
-        drv = InCasaDriver(topic_stream_factory=_mk_noop_factory())
+        drv = InCasaDriver()
         rec = _make_record()
         await _launch(drv, rec, "p")
         assert drv.is_alive(rec) is True
@@ -463,7 +461,7 @@ class TestInCasaCancel:
     async def test_cancel_is_idempotent(self):
         from drivers.in_casa_driver import InCasaDriver
 
-        drv = InCasaDriver(topic_stream_factory=_mk_noop_factory())
+        drv = InCasaDriver()
         rec = _make_record()
         # Not alive yet: must not raise.
         await drv.cancel(rec)
@@ -487,7 +485,7 @@ class TestInCasaResume:
             )
         monkeypatch.setattr(tools_mod, "build_engagement_resume_options", _fake_rebuild)
 
-        drv = InCasaDriver(topic_stream_factory=_mk_noop_factory())
+        drv = InCasaDriver()
         rec = _make_record(sdk_session_id="sess-old")
         await drv.resume(rec, session_id="sess-old")
         assert drv.is_alive(rec) is True
@@ -506,7 +504,7 @@ class TestInCasaResume:
         monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient", _client_of(
             _mk_system_init("sess-xyz"), _mk_result_msg(session_id="sess-xyz")))
 
-        drv = InCasaDriver(topic_stream_factory=_mk_noop_factory())
+        drv = InCasaDriver()
         rec = _make_record()
         await _launch(drv, rec, "p")
         assert drv.get_session_id(rec) == "sess-xyz"
@@ -581,7 +579,7 @@ class TestInCasaEngagementContext:
             "drivers.in_casa_driver.ClaudeSDKClient", _SDKWithInnerTask,
         )
 
-        drv = InCasaDriver(topic_stream_factory=_mk_noop_factory())
+        drv = InCasaDriver()
         rec = _make_record(role_or_type="configurator", kind="executor")
 
         # Pre-state: engagement_var unbound in the parent task.
@@ -615,7 +613,7 @@ class TestInCasaEngagementContext:
 
         monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient", _Client)
 
-        drv = InCasaDriver(topic_stream_factory=_mk_noop_factory())
+        drv = InCasaDriver()
         rec = _make_record(role_or_type="configurator", kind="executor")
 
         assert engagement_var.get(None) is None
@@ -633,7 +631,7 @@ class TestInCasaEngagementContext:
             _mk_result_msg(session_id="sess-abc")))
 
         persist = AsyncMock()
-        drv = InCasaDriver(topic_stream_factory=_mk_noop_factory(), persist_session_id=persist)
+        drv = InCasaDriver(persist_session_id=persist)
         rec = _make_record()
 
         await _launch(drv, rec, "hi")
@@ -651,7 +649,7 @@ class TestInCasaEngagementContext:
             _mk_result_msg(session_id="sess-abc")))
 
         persist = AsyncMock()
-        drv = InCasaDriver(topic_stream_factory=_mk_noop_factory(), persist_session_id=persist)
+        drv = InCasaDriver(persist_session_id=persist)
         rec = _make_record()
 
         session = await _launch(drv, rec, "hi")
@@ -674,7 +672,7 @@ class TestInCasaEngagementContext:
 
         persist = AsyncMock(side_effect=[OSError("registry write failed"), None])
         drv = InCasaDriver(
-            topic_stream_factory=_mk_noop_factory(), persist_session_id=persist)
+            persist_session_id=persist)
         rec = _make_record()
 
         session = await _launch(drv, rec, "hi")
@@ -693,7 +691,7 @@ class TestInCasaEngagementContext:
             _mk_system_init("sess-abc"), _mk_assistant("hi"),
             _mk_result_msg(session_id="sess-abc")))
 
-        drv = InCasaDriver(topic_stream_factory=_mk_noop_factory())
+        drv = InCasaDriver()
         rec = _make_record()
 
         await _launch(drv, rec, "hi")
@@ -719,7 +717,7 @@ from test_agent_api_error_message import (          # noqa: E402
 )
 
 
-async def _turn_kinds(monkeypatch, *turns, rec=None, factory=None):
+async def _turn_kinds(monkeypatch, *turns, rec=None, logs=None):
     """Run one session through ``turns`` (the first is the brief's) and
     return what the turn-end handler received for each: the API-fault kind
     or None."""
@@ -727,7 +725,7 @@ async def _turn_kinds(monkeypatch, *turns, rec=None, factory=None):
     client = _session_of(*turns)
     monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient", client)
     kinds: list = []
-    drv = InCasaDriver(topic_stream_factory=factory or _mk_noop_factory(),
+    drv = InCasaDriver(agent_logs=logs,
                        on_turn_end=lambda r, res, err: kinds.append(err))
     rec = rec or _make_record()
     session = await _launch(drv, rec)
@@ -770,32 +768,22 @@ class TestInCasaApiFaultCarriesItsKind:
 
     async def test_fault_after_output_truncation_still_raises(self, monkeypatch):
         """Found in design review. The detection once sat inside the branch
-        that streams text below the output cap, so once a specialist's output
-        reached the cap the classifier stopped running and a later fault
-        ended the turn as a SUCCESS. The cap now starts a new topic message;
-        the fault after it is still classified."""
+        that streamed text below the output cap, so once a specialist's
+        output reached the cap the classifier stopped running and a later
+        fault ended the turn as a SUCCESS. However long the output, the fault
+        after it is classified."""
         import specialist_limits
         from error_kinds import ErrorKind
 
-        streams: list = []
-
-        def factory(topic_id):
-            h = MagicMock()
-            h.emit = AsyncMock()
-            h.finalize = AsyncMock()
-            streams.append(h)
-            return h
-
-        # kind="specialist" is what arms the output cap; two messages that
-        # together pass it.
         half = "x" * (specialist_limits._MAX_OUTPUT_CHARS // 2 + 10)
+        logs = RecordingLogs()
         kinds, _drv, _rec = await _turn_kinds(
             monkeypatch,
             [_mk_assistant(half), _mk_assistant(half),
              _parsed(_refusal_envelope()), _mk_result_msg()],
-            rec=_make_record(kind="specialist"), factory=factory)
+            rec=_make_record(kind="specialist"), logs=logs)
         assert kinds == [ErrorKind.REFUSAL]
-        assert len(streams) == 2, "test no longer exercises the output cap"
+        assert logs.texts() == [half, half]
 
     async def test_sub_agent_scoped_fault_does_not_end_the_turn(
             self, monkeypatch):
@@ -803,33 +791,30 @@ class TestInCasaApiFaultCarriesItsKind:
         sub-agent's problem — the turn can still answer, and it ends clean.
         Its prose is still never streamed, because it is still not the agent
         speaking."""
-        factory, handle = _mk_factory_with_fake_handle()
+        logs = RecordingLogs()
         scoped = _parsed(_refusal_envelope(parent_tool_use_id="toolu_01"))
         kinds, _drv, _rec = await _turn_kinds(
             monkeypatch,
             [scoped, _mk_assistant("here is the real answer"), _mk_result_msg()],
-            factory=factory)
+            logs=logs)
 
         assert kinds == [None]
-        handle.finalize.assert_awaited_once_with("here is the real answer")
-        posted = "".join(str(c) for c in handle.emit.await_args_list)
-        assert "Request ID" not in posted, (
-            "the CLI's error prose was streamed as the agent's words")
+        assert logs.texts() == ["here is the real answer"], (
+            "the CLI's error prose was logged as the agent's words")
 
-    async def test_text_before_the_fault_is_finalized_then_raised(
+    async def test_text_before_the_fault_is_logged_then_raised(
             self, monkeypatch):
-        """Text that reached Telegram before the fault cannot be retracted, so
-        the stream is finalized (coherent last edit) and the turn ends with
-        the fault's kind; the fault's prose is never posted."""
+        """Text logged before the fault stays logged, and the turn ends with
+        the fault's kind; the fault's prose is never logged."""
         from error_kinds import ErrorKind
-        factory, handle = _mk_factory_with_fake_handle()
+        logs = RecordingLogs()
         kinds, _drv, _rec = await _turn_kinds(
             monkeypatch,
             [_mk_assistant("partial work so far"), _parsed(_refusal_envelope()),
              _mk_result_msg()],
-            factory=factory)
+            logs=logs)
         assert kinds == [ErrorKind.REFUSAL]
-        handle.finalize.assert_awaited_once_with("partial work so far")
+        assert logs.texts() == ["partial work so far"]
 
     async def test_a_clean_turn_still_returns_normally(self, monkeypatch):
         """Mutation check: the kind is carried on the fault, not on every
@@ -855,30 +840,19 @@ class TestInCasaApiFaultCarriesItsKind:
 
 
 # ---------------------------------------------------------------------------
-# A specialist's topic streams every text block, across its tool calls
+# A specialist's log carries every text block, across its tool calls
 # ---------------------------------------------------------------------------
 
-async def test_a_specialists_conversation_streams_every_text_block(monkeypatch):
-    """The operator chats with a specialist turn by turn: the text written
-    before a tool call and the text written after it both stream, and the
-    finalize posts the whole turn."""
+async def test_a_specialists_conversation_logs_every_text_block(monkeypatch):
+    """The text written before a tool call, the step, and the text written
+    after it are all logged, in that order."""
     from claude_agent_sdk import (
         ResultMessage, ToolResultBlock, ToolUseBlock, UserMessage,
     )
-    from channels import DeliveryOutcome
     from drivers.in_casa_driver import InCasaDriver
 
     before = "Now let me look that up."
     after = "Found it. Shall I go ahead?"
-    calls: list[tuple[str, str]] = []
-
-    class _Stream:
-        async def emit(self, text):
-            calls.append(("emit", text))
-
-        async def finalize(self, text):
-            calls.append(("finalize", text))
-            return DeliveryOutcome.DELIVERED
 
     def _said(*blocks):
         return AssistantMessage(content=list(blocks), model="m",
@@ -895,11 +869,8 @@ async def test_a_specialists_conversation_streams_every_text_block(monkeypatch):
             total_cost_usd=0.0, usage={}, result="",
             stop_reason="end_turn")))
 
-    rec = _make_record(topic_id=99)
-    drv = InCasaDriver(topic_stream_factory=lambda tid: _Stream())
+    rec = _make_record()
+    logs = RecordingLogs()
+    drv = InCasaDriver(agent_logs=logs)
     await _launch(drv, rec, "go")
-    assert calls == [
-        ("emit", before),
-        ("emit", f"{before}\n\n{after}"),
-        ("finalize", f"{before}\n\n{after}"),
-    ]
+    assert logs.texts() == [before, "🔧 Working", after]

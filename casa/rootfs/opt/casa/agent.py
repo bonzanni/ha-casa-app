@@ -350,13 +350,12 @@ def _render_jobs_block(caller_role, delegates, registry, *, live_names=None,
         if host.kind == "specialist" and host.role not in own:
             own[host.role] = {h.decl.qualified_name for h in own_job_hosts(host.role)}
         if host.kind == "resident":
-            location = f"runs as a plugin job in {name}'s topic"
+            location = f"runs as a plugin job of {name}"
         elif job.qualified_name in own[host.role]:
             location = (f"{name}'s own job: in text, ask {name} with a sync "
-                        f"delegation; {name} starts it itself and it runs in "
-                        f"{name}'s topic")
+                        f"delegation; {name} starts it itself and runs it")
         else:
-            location = f"runs in {name}'s topic"
+            location = f"runs on {name}"
         lines.append(
             f"- {job.qualified_name} — {job.title}: "
             f"{job.summary or job.title} "
@@ -1852,7 +1851,7 @@ class Agent:
             # now a second producer. A delegation row is converted at boot and
             # really did finish during the restart; an ENGAGEMENT outcome may
             # have finished long before it, and its summary may well still
-            # stand in its closed topic — so "completed during a Casa restart" and
+            # stand where it was told — so "completed during a Casa restart" and
             # "the answer itself is gone" were both false on that arm, and told
             # the operator something untrue about durable state. What is true of
             # both producers is only that this NOTICE does not carry the answer.
@@ -1902,15 +1901,15 @@ class Agent:
                 )
             if msg.context.get("engagement_id"):
                 # #1411: an engagement's summary is the specialist's own
-                # words, and live it said its topic "will stay open" — written
-                # in the very call that ended it. Casa's fact goes after it
-                # (the record is terminal; the topic close itself is best-effort).
+                # words, and it may say the work "will stay open" — written in
+                # the very call that ended it. Casa's fact goes after it (the
+                # record is terminal).
                 body += (
-                    "\nThis was an engagement, and it has ended: the person "
-                    "can no longer talk with the specialist in its topic. The "
-                    "summary is the specialist's own words; where it says the "
-                    "topic or the conversation is still open, that is not so, "
-                    "and is not passed on as fact.\n"
+                    "\nThis was a background job, and it has ended: the "
+                    "person's replies no longer reach it. The summary is the "
+                    "specialist's own words; where it says the job or the "
+                    "conversation is still open, that is not so, and is not "
+                    "passed on as fact.\n"
                 )
         elif complete.kind == "restart_orphan":
             body = (
@@ -1927,7 +1926,7 @@ class Agent:
         elif complete.kind == "launch_outcome_uncommitted":
             # Design 2026-09-15 §2.A: NOT a terminal outcome. The launch turn
             # ended and the strict terminal write did not persist, so the
-            # engagement is live and its topic open; narrating it through the
+            # engagement is live; narrating it through the
             # failure branch below would tell the operator it ended in error.
             body = (
                 f"[System notification: the launch turn of your engagement with "
@@ -1935,7 +1934,7 @@ class Agent:
                 "not be recorded]\n\n"
                 "The engagement is still open and can be resumed; it did not "
                 "fail. Tell the user that the first turn ended without a "
-                "recorded outcome and that the topic is still there — do NOT "
+                "recorded outcome and that the job is still open — do NOT "
                 "say the work failed or ended.\n"
             )
         else:
@@ -2052,9 +2051,8 @@ class Agent:
             "role": self.config.role,
             "channel": msg.channel,
             "chat_id": msg.context.get("chat_id", ""),
-            # Bug 8 (v0.14.6): propagated through engagement.origin so the
-            # Telegram channel can verify the user that issues /cancel or
-            # /complete in an engagement topic actually owns the engagement.
+            # Bug 8 (v0.14.6): propagated through engagement.origin: the
+            # operator a job's posts and protected calls are bound to.
             "user_id": msg.context.get("user_id"),
             "cid": cid_var.get(),
             # #1336: no person authored this turn's text at ingress (no

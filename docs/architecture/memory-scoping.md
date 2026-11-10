@@ -12,7 +12,7 @@ Which stored facts a given reader gets back: the read-clearance model — per ch
 Telegram sender via the stamped origin, failing closed — the ledgers Casa maintains, one per
 clearance it serves, each written only from what that clearance can read, the check every
 read path makes on each object it returns, the clearance an engagement
-inherits from its creating turn, and who may steer a job at that clearance. How a
+inherits from its creating turn, and who may steer a job. How a
 ledger is served, what a
 caller is told when the store cannot answer, and what a caller may claim from what comes
 back are [`architecture/memory-serving.md`](memory-serving.md) and
@@ -94,27 +94,18 @@ carries that turn's markers. An engagement
 whose record predates this (or came from an origin that stamps no
 route) keeps the channel-keyed behaviour.
 
-Inheritance at creation is only half the rule, because a job is *steerable*: anyone in the
-engagement supergroup can write in its topic. So a message there from a sender whose
-clearance is below the record's stamped clearance — a household member in a job the
-operator started — never reaches the job. Casa answers in the topic with one line, "Only
-the person who started this job can steer it.", and leaves the record and the job's session
-as they were (`casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._steer_refused`).
-The job keeps reading at the clearance of the turn that started it, and its session, which
-holds what it read there, never takes direction from someone who could ask it to restate
-that. A sender at or above the stamped clearance is delivered like any operator message
-([`background-jobs.md`](background-jobs.md)). The check compares clearances, not people.
-On Telegram only the configured operator is stamped `private` and every other sender
-`public`, so what it refuses is a non-operator writing in a job started at `private` (by the
-operator's turn, a scheduled fire or a specialist desk); two non-operators share a clearance
-and are not told apart. `/cancel` and `/complete` are checked separately, against the user
-id that started the job.
+Inheritance at creation is only half the rule, because a job is *steerable*. It is steered
+only in the direct chat: a reply quoting one of its posts goes into it when the sender is the
+authenticated operator who started it, in that chat (INV-BGJOB-012,
+[`background-job-direct-chat.md`](background-job-direct-chat.md)), and a tap on its buttons is
+resolved for that operator alone. Nothing written in the agent-log group reaches a job
+(INV-TG-016, [`agent-logs.md`](agent-logs.md)). So the job keeps reading at the clearance of
+the turn that started it, and its session, which holds what it read there, takes direction
+only from the operator who started it.
 
-What this deliberately does not do: an engagement topic is readable by every supergroup
-member, so what the job posts there is a disclosure the topic carries regardless. And it
-only refuses against a record that carries a stamped clearance: an engagement created
-before per-sender markers existed has none, so it keeps channel-keyed clearance — on
-Telegram, private — and refuses nobody.
+What this deliberately does not do: the agent log, when one is set up, is readable by every
+member of its group, so what a job's agent writes there is a disclosure the group carries
+regardless; the operator decides who is in it.
 
 ## Contracts & invariants
 
@@ -176,19 +167,16 @@ every reader clearance over one store holding a canary at every tier.
 What it does not cover: the meter, which reports counts per ledger to the operator, and the
 whole-store export, which is the operator's own copy.
 
-**INV-MEM-045**: An engagement's reads resolve clearance from the origin markers its own record carries; a message in its topic from a sender whose clearance is below the record's stamped clearance draws one line, never reaches the job, and leaves the record unchanged.
+**INV-MEM-045**: An engagement's reads resolve clearance from the origin markers its own record carries.
 
-Enforced in two places that have to agree: where the markers are resolved for an
-access-control decision — the ambient origin wins when it has a route of its own (an
-in-process delegated turn), otherwise the bound engagement record supplies them — and at the
-engagement-topic ingress, which refuses a lower-clearance sender's message before it is
-journaled or admitted. Every read an engagement can perform resolves through the first: its
-own recall and the engager-side context.
+Enforced where the markers are resolved for an access-control decision: the ambient origin
+wins when it has a route of its own (an in-process delegated turn), otherwise the bound
+engagement record supplies them. Every read an engagement can perform resolves through it:
+its own recall and the engager-side context.
 
 What it does not cover: a record carrying no markers falls back to channel-keyed clearance,
-which on Telegram is private, and the topic check then refuses nobody — so this tightens
-what a *newly* stamped origin can reach, and does not reach engagements created before the
-markers existed. It cannot un-share what the job already posted to the group-readable topic.
+which on Telegram is private — so this tightens what a *newly* stamped origin can reach, and
+does not reach engagements created before the markers existed.
 
 ## Failure behavior
 
@@ -221,7 +209,6 @@ by default. Write access is a separate, deliberate addition
 - `casa/rootfs/opt/casa/channel_trust.py`
 - `casa/rootfs/opt/casa/tools.py::_origin_clearance_markers`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.handle_update`
-- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._steer_refused`
 
 **Tests**
 - `tests/test_sensitivity.py::test_readable_tiers_is_clearance_and_below`

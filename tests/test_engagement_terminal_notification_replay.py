@@ -64,10 +64,6 @@ async def _owing_records(tmp_path):
     reg = EngagementRegistry(tombstone_path=str(tombstone))
 
     channel = MagicMock()
-    channel.send_to_topic = AsyncMock()
-    channel.send_response_to_topic = AsyncMock()
-    channel.close_topic = AsyncMock()
-    channel.update_topic_state = AsyncMock()
     cm = MagicMock()
     cm.get.return_value = channel
 
@@ -82,15 +78,13 @@ async def _owing_records(tmp_path):
         task="tidy the plugins",
         origin={"role": "concierge", "channel": "telegram",
                 "chat_id": "chat-A", "cid": "route-A",
-                "user_text": "tidy the plugins please"},
-        topic_id=None)
+                "user_text": "tidy the plugins please"})
     b = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
         task="plan Q2",
         origin={"role": "assistant", "channel": "telegram",
                 "chat_id": "chat-B", "cid": "route-B",
-                "user_text": "plan Q2 please"},
-        topic_id=None)
+                "user_text": "plan Q2 please"})
 
     await _finalize_engagement(
         a, outcome="completed", text="all tidy", next_steps=[],
@@ -104,8 +98,7 @@ async def _owing_records(tmp_path):
         task="reconcile the ledger",
         origin={"role": "assistant", "channel": "telegram",
                 "chat_id": "chat-D", "cid": "route-D",
-                "user_text": "reconcile the ledger please"},
-        topic_id=None)
+                "user_text": "reconcile the ledger please"})
     await _finalize_engagement(
         c, outcome="error", text="", next_steps=[],
         driver=_driver_double())
@@ -118,8 +111,7 @@ async def _owing_records(tmp_path):
         kind="specialist", role_or_type="finance", driver="in_casa",
         task="already told",
         origin={"role": "assistant", "channel": "telegram",
-                "chat_id": "chat-C", "cid": "route-C", "user_text": "c"},
-        topic_id=None)
+                "chat_id": "chat-C", "cid": "route-C", "user_text": "c"})
     await _finalize_engagement(
         told, outcome="completed", text="done", next_steps=[],
         driver=_driver_double())
@@ -506,10 +498,6 @@ async def test_live_engagement_finalization_is_not_marked_as_a_boot_replay(
     reg = EngagementRegistry(
         tombstone_path=str(tmp_path / "engagements.json"))
     channel = MagicMock()
-    channel.send_to_topic = AsyncMock()
-    channel.send_response_to_topic = AsyncMock()
-    channel.close_topic = AsyncMock()
-    channel.update_topic_state = AsyncMock()
     cm = MagicMock()
     cm.get.return_value = channel
     bus = _RecordingBus()
@@ -523,8 +511,7 @@ async def test_live_engagement_finalization_is_not_marked_as_a_boot_replay(
         task="plan Q2",
         origin={"role": "assistant", "channel": "telegram",
                 "chat_id": "chat-B", "cid": "route-B",
-                "user_text": "plan Q2 please"},
-        topic_id=None)
+                "user_text": "plan Q2 please"})
     await _finalize_engagement(
         eng, outcome="completed", text="the plan",
         next_steps=[], driver=_driver_double())
@@ -708,10 +695,6 @@ def _live_tools(reg):
     from tools import init_tools
 
     channel = MagicMock()
-    channel.send_to_topic = AsyncMock()
-    channel.send_response_to_topic = AsyncMock()
-    channel.close_topic = AsyncMock()
-    channel.update_topic_state = AsyncMock()
     cm = MagicMock()
     cm.get.return_value = channel
     bus = _RecordingBus()
@@ -749,7 +732,7 @@ async def test_boot_replays_loaded_owed_outcome_but_defers_live_outcome(
     # THIS process, through the live funnel.
     live = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
-        task="live task", topic_id=None,
+        task="live task",
         origin={"role": "assistant", "channel": "telegram",
                 "chat_id": "live-chat", "cid": "live-route",
                 "user_text": "live task"})
@@ -834,7 +817,7 @@ async def test_load_persists_reconcile_and_retains_unusable_terminal_time(
     await seeded.load()
     active = await seeded.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
-        task="unfinished", origin={}, topic_id=None)
+        task="unfinished", origin={})
 
     # The cleared bit is deliberate: retention of an unusable time must hold
     # independently of the owed-telling exemption.
@@ -1002,7 +985,7 @@ async def test_an_empty_load_then_a_live_outcome_replays_nothing(tmp_path):
     bus = _live_tools(reg)
     live = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
-        task="t", topic_id=None,
+        task="t",
         origin={"role": "assistant", "channel": "telegram",
                 "chat_id": "c", "cid": "r", "user_text": "t"})
     await _finalize_engagement(
@@ -1064,7 +1047,7 @@ async def test_main_loads_the_engagement_registry_before_anything_can_arm_an_obl
 
 def _retention_row(**over):
     base = {"id": "x", "kind": "specialist", "role_or_type": "finance",
-            "driver": "in_casa", "status": "completed", "topic_id": None,
+            "driver": "in_casa", "status": "completed",
             "started_at": 1.0, "last_user_turn_ts": 1.0,
             "completed_at": None, "origin": {}, "task": "t",
             "auth_token": "tok-" + "a" * 40,
@@ -1114,7 +1097,7 @@ async def test_retention_ages_only_a_usable_time(tmp_path, value, extra, kept):
     await reg.load()
 
     # A best-effort write through a real mutator: it must not raise.
-    await reg.set_initial_state_emoji("anchor", "x")
+    await reg.update_user_turn("anchor", time.time())
 
     ids = [r["id"] for r in _rows(tombstone)]
     assert ids.count("anchor") == 1
@@ -1139,7 +1122,7 @@ async def test_a_strict_writer_still_rolls_back_beside_an_unusable_time(tmp_path
         _retention_row(id="subject", completed_at="yesterday")]))
     reg = EngagementRegistry(tombstone_path=str(tombstone))
     await reg.load()
-    rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
+    rec = await reg.create("specialist", "finance", "in_casa", "t", {})
 
     with _mock.patch.object(
         reg, "_write_tombstone", side_effect=OSError("disk full"),

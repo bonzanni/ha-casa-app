@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from channels import DeliveryOutcome
-from test_telegram_topic_stream import _mk_channel_with_fake_bot
+from telegram_channel_double import _mk_channel_with_fake_bot
 from output_boundary_testing import admitted
 
 pytestmark = pytest.mark.asyncio

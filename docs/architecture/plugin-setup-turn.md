@@ -73,7 +73,7 @@ this brings is deliberate: a protected tool the dispatched target calls on a set
 becomes approvable through the operator's keyboard, where it was refused for lack of
 identity — the operator approved the plugin's consent, the turn is addressed to their
 chat, and the challenge still goes to them. The `sync`-only rule is enforced in the
-delegation tool's mode gate, before target resolution or any topic: an `async` delegation
+delegation tool's mode gate, before target resolution or any record: an `async` delegation
 or a job launch would return a non-error pending result that the courier report counts as a
 delegation that went through, while a later turn's setup tool is refused for identity.
 
@@ -215,7 +215,7 @@ tool's own outcome to the operator. Casa makes no claim of its own about whether
 integration works — it cannot see the external side (INV-TOOL-005).
 
 **The courier delegates in a mode other than `sync`.** The delegation tool returns an error
-before any engagement or topic exists (`mode_unsupported_on_setup_turn`); an error result
+before any engagement exists (`mode_unsupported_on_setup_turn`); an error result
 is not a non-error delegation, so the row returns to `pending` under the courier's bounded
 budget (INV-PLUG-024) rather than resting consumed with the setup never run.
 

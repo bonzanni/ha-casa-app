@@ -669,19 +669,25 @@ class ResultContractMap:
     plugins: dict        # plugin_seg -> PluginContract (every MCP-bearing plugin)
 
     def plugin_seg_of(self, tool_name: str) -> str | None:
-        """The ``<plugin>`` segment of ``mcp__plugin_<plugin>_<server>__<tool>``
-        — resolved against the KNOWN plugin segments (longest match), because
-        ``_`` is legal inside a plugin name and inside a server name alike, so
-        the name cannot be split by counting underscores."""
-        if not tool_name.startswith("mcp__plugin_"):
-            return None
-        rest = tool_name[len("mcp__plugin_"):]
-        best = None
-        for seg in self.plugins:
-            if rest == seg or rest.startswith(seg + "_"):
-                if best is None or len(seg) > len(best):
-                    best = seg
-        return best
+        """The ``<plugin>`` segment of *tool_name* among this map's plugins
+        (:func:`plugin_seg_of`)."""
+        return plugin_seg_of(tool_name, self.plugins)
+
+
+def plugin_seg_of(tool_name: str, segments) -> str | None:
+    """The ``<plugin>`` segment of ``mcp__plugin_<plugin>_<server>__<tool>``
+    — resolved against the KNOWN plugin *segments* (longest match), because
+    ``_`` is legal inside a plugin name and inside a server name alike, so
+    the name cannot be split by counting underscores."""
+    if not tool_name.startswith("mcp__plugin_"):
+        return None
+    rest = tool_name[len("mcp__plugin_"):]
+    best = None
+    for seg in segments:
+        if rest == seg or rest.startswith(seg + "_"):
+            if best is None or len(seg) > len(best):
+                best = seg
+    return best
 
 
 def result_contract_map(resolution) -> ResultContractMap:

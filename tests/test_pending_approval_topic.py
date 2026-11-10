@@ -1,6 +1,8 @@
-"""#1207 arm 6 under ruling #1252: an engagement topic or a plugin job's topic
-whose protected call is waiting on the operator's approval shows nothing the
-model wrote after that call; the words before it are emitted and finalized.
+"""#1207 arm 6 under ruling #1252: the agent log of a job (a specialist's, or a
+plugin job's) whose protected call is waiting on the operator's approval shows
+nothing the model wrote after that call; the words before it are logged. A
+consume of the same grant releases the held words at once; a turn that ends
+with the cut in place never logs them.
 
 It drives the REAL ``InCasaDriver`` (``open``, then the job's brief through
 ``enqueue_brief`` and later writes through ``submit_casa``) with a scripted SDK
@@ -27,7 +29,8 @@ from authz_grants import (
 )
 
 from test_authz_hook import _deny_reason
-from test_in_casa_driver import _make_record, _mk_factory_with_fake_handle
+from agent_log_double import RecordingLogs
+from test_in_casa_driver import _make_record
 from test_pending_approval_output import ARGS, PROTECTED, TOOL, _Channel
 
 try:
@@ -154,10 +157,10 @@ async def test_launch_pending_approval_keeps_prefix_from_sdk_context(
     monkeypatch.setattr(_EntryClient, "answers", answers, raising=False)
     monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient", _EntryClient)
 
-    factory, handle = _mk_factory_with_fake_handle()
+    logs = RecordingLogs()
     ends, on_turn_end = _turn_counter()
-    drv = InCasaDriver(topic_stream_factory=factory, on_turn_end=on_turn_end)
-    rec = _make_record(kind=kind, role_or_type=ROLE, topic_id=OPERATOR,
+    drv = InCasaDriver(agent_logs=logs, on_turn_end=on_turn_end)
+    rec = _make_record(kind=kind, role_or_type=ROLE,
                        origin={"chat_id": str(OPERATOR), "user_id": OPERATOR})
     await drv.open(rec, ClaudeAgentOptions(model="sonnet"))
     _OPEN.append((drv, rec))
@@ -171,9 +174,8 @@ async def test_launch_pending_approval_keeps_prefix_from_sdk_context(
     assert len(answers) == 1
     assert _deny_reason(answers[0]) == _DENY_POSTED
     assert len(channel.posts) == 1
-    # The topic shows only what was written before the call.
-    assert [str(c.args[0]) for c in handle.emit.await_args_list] == ["BEFORE"]
-    assert [str(c.args[0]) for c in handle.finalize.await_args_list] == ["BEFORE"]
+    # The log shows only what was written before the call.
+    assert logs.words() == ["BEFORE"]
 
 
 # ---------------------------------------------------------------------------
@@ -268,12 +270,11 @@ class _Topic:
         self.session = _Session(self.hook)
         monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient",
                             self.session.client_cls)
-        self.factory, self.handle = _mk_factory_with_fake_handle()
+        self.logs = RecordingLogs()
         self.ends, on_turn_end = _turn_counter()
-        self.drv = InCasaDriver(topic_stream_factory=self.factory,
-                                on_turn_end=on_turn_end)
+        self.drv = InCasaDriver(agent_logs=self.logs, on_turn_end=on_turn_end)
         self.rec = _make_record(id=rec_id, kind=kind, role_or_type=ROLE,
-                                topic_id=OPERATOR,
+                                task=rec_id,
                                 origin={"chat_id": str(OPERATOR),
                                         "user_id": OPERATOR})
 
@@ -308,12 +309,9 @@ class _Topic:
         await self._turn(lambda: self.drv.submit_casa(self.rec, "next"))
 
     @property
-    def emits(self) -> list[str]:
-        return [str(c.args[0]) for c in self.handle.emit.await_args_list]
-
-    @property
-    def finals(self) -> list[str]:
-        return [str(c.args[0]) for c in self.handle.finalize.await_args_list]
+    def words(self) -> list[str]:
+        """The words logged, without the step lines."""
+        return self.logs.words()
 
 
 def _waiting(call_id="deny-1"):
@@ -326,14 +324,14 @@ def _waiting(call_id="deny-1"):
 @pytest.mark.parametrize("tail", [True, False])
 async def test_a_launch_whose_only_words_are_withheld_shows_nothing_and_lives(
         monkeypatch, kind, tail):
-    """R6-1 with no prefix, R6-4 and R6-4b: no emit, no finalize — and the
+    """R6-1 with no prefix, R6-4 and R6-4b: no words logged — and the
     session stays open, the keyboard up. tail=False is the mute launch after a
     POSTED deny."""
     t = _Topic(monkeypatch, kind)
     await t.launch(*_waiting(), *([_text(TAIL)] if tail else []))
     assert [_reason(a) for a in t.session.answers] == [_DENY_POSTED]
     assert len(t.channel.posts) == 1
-    assert t.emits == [] and t.finals == []
+    assert t.words == []
     assert t.drv.is_alive(t.rec)
 
 
@@ -348,7 +346,7 @@ async def test_a_reused_keyboard_whose_post_settled_cuts_too(monkeypatch):
     await t.launch(_text("BEFORE"), *_waiting(), _text(TAIL))
     assert [_reason(a) for a in t.session.answers] == [_DENY_PENDING]
     assert len(t.channel.posts) == 1
-    assert t.emits == ["BEFORE"] and t.finals == ["BEFORE"]
+    assert t.words == ["BEFORE"]
 
 
 async def test_a_follow_up_turn_and_a_continuation_reaching_a_second_call(
@@ -365,8 +363,7 @@ async def test_a_follow_up_turn_and_a_continuation_reaching_a_second_call(
                       _result("deny-2"), _text(TAIL))
     assert [_reason(a) for a in t.session.answers] == [
         _DENY_POSTED, "allow", _DENY_POSTED]
-    assert t.finals == ["Hi.", "BEFORE", "Done the first."]
-    assert TAIL not in "".join(t.emits)
+    assert t.words == ["Hi.", "BEFORE", "Done the first."]
 
 
 async def test_a_consume_of_the_same_grant_releases_the_words(monkeypatch):
@@ -377,8 +374,34 @@ async def test_a_consume_of_the_same_grant_releases_the_words(monkeypatch):
                    _call("ok-1"), _Ask("ok-1"), _result("ok-1", error=False),
                    _text(TAIL))
     assert [_reason(a) for a in t.session.answers] == [_DENY_POSTED, "allow"]
-    assert t.emits == ["BEFORE", "BEFORE\n\nMID\n\n" + TAIL]
-    assert t.finals == ["BEFORE\n\nMID\n\n" + TAIL]
+    assert t.words == ["BEFORE", "MID", TAIL]
+
+
+async def test_a_cleared_cut_logs_the_held_words_at_once(monkeypatch):
+    """The words held behind a waiting call are logged as soon as the consume
+    of its grant is read at the call's result — not later, at the next words
+    or the turn's end."""
+    t = _Topic(monkeypatch)
+    seen: list = []
+
+    async def _snapshot():
+        seen.append(list(t.words))
+
+    await t.launch(_text("BEFORE"), *_waiting(), _text("MID"), t.approve(),
+                   _call("ok-1"), _Ask("ok-1"), _result("ok-1", error=False),
+                   _Do(_snapshot), _call("ok-2"))
+    assert seen == [["BEFORE", "MID"]]
+
+
+async def test_a_turn_that_ends_under_the_cut_never_logs_the_held_words(
+        monkeypatch):
+    """The words after the waiting call are dropped at the turn's end; a
+    later turn's words are logged as usual."""
+    t = _Topic(monkeypatch)
+    await t.launch(_text("BEFORE"), *_waiting(), _text("HELD-1"), _text("HELD-2"))
+    assert t.words == ["BEFORE"]
+    await t.follow_up(_text("NEXT"))
+    assert t.words == ["BEFORE", "NEXT"]
 
 
 async def test_a_deny_that_left_no_keyboard_delivers_the_words(monkeypatch):
@@ -388,31 +411,27 @@ async def test_a_deny_that_left_no_keyboard_delivers_the_words(monkeypatch):
     t.channel.post_dm_keyboard = AsyncMock(side_effect=RuntimeError("down"))
     await t.launch(_text("BEFORE"), *_waiting(), _text(TAIL))
     assert [_reason(a) for a in t.session.answers] == [_DENY_DELIVERY_FAILED]
-    assert t.finals == ["BEFORE\n\n" + TAIL]
+    assert t.words == ["BEFORE", TAIL]
 
 
-# --- R6-7: the cut counts exactly what the stream folds -------------------------
+# --- R6-7: the cut counts exactly what the reader folds -------------------------
 
 async def test_the_cut_counts_what_the_stream_folds(monkeypatch):
-    """A sub-agent's fault frame is never folded and the output cap freezes the
-    stream: the cut index follows the same rule, so the kept prefix is exactly
-    what was shown before the call."""
-    import specialist_limits
-    monkeypatch.setattr(specialist_limits, "_MAX_OUTPUT_CHARS", 20)
+    """A sub-agent's fault frame is never folded: the cut index follows the
+    same rule, so the kept prefix is exactly what was logged before the
+    call."""
     fault = AssistantMessage(content=[TextBlock(text="API Error: overloaded")],
                              model="sonnet", parent_tool_use_id="sub-1",
                              error="overloaded")
     t = _Topic(monkeypatch)
     await t.launch(_text("B" * 15), fault, *_waiting(), _text("X" * 30))
-    assert t.emits == ["B" * 15] and t.finals == ["B" * 15]
+    assert t.words == ["B" * 15]
 
 
 async def test_the_kept_prefix_is_finalized_as_it_was_shown(monkeypatch):
-    import specialist_limits
-    monkeypatch.setattr(specialist_limits, "_MAX_OUTPUT_CHARS", 20)
     t = _Topic(monkeypatch)
     await t.launch(_text("B" * 25), *_waiting(), _text(TAIL))
-    assert t.emits == ["B" * 25] and t.finals == ["B" * 25]
+    assert t.words == ["B" * 25]
 
 
 # --- R6-8 / R6-14: a resumed or rebuilt session gets its own carrier -----------
@@ -444,7 +463,7 @@ async def test_a_reopened_session_is_cut_and_the_old_clients_hook_lands_nowhere(
                       _result("old-1"), _text("STILL"), *_waiting(),
                       _text(TAIL))
     assert [_reason(a) for a in t.session.answers] == [_DENY_POSTED, _DENY_POSTED]
-    assert t.finals == ["Hi.", "BEFORE\n\nSTILL"]
+    assert t.words == ["Hi.", "BEFORE", "STILL"]
 
 
 # --- R6-10: a record with no turn running, or never folded, changes nothing ---
@@ -460,7 +479,7 @@ async def test_a_stale_write_changes_nothing(monkeypatch):
     assert _deny_reason(await task) == _DENY_POSTED
     # during the next turn, a record for a call this turn never folds
     await t.follow_up(_text("BEFORE"), _Ask("never-folded"), _text(TAIL))
-    assert t.finals == ["Hi.", "BEFORE\n\n" + TAIL]
+    assert t.words == ["Hi.", "BEFORE", TAIL]
 
 
 # --- R6-12: two engagements of one specialist at once ---------------------------
@@ -493,8 +512,11 @@ async def test_a_record_reaches_only_its_own_engagements_topic(monkeypatch):
     gate.set()
     await until(lambda: sorted(a.ends) == ["e-a", "e-b"], 10)
     assert [_reason(x) for x in a.session.answers] == [_DENY_POSTED]
-    finals = [str(c.args[0]) for c in a.handle.finalize.await_args_list]
-    assert sorted(finals) == ["A-BEFORE", "B-WORDS\n\nB-TAIL"]
+    by_run: dict = {}
+    for _key, run, text in a.logs.lines:
+        if not text.startswith("🔧"):
+            by_run.setdefault(run, []).append(text)
+    assert by_run == {"e-a": ["A-BEFORE"], "e-b": ["B-WORDS", "B-TAIL"]}
 
 
 # --- R6-13: the hook finishing before the call is even folded ------------------
@@ -508,7 +530,7 @@ async def test_a_hook_that_returns_before_the_call_is_folded_keeps_the_prefix(
         id="deny-1", name=TOOL, input=dict(ARGS))], model="sonnet")
     await t.launch(_Ask("deny-1"), both, _result("deny-1"), _text(TAIL))
     assert [_reason(a) for a in t.session.answers] == [_DENY_POSTED]
-    assert t.emits == ["BEFORE"] and t.finals == ["BEFORE"]
+    assert t.words == ["BEFORE"]
 
 
 # --- R6-9 lives in test_pending_approval_pins.py (the ambient scope pin) -------
@@ -530,4 +552,4 @@ async def test_a_record_from_before_this_turn_never_cuts_it(monkeypatch, when):
         t.session.answers.append(await task)
     await t.follow_up(_text("BEFORE"), _result("orphan-1"), _text(TAIL))
     assert [_reason(a) for a in t.session.answers] == [_DENY_POSTED]
-    assert t.finals == ["Hi.", "BEFORE\n\n" + TAIL]
+    assert t.words == ["Hi.", "BEFORE", TAIL]

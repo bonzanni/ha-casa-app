@@ -419,66 +419,9 @@ async def test_send_response_overflow_renders_each_chunk():
 
 
 @pytest.mark.asyncio
-async def test_topic_finalize_overflow_renders_each_chunk():
-    ch, bot = _mk_channel()
-    handle = ch.create_topic_stream(topic_id=42)
-    await handle.finalize(_LONG_MD)
-    assert bot.send_message.await_count >= 2
-    for call in bot.send_message.await_args_list:
-        kw = call.kwargs
-        assert len(kw["text"]) <= 4096
-        assert "**" not in kw["text"]
-        assert kw.get("entities")
-
-
-@pytest.mark.asyncio
-async def test_topic_finalize_overflow_after_stream_renders_chunks():
-    ch, bot = _mk_channel()
-    handle = ch.create_topic_stream(topic_id=42)
-    await handle.emit("partial")
-    bot.send_message.reset_mock()
-    await handle.finalize(_LONG_MD)
-    # first chunk edits the streamed message, rest are fresh sends — all rendered
-    kw_edit = bot.edit_message_text.await_args.kwargs
-    assert "**" not in kw_edit["text"] and kw_edit.get("entities")
-    for call in bot.send_message.await_args_list:
-        kw = call.kwargs
-        assert "**" not in kw["text"] and kw.get("entities")
-
-
-@pytest.mark.asyncio
-async def test_send_response_to_topic_overflow_paginates_rendered():
-    # D3 (Sol+Terra ACK): pagination lives in send_response_to_topic;
-    # send_to_topic_rich stays the sequencer's ONE-message primitive
-    ch, bot = _mk_channel()
-    mid = await ch.send_response_to_topic(42, _LONG_MD)
-    assert bot.send_message.await_count >= 2
-    assert mid == 777  # last page's message_id
-    for call in bot.send_message.await_args_list:
-        kw = call.kwargs
-        assert kw["message_thread_id"] == 42
-        assert "**" not in kw["text"] and kw.get("entities")
-
-
-@pytest.mark.asyncio
-async def test_send_to_topic_rich_stays_single_send_when_fits():
-    ch, bot = _mk_channel()
-    await ch.send_to_topic_rich(42, "say **hi**")
-    bot.send_message.assert_awaited_once()
-    kw = bot.send_message.await_args.kwargs
-    assert kw["text"] == "say hi" and kw.get("entities")
-
-
-@pytest.mark.asyncio
 async def test_plain_paths_stay_plain():
     # error/tool/notice paths keep byte-identical literal markdown
     ch, bot = _mk_channel()
-    await ch.send_to_topic(7, "**not bold** `raw`")
-    kw = bot.send_message.await_args.kwargs
-    assert kw["text"] == "**not bold** `raw`"
-    assert "entities" not in kw
-
-    bot.send_message.reset_mock()
     await ch.send(admitted("**stars stay** `literal`"), {"chat_id": "42"})
     kw = bot.send_message.await_args.kwargs
     assert kw["text"] == "**stars stay** `literal`"

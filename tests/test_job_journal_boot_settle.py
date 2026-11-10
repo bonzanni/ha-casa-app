@@ -18,9 +18,9 @@ class _Registry:
     def get(self, eid):
         return self._records.get(eid)
 
-    async def settled_terminal_state(self, eid):
+    async def settled_status(self, eid):
         rec = self._records.get(eid)
-        return (rec.status if rec is not None else "", False)
+        return rec.status if rec is not None else ""
 
 
 def _rec(eid, status):

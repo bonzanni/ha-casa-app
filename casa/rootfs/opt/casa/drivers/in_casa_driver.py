@@ -9,8 +9,8 @@ next turn when no boundary is left (measured). Casa therefore never
 serialises turns. Per live job session:
 
 - **One reader** consumes ``client.receive_messages()`` for the session's
-  whole life: it streams each turn's text to the topic, logs, detects API
-  faults, discharges the tickets the CLI echoes back as taken up, and calls
+  whole life: it puts each turn's words and steps in the agent's log,
+  detects API faults, discharges the tickets the CLI echoes back as taken up, and calls
   the injected turn-end handler at every ``ResultMessage`` and the
   session-lost handler when the stream ends without Casa's teardown.
 - **One delivery worker** per job (it outlives a session replacement) is
@@ -51,8 +51,9 @@ from claude_agent_sdk import (
     UserMessage,
 )
 
-from channels import DeliveryOutcome
+import background_jobs
 from drivers.driver_protocol import DriverProtocol
+from drivers.turn_progress import step_log_line
 from error_kinds import ErrorKind, api_error_kind, result_api_error_kind
 from engagement_registry import LAUNCH_CWD_KEY, EngagementRecord
 import job_inbox
@@ -61,21 +62,12 @@ from log_cid import cid_var, new_cid
 from output_boundary import ApprovalCut
 
 if TYPE_CHECKING:
-    from channels.telegram import TopicStreamHandle
+    from agent_logs import AgentLogs
 
 logger = logging.getLogger(__name__)
 
 _TERMINAL = frozenset({"completed", "cancelled", "error"})
 
-
-TopicStreamFactory = Callable[[int], "TopicStreamHandle"]
-"""(topic_id) → TopicStreamHandle — channel-side per-turn streaming primitive.
-
-Returned handle exposes async ``emit(accumulated_text)`` and async
-``finalize(full_text) -> DeliveryOutcome`` (#665 — the driver reads the
-outcome to see a wholly undelivered turn; a handle off the contract returns
-``None``, which the driver coerces to ``UNKNOWN``). See
-channels.telegram.TopicStreamHandle."""
 
 ResultObserver = Callable[[EngagementRecord, ResultMessage], None]
 """(engagement, ResultMessage) → None — Task 6 (spec §4.6) per-turn cost/usage
@@ -87,8 +79,8 @@ TurnEndHandler = Callable[[EngagementRecord, ResultMessage, "ErrorKind | None"],
 """(engagement, ResultMessage, api_error) → None — what Casa does when a job's
 turn ends (the turn-end guard: continue, nudge or park). ``api_error`` is the
 API fault the turn ended on, or ``None``. Called SYNCHRONOUSLY by the
-session's reader at every ResultMessage, after the turn's stream is
-finalized, ``turn_open`` cleared, activity stamped and the job's cost
+session's reader at every ResultMessage, after the turn's words are
+logged, ``turn_open`` cleared, activity stamped and the job's cost
 updated. Must not raise; may enqueue Casa's own writes
 (:meth:`InCasaDriver.submit_casa`)."""
 
@@ -141,7 +133,7 @@ class _EngagementTurn:
 
 class _EngagementCapture:
     """What one engagement turn of a memory-writing specialist captures into
-    memory: the operator's message in the topic, keyed by its Telegram id,
+    memory: the operator's message to the job, keyed by its Telegram id,
     and each text-bearing message the specialist writes. Executors and plugin
     jobs are not memory-writing specialists and capture nothing. Every
     event's floor is the engagement's read clearance. A capture failure is
@@ -335,18 +327,6 @@ def _at_launch_cwd(engagement: EngagementRecord, options: Any) -> Any:
     return options
 
 
-class _WithheldStream:
-    """#1301: the stream of a turn whose record has no topic (a quiet
-    scheduled run). Its words are withheld by design, not lost: ``finalize``
-    reports DELIVERED."""
-
-    async def emit(self, accumulated_text: str) -> None:
-        return None
-
-    async def finalize(self, full_text: str) -> DeliveryOutcome:
-        return DeliveryOutcome.DELIVERED
-
-
 class DriverNotAliveError(RuntimeError):
     """Raised when a job has no session that can be opened or resumed."""
 
@@ -426,10 +406,11 @@ class _Segment:
     (or the write that opened it while idle) to its ResultMessage."""
 
     cid: str
-    stream: Any
     capture: Any = None                 # _EngagementCapture | None
     capture_ready: Any = None           # its registration task
-    accumulated: str = ""
+    # The turn's text-bearing messages not yet in the log: those written
+    # after a call still waiting on the operator's approval are held here
+    # until the cut clears (#1207). The ApprovalCut's indices count into it.
     messages: list = field(default_factory=list)
     approval_cut: ApprovalCut = field(default_factory=ApprovalCut)
     api_error: ErrorKind | None = None
@@ -501,17 +482,16 @@ class _JobLane:
 class InCasaDriver(DriverProtocol):
     """Holds one continuous ClaudeSDKClient session per live job.
 
-    ``topic_stream_factory`` is the channel-side factory that, given a
-    topic_id, returns a TopicStreamHandle; the reader builds one per turn
-    (and a new one when a turn's text reaches the output cap). Injected
-    rather than imported from ``channels.telegram`` to keep the driver
-    pure/testable, as are the registry hooks and the job callbacks.
+    ``agent_logs`` is the agent log sink: the reader puts each turn's words
+    and steps in the job's log with its synchronous ``log()``, never waiting
+    on Telegram. ``None`` logs nothing. Injected, like the registry hooks and
+    the job callbacks, to keep the driver pure/testable.
     """
 
     def __init__(
         self,
         *,
-        topic_stream_factory: TopicStreamFactory,
+        agent_logs: "AgentLogs | None" = None,
         persist_session_id: SessionIdPersister | None = None,
         persist_plugin_profiles: "Callable[[str, dict], Awaitable[None]] | None" = None,
         result_observer: "ResultObserver | None" = None,
@@ -524,7 +504,7 @@ class InCasaDriver(DriverProtocol):
         on_operator_written: "Callable[[EngagementRecord], None] | None" = None,
         launch_in_flight: "Callable[[str], bool] | None" = None,
     ) -> None:
-        self._topic_stream_factory = topic_stream_factory
+        self._agent_logs = agent_logs
         self._persist_session_id = persist_session_id
         # S8: persists the rows a rebuilt session's plan decided onto the
         # record's plugin_artifacts — called after the options are built and
@@ -1215,9 +1195,7 @@ class InCasaDriver(DriverProtocol):
         session.holder.value = cid
         session.holder.approvals = {}
         session.turn_open = True
-        stream = (_WithheldStream() if rec.topic_id is None
-                  else self._topic_stream_factory(rec.topic_id))
-        segment = _Segment(cid=cid, stream=stream)
+        segment = _Segment(cid=cid)
         capture = _EngagementCapture.for_turn(rec)
         if capture is not None:
             segment.capture = capture
@@ -1299,16 +1277,20 @@ class InCasaDriver(DriverProtocol):
                     segment.approval_cut.observe(
                         getattr(block, "tool_use_id", ""),
                         session.holder.approvals or {}, len(segment.messages))
+            # A consume that cleared the cut releases the words held behind it.
+            self._log_words(segment, rec)
             return
         if not isinstance(sdk_msg, AssistantMessage):
             return
         segment.idx += 1
         sdk_logging.log_assistant_message(sdk_msg, idx=segment.idx)
+        steps: list[str] = []
         for block in getattr(sdk_msg, "content", []) or []:
             if isinstance(block, ToolUseBlock):
                 segment.tool_names[getattr(block, "id", "")] = getattr(block, "name", "?")
                 sdk_logging.log_tool_use(block, idx=segment.idx,
                                          started_ms=segment.started_ms)
+                steps.append(str(getattr(block, "name", "")))
         # #568/#595: an API-level fault arrives as an assistant message whose
         # text is the CLI's own error prose. Never streamed; recorded (main
         # loop only, first one wins) so the turn ends with its kind.
@@ -1329,29 +1311,27 @@ class InCasaDriver(DriverProtocol):
                                exc_info=True)
         msg_text = "".join(b.text for b in getattr(sdk_msg, "content", [])
                            if isinstance(b, TextBlock))
-        if not msg_text:
+        if msg_text:
+            segment.messages.append(msg_text)
+            self._log_words(segment, rec)
+        if getattr(sdk_msg, "parent_tool_use_id", None) is None:
+            # The main loop's steps, after the words written before them. A
+            # step names the tool, never its outcome, so it is not held.
+            for name in steps:
+                background_jobs.log_job_line(
+                    self._agent_logs, rec, step_log_line(name))
+
+    def _log_words(self, segment: _Segment, rec: Any) -> None:
+        """#1207: put the turn's words in the job's log, unless a call is
+        waiting on the operator's approval. Nothing written after such a call
+        is logged; a consume of the same grant clears the cut, and the words
+        written meanwhile are logged then. Synchronous: the log never makes
+        the reader wait."""
+        if segment.approval_cut.cut is not None:
             return
-        segment.messages.append(msg_text)
-        candidate = (f"{segment.accumulated}\n\n{msg_text}"
-                     if segment.accumulated else msg_text)
-        import specialist_limits
-        if (segment.approval_cut.cut is None
-                and getattr(rec, "kind", "") == "specialist" and segment.accumulated
-                and len(candidate) > specialist_limits._MAX_OUTPUT_CHARS):
-            # One turn can run for hours: at the output cap the handle is
-            # finalized and a new one started, instead of truncating.
-            await _finalize_stream(segment.stream, segment.accumulated.strip(), rec)
-            segment.stream = (_WithheldStream() if rec.topic_id is None
-                              else self._topic_stream_factory(rec.topic_id))
-            segment.messages = [msg_text]
-            segment.approval_cut = ApprovalCut()
-            candidate = msg_text
-        segment.accumulated = candidate
-        # #1207: nothing written after a call that is waiting on the
-        # operator's approval is shown; a consume of the same grant clears
-        # the cut, and the words written meanwhile are shown with the rest.
-        if segment.approval_cut.cut is None:
-            await segment.stream.emit(segment.accumulated)
+        held, segment.messages = segment.messages, []
+        for text in held:
+            background_jobs.log_job_line(self._agent_logs, rec, text)
 
     async def _end_segment(self, session: _JobSession, rec: Any,
                            result: Any) -> None:
@@ -1359,7 +1339,7 @@ class InCasaDriver(DriverProtocol):
         detach the segment, clear ``turn_open``, stamp activity, drop the
         journal entries the turn took up — so a write landing during the
         awaits below opens a new turn rather than being folded into this one.
-        Without a result (the stream ended mid-turn) only the stream and
+        Without a result (the stream ended mid-turn) only the log and the
         capture are closed."""
         segment = session.segment
         if segment is None:
@@ -1383,15 +1363,13 @@ class InCasaDriver(DriverProtocol):
                     logger.warning("result_observer raised for engagement %s",
                                    rec.id[:8], exc_info=True)
             self._signal_turn_end(session)
+        # The turn's words that are not held: a turn that ends while a call
+        # still waits on the operator's approval never logs what it wrote
+        # after that call.
         cut = segment.approval_cut.cut
-        if cut is None:
-            final = segment.accumulated.strip()
-        else:
-            # The words written before the call still waiting on approval,
-            # finalized as they were shown.
-            final = "\n\n".join(segment.messages[:cut]).strip()
-        if final:
-            await _finalize_stream(segment.stream, final, rec)
+        for text in segment.messages[:cut]:
+            background_jobs.log_job_line(self._agent_logs, rec, text)
+        segment.messages = []
         if segment.capture is not None:
             try:
                 await asyncio.shield(segment.capture_ready)
@@ -1707,14 +1685,6 @@ async def _close_client(client: Any, ctx: Any) -> None:
         await ctx.__aexit__(None, None, None)
     elif hasattr(client, "close"):
         await client.close()
-
-
-async def _finalize_stream(stream: Any, text: str, rec: Any) -> None:
-    try:
-        await stream.finalize(text)
-    except Exception:  # noqa: BLE001 — topic text is best effort
-        logger.warning("engagement %s topic stream finalize failed",
-                       rec.id[:8], exc_info=True)
 
 
 def _transcript_uuids(rec: Any, session_id: str | None) -> set[str]:

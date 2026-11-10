@@ -88,7 +88,6 @@
     - casa/rootfs/opt/casa/atomic_io.py::atomic_write_json
     - casa/rootfs/opt/casa/atomic_io.py::atomic_write_text
     - casa/rootfs/opt/casa/session_registry.py::SessionRegistry
-    - casa/rootfs/opt/casa/topic_ledger.py
     - casa/rootfs/opt/casa/explanation_store.py
     - casa/rootfs/opt/casa/config_git.py::init_repo
     - casa/rootfs/opt/casa/private_state.py::enforce
@@ -107,7 +106,7 @@
   invariant_tests:
     INV-STATE-001: [tests/test_pin_g5_invariants.py::test_pin_inv_state_001_only_whitelist_admitted]
     INV-STATE-002: [tests/test_pin_g5_invariants.py::test_pin_inv_state_002_missing_is_empty_corrupt_is_per_loader]
-    INV-STATE-003: [tests/test_topic_ledger.py::test_append_writes_through_atomic_write_json]
+    INV-STATE-003: [tests/test_agent_logs.py::test_registry_writes_through_atomic_write_json]
     INV-STATE-004: [tests/test_job_registry.py::test_failed_snapshot_write_does_not_publish_memory_mutation]
     INV-STATE-005: [tests/test_private_state.py::test_inventory_pins_every_path_the_advisory_named, tests/test_private_state.py::test_main_repairs_private_state_on_every_boot_before_any_channel_starts, tests/test_private_state.py::test_enforce_repairs_a_preexisting_world_readable_file, tests/test_private_state.py::test_enforce_repairs_directories_without_recursing, tests/test_private_state.py::test_enforce_covers_the_quarantine_alias_shape, tests/test_private_state.py::test_traversal_roots_are_never_declared, tests/test_private_state.py::test_config_sync_report_stays_group_and_world_readable, tests/test_private_state.py::test_enforce_refuses_to_chmod_through_a_symlink, tests/test_private_state_write_sites.py::test_atomic_io_default_is_still_world_readable, tests/test_private_state_dropped_uid.py::test_no_declared_private_file_is_readable, tests/test_private_state_dropped_uid.py::test_the_control_set_is_still_readable]
 - doc: architecture/persona-lifecycle.md

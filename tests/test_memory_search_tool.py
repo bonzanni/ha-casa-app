@@ -216,7 +216,7 @@ async def test_query_engager_unknown_carries_guidance(mem, monkeypatch):
     from engagement_registry import EngagementRecord
     rec = EngagementRecord(
         id="e" * 32, kind="specialist", role_or_type="finance",
-        driver="in_casa", status="active", topic_id=1, started_at=0.0,
+        driver="in_casa", status="active", started_at=0.0,
         last_user_turn_ts=0.0, completed_at=None,
         sdk_session_id=None, task="a task", origin={"channel": "telegram",
                                      "_origin_route": "telegram",

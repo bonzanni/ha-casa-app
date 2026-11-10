@@ -678,7 +678,6 @@ class TestJobLaunchRequiresDenial:
         resolution = _resolution(name="other-plugin")
 
         tch = MagicMock()
-        tch.open_engagement_topic = AsyncMock(return_value=555)
         cm = MagicMock()
         cm.get.return_value = tch
         reg = MagicMock()
@@ -709,7 +708,6 @@ class TestJobLaunchRequiresDenial:
         assert payload["status"] == "error"
         assert payload["kind"] == "dependency_unavailable"
         assert payload["missing_plugins"] == ["mtg"]
-        tch.open_engagement_topic.assert_not_awaited()
         eng_reg.create.assert_not_awaited()
 
     async def test_satisfied_job_launch_reuses_same_resolution_once(
@@ -732,10 +730,7 @@ class TestJobLaunchRequiresDenial:
         })
 
         tch = MagicMock()
-        tch.engagement_permission_ok = True
         tch.engagement_supergroup_id = -1001
-        tch.open_engagement_topic = AsyncMock(return_value=555)
-        tch.set_channel_state = AsyncMock()
         cm = MagicMock()
         cm.get.return_value = tch
         reg = MagicMock()
@@ -745,7 +740,6 @@ class TestJobLaunchRequiresDenial:
         rec.id = "eng1"
         eng_reg.create = AsyncMock(return_value=rec)
         eng_reg.update_plugin_profiles = AsyncMock()  # S8: the launch records the applied profile
-        eng_reg.set_channel_state = AsyncMock()
         eng_reg.launch_shutdown_active = MagicMock(return_value=False)
 
         tm.init_tools(

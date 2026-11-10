@@ -788,3 +788,24 @@ async def test_a_late_closing_silence_is_told_as_silence(monkeypatch, text, fina
     note = tools_mod.SILENT_CLOSE_NOTE.format(name=tools_mod._display_name_for_role("finance"))
     assert (note in content.text) is noted
     assert content.relayable is False or not noted
+
+
+@pytest.mark.parametrize("cause, unsent", [
+    ("connect_timeout", True), ("pool_timeout", True), ("connect_error", True),
+    ("read_timeout", False),
+])
+def test_only_a_failure_before_the_request_left_proves_it_unsent(cause, unsent):
+    """PTB wraps httpx's pre-send failures with ``raise ... from err``: a
+    connect timeout, a full pool or a refused connection never reached
+    Telegram. A read timeout may have lost only the acknowledgement of a
+    message Telegram showed, so it proves nothing."""
+    import httpx
+    from telegram.error import TimedOut
+    errors = {"connect_timeout": httpx.ConnectTimeout("no route"),
+              "pool_timeout": httpx.PoolTimeout("pool full"),
+              "connect_error": httpx.ConnectError("refused"),
+              "read_timeout": httpx.ReadTimeout("ack lost")}
+    try:
+        raise TimedOut() from errors[cause]
+    except TimedOut as exc:
+        assert tools_mod._proven_unsent(exc) is unsent

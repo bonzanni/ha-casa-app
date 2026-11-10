@@ -773,14 +773,6 @@ async def test_delegated_request_captured_before_the_run(mem, monkeypatch):
 
 # --- the exit condition: each path, exact counts ----------------------------
 
-class _TopicStream:
-    async def emit(self, text):
-        return None
-
-    async def finalize(self, text):
-        return None
-
-
 class _ScriptedEngagementTurn:
     async def query(self, prompt):
         self.prompt = prompt
@@ -846,10 +838,10 @@ async def test_a_turn_a_delegation_and_an_engagement_turn_each_capture(
 
     # An in-casa engagement turn of a memory-writing specialist: the
     # operator's topic message and each message the specialist wrote.
-    drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream())
+    drv = InCasaDriver()
     rec = EngagementRecord(
         id="e" * 32, kind="specialist", role_or_type="finance",
-        driver="in_casa", status="active", topic_id=99, started_at=0.0,
+        driver="in_casa", status="active", started_at=0.0,
         last_user_turn_ts=0.0, completed_at=None,
         sdk_session_id=None, task="t",
         origin={"channel": "telegram", "_origin_route": "telegram",

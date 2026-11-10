@@ -45,7 +45,7 @@ def _out(r) -> dict:
 
 async def test_no_open_conversations_means_no_warning(reg, sflow, funnel, rollback):
     import tools as tools_mod
-    await _open(reg, slug="travel", topic=103)          # another specialist's
+    await _open(reg, slug="travel")          # another specialist's
     out = _out(await tools_mod.specialist_rollback.handler({"slug": "fin"}))
     assert out.get("ok") is True and rollback.calls == 1, out
     sflow.specs = []
@@ -69,16 +69,16 @@ async def test_an_uninstall_that_does_not_commit_closes_nothing(reg, sflow, funn
         {"slug": "fin", "acknowledged_conversations": [a.id]}))
     assert out.get("ok") is False and out.get("rolled_back") is True, out
     assert reg.get(a.id).status == "active"
-    assert funnel.tch.close_topic.await_count == 0
+    assert funnel.bus.notify.await_count == 0
 
 
 async def test_only_the_removed_specialists_conversations_close(reg, sflow, funnel):
     sflow.specs = []
     a = await _open(reg)
-    configurator = await _open(reg, slug="fin", kind="executor", topic=105,
+    configurator = await _open(reg, slug="fin", kind="executor",
                                task="the configurator itself")
-    other = await _open(reg, slug="travel", topic=103)
-    plugin_job = await _open(reg, slug="fin", kind="plugin", topic=106)
+    other = await _open(reg, slug="travel")
+    plugin_job = await _open(reg, slug="fin", kind="plugin")
     out = _out(await sflow.tm.specialist_uninstall.handler(
         {"slug": "fin", "acknowledged_conversations": [a.id]}))
     assert out.get("ok") is True, out
@@ -202,14 +202,14 @@ async def test_an_acknowledgement_must_name_one_of_the_specialists_engagements(
     that conversation closed, and a conversation opened since is named."""
     import tools as tools_mod
     a = await _open(reg)
-    other = await _open(reg, slug="travel", topic=103)
+    other = await _open(reg, slug="travel")
     for bogus in (["not-an-engagement-id"], [other.id]):
         out = _out(await tools_mod.specialist_rollback.handler(
             {"slug": "fin", "acknowledged_conversations": bogus}))
         assert out.get("kind") == "open_conversations_unconfirmed", (bogus, out)
     assert rollback.calls == 0
     await reg.try_transition_terminal(a.id, "cancelled")
-    b = await _open(reg, topic=102, task="Plan the holiday budget")
+    b = await _open(reg, task="Plan the holiday budget")
     out = _out(await tools_mod.specialist_rollback.handler(
         {"slug": "fin", "acknowledged_conversations": [a.id]}))
     assert out.get("ok") is True and rollback.calls == 1, out
@@ -225,8 +225,8 @@ async def test_boot_does_not_resume_a_job_whose_disabled_close_failed(reg, monke
     import reload as reload_mod
     import tools as tools_mod
     monkeypatch.setattr(reload_mod, "_INCOMPLETE_RETIREMENTS", set())
-    stuck = await _open(reg, slug="travel", topic=103, job={"title": "Fares"})
-    fine = await _open(reg, slug="fin", topic=104, job={"title": "Budget"})
+    stuck = await _open(reg, slug="travel", job={"title": "Fares"})
+    fine = await _open(reg, slug="fin", job={"title": "Budget"})
 
     async def failing(engagement, **kw):
         return tools_mod.FinalizeResult.PERSIST_FAILED
@@ -249,9 +249,6 @@ async def test_boot_does_not_resume_a_job_whose_disabled_close_failed(reg, monke
             resumed.append(rec.id)
     monkeypatch.setattr(background_jobs, "_runner", _Runner())
 
-    async def notice(channel, rec, text):
-        return None
-    monkeypatch.setattr(tools_mod, "_post_engagement_notice", notice)
     await casa_core._resume_background_jobs(reg, object(), skip=left)
     assert resumed == [fine.id]
     src = inspect.getsource(casa_core.main)
