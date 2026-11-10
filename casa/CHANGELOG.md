@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.357.0] - 2026-11-10
+
+### Added
+
+- **A specialist or a job can run a short Python script over its own notes.** When it has put a page or an export into its scratchpad and needs to compute from it (a paste for a site's bulk field, a total, a filtered list), it can run a script that sees the notes and nothing else. The script runs in a separate process with no network, no files, no other process, 30 seconds and 512 MiB, and its result is written back to the notes all at once, only when the script finishes cleanly.
+- The box is enforced by the app's AppArmor profile, so this works on x86_64 installs only. Elsewhere, and whenever the profile has not loaded, the operation is unavailable and Casa tells you once, with the reason in its log.
+
 ## [0.356.0] - 2026-11-10
 
 Not backward compatible. Background jobs no longer open a topic each in the forum group, and nothing reads or cleans the topics older versions opened: they stay in the group until you delete them.
