@@ -596,7 +596,7 @@ class TestStartLineCancelAndRetirement:
         await r.ch._file_job_keyboard(r.rec, 950, JOB_POST_QUESTION)
         assert [m["message_id"] for m in r.bot.markups] == [950]
         assert r.rec.ui_posts == []
-        assert r.reg.ended_job_post_owner(950) is r.rec
+        assert r.reg.ended_job_post_owner(100, 950) is r.rec
 
     async def test_boot_retires_what_an_ended_job_still_carries(
             self, tmp_path, monkeypatch):

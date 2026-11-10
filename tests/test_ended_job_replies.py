@@ -133,7 +133,7 @@ async def test_a_plugin_post_landing_after_the_end_is_the_ended_jobs(routed, tmp
     ch, bus = _channel()
     ch._engagement_registry = reg
     ch._record_post(OPERATOR, NS(message_id=650), _record(owner=rec.id))
-    assert reg.ended_job_post_owner(650) is rec
+    assert reg.ended_job_post_owner(OPERATOR, 650) is rec
     [turn] = await _turns(ch, bus, _text_reply(quoted_id=650, quoted_text="📊 Finance\nrow 9"))
     assert spawned.await_count == 0
     assert turn.context["_reply_note"] == sd.reply_note(_note_for(), None, "📊 Finance\nrow 9")
@@ -316,3 +316,67 @@ async def test_the_ended_route_never_outranks_a_live_job(routed, tmp_path):
     reg._write_tombstone = real
     assert ch._ended_job_quoted(str(OPERATOR), types.SimpleNamespace(id=OPERATOR),
                                 types.SimpleNamespace(message_id=501)) is rec
+
+
+async def test_a_pending_terminal_reply_goes_into_the_job_through_the_handler(
+        tmp_path, monkeypatch):
+    """The whole text handler, not the lookups: a reply arriving while the
+    job's terminal write is pending is the job's (the live route runs first),
+    and when the write fails and the job is live again it is delivered once —
+    no desk turn and no resident turn."""
+    from unittest.mock import AsyncMock
+    from test_job_dm_attention import CHAT, _drain, _HeldWrite, _reply_update, _rig, _wait
+    r = await _rig(tmp_path, monkeypatch)
+    r.reg.record_job_post(r.rec.id, 501)
+    await _drain(r)
+    desk = AsyncMock(return_value=True)
+    monkeypatch.setattr(r.ch, "_maybe_route_desk_reply", desk)
+    resident = AsyncMock(return_value=True)
+    monkeypatch.setattr(r.ch, "_dispatch_dm_turn", resident)
+    held = _HeldWrite(r.reg)
+    held.fail = True
+    transition = asyncio.ensure_future(r.reg.try_transition_terminal(
+        r.rec.id, "completed", strict=True))
+    await _wait(held.started.is_set, "the terminal write")
+    handler = asyncio.ensure_future(r.ch._handle(_reply_update("wait", 501), None))
+    await asyncio.sleep(0.01)
+    held.release.set()
+    with pytest.raises(OSError):
+        await transition
+    held.fail = False
+    await handler
+    held.restore()
+    await _drain(r)
+    assert r.rec.status == "active"
+    assert len(r.delivered) == 1 and r.delivered[0].endswith("wait")
+    assert desk.await_count == 0
+    assert resident.await_count == 0
+
+
+async def test_ended_jobs_of_two_chats_sharing_a_message_id_stay_apart(routed, tmp_path):
+    """Telegram numbers messages per chat: two ended jobs, in two chats, each
+    filed a post 501. After a restart, a reply in the first chat names that
+    chat's job and reaches the resident — never the desk."""
+    from engagement_registry import EngagementRegistry
+    pm, spawned = routed
+    path = str(tmp_path / "e.json")
+    reg = EngagementRegistry(tombstone_path=path)
+    recs = {}
+    for chat, role in ((OPERATOR, "finance"), (99, "travel")):
+        origin = {"role": "assistant", "channel": "telegram", "chat_id": str(chat),
+                  "user_id": OPERATOR, "job": _job_state()}
+        recs[chat] = await reg.create("specialist", role, "in_casa", "t", origin,
+                                      topic_id=None)
+        assert reg.record_job_post(recs[chat].id, 501) is True
+        assert await reg.try_transition_terminal(
+            recs[chat].id, "completed", completed_at=ENDED_AT, strict=True)
+    pm.record(OPERATOR, 501, _record(owner=recs[OPERATOR].id))
+    again = EngagementRegistry(tombstone_path=path)
+    await again.load()
+    assert again.ended_job_post_owner(OPERATOR, 501).id == recs[OPERATOR].id
+    assert again.ended_job_post_owner(99, 501).id == recs[99].id
+    ch, bus = _channel()
+    ch._engagement_registry = again
+    [turn] = await _turns(ch, bus, _text_reply(quoted_id=501, quoted_text="row 7"))
+    assert spawned.await_count == 0
+    assert turn.context["_reply_note"] == sd.reply_note(_note_for(), None, "row 7")

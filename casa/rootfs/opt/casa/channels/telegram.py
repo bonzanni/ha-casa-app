@@ -2084,7 +2084,7 @@ class TelegramChannel(Channel):
         if (owner_of is None or quoted is None or chat is None
                 or not self._sender_is_operator(user)):
             return None
-        rec = owner_of(getattr(quoted, "message_id", None))
+        rec = owner_of(chat, getattr(quoted, "message_id", None))
         return rec if self._job_is_theirs(rec, user, chat) else None
 
     def _ended_job_phrase(self, rec) -> str:

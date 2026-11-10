@@ -30,6 +30,7 @@ from typing import Any, Callable
 
 from atomic_io import atomic_write_json
 from job_registry import CASA_SHUTDOWN_REASON
+from provenance import strict_positive_id
 from sensitivity import TIERS
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,12 @@ def _question_map(value: object) -> dict:
                               if isinstance(o, str)]}
             for qid, q in value.items()
             if isinstance(qid, str) and isinstance(q, dict)}
+
+
+def _post_chat(rec: Any) -> int | None:
+    """The direct chat a job's posts are in: its origin's chat id, or
+    ``None`` when the origin names none."""
+    return strict_positive_id((getattr(rec, "origin", None) or {}).get("chat_id"))
 
 
 def _new_question_id() -> str:
@@ -373,12 +380,14 @@ class EngagementRegistry:
         # extended by ``record_job_post`` and emptied for a record when its
         # terminal transition settles.
         self._job_post_index: dict[int, str] = {}
-        # #1522: DM message id -> the ended job record that posted it. Its
-        # posts move here from the index above when the terminal transition
-        # settles; a post landing after that is filed here directly. Rebuilt
-        # from terminal records at ``load()``, so a record that aged out of the
+        # #1522: (chat id, DM message id) -> the ended job record that posted
+        # it; Telegram numbers messages per chat, so the chat is part of the
+        # key (``None`` for a job whose origin names no chat). Its posts move
+        # here from the index above when the terminal transition settles; a
+        # post landing after that is filed here directly. Rebuilt from
+        # terminal records at ``load()``, so a record that aged out of the
         # tombstone leaves it at the next boot.
-        self._ended_post_index: dict[int, str] = {}
+        self._ended_post_index: dict[tuple[int | None, int], str] = {}
         # #678/#692: whether the terminal path CONFIRMED a telling into each
         # terminal engagement's topic. In-memory, never persisted — see
         # ``record_terminal_telling``. Bounded by the record set: dropped
@@ -515,7 +524,7 @@ class EngagementRegistry:
                 # a reply to this ended job; its questions are not
                 # answerable any more (the settling write stores them empty).
                 for message_id in rec.dm_posts:
-                    self._ended_post_index[message_id] = rec.id
+                    self._ended_post_index[(_post_chat(rec), message_id)] = rec.id
                 rec.questions = {}
 
         # #1093: what the previous process left owed, captured here — before
@@ -659,23 +668,29 @@ class EngagementRegistry:
             return None
         return self._records.get(engagement_id)
 
-    def ended_job_post_owner(self, message_id: Any) -> "EngagementRecord | None":
+    def ended_job_post_owner(self, chat_id: Any,
+                             message_id: Any) -> "EngagementRecord | None":
         """#1522: the ended job record that filed *message_id* as one of its
-        direct chat posts; ``None`` for any other message, and for a record
-        that still counts as live (``job_post_owner`` answers for it). A
-        record that is no longer held answers ``None``."""
-        if type(message_id) is not int:
+        posts in the direct chat *chat_id* (Telegram numbers messages per
+        chat); ``None`` for any other message, and for a record that still
+        counts as live (``job_post_owner`` answers for it). A record that is
+        no longer held answers ``None``."""
+        chat = strict_positive_id(chat_id)
+        if chat is None or type(message_id) is not int:
             return None
-        # The live index too: a direct terminal mutator has flipped the status
-        # before its write settles and the posts move.
-        engagement_id = (self._ended_post_index.get(message_id)
-                         or self._job_post_index.get(message_id))
-        rec = self._records.get(engagement_id) if engagement_id else None
-        if (rec is None or rec.status not in _TERMINAL_STATUSES
-                or self.counts_as_live(rec.id)
-                or not isinstance(rec.origin.get("job"), dict)):
-            return None
-        return rec
+        # A job whose origin names no chat is filed under ``None``. The live
+        # index too: a direct terminal mutator has flipped the status before
+        # its write settles and the posts move.
+        for engagement_id in (self._ended_post_index.get((chat, message_id)),
+                              self._ended_post_index.get((None, message_id)),
+                              self._job_post_index.get(message_id)):
+            rec = self._records.get(engagement_id) if engagement_id else None
+            if (rec is not None and rec.status in _TERMINAL_STATUSES
+                    and not self.counts_as_live(rec.id)
+                    and isinstance(rec.origin.get("job"), dict)
+                    and _post_chat(rec) in (chat, None)):
+                return rec
+        return None
 
     def record_job_post(self, engagement_id: str, message_id: Any, *,
                         keyboard: str | None = None) -> bool:
@@ -702,7 +717,7 @@ class EngagementRegistry:
             # sent; a reply to that post is a reply to the ended job.
             if message_id not in rec.dm_posts:
                 rec.dm_posts.append(message_id)
-            self._ended_post_index[message_id] = engagement_id
+            self._ended_post_index[(_post_chat(rec), message_id)] = engagement_id
             self._schedule_tombstone_persist()
             return False
         if message_id not in rec.dm_posts:
@@ -758,7 +773,7 @@ class EngagementRegistry:
         for message_id in rec.dm_posts:
             if self._job_post_index.get(message_id) == rec.id:
                 del self._job_post_index[message_id]
-            self._ended_post_index[message_id] = rec.id
+            self._ended_post_index[(_post_chat(rec), message_id)] = rec.id
         rec.questions = {}
 
     async def promote_from_quiet(self, engagement_id: str) -> bool:
