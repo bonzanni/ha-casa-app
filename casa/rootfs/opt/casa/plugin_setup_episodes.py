@@ -1932,8 +1932,8 @@ async def _run_episode(ep: dict) -> bool:
                                               len(_RETRY_BACKOFF_S) - 1)])
     if ok:
         # Bus accepted — the agent's own reply reports the setup RESULT to
-        # the operator (for a specialist target, the specialist's answer, which
-        # Casa posts under its header when the resident relays it, slice 5l); what Casa now also correlates (#521) is whether the
+        # the operator (for a specialist target, the resident tells the
+        # specialist's answer in its own words); what Casa now also correlates (#521) is whether the
         # dispatched session could run the tool at all. For a RESIDENT
         # execution target the dispatched session itself must carry the
         # namespaced tool, so record it for `report_dispatch_outcome`; a
@@ -2520,12 +2520,10 @@ def _compose(ep: dict, entry: dict, tool: str) -> tuple[str | None, str]:
     if residents:
         return role, instruction
     sp = specialists[0]
-    # Slice 5l: the specialist's report reaches the operator under its own
-    # header — Casa posts it when the resident relays it.
     return "assistant", (
         base + f"Delegate to the specialist '{sp}' with the instruction "
         f"to run its setup tool `{namespaced}` now, with no arguments and no "
         "other action, and to answer with its outcome alone, in one short "
         "plain line, without naming the tool — do not substitute another "
-        "agent or tool. Then pass its answer on to the operator with "
-        "relay_answer.")
+        "agent or tool. Then tell the operator its outcome yourself, in one "
+        "short line.")

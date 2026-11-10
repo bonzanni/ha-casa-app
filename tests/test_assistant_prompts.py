@@ -60,9 +60,10 @@ def test_system_prompt_forbids_llm_arithmetic_for_finance(system_md_text):
 
 
 def test_system_prompt_teaches_talking_with_a_specialist(system_md_text):
-    """Interactive specialist engagements are retired in favour of the desk:
-    Ellen must not be taught to open one, and a request to talk with a
-    specialist is a sync delegation whose answer the person replies to.
+    """Interactive specialist engagements are retired: Ellen must not be
+    taught to open one, and a request to talk with a specialist is a sync
+    delegation whose answer she tells the person herself; the person carries
+    on by writing to her.
 
     Anchors a small set of phrases so a future prose rewrite can't
     silently drop the guidance.
@@ -74,7 +75,8 @@ def test_system_prompt_teaches_talking_with_a_specialist(system_md_text):
     assert "mode='sync'" in text, (
         "system prompt must teach sync-mode delegation."
     )
-    assert "talk with a specialist" in text and "replying to its message" in text, (
+    assert ("talk with a specialist" in text
+            and "they carry on by writing to you" in text), (
         "system prompt must say how the person talks with a specialist."
     )
     assert "engagements supergroup" not in text and "a job lives in this chat" in text, (
@@ -342,8 +344,10 @@ def test_configurator_card_routes_repo_installs_with_correct_lifecycles():
     ), "card must state reset is residents-only"
 
     # (e) the card hands the person's words on, process instructions verbatim,
-    #     and says how the answer comes back.
-    assert "verbatim" in low and "relay_answer" in low
+    #     and says the answer comes back to be told in the resident's own words.
+    assert "verbatim" in low
+    assert "tell the person what it says, in your own words" in low
+    assert "relay_answer" not in low
 
 
 
@@ -1183,11 +1187,21 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # from every assistant projection, and the text projection also loses the
 # purge paragraph. Nothing added; the six other carriers byte-identical. No
 # retention claim.
+# MOVED (the resident tells a delegate's answer herself), `assistant:text`
+# only, three paragraphs: the relay paragraph now says to tell the answer in
+# her own words, keeping every fact, amount, date, name and question exactly,
+# never under the delegate's name; the late-answer paragraph loses its sentence
+# on a connection report passed on under the delegate's name; the
+# talk-with-a-specialist sentence says to tell its answer in her own words and
+# that the person carries on by writing to her. Measured with `difflib` over
+# base-vs-new compiled text, word by word: 19 non-equal opcodes on
+# `assistant:text`, all inside those three paragraphs; the eight other carriers
+# byte-identical. No retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "c2c249fe7a34c5e33409f0114550920554ca15892b7f652b631ebbff53cc7111",
     "assistant:text":
-        "86161cbf376db0c1052fe75f6fa82e5814fbe0d548a5ef23c1970091d2ab80f4",
+        "b73f0a6dd9e62ce89ec78d9fb4913f0ba6a68911617fb16ae602cdeaef059c91",
     "assistant:voice":
         "7379e0d5b817c09b0c6cf4ad2a69e0a1ca3a668c791d66211bcc6d1584e646a4",
     "butler:restricted_webhook":
@@ -1503,10 +1517,9 @@ _KERNEL_DROP_OFF_CLAUSE = (
 _UNOPENED_TOPIC_DOCTRINE = (
     "A job lives in this chat: its questions, its result and its Cancel button "
     "come here. When the person wants to talk with a specialist themselves, or "
-    "a step needs them to, delegate their words to it in `sync` mode and pass "
-    "its answer on with relay_answer; in Telegram they carry on with it "
-    "directly by replying to its message, and if they ask how to go on with "
-    "it, tell them that."
+    "a step needs them to, delegate their words to it in `sync` mode and tell "
+    "them its answer in your own words; they carry on by writing to you, and "
+    "you delegate their next words the same way."
 )
 
 
@@ -1692,28 +1705,59 @@ def test_the_eval_measures_the_shipped_rule():
 
 
 # ---------------------------------------------------------------------------
-# #1332: a delegate's answer reaches the person once, in the delegate's own
-# words, attributed by name — not rewritten into a second version with a
-# question added. Slice 5l: Casa posts it under the delegate's header when the
-# assistant relays it (relay_answer); passing it on by hand is the fallback. The rule reaches only the assistant's text projection and
-# the legacy carrier, once each. Its live effect is measured by
-# test-local/eval/ellen_relay_fidelity.py.
+# A delegate's answer is told by the resident herself, in her own words: the
+# delegate's "I" becomes its name, every fact, amount, date, name and question
+# is kept exactly, and nothing goes out under the delegate's name. The rule
+# reaches only the assistant's text projection and the legacy carrier, once
+# each. Its live effect is measured by test-local/eval/ellen_own_words.py,
+# whose LLM judge decides fidelity; no offline judge is pinned here.
 # ---------------------------------------------------------------------------
 
+CASA_ROOT = Path(__file__).resolve().parents[1] / "casa/rootfs/opt/casa"
+
+RELAY_TEXT_SITES = ["defaults/agents/assistant/prompts/system.md",
+                    "defaults/roles/resident/assistant/doctrine.md",
+                    "defaults/agents/assistant/delegates.yaml",
+                    "plugin_setup_episodes.py", "tools.py"]
+
 _RELAY_DOCTRINE = (
-    "When a delegate's result answers the person, pass that answer on with "
-    "relay_answer: Casa posts the delegate's whole answer to them, in its own "
-    "words and under its name, and that post is your whole reply to it. Write "
-    "nothing of your own around it: do not announce that you are asking the "
-    "delegate, and add no rewrite or restatement, no question, offer or next "
-    "step it did not make, no note on what you will do. A result meant for you "
-    "rather than the person is not relayed, except that a question or request "
-    "it asks you to put to them is put to them. If relay_answer cannot post it, "
-    "pass it on yourself in the delegate's own words, introduced only by its "
-    "name (\"Alex: …\") so that its \"I\" and \"me\" stay the delegate's; your "
-    "other rules on what a reply may hold still apply to what you pass on "
-    "yourself."
+    "When a delegate's result answers the person, tell them that answer "
+    "yourself, in your own words and as yourself: the delegate's \"I\" becomes "
+    "its name (\"Alex found €420 in October…\"). Keep every fact, amount, date, "
+    "name and question it gives them exactly as it gave them; leave out only "
+    "its account of how it worked. Never write it under the delegate's name or "
+    "as a quote introduced by its name, and add no question, offer or next step "
+    "it did not make, and no note on what you will do. Say it in as many words "
+    "as the answer needs and no more. A result meant for you rather than the "
+    "person is not passed on, except that a question or request it asks you to "
+    "put to them is put to them."
 )
+
+
+def test_no_model_facing_text_mentions_relay_answer():
+    for rel in RELAY_TEXT_SITES:
+        assert "relay_answer" not in (CASA_ROOT / rel).read_text(encoding="utf-8"), rel
+
+
+def test_ellen_tells_answers_in_her_own_words():
+    for rel in RELAY_TEXT_SITES[:2]:
+        text = _collapse_ws((CASA_ROOT / rel).read_text(encoding="utf-8"))
+        assert "tell them that answer yourself, in your own words and as yourself" in text
+        assert "Never write it under the delegate's name" in text
+        assert "Keep every fact, amount, date, name and question" in text
+
+
+def test_the_connection_verdict_rule_is_untouched():
+    for rel in RELAY_TEXT_SITES[:2]:
+        text = _collapse_ws((CASA_ROOT / rel).read_text(encoding="utf-8"))
+        assert "Do not relay anyone else's verdict on whether a connection works" in text
+        assert "stays its own report" not in text
+
+
+def test_the_configurator_answer_is_told_not_relayed():
+    text = _collapse_ws(
+        (CASA_ROOT / "defaults/agents/assistant/delegates.yaml").read_text(encoding="utf-8"))
+    assert "tell the person what it says, in your own words" in text
 
 
 def test_the_relay_rule_reaches_only_the_assistant_text_projection():
@@ -1739,162 +1783,13 @@ def test_the_relay_rule_follows_the_already_posted_rule():
             _collapse_ws(_RELAY_DOCTRINE)) < flat.index(_collapse_ws(_OWN_WORDS_DOCTRINE))
 
 
-def test_the_relay_eval_measures_the_shipped_rule():
+def test_the_own_words_eval_measures_the_shipped_rule():
     import ast
-    path = Path(__file__).resolve().parents[1] / "test-local/eval/ellen_relay_fidelity.py"
+    path = Path(__file__).resolve().parents[1] / "test-local/eval/ellen_own_words.py"
     text = path.read_text(encoding="utf-8")
     start = text.index("DOCTRINE_PARAGRAPH = (") + len("DOCTRINE_PARAGRAPH = ")
     shipped = ast.literal_eval(text[start:text.index("\n)\n", start) + 2])
     assert _collapse_ws(shipped) == _collapse_ws(_RELAY_DOCTRINE)
-
-
-_RELAY_PREFIX = "Alex: Two invoices fit the €120 payment of 3 September"
-
-
-@pytest.mark.parametrize("reply, ok", [
-    (f"{_RELAY_PREFIX}. Which one does it pay: Snelstart or Moneybird?", True),
-    (f"{_RELAY_PREFIX} — which one does it pay, Snelstart or Moneybird?", True),
-    (f"{_RELAY_PREFIX}. Please tell me which one it pays: Snelstart or Moneybird.", True),
-    # the reviewers' counterexamples (#1332 x1, x2): each must be refused
-    ("I rewrote Alex's answer: Which invoice was it—Snelstart or Moneybird? "
-     "I can help further.", False),
-    ("Alex: Snelstart or Moneybird? I have already matched it to Snelstart. "
-     "Would you like me to delete the other invoice?", False),
-    (f"{_RELAY_PREFIX}. Which one does it pay: Snelstart or Moneybird? "
-     "I can help further.", False),
-    (f"{_RELAY_PREFIX}. I picked Snelstart and rejected Moneybird.", False),
-    (f"{_RELAY_PREFIX}. Which one: Snelstart or Moneybird, and shall I audit "
-     "your accounts?", False),
-    (f"{_RELAY_PREFIX}. Please delete Snelstart or Moneybird.", False),
-    (f"{_RELAY_PREFIX} — Ellen asks: Snelstart or Moneybird?", False),
-])
-def test_the_relay_eval_judges_the_relayed_question(reply, ok):
-    import importlib.util
-    path = Path(__file__).resolve().parents[1] / "test-local/eval/ellen_relay_fidelity.py"
-    spec = importlib.util.spec_from_file_location("ellen_relay_fidelity", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    case = next(c for c in module.CASES if c["id"] == "question-via-ellen")
-    assert module._judge(case, reply)[0] is ok
-
-
-@pytest.mark.parametrize("case_id, reply, ok", [
-    ("q3-started", "Alex: Checking the bank and your email — I'll post the result here.", True),
-    # #1369: the same words joined by another clause mark are the delegate's own
-    ("q3-started", "Alex: Checking the bank and your email. I'll post the result here.", True),
-    ("q3-started", 'Alex: "Checking the bank and your email—I\'ll post the result here."', True),
-    ("q1-not-in-books", "Alex: Q1 2026 isn't in the books yet. They start 1 Apr 2026. "
-     "Ask me to do Q1 and I'll start the books from 1 Jan.", True),
-    # refused: a changed, added or dropped word, a changed number, a question
-    # mark of Ellen's, an offer of her own, no attribution
-    ("line-for-ellen", "Alex: September groceries came to €412.30 over 9 payments, "
-     "and most of that was at Esselunga.", False),
-    ("q3-started", "Alex: I'm checking the bank and your email now and will post the "
-     "result here.", False),
-    ("data-answer", "Alex: September groceries came to €412.80 over 9 payments, most of "
-     "it at Esselunga.", False),
-    ("data-answer", "Alex: September groceries came to €412 30 over 9 payments, most of "
-     "it at Esselunga.", False),
-    ("q3-started", "Alex: Checking the bank and your email — I'll post the result here?", False),
-    ("q1-not-in-books", "Alex: Q1 2026 isn't in the books yet: they start 1 Apr 2026. Ask "
-     "me to do Q1 and I'll start the books from 1 Jan. Want me to?", False),
-    ("q3-started", "Checking the bank and your email — I'll post the result here.", False),
-    # #1369 x1 (Terra): the attribution is not a clause mark
-    ("q3-started", "Alex Checking the bank and your email — I'll post the result here.", False),
-    ("q3-started", "Alex — Checking the bank and your email — I'll post the result here.", False),
-    ("q3-started", "Tina: Checking the bank and your email — I'll post the result here.", False),
-    # #1369 x1 (Astra): a dash before an amount may be its sign; a closing quote
-    # does not shield the full stop before it; the order of the words counts
-    ("data-answer", "Alex: September groceries came to - €412.30 over 9 payments, most "
-     "of it at Esselunga.", False),
-    ("data-answer", "Alex: September groceries came to – €412.30 over 9 payments, most "
-     "of it at Esselunga.", False),
-    ("data-answer", "Alex: September groceries came to −€412.30 over 9 payments, most "
-     "of it at Esselunga.", False),
-    ("q3-started", 'Alex: "Checking the bank and your email. I\'ll post the result here"',
-     True),
-    ("q3-started", "Alex: I'll post the result here — checking the bank and your email.",
-     False),
-])
-def test_the_relay_eval_judges_the_attributed_answer_by_its_words(case_id, reply, ok):
-    import importlib.util
-    path = Path(__file__).resolve().parents[1] / "test-local/eval/ellen_relay_fidelity.py"
-    spec = importlib.util.spec_from_file_location("ellen_relay_fidelity", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    case = next(c for c in module.CASES if c["id"] == case_id)
-    assert module._judge(case, reply)[0] is ok
-
-
-_ASK_FULL = ("Alex found two invoices that fit the €120 payment from 3 September. "
-             "Which one does it pay?")
-
-
-@pytest.mark.parametrize("reply, question, options, ok", [
-    # since #1348 the question goes out through ask_user with its two names as
-    # buttons, and the reply around it is silence or the attributed answer
-    ("<silent/>", _ASK_FULL, ["Snelstart", "Moneybird"], True),
-    ("", "Alex: Two invoices fit the €120 payment of 3 September. Which one does "
-         "it pay?", ["Snelstart", "Moneybird"], True),
-    ("", "Two invoices fit the €120 payment from 3 September — which invoice is it "
-         "for: Snelstart or Moneybird?", ["Moneybird", "Snelstart"], True),
-    (f"{_RELAY_PREFIX}.", "Which one does it pay?", ["Snelstart", "Moneybird"], True),
-    (f"{_RELAY_PREFIX}.", "Please tell me which invoice it pays: Snelstart or Moneybird.",
-     ["Snelstart", "Moneybird"], True),
-    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which invoice does "
-     "the payment cover?", ["Snelstart", "Moneybird"], True),
-    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which one does it "
-     "pay: Moneybird or Snelstart?", ["Snelstart", "Moneybird"], True),
-    # #1351 x3 (Astra): judged by its words, not a list of phrasings
-    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which invoice is "
-     "the payment for?", ["Snelstart", "Moneybird"], True),
-    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which one does "
-     "it belong to?", ["Snelstart", "Moneybird"], True),
-    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which one should "
-     "I delete?", ["Snelstart", "Moneybird"], False),
-    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which one does it "
-     "pay: Snelstart, Moneybird or Exact?", ["Snelstart", "Moneybird"], False),
-    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which one does it "
-     "pay? I can match it for you.", ["Snelstart", "Moneybird"], False),
-    # #1351 x4 (Astra, Terra): a payment instruction is not the delegate's question
-    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which one should "
-     "it be matched to?", ["Snelstart", "Moneybird"], True),
-    # #1351 x5 (Astra, Terra)
-    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which invoice does "
-     "the €120 payment match?", ["Snelstart", "Moneybird"], True),
-    ("<silent/>", "Alex: Two invoices fit the €120 payment of 3 September. Which invoice "
-     "should I match it to?", ["Snelstart", "Moneybird"], True),
-    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which invoice does "
-     "this payment correspond to?", ["Snelstart", "Moneybird"], True),
-    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which invoice "
-     "should be paid?", ["Snelstart", "Moneybird"], False),
-    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which one does it "
-     "pay: Snelstart or Moneybird — please pay the invoice?", ["Snelstart", "Moneybird"],
-     False),
-    # refused: narration after the question, a question that drops the answer,
-    # changed choices, an extra choice, a changed fact, a question of Ellen's own
-    ("Asked — tap whichever applies.", _ASK_FULL, ["Snelstart", "Moneybird"], False),
-    ("<silent/>", "Which one does it pay?", ["Snelstart", "Moneybird"], False),
-    ("<silent/>", _ASK_FULL, ["Snelstart", "Exact Online"], False),
-    ("<silent/>", _ASK_FULL, ["Snelstart", "Moneybird", "Neither"], False),
-    ("<silent/>", _ASK_FULL.replace("€120", "€210"), ["Snelstart", "Moneybird"], False),
-    ("<silent/>", _ASK_FULL + " Shall I delete the other one?",
-     ["Snelstart", "Moneybird"], False),
-    (f"{_RELAY_PREFIX}. I'll ask you below.", "Which one does it pay?",
-     ["Snelstart", "Moneybird"], False),
-])
-def test_the_relay_eval_judges_the_question_put_with_buttons(reply, question, options, ok):
-    """#1348 made ask_user's live result tell the assistant the person sees the
-    question with its buttons and to add nothing, so the delegate's question is
-    now put with ask_user; the case judges that form as well as the text one."""
-    import importlib.util
-    path = Path(__file__).resolve().parents[1] / "test-local/eval/ellen_relay_fidelity.py"
-    spec = importlib.util.spec_from_file_location("ellen_relay_fidelity", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    case = next(c for c in module.CASES if c["id"] == "question-via-ellen")
-    asked = {"question": question, "options": options}
-    assert module._judge_asked(case, reply, asked)[0] is ok
 
 
 # ---------------------------------------------------------------------------
@@ -1908,9 +1803,7 @@ def test_the_relay_eval_judges_the_question_put_with_buttons(reply, question, op
 
 _LATE_ANSWER_DOCTRINE = (
     "A delegate's answer that comes back later, in a notification, is passed "
-    "on the same way. Passed on under the delegate's name, what it says about "
-    "a connection stays its own report: add no note of yours on whether it "
-    "has been checked. Casa's lines about a delegate's posts cover only those "
+    "on the same way. Casa's lines about a delegate's posts cover only those "
     "posts: an answer it wrote above them is not among them, and is passed on. "
     "A line above them that only announces those posts, points to them or says "
     "what they hold or propose, such as \"I'm posting its card now\" or \"it's "
@@ -1990,85 +1883,6 @@ def test_the_late_answer_eval_fakes_the_production_ask_note():
     assert module.AWAITING["note"] == tools.ASK_USER_SILENCE_NOTE
     assert tools.ASK_USER_SILENCE_NOTE.count("<silent/>") == 1
     assert strips_to_silence("<silent/>")
-
-
-def _carried(module, reason: str) -> str:
-    return f"Alex: {reason} {module.LIVE_QUESTION}"
-
-
-@pytest.mark.parametrize("reply, ok", [
-    # verbatim, quoted, and the translation the other reply rules make
-    ("verbatim", True),
-    ("quoted", True),
-    ("Alex: The decision is the bank side, not a figure: every sync on the three "
-     "linked accounts has failed since 7 October, and this install is flagged as "
-     "restored from a backup, so those cached balances and transactions can no "
-     "longer be trusted as current. {Q}", True),
-    # the live #1348 reply: question only, reasoning paraphrased, a hedge added
-    ('Alex: "{Q}"\n\nHis reason for asking is his own report on the bank side: he '
-     "says syncs have been failing since 7 October and that this install looks "
-     "restored from a backup, so he doesn't trust the cached balances as current. "
-     "I haven't checked that connection myself, so take it as his account rather "
-     "than confirmed.", False),
-    ("Alex: {R} {Q} Want me to remind you later?", False),
-    ("Alex: Bank syncs are broken. {Q}", False),
-    ("I'll pass it on. Alex: {R} {Q}", False),
-    ("Alex: {Q}", False),
-    ("Alex: The decision is the bank side, not a figure: he says every sync on the "
-     "three linked accounts has failed since 7 October, and this install is flagged "
-     "as restored from a backup, so those cached balances can no longer be trusted. "
-     "{Q}", False),
-    ("Alex: The decision is the bank side, not a figure: every sync on the three "
-     "linked accounts has failed since 7 October, though I have not checked it, so "
-     "those cached balances can no longer be trusted as current. {Q}", False),
-    ("<silent/>", False),
-    # every rendering the live runs produced
-    ("Alex: The decision is the bank side, not a figure: every sync on the three "
-     "linked accounts has been failing since 7 October, and the vault flags this "
-     "install as restored from a backup, so those cached balances and transactions "
-     "can no longer be trusted as current. {Q}", True),
-    ("Alex: The decision is the bank side, not a figure: every sync on the three "
-     "linked accounts has returned an error since 7 October, and the records flag "
-     "this install as restored from a backup, so those cached balances and "
-     "transactions can no longer be trusted as current. {Q}", True),
-    # the reviewers' counterexamples (#1348 x1): a changed fact, a reversed
-    # conclusion — same length, no voice of the resident's own
-    ("Alex: The decision is the bank side, not a figure: every sync on the three "
-     "linked accounts has returned a 404 since 7 September, and the vault flags "
-     "this install as restored from a backup, so those cached balances and "
-     "transactions can no longer be trusted as current. {Q}", False),
-    ("Alex: The decision is the bank side, not a figure: every sync on the three "
-     "linked accounts has returned a 404 since 7 October, and the vault flags this "
-     "install as restored from a backup, so those cached balances and transactions "
-     "can now safely be trusted as current. {Q}", False),
-])
-def test_the_late_answer_eval_judges_the_carried_answer(reply, ok):
-    module = _late_eval()
-    case = next(c for c in module.CASES if c["id"] == "late-live")
-    if reply == "verbatim":
-        reply = _carried(module, module.LIVE_REASON)
-    elif reply == "quoted":
-        reply = f'Alex: "{module.LIVE_ANSWER}"'
-    reply = reply.replace("{Q}", module.LIVE_QUESTION).replace("{R}", module.LIVE_REASON)
-    assert module.judge_carried(case, reply)[0] is ok
-
-
-@pytest.mark.parametrize("case_id, late, asked, ok", [
-    ("late-answer", "Alex: {late}", False, True),
-    # #1348 x1: an ask in the late turn, silent after it, used to pass with
-    # the answer dropped; any ask there now fails
-    ("late-answer", "<silent/>", True, False),
-    ("late-answer", "Alex: {late}", True, False),
-    ("late-live", "Alex: {R} {Q}", True, False),
-    ("late-live", "Alex: {R} {Q}", False, True),
-    ("late-live", "<silent/>", False, False),
-])
-def test_the_late_answer_eval_judges_the_late_turn(case_id, late, asked, ok):
-    module = _late_eval()
-    case = next(c for c in module.CASES if c["id"] == case_id)
-    late = (late.replace("{late}", case.get("late", ""))
-            .replace("{Q}", module.LIVE_QUESTION).replace("{R}", module.LIVE_REASON))
-    assert module.judge_late_turn(case, late, asked)[0] is ok
 
 
 @pytest.mark.parametrize("reply, ok", [
