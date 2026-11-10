@@ -80,7 +80,8 @@ class Clock:
 
 class FakeBot:
     """Records ``(method, kwargs, monotonic time)``; ``fail[method]`` is a list
-    of exceptions raised by that method's next calls, in order."""
+    of exceptions raised by that method's next calls, in order; a call to a
+    method in ``gates`` is held until that event is set."""
 
     id = 4242
 
@@ -91,37 +92,41 @@ class FakeBot:
         self.next_message = 100
         self.next_thread = 500
         self.member: Any = _admin(can_manage_topics=True)
+        self.gates: dict[str, asyncio.Event] = {}
 
-    def _call(self, method: str, kwargs: dict[str, Any]) -> None:
+    async def _call(self, method: str, kwargs: dict[str, Any]) -> None:
         self.calls.append((method, kwargs, self.clock.mono))
+        gate = self.gates.get(method)
+        if gate is not None:
+            await gate.wait()
         queue = self.fail.get(method)
         if queue:
             raise queue.pop(0)
 
     async def send_message(self, **kw: Any) -> Any:
-        self._call("send_message", kw)
+        await self._call("send_message", kw)
         self.next_message += 1
         return SimpleNamespace(message_id=self.next_message)
 
     async def edit_message_text(self, **kw: Any) -> Any:
-        self._call("edit_message_text", kw)
+        await self._call("edit_message_text", kw)
         return True
 
     async def create_forum_topic(self, **kw: Any) -> Any:
-        self._call("create_forum_topic", kw)
+        await self._call("create_forum_topic", kw)
         self.next_thread += 1
         return SimpleNamespace(message_thread_id=self.next_thread)
 
     async def delete_messages(self, **kw: Any) -> bool:
-        self._call("delete_messages", kw)
+        await self._call("delete_messages", kw)
         return True
 
     async def delete_message(self, **kw: Any) -> bool:
-        self._call("delete_message", kw)
+        await self._call("delete_message", kw)
         return True
 
     async def get_chat_member(self, **kw: Any) -> Any:
-        self._call("get_chat_member", kw)
+        await self._call("get_chat_member", kw)
         return self.member
 
     def named(self, method: str) -> list[dict[str, Any]]:
@@ -601,6 +606,34 @@ async def test_posts_past_47_5_hours_are_forgotten_without_a_call(
     assert len(warned) == 1 and "2 posts" in warned[0]
 
 
+async def test_a_flood_wait_ends_the_retention_pass(logs, bot, clock) -> None:
+    """A post 47 h 29 min old meets a one-hour flood wait. Waiting it out would
+    delete at 48 h 29 min, past what Telegram allows: the pass ends instead,
+    and the next one forgets the post without a request."""
+    logs._posts = [[1, clock.wall - (47 * HOUR + 29 * 60)]]
+    bot.fail["delete_messages"] = [_retry_after(3600)]
+    await logs.retention_pass()
+    assert len(bot.named("delete_messages")) == 1
+    assert logs._posts and logs._posts[0][0] == 1
+    clock.advance(3600)
+    await logs.retention_pass()
+    assert len(bot.named("delete_messages")) == 1
+    assert bot.named("delete_message") == []
+    assert logs._posts == []
+
+
+async def test_a_retention_pass_does_not_wait_out_the_writers_flood_wait(
+    logs, bot, clock,
+) -> None:
+    logs.log(FINANCE, "Q3", "a")
+    await logs.step()  # topic
+    bot.fail["send_message"] = [_retry_after(3600)]
+    await logs.step()
+    logs._posts = [[1, clock.wall - 47 * HOUR]]
+    await logs.retention_pass()
+    assert bot.named("delete_messages") == []
+
+
 async def test_retention_runs_without_the_topics_right(clock, bot, tmp_path) -> None:
     """Deleting the bot's own posts needs no admin right."""
     sink = _make(clock, tmp_path)
@@ -639,9 +672,30 @@ async def test_enabled_only_for_an_admin_that_manages_topics(
         assert await sink.check_enabled(bot, CHAT) is False
         assert len(caplog.records) == 3
 
-        caplog.clear()
-        assert await sink.check_enabled(bot, 0) is False  # no group: silent
-        assert caplog.records == []
+
+
+async def test_no_group_is_silent(clock, bot, tmp_path, caplog) -> None:
+    sink = _make(clock, tmp_path)
+    with caplog.at_level(logging.WARNING, logger="agent_logs"):
+        assert await sink.check_enabled(bot, 0) is False
+        assert await sink.check_enabled(bot, None) is False
+    assert caplog.records == []
+    assert bot.calls == []
+
+
+async def test_a_flood_wait_on_the_check_pauses_every_request(
+    clock, bot, tmp_path,
+) -> None:
+    sink = _make(clock, tmp_path)
+    bot.fail["get_chat_member"] = [_retry_after(30)]
+    t0 = clock.mono
+    assert await sink.check_enabled(bot, CHAT) is False
+    sink._posts = [[7, clock.wall - 45 * HOUR]]
+    await sink.retention_pass()
+    assert bot.named("delete_messages") == []  # not while the wait holds
+    clock.advance(30)
+    await sink.retention_pass()
+    assert [t for m, _, t in bot.calls if m == "delete_messages"] == [t0 + 30]
 
 
 # ---------------------------------------------------------------------------
@@ -717,12 +771,81 @@ async def test_a_corrupt_registry_is_set_aside(clock, tmp_path) -> None:
     assert (tmp_path / "log-topics.json.casabak").exists()
 
 
-async def test_a_different_group_forgets_the_old_topics(clock, bot, tmp_path) -> None:
+async def test_a_different_group_on_record_is_forgotten_at_start(
+    clock, bot, tmp_path,
+) -> None:
+    first = _make(clock, tmp_path)
+    await first.check_enabled(bot, CHAT - 1)
+    await _post(first, FINANCE, "a")
+    await first._save()
+
     sink = _make(clock, tmp_path)
-    await sink.check_enabled(bot, CHAT)
-    await _post(sink, FINANCE, "a")
-    assert await sink.check_enabled(bot, CHAT - 1)
+    assert sink._topics and sink._posts
+    assert await sink.check_enabled(bot, CHAT)
     assert sink._topics == {} and sink._posts == []
+    assert sink._snapshot()["chat_id"] == CHAT
+
+
+async def test_a_later_group_change_waits_for_a_restart(
+    logs, bot, clock, caplog,
+) -> None:
+    await _post(logs, FINANCE, "a")
+    with caplog.at_level(logging.WARNING, logger="agent_logs"):
+        assert await logs.check_enabled(bot, CHAT - 1)
+        assert await logs.check_enabled(bot, CHAT - 1)
+        assert await logs.check_enabled(bot, 0)
+    assert [r.getMessage() for r in caplog.records].count(
+        "agent log: the log group changed; the new group applies after a restart") == 2
+    assert logs._topics == {"agent:finance": 501}
+    await _post(logs, FINANCE, "b")
+    logs._posts[0][1] = clock.wall - 45 * HOUR
+    await logs.retention_pass()
+    assert {kw["chat_id"] for _, kw, _ in bot.calls} == {CHAT}
+
+
+@pytest.mark.parametrize("held", ["create_forum_topic", "send_message",
+                                  "delete_messages"])
+async def test_a_group_change_mid_request_keeps_everything_on_the_first_group(
+    logs, bot, clock, held,
+) -> None:
+    """Requests already on their way finish in the first group, and every id
+    they return is recorded for it."""
+    if held != "create_forum_topic":
+        await _post(logs, FINANCE, "a")
+        clock.advance(301)  # the next line starts a new message
+    logs._posts.append([42, clock.wall - 45 * HOUR])
+    bot.gates[held] = asyncio.Event()
+    logs.log(FIDO if held == "create_forum_topic" else FINANCE, "Q3", "b")
+
+    if held == "delete_messages":
+        work = asyncio.ensure_future(logs.retention_pass())
+    else:
+        async def writer() -> None:
+            while await logs.step():
+                pass
+        work = asyncio.ensure_future(writer())
+    for _ in range(100):
+        if bot.named(held):
+            break
+        await asyncio.sleep(0)
+    assert bot.named(held), "the request never started"
+
+    assert await logs.check_enabled(bot, CHAT - 1)
+    bot.gates[held].set()
+    await work
+    await _drain(logs)
+    await logs.retention_pass()
+    await logs._save()
+
+    assert {kw["chat_id"] for _, kw, _ in bot.calls} == {CHAT}
+    snapshot = logs._snapshot()
+    assert snapshot["chat_id"] == CHAT
+    if held == "create_forum_topic":
+        assert snapshot["topics"]["agent:fido"] == bot.next_thread
+    if held == "send_message":
+        assert bot.next_message in [p[0] for p in snapshot["posts"]]
+    if held == "delete_messages":
+        assert 42 not in [p[0] for p in snapshot["posts"]]
 
 
 # ---------------------------------------------------------------------------

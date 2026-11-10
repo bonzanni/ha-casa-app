@@ -201,14 +201,21 @@ class _Budget:
             wait = max(wait, self._stamps[0] + self._window - now)
         return wait
 
-    async def acquire(self) -> None:
+    def paused(self) -> bool:
+        return self._paused_until > self._monotonic()
+
+    async def acquire(self, *, unless_paused: bool = False) -> bool:
+        """Take a token, waiting for one. With *unless_paused*, give up and
+        return ``False`` instead of waiting out a flood wait."""
         # The check and the record happen with no await between them, so two
         # callers on the same event loop can never both take the last token.
         while True:
+            if unless_paused and self.paused():
+                return False
             wait = self._wait_time()
             if wait <= 0:
                 self._stamps.append(self._monotonic())
-                return
+                return True
             await self._sleep(wait)
 
     def pause(self, seconds: float) -> None:
@@ -297,6 +304,7 @@ class AgentLogs:
         self._warned_reason: str | None = None
         self._bot: Any = None
         self._chat_id: int | None = None
+        self._ignored_chat: int | None = None
 
         self._keys: dict[LogKey, _KeyState] = {}
         self._order: deque[LogKey] = deque()
@@ -373,28 +381,40 @@ class AgentLogs:
     # ------------------------------------------------------------------
 
     async def check_enabled(self, bot: Any, chat_id: int | None) -> bool:
-        """Decide whether logging is on for *chat_id*, and bind *bot*.
+        """Decide whether logging is on, and bind *bot*.
 
-        On only when the group is configured and the bot is an administrator
-        there with the right to manage topics. Otherwise one WARNING (unless no
-        group is configured at all) and :meth:`log` does nothing until the
-        next check.
+        The first call with a group binds that group for the life of the
+        process: requests already on their way belong to it, so a later call
+        naming another group changes nothing and warns once (the option is read
+        at start). Logging is on only when the bot is an administrator of the
+        bound group with the right to manage topics. Otherwise one WARNING
+        (unless no group is configured at all) and :meth:`log` does nothing
+        until the next check.
         """
         self._bot = bot
         self._unreachable = False
-        if chat_id and chat_id != self._registry_chat:
-            if self._registry_chat is not None:
-                logger.info(
-                    "agent log: group changed; topics and posts of the previous "
-                    "group are forgotten")
-            self._reset_registry(chat_id)
-        self._chat_id = chat_id or None
-        if not chat_id:
+        if self._chat_id is None and chat_id:
+            if chat_id != self._registry_chat:
+                if self._registry_chat is not None:
+                    logger.info(
+                        "agent log: the log group is not the one on record; "
+                        "topics and posts of the previous group are forgotten")
+                self._reset_registry(chat_id)
+            self._chat_id = chat_id
+        elif self._chat_id is not None and chat_id != self._chat_id:
+            if chat_id != self._ignored_chat:
+                self._ignored_chat = chat_id
+                logger.warning(
+                    "agent log: the log group changed; the new group applies "
+                    "after a restart")
+        if self._chat_id is None:
             self._disable(None)
             return False
         try:
-            member = await bot.get_chat_member(chat_id=chat_id, user_id=bot.id)
+            member = await bot.get_chat_member(chat_id=self._chat_id, user_id=bot.id)
         except Exception as exc:  # noqa: BLE001 - any failure means no logging
+            if isinstance(exc, RetryAfter):
+                self._pause(exc)
             self._unreachable = _matches(exc, _UNREACHABLE)
             self._disable(f"the log group could not be checked ({exc})")
             return False
@@ -687,7 +707,9 @@ class AgentLogs:
         A post's age counts from its first send; edits do not extend it. Each
         request spends a token from the writer's budget. A bulk delete fails as
         a whole when any one of its ids cannot be deleted, so a failed batch is
-        retried one id at a time.
+        retried one id at a time. A flood wait ends the pass instead of being
+        waited out: by the time it is over a post may be past the 48 hours in
+        which it can be deleted, and the next pass judges every age afresh.
         """
         if self._retention_lock.locked():
             return
@@ -704,45 +726,49 @@ class AgentLogs:
                     "group", len(forgotten))
             due = [int(mid) for mid, sent in sorted(self._posts, key=lambda p: p[1])
                    if now - sent > DELETE_AFTER_SECONDS]
-            for start in range(0, len(due), DELETE_BATCH_LIMIT):
-                batch = due[start:start + DELETE_BATCH_LIMIT]
+            await self._delete_due(due)
+            await self._save_if_due()
+
+    async def _delete_due(self, due: list[int]) -> None:
+        for start in range(0, len(due), DELETE_BATCH_LIMIT):
+            batch = due[start:start + DELETE_BATCH_LIMIT]
+            outcome = await self._delete_call(
+                functools.partial(self._bot.delete_messages,
+                                  chat_id=self._chat_id, message_ids=batch))
+            if outcome == "stop":
+                return
+            if outcome == "ok":
+                self._drop_posts(set(batch))
+                continue
+            for mid in batch:
                 outcome = await self._delete_call(
-                    functools.partial(self._bot.delete_messages,
-                                      chat_id=self._chat_id, message_ids=batch))
+                    functools.partial(self._bot.delete_message,
+                                      chat_id=self._chat_id, message_id=mid))
                 if outcome == "stop":
                     return
-                if outcome == "ok":
-                    self._drop_posts(set(batch))
-                    continue
-                for mid in batch:
-                    outcome = await self._delete_call(
-                        functools.partial(self._bot.delete_message,
-                                          chat_id=self._chat_id, message_id=mid))
-                    if outcome == "stop":
-                        return
-                    if outcome in ("ok", "gone"):
-                        self._drop_posts({mid})
-            await self._save_if_due()
+                if outcome in ("ok", "gone"):
+                    self._drop_posts({mid})
 
     async def _delete_call(self, call: Callable[[], Awaitable[Any]]) -> str:
         """One delete request under the budget: ``ok``, ``gone`` (the id cannot
-        or need not be deleted), ``failed`` or ``stop`` (the group is unreachable)."""
-        while True:
-            await self._budget.acquire()
-            try:
-                await call()
-                return "ok"
-            except RetryAfter as exc:
-                self._pause(exc)
-                continue
-            except Exception as exc:  # noqa: BLE001 - classified below
-                if _matches(exc, _UNREACHABLE):
-                    self._disable_unreachable(exc)
-                    return "stop"
-                if _matches(exc, _DELETE_GONE):
-                    return "gone"
-                logger.info("agent log: delete failed: %s", exc)
-                return "failed"
+        or need not be deleted), ``failed``, or ``stop`` (a flood wait is in
+        force, or the group is unreachable: the pass ends)."""
+        if not await self._budget.acquire(unless_paused=True):
+            return "stop"
+        try:
+            await call()
+            return "ok"
+        except RetryAfter as exc:
+            self._pause(exc)
+            return "stop"
+        except Exception as exc:  # noqa: BLE001 - classified below
+            if _matches(exc, _UNREACHABLE):
+                self._disable_unreachable(exc)
+                return "stop"
+            if _matches(exc, _DELETE_GONE):
+                return "gone"
+            logger.info("agent log: delete failed: %s", exc)
+            return "failed"
 
     def _drop_posts(self, ids: set[int]) -> None:
         self._posts = [p for p in self._posts if int(p[0]) not in ids]
