@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.358.0] - 2026-11-10
+
+Not backward compatible. The assistant's `relay_answer` tool is gone; a stored scheduled prompt or a custom assistant prompt that still tells the assistant to call it gets an error for that call, and the assistant answers in its own words instead.
+
+### Changed
+
+- **The assistant tells you what a specialist answered, in its own words.** It no longer posts a specialist's answer under the specialist's name: it says it itself ("Alex found €420 in October…"), keeping the amounts, dates, names and questions exactly as the specialist gave them. You carry on by writing to the assistant, which passes your next words on.
+- The configurator's answers and questions reach you the same way: the assistant tells you what it said and puts its questions to you.
+- Plugin cards in our chat still carry the specialist's label, and replying to one still reaches that specialist.
+
+### Fixed
+
+- A specialist's closing answer is no longer lost when it worked through a very long turn: when the result is cut at its length limit, the assistant still gets the specialist's final message, also after a restart.
+
 ## [0.357.0] - 2026-11-10
 
 ### Added
