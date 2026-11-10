@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from casa_browser import masking
-from casa_browser.masking import mask_text
+from casa_browser.masking import MAX_INPUT, mask_text, mask_whole
 
 # Known-format canaries, assembled at run time so no literal key shape sits in the source
 # (the push gate's secret scanner would — rightly — refuse one).
@@ -63,7 +63,7 @@ def test_same_url_same_reference_different_url_different():
 
 
 @pytest.mark.parametrize("plain", [
-    "Invoice 2026-10-13 total EUR 1,234.56", "Order number 4711", "Welcome back, Nicola",
+    "Invoice 2026-10-13 total EUR 1,234.56", "Order number 4711", "Welcome back, Robin",
     "The quick brown fox jumps over the lazy dog", "accountsettingspreferencesoverview",
     "ISBN 978-3-16-148410-0",
 ])
@@ -161,3 +161,20 @@ def test_special_schemes_follow_the_url_standard(text, expected):
     backslashes after the colon, or none: every such form is an address (operator ruling
     E-C2-5 A); a host is shown only after two or more separators, never for file:."""
     assert mask_text(text).text == expected
+
+
+def test_a_page_full_of_addresses_masks_whole_and_quickly():
+    """Masking lengthens this text past its input limit: nothing is cut; and it stays linear, so
+    a page of the input limit's size never holds up the controller."""
+    import time
+    raw = "\n".join(f"https://a.example/{i % 7}" for i in range(20_000))
+    assert len(raw) < MAX_INPUT
+    started = time.monotonic()
+    text, whole, masked = mask_whole(raw)
+    assert time.monotonic() - started < 3
+    assert whole and masked and len(text) > MAX_INPUT and text.count("⟨r") == 20_000
+    assert mask_text(raw).text == text[:20_000]
+    assert mask_whole("plain words") == ("plain words", True, False)
+    over = "word " * (MAX_INPUT // 5 + 1)
+    text, whole, _ = mask_whole(over)
+    assert not whole and len(text) <= MAX_INPUT

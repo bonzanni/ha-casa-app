@@ -194,8 +194,8 @@ def test_visible_click_timeout():
         res = run_scenario([{"open": {"site_id": None, "mode": "open_web"}},
                             {"goto": f"https://{SITE_A}/buttons"},
                             {"click_hidden_duplicate": "Pay"}])
-        assert res[2]["code"] in ("not_actionable", "timeout")
-        assert res[2]["seconds"] <= 6.0
+        assert res[2]["code"] == "not_visible"
+        assert res[2]["seconds"] <= 4.0            # told after a moment, not the scroll's timeout
 
 
 

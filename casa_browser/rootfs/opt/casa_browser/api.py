@@ -34,6 +34,7 @@ from aiohttp import HttpVersion11, web
 
 from . import __version__
 from .protocol import (
+    MAX_FIND,
     ERROR_STATUS,
     ORIGIN_KINDS,
     PROTOCOL_HEADER,
@@ -49,10 +50,13 @@ from .protocol import (
     parse_claim,
     parse_delivery,
     parse_download,
+    parse_fetch,
     parse_finish,
     parse_judgement_verdict,
     parse_live,
     parse_login_code,
+    parse_look,
+    parse_read,
     parse_sign_in,
     parse_operator_ref,
     parse_question_live,
@@ -84,9 +88,10 @@ class Controller(Protocol):
     async def screenshot(self, run_id: str, screenshot_id: str) -> bytes: ...
     async def take_screenshot(self, run_id: str) -> str: ...
     async def sources(self, run_id: str) -> list: ...
-    async def observe(self, run_id: str, sign_in: bool = False): ...
+    async def observe(self, run_id: str, sign_in: bool = False, find: str | None = None): ...
     async def act(self, run_id: str, action): ...
     async def download(self, run_id: str, handle: str): ...
+    async def fetch(self, run_id: str, url: str, fields: tuple[str, ...]): ...
     async def search(self, run_id: str, query: str): ...
     async def archive(self, run_id: str, file_ids: tuple): ...
     async def request_live(self, run_id: str, purpose: str): ...
@@ -107,6 +112,10 @@ class Controller(Protocol):
     async def live_from_question(self, run_id: str, question_id: str, body: dict) -> dict: ...
     async def login_code(self, run_id: str, login): ...
     async def ask_sign_in(self, run_id: str, site_name: str): ...
+    async def judgement_picture(self, run_id: str, judgement_id: str) -> bytes: ...
+    async def look(self, run_id: str, handle: str | None) -> str | None: ...
+    async def read(self, run_id: str, handle: str | None, file_id: str | None, offset: int,
+                   rows: bool = False) -> dict: ...
 
 
 # Every aiohttp logger that can carry request bytes (a request line, a header value, a body
@@ -377,22 +386,40 @@ def _empty(body: Any) -> None:
         raise ProtocolError("unsupported")
 
 
-def _observe_body(body: Any) -> bool:
-    """``{}`` (Fido 0.1.20: the page) or ``{"sign_in": <bool>}`` (Fido 0.1.21: the page, looked
-    at first for the site's sign-in); anything else is refused."""
-    if body == {}:
-        return False
-    if not isinstance(body, dict) or set(body) != {"sign_in"} or type(body["sign_in"]) is not bool:
+def _observe_body(body: Any) -> tuple[bool, str | None]:
+    """``{}`` (the page), with ``sign_in`` (a bool: the page, looked at first for the site's
+    sign-in) and ``find`` (plain words: what holds them comes with handles, wherever it is on the
+    page), as ``(sign_in, find)``; anything else is refused."""
+    if not isinstance(body, dict) or set(body) - {"sign_in", "find"}:
         raise ProtocolError("unsupported")
-    return body["sign_in"]
+    sign_in, find = body.get("sign_in", False), body.get("find", "")
+    if type(sign_in) is not bool or not isinstance(find, str) or len(find) > MAX_FIND or (
+            "find" in body and not find):
+        raise ProtocolError("unsupported")
+    return sign_in, find or None
 
 
 async def observe(request: web.Request) -> web.Response:
     _no_query(request)
     run_id = await _run_id(request)
-    if _observe_body(await _body(request)):
-        return _ok((await _ctl(request).observe(run_id, sign_in=True)).to_wire())
-    return _ok((await _ctl(request).observe(run_id)).to_wire())
+    sign_in, find = _observe_body(await _body(request))
+    return _ok((await _ctl(request).observe(run_id, sign_in=sign_in, find=find)).to_wire())
+
+
+async def look(request: web.Request) -> web.Response:
+    """The page as a picture for the model: base64 PNG, or null; kept nowhere."""
+    _no_query(request)
+    run_id = await _run_id(request)
+    handle = parse_look(await _body(request))
+    return _ok({"picture": await _ctl(request).look(run_id, handle)})
+
+
+async def read(request: web.Request) -> web.Response:
+    """A window of the page's whole text, its rows, a field's value or a text file, masked."""
+    _no_query(request)
+    run_id = await _run_id(request)
+    handle, file_id, offset, rows = parse_read(await _body(request))
+    return _ok(await _ctl(request).read(run_id, handle, file_id, offset, rows=rows))
 
 
 async def act(request: web.Request) -> web.Response:
@@ -427,6 +454,15 @@ async def download(request: web.Request) -> web.Response:
     run_id = await _run_id(request)
     handle = parse_download(await _body(request))
     return _ok((await _ctl(request).download(run_id, handle)).to_wire())
+
+
+async def fetch(request: web.Request) -> web.Response:
+    """A public address read with no browser and no cookie; a refusal the model can act on is a
+    ``not_run`` step."""
+    _no_query(request)
+    run_id = await _run_id(request)
+    url, fields = parse_fetch(await _body(request))
+    return _ok((await _ctl(request).fetch(run_id, url, fields)).to_wire())
 
 
 async def search(request: web.Request) -> web.Response:
@@ -533,6 +569,14 @@ async def judgement(request: web.Request) -> web.Response:
     return _ok(await _ctl(request).apply_judgement(run_id, judgement_id, body))
 
 
+async def judgement_picture(request: web.Request) -> web.Response:
+    """The open judgement's picture, for the plugin's own relay: a control route."""
+    _no_query(request)
+    data = await _ctl(request).judgement_picture(await _run_id(request), _id(request, "judgement"))
+    return web.Response(body=data, content_type="image/png",
+                        headers={"Cache-Control": "no-store"})
+
+
 async def answer(request: web.Request) -> web.Response:
     """The operator's answer to a question (S2-10): a control route (Casa's trusted tap)."""
     _no_query(request)
@@ -593,8 +637,11 @@ def make_app(controller: Controller) -> web.Application:
         web.post("/v1/control/runs/{run}/screenshots", take_screenshot, expect_handler=_expect),
         web.get("/v1/control/runs/{run}/sources", sources, **_GET),
         web.post("/v1/runs/{run}/observe", observe, expect_handler=_expect),
+        web.post("/v1/runs/{run}/look", look, expect_handler=_expect),
+        web.post("/v1/runs/{run}/read", read, expect_handler=_expect),
         web.post("/v1/runs/{run}/action", act, expect_handler=_expect),
         web.post("/v1/runs/{run}/download", download, expect_handler=_expect),
+        web.post("/v1/runs/{run}/fetch", fetch, expect_handler=_expect),
         web.post("/v1/runs/{run}/login-code", login_code, expect_handler=_expect),
         web.post("/v1/runs/{run}/sign-in", sign_in, expect_handler=_expect),
         web.post("/v1/runs/{run}/search", search, expect_handler=_expect),
@@ -612,6 +659,8 @@ def make_app(controller: Controller) -> web.Application:
         web.get("/v1/control/runs/{run}/judgements/pending", pending_judgements, **_GET),
         web.post("/v1/control/runs/{run}/judgements/{judgement}", judgement,
                  expect_handler=_expect),
+        web.get("/v1/control/runs/{run}/judgements/{judgement}/picture", judgement_picture,
+                **_GET),
         web.post("/v1/control/runs/{run}/questions/{question}/answer", answer,
                  expect_handler=_expect),
         web.get("/v1/control/runs/{run}/questions/{question}", question, **_GET),

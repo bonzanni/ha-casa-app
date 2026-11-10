@@ -97,14 +97,15 @@ shown, enabled input on a login origin whose autocomplete ends with the token `w
 `passkey_frame`) ends the sign-in as `needs_guest`, before any further fill or choice.
 **Off the start page** (the look, [`casa-browser-signin.md`](casa-browser-signin.md)), the
 broker's `read_sign_in` settles and runs the driver's `read_sign_in` once — nothing filled, no
-vault read — and keeps that read's binding (its mark and digest) per run and site; `login` with
+vault read — and keeps that read's binding (its mark and its fields' facts) per run and site; `login` with
 `auto` (and `fields`, the check's mapping of the page's unmarked fields, named to the driver's
 discovery with the look's mark) signs in only on it: the driver's `sign_in_bound` before each fill, submit or passkey
 answer of that first step (`no_form`/`page_moved` otherwise), the item read only once a value is needed,
 no form-render wait, and after its first submit or passkey answer no guest, no passkey and no
 second password (`password_again`; `password_sent` carries one sent before the guest reload,
-and `_code_marks` carries both flags through an emailed code). A first read that errors or finds
-no form is `no_form` (`probe_failed`, `no_form`). The look's binding ends with its run.
+and `_code_marks` carries both flags through an emailed code). A first read that errors is
+`no_form`/`probe_failed`; one that finds no field to fill is `no_form`/`no_form`, or
+`no_form`/`page_moved` when the check named fields. The look's binding ends with its run.
 Guest bootstrap reads the driver's state and calls sign-in or unlock with credentials
 in call arguments only, within 105 s; other states, `timeout` and driver errors are logged by
 the run controller, which goes on (no live view, slice 5s).
@@ -182,7 +183,8 @@ Fill uses the native input setter in Patchright's isolated world and verifies th
 same element's value; it sends no keyboard events carrying a credential. Every action
 rechecks its frame origin and generation. Broker-origin metadata narrows the controller's
 login origins for production login calls. Field discovery, settling, account-origin checks
-and guest-state reads retry destroyed execution contexts after waiting for document load.
+and guest-state reads retry any read that fails under them (a destroyed execution context, a
+detached frame) after waiting for document load.
 Settling then waits for a quarter second without a frame navigation (at most three seconds).
 Each read allows three attempts within a time bound (the caller's bound for settling,
 ten seconds otherwise); exhausted retries or a load wait that does not settle return

@@ -18,6 +18,7 @@ class Page:
     def __init__(self, editable=lambda x, y: False):
         self.log = []
         self.editable = editable
+        self.scrollers = [[0, 0]]
         page = self
 
         class Mouse:
@@ -46,6 +47,8 @@ class Page:
         self.pointer = None
 
     async def evaluate(self, expr, arg=None):
+        if "scrollTop" in expr:
+            return self.scrollers
         if "elementFromPoint" in expr:
             return self.editable(*arg)
         if "innerWidth" in expr:
@@ -68,6 +71,9 @@ class Locator:
 
     async def bounding_box(self):
         return {"x": 100, "y": 100, "width": 80, "height": 30}
+
+    async def evaluate(self, js, arg=None):          # as a contenteditable answers the select
+        return False
 
 
 async def _no_sleep(_s):
@@ -231,3 +237,99 @@ async def test_scroll_checks_every_wheel_step():
     with pytest.raises(ActionError, match="unsupported"):
         await pacer(page3).scroll("down", "step")
     assert not [e for e in page3.log if e[0] == "wheel"]
+
+
+async def test_scroll_says_where_it_left_what_it_scrolled():
+    """The outermost scroller that moved, or with none the innermost the wheel was at."""
+    assert pacing._position([[0, 900]], [[120, 900]]) == {"top": 120, "end": 900, "moved": True}
+    assert pacing._position([[900, 900]], [[900, 900]]) == {"top": 900, "end": 900, "moved": False}
+    assert pacing._position([[0, 0], [40, 500]], [[0, 0], [160, 500]]) == {"top": 160, "end": 500, "moved": True}
+    # the page moved, and another box came under the pointer
+    assert pacing._position([[0, 900], [40, 500]], [[120, 900], [0, 77]])["top"] == 120
+    assert pacing._position([[0, 0], [500, 500]], [[0, 0], [500, 500]]) == {"top": 500, "end": 500, "moved": False}
+    page = Page(editable=lambda x, y: False)
+    page.scrollers = [[300, 900]]
+    assert await pacer(page).scroll("down", "step") == {"top": 300, "end": 900, "moved": False}
+
+
+class Area(Locator):
+    async def evaluate(self, js, *args):
+        self.page.log.append(("select",) if "select()" in js else ("eval", js))
+        return True                                  # an input or a textarea
+
+
+async def test_insert_goes_through_the_guard_and_the_focus():
+    """A long text is one insertion after the guarded click and the select, with no key event;
+    a guard or a focus that does not hold inserts nothing."""
+    page = Page()
+
+    async def ok(point=None):
+        return "ok"
+
+    async def focused():
+        page.log.append(("focus",))
+        return True
+    await pacer(page).insert(Area(page), "a\nb", guard=ok, focus=focused,
+                             on_dispatch=lambda: page.log.append(("dispatch",)))
+    kinds = [e[0] for e in page.log if e[0] != "move"]
+    assert kinds == ["dispatch", "down", "up", "select", "focus", "insert"]
+    assert ("insert", "a\nb") in page.log and not [e for e in page.log if e[0] in ("key", "press")]
+
+    for answer in ("moved", "changed"):
+        page = Page()
+
+        async def refuses(point):
+            return answer
+        with pytest.raises(GuardRefused) as err:
+            await pacer(page).insert(Area(page), "text", guard=refuses, focus=focused)
+        assert err.value.code == answer and not [e for e in page.log if e[0] == "insert"]
+
+    page = Page()
+
+    async def lost():
+        return False
+    with pytest.raises(GuardRefused):
+        await pacer(page).insert(Area(page), "text", guard=ok, focus=lost)
+    assert not [e for e in page.log if e[0] == "insert"]
+
+
+async def test_type_selects_an_input_or_textarea_so_the_text_replaces_it():
+    """The select comes after the guarded click and before the first key; an empty text is one
+    empty insertion behind the focus check, which clears the selection."""
+    page = Page()
+
+    async def ok(point=None):
+        return "ok"
+
+    async def focused():
+        page.log.append(("focus",))
+        return True
+    await pacer(page).type(Area(page), "ab", guard=ok, focus=focused)
+    assert [e for e in page.log if e[0] != "move"] == [
+        ("down",), ("up",), ("select",), ("focus",), ("key", "a"), ("focus",), ("key", "b")]
+
+    page = Page()
+    await pacer(page).type(Area(page), "", guard=ok, focus=focused)
+    assert [e for e in page.log if e[0] != "move"] == [
+        ("down",), ("up",), ("select",), ("focus",), ("insert", "")]
+
+    page = Page()
+
+    async def lost():
+        return False
+    with pytest.raises(GuardRefused):
+        await pacer(page).type(Area(page), "", guard=ok, focus=lost)
+    assert not [e for e in page.log if e[0] == "insert"]
+
+
+async def test_type_leaves_a_contenteditable_at_its_caret():
+    """Nothing selected, nothing cleared: a signature or a quoted reply stays."""
+    page = Page()
+
+    async def ok(point=None):
+        return "ok"
+    await pacer(page).type(Locator(page), "ab", guard=ok)
+    assert [e for e in page.log if e[0] in ("key", "insert")] == [("key", "a"), ("key", "b")]
+    page = Page()
+    await pacer(page).type(Locator(page), "", guard=ok)
+    assert not [e for e in page.log if e[0] in ("key", "insert")]

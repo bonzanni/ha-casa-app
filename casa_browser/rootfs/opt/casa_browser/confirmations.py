@@ -10,6 +10,8 @@ the view and decides, mechanically, whether a confirm button may be offered:
   app's own question screenshot; without a faithful one there is no confirm button.
 * **F6a.** ``text_incomplete: true`` (the check could not read a fact the operator needs) means
   no confirm button; that includes account changes with no stated terms (ruling (a)).
+* **Blind.** A reading the app could not see whole for any cause but the control cap has no final
+  read to press on: no confirm button, and no plan card.
 * **F2.** A ``go`` whose category is a change becomes a question with no check wording: fixed copy
   and no confirm button.
 
@@ -35,7 +37,13 @@ COPY_F2 = ("Ellen was about to {verb} “{name}” on {site}, and the check says
            "something but did not describe it. You can do it in the live view.")
 COPY_F6 = "I can't show you this page reliably; you can do it in the live view."
 COPY_F6A = "I can't check the amount on this page myself, so please finish it in the live view."
-COPY_TOO_MUCH = "This page changed too much to check again; you can finish it in the live view."
+COPY_BLIND = "I can't re-check this page before pressing, so please do it in the live view."
+# Why a Yes could not be checked again at the tap: nothing was pressed, whichever it is. A long page
+# is not unreadable: only a reading that came back blind (``gate.blind``) has this copy.
+COPY_INCOMPLETE = ("I can't read this page whole, so I can't check it again and didn't press "
+                   "anything; you can finish it in the live view.")
+COPY_TOO_MUCH = ("This page changed too much since I asked to check it again, so I didn't press "
+                 "anything; you can finish it in the live view.")
 
 VERBS = {"click": "press", "download": "press", "type": "type into", "select": "choose",
          "navigate": "open", "search": "open", "back": "go back from"}
@@ -169,18 +177,21 @@ def wants_screenshot(category: str, question: dict | None, has_cc: bool) -> bool
 
 
 def build_view(verdict: dict, *, has_cc: bool, screenshot_id: str | None, f2: bool,
-               verb: str, name: str, site: str) -> dict:
+               verb: str, name: str, site: str, plan: str | None = None,
+               blind: bool = False) -> dict:
     """The question view the plugin renders (design §2.5, F5–F6a), from the check's question."""
     category = verdict.get("category", "unclear")
     q = None if f2 else verdict.get("question")
     copy = None
     if q is None:
         copy = COPY_F2.format(verb=verb, name=_m(name, 80), site=_m(site, 80))
+    elif blind:
+        copy = COPY_BLIND
     elif q.get("text_incomplete"):
         copy = COPY_F6A
     elif money(category, q, has_cc) and screenshot_id is None:
         copy = COPY_F6
-    return {"text": copy if q is None else q["text"],
+    view = {"text": copy if q is None else q["text"],
             "confirm_label": "" if q is None else q["confirm_label"],
             "extra_options": [] if q is None else list(q.get("extra_options") or []),
             "highlight": [] if q is None else list(q.get("highlight") or []),
@@ -188,6 +199,9 @@ def build_view(verdict: dict, *, has_cc: bool, screenshot_id: str | None, f2: bo
             "confirm_offered": copy is None,
             "live_only_copy": copy,
             "category": category}
+    if plan is not None:
+        view["plan"] = plan
+    return view
 
 
 def _m(text: str, limit: int) -> str:

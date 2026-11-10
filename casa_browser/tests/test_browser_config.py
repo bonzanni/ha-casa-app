@@ -290,6 +290,8 @@ class FakePage:
         self.viewport_size = None
 
     async def evaluate(self, expr, arg=None):
+        if "scrollTop" in expr:
+            return [[0, 0]]
         if "elementFromPoint" in expr:
             return False          # no form control under any point
         if "innerWidth" in expr:
@@ -318,6 +320,10 @@ class FakeLocator:
 
     async def focus(self):
         self.page.log.append(("focus",))
+
+    async def evaluate(self, expr, arg=None):       # the pacer selects what a field holds
+        self.page.log.append(("select",))
+        return True
 
 
 def _pacer(page, **kw):
@@ -368,8 +374,10 @@ def test_scroll_in_steps():
     assert all(e[2] < 0 for e in page.log if e[0] == "wheel")
 
 
-@pytest.mark.parametrize("loc", [dict(visible=False), dict(enabled=False), dict(box=None)])
-def test_not_actionable_refused_at_once(loc):
+@pytest.mark.parametrize("loc, code", [(dict(visible=False), "not_visible"),
+                                       (dict(enabled=False), "disabled"),
+                                       (dict(box=None), "no_size")])
+def test_a_refused_target_says_why_at_once(loc, code):
     page = FakePage()
     p, _ = _pacer(page)
     locator = FakeLocator(page, **{k: v for k, v in loc.items() if k != "box"})
@@ -377,7 +385,65 @@ def test_not_actionable_refused_at_once(loc):
         locator.bounding_box = lambda: asyncio.sleep(0, result=None)
     with pytest.raises(pacing.ActionError) as err:
         asyncio.run(p.click(locator))
-    assert err.value.code == "not_actionable"
+    assert err.value.code == code
+    assert code in pacing.TARGET_REFUSALS
+    assert not [e for e in page.log if e[0] in ("move", "down", "up")]
+
+
+def test_a_hidden_target_is_refused_before_any_scroll():
+    """Scrolling a ``display:none`` element waits out its timeout on real Chrome, so a target
+    that stays hidden is told as hidden before the scroll, which is never reached."""
+    page = FakePage()
+    p, _ = _pacer(page, action_timeout=0.2)
+    with pytest.raises(pacing.ActionError) as err:
+        asyncio.run(p.click(FakeLocator(page, visible=False, hang=True)))
+    assert err.value.code == "not_visible"
+    assert page.log == []
+
+
+def test_a_target_a_transition_hides_for_a_moment_is_still_pressed():
+    """A page in a transition shows its target again: the step goes on, as it did before."""
+    page = FakePage()
+    p, _ = _pacer(page)
+    locator = FakeLocator(page, visible=False)
+    looks = []
+
+    async def shows_again():
+        looks.append(1)
+        return len(looks) > 3
+    locator.is_visible = shows_again
+    asyncio.run(p.click(locator))
+    assert [e for e in page.log if e[0] == "down"]
+
+
+def test_a_zero_area_target_says_no_size_and_a_hidden_one_does_not():
+    """The visibility check says no to both; only the box tells them apart."""
+    page = FakePage()
+    p, _ = _pacer(page)
+    for box, code in (((400, 300, 0, 0), "no_size"), ((400, 300, 100, 0), "no_size"),
+                      ((400, 300, 100, 40), "not_visible")):
+        with pytest.raises(pacing.ActionError) as err:
+            asyncio.run(p.click(FakeLocator(page, visible=False, box=box)))
+        assert err.value.code == code
+    gone = FakeLocator(page, visible=False)
+    gone.bounding_box = lambda: asyncio.sleep(0, result=None)
+    with pytest.raises(pacing.ActionError) as err:
+        asyncio.run(p.click(gone))
+    assert err.value.code == "not_visible"
+
+
+def test_a_target_the_scroll_hides_is_told_hidden():
+    """The check after the scroll stays: a page can hide the target as it comes into view."""
+    page = FakePage()
+    p, _ = _pacer(page)
+    locator = FakeLocator(page)
+
+    async def hides(timeout=None):
+        locator.visible = False
+    locator.scroll_into_view_if_needed = hides
+    with pytest.raises(pacing.ActionError) as err:
+        asyncio.run(p.click(locator))
+    assert err.value.code == "not_visible"
 
 
 def test_a_hanging_keystroke_returns_control():

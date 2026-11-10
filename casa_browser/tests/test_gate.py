@@ -36,6 +36,77 @@ def test_scope_table_rows(action, facts, signed_in, public):
     assert gate.in_scope("public", action, **facts) is public
 
 
+@pytest.mark.parametrize("url,page,same", [
+    ("https://a.example/list", "https://a.example/home", True),
+    ("https://www.a.example/list", "https://www.a.example/home", True),
+    ("https://www.a.example/list", "https://shop.a.example/home", False),
+    ("https://www.example.test/list", "https://www.example.test/home", True),
+    ("https://example.test/list", "https://www.example.test/home", False),       # a subdomain
+    ("https://www.example.test/list", "https://example.test/home", False),
+    ("https://beta.co.uk/list", "https://alpha.co.uk/home", False),              # one public suffix
+    ("https://b.github.io/list", "https://a.github.io/home", False),
+    ("http://a.example/list", "https://a.example/home", True),
+    ("https://a.example/home", "https://a.example/home", True),                  # a reload loads
+    ("https://a.example/home#top", "https://a.example/list", True),
+    ("https://a.example/home#", "https://a.example/home", True),                 # no fragment
+    ("https://a.example/home#top", "https://a.example/home", False),
+    ("https://a.example/home#top", "https://a.example/home#bottom", False),
+    ("https://b.example/list", "https://a.example/home", False),
+    ("https://a.example/list", "about:blank", False),
+    ("https://a.example/list", "chrome-error://chromewebdata/", False),
+    ("javascript:void(0)", "https://a.example/home", False),
+    ("https:///list", "https://a.example/home", False),
+    ("https://[bad/list", "https://a.example/home", False),
+])
+def test_same_host_load(url, page, same):
+    assert gate.same_host_load(url, page) is same
+
+
+def test_only_a_navigation_on_the_host_open_is_free_on_an_account_session():
+    assert not gate.in_scope("account", "navigate", is_link=True, same_host=True)
+    for action, facts in (("click", {"is_link": True}), ("click", {}), ("back", {}), ("type", {}),
+                          ("select", {}),
+                          ("download", {"download_via": "link"}),
+                          ("download", {"download_via": "button"})):
+        assert gate.in_scope("account", action, same_host=True, **facts), action
+
+
+def _control(role, tag, **facts):
+    return {"role": role, "tag": tag, "state": {}, **facts}
+
+
+@pytest.mark.parametrize("kind,target,enter,free", [
+    ("type", _control("textbox", "input"), False, True),
+    ("type", _control("textbox", "input"), True, False),
+    ("select", _control("combobox", "select"), False, True),
+    # a text field or select inside a link: pressing into it follows the link
+    ("type", _control("textbox", "input", activator_href="https://a.example/x"), False, False),
+    ("select", _control("combobox", "select", activator_href="https://a.example/x"), False, False),
+    ("click", _control("checkbox", "input"), False, True),
+    ("click", _control("radio", "input"), False, True),
+    ("click", _control("checkbox", "button"), False, True),      # a custom box, no submitter
+    ("click", _control("button", "summary"), False, True),
+    ("click", _control("button", "button", state={"expanded": "false"}), False, True),
+    ("click", _control("button", "button"), False, False),       # any other button can act
+    ("click", _control("switch", "button"), False, False),
+    ("click", _control("menuitem", "div"), False, False),
+    ("click", _control("tab", "button", state={"expanded": "false"}), False, False),
+    # anything with a destination sends, whatever it calls itself
+    ("click", _control("checkbox", "a", href="https://a.example/pay"), False, False),
+    ("click", _control("button", "span", activator_href="https://a.example/pay",
+                       state={"expanded": "false"}), False, False),
+    ("click", _control("checkbox", "button", is_submitter=True, submit_action="https://a.example/pay",
+                       submit_method="post", submit_target=""), False, False),
+    ("click", _control("button", "summary", is_submitter=True), False, False),
+    ("click", _control("checkbox", "input", secret=True), False, False),
+    ("click", None, False, False),
+    ("navigate", _control("checkbox", "input"), False, False),
+    ("back", None, False, False),
+])
+def test_sends_nothing_only_for_what_prepares(kind, target, enter, free):
+    assert gate.sends_nothing(kind, target, enter=enter) is free
+
+
 def test_canonical_bytes_and_digest():
     p = {"b": "€ 84,20", "a": [1, {"d": None, "c": True}]}
     data = gate.canonical(p)
@@ -79,6 +150,78 @@ def invoice_table() -> dict:
     return {"href": "https://shop.example/facturen/", "title": "Facturen", "complete": True,
             "blocks": blocks, "controls": controls, "target": None, "target_idx": -1,
             "has_cc": False}
+
+
+LONG = "".join(f"item {i:05d}\n" for i in range(2_500)) + "trailing item zz"   # 27,516 characters
+
+
+def _pasted(form_owner: bool, *, other_frame: bool = False) -> tuple[dict, dict]:
+    """A page with a long list pasted into a textarea and a Save button: in the button's form,
+    or with no form owner (the page's script sends it)."""
+    reading = invoice_table()
+    form = {"id": 7, "method": "post", "action": "https://shop.example/save", "target": "",
+            "fields": [{"label": "List", "type": "textarea", "value": LONG}]} if form_owner else None
+    area = _control(len(reading["controls"]), "textbox", "List", tag="textarea", form=form,
+                    form_self=0 if form_owner else -1, state={"value": LONG})
+    save = _control(len(reading["controls"]) + 1, "button", "Save", form=form)
+    reading["controls"] += [area, save]
+    if other_frame:                       # the same ids in another frame's reading
+        child = {"href": "https://shop.example/f", "complete": True, "blocks": [],
+                 "controls": [dict(area, idx=0, form=form, state={"value": "other " + LONG})]}
+        gate.merge_frame(reading, child, 1, shown=True)
+    return reading, save
+
+
+@pytest.mark.parametrize("form_owner", [True, False], ids=["in-the-form", "no-form-owner"])
+def test_a_long_pasted_value_is_in_the_packet_whole_exactly_once(form_owner):
+    """Astra S1 (run-r1): the check sees the whole masked value a press can send, a form or not:
+    once in ``target.form.fields`` when the form lists it, else once in its control line."""
+    reading, save = _pasted(form_owner)
+    pkt = gate.build_packet(reading, save, {"kind": "click"}, task="t", session="signed_in",
+                            site="Shop")
+    text = json.dumps(pkt, ensure_ascii=False)
+    assert text.count("trailing item zz") == 1
+    assert text.count("item 02499") == 1
+    if form_owner:
+        assert pkt["target"]["form"]["fields"][0]["value"] == LONG
+    else:
+        assert any(line.startswith("textbox: List") and "trailing item zz" in line
+                   for line in pkt["page"]["controls"])
+
+
+def test_another_frames_field_with_the_same_ids_is_shown_whole_in_its_line():
+    """A form id belongs to one frame's reading: another frame's field is never taken for one of
+    the target's form fields, so its value is whole in its own line."""
+    reading, save = _pasted(True, other_frame=True)
+    pkt = gate.build_packet(reading, save, {"kind": "click"}, task="t", session="signed_in",
+                            site="Shop")
+    text = json.dumps(pkt, ensure_ascii=False)
+    assert text.count("trailing item zz") == 2      # the form's field, and the frame's own line
+    assert text.count("other item 00000") == 1
+
+
+def test_an_editable_inside_the_form_that_the_form_does_not_list_is_whole_in_its_line():
+    """A contenteditable inside the target's form element is no field of it (``form_self`` -1):
+    the form's fields never show it, so its line does."""
+    reading, save = _pasted(True)
+    note = _control(50, "textbox", "Note", tag="div", form=save["form"], form_self=-1,
+                    state={"value": "x " * 300 + "editable end"})
+    reading["controls"].append(note)
+    text = json.dumps(gate.build_packet(reading, save, {"kind": "click"}, task="t",
+                                        session="signed_in", site="Shop"), ensure_ascii=False)
+    assert text.count("editable end") == 1 and text.count("trailing item zz") == 1
+
+
+def test_a_whole_value_is_still_masked_and_a_secret_stays_not_shown():
+    reading, save = _pasted(False)
+    token = "Zq81Yt7Wm2Pk5Rn9Xs4Bv6Cd3Lh0Fg"  # gitleaks:allow - synthetic fixture; this test exists to prove masking works
+    reading["controls"][-2]["state"]["value"] = LONG + " " + token + " https://bank.example/x?k=1"
+    reading["controls"].append(_control(99, "textbox", "Code", tag="input",
+                                        state={"value": gate.NOT_SHOWN}))
+    text = json.dumps(gate.build_packet(reading, save, {"kind": "click"}, task="t",
+                                        session="signed_in", site="Shop"), ensure_ascii=False)
+    assert token not in text and "k=1" not in text and "[masked]" in text
+    assert 'textbox: Code {\\"value\\": \\"[not shown]\\"}' in text
 
 
 def test_packet_orders_target_record_form_rest():
@@ -586,3 +729,238 @@ def test_read_page_shows_a_written_frame_by_the_one_frame_rule(monkeypatch):
     facts[id(written)] = ("about:blank", "https://other.example", "Written")   # not its parent's
     with pytest.raises(LookupError):
         asyncio.run(ops.read_page(page, target, policy=policy))
+
+
+def _plain_packet(**kw):
+    reading = {"href": "https://a.example/x", "title": "T", "complete": True, "has_cc": False,
+               "blocks": [{"text": "Hello", "containers": [], "record": None}], "controls": []}
+    return gate.build_packet(reading, None, {"kind": "back"}, task="t", session="signed_in",
+                             site="A", **kw)
+
+
+def test_a_packet_with_neither_stays_byte_identical():
+    """The check's measured packets keep their bytes: no member unless it is present."""
+    bytes_ = gate.canonical(_plain_packet())
+    assert bytes_ == (b'{"action":{"kind":"back"},"page":{"blocks":[{"n":1,"text":"Hello"}],"controls":[],'
+                      b'"page_truncated":false},"run_so_far":[],"target":{"role":"page"},"task":"t",'
+                      b'"where":{"host":"a.example","path":"/x","session":"signed_in","site":"A","title":"T"}}')
+    both = _plain_packet(plan="p", approved="q")
+    assert both["plan"] == "p" and both["approved"] == "q"
+    assert gate.canonical(_plain_packet(plan=None, approved=None)) == bytes_
+
+
+def test_go_allowed():
+    click, enter = {"action": {"kind": "click"}}, {"action": {"kind": "type", "then_enter": True}}
+    for category in gate.GO_CATEGORIES:
+        assert gate.go_allowed(category, click) and gate.go_allowed(category, {**click, "approved": "p"})
+        assert gate.go_allowed(category, enter)
+    assert gate.go_allowed("account_change", {**click, "approved": "p"})
+    assert not gate.go_allowed("account_change", click)
+    assert not gate.go_allowed("account_change", {**click, "plan": "p"})
+    assert not gate.go_allowed("account_change", {**enter, "approved": "p"})
+    for category in ("payment", "commitment", "personal_data", "unclear"):
+        assert not gate.go_allowed(category, {**click, "approved": "p"})
+        assert not gate.go_allowed(category, click)
+
+
+def test_an_approved_go_is_held_to_all_the_judged_packet_was_built_from():
+    base = {"complete": False, "title": "T", "href": "https://a.example/x", "has_cc": False,
+            "blocks": [{"text": "a"}], "controls": []}
+    assert not gate.same_reading(base, dict(base))      # a tap's final read wants a complete one
+    assert gate.same_as_judged(base, dict(base))        # a capped reading: what it shows
+    for change in ({"blocks": [{"text": "a fee"}]}, {"title": "Charges EUR 25"},
+                   {"href": "https://a.example/checkout"}, {"has_cc": True},
+                   {"frames_withheld": ["x"]}, {"target": {"submission": {"entries": [1]}}},
+                   {"controls": [{"role": "button", "name": "Pay"}]}):
+        assert not gate.same_as_judged(base, {**base, **change}), change
+
+
+# --------------------------------------------------------------------------- past the list's cap
+
+def capped_reading(all_controls=("d1",)) -> dict:
+    """A reading the control cap left short: its list holds what was in view."""
+    return {**invoice_table(), "complete": False, "all_controls": list(all_controls)}
+
+
+def targeted(reading: dict, name="Alice", record=7) -> dict:
+    return {**reading, "target": {"record": record, "name": "Remove"},
+            "blocks": reading["blocks"] + [{"text": name, "containers": [], "record": record}]}
+
+
+def test_a_capped_reading_is_compared_by_its_digests_not_its_list():
+    a = capped_reading()
+    shifted = json.loads(json.dumps(a))
+    shifted["controls"] = shifted["controls"][1:]
+    assert gate.same_reading(a, shifted)
+    assert gate.difference(a, shifted) == {}
+
+
+def test_a_capped_final_read_binds_everything_beside_the_controls():
+    a = capped_reading()
+    for mutate in (lambda r: r.update(all_controls=["d2"]),
+                   lambda r: r["blocks"][1].update(text="Klantnummer 1049."),
+                   lambda r: r["blocks"].append({"text": "1 s ago", "containers": [], "record": None}),
+                   lambda r: r.update(frames_withheld=["x"]),
+                   lambda r: r.update(target={"submission": {"raw": "other"}}),
+                   lambda r: r.update(blind=True)):
+        b = json.loads(json.dumps(a))
+        mutate(b)
+        assert not gate.same_reading(a, b) and not gate.same_reading(b, a), b
+
+
+def test_one_reading_capped_and_one_not_is_unequal():
+    a = capped_reading()
+    fits = {k: v for k, v in a.items() if k != "all_controls"} | {"complete": True}
+    assert not gate.same_reading(a, fits) and not gate.same_reading(fits, a)
+    assert gate.difference(a, fits) == {"controls_beyond_list_changed": True}
+
+
+def test_without_a_digest_the_listed_controls_decide_as_before():
+    a = invoice_table()
+    b = json.loads(json.dumps(a))
+    b["controls"][0]["state"] = {"disabled": True}
+    assert not gate.same_reading(a, b)
+    assert "all_controls" not in a and not gate.blind(a)
+
+
+def test_an_incomplete_reading_with_no_digest_counts_as_blind():
+    assert gate.blind({"complete": False}) and gate.blind({})
+    assert gate.blind({"complete": True, "blind": True})
+    assert gate.blind({"complete": False, "all_controls": ["d"], "blind": True})
+    assert not gate.blind({"complete": False, "all_controls": ["d"]})
+    assert not gate.blind({"complete": True})
+
+
+def test_same_as_judged_ignores_the_digests_and_holds_the_list():
+    a = capped_reading()
+    assert gate.same_as_judged(a, {**a, "all_controls": ["d2"]})
+    shifted = json.loads(json.dumps(a))
+    shifted["controls"] = shifted["controls"][1:]
+    assert not gate.same_as_judged(a, shifted)
+
+
+def test_the_target_record_is_its_own_blocks_text():
+    a = targeted(invoice_table())
+    assert gate.target_record(a) == ["Alice"]
+    assert gate.target_record(invoice_table()) == []                       # no target
+    assert gate.target_record({**a, "target": {"record": None}}) == []     # outside any record
+    b = targeted(invoice_table(), name="Bob", record=9)
+    assert gate.target_record(b) == ["Bob"]
+    # The record's id belongs to one reading: the same text under another id is the same record.
+    assert gate.same_reading(a, targeted(invoice_table(), record=9))
+
+
+@pytest.mark.parametrize("capped", [False, True])
+def test_a_target_moved_to_another_record_is_a_difference(capped):
+    base = capped_reading() if capped else invoice_table()
+    a, b = targeted(base), targeted(base)
+    b["blocks"][-1] = {"text": "Alice", "containers": [], "record": 8}
+    b["blocks"].append({"text": "Bob", "containers": [], "record": 7})
+    a["blocks"].append({"text": "Bob", "containers": [], "record": 8})
+    assert [x["text"] for x in a["blocks"]] == [x["text"] for x in b["blocks"]]
+    assert not gate.same_reading(a, b)
+    assert gate.difference(a, b) == {"target_record_changed": {"before": ["Alice"],
+                                                               "after": ["Bob"]}}
+
+
+def test_a_target_record_change_is_shown_masked():
+    secret = "tok_" + "aB3dE9fG2hJ7kL4mN8pQ6rS1"
+    a, b = targeted(invoice_table(), name=secret), targeted(invoice_table(), name=secret + "x")
+    changed = gate.difference(a, b)["target_record_changed"]
+    assert secret not in json.dumps(changed)
+
+
+def test_unequal_digests_keep_a_listed_change_and_drop_the_lists_noise():
+    a = capped_reading()
+    b = json.loads(json.dumps(a))
+    b["all_controls"] = ["d2"]
+    b["controls"][0]["state"] = {"disabled": True}         # a listed control changed
+    b["controls"].pop()                                    # the list shifted: one went
+    b["controls"].append({"role": "button", "name": "Item 400"})     # and another came
+    d = gate.difference(a, b)
+    assert d["controls_beyond_list_changed"] is True and len(d["controls_changed"]) == 1
+    assert "controls_added" not in d and "controls_removed" not in d
+
+
+def test_equal_digests_drop_every_controls_key_and_keep_the_rest():
+    a = capped_reading()
+    b = json.loads(json.dumps(a))
+    b["controls"][0]["state"] = {"disabled": True}
+    b["blocks"].append({"text": "A fee", "containers": [], "record": None})
+    assert gate.difference(a, b) == {"blocks_added": ["A fee"]}
+
+
+def test_a_blind_frame_makes_the_page_blind_shown_or_withheld():
+    child = {"href": "https://a.example/f", "complete": False, "blind": True, "blocks": [],
+             "controls": []}
+    for shown in (True, False):
+        base = invoice_table()
+        gate.merge_frame(base, child, 1, shown=shown)
+        assert base["blind"] is True and base["complete"] is False
+    base = invoice_table()
+    gate.merge_frame(base, dict(child, blind=None, complete=True), 1, shown=True)
+    assert "blind" not in base and base["complete"] is True
+
+
+def _frames(*datas, shown=None, target=0):
+    from types import SimpleNamespace
+    frames = [SimpleNamespace(n=i) for i in range(len(datas))]
+    got = [(f, None if d is None else gate.Reading(d)) for f, d in zip(frames, datas)]
+    views = {id(f): ((shown or {}).get(i, True), "o") for i, f in enumerate(frames)}
+    return frames[target], got, views
+
+
+def _frame(name="Own", **extra):
+    return {"href": "https://a.example/", "complete": True, "has_cc": False, "blocks": [],
+            "controls": [_control(0, "button", name)], "target": None, "target_idx": -1, **extra}
+
+
+def test_assemble_adds_nothing_when_nothing_overflowed():
+    data = gate.PageOps._assemble(*_frames(_frame(), _frame("Child")), False, False).data
+    assert "all_controls" not in data and "blind" not in data and data["complete"] is True
+
+
+def test_assemble_keeps_one_value_per_shown_frame_in_frame_order():
+    capped = _frame(complete=False, all_controls="page-digest")
+    small, withheld = _frame("Share publicly"), _frame("Elsewhere")
+    args = _frames(capped, small, withheld, shown={2: False})
+    data = gate.PageOps._assemble(*args, False, False).data
+    assert data["all_controls"] == ["page-digest", gate.listed_digest(small)]
+    assert len(data["frames_withheld"]) == 1
+    # the same list when the target's frame, the reading's first, is the small one
+    data = gate.PageOps._assemble(*_frames(capped, small, withheld, shown={2: False}, target=1),
+                                  False, False).data
+    assert data["all_controls"] == ["page-digest", gate.listed_digest(small)]
+
+
+def test_assemble_a_small_frames_change_changes_its_value():
+    capped = _frame(complete=False, all_controls="page-digest")
+    a = gate.PageOps._assemble(*_frames(capped, _frame("Share")), False, False).data
+    b = gate.PageOps._assemble(*_frames(capped, _frame("Keep")), False, False).data
+    assert a["all_controls"][0] == b["all_controls"][0]
+    assert a["all_controls"][1] != b["all_controls"][1]
+
+
+def test_listed_digest_binds_what_a_control_does_and_no_id_of_one_read():
+    base = _control(0, "button", "Send")
+    def value(**change):
+        return gate.listed_digest({"controls": [{**base, **change}]})
+    for key in gate.COMPARED:
+        assert value(**{key: "other"}) != value(), key
+    for key in ("idx", "block", "record", "container"):
+        assert value(**{key: 99}) == value(), key
+
+
+def test_assemble_an_overflow_only_in_a_withheld_frame_still_compares_by_digest():
+    capped = _frame("Elsewhere", complete=False, all_controls="its-digest")
+    own = _frame()
+    data = gate.PageOps._assemble(*_frames(own, capped, shown={1: False}), False, False).data
+    assert data["complete"] is False and "blind" not in data
+    assert data["all_controls"] == [gate.listed_digest(own)]
+
+
+def test_assemble_an_unreadable_frame_or_a_closed_shadow_is_blind():
+    data = gate.PageOps._assemble(*_frames(_frame(), None), False, False).data
+    assert data["blind"] is True and data["complete"] is False
+    data = gate.PageOps._assemble(*_frames(_frame()), False, True).data
+    assert data["blind"] is True and data["complete"] is False

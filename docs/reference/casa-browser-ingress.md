@@ -126,8 +126,8 @@ only when it is off — and undoes it at Done or when the page closes. It places
 of its frame the operator can see (inside Home Assistant's same-origin frame, the frame's box
 within the top page's visual viewport) and refits Chrome — except while the keyboard is up (see
 Typing). One finger: a tap clicks, a swipe scrolls Chrome, a hold then a drag drags; a second
-finger cancels the gesture (a drag gets its up) until all lift. − · Fit · + zoom the picture
-(1–4×; each first cancels a gesture), which taps follow; zoomed, a swipe pans it, then scrolls
+finger cancels the gesture (a drag gets its up) until all lift. − · Fit · +, in the bar and so never
+over a site's button, zoom the picture (1–4×; each first cancels a gesture), which taps follow; zoomed, a swipe pans it, then scrolls
 Chrome at its edge. The page takes every touch (`touch-action: none`, touch, gesture and
 two-touch `touchstart` defaults prevented), so it never zooms or scrolls itself; Done resets the
 zoom. Each picture draws into its own holder and a reconnect removes the

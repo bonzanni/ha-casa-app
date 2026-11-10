@@ -252,7 +252,8 @@ _MARK = "m => { window.__casaCodePage = m; return window.__casaCodePage === m; }
 _MARKED = "m => window.__casaCodePage === m"
 
 # Signing in off the start page (the look): the judged sign-in's documents carry their own
-# mark, in the isolated world as the code page's does; the binding reads what a verdict covers.
+# mark, in the isolated world as the code page's does; the binding reads the fields and buttons
+# a verdict covers, never the page's text around them.
 _SIGN_IN_MARK = "m => { window.__casaSignIn = m; return window.__casaSignIn === m; }"
 _SIGN_IN_MARKED = "m => window.__casaSignIn === m"
 _LABEL = """e => {
@@ -292,33 +293,37 @@ _PLAN = """a => {
         const id = 'f' + (++n);
         e.__casaSignInField = {look: a.look, id};
         const b = submitOf(e);
-        if (b) b.__casaSignInField = {look: a.look, id: 'button'};
+        if (b) b.__casaSignInField = {look: a.look, id: 'button ' + id};
         out.push({id, role, label: labelOf(e), password: e.type === 'password',
                   button: b ? labelOf(b) : null});
     }
     return out;
 }""" % (_ROLE, _LABEL)
-# The facts of every field and button the look marked in this document (the binding's part).
+# What the binding holds of a marked field or button: its tag, type, autocomplete, label, its
+# form's destination and a button's own formaction/formmethod.
+_FACTS_OF = """e => {
+    const labelOf = (%s), f = e.form;
+    return [e.tagName, e.type, e.getAttribute('autocomplete'), labelOf(e),
+            f ? f.action : null, f ? f.method : null,
+            e.hasAttribute('formaction') ? e.formAction : null,
+            e.hasAttribute('formmethod') ? e.formMethod : null];
+}""" % _LABEL
+# Those facts by the look's id, of everything it marked in this document.
 _SCAN = """m => {
-    const labelOf = (%s);
-    const out = [];
+    const factsOf = (%s), out = {};
     for (const e of document.querySelectorAll('input,button')) {
         const k = e.__casaSignInField;
-        if (!k || k.look !== m) continue;
-        const f = e.form;
-        out.push([k.id, e.tagName, e.type, e.getAttribute('autocomplete'), labelOf(e),
-                  f ? f.action : null, f ? f.method : null,
-                  e.hasAttribute('formaction') ? e.formAction : null,
-                  e.hasAttribute('formmethod') ? e.formMethod : null]);
+        if (k && k.look === m) out[k.id] = factsOf(e);
     }
     return out;
-}""" % _LABEL
+}""" % _FACTS_OF
+# One element's id and facts, or null when the look did not mark it.
+_FACTS = """(e, m) => {
+    const k = e.__casaSignInField;
+    return k && k.look === m ? [k.id, (%s)(e)] : null;
+}""" % _FACTS_OF
 # The id the look gave this element, or null (another look's mark is no mark).
 _PLANNED = "(e, m) => { const k = e.__casaSignInField; return k && k.look === m ? k.id : null; }"
-_DOCUMENT_TEXT = "() => document.body ? document.body.innerText : ''"
-# 1Password's prompt as shown: every visible notification's text (title bar, item, buttons).
-_PROMPT_TEXT = """() => [...document.querySelectorAll('[data-testid=stacked-notification]')]
-    .filter(e => e.getClientRects().length > 0).map(e => e.innerText).join('\\n')"""
 
 
 # The popup's state, by its language-free markers (5v): the lock screen, the vault list.
@@ -733,9 +738,11 @@ class DriverServer(UnixServer):
                         return result
                     except BrokerError:
                         raise
-                    except Exception as error:
-                        if 'Execution context was destroyed' not in str(error):
-                            raise
+                    except Exception:  # noqa: BLE001
+                        # The page moved under the read: its document destroyed, a frame gone
+                        # (a challenge's widget), each in the library's own words. A read does
+                        # nothing to the page, so it reads again; a page that goes on: timeout.
+                        pass
                     self._session(sid, generation)
                     if attempt == 2:
                         raise BrokerError('timeout')
@@ -1043,9 +1050,8 @@ class DriverServer(UnixServer):
         that button carry ``mark`` in Patchright's isolated world. The binding of what the
         check judges: ``mark`` in every credential-bearing frame document (the main one, each
         frame holding a field or the submit, 1Password's notification frame while it shows a
-        prompt) and one digest of the marked fields' and buttons' facts, each bound document's
-        text and the prompt's text (``binding``). Ids, roles and labels only: never a handle,
-        never a value."""
+        prompt) and the marked fields' and buttons' facts by id (``binding``). Ids, roles and
+        labels only: never a handle, never a value."""
         fields = await self.find_login_fields(driver_session, page_generation)
         s = self._session(driver_session, page_generation)
         planned, holders = [], []
@@ -1072,7 +1078,10 @@ class DriverServer(UnixServer):
                                    page_generation) is not True:
                 raise BrokerError('refused')
         self._sign_in_frames[(s.run_id, s.site_id)] = (s.page, tuple(frames))
-        binding = await self._sign_in_binding(driver_session, page_generation, frames, mark)
+        binding = {}
+        for frame in frames:
+            binding.update(await self._checked(driver_session, frame.evaluate(_SCAN, mark),
+                                               page_generation))
         return dict(page_generation=page_generation, origin_ok=fields['origin_ok'],
                     roles=sorted(fields['roles']),
                     fields=[{'id': f['id'], 'role': f['role'], 'label': f['label'],
@@ -1086,8 +1095,10 @@ class DriverServer(UnixServer):
         """Whether the verdict still covers the page, asked just before a fill, a submit or a
         passkey's Sign in of the judged step: every bound frame document still holds ``mark``,
         every field and the submit of the step's read is one the look marked (so in a bound
-        document of the judged reading), no 1Password prompt the look did not bind is shown,
-        and the binding reads as it did at the look."""
+        document of the judged reading), and no 1Password prompt the look did not bind is shown.
+        ``binding``: those fields' and that submit's facts, for the broker to hold to the look's.
+        The page's text is not bound: a banner, a price or a password manager's line moves it
+        all the time, and a form that became another one loses its marks or its facts."""
         s = self._session(driver_session, page_generation)
         kept = self._sign_in_frames.get((s.run_id, s.site_id))
         if kept is None or kept[0] is not s.page:
@@ -1101,38 +1112,25 @@ class DriverServer(UnixServer):
             self._session(driver_session, page_generation)
             if marked is not True:
                 return {'ok': False}
-        for handle, entry in s.handles.items():
-            if not any(entry[1] is f for f in frames) or await self._checked(
-                    driver_session, entry[0].evaluate(_PLANNED, mark), page_generation) is None:
+        facts = {}
+        for entry in s.handles.values():
+            row = any(entry[1] is f for f in frames) and await self._checked(
+                driver_session, entry[0].evaluate(_FACTS, mark), page_generation)
+            if not row:
                 return {'ok': False}             # a field or the submit the look did not judge
+            facts[row[0]] = row[1]
         for frame in s.page.frames:
             if (frame.url.startswith(EXTENSION_NOTIFICATION)
                     and not any(frame is f for f in frames)
                     and await self._passkey_prompt(driver_session, s, frame, page_generation)):
                 return {'ok': False}             # a passkey prompt the look did not judge
-        return {'ok': True, 'binding': await self._sign_in_binding(
-            driver_session, page_generation, frames, mark)}
+        return {'ok': True, 'binding': facts}
 
     def sign_in_frames(self, run_id, site_id):
-        """The frames of the look's bound documents (the controller reads only these for its
-        final comparison), or () when none was read for this run and site."""
+        """The frames of the look's bound documents (the controller needs only these read whole
+        for the check), or () when none was read for this run and site."""
         kept = self._sign_in_frames.get((run_id, site_id))
         return kept[1] if kept is not None else ()
-
-    async def _sign_in_binding(self, sid, generation, frames, mark):
-        """One digest of what a verdict covers: in each bound site document, the facts of every
-        field and button the look marked (its id, tag, type, autocomplete, label, its form's
-        destination, a button's own formaction/formmethod) and the document's text; in
-        1Password's notification frame, its prompt's text."""
-        parts = []
-        for frame in frames:
-            prompt = frame.url.startswith(EXTENSION_NOTIFICATION)
-            text = await self._checked(sid, frame.evaluate(
-                _PROMPT_TEXT if prompt else _DOCUMENT_TEXT), generation)
-            facts = [] if prompt else await self._checked(sid, frame.evaluate(_SCAN, mark),
-                                                         generation)
-            parts.append([prompt, hashlib.sha256(str(text).encode('utf-8')).hexdigest(), facts])
-        return hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
 
     @_serialized
     async def choose_passkey(self, driver_session, page_generation, title, username):

@@ -40,7 +40,13 @@ MAX_SUMMARY = 2000
 MAX_CALLER_LABEL = 64
 MAX_DELIVERY_PATH = 256
 MAX_ACTION_TEXT = 2000
+MAX_LINES_TEXT = 32_000    # a text with line breaks: a list pasted into a <textarea>
+MAX_PLAN = 12_000
+MAX_READ = 30_000          # characters of one ``POST /v1/runs/{run}/read`` window
+MAX_FIND = 200             # characters of an observation's ``find``
 MAX_LIST = 200
+MAX_FIELDS = 50            # the dotted paths of one ``POST /v1/runs/{run}/fetch``
+MAX_FIELD_PATH = 200
 
 # ---------------------------------------------------------------------------
 # Errors: one stable code per failure, one HTTP status per code. The reply body of
@@ -373,6 +379,7 @@ class ElementView:
     # a checkbox's or radio's state; never for a password, one-time-code or payment-card field.
     value_masked: str | None = None
     checked: bool | None = None
+    found: bool = False        # a search's words are in its masked label or value
 
     def to_wire(self) -> dict:
         out = {"handle": self.handle, "role": self.role, "label_masked": self.label_masked}
@@ -382,6 +389,8 @@ class ElementView:
             out["value_masked"] = self.value_masked
         if self.checked is not None:
             out["checked"] = self.checked
+        if self.found:
+            out["found"] = True
         return out
 
 
@@ -395,11 +404,24 @@ class Observation:
     # Signing in off the start page: the sign-in step the look recorded (Casa Browser signed
     # in by itself, or the login it needs), or None.
     notice: str | None = None
+    text_cut: bool = False     # the page holds more text than ``text``: ``run_read`` has it
+    controls_left: int = 0     # controls and options the cap left out of ``elements``
+    # A search (``find``): whether all of the page's controls were searched, and how many that
+    # hold the words did not fit. None: this observation searched nothing.
+    find_whole: bool | None = None
+    find_left: int = 0
 
     def to_wire(self) -> dict:
-        return {"page_handle": self.page_handle, "generation": self.generation,
-                "text": self.text, "elements": [e.to_wire() for e in self.elements],
-                "source_id": self.source_id, "notice": self.notice}
+        out = {"page_handle": self.page_handle, "generation": self.generation,
+               "text": self.text, "elements": [e.to_wire() for e in self.elements],
+               "source_id": self.source_id, "notice": self.notice}
+        if self.text_cut:
+            out["text_cut"] = True
+        if self.controls_left:
+            out["controls_left"] = self.controls_left
+        if self.find_whole is not None:
+            out["find"] = {"whole": self.find_whole, "left": self.find_left}
+        return out
 
 
 @dataclass(frozen=True)
@@ -428,6 +450,11 @@ class Action:
     direction: str | None = None
     amount: str | None = None
     enter: bool = False          # a ``type`` that ends in Enter (the guarded Enter, S2-4)
+    # What the task will still do on this site, list included: it goes in the packet.
+    plan: str | None = field(default=None, repr=False)
+    # Fido asks for the check on a step that would otherwise run free (a tick, a choice, typing):
+    # one whose label says it commits money, now or later (operator ruling 2026-11-09).
+    ask_first: bool = False
 
 
 # The outcomes of a step (an action, a download, a search, a verdict, an answer). ``done`` ran
@@ -551,11 +578,13 @@ class ActiveRun:
     created_at: datetime
     pending_question: str | None = None
     code_site: str | None = None         # slice 6: the site waiting for a sign-in code it sent
+    approved: str | None = None          # the plan the operator approved in this run
 
     def to_wire(self) -> dict:
         return {"run_id": self.run_id, "request_id": self.request_id, "state": self.state,
                 "created_at": rfc3339(self.created_at),
-                "pending_question": self.pending_question, "code_site": self.code_site}
+                "pending_question": self.pending_question, "code_site": self.code_site,
+                "approved": self.approved}
 
 
 @dataclass(frozen=True)
@@ -584,13 +613,15 @@ _START_URL = re.compile(r"https://[^\s/?#]+[^\s]*")
 
 
 def start_url_ok(value: Any) -> bool:
-    """Slice 5b (F-a): an absolute ``https`` address with a host, at most 2,048 bytes,
-    printable, no whitespace."""
+    """Slice 5b (F-a): an absolute ``https`` address with a host and no malformed port, at most
+    2,048 bytes, printable, no whitespace."""
     if (not isinstance(value, str) or len(value.encode("utf-8")) > MAX_START_URL_BYTES
             or not value.isprintable() or _START_URL.fullmatch(value) is None):
         return False
     try:
-        return bool(urlsplit(value).hostname)
+        parts = urlsplit(value)
+        parts.port                  # raises on a malformed port, as the origin check would
+        return bool(parts.hostname)
     except ValueError:
         return False
 
@@ -656,21 +687,27 @@ def _typed_text(value: str) -> str:
 
 def parse_action(body: Any) -> Action:
     body = _obj(body, {"kind", "handle", "generation"},
-                {"text", "choice_handle", "direction", "amount", "enter"})
+                {"text", "choice_handle", "direction", "amount", "enter", "plan", "ask_first"})
     kind = _choice(body["kind"], ACTION_KINDS)
-    enter = body.get("enter", False)
-    if not isinstance(enter, bool):
+    enter, ask_first = body.get("enter", False), body.get("ask_first", False)
+    if not isinstance(enter, bool) or not isinstance(ask_first, bool):
+        raise _refuse()
+    text = body.get("text")
+    if text is not None and len(_str(text, MAX_LINES_TEXT)) > MAX_ACTION_TEXT and not (
+            "\n" in text or "\r" in text):
         raise _refuse()
     action = Action(
         kind=kind,
         handle=_app_id(body["handle"]),
         generation=_int(body["generation"], 0, 2**31),
-        text=(None if body.get("text") is None
-              else _typed_text(_str(body["text"], MAX_ACTION_TEXT))),
+        text=None if text is None else _typed_text(text),
         choice_handle=None if body.get("choice_handle") is None else _app_id(body["choice_handle"]),
         direction=None if body.get("direction") is None else _choice(body["direction"], SCROLL_DIRECTIONS),
         amount=None if body.get("amount") is None else _choice(body["amount"], SCROLL_AMOUNTS),
         enter=enter,
+        plan=(None if body.get("plan") is None
+              else _typed_text(_str(body["plan"], MAX_PLAN, allow_empty=False))),
+        ask_first=ask_first,
     )
     if enter and kind != "type":
         raise _refuse()
@@ -795,6 +832,24 @@ def parse_sign_in(body: Any) -> str:
     return _str(body["site_name"], MAX_SIGN_IN_NAME, allow_empty=False)
 
 
+def parse_look(body: Any) -> str | None:
+    """``POST /v1/runs/{run}/look``: ``{}``, or ``{"handle"}`` to outline that element."""
+    body = _obj(body, set(), {"handle"})
+    return _app_id(body["handle"]) if "handle" in body else None
+
+
+def parse_read(body: Any) -> tuple[str | None, str | None, int, bool]:
+    """``POST /v1/runs/{run}/read``: the page's text, ``handle`` (a field), ``file_id`` or
+    ``rows: true`` (the page's rows), at most one of the three; and the offset."""
+    body = _obj(body, set(), {"handle", "file_id", "offset", "rows"})
+    rows = body.get("rows", False)
+    if not isinstance(rows, bool) or ("handle" in body) + ("file_id" in body) + rows > 1:
+        raise _refuse()
+    return (_app_id(body["handle"]) if "handle" in body else None,
+            _app_id(body["file_id"]) if "file_id" in body else None,
+            _int(body.get("offset", 0), 0, 2**31), rows)
+
+
 def parse_claim(body: Any) -> str:
     body = _obj(body, {"caller_label"})
     return _str(body["caller_label"], MAX_CALLER_LABEL)
@@ -803,6 +858,15 @@ def parse_claim(body: Any) -> str:
 def parse_search(body: Any) -> str:
     body = _obj(body, {"query"})
     return _str(body["query"], MAX_QUERY, allow_empty=False)
+
+
+def parse_fetch(body: Any) -> tuple[str, tuple[str, ...]]:
+    """``POST /v1/runs/{run}/fetch``: the address, and optionally the JSON fields wanted. Whether
+    the address may be fetched is the controller's answer (``start_url_ok``), not a refusal."""
+    body = _obj(body, {"url"}, {"fields"})
+    fields = _list(body["fields"], 1, MAX_FIELDS) if "fields" in body else ()
+    return (_str(body["url"], MAX_START_URL_BYTES, allow_empty=False),
+            tuple(_str(f, MAX_FIELD_PATH, allow_empty=False) for f in fields))
 
 
 def parse_download(body: Any) -> str:

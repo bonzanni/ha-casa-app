@@ -3,7 +3,10 @@ tests/test_voice_job_result.py
 tests/test_pin_g5_invariants.py
 casa_browser/tests/integration/test_file_downloads.py
 casa_browser/tests/test_downloads.py
+casa_browser/tests/test_plain_fetch.py
 casa_browser/tests/test_gate.py
 casa_browser/tests/integration/test_ingress.py
 casa_browser/tests/integration/test_observation.py
 casa_browser/tests/test_observe.py
+casa_browser/tests/integration/test_action_gate.py
+casa_browser/tests/integration/test_long_page_find.py

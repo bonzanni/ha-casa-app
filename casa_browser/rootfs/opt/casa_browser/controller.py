@@ -32,6 +32,7 @@ page's address through the trusted sources route) or page content beyond masked 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import secrets
@@ -46,16 +47,24 @@ from casa_browser import confirmations as conf
 from casa_browser import gate
 from casa_browser.broker import BrokerError
 from casa_browser.broker_client import arm_capture_then
-from casa_browser.downloads import DownloadRefused, Quarantined
+from casa_browser.downloads import (
+    FALLBACK_USER_AGENT,
+    DownloadRefused,
+    Quarantined,
+    html_text,
+    pick_fields,
+)
 from casa_browser.handles import PrivateTarget, StaleHandle
 from casa_browser.login import learn_provider_binding
-from casa_browser.masking import mask_text
-from casa_browser.observe import ObservationRefused
-from casa_browser.pacing import ActionError, GuardRefused
+from casa_browser.masking import mask_text, mask_whole
+from casa_browser.observe import ObservationRefused, holds_words, page_view_allowed
+from casa_browser.pacing import TARGET_REFUSALS, ActionError, GuardRefused
 from casa_browser.policy import Lease, RequestMeta, RunPolicy, SessionRef, decide, https_upgrade
 from casa_browser.protocol import (
     ACTIVE_STATES,
+    MAX_READ,
     TERMINAL_STATES,
+    Action,
     ActionResult,
     ActiveRun,
     Change,
@@ -94,6 +103,9 @@ RETENTION_EVERY_S = 6 * 3600
 QUESTION_SWEEP_S = 30.0         # an open question past its hour expires within this; so does
                                 # a live view the model asked for and nobody opened
 DEPENDENCY_CODES = frozenset({"unavailable", "timeout", "internal"})
+PICTURE_WAIT_S = 12.0           # a picture for a model takes at most this; then there is none
+COOKIES_WAIT_S = 5.0            # reading or putting back session cookies takes at most this
+LONG_TEXT = 200                 # more characters than this into a <textarea> are one insertion
 
 
 def _utcnow() -> datetime:
@@ -195,6 +207,8 @@ class _Active:
     # awaited, so one that was cancelled, failed or timed out counts too). Every browser start
     # relocks the extension, so another session object means it has not run yet.
     guest_for: Any = field(default=None, repr=False)
+    # The handle the last step scrolled by: the same one again wheels on instead of going back.
+    scroll_anchor: str | None = None
     # Signing in off the start page. ``looked``: the (browser session, address) pairs looked at
     # since Fido's last step (every executed step clears it; every sign-in adds the page it
     # ended on). ``sign_ins``: per site, the sign-ins of the run that acted, start page or
@@ -207,25 +221,31 @@ class _Active:
     # The address of the account page last loaded or observed: a login view on a new session
     # (the old one is gone) starts there rather than on a blank page.
     page_url: str | None = field(default=None, repr=False)
+    # What the operator approved on a plan question: {"site_key", "plan"}.
+    approved: dict | None = field(default=None, repr=False)
+    # Session cookies of an account session closed for another session of this run, by site id:
+    # memory only, never logged or sent, until that site's session reopens or the run ends.
+    kept_cookies: dict = field(default_factory=dict, repr=False)
+    # The browser's User-Agent, read when its session opened: a plain fetch needs no live page.
+    user_agent: str = FALLBACK_USER_AGENT
+    # Files this run fetched plainly: no cookie went to them, so their addresses stay whole.
+    plain_files: dict = field(default_factory=dict, repr=False)
 
 
 @dataclass(eq=False)
 class _Look:
     """What a ``sign_in`` verdict covers: the site, the browser session and the address looked
-    at, the judged reading restricted to the bound documents (``frames``), the shape the check
-    was asked about, and what a sign-in there carries (``guest_ask``: None for the run's own
-    rule; ``password_sent``: this look sent the password already)."""
+    at, the shape the check was asked about, and what a sign-in there carries (``guest_ask``:
+    None for the run's own rule; ``password_sent``: this look sent the password already)."""
 
     site_id: str
     session: Any = field(repr=False)
     url: str = field(repr=False)
-    frames: tuple = field(repr=False)
-    reading: dict = field(repr=False)
     shape: tuple = field(repr=False)
     guest_ask: bool | None = None
     password_sent: bool = False
     fields: tuple = field(default=(), repr=False)    # the planned fields the check was shown
-    fresh: bool = False                  # looked at again after a verdict on a page that changed
+    fresh: bool = False                  # looked at again after a sign-in on a page that moved
 
 
 def _sign_in_mapping(fields, named) -> dict | None:
@@ -712,6 +732,32 @@ class RunController:
         except Exception:  # noqa: BLE001 — the launcher refuses a second Chrome anyway
             pass
 
+    async def _keep_session_cookies(self, active: _Active) -> None:
+        """Chrome closes on a switch and a site's session cookies die with it: read them first.
+        A failure leaves the run going, signed out when it comes back."""
+        session = active.session
+        if session is None or session.kind != "account" or self.browser.session is not session:
+            return
+        try:
+            cookies = await asyncio.wait_for(session.context.cookies(), COOKIES_WAIT_S)
+        except Exception:  # noqa: BLE001 — its text is not logged: it could carry a value
+            log.warning("session cookies not read before a switch")
+            return
+        kept = [c for c in cookies if c.get("expires") == -1]
+        if kept and active.ending is None:
+            active.kept_cookies[session.site_id] = kept
+
+    async def _restore_session_cookies(self, active: _Active, session) -> None:
+        """What ``_keep_session_cookies`` read, into the same site's new session, before it
+        loads anything. Only a session of that very site id ever gets them."""
+        kept = active.kept_cookies.pop(session.site_id, None)
+        if not kept:
+            return
+        try:
+            await asyncio.wait_for(session.context.add_cookies(kept), COOKIES_WAIT_S)
+        except Exception:  # noqa: BLE001 — its text is not logged: it could carry a value
+            log.warning("session cookies not put back after a switch")
+
     async def _open_session(self, active: _Active, site: Site | None) -> None:
         """Close whatever runs, install the session's policy, start it. The guest unlock is
         not run here: a sign-in that meets a passkey hint, or a sign-in live view, runs it."""
@@ -719,6 +765,7 @@ class RunController:
         account = (spec.mode == "account" and site is not None
                    and self._access(spec, site.site_id) == "account")
         if active.session is not None or self.browser.session is not None:
+            await self._keep_session_cookies(active)
             await self._close_browser(active)
         # No session's policy is installed while any Chrome of the browser user may still run:
         # the launcher's exit proof first (a profile switch whose close failed is interrupted).
@@ -757,6 +804,11 @@ class RunController:
             active.ref = replace(active.ref, generation=session.generation)
             await self._install(active)
         self._watch_downloads(active, session)
+        await self._restore_session_cookies(active, session)
+        try:
+            active.user_agent = await self.downloader.user_agent(session)
+        except Exception:  # noqa: BLE001 — only a plain fetch needs it, and has a fallback
+            log.warning("the browser's user agent was not read")
 
     async def _ensure_session(self, active: _Active):
         """The run's browser session; after a forced close, a new one on the same site."""
@@ -907,10 +959,14 @@ class RunController:
         if reply.get("status") == "no_form":
             # Slice 5u: the sign-in filled nothing and found no form — it claims nothing; the
             # model reading the page decides whether he is signed in or needs the live view.
-            if reply.get("reason") == "needs_check" and active.session is session:
+            # A form that rendered late is the look's too.
+            if reply.get("reason") in ("needs_check", "no_form") and active.session is session:
                 page = session.page             # this page is the look's, whatever came before
                 if page is not None and not page.is_closed():
                     active.looked.discard((session, page.url))
+            if reply.get("reason") == "no_form":
+                self._event(active.run_id, "sign_in_nothing", "no_form",
+                            f"No sign-in form showed on {site.display_name}; nothing was filled.")
             return
         if reply.get("status") != "logged_in":
             if reply.get("reason") == "not_found" and await self._vault_judgement(active, site):
@@ -975,10 +1031,9 @@ class RunController:
     async def _read_look(self, active: _Active, site: Site, session, url: str, *,
                          guest_ask: bool | None, password_sent: bool,
                          fresh: bool = False) -> _AppJudgement | None:
-        """The look's read, then its judgement: the page reading as an action packet has it,
-        the reading of the bound documents kept for the verdict, and what a sign-in would do
-        (masked labels). A read error, no sign-in fields, a shape the check already judged
-        not a sign-in in this run, or a page that moved: None."""
+        """The look's read, then its judgement: the page reading as an action packet has it
+        and what a sign-in would do (masked labels). A read error, no sign-in fields, a shape
+        the check already judged not a sign-in in this run, or a page that moved: None."""
         try:
             sid = await self.driver.open_session("login", active.run_id, site.site_id, session,
                                                  self.proxy, site.login_origins)
@@ -1008,19 +1063,23 @@ class RunController:
         frames = tuple(self.driver.sign_in_frames(active.run_id, site.site_id))
         page = session.page
         try:
-            # One pass: the packet and the reading the verdict is held to are the same frames'.
             reading, bound = await self.ops.read_page_and_bound(page, frames, policy=active.policy)
         except Exception:  # noqa: BLE001 — a page that cannot be read is not judged
             return None
         if not bound.complete or page.url != url:
+            # A plain text box (a search, a quantity) on a page that could not be read is no
+            # sign-in that went unchecked: only a page with sign-in fields gets this word.
+            if passkey or any(f["password_field"] or f["role"] for f in fields):
+                self._event(active.run_id, "sign_in_nothing", "not_checked",
+                            f"Casa could not check the sign-in page of {site.display_name}; "
+                            "nothing was filled.")
             return None
         packet = gate.sign_in_packet(
             reading.data, site=site.display_name,
             origins=sorted({*site.origins, *site.login_origins}),
             planned={"fields": fields, "passkey": passkey})
-        look = _Look(site.site_id, session, url, frames, dict(bound.data), shape,
-                     guest_ask=guest_ask, password_sent=password_sent, fields=tuple(fields),
-                     fresh=fresh)
+        look = _Look(site.site_id, session, url, shape, guest_ask=guest_ask,
+                     password_sent=password_sent, fields=tuple(fields), fresh=fresh)
         self._freeze_app(active, "sign_in", packet, site_id=site.site_id, look=look)
         self._event(active.run_id, "sign_in_judgement", "pending",
                     f"Casa checks whether this page is the sign-in of {site.display_name}.")
@@ -1034,21 +1093,6 @@ class RunController:
         page = session.page
         return not (page is None or page.is_closed() or page.url != look.url
                     or (session, look.url) not in active.looked)
-
-    async def _look_holds(self, active: _Active, look: _Look) -> bool:
-        """The verdict applies only to what it judged: the session and the address looked at,
-        no step since (the pair is still in ``looked``), and a final read of the bound
-        documents equal to the judged one (``gate.same_reading``: their blocks' text, their
-        controls' state and their exact destinations)."""
-        if not self._look_current(active, look):
-            return False
-        page = active.session.page
-        try:
-            _whole, final = await self.ops.read_page_and_bound(page, look.frames,
-                                                               policy=active.policy)
-        except Exception:  # noqa: BLE001
-            return False
-        return page.url == look.url and gate.same_reading(look.reading, dict(final.data))
 
     async def _apply_sign_in(self, active: _Active, app: _AppJudgement, body: dict) -> dict:
         """A ``sign_in`` verdict. ``sign_in`` on the page as it was judged: Casa signs in by
@@ -1079,16 +1123,10 @@ class RunController:
             self._event(active.run_id, "sign_in_mapping", "refused",
                         f"The check's fields for the sign-in page on {name} do not fit it; "
                         "nothing is filled.")
-        if mapping is not None and site is not None:
-            successor = None
-            if await self._look_holds(active, look):
-                successor = await self._auto_login(active, site, look, mapping)
-            elif not look.fresh and self._look_current(active, look):
-                # The same address reads differently since it was judged (a widget solved and
-                # its button came on): the check judges the page as it is now, once.
-                successor = await self._read_look(
-                    active, site, look.session, look.url, guest_ask=look.guest_ask,
-                    password_sent=look.password_sent, fresh=True)
+        if mapping is not None and site is not None and self._look_current(active, look):
+            # What the verdict covers from here on is the broker's binding (the judged fields
+            # and button in their marked documents): the page's text around them may move.
+            successor = await self._auto_login(active, site, look, mapping)
             if successor is not None:
                 return {"outcome": "judgement_required", "generation": self._generation(active),
                         "judgement": successor.wire()}
@@ -1140,11 +1178,25 @@ class RunController:
                                          password_sent=sent)
         self._ledger(active, site, status, reason)
         if status == "logged_in":
-            text = f"Casa Browser signed in to {site.display_name} by itself."
-            self._event(active.run_id, "signed_in", "logged_in", text)
+            # The form went away after the submit: no proof it worked. It claims nothing; the
+            # model reading the page judges whether he is signed in.
+            text = (f"Casa Browser filled in the sign-in of {site.display_name} and sent it; "
+                    "read the page to see whether it worked.")
+            self._event(active.run_id, "sign_in_sent", "submitted", text)
             active.notice = mask_text(text).text[:500]
         elif status == "needs_code":
             self._code_asked(active, site, reply.get("page_generation"))
+        elif status == "no_form" and reason == "page_moved":
+            # The judged fields or button are not the ones the look marked any more (a re-render,
+            # a reload): nothing went out. The check judges the page as it is now, once.
+            self._event(active.run_id, "sign_in_nothing", "page_moved",
+                        f"The sign-in page of {site.display_name} changed while it was being "
+                        "filled; nothing was sent. The next observe after a step looks at it "
+                        "again.")
+            if not look.fresh and self._look_current(active, look):
+                return await self._read_look(active, site, session, look.url,
+                                             guest_ask=look.guest_ask,
+                                             password_sent=look.password_sent, fresh=True)
         elif status != "no_form":
             self._login_needed(active, reason if isinstance(reason, str) else "unknown")
         return None
@@ -1197,8 +1249,8 @@ class RunController:
             raise _Dependency("broker_" + str(reply["error"]))
         gen = self._generation(active)
         status = "timeout" if forced else reply.get("status")
-        self._event(active.run_id, "login_code", status if status in (
-                        "logged_in", "needs_code") else "not_signed_in",
+        self._event(active.run_id, "login_code", {"logged_in": "submitted", "needs_code": "needs_code"
+                                                  }.get(status, "not_signed_in"),
                     f"A sign-in code was given for {site.display_name}.")
         if status == "logged_in":
             return ActionResult("done", gen)
@@ -1400,7 +1452,8 @@ class RunController:
 
     # ------------------------------------------------------------------ observations
 
-    def _start_entries(self, active: _Active, generation: int) -> list[ElementView]:
+    def _start_entries(self, active: _Active, generation: int,
+                       find: str | None = None) -> list[ElementView]:
         if active.spec.mode != "account":
             return []
         out = []
@@ -1408,19 +1461,40 @@ class RunController:
             target = PrivateTarget("link", "link", None, self._start_url(site), None)
             handle = self.registry.issue(active.run_id, None, generation, target)
             label = mask_text(f"Open site: {site.display_name}").text[:300]
-            out.append(ElementView(handle, "link", label))
+            out.append(ElementView(handle, "link", label,
+                                   found=find is not None and holds_words(find, label)))
         return out
 
     def _source(self, active: _Active, session, url: str, title: str) -> str | None:
-        if session.kind != "public" or not isinstance(url, str):
+        if session.kind != "public":
             return None
-        if not url.startswith("https://") or len(url.encode("utf-8")) > MAX_SOURCE_URL:
+        return self._add_source(active, url, title)
+
+    def _add_source(self, active: _Active, url: str, title: str) -> str | None:
+        if not isinstance(url, str) or not url.startswith("https://") or (
+                len(url.encode("utf-8")) > MAX_SOURCE_URL):
             return None
         title_masked = mask_text(title or "").text.strip()[:MAX_SOURCE_TITLE]
         return self.store.add_source(active.run_id, url, title_masked,
                                      "src_" + secrets.token_hex(8), MAX_SOURCES)
 
-    async def _observe(self, active: _Active) -> Observation:
+    @staticmethod
+    async def _page_read(read):
+        """A reading of the page, once more if it moved under it; a refusal as the API's code."""
+        for attempt in range(2):
+            try:
+                return await read()
+            except ObservationRefused as refused:
+                if refused.code == "page_off_session":
+                    # The page is not this session's (an account page that left the site).
+                    raise ProtocolError("blocked") from None
+                if refused.code == "no_page":
+                    raise _Dependency("browser_gone") from None
+                if refused.code in ("stale", "unavailable") and attempt == 0:
+                    continue
+                raise ProtocolError("not_ready") from None
+
+    async def _observe(self, active: _Active, find: str | None = None) -> Observation:
         session = await self._ensure_session(active)
         page = session.page
         if page is None or page.is_closed():
@@ -1434,53 +1508,182 @@ class RunController:
                     else "No page is open yet; search to begin, or search for an exact https "
                          "address to open that page.")
             return Observation(page_handle, generation, text,
-                               tuple(self._start_entries(active, generation)), None)
+                               tuple(self._start_entries(active, generation, find)), None,
+                               find_whole=None if find is None else True)
         run = self._run(active.run_id)
-        for attempt in range(2):
-            try:
-                obs, url, title = await self.observer.observe_page(run, session, active.policy)
-                self._keep_page_url(active, url)
-                break
-            except ObservationRefused as refused:
-                if refused.code == "page_off_session":
-                    # The page is not this session's (an account page that left the site).
-                    raise ProtocolError("blocked") from None
-                if refused.code == "no_page":
-                    raise _Dependency("browser_gone") from None
-                if refused.code in ("stale", "unavailable") and attempt == 0:
-                    continue
-                raise ProtocolError("not_ready") from None
+        obs, url, title = await self._page_read(
+            lambda: self.observer.observe_page(run, session, active.policy, find))
+        self._keep_page_url(active, url)
         source_id = self._source(active, session, url, title)
-        extra = tuple(self._start_entries(active, obs.generation))
+        extra = tuple(self._start_entries(active, obs.generation, find))
         return replace(obs, source_id=source_id, elements=obs.elements + extra)
 
-    async def observe(self, run_id: str, sign_in: bool = False):
+    async def observe(self, run_id: str, sign_in: bool = False, find: str | None = None):
         """``POST …/observe``: the page. With ``sign_in`` (Fido 0.1.21), a page of the site
         that shows sign-in fields is first looked at: the reply is then the ``sign_in``
         judgement for Casa's check (an ``ActionResult``), whose verdict reply carries the
-        observation."""
+        observation, one with no search. With ``find``, what holds those words comes with handles
+        wherever it is on the page, and the reply says whether all of it was searched."""
         if not sign_in:
-            return await self._command(run_id, ("running",), self._observe)
+            return await self._command(run_id, ("running",),
+                                       lambda active: self._observe(active, find))
 
         async def body(active):
             app = await self._look(active)
             if app is not None:
                 return ActionResult("judgement_required", self._generation(active),
                                     {"judgement": app.wire()})
-            return await self._observe(active)
+            return await self._observe(active, find)
         return await self._command(run_id, ("running",), body)
+
+    async def _model_picture(self, active: _Active, session, element) -> bytes | None:
+        """The page as a picture for a model, ``element`` outlined; any failure is no picture."""
+        try:
+            png = await asyncio.wait_for(self.observer.capture_for_model(
+                self._run(active.run_id), session, active.policy, element), PICTURE_WAIT_S)
+        except Exception:  # noqa: BLE001 — the caller goes on without one
+            return None
+        return png if png is not None and len(png) <= gate.MAX_JUDGE_PICTURE_BYTES else None
+
+    async def look(self, run_id: str, handle: str | None) -> str | None:
+        """``POST …/look``: what the page looks like, as ``run_look`` returns it."""
+        async def body(active):
+            session = await self._ensure_session(active)
+            element = (None if handle is None else self._resolve(
+                active, session, handle, session.view_generation).element)
+            png = await self._model_picture(active, session, element)
+            return None if png is None else base64.b64encode(png).decode("ascii")
+        return await self._command(run_id, ("running",), body)
+
+    async def _read_field(self, active: _Active, session, handle: str) -> tuple[str, bool, bool]:
+        """A text field's whole value (``mask_whole``'s answer); a secret field shows nothing."""
+        element = self._resolve(active, session, handle, session.view_generation).element
+        if element is None:
+            raise ProtocolError("unsupported")
+        if not page_view_allowed(session.page.url, active.policy):
+            raise ProtocolError("blocked")
+        try:
+            facts, value = await self.ops.text_facts(element), await self.ops.value(element)
+        except Exception:  # noqa: BLE001 — the element left the page
+            raise ProtocolError("stale_handle") from None
+        if facts.get("secret") or value == gate.NOT_SHOWN:
+            return "", True, True
+        if not (facts.get("editable_text") or facts.get("value_kind")) or not isinstance(value, str):
+            raise ProtocolError("unsupported")
+        return mask_whole(value)
+
+    async def _read_file(self, active: _Active, file_id: str) -> tuple[str, bool, bool]:
+        """A downloaded text file of this run (``mask_whole``'s answer)."""
+        record = self.store.get_file(file_id)
+        if record is None or record.run_id != active.run_id:
+            raise ProtocolError("not_found")
+        if not record.mime.startswith("text/") and record.mime not in ("application/json",
+                                                                       "application/csv"):
+            raise ProtocolError("unsupported")
+        path = Path(record.private_path)
+        address = active.plain_files.get(file_id, "")
+        as_text = ((lambda raw: html_text(raw, address)) if record.mime == "text/html"
+                   else (lambda raw: raw.decode("utf-8")))
+        try:
+            keep = file_id in active.plain_files
+            return await asyncio.to_thread(
+                lambda: mask_whole(as_text(path.read_bytes()), keep_addresses=keep))
+        except OSError:
+            raise ProtocolError("not_found") from None
+        except UnicodeDecodeError:
+            raise ProtocolError("unsupported") from None
+
+    async def read(self, run_id: str, handle: str | None, file_id: str | None, offset: int,
+                   rows: bool = False) -> dict:
+        """``POST …/read``: at most ``MAX_READ`` characters from ``offset`` of the page's whole
+        text, its rows (``observe.EXTRACT``'s rows mode, one JSON line each), a field's value or a file; the
+        windows join to the whole when ``complete``."""
+        async def body(active):
+            if file_id is not None:
+                text, whole, masked = await self._read_file(active, file_id)
+            else:
+                session = await self._ensure_session(active)
+                reader = self.observer.read_rows if rows else self.observer.read_text
+                text, whole, masked = (
+                    await self._read_field(active, session, handle) if handle is not None
+                    else await self._page_read(lambda: reader(
+                        self._run(active.run_id), session, active.policy)))
+            return self._window(text, whole, masked, offset)
+        return await self._command(run_id, ("running",), body)
+
+    @staticmethod
+    def _window(text: str, whole: bool, masked: bool, offset: int = 0) -> dict:
+        end = offset + MAX_READ
+        next_offset = end if end < len(text) else None
+        return {"text": text[offset:end], "next_offset": next_offset,
+                "complete": whole and next_offset is None, "masked": masked}
+
+    @staticmethod
+    def _masked_fields(record, fields) -> tuple[str, bool, bool] | None:
+        picked = pick_fields(Path(record.private_path).read_bytes(), fields)
+        return None if picked is None else mask_whole(picked, keep_addresses=True)
+
+    async def fetch(self, run_id: str, url: str, fields: tuple[str, ...] = ()) -> ActionResult:
+        """``POST …/fetch``: a public read with no browser (``Downloader.fetch_plain``). It holds
+        the command lock like a download and touches neither Chrome, nor the session, nor the
+        policy, so it leaves a frozen judgement standing: the page did not move."""
+        async def body(active):
+            generation = self._generation(active)
+            if not start_url_ok(url):
+                return ActionResult("not_run", generation, {"reason": "bad_address"})
+            try:
+                answer = await self.downloader.fetch_plain(
+                    self._run(active.run_id), url, active.policy, active.user_agent)
+            except DownloadRefused as err:
+                raise ProtocolError(err.code) from None
+            if answer.reason is not None:
+                return ActionResult("not_run", generation, {"reason": answer.reason})
+            record = answer.record
+            active.plain_files[record.file_id] = answer.url
+            self._event(active.run_id, "file_saved", "done",
+                        f"Saved {record.safe_name} ({record.size} bytes).")
+            extra = {"file": record.to_wire(), "url": mask_whole(answer.url, keep_addresses=True)[0],
+                     "text": None, "next_offset": None,
+                     "complete": False, "masked": False}
+            title = record.safe_name
+            try:
+                text, whole, masked = await self._read_file(active, record.file_id)
+            except ProtocolError as err:
+                if err.code != "unsupported":
+                    raise
+            else:
+                extra.update(self._window(text, whole, masked))
+                if record.mime == "text/html":
+                    title = text.split("\n", 1)[0]
+            if fields:
+                picked = await asyncio.to_thread(self._masked_fields, record, fields)
+                if picked is None:
+                    extra["not_json"] = True
+                else:   # one window: the rest of the answer is the file's, not these fields'
+                    extra.update(self._window(*picked), next_offset=None)
+            source_id = self._add_source(active, answer.url, title)
+            if source_id is not None:
+                extra["source_id"] = source_id
+            return ActionResult("done", generation, extra)
+        return await self._command(run_id, ("running",), body, supersede=False)
 
     async def search(self, run_id: str, query: str):
         async def body(active):
             # Always public and free (design §3, §4): the search page opens in the public
             # profile, whatever the run's sites — a site with account access on the search
-            # host included — and the load is checked to be public (G1). In an open-web run a
-            # query that is exactly one https address opens that page instead, as an address
-            # bar does (slice 5c): the same free public load as the run's start address.
-            if active.spec.mode == "open_web" and start_url_ok(query):
-                url = query
-            else:
-                url = SEARCH_ORIGIN + SEARCH_PATH + quote_plus(query)
+            # host included — and the load is checked to be public (G1). A query that is
+            # exactly one https address opens that page instead, as an address bar does, and
+            # the destination decides: a public one is the same free public load as an open-web
+            # run's start address; a site of the run with account access is a signed-in link's
+            # navigation, checked unless it stays on the host open now (G1 d).
+            address = start_url_ok(query)
+            if address and self._dest_kind(active, query) == "account":
+                session = await self._ensure_session(active)
+                generation = session.view_generation
+                handle = self.registry.issue(active.run_id, None, generation,
+                                             PrivateTarget("link", "link", None, query, None))
+                return await self._act(active, Action("navigate", handle, generation))
+            url = query if address else SEARCH_ORIGIN + SEARCH_PATH + quote_plus(query)
             await self._ensure_session(active)
             await self._navigate(active, url, before_goto=self._free_nav_guard(active),
                                  public=True)
@@ -1508,9 +1711,10 @@ class RunController:
             return None
 
     async def _act(self, active: _Active, action) -> ActionResult:
-        """An agent action (design §2.1, §3). ``scroll`` and the free inputs of G1 run at once,
-        each checked at delivery against the property that makes it free; every other action
-        is frozen as a pending judgement whose packet the plugin's code relays to the check."""
+        """An agent action (design §2.1, §3). ``scroll``, what sends nothing by itself and the
+        free inputs of G1 run at once, each checked at delivery against what makes it free; every
+        other action is frozen as a pending judgement whose packet the plugin's code relays to
+        the check."""
         session = await self._ensure_session(active)
         target = self._resolve(active, session, action.handle, action.generation)
         page = session.page
@@ -1521,6 +1725,7 @@ class RunController:
         http_link = link and target.href.lower().startswith(("https://", "http://"))
         if kind == "scroll":
             return await self._scroll(active, session, target, action)
+        active.scroll_anchor = None
         if kind == "navigate" and not http_link:
             raise ProtocolError("unsupported")
         nav = kind == "navigate" or (kind == "click" and http_link and (
@@ -1533,13 +1738,19 @@ class RunController:
             if choice.element is None:
                 raise ProtocolError("unsupported")
         search_field, option = await self._admissible(kind, target, choice, action)
+        # A step carrying a plan is the one the operator's Yes is asked on, and one Fido marks
+        # ask_first may commit money: both go to the check.
+        if (kind in ("click", "type", "select") and not nav and not link and action.plan is None
+                and not action.ask_first):
+            done = await self._prepare(active, session, target, action, choice, option)
+            if done is not None:
+                return done
         dest = (self._dest_kind(active, target.href) if (kind == "navigate" or (
             kind == "click" and http_link)) else active.ref.kind)
-        if not gate.in_scope(dest, kind, is_link=http_link, search_field=search_field):
-            if kind == "type" and "\n" in action.text:
-                # Slice 6b: the check judges every multi-line text first; free typing takes none.
-                raise GuardRefused("one_line")
-            return await self._free(active, session, target, action, nav=nav)
+        on_host = await self._free_on_host(active, session, target, action)
+        if not gate.in_scope(dest, kind, is_link=http_link, search_field=search_field,
+                             same_host=on_host):
+            return await self._free(active, session, target, action, nav=nav, on_host=on_host)
         packet_action: dict = {"kind": kind}
         if kind == "type":
             packet_action.update(text=action.text, then_enter=action.enter)
@@ -1552,6 +1763,30 @@ class RunController:
         pending.choice, pending.option = choice, option
         return ActionResult("judgement_required", session.view_generation,
                             {"judgement": pending.wire()})
+
+    async def _prepare(self, active: _Active, session, target, action, choice, option):
+        """An action that sends nothing by itself (``gate.sends_nothing``) runs with no check, as
+        a go does (F4, F9, the journal); None when the facts say it is not one."""
+        try:
+            reading = await self.ops.read_page(session.page, target.element, policy=active.policy)
+        except Exception:  # noqa: BLE001 — Patchright's text can carry the address
+            raise ProtocolError("stale_handle") from None
+        facts = reading.data.get("target")
+        if not facts:
+            raise ProtocolError("stale_handle")
+        if not gate.sends_nothing(action.kind, facts, enter=action.enter):
+            return None
+        op = gate.PendingJudgement(
+            id="", kind="act", packet_bytes=b"", digest="", generation=session.view_generation,
+            session_ref=active.ref, url=session.page.url, created_at=self.clock(), action=action,
+            target=target, frozen=gate.target_facts(facts),
+            label=self._step_label(action.kind, facts.get("name"), target),
+            choice=choice, option=option)
+        result = await self._guarded(active, op, op, target, final=None)
+        outcome, generation = result.pop("outcome"), result.pop("generation")
+        if outcome == "done":
+            generation = (await self._action_done(active, op.label)).generation
+        return ActionResult(outcome, generation, result)
 
     async def _admissible(self, kind: str, target, choice, action=None) -> tuple[bool, Any]:
         """The checks an action passes before any packet, at arrival and again whenever it is
@@ -1605,23 +1840,56 @@ class RunController:
         return False, None
 
     async def _scroll(self, active: _Active, session, target, action) -> ActionResult:
-        """``scroll`` is free everywhere (G1 c); the pacer checks every wheel step."""
+        """``scroll`` is free everywhere (G1 c); the pacer checks every wheel step. The first
+        scroll on a handle brings its element into view, and when that moved anything it is the
+        whole step; the same handle again wheels on from where the page is, never back to the
+        element, so repeated scrolls advance. The reply says where that left the page."""
         pacer = self.c.pacer(session.page)
-        if target.kind != "page":
+        position = None
+        if target.kind != "page" and active.scroll_anchor != action.handle:
             if target.element is None:
                 raise ProtocolError("unsupported")
-            await target.element.scroll_into_view_if_needed(timeout=5000)
-        await pacer.scroll(action.direction, action.amount)
-        return await self._action_done(active, "scroll")
+            position = await pacer.scroll_to(target.element)
+        active.scroll_anchor = action.handle
+        if position is None:
+            position = await pacer.scroll(action.direction, action.amount)
+        return replace(await self._action_done(active, "scroll"), extra={"position": position})
 
-    async def _action_done(self, active: _Active, kind: str, note: str = "") -> ActionResult:
+    async def _action_done(self, active: _Active, kind: str, note: str = "", *,
+                           sent: bool = False) -> ActionResult:
+        """An action's event. Only one that went through the check and sent something (``sent``)
+        keeps a picture of the page after it, as the operator's record of what was sent."""
         session = active.session
         if session is None:
             raise ProtocolError("stale_handle")
-        shot = await self._screenshot(active, session)
+        shot = await self._screenshot(active, session) if sent else None
         self._event(active.run_id, "action", "done", f"Action: {kind}.{note}", screenshot_id=shot)
         active.looked.clear()                # a step: every page may be looked at again
         return ActionResult("done", session.view_generation)
+
+    def _on_host(self, active: _Active, session, url: str) -> bool:
+        """The address loads another page of the host open in this account session: the run's own
+        site for this session (no switch) and the host of the page open now."""
+        page = session.page
+        return (active.ref is not None and active.ref.kind == "account"
+                and active.session is session and self.browser.session is session
+                and page is not None and not page.is_closed()
+                and not self._switch_needed(active, url) and gate.same_host_load(url, page.url))
+
+    async def _free_on_host(self, active: _Active, session, target, action) -> bool:
+        """G1 (d): a navigation that opens an address on the host open runs with no check. A click
+        never does: it is a real press, and a script behind a link is an action. A step carrying a
+        plan is the one the operator's Yes is asked on, and a link whose address moved since it was
+        observed is judged, which says so."""
+        if (action.kind != "navigate" or action.plan is not None
+                or not self._on_host(active, session, target.href)):
+            return False
+        if target.element is None:
+            return True
+        try:
+            return await self.ops.link_href(target.element) == target.href
+        except Exception:  # noqa: BLE001 — the element left the page: the check's read says so
+            return False
 
     def _free_nav_guard(self, active: _Active):
         """G1 a: a free navigation runs only in the public session it was judged free for,
@@ -1631,8 +1899,9 @@ class RunController:
                 raise GuardRefused("changed")
         return check
 
-    async def _free(self, active: _Active, session, target, action, *, nav: bool) -> ActionResult:
-        """The free inputs of G1 (a) and (b), each checked at delivery."""
+    async def _free(self, active: _Active, session, target, action, *, nav: bool,
+                    on_host: bool = False) -> ActionResult:
+        """The free inputs of G1 (a), (b) and (d), each checked at delivery."""
         kind = action.kind
         page = session.page
 
@@ -1641,8 +1910,13 @@ class RunController:
                   and active.session is session and self.browser.session is session)
             return "ok" if ok else "changed"
 
+        def still_on_host() -> None:
+            if not self._on_host(active, session, target.href):
+                raise GuardRefused("changed")
+
         if nav:
-            await self._navigate(active, target.href, before_goto=self._free_nav_guard(active))
+            await self._navigate(active, target.href, before_goto=(
+                still_on_host if on_host else self._free_nav_guard(active)))
         elif kind == "back":
             if await public() != "ok":
                 raise GuardRefused("changed")
@@ -1689,7 +1963,7 @@ class RunController:
                 await pacer.press_enter(at_enter)
         else:
             raise ProtocolError("unsupported")
-        return await self._action_done(active, kind)
+        return await self._action_done(active, self._step_label(kind, None, target))
 
     def _switch_needed(self, active: _Active, url: str) -> bool:
         if active.ref is None:
@@ -1706,6 +1980,8 @@ class RunController:
                                     if active.session is not None else 0,
                                     {"reason": refused.code})
             except ActionError as err:
+                if err.code in TARGET_REFUSALS:
+                    return ActionResult("not_run", self._generation(active), {"reason": err.code})
                 raise ProtocolError("unsupported" if err.code == "unsupported" else "blocked") \
                     from None
         return await self._command(run_id, ("running",), body)
@@ -1717,6 +1993,17 @@ class RunController:
         if not url:
             return active.ref.kind if active.ref is not None else "public"
         return self._session_for(active, url)[0]
+
+    @staticmethod
+    def _step_label(kind: str, name: str | None, target) -> str:
+        """How an event names a step: its name, else what the observation called its target, else,
+        for an address the model gave itself (the only target with neither), that address's host
+        and masked path. A page's own link never shows more than the model was shown."""
+        shown = mask_text(name or "").text.strip()[:80]
+        if not shown and target is not None:
+            shown = target.label[:80] or (gate.address_name(target.href)[:80]
+                                          if target.element is None and target.href else "")
+        return f"{kind} “{shown}”" if shown else kind
 
     def _entry_name(self, active: _Active, target) -> str:
         """The label the app gave a link it issued itself (a site's start entry)."""
@@ -1738,6 +2025,12 @@ class RunController:
         except ValueError:
             return ""
 
+    def _site_key(self, active: _Active, url: str) -> str | None:
+        """What an approval is bound to: the run's site by id (display names are not unique),
+        else the page's origin."""
+        site = self._target_site(active, url)
+        return site.site_id if site is not None else self._origin(url)
+
     async def _freeze(self, active: _Active, session, target, packet_action: dict, *, kind: str,
                       dest_kind: str, action=None, handle: str | None = None,
                       search_url: str | None = None, enter: bool = False, name: str = "",
@@ -1750,6 +2043,8 @@ class RunController:
             raise _Dependency("browser_gone")
         generation, url = session.view_generation, page.url
         element = target.element if target is not None else None
+        # The picture first: its scroll can load more, which the reading and stale check then see.
+        picture = await self._model_picture(active, session, element)
         try:
             reading = await self.ops.read_page(page, element, policy=active.policy)
         except Exception:  # noqa: BLE001 — Patchright's text can carry the address
@@ -1777,20 +2072,37 @@ class RunController:
         packet = gate.build_packet(data, facts, packet_action, task=active.spec.task_text,
                                    session="signed_in" if dest_kind == "account" else "public",
                                    site=self._site_name(active, url), run_so_far=list(active.judged),
-                                   download=download)
+                                   download=download, plan=action.plan if action else None,
+                                   approved=self._approved_here(active, url, data))
         body = gate.canonical(packet)
-        shown = mask_text((facts or {}).get("name") or "").text.strip()[:80] if facts else ""
         pending = gate.PendingJudgement(
             id="j" + self.c.token().replace("=", ""), kind=kind, packet_bytes=body,
             digest=gate.digest(body), generation=generation, session_ref=active.ref, url=url,
             created_at=self.clock(), action=action, target=target,
             frozen=gate.target_facts(facts, enter=enter), reading=data, packet=packet,
-            label=f"{packet_action['kind']} “{shown}”" if facts else packet_action["kind"],
+            label=self._step_label(packet_action["kind"], (facts or {}).get("name"), target),
             verb=packet_action["kind"] if kind != "download" else "download",
             dest_kind=dest_kind, handle=handle, search_url=search_url, enter=enter, via=via,
-            nav=nav or kind == "search", entry_name=name, frame_url=data.get("href"))
+            nav=nav or kind == "search", entry_name=name, frame_url=data.get("href"),
+            picture=picture)
         active.pending = pending
         return pending
+
+    def _approved_here(self, active: _Active, url: str, reading: dict) -> str | None:
+        """The approved plan, on the site it was approved for and on no page with a card field."""
+        approved, key = active.approved, self._site_key(active, url)
+        if approved is None or key is None or approved["site_key"] != key or reading.get("has_cc"):
+            return None
+        return approved["plan"]
+
+    async def judgement_picture(self, run_id: str, judgement_id: str) -> bytes:
+        """``GET …/judgements/{judgement}/picture``: no lock, it only reads memory; a verdict
+        that started applying has cleared it."""
+        run, active = self._run(run_id), self.active
+        pending = active.pending if active is not None and active.run_id == run.run_id else None
+        if pending is None or pending.id != judgement_id or pending.picture is None:
+            raise ProtocolError("not_found")
+        return pending.picture
 
     # -- verdicts (S2-5, S2-7) ---------------------------------------------------------
 
@@ -1828,6 +2140,7 @@ class RunController:
             if "no_verdict" not in body and body["packet_sha256"] != pending.digest:
                 raise ProtocolError("digest_mismatch")
             pending.state = "applying"
+            pending.picture = None
             response, successor = await self._apply(active, pending, body)
             # The complete response is stored before any successor replaces the pending one.
             self.store.put_response(run_id, key, response)
@@ -2212,7 +2525,7 @@ class RunController:
         gen = self._generation(active)
         if verdict is None:
             return {"outcome": "check_unavailable", "generation": gen}, None
-        if verdict["verdict"] == "go" and verdict["category"] not in gate.GO_CATEGORIES:
+        if verdict["verdict"] == "go" and not gate.go_allowed(verdict["category"], pending.packet):
             return await self._ask(active, pending, verdict, f2=True)            # F2
         if verdict["verdict"] == "look_first":
             return {"outcome": "look_first", "generation": gen,
@@ -2260,7 +2573,7 @@ class RunController:
         control = reading.data["controls"][matches[0]]
         return True, PrivateTarget("link" if control.get("href") else "element", target.role,
                                    reading.handles[matches[0]], control.get("href"),
-                                   target.frame_url)
+                                   target.frame_url, target.label)
 
     def _in_flight(self, run_id: str) -> bool:
         work = self._work
@@ -2273,10 +2586,11 @@ class RunController:
         def started():
             op.dispatch_started = True
             applied.dispatch_started = True
-            self.store.put_response(active.run_id, "j:" + applied.id,
-                                    {"outcome": "outcome_unknown",
-                                     "generation": self._generation(active),
-                                     "provisional": True})
+            if applied.id:                 # an unjudged step has no verdict to replay
+                self.store.put_response(active.run_id, "j:" + applied.id,
+                                        {"outcome": "outcome_unknown",
+                                         "generation": self._generation(active),
+                                         "provisional": True})
         return started
 
     def _record_unknown(self, active: _Active, op, question=None) -> None:
@@ -2324,6 +2638,7 @@ class RunController:
         action = op.action
         expected = {"facts": op.frozen}
         seen: dict = {}
+        same = gate.same_reading if question is not None else gate.same_as_judged
 
         async def reread(point=None, *, typed: bool = False) -> str:
             """F4 (and for a tap, the final read), immediately before the input."""
@@ -2333,7 +2648,7 @@ class RunController:
             if element is None:
                 if final is not None:
                     data = await self._read_whole(active, page)
-                    if data is None or not gate.same_reading(final, data):
+                    if data is None or not same(final, data):
                         seen["reread"] = data
                         return "changed"
                 return "ok"
@@ -2343,7 +2658,7 @@ class RunController:
                 return "changed"
             data = cur.data
             if final is not None:
-                if not gate.same_reading(final, data):
+                if not same(final, data):
                     seen["reread"] = data
                     return "changed"
             facts = gate.target_facts(data.get("target"), enter=op.enter)
@@ -2469,14 +2784,17 @@ class RunController:
                     "typed": "shown" if outcome == "ok" else "not_shown"}
 
         lines = "\n" in action.text
+        # Typed by key a long list would outlast the check, and append.
+        bulk = frozen.get("tag") == "textarea" and len(action.text) > LONG_TEXT and not action.enter
 
         async def text_field() -> bool:
             # Rule 0: still an editable text control (a field turned into a checkbox would take
-            # a space as a toggle) and, for a text with line breaks, still a real <textarea>
-            # (slice 6b: an input would take a line break as implicit submission).
+            # a space as a toggle) and, for a text with line breaks or an insertion, still a real
+            # <textarea> (slice 6b: an input would take a line break as implicit submission).
             facts = await self.ops.text_facts(element)
             return (isinstance(facts, dict) and bool(facts.get("editable_text"))
-                    and not facts.get("secret") and (not lines or bool(facts.get("textarea"))))
+                    and not facts.get("secret")
+                    and (not (lines or bulk) or bool(facts.get("textarea"))))
 
         async def focus() -> bool:
             # Rule 2 with rule 0: the focused element is the frozen target, still a text field.
@@ -2488,6 +2806,11 @@ class RunController:
                 return "changed"
             return await reread(point)
 
+        if bulk:
+            await pacer.insert(element, action.text, guard=into_text_field, on_dispatch=journal,
+                               focus=focus)
+            return {"outcome": "done", "generation": self._generation(active),
+                    **await self._typed_shown(element, action.text)}
         if not (question is not None and op.typed_judged):
             await pacer.type(element, action.text, guard=into_text_field,
                              on_dispatch=None if action.enter else journal, focus=focus,
@@ -2528,8 +2851,10 @@ class RunController:
             return {}
         if not isinstance(value, str) or value == gate.NOT_SHOWN:
             return {}
-        # A contenteditable keeps a typed space as a no-break space (r1 Astra)
-        same = text.replace("\u00a0", " ") in value.replace("\u00a0", " ")
+        # A contenteditable keeps a typed space as a no-break space (r1 Astra). An empty text is
+        # shown by an empty field, not by being part of whatever the field holds.
+        same = (text.replace("\u00a0", " ") in value.replace("\u00a0", " ") if text
+                else not value.strip())
         return {"typed": "shown" if same else "not_shown"}
 
     async def _read_whole(self, active: _Active, page) -> dict | None:
@@ -2546,7 +2871,10 @@ class RunController:
         if not found:
             return {"outcome": "not_run", "generation": gen, "reason": "changed"}, None
         try:
-            result = await self._guarded(active, pending, pending, target, final=None)
+            # Under an approval the whole page must still be the one judged: a fee shown since
+            # is judged afresh, never pressed on the earlier Yes.
+            final = pending.reading if verdict.get("category") == "account_change" else None
+            result = await self._guarded(active, pending, pending, target, final=final)
         except GuardRefused as refused:
             if refused.code == "moved":
                 return {"outcome": "not_run", "generation": self._generation(active),
@@ -2558,9 +2886,14 @@ class RunController:
             return {"outcome": "judgement_required", "generation": self._generation(active),
                     "judgement": fresh.wire()}, fresh
         if result.get("outcome") == "done":
+            if verdict.get("category") == "account_change":
+                active.changes.append(Change("action_confirmed", None, "",
+                                             mask_text(pending.label).text[:200]))
             note = (f" Check: go ({verdict.get('category')}): "
                     f"{gate.one_line(verdict.get('reason'), 200)}")
-            done = await self._action_done(active, pending.label, note)
+            sent = pending.enter or (pending.verb == "click" and not pending.nav) or (
+                pending.verb == "download" and pending.via == "button")
+            done = await self._action_done(active, pending.label, note, sent=sent)
             result = {**result, "generation": done.generation}
         return result, None
 
@@ -2586,20 +2919,29 @@ class RunController:
             return None
         fresh.choice, fresh.option = op.choice, op.option
         fresh.quarantine = op.quarantine
+        fresh.after_lapse = op.after_lapse     # still the question after his lapsed Yes
         return fresh
 
     # -- questions (S2-9) ----------------------------------------------------------------
 
     async def _ask(self, active: _Active, pending, verdict, *, f2: bool) -> tuple[dict, Any]:
         """An ask freezes a question: a confirmations row, the run waiting on it, and the
-        frozen operation in memory. F2, F6 and F6a decide whether a confirm button is
-        offered."""
+        frozen operation in memory. F2, F6, F6a and a blind reading decide whether a confirm
+        button is offered."""
         session = active.session
         gen = self._generation(active)
         question = None if f2 else verdict.get("question")
         has_cc = bool((pending.reading or {}).get("has_cc"))
+        category = verdict.get("category", "")
+        blind = gate.blind(pending.reading or {})
+        # A plan card shows the plan verbatim; money is never one, nor a question with no confirm.
+        plan = None
+        if (question is not None and category == "account_change" and not blind
+                and not question.get("text_incomplete")
+                and not conf.money(category, question, has_cc)):
+            plan = pending.packet.get("plan")
         shot = None
-        if conf.wants_screenshot(verdict.get("category", ""), question, has_cc) and not f2:
+        if plan is None and conf.wants_screenshot(category, question, has_cc) and not f2:
             _found, target = await self._current_target(active, pending)
             element = target.element if target is not None else None
             try:
@@ -2610,7 +2952,10 @@ class RunController:
         name = (pending.reading or {}).get("target", {}) or {}
         view = conf.build_view(verdict, has_cc=has_cc, screenshot_id=shot, f2=f2,
                                verb=conf.VERBS.get(pending.verb, "use"),
-                               name=name.get("name") or "", site=self._site_name(active, pending.url))
+                               name=name.get("name") or "", site=self._site_name(active, pending.url),
+                               plan=plan, blind=blind)
+        if pending.after_lapse:
+            view["after_lapse"] = True
         qid = "q" + self.c.token().replace("=", "")
         run_id = active.run_id
         with self.store.transaction():
@@ -2692,7 +3037,7 @@ class RunController:
             if choice == "not_now":
                 response = {"outcome": "declined", "generation": gen}
                 self._settle_question(active, q, "declined", response, ref,
-                                      text="The operator said not now; nothing was done.")
+                                      text=_declined_text(ref))
                 return response
             if isinstance(choice, dict):
                 options = q.view.get("extra_options") or []
@@ -2719,8 +3064,8 @@ class RunController:
                 gone = response.get("reason") == "target_gone"
                 self._settle_question(
                     active, q, "lapsed", response, ref,
-                    text=("The question's target is gone (perhaps done in the live view); "
-                          "observe the page." if gone else ""))
+                    text=("The question's target is gone or can no longer be told apart from another "
+                          "(perhaps done in the live view); observe the page." if gone else ""))
             return response
         # "running" too: an identical answer racing the first one finds the run already
         # running and must still get the first answer's stored response (r1 Astra 2a)
@@ -2875,8 +3220,9 @@ class RunController:
                        typed_target=None) -> tuple[dict, Any]:
         """S2-10 steps 1–4: a fresh whole reading, the difference over the whole readings, the
         private ``destination_changed``, and the re-judgement input as a pending ``rejudge``.
-        Too large a difference, or an incomplete reading, has no ``same``: the question lapses
-        with design §2.3's copy."""
+        Too large a difference, or a blind reading, has no ``same``: the question lapses with
+        design §2.3's copy. A reading only capped goes on: ``all_controls`` compares what it does
+        not list."""
         op = frozen.pending
         gen = self._generation(active)
         if typed_reading is not None:
@@ -2894,8 +3240,8 @@ class RunController:
                 return {"outcome": "lapsed", "generation": gen, "reason": "unreadable"}, None
             if element is None and target is not None and target.href:
                 current["target"] = (op.reading or {}).get("target")
-        if not current.get("complete"):
-            return {"outcome": "lapsed", "generation": gen, "copy": conf.COPY_TOO_MUCH,
+        if gate.blind(current):
+            return {"outcome": "lapsed", "generation": gen, "copy": conf.COPY_INCOMPLETE,
                     "reason": "incomplete"}, None
         diff = gate.difference(frozen.approved_reading, current)
         if not gate.difference_fits(diff):
@@ -2913,7 +3259,9 @@ class RunController:
             session="signed_in" if op.dest_kind == "account" else "public",
             site=self._site_name(active, active.session.page.url if active.session else op.url),
             run_so_far=frozen.approved_packet.get("run_so_far", []),
-            download=frozen.approved_packet.get("downloaded_file"))   # the same fetched file
+            download=frozen.approved_packet.get("downloaded_file"),   # the same fetched file
+            plan=frozen.approved_packet.get("plan"),
+            approved=frozen.approved_packet.get("approved"))
         rj = {"approved_packet": frozen.approved_packet,
               "approved_question": {"text": q.get("text", ""),
                                     "confirm_label": q.get("confirm_label", ""),
@@ -2995,6 +3343,9 @@ class RunController:
             self.store.transition(active.run_id, "waiting_approval", "running")
         active.changes.append(Change("action_confirmed", None, "",
                                      mask_text(frozen.confirm_label).text[:200]))
+        if q.view.get("plan"):
+            active.approved = {"site_key": self._site_key(active, frozen.pending.url),
+                               "plan": frozen.approved_packet["plan"]}
         active.looked.clear()                # a step: every page may be looked at again
         self._event(active.run_id, "action", "confirmed",
                     f"Action confirmed by the operator: {frozen.pending.label}.",
@@ -3015,6 +3366,7 @@ class RunController:
         gen = self._generation(active)
         if fresh is None:
             return {"outcome": "lapsed", "generation": gen, "reason": "changed"}, None
+        fresh.after_lapse = True          # a question it raises says his last Yes did not run
         return {"outcome": "judgement_required", "generation": gen,
                 "judgement": fresh.wire()}, fresh
 
@@ -3496,6 +3848,7 @@ class RunController:
         """The synchronous start of a run's ending: from here the run is ``finishing`` and its
         ending is decided (``active.ending``), so every later command of it is refused."""
         active.ending = (state, kind, outcome)
+        active.kept_cookies.clear()
         # The run's question ends with it: nothing it froze can run any more. (A press
         # that may have happened was already recorded outcome_unknown by its own work.)
         active.pending = None
@@ -3700,11 +4053,12 @@ class RunController:
             for r in runs:
                 question = self.store.open_question(r.run_id)
                 active = self.active
-                wait = active.code_wait if active is not None and active.run_id == r.run_id \
-                    else None
+                own = active if active is not None and active.run_id == r.run_id else None
+                wait = own.code_wait if own is not None else None
                 out.append(ActiveRun(r.run_id, r.spec.request_id, r.state, r.created_at,
                                      question.question_id if question is not None else None,
-                                     wait[0] if wait is not None else None))
+                                     wait[0] if wait is not None else None,
+                                     own.approved["plan"] if own and own.approved else None))
             return out
 
     async def events(self, run_id: str, after: int) -> list:
@@ -3768,6 +4122,15 @@ def _sign_in_address(url) -> tuple[str | None, str, str]:
     if len(start) > 2048:
         start = origin + "/"
     return origin, origin[len("https://"):], start
+
+
+def _declined_text(ref: str) -> str:
+    """What a Not now means: the operator's answer, or Fido taking back a question the operator
+    never saw (an ``operator_ref`` of ``fido:<why>``)."""
+    if ref.startswith("fido:"):
+        return (f"Fido took this question back before the operator answered it "
+                f"({ref[len('fido:'):]}); nothing was done.")
+    return "The operator said not now; nothing was done."
 
 
 def _label(text) -> str:

@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-22
+last_reviewed: 2026-11-07
 ---
 
 # Casa Browser — the run controller
@@ -9,13 +9,14 @@ last_reviewed: 2026-10-22
 ## Scope
 
 How the optional `casa_browser/` app runs a browsing task: one leased run at a time, its
-browser sessions and policy, its broker and driver calls, its live-view states and every way
+browser sessions and policy, its broker and driver calls and every way
 it ends — `casa_browser/rootfs/opt/casa_browser/controller.py` (`RunController`, which the
 `/v1` routes of [`casa-browser.md`](casa-browser.md) await) and the s6 unit
 `svc-browser-controller`. The components it composes have their own documents: the request
 policy and the store ([`casa-browser.md`](casa-browser.md)), the floor and the proxy
-([`casa-browser-runtime.md`](casa-browser-runtime.md)), Chrome, observations and handles
-([`casa-browser-browser.md`](casa-browser-browser.md)), downloads
+([`casa-browser-runtime.md`](casa-browser-runtime.md)), Chrome
+([`casa-browser-browser.md`](casa-browser-browser.md)), observations and handles
+([`casa-browser-observations.md`](casa-browser-observations.md)), downloads
 ([`casa-browser-files.md`](casa-browser-files.md)), the operator's questions
 ([`casa-browser-approvals.md`](casa-browser-approvals.md)), and the broker and login driver
 ([`casa-browser-credentials.md`](casa-browser-credentials.md)), and the ingress pages and the
@@ -135,8 +136,11 @@ sent, a top-level navigation is asked of the run's policy with its leases remove
 (the floor) is `blocked`, never held. `click`, `type`, `select`, `scroll` and `back` act through `pacing.Pacer` on the
 handle's element, bound to the page generation it was issued for (`stale_handle` otherwise); the
 model never types into a password field (`unsupported` before any key). A download the browser
-starts outside `POST …/download` is cancelled and deleted. After an action the operator-only
-masked screenshot is attached to the `action` event. Every action, download and search first
+starts outside `POST …/download` is cancelled and deleted. An action that went through the check
+and sent something (a press, a button download, an Enter) gets an operator-only masked screenshot of
+the page after it on its `action` event, and a confirmed tap the question's; every other action's
+event has none, and `POST …/screenshots` takes one on request. The step log shows a picture only
+where an event has one. Every action, download and search first
 passes the action gate ([`casa-browser-actions.md`](casa-browser-actions.md)): a checked one
 answers `judgement_required` and runs only through its verdict; a question moves the run to
 `waiting_approval` until its answer, a lapse or the run's end.
@@ -148,16 +152,32 @@ browser is a dependency failure and interrupts the run.
 **Sources (v9.2).** An observation in the public session whose committed top-level address is
 `https` and at most 800 bytes gets a `source_id` — the same one for the same address in the run,
 at most 200 a run — and the address is stored with the masked title (≤ 120 characters) in the
-store's `sources` table, swept with the run. Account-session pages never get one. The address
+store's `sources` table, swept with the run. Account-session pages never get one. A plain fetch's
+final address gets one under the same bounds, in any run (`RunController._add_source`), its title
+the page's first line or the file's name: nothing of an account came with it, and that reply states
+the address to the model too. Otherwise the address
 leaves the app only through `GET /v1/control/runs/{run}/sources`; `finish` naming an id the run
 did not issue is `unsupported`.
 
 **Search.** `search(run, query)` opens `https://www.google.com/search?q=<query>` in the public
 session, whatever the run's sites (an account run moves to it), free of the action gate, and
-returns its observation. In an open-web run a query that is exactly one address `start_url`
-would accept opens that address instead, the same free public navigation as a `start_url`;
-an account run's query is always searched. Open-web pages are always observed in the
-real browser (a plain HTTP fetch for simple HTML is deferred, operator ruling 2026-10-21).
+returns its observation. In any run a query that is exactly one address `start_url` would
+accept (and fits the query's own bound) opens that address instead, and the destination decides
+(`controller.py::RunController._dest_kind`). A public one is the same free public navigation as a
+`start_url`. A site of the run with account access is a signed-in link's navigation: the
+address gets a link target as `RunController._start_entries` issues one and goes through
+`RunController._act`, so it runs with no check only if it stays on the host open now
+([`casa-browser-actions.md`](casa-browser-actions.md)), and otherwise nothing loads before the verdict;
+its `done` carries no observation, and the plugin observes.
+
+**Plain reading.** `fetch(run, url, fields)` (`POST …/fetch`) reads a public address with no
+browser, in any run, the signed-in browser staying open
+([`casa-browser-files.md`](casa-browser-files.md)). It holds the command lock like a download and
+takes the run only while `running` (a question answers `not_ready`). It calls neither
+`_ensure_session` nor `_install` and reads no page, and it leaves a frozen judgement standing,
+since the page did not move. The browser's User-Agent is read when a session opens
+(`_open_session`) and kept on `_Active`, so a fetch works with no live session; until one has been
+read it is `downloads.FALLBACK_USER_AGENT`.
 
 **Downloads.** A link handle is fetched by `Downloader.fetch`; an element handle is clicked
 while the controller waits up to 30 s for the browser download it starts, which
@@ -166,60 +186,10 @@ download is fetched freely and a type outside the document set is quarantined un
 lets it through ([`casa-browser-files.md`](casa-browser-files.md)). Archives and file reads run
 in a thread.
 
-## Live view (run states)
+## Live view
 
-`request_live(run, purpose)` drains the in-flight work, moves `running` → `waiting_live` and
-issues a grant (120 s, `LiveView.issue`). The purpose is `login` or `assist`; a `login` view
-needs an account session. Before that transition, a `login` view on a site with login origins
-takes the run's session (`_ensure_session`, which reopens one that is gone or stale, as
-`begin_live` would) and, when the guest flow has not been started for it, runs it, so the
-operator's link goes out with 1Password unlocked for its own fill. A flow that does not complete,
-or a K1 under it, lets the request go on (on a new session whose guest has not
-run); an `assist` view runs no guest flow. A `login` view on `about:blank` first loads, with no
-sign-in, the site's page the run was last on (`_Active.page_url`) or its start page
-(`_load_for_login`), at the request and again at the claim. `begin_live(run, expose)` — the ingress claim, before the
-operator's input is exposed — moves `waiting_live` → `live`; on an account session it begins the
-manual lease (`begin_manual(lease, purpose=…)`, keeping the window token), opens a `capture`
-driver session and arms the broker's
-capture through `broker_client.arm_capture_then`, which calls `expose` only after the capture is
-acknowledged; the capture belongs to the view from that acknowledgement on. Each stage is logged
-at `info` with its time and nothing of the page. Any failure while
-a view is claimed — in either session kind, at any step (the lease, the capture session, the
-capture, the exposure) — leaves through one cleanup (operator ruling 2026-10-21) and offers no
-view: the capture the broker armed is ended, the
-lease ends, the window closes, the run returns to `running` with a `live_unavailable` event.
-
-**A view nobody opens.** A view `request_live` issued (its `_Live.asked_at`) that is still
-`waiting_live` a question's hour later (`confirmations.QUESTION_TTL_S`) cancels its run: the
-controller's 30-second sweep (`expire_live`, beside `expire_questions`) records a `live_done`
-event with outcome `expired` and ends the run `cancelled` (no notice; the plugin tells whoever
-asked). Only `request_live` sets `asked_at`: a view from a question ends with its question, and
-a view the operator opened (`live`) stays his until Done.
-
-**The view ends first.** Every path that ends a run or cuts its work — `cancel`, an interruption,
-re-pairing, forget, shutdown and every `_end` — ends the live view (`LiveView.revoke`: no more
-socket or input) before it waits for anything; the teardown and a refused claim then wait for
-the one operation in flight (`LiveView.end`) before the capture, lease and window are released.
-Done first closes the view and restores Chrome's window, verified (`LiveView.close_view`); an
-unverifiable restore interrupts the run (`window_unrestored`).
-
-Done (one tap; nothing is reviewed): `live_done(run)` ends the broker's capture
-(`end_capture`: an unsaved changed value leaves the warning notice; the site's next live view
-can capture again; a capture that cannot be ended interrupts the run, whose `end_run` retires
-it), the capture session, the manual lease and — after the proxy's remaining events of the view were consumed — the window.
-Before that release, a `login` or `assist` view on an account site takes its capture's last
-sign-in attempt (`take_attempt`); one that may be saved becomes a `signin` judgement and the
-broker holds that capture (`end_capture` keeps it) until the verdict or the run's end
-([`casa-browser-credentials.md`](casa-browser-credentials.md)).
-A `login` view's operator Done learns at most one provider binding (tags only) — nothing is asked (operator ruling 2026-10-31): exactly one provider attempt and the provider's redirect back to a callback on one of the site's own origins (`login.learn_provider_binding`); a sign-in that failed but was still redirected back teaches it too, an accepted residual; `/v1 …/live-complete` learns none. A learned binding
-records the proxy binding key it was learned under (the `binding_key_id` the controller read
-from the proxy's `status` at its start; `bindings_lost` names the sites whose record differs
-from the current key or is missing) and installs it. A view opened from an open question
-(`live_from_question`, [`casa-browser-approvals.md`](casa-browser-approvals.md)) starts from
-`waiting_approval` and returns there while the question is still open. Every other Done returns
-it to `running`. `POST /v1/control/runs/{run}/live-complete` is the same Done without the operator's page
-(no binding); its capture is ended the same way, reviewed first, so its values reach the
-broker, which warns if they end unsaved.
+A run's states around a live view, what claims one and what Done does, are
+[`casa-browser-live-states.md`](casa-browser-live-states.md).
 
 ## Ends
 
@@ -307,7 +277,7 @@ warnings, and those that can carry request bytes are filtered.
 
 **INV-BRW-027**: Every driver session the controller opens is closed on every path, and a login or assist live view on an account session exposes the operator's input only after the broker acknowledged its capture (a public-session assist view runs no capture).
 
-**INV-BRW-028**: Only a page of the run's public session, `https` and at most 800 bytes, gets a source id, and its address leaves the app only through the trusted sources route.
+**INV-BRW-028**: Only a page of the run's public session or the address that served a plain fetch, `https` and at most 800 bytes, gets a source id, and its address leaves the app only through the trusted sources route, except that a plain fetch's own reply states the address that answered it.
 
 
 ## Source & test map
@@ -330,4 +300,5 @@ warnings, and those that can carry request bytes are filtered.
 - [`reference/casa-browser-files.md`](../reference/casa-browser-files.md)
 - [`reference/casa-browser-approvals.md`](../reference/casa-browser-approvals.md)
 - [`reference/casa-browser-credentials.md`](../reference/casa-browser-credentials.md)
+- [`reference/casa-browser-live-states.md`](../reference/casa-browser-live-states.md)
 <!-- END SOURCEMAP -->

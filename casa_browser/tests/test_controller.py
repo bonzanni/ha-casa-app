@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import replace
+from urllib.parse import quote_plus
 
 import pytest
 
+from casa_browser import confirmations as conf
 from casa_browser import controller as ctl_mod
 from casa_browser.downloads import DownloadRefused
 from casa_browser.policy import RequestMeta
@@ -19,6 +21,7 @@ from casa_browser.protocol import (
     SafeNotice,
 )
 from casa_browser.proxy_client import PrivateRequestEvent
+from casa_browser.protocol import Site
 from controllerfakes import ACCOUNT, OTHER, PUBLIC, SEARCH, Rig, spec
 
 pytestmark = pytest.mark.asyncio
@@ -238,8 +241,8 @@ async def test_off_site_navigation_moves_to_public_profile(rig):
 
 async def test_plain_http_address_of_the_site_stays_signed_in(rig):
     """casa-test F16 with S4-1: an ``http://`` link to a host the site registered over https is
-    the site's page — it stays in the account session (judged there) and is sent for the
-    proxy's https redirect, never moved to the public session."""
+    the site's page — it stays in the account session (where a load of the host open needs no
+    check) and is sent for the proxy's https redirect, never moved to the public session."""
     run = await rig.run()
     rig.page().show(A_START, "Start", [dict(role="link", name="Plain",
                                             href="http://a.example/next")])
@@ -249,7 +252,7 @@ async def test_plain_http_address_of_the_site_stays_signed_in(rig):
     assert ("goto", "http://a.example/next") in rig.log
     assert (rig.browser.session.kind, rig.browser.session.site_id) == ("account", "sa")
     assert not [e for e in rig.log if e[0] == "open" and e[1] == "public"]
-    assert len(rig.events(run.run_id, "judgement")) == judged + 1
+    assert len(rig.events(run.run_id, "judgement")) == judged
 
 
 async def test_account_cookies_never_reach_public_profile(rig):
@@ -355,14 +358,71 @@ async def test_an_open_web_search_for_an_exact_address_opens_that_page(rig):
     assert ("goto", "https://127.0.0.1/admin") not in rig.log
 
 
-async def test_an_account_run_searches_an_address_as_words(rig):
+async def test_an_account_run_opens_a_public_address_free_and_in_the_public_session(rig):
+    """A2: exactly one https address opens in any run. A public destination is the same free
+    public load as an open-web run's: nothing judged, and never in the account session."""
     run = await rig.run(spec(request_id="lone"))
+    assert rig.browser.session.kind == "account"
     url = "https://shop.example/forms/post"
-    rig.browser.contents[ctl_mod.SEARCH_ORIGIN + ctl_mod.SEARCH_PATH
-                         + "https%3A%2F%2Fshop.example%2Fforms%2Fpost"] = dict(
+    rig.browser.contents[url] = dict(text="Pizza form", title="Order")
+    obs = await rig.ctl.search(run.run_id, url)
+    assert "Pizza form" in obs.text and obs.source_id
+    assert rig.log.index_of("open", "public") < rig.log.index_of("goto", url)
+    assert rig.browser.session.kind == "public"
+    assert not rig.events(run.run_id, "judgement")
+    with pytest.raises(ProtocolError, match="blocked"):        # the floor still applies
+        await rig.ctl.search(run.run_id, "https://127.0.0.1/admin")
+    assert ("goto", "https://127.0.0.1/admin") not in rig.log
+
+
+@pytest.mark.parametrize("query", ["https://shop.example:bad/invoices",
+                                   "https://shop.example:99999/invoices"])
+async def test_an_address_with_a_malformed_port_is_a_search(rig, query):
+    """An address no origin can be read from is no address: it searches, as it always did."""
+    run = await rig.run(spec(request_id="lone"))
+    rig.browser.contents[ctl_mod.SEARCH_ORIGIN + ctl_mod.SEARCH_PATH + quote_plus(query)] = dict(
         text="Results", title="Search")
-    assert (await rig.ctl.search(run.run_id, url)).text.startswith("Results")
-    assert ("goto", url) not in rig.log
+    assert "Results" in (await rig.ctl.search(run.run_id, query)).text
+
+
+async def test_an_address_on_a_site_held_without_account_access_is_public(rig):
+    run = await rig.run(sites=(("sa", "account"), ("sp", "public")))
+    rig.browser.contents[B_PAGE] = dict(text="Public B", title="B")
+    assert "Public B" in (await rig.ctl.search(run.run_id, B_PAGE)).text
+    assert rig.browser.session.kind == "public" and not rig.events(run.run_id, "judgement")
+
+
+@pytest.mark.parametrize("from_public", [False, True])
+async def test_an_address_on_a_signed_in_site_loads_only_after_the_check(rig, from_public):
+    """A2: the same checked navigation as a signed-in link. Nothing loads, in any session, before
+    the verdict; the address is in what the check reads; the reply carries no observation."""
+    run = await rig.run()
+    if from_public:
+        rig.browser.contents[ctl_mod.SEARCH_ORIGIN + ctl_mod.SEARCH_PATH + "march"] = dict(
+            text="Results", title="Search")
+        await rig.ctl.search(run.run_id, "march")
+        assert rig.browser.session.kind == "public"
+    else:
+        rig.page().show("about:blank", "", [])       # the host open is free: no page open is not
+    mark = len(rig.log)
+    rig.browser.contents[A_PAGE] = dict(text="Invoices", title="Invoices")
+    wire = (await rig.ctl.search(run.run_id, A_PAGE)).to_wire()
+    assert wire["outcome"] == "judgement_required" and "observation" not in wire
+    assert json.loads(wire["judgement"]["packet"])["target"]["destination"]["path"] == "/invoices"
+    assert not [e for e in rig.log[mark:] if e[0] in ("goto", "open")]
+    reply = await verdict(rig, run.run_id, wire, GO)
+    assert reply["outcome"] == "done" and "observation" not in reply
+    assert ("goto", A_PAGE) in rig.log[mark:]
+    assert (rig.browser.session.kind, rig.browser.session.site_id) == ("account", "sa")
+    assert "Invoices" in (await observe(rig, run.run_id)).text
+
+
+async def test_a_signed_in_address_with_no_verdict_never_loads(rig):
+    run = await rig.run()
+    rig.page().show("about:blank", "", [])
+    wire = (await rig.ctl.search(run.run_id, A_PAGE)).to_wire()
+    assert (await verdict(rig, run.run_id, wire, None))["outcome"] == "check_unavailable"
+    assert ("goto", A_PAGE) not in rig.log
 
 
 async def test_the_page_now_is_an_operator_screenshot_of_a_running_run(rig):
@@ -1065,6 +1125,148 @@ async def test_search_is_public_and_free(rig):
     assert not rig.events(run.run_id, "judgement")
     assert not [e for e in rig.log if e[0] == "broker" and e[1] in ("login", "unlock_guest")
                 and rig.log.index(e) > rig.log.index_of("open", "public")]
+
+
+# --------------------------------------------------------------------------- a public excursion
+
+
+SESSION_COOKIE = {"name": "SID", "value": "kept-value-1", "domain": "a.example", "path": "/",
+                  "expires": -1, "httpOnly": True, "secure": True, "sameSite": "Lax"}
+LASTING_COOKIE = {"name": "keep", "value": "lasting-value", "domain": "a.example", "path": "/",
+                  "expires": 2_000_000_000.0, "httpOnly": False, "secure": True, "sameSite": "Lax"}
+
+
+def _signed_in(rig):
+    rig.browser.session.context.jar = [dict(SESSION_COOKIE), dict(LASTING_COOKIE)]
+
+
+async def _to_public(rig, run):
+    rig.browser.contents[ctl_mod.SEARCH_ORIGIN + ctl_mod.SEARCH_PATH + "away"] = dict(
+        text="Results", title="Search")
+    await rig.ctl.search(run.run_id, "away")
+    assert rig.browser.session.kind == "public"
+
+
+async def _opened(rig, url):
+    """Back on the site by an address: its session opens through the check."""
+    run_id = rig.ctl.active.run_id
+    wire = (await rig.ctl.search(run_id, url)).to_wire()
+    assert (await verdict(rig, run_id, wire, GO))["outcome"] == "done"
+
+
+def _puts_back(rig):
+    return [e for e in rig.log if e[0] == "add_cookies"]
+
+
+async def test_a_public_excursion_keeps_the_sign_in(rig):
+    """A3: the session cookies go back into the site's own new session, and only those, before
+    any page loads there; the public session in between got none."""
+    run = await rig.run()
+    _signed_in(rig)
+    await _to_public(rig, run)
+    assert _puts_back(rig) == []
+    mark = len(rig.log)
+    await _opened(rig, A_PAGE)
+    opened = rig.log.index_of("open", "account", "sa", after=mark - 1)
+    put = rig.log.index_of("add_cookies", after=opened)
+    assert rig.log[put] == ("add_cookies", ["SID"])
+    assert put < rig.log.index_of("goto", A_PAGE, after=mark - 1)
+    assert not rig.ctl.active.kept_cookies          # held only while the session is away
+
+
+async def test_kept_cookies_go_to_no_other_site(rig):
+    """A3: another site's session gets none, and they still reach their own site afterwards."""
+    run = await rig.run(sites=(("sa", "account"), ("sc", "account")))
+    _signed_in(rig)
+    await _opened(rig, "https://c.example/page")
+    assert rig.browser.session.site_id == "sc" and _puts_back(rig) == []
+    await _opened(rig, A_PAGE)
+    assert _puts_back(rig) == [("add_cookies", ["SID"])]
+    assert rig.browser.session.site_id == "sa"
+
+
+async def test_a_session_that_closes_with_no_excursion_gets_nothing_back(rig):
+    """A forced close never reaches the read: the sign-in is lost, as before. A session put back
+    once does not get the same cookies a second time."""
+    run = await rig.run()
+    _signed_in(rig)
+    await _to_public(rig, run)
+    await _opened(rig, A_PAGE)
+    assert len(_puts_back(rig)) == 1
+    await _lose_the_session(rig, run)
+    await observe(rig, run.run_id)
+    assert rig.browser.session.site_id == "sa" and len(_puts_back(rig)) == 1
+
+
+async def test_a_forgotten_site_gets_no_cookies_back(rig):
+    """A3: forgetting the site ends the run and drops what it held; nothing reaches a later run."""
+    run = await rig.run()
+    _signed_in(rig)
+    await _to_public(rig, run)
+    active = rig.ctl.active
+    assert [c["name"] for c in active.kept_cookies["sa"]] == ["SID"]
+    await rig.ctl.forget("sa", "tg-op")
+    assert active.kept_cookies == {}
+    await rig.settle()
+    later = await rig.run(spec(request_id="later"))
+    assert rig.state(later.run_id) == "running" and _puts_back(rig) == []
+    assert rig.browser.session.site_id == "sa"
+
+
+@pytest.mark.parametrize("how", ["cancel", "revoke"])
+async def test_a_run_that_ends_drops_what_it_kept(rig, how):
+    run = await rig.run()
+    _signed_in(rig)
+    await _to_public(rig, run)
+    active = rig.ctl.active
+    assert active.kept_cookies
+    if how == "cancel":
+        await rig.ctl.cancel(run.run_id)
+    else:
+        rig.ctl.revoke_authority()
+    await rig.settle()
+    assert active.kept_cookies == {} and _puts_back(rig) == []
+    assert rig.state(run.run_id) in ("cancelled", "interrupted")
+
+
+async def test_cookies_read_while_the_run_ends_are_not_kept(rig):
+    """A read that finishes after the run's ending began keeps nothing."""
+    await rig.run()
+    active = rig.ctl.active
+    context = rig.browser.session.context
+    _signed_in(rig)
+    read = context.cookies
+
+    async def slow_read(urls=None):
+        rig.ctl._begin_end(active, "cancelled", "run_cancelled", "cancelled")
+        return await read(urls)
+    context.cookies = slow_read
+    await rig.ctl._keep_session_cookies(active)
+    assert active.kept_cookies == {}
+
+
+async def test_cookie_failures_are_logged_without_values_and_the_run_goes_on(rig, caplog):
+    """A3: a failed read or put-back leaves the run going, signed out as before; no value in the
+    log or in the run's repr, whatever the browser's error carried."""
+    run = await rig.run()
+    _signed_in(rig)
+    rig.browser.session.context.cookies_error = RuntimeError(SESSION_COOKIE["value"])
+    with caplog.at_level("DEBUG"):
+        await _to_public(rig, run)
+        assert rig.ctl.active.kept_cookies == {}
+        await _opened(rig, A_PAGE)
+        assert rig.state(run.run_id) == "running" and _puts_back(rig) == []
+        rig.browser.session.context.jar = [dict(SESSION_COOKIE)]
+        await _to_public(rig, run)
+        assert SESSION_COOKIE["value"] not in repr(rig.ctl.active)
+
+        async def refuses(session):
+            session.context.add_error = RuntimeError(SESSION_COOKIE["value"])
+        rig.browser.open_hook = refuses
+        await _opened(rig, A_PAGE)
+    assert rig.state(run.run_id) == "running" and _puts_back(rig) == []
+    assert ("goto", A_PAGE) in rig.log and SESSION_COOKIE["value"] not in caplog.text
+    assert "session cookies" in caplog.text
 
 
 # --------------------------------------------------------------------------- downloads
@@ -1987,15 +2189,15 @@ async def test_go_type_enter_rereads_before_enter(rig):
     assert reply["outcome"] == "judgement_required"
 
 
-async def test_go_type_enter_appends_to_a_populated_field_once(rig):
-    """p2 Astra: typing inserts at the caret, so the expected value is the read-back one; one
+async def test_go_type_enter_replaces_a_populated_field_once(rig):
+    """Typing replaces what an input holds, so the expected value is the read-back one; one
     Enter is sent."""
     run, els = await _gate_run(rig, [dict(role="textbox", name="Zoeken", field=True,
                                           input_type="text", value="Hello",
                                           facts=dict(SEARCH_FORM))])
     wire = await judged(rig, run.run_id, "Zoeken", "type", text=" world", enter=True)
     reply = await verdict(rig, run.run_id, wire, GO)
-    assert reply["outcome"] == "done" and els[0].value == "Hello world"
+    assert reply["outcome"] == "done" and els[0].value == " world"
     assert [e for e in rig.log if e[0] == "enter"] == [("enter",)]
 
 
@@ -2051,7 +2253,7 @@ async def test_a_time_field_takes_the_judged_value_as_one_step(rig):
     """Slice 5g: typing into a value field is judged like typing (the same packet), then the
     value is set as one in-page step — no pointer, no keys — and read back."""
     run, els = await _gate_run(rig, [dict(TIME)])
-    wire = await judged(rig, run.run_id, "Pickup time", "type", text="19:30")
+    wire = await judged(rig, run.run_id, "Pickup time", "type", text="19:30", plan="The task")
     packet = json.loads(wire["judgement"]["packet"])
     assert packet["action"] == {"kind": "type", "text": "19:30", "then_enter": False}
     assert packet["target"]["input_type"] == "time"
@@ -2066,7 +2268,7 @@ async def test_a_value_the_page_changes_after_it_was_set_is_reported(rig):
     ran; a page that rounds the time is reported (the step ran: never "not run")."""
     run, els = await _gate_run(rig, [dict(TIME, facts=dict(TIME["facts"],
                                                            normalise=lambda t: t[:3] + "45"))])
-    wire = await judged(rig, run.run_id, "Pickup time", "type", text="19:37")
+    wire = await judged(rig, run.run_id, "Pickup time", "type", text="19:37", plan="The task")
     reply = await verdict(rig, run.run_id, wire, GO)
     assert reply["outcome"] == "done" and reply["typed"] == "not_shown" and els[0].value == "19:45"
 
@@ -2093,7 +2295,7 @@ async def test_a_value_field_changed_before_the_set_is_judged_afresh(rig):
     """F4 holds for the in-page step: a field whose facts changed after the judgement gets no
     value; the step is judged afresh."""
     run, els = await _gate_run(rig, [dict(TIME)])
-    wire = await judged(rig, run.run_id, "Pickup time", "type", text="19:30")
+    wire = await judged(rig, run.run_id, "Pickup time", "type", text="19:30", plan="The task")
     els[0].name = "Delivery time"
     reply = await verdict(rig, run.run_id, wire, GO)
     assert reply["outcome"] in ("judgement_required", "not_run")
@@ -2105,7 +2307,7 @@ async def test_typed_text_is_read_back_as_one_bit(rig):
     a field that swallowed the keys says not_shown — never the value."""
     run, els = await _gate_run(rig, [dict(role="textbox", name="Name", field=True,
                                           input_type="text")])
-    wire = await judged(rig, run.run_id, "Name", "type", text="Jan")
+    wire = await judged(rig, run.run_id, "Name", "type", text="Jan", plan="The task")
     reply = await verdict(rig, run.run_id, wire, GO)
     assert reply["outcome"] == "done" and reply["typed"] == "shown"
     els[0].value = ""
@@ -2115,7 +2317,7 @@ async def test_typed_text_is_read_back_as_one_bit(rig):
         element.value = ""
         return await real(element)
     rig.ctl.ops.value = swallowed
-    wire = await judged(rig, run.run_id, "Name", "type", text="Jan")
+    wire = await judged(rig, run.run_id, "Name", "type", text="Jan", plan="The task")
     reply = await verdict(rig, run.run_id, wire, GO)
     assert reply["outcome"] == "done" and reply["typed"] == "not_shown"
     assert "Jan" not in json.dumps(reply)
@@ -2123,28 +2325,180 @@ async def test_typed_text_is_read_back_as_one_bit(rig):
     async def no_break_space(element):            # r1 Astra: a contenteditable's typed spaces
         return "hello\u00a0 world\u00a0"
     rig.ctl.ops.value = no_break_space
-    wire = await judged(rig, run.run_id, "Name", "type", text="hello  world ")
+    wire = await judged(rig, run.run_id, "Name", "type", text="hello  world ", plan="The task")
     reply = await verdict(rig, run.run_id, wire, GO)
     assert reply["typed"] == "shown"
 
 
+async def test_an_empty_text_clears_and_only_an_empty_field_shows_it(rig):
+    """An empty text clears an input. It is not "shown" by being part of what a field holds: a
+    field still holding text, as a contenteditable keeps its own, says not_shown."""
+    run, els = await _gate_run(rig, [dict(role="textbox", name="Name", field=True,
+                                          input_type="text", value="old"),
+                                     dict(role="textbox", name="Note", field=True, input_type="",
+                                          value="signature", facts={"contenteditable": True})])
+    wire = await judged(rig, run.run_id, "Name", "type", text="", plan="The task")
+    reply = await verdict(rig, run.run_id, wire, GO)
+    assert reply["typed"] == "shown" and els[0].value == ""
+    wire = await judged(rig, run.run_id, "Note", "type", text="", plan="The task")
+    reply = await verdict(rig, run.run_id, wire, GO)
+    assert reply["typed"] == "not_shown" and els[1].value == "signature"
+
+
+async def test_a_replaced_value_is_read_back_as_the_new_text(rig):
+    """The old value is gone, so a text that was part of it is not reported as shown by it."""
+    run, els = await _gate_run(rig, [dict(role="textbox", name="Qty", field=True,
+                                          input_type="text", value="13")])
+    wire = await judged(rig, run.run_id, "Qty", "type", text="3", plan="The task")
+    reply = await verdict(rig, run.run_id, wire, GO)
+    assert reply["typed"] == "shown" and els[0].value == "3"
+
+
 # --------------------------------------------------------------------------- slice 6b
+
+CHECKBOX = dict(role="checkbox", name="Insurance", facts={"tag": "input", "state": {"checked": False}})
+FIELD = dict(role="textbox", name="Note", field=True, input_type="text")
+MENU = dict(role="button", name="Menu", facts={"state": {"expanded": "false"}})
+
+
+async def act_on(rig, run_id, label, kind="click", **kw):
+    obs = await observe(rig, run_id)
+    return (await rig.ctl.act(run_id, Action(kind, handle_of(obs, label), obs.generation, **kw))).to_wire()
+
+
+@pytest.mark.parametrize("public", [False, True], ids=["signed-in", "public"])
+async def test_filling_in_runs_with_no_check(rig, public):
+    """Typing without Enter, a select's value, a tick, a menu: done at once, no judgement frozen,
+    no verdict recorded, nothing for run_so_far, and each is a step in the run's history."""
+    elements = [dict(FIELD), dict(CHECKBOX), dict(MENU),
+                dict(role="combobox", name="Bank", options=[("ING", "ing"), ("ABN", "abn")]),
+                dict(role="option", name="ABN", facts={"value": "abn"})]
+    if public:
+        run = await rig.run(sites=(("sa", "account"), ("sp", "public")))
+        obs = await observe(rig, run.run_id)
+        await act(rig, run.run_id, "navigate", handle_of(obs, "Public B"), obs)
+        els = rig.page().show(B_PAGE, "A form", elements)
+        rig.mark = len(rig.log)
+    else:
+        run, els = await _gate_run(rig, elements)
+    assert (await act_on(rig, run.run_id, "Note", "type", text="Ring twice"))["typed"] == "shown"
+    assert els[0].value == "Ring twice"
+    assert (await act_on(rig, run.run_id, "Insurance"))["outcome"] == "done"
+    assert (await act_on(rig, run.run_id, "Menu"))["outcome"] == "done"
+    obs = await observe(rig, run.run_id)
+    done = await rig.ctl.act(run.run_id, Action("select", handle_of(obs, "Bank"), obs.generation,
+                                                choice_handle=handle_of(obs, "ABN")))
+    assert done.to_wire()["outcome"] == "done"
+    assert len(presses(rig, "Insurance")) == 1
+    assert rig.ctl.active.pending is None and rig.ctl.active.judged == []
+    assert rig.events(run.run_id, "judgement") == []
+    assert len(rig.events(run.run_id, "action")) >= 4
+
+
+async def test_a_press_after_filling_in_is_judged(rig):
+    run, _els = await _gate_run(rig, [dict(CHECKBOX), dict(role="button", name="Pay now")])
+    assert (await act_on(rig, run.run_id, "Insurance"))["outcome"] == "done"
+    wire = await judged(rig, run.run_id, "Pay now")
+    assert not presses(rig, "Pay now")
+    assert (await verdict(rig, run.run_id, wire, ASK))["outcome"] == "asked"
+    assert not presses(rig, "Pay now")
+
+
+@pytest.mark.parametrize("element,label", [
+    (dict(role="button", name="Delete"), "Delete"),
+    (dict(role="switch", name="Auto renew"), "Auto renew"),
+    (dict(role="checkbox", name="Secret", facts={"secret": True}), "Secret"),
+    (dict(role="checkbox", name="Accept", facts={"is_submitter": True, "submit_action": "https://a.example/x",
+                                                 "submit_method": "post", "submit_target": ""}), "Accept"),
+    (dict(role="button", name="Open", facts={"activator_href": "https://a.example/x",
+                                             "state": {"expanded": "false"}}), "Open")],
+    ids=["button", "switch", "secret", "submitter", "inside-a-link"])
+async def test_what_can_send_is_judged(rig, element, label):
+    run, _els = await _gate_run(rig, [element])
+    await judged(rig, run.run_id, label)
+    assert not presses(rig, label)
+
+
+async def test_enter_is_judged(rig):
+    run, els = await _gate_run(rig, [dict(FIELD)])
+    await judged(rig, run.run_id, "Note", "type", text="x", enter=True)
+    assert els[0].value == ""
+
+
+async def test_a_step_carrying_a_plan_goes_to_the_check(rig):
+    run, _els = await _gate_run(rig, [dict(FIELD)])
+    wire = await judged(rig, run.run_id, "Note", "type", text="x", plan="Add a note")
+    assert json.loads(wire["judgement"]["packet"])["plan"] == "Add a note"
+
+
+async def test_a_tick_is_checked_at_delivery(rig):
+    """What made it free holds at the press (F4), and the point lands on it (F9): else no press."""
+    run, els = await _gate_run(rig, [dict(CHECKBOX)])
+    obs = await observe(rig, run.run_id)
+
+    def turned(page, _reads):      # the box turned into a submit between the reading and the press
+        if page.reads > first:
+            els[0].facts.update(is_submitter=True, submit_action="https://a.example/x",
+                                submit_method="post", submit_target="")
+    first = rig.page().reads + 1
+    rig.page().read_hook = turned
+    out = await rig.ctl.act(run.run_id, Action("click", handle_of(obs, "Insurance"), obs.generation))
+    assert out.to_wire()["outcome"] == "not_run" and out.to_wire()["reason"] == "changed"
+    assert not presses(rig, "Insurance")
+    rig.page().read_hook = None
+    els[0].facts.pop("is_submitter")
+    els[0].covered = True
+    assert (await act_on(rig, run.run_id, "Insurance"))["reason"] == "moved"
+    assert not presses(rig, "Insurance")
+
+
+async def test_a_tick_fido_marks_ask_first_goes_to_the_check(rig):
+    """A tick runs free unless Fido marks it ask_first (its label commits money): then it is
+    judged like a press, nothing pressed before the verdict, and a go presses it."""
+    run, _els = await _gate_run(rig, [dict(CHECKBOX)])
+    obs = await observe(rig, run.run_id)
+    out = await rig.ctl.act(run.run_id, Action("click", handle_of(obs, "Insurance"), obs.generation,
+                                               ask_first=True))
+    wire = out.to_wire()
+    assert wire["outcome"] == "judgement_required" and not presses(rig, "Insurance")
+    done = await verdict(rig, run.run_id, wire, GO)
+    assert done["outcome"] == "done" and len(presses(rig, "Insurance")) == 1
+
+
+async def test_an_unjudged_step_leaves_no_verdict_to_replay(rig):
+    run, _els = await _gate_run(rig, [dict(CHECKBOX)])
+    await act_on(rig, run.run_id, "Insurance")
+    assert rig.store.get_response(run.run_id, "j:") is None
+
+
+async def test_a_cut_during_an_unjudged_tick_is_an_unknown_outcome(rig):
+    """G2 for an unjudged step: the press may have happened, so it is recorded, not retried."""
+    run, _els = await _gate_run(rig, [dict(CHECKBOX)])
+    rig.gate = asyncio.Event()
+    pressing = asyncio.create_task(act_on(rig, run.run_id, "Insurance"))
+    for _ in range(500):
+        await asyncio.sleep(0.002)
+        if presses(rig, "Insurance") or [e for e in rig.log[rig.mark:] if e[0] == "guard"]:
+            break
+    await asyncio.sleep(0.01)
+    await rig.ctl.cancel(run.run_id)
+    with pytest.raises(ProtocolError, match="interrupted"):
+        await pressing
+    unknown = [e for e in rig.events(run.run_id, "action") if e.outcome == "outcome_unknown"]
+    assert len(unknown) == 1
+
 
 TEXTAREA = dict(role="textbox", name="Bericht", field=True, input_type="",
                 facts={"tag": "textarea"})
 LETTER = "Beste klantenservice,\n\nMijn bestelling is niet aangekomen.\nGroet, Jan"
 
 
-async def test_multi_line_text_is_judged_whole_and_typed_into_a_textarea(rig):
-    """Slice 6b: the check's packet holds the whole multi-line text; after its go the text is
-    typed into the real <textarea> with its line breaks inserted as text (``line_breaks``),
-    every character and line break behind the focus check, and nothing more sent."""
+async def test_multi_line_text_is_typed_into_a_textarea(rig):
+    """Slice 6b: a multi-line text goes into the real <textarea> with its line breaks inserted as
+    text (``line_breaks``), every character and line break behind the focus check, and nothing
+    more sent: no check, since sending is its own step."""
     run, els = await _gate_run(rig, [dict(TEXTAREA)])
-    wire = await judged(rig, run.run_id, "Bericht", "type", text=LETTER)
-    packet = json.loads(wire["judgement"]["packet"])
-    assert packet["action"] == {"kind": "type", "text": LETTER, "then_enter": False}
-    assert packet["target"]["tag"] == "textarea"
-    reply = await verdict(rig, run.run_id, wire, GO)
+    reply = await act_on(rig, run.run_id, "Bericht", "type", text=LETTER)
     assert reply["outcome"] == "done" and reply["typed"] == "shown"
     assert els[0].value == LETTER
     assert ("type", "Bericht", len(LETTER), True) in rig.log
@@ -2174,7 +2528,7 @@ async def test_a_line_break_anywhere_but_a_textarea_is_refused_before_judgement(
 async def test_one_line_text_into_an_input_is_unchanged(rig):
     run, els = await _gate_run(rig, [dict(role="textbox", name="Bericht", field=True,
                                           input_type="text")])
-    wire = await judged(rig, run.run_id, "Bericht", "type", text="Klopt dit?")
+    wire = await judged(rig, run.run_id, "Bericht", "type", text="Klopt dit?", plan="The task")
     reply = await verdict(rig, run.run_id, wire, GO)
     assert reply["outcome"] == "done" and ("type", "Bericht", 10, False) in rig.log
 
@@ -2184,14 +2538,13 @@ async def test_multi_line_typing_stops_when_the_textarea_is_no_longer_the_field(
     that is no textarea any more gets no line break."""
     run, els = await _gate_run(rig, [dict(TEXTAREA)])
     rig.pacer_hooks["key_hook"] = lambda n: n == 1 and els[0].facts.update(tag="input")
-    wire = await judged(rig, run.run_id, "Bericht", "type", text="a\nb")
+    wire = await judged(rig, run.run_id, "Bericht", "type", text="a\nb", plan="The task")
     reply = await verdict(rig, run.run_id, wire, GO)
     assert els[0].value == "a" and reply["outcome"] in ("judgement_required", "not_run")
 
 
-async def test_free_search_typing_takes_no_line_break(rig):
-    """Slice 6b: a public search field's typing is free (unjudged), so it takes no line break,
-    even when the search box is a textarea: the check judges every multi-line text first."""
+async def test_a_public_search_textarea_takes_a_line_break_as_text(rig):
+    """Typing sends nothing: a line break goes into a real textarea as text, search box or not."""
     run = await rig.run(sites=(("sa", "account"), ("sp", "public")))
     obs = await observe(rig, run.run_id)
     await act(rig, run.run_id, "navigate", handle_of(obs, "Public B"), obs)
@@ -2201,8 +2554,8 @@ async def test_free_search_typing_takes_no_line_break(rig):
     obs = await observe(rig, run.run_id)
     result = await rig.ctl.act(run.run_id, Action("type", handle_of(obs, "Zoek"), obs.generation,
                                                   text="pizza\nroma"))
-    assert result.outcome == "not_run" and result.extra == {"reason": "one_line"}
-    assert els[0].value == "" and presses(rig) == []
+    assert result.outcome == "done" and els[0].value == "pizza\nroma"
+    assert not [e for e in rig.log[rig.mark:] if e[0] == "enter"]
 
 
 async def test_tap_executes_the_frozen_operation_once(rig):
@@ -2263,6 +2616,225 @@ async def test_lapsed_and_other_revision_taps_execute_nothing(rig):
     assert presses(rig) == []
 
 
+async def test_a_tap_that_cannot_be_checked_says_why_in_its_own_words(rig):
+    """An incomplete reading is a page that cannot be read whole, not one that changed; each
+    reason has its own copy, and neither presses anything."""
+    run, els = await _gate_run(rig, [dict(role="button", name="Pay now")])
+    qid = await asked(rig, run, els)
+    rig.page().complete = False
+    reply = await tap(rig, run.run_id, qid)
+    assert reply["outcome"] == "lapsed" and reply["reason"] == "incomplete"
+    assert reply["copy"] == conf.COPY_INCOMPLETE and "changed" not in reply["copy"]
+    assert presses(rig) == []
+
+    rig.page().complete = True
+    qid = await asked(rig, run, els)
+    rig.page().text += "\n" + "A new line of text. " * 1000
+    reply = await tap(rig, run.run_id, qid)
+    assert reply["outcome"] == "lapsed" and reply["reason"] == "too_much"
+    assert reply["copy"] == conf.COPY_TOO_MUCH and "changed too much" in reply["copy"]
+    assert presses(rig) == []
+
+
+async def test_a_question_taken_back_does_not_say_the_operator_answered(rig):
+    """Fido's Not now on a question the operator never saw (it comes again with a plan) reads as
+    what happened; the operator's own still reads as his."""
+    run, els = await _gate_run(rig, [dict(role="button", name="Pay now")])
+    qid = await asked(rig, run, els)
+    q = await rig.ctl.get_question(run.run_id, qid)
+    await rig.ctl.answer_question(run.run_id, qid, {
+        "revision": q["revision"], "digest": q["digest"], "choice": "not_now",
+        "operator_ref": "fido:replaced-by-plan"})
+    said = rig.events(run.run_id, "question")[-1]
+    assert said.outcome == "declined" and "operator said" not in said.text_masked
+    assert "replaced-by-plan" in said.text_masked and "before the operator" in said.text_masked
+
+    qid = await asked(rig, run, els)
+    await tap(rig, run.run_id, qid, "not_now")
+    assert "The operator said not now" in rig.events(run.run_id, "question")[-1].text_masked
+
+
+async def test_a_step_with_no_name_names_what_it_acted_on(rig):
+    """A nameless page control keeps what the observation called it; an address the model gave
+    names its host and path, its query dropped."""
+    run, els = await _gate_run(rig, [dict(role="button", name="")])
+    wire = await judged(rig, run.run_id, "(unnamed button 1)")
+    await verdict(rig, run.run_id, wire, GO)
+    texts = [e.text_masked for e in rig.events(run.run_id, "action")]
+    assert texts[-1].startswith("Action: click “(unnamed button 1)”.")
+
+    rig.page().show("about:blank", "", [])
+    reply = await rig.ctl.search(run.run_id, "https://a.example/list/view?token=hidden-query")
+    assert reply.outcome == "judgement_required"
+    await verdict(rig, run.run_id, reply.to_wire(), GO)
+    said = rig.events(run.run_id, "judgement")[-1].text_masked
+    assert "navigate “a.example/list/view”" in said and "hidden-query" not in said
+    assert "“”" not in " ".join(e.text_masked for e in rig.events(run.run_id))
+
+
+async def test_only_a_checked_press_or_enter_keeps_a_picture_of_the_page(rig):
+    """What prepares, scrolls or only loads runs with no operator screenshot; the check's own
+    picture and a screenshot asked for are not routine and stay."""
+    run, els = await _gate_run(rig, [
+        dict(role="textbox", name="Zoeken", field=True, input_type="text", facts=dict(SEARCH_FORM)),
+        dict(role="button", name="Open")])
+
+    def shot():
+        return rig.events(run.run_id, "action")[-1].screenshot_id
+    obs = await observe(rig, run.run_id)
+    assert (await rig.ctl.act(run.run_id, Action("type", handle_of(obs, "Zoeken"), obs.generation,
+                                                 text="a"))).outcome == "done"
+    assert shot() is None
+    obs = await observe(rig, run.run_id)
+    await rig.ctl.act(run.run_id, Action("scroll", obs.page_handle, obs.generation,
+                                         direction="down", amount="step"))
+    assert shot() is None
+
+    wire = await judged(rig, run.run_id, "Open")
+    assert await rig.ctl.judgement_picture(run.run_id, wire["judgement"]["id"])   # the check's
+    assert (await verdict(rig, run.run_id, wire, GO))["outcome"] == "done"
+    pressed = shot()
+    assert pressed and (await rig.ctl.screenshot(run.run_id, pressed)).startswith(b"\x89PNG")
+
+    wire = await judged(rig, run.run_id, "Zoeken", "type", text="b", enter=True)
+    assert (await verdict(rig, run.run_id, wire, GO))["outcome"] == "done"
+    assert shot() not in (None, pressed)
+
+    asked_for = await rig.ctl.take_screenshot(run.run_id)
+    assert (await rig.ctl.screenshot(run.run_id, asked_for)).startswith(b"\x89PNG")
+
+
+async def test_an_address_on_the_host_open_runs_with_no_check(rig):
+    """A navigation and an address search on the host open: no packet, no verdict, no picture, and
+    each event names what it loaded."""
+    run, els = await _gate_run(rig, [dict(role="link", name="Invoices", href=A_PAGE)])
+    pictures = []
+    real = rig.observer.capture_for_model
+
+    async def picture(*a, **kw):
+        pictures.append(1)
+        return await real(*a, **kw)
+    rig.observer.capture_for_model = picture
+    obs = await observe(rig, run.run_id)
+    gone = await rig.ctl.act(run.run_id, Action("navigate", handle_of(obs, "Invoices"),
+                                                obs.generation))
+    assert gone.outcome == "done" and ("goto", A_PAGE) in rig.log[rig.mark:]
+
+    searched = await rig.ctl.search(run.run_id, "https://a.example/invoices/2?secret=hidden")
+    assert searched.outcome == "done" and "observation" not in searched.to_wire()
+    said = rig.events(run.run_id, "action")[-1]
+    assert "a.example/invoices/2" in said.text_masked and "hidden" not in said.text_masked
+    assert said.screenshot_id is None and pictures == [] and rig.events(run.run_id, "judgement") == []
+    assert rig.ctl.active.pending is None
+
+
+@pytest.mark.parametrize("element", [
+    dict(role="button", name="T", href=A_PAGE),
+    dict(role="link", name="T", href=A_PAGE, facts={"download_attr": True}),
+], ids=["another-role", "download"])
+async def test_a_navigation_opens_the_address_whatever_the_link_says_of_itself(rig, element):
+    """It loads the address and presses nothing, so what the page puts on the link does not run."""
+    run, _els = await _gate_run(rig, [element])
+    obs = await observe(rig, run.run_id)
+    result = await rig.ctl.act(run.run_id, Action("navigate", handle_of(obs, "T"), obs.generation))
+    assert result.outcome == "done" and presses(rig) == [("goto", A_PAGE)]
+    assert rig.events(run.run_id, "judgement") == []
+
+
+async def test_a_link_click_on_the_host_open_goes_through_the_check(rig):
+    """A click is a real press and a script behind a link is an action: nothing is pressed until
+    the check, which judges the link's name, says go; then it presses once."""
+    run, els = await _gate_run(rig, [dict(role="link", name="Next", href=A_PAGE)])
+    obs = await observe(rig, run.run_id)
+    result = await rig.ctl.act(run.run_id, Action("click", handle_of(obs, "Next"), obs.generation))
+    assert result.outcome == "judgement_required" and presses(rig) == []
+    wire = result.to_wire()
+    assert json.loads(wire["judgement"]["packet"])["target"]["name"] == "Next"
+    await verdict(rig, run.run_id, wire, GO)
+    assert presses(rig, "Next") == [("click", "Next")]
+
+
+@pytest.mark.parametrize("element,action", [
+    (dict(role="link", name="T", href="https://c.example/other"), "navigate"),   # another site
+    (dict(role="link", name="T", href="https://c.example/other"), "click"),
+    (dict(role="button", name="T"), "click"),                                    # any other press
+    (dict(role="button", name="T", facts=dict(
+        is_submitter=True, submit_action=PAY, submit_method="post", submit_target="")), "click"),
+    (dict(role="link", name="T", href=A_PAGE), "click"),                         # a real press
+    (dict(role="link", name="T", href=A_START + "#top"), "click"),
+    (dict(role="link", name="T", href=A_START + "#top"), "navigate"),            # loads nothing
+    (dict(role="link", name="T", href=A_PAGE, facts={"download_attr": True}), "click"),
+    (dict(role="link", name="T", href=A_PAGE), "plan"),                          # his Yes is asked
+    (dict(role="button", name="T", href=A_PAGE), "click"),
+], ids=["other-site", "other-site-click", "button", "submit", "link-click", "fragment-click",
+        "fragment-navigate", "download", "plan", "link-as-button"])
+async def test_everything_but_an_address_on_the_host_open_is_still_checked(rig, element, action):
+    run = await rig.run(sites=(("sa", "account"), ("sc", "account")))
+    rig.page().show(A_START, "Invoices", [element])
+    rig.mark = len(rig.log)
+    obs = await observe(rig, run.run_id)
+    kind, kw = ("navigate", {"plan": "The whole task"}) if action == "plan" else (action, {})
+    result = await rig.ctl.act(run.run_id, Action(kind, handle_of(obs, "T"), obs.generation, **kw))
+    assert result.outcome == "judgement_required", result.to_wire()
+    assert presses(rig) == []
+
+
+@pytest.mark.parametrize("here,there,free", [
+    ("www.example.test", "www.example.test", True),
+    ("example.test", "www.example.test", False),
+    ("www.example.test", "shop.example.test", False),
+    ("alpha.co.uk", "beta.co.uk", False),
+    ("a.github.io", "b.github.io", False),
+])
+async def test_only_the_same_host_of_one_site_is_free(rig, here, there, free):
+    """One account site registered on both hosts, so no session switch: only the hostname decides."""
+    rig.store.put_site(Site("sd", "Site D", (f"https://{here}", f"https://{there}"), (), None, (),
+                            f"https://{here}/", 1))
+    run = await rig.run(sites=(("sd", "account"),))
+    rig.page().show(f"https://{here}/start", "Start",
+                    [dict(role="link", name="T", href=f"https://{there}/x")])
+    obs = await observe(rig, run.run_id)
+    result = await rig.ctl.act(run.run_id, Action("navigate", handle_of(obs, "T"), obs.generation))
+    assert result.outcome == ("done" if free else "judgement_required"), result.to_wire()
+    assert (("goto", f"https://{there}/x") in rig.log) is free
+
+
+async def test_two_sites_under_one_registry_are_not_one_site(rig):
+    """The last two labels match, but the destination is another site of the run: its own session,
+    so it is checked."""
+    rig.store.put_site(Site("sd", "Site D", ("https://other.a.example",), (), None, (),
+                            "https://other.a.example/", 1))
+    run = await rig.run(sites=(("sa", "account"), ("sd", "account")))
+    rig.page().show(A_START, "Invoices", [dict(role="link", name="T",
+                                               href="https://other.a.example/x")])
+    obs = await observe(rig, run.run_id)
+    result = await rig.ctl.act(run.run_id, Action("navigate", handle_of(obs, "T"), obs.generation))
+    assert result.outcome == "judgement_required"
+
+
+async def test_with_no_page_open_a_load_is_still_checked(rig):
+    run, _els = await _gate_run(rig, [])
+    rig.page().show("about:blank", "", [])
+    reply = await rig.ctl.search(run.run_id, A_PAGE)
+    assert reply.outcome == "judgement_required" and presses(rig) == []
+
+
+async def test_a_same_host_navigation_is_asked_again_just_before_the_load(rig):
+    run, _els = await _gate_run(rig, [dict(role="link", name="Invoices", href=A_PAGE)])
+    page = rig.page()
+    real = rig.ctl._precheck
+
+    def page_moves_off_the_site(active, url):
+        real(active, url)
+        page.url = "https://c.example/elsewhere"
+    rig.ctl._precheck = page_moves_off_the_site
+    obs = await observe(rig, run.run_id)
+    result = await rig.ctl.act(run.run_id, Action("navigate", handle_of(obs, "Invoices"),
+                                                  obs.generation))
+    assert (result.outcome, result.to_wire().get("reason")) == ("not_run", "changed")
+    assert presses(rig) == []
+
+
 async def test_rejudge_changed_lapses_and_rejudges(rig):
     """F4 after a tap: ``changed`` lapses the question and judges the action afresh; an ask
     then is a new question with a new screenshot."""
@@ -2280,6 +2852,28 @@ async def test_rejudge_changed_lapses_and_rejudges(rig):
     first_shot = (await rig.ctl.get_question(run.run_id, qid))["view"]["screenshot_id"]
     second = await rig.ctl.get_question(run.run_id, again["question_id"])
     assert second["view"]["screenshot_id"] not in (None, first_shot)
+    # the new question says his last Yes did not run, whatever the check could name of the change
+    assert second["view"].get("after_lapse") is True
+    assert "after_lapse" not in (await rig.ctl.get_question(run.run_id, qid))["view"]
+
+
+async def test_a_question_after_a_lapse_keeps_its_mark_through_a_second_refreeze(rig):
+    """Yes lapses, the fresh judgement says go, the page changes again before the press: the
+    action is frozen afresh once more, and the question that follows still says his last Yes
+    did not run (release r2)."""
+    run, els = await _gate_run(rig, [dict(role="button", name="Pay now")])
+    qid = await asked(rig, run, els)
+    rig.page().text += "\nTransaction fee € 2,50"
+    rj = await tap(rig, run.run_id, qid)
+    fresh = await verdict(rig, run.run_id, rj, CHANGED)
+    assert fresh["outcome"] == "judgement_required"
+    els[0].facts.setdefault("state", {})["expanded"] = True   # the button changed since the go
+    again = await verdict(rig, run.run_id, fresh, GO)
+    if again["outcome"] == "judgement_required":
+        again = await verdict(rig, run.run_id, again, ASK)
+    assert again["outcome"] == "asked" and presses(rig) == []
+    view = (await rig.ctl.get_question(run.run_id, again["question_id"]))["view"]
+    assert view.get("after_lapse") is True
 
 
 async def test_same_with_destination_changed_is_changed(rig):
@@ -2674,9 +3268,11 @@ async def test_every_dispatch_kind_journals_before_input(rig, kind):
     h = lambda label: handle_of(obs, label)  # noqa: E731
     action = {"press": Action("click", h("Pay now"), obs.generation),
               "enter": Action("type", h("Zoeken"), obs.generation, text="x", enter=True),
-              "select": Action("select", h("Jaar"), obs.generation, choice_handle=h("2025")),
+              "select": Action("select", h("Jaar"), obs.generation, choice_handle=h("2025"),
+                               plan="The task"),
               "back": Action("back", obs.page_handle, obs.generation),
-              "goto": Action("navigate", h("Invoices"), obs.generation)}.get(kind)
+              "goto": Action("navigate", h("Invoices"), obs.generation,
+                             plan="The task")}.get(kind)
     if kind in ("button_download", "link_download"):
         label = "Pay now" if kind == "button_download" else "Invoice PDF"
         result = await rig.ctl.download(run.run_id, h(label))
@@ -2839,6 +3435,103 @@ async def test_judged_typing_stops_when_the_field_is_no_text_field(rig):
     assert reply["outcome"] in ("judgement_required", "not_run")
 
 
+@pytest.mark.parametrize("code", ["not_visible", "disabled", "no_size"])
+async def test_a_free_click_refused_says_why(rig, code):
+    """A1: ``act`` no longer flattens a refused target to ``blocked``."""
+    run = await rig.run(sites=(("sa", "account"), ("sp", "public")))
+    obs = await observe(rig, run.run_id)
+    await act(rig, run.run_id, "navigate", handle_of(obs, "Public B"), obs)
+    rig.page().show(B_PAGE, "Public", [dict(role="link", name="Article", href=B_PAGE + "a")])
+    obs = await observe(rig, run.run_id)
+    rig.pacer_hooks["refuse"] = code
+    result = await rig.ctl.act(run.run_id, Action("click", handle_of(obs, "Article"), obs.generation))
+    assert result.to_wire() == {"outcome": "not_run", "generation": obs.generation, "reason": code}
+
+
+async def test_another_free_click_failure_stays_blocked(rig):
+    run = await rig.run(sites=(("sa", "account"), ("sp", "public")))
+    obs = await observe(rig, run.run_id)
+    await act(rig, run.run_id, "navigate", handle_of(obs, "Public B"), obs)
+    rig.page().show(B_PAGE, "Public", [dict(role="link", name="Article", href=B_PAGE + "a")])
+    obs = await observe(rig, run.run_id)
+    rig.pacer_hooks["refuse"] = "timeout"
+    with pytest.raises(ProtocolError, match="blocked"):
+        await rig.ctl.act(run.run_id, Action("click", handle_of(obs, "Article"), obs.generation))
+
+
+async def test_a_judged_click_and_a_filling_step_refused_say_why(rig):
+    """A1: past the check, and with no check at all, the reason reaches the reply."""
+    run, els = await _gate_run(rig, [dict(role="button", name="Pay"),
+                                     dict(role="textbox", name="Note", field=True)])
+    rig.pacer_hooks["refuse"] = "disabled"
+    wire = await judged(rig, run.run_id, "Pay")
+    assert (await verdict(rig, run.run_id, wire, GO))["reason"] == "disabled"
+    obs = await observe(rig, run.run_id)
+    done = await rig.ctl.act(run.run_id, Action("type", handle_of(obs, "Note"), obs.generation,
+                                                text="hello"))
+    assert (done.to_wire()["outcome"], done.to_wire()["reason"]) == ("not_run", "disabled")
+
+
+async def test_scrolling_a_hidden_target_says_why(rig):
+    """A1: ``scroll`` scrolls its target into view too, which a hidden one never finishes."""
+    run, els = await _gate_run(rig, [dict(role="button", name="Pay")])
+    obs = await observe(rig, run.run_id)
+    els[0].hidden = True
+    result = await rig.ctl.act(run.run_id, Action("scroll", handle_of(obs, "Pay"), obs.generation,
+                                                  direction="down", amount="step"))
+    assert (result.to_wire()["outcome"], result.to_wire()["reason"]) == ("not_run", "not_visible")
+    assert not [e for e in rig.log if e[0] == "scroll"]
+
+
+@pytest.mark.parametrize("sign_in", [False, True], ids=["plain", "looking"])
+async def test_a_search_reaches_the_observation_through_both_doors(rig, sign_in):
+    """Fido's observe always looks first (``sign_in``): the words must survive that door too."""
+    run, _els = await _gate_run(rig, [dict(role="button", name="Pay"), dict(role="button", name="Other")])
+    obs = await rig.ctl.observe(run.run_id, sign_in=sign_in, find="pay")
+    assert [e.label_masked for e in obs.elements if e.found] == ["Pay"]
+    assert obs.to_wire()["find"] == {"whole": True, "left": 0}
+    plain = await rig.ctl.observe(run.run_id, sign_in=sign_in)
+    assert "find" not in plain.to_wire() and not any(e.found for e in plain.elements)
+
+
+async def test_a_scroll_goes_to_its_handles_element_once_then_wheels_on(rig):
+    """The same handle again never goes back to its element, or repeated scrolls stand still; a
+    first scroll that moved the page is the whole step; the reply says where the page is."""
+    run, _els = await _gate_run(rig, [dict(role="button", name="Pay"), dict(role="button", name="Other")])
+    obs = await observe(rig, run.run_id)
+
+    async def scroll(handle):
+        return (await rig.ctl.act(run.run_id, Action("scroll", handle, obs.generation,
+                                                     direction="down", amount="page"))).to_wire()
+
+    def steps():
+        got = [e[0] for e in rig.log if e[0] in ("scroll", "scroll_to")]
+        rig.log.clear()
+        return got
+    rig.log.clear()
+    # in view already: it wheels too
+    assert (await scroll(handle_of(obs, "Pay")))["position"] == {"top": 0, "end": 0, "moved": False}
+    assert steps() == ["scroll_to", "scroll"]
+    await scroll(handle_of(obs, "Pay"))
+    assert steps() == ["scroll"]
+    # another handle goes to its element; bringing it into view is the whole step
+    rig.pacer_hooks["scroll_to_position"] = {"top": 900, "end": 5000, "moved": True}
+    assert (await scroll(handle_of(obs, "Other")))["position"]["top"] == 900
+    assert steps() == ["scroll_to"]
+    await scroll(handle_of(obs, "Other"))
+    assert steps() == ["scroll"]
+    # the page's own handle has no element
+    await scroll(obs.page_handle)
+    assert steps() == ["scroll"]
+    # any other step, and the same handle goes to its element again
+    await scroll(handle_of(obs, "Other"))
+    assert steps() == ["scroll_to"]
+    await rig.ctl.act(run.run_id, Action("click", handle_of(obs, "Pay"), obs.generation))
+    rig.log.clear()
+    await scroll(handle_of(obs, "Other"))
+    assert steps() == ["scroll_to"]
+
+
 async def test_free_link_click_rechecks_the_link_and_the_point(rig):
     run = await rig.run(sites=(("sa", "account"), ("sp", "public")))
     obs = await observe(rig, run.run_id)
@@ -2870,11 +3563,23 @@ async def test_select_in_a_card_select_is_refused_before_judgement(rig):
     assert rig.ctl.active.pending is None and presses(rig) == []
 
 
+async def test_a_select_whose_choice_is_an_options_text_runs_nothing(rig):
+    """2026-11-06: the option's name in place of its handle reads as a stale handle."""
+    run, els = await _gate_run(rig, [
+        dict(role="combobox", name="View", options=[("Table", "Table")]),
+        dict(role="option", name="Table", facts={"value": "Table"})])
+    obs = await observe(rig, run.run_id)
+    with pytest.raises(ProtocolError, match="stale_handle"):
+        await rig.ctl.act(run.run_id, Action("select", handle_of(obs, "View"), obs.generation,
+                                             choice_handle="Table"))
+    assert rig.ctl.active.pending is None and presses(rig) == []
+
+
 async def test_a_type_frozen_afresh_is_admitted_again(rig):
     """r3: a field that became a checkbox is neither clicked by the go nor frozen afresh."""
     run, els = await _gate_run(rig, [dict(role="textbox", name="Note", field=True,
                                           input_type="text")])
-    wire = await judged(rig, run.run_id, "Note", "type", text=" ")
+    wire = await judged(rig, run.run_id, "Note", "type", text=" ", plan="The task")
     els[0].input_type = "checkbox"
     reply = await verdict(rig, run.run_id, wire, GO)
     assert reply["outcome"] == "not_run" and presses(rig) == []
@@ -3160,6 +3865,17 @@ async def test_public_document_kept_without_check(rig):
     assert rec.mime == "application/pdf" and rig.store.get_file(rec.file_id) is not None
     assert fetched == [True] and _partials(rig) == []
     assert rig.events(run.run_id, "judgement") == []
+
+
+async def test_a_browser_download_refused_says_why(rig):
+    """A1: the download route's own click does not flatten the reason either."""
+    run, els = await _gate_run(rig, [dict(role="button", name="Export")])
+    obs = await observe(rig, run.run_id)
+    rig.pacer_hooks["refuse"] = "not_visible"
+    wire = (await rig.ctl.download(run.run_id, handle_of(obs, "Export"))).to_wire()
+    if wire["outcome"] == "judgement_required":
+        wire = await verdict(rig, run.run_id, wire, GO)
+    assert (wire["outcome"], wire["reason"]) == ("not_run", "not_visible")
 
 
 async def test_public_non_document_quarantined_until_go(rig):
@@ -4131,3 +4847,718 @@ async def test_a_login_view_whose_page_cannot_be_loaded_is_still_offered(rig, mo
         pass
     await rig.ctl.begin_live(run.run_id, expose)
     assert rig.state(run.run_id) == "live"
+
+
+# --------------------------------------------------------------------------- the judge's picture
+
+class Unfaithful(Exception):
+    pass
+
+
+async def test_freeze_captures_before_it_reads(rig):
+    run, _els = await _gate_run(rig, [dict(role="button", name="Open")])
+    order = []
+    real_capture, real_read = rig.observer.capture_for_model, rig.ctl.ops.read_page
+
+    async def capture(*a, **kw):
+        order.append("picture")
+        return await real_capture(*a, **kw)
+
+    async def read(*a, **kw):
+        order.append("read")
+        return await real_read(*a, **kw)
+    rig.observer.capture_for_model = capture
+    rig.ctl.ops.read_page = read
+    obs = await observe(rig, run.run_id)
+    await rig.ctl.act(run.run_id, Action("click", handle_of(obs, "Open"), obs.generation))
+    assert order[-2:] == ["picture", "read"]     # what it is decides first, by a read of its own
+
+
+@pytest.mark.parametrize("fail", ["none", "raises", "too_big", "hangs"])
+async def test_no_picture_leaves_the_judgement_as_it_was(rig, fail, monkeypatch):
+    run, _els = await _gate_run(rig, [dict(role="button", name="Open")])
+    first = await judged(rig, run.run_id, "Open")
+    assert (await rig.ctl.judgement_picture(run.run_id, first["judgement"]["id"])).startswith(b"\x89PNG")
+
+    async def capture(*a, **kw):
+        if fail == "raises":
+            raise Unfaithful()
+        if fail == "hangs":
+            await asyncio.Event().wait()
+        return b"\x89PNG" + b"x" * (2 * 1024 * 1024) if fail == "too_big" else None
+    rig.observer.capture_for_model = capture
+    monkeypatch.setattr(ctl_mod, "PICTURE_WAIT_S", 0.01)
+    wire = await judged(rig, run.run_id, "Open")
+    assert wire["judgement"]["packet"] == first["judgement"]["packet"]
+    with pytest.raises(ProtocolError, match="not_found"):
+        await rig.ctl.judgement_picture(run.run_id, wire["judgement"]["id"])
+    assert (await verdict(rig, run.run_id, wire, GO))["outcome"] == "done"
+
+
+async def test_the_picture_route_answers_while_open_and_never_for_a_rejudge(rig):
+    run, _els = await _gate_run(rig, [dict(role="button", name="Pay now")])
+    wire = await judged(rig, run.run_id, "Pay now")
+    jid = wire["judgement"]["id"]
+    assert set(wire["judgement"]) == {"id", "kind", "packet"}
+    for _ in range(2):      # the relay's two attempts may each ask
+        assert (await rig.ctl.judgement_picture(run.run_id, jid)).startswith(b"\x89PNG")
+    with pytest.raises(ProtocolError, match="not_found"):
+        await rig.ctl.judgement_picture(run.run_id, "other")
+    qid = (await verdict(rig, run.run_id, wire, ASK))["question_id"]
+    with pytest.raises(ProtocolError, match="not_found"):
+        await rig.ctl.judgement_picture(run.run_id, jid)     # applied: gone
+    assert rig.ctl.active.question.pending.picture is None
+    rejudge = await tap(rig, run.run_id, qid)
+    assert rejudge["judgement"]["kind"] == "rejudge"
+    with pytest.raises(ProtocolError, match="not_found"):
+        await rig.ctl.judgement_picture(run.run_id, rejudge["judgement"]["id"])
+
+
+async def test_the_picture_reaches_no_store_and_no_stored_response(rig):
+    """After a go and after a successor judgement: the stored responses and the screenshots hold
+    nothing of it. The operator's own screenshot after the go is the only file."""
+    run, els = await _gate_run(rig, [dict(role="button", name="Open"), dict(role="button", name="Next")])
+    marker = b"PICTURE-MARKER"
+    calls = []
+
+    async def capture(*a, **kw):
+        calls.append(a)
+        return b"\x89PNG\r\n\x1a\n" + marker
+    rig.observer.capture_for_model = capture
+    shots = rig.tmp / "artifacts" / "screenshots"
+    before = set(shots.iterdir()) if shots.exists() else set()
+    wire = await judged(rig, run.run_id, "Next")
+    els[1].name = "Next changed"       # F4: judged afresh, a successor judgement
+    reply = await verdict(rig, run.run_id, wire, GO)
+    assert len(calls) == 2
+    assert reply["outcome"] == "judgement_required" and "picture" not in json.dumps(reply)
+    fresh = rig.ctl.active.pending
+    assert fresh.picture and marker.decode() not in repr(fresh)
+    assert marker not in json.dumps(reply).encode()
+    await verdict(rig, run.run_id, reply, GO)
+    assert rig.ctl.active.pending is None
+    for path in rig.tmp.rglob("*"):
+        if path.is_file():
+            assert marker not in path.read_bytes(), path
+    for path in (set(shots.iterdir()) - before if shots.exists() else ()):
+        assert marker not in path.read_bytes()
+    for row in rig.events(run.run_id):
+        assert "PICTURE" not in row.text_masked
+
+
+# --------------------------------------------------------------------------- run_look
+
+
+async def test_look_outlines_a_handle_and_answers_null_off_the_page_gate(rig):
+    import base64
+    run, els = await _gate_run(rig, [dict(role="button", name="Open")])
+    obs = await observe(rig, run.run_id)
+    seen = []
+    real = rig.observer.capture_for_model
+
+    async def capture(run_, session, policy, target=None):
+        seen.append(target)
+        return await real(run_, session, policy, target)
+    rig.observer.capture_for_model = capture
+    picture = await rig.ctl.look(run.run_id, handle_of(obs, "Open"))
+    assert base64.b64decode(picture).startswith(b"\x89PNG") and seen == [els[0]]
+    assert (await rig.ctl.look(run.run_id, None)) and seen[1] is None
+    with pytest.raises(ProtocolError, match="stale_handle"):
+        await rig.ctl.look(run.run_id, "nope")
+    rig.page().show("https://off.example/")
+    assert await rig.ctl.look(run.run_id, None) is None
+
+
+async def test_look_refused_during_a_live_view(rig):
+    run, _els = await _gate_run(rig, [dict(role="button", name="Open")])
+    await rig.ctl.request_live(run.run_id, "assist")
+    with pytest.raises(ProtocolError, match="not_ready"):
+        await rig.ctl.look(run.run_id, None)
+
+
+# --------------------------------------------------------------------------- run_read
+
+
+async def _read_all(rig, run_id, **kw):
+    out, offset, last = [], 0, None
+    while True:
+        last = await rig.ctl.read(run_id, kw.get("handle"), kw.get("file_id"), offset)
+        out.append(last)
+        if last["next_offset"] is None:
+            return out
+        offset = last["next_offset"]
+
+
+async def test_read_windows_join_to_the_whole_masked_text(rig):
+    run, _els = await _gate_run(rig, [], text="\n".join(f"line {i} of the list" for i in range(9000)))
+    parts = await _read_all(rig, run.run_id)
+    joined = "".join(p["text"] for p in parts)
+    assert joined == rig.page().text and len(parts) == 7
+    assert all(len(p["text"]) == 30_000 and p["complete"] is False for p in parts[:-1])
+    assert parts[-1]["complete"] is True and parts[-1]["masked"] is False
+    past = await rig.ctl.read(run.run_id, None, None, 10_000_000)
+    assert past["text"] == "" and past["next_offset"] is None
+
+
+async def test_read_rows_windows_the_pages_rows(rig):
+    """``rows: true``: the observer's rows reading, windowed like the page's text."""
+    run, _els = await _gate_run(rig, [])
+    found = [{"text": f"Line {i}", "fields": [["Qty", str(i)]], "press": ["Save"]}
+             for i in range(2000)]
+
+    async def reader(frame):
+        from test_observe import frame_reading
+        return frame_reading(found), True
+    rig.observer.rows_reader = reader
+    out, offset = [], 0
+    while True:
+        got = await rig.ctl.read(run.run_id, None, None, offset, rows=True)
+        out.append(got)
+        if got["next_offset"] is None:
+            break
+        offset = got["next_offset"]
+    lines = "".join(p["text"] for p in out).split("\n")
+    assert len(out) > 1 and len(lines) == 2000 and out[-1]["complete"] is True
+    assert json.loads(lines[-1]) == {"text": "Line 1999", "fields": [["Qty", "1999"]],
+                                     "press": ["Save"]}
+    assert (await rig.ctl.read(run.run_id, None, None, 0))["text"] == rig.page().text
+
+
+async def test_read_masks_as_an_observation_does(rig):
+    token = "".join(["ghp_", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"])
+    run, _els = await _gate_run(rig, [], text=f"See https://a.example/secret/path?x=1 key {token}")
+    got = await rig.ctl.read(run.run_id, None, None, 0)
+    assert got["masked"] is True and got["complete"] is True
+    for leak in ("/secret/path", token):
+        assert leak not in got["text"]
+    assert "https://a.example ⟨r1⟩" in got["text"] and "[masked]" in got["text"]
+
+
+async def test_a_page_that_grows_under_masking_reads_whole(rig):
+    """Under 400,000 characters raw, over 400,000 masked: nothing is cut and the windows join."""
+    raw = "\n".join(f"https://a.example/{i % 7}" for i in range(19_500))
+    assert len(raw) < 400_000
+    run, _els = await _gate_run(rig, [], text=raw)
+    parts = await _read_all(rig, run.run_id)
+    joined = "".join(p["text"] for p in parts)
+    assert len(joined) > 400_000 and joined.count("⟨r") == 19_500 and parts[-1]["complete"] is True
+
+
+async def test_read_refused_off_the_session(rig):
+    run, _els = await _gate_run(rig, [])
+    rig.page().show("https://off.example/", "secret text")
+    with pytest.raises(ProtocolError, match="blocked"):
+        await rig.ctl.read(run.run_id, None, None, 0)
+    await rig.ctl.request_live(run.run_id, "assist")
+    with pytest.raises(ProtocolError, match="not_ready"):
+        await rig.ctl.read(run.run_id, None, None, 0)
+
+
+async def test_read_keeps_the_observations_handles(rig):
+    run, _els = await _gate_run(rig, [dict(role="button", name="Open")], text="words")
+    obs = await observe(rig, run.run_id)
+    await rig.ctl.read(run.run_id, None, None, 0)
+    reply = await act(rig, run.run_id, "click", handle_of(obs, "Open"), obs)
+    assert reply.outcome == "done"
+
+
+async def test_read_of_a_secret_field_shows_nothing(rig):
+    run, els = await _gate_run(rig, [
+        dict(role="textbox", name="Password", field=True, input_type="password", value="Hunter2pw"),
+        dict(role="textbox", name="Code", field=True, value="991122",
+             facts={"autocomplete": "one-time-code"})])
+    obs = await observe(rig, run.run_id)
+    for label in ("Password", "Code"):
+        got = await rig.ctl.read(run.run_id, handle_of(obs, label), None, 0)
+        assert got == {"text": "", "next_offset": None, "complete": True, "masked": True}
+
+
+async def test_read_of_a_field_gives_its_whole_value_past_500(rig):
+    value = "a line of the list\n" * 2000
+    run, els = await _gate_run(rig, [dict(role="textbox", name="List", field=True, value=value),
+                                     dict(role="button", name="Open"),
+                                     dict(role="link", name="Away", href="https://a.example/x")])
+    obs = await observe(rig, run.run_id)
+    parts = await _read_all(rig, run.run_id, handle=handle_of(obs, "List"))
+    assert "".join(p["text"] for p in parts) == value and parts[-1]["complete"] is True
+    for label in ("Open", "Away"):
+        with pytest.raises(ProtocolError, match="unsupported"):
+            await rig.ctl.read(run.run_id, handle_of(obs, label), None, 0)
+    with pytest.raises(ProtocolError, match="unsupported"):
+        await rig.ctl.read(run.run_id, obs.page_handle, None, 0)
+    with pytest.raises(ProtocolError, match="stale_handle"):
+        await rig.ctl.read(run.run_id, "nope", None, 0)
+
+
+def _file(rig, run_id, file_id, data, mime="text/csv"):
+    import hashlib
+    from casa_browser.protocol import FileRecord
+    path = rig.tmp / "files" / file_id
+    path.write_bytes(data)
+    rig.store.put_file(FileRecord(file_id, run_id, "finance", "list.csv", mime, len(data),
+                                  hashlib.sha256(data).hexdigest(), str(path), None))
+
+
+async def test_read_of_a_text_file_is_masked_and_windowed(rig):
+    run, _els = await _gate_run(rig, [])
+    _file(rig, run.run_id, "f_text", ("card,1\n" * 10_000 + "https://a.example/secret").encode())
+    parts = await _read_all(rig, run.run_id, file_id="f_text")
+    joined = "".join(p["text"] for p in parts)
+    assert len(parts) == 3 and parts[-1]["complete"] and parts[-1]["masked"]
+    assert joined.startswith("card,1\n") and "/secret" not in joined
+    _file(rig, run.run_id, "f_long", b"word " * 90_000)
+    assert (await _read_all(rig, run.run_id, file_id="f_long"))[-1]["complete"] is False
+
+
+async def test_read_of_another_runs_file_is_not_found(rig):
+    run, _els = await _gate_run(rig, [])
+    other = await rig.run(spec(request_id="queued"))
+    _file(rig, other.run_id, "f_other", b"theirs")
+    for file_id in ("f_other", "f_none"):
+        with pytest.raises(ProtocolError, match="not_found"):
+            await rig.ctl.read(run.run_id, None, file_id, 0)
+
+
+@pytest.mark.parametrize("data, mime", [(b"%PDF-1.7", "application/pdf"),
+                                        (b"\xff\xfe not utf-8", "text/plain")])
+async def test_read_of_a_binary_file_is_unsupported(rig, data, mime):
+    run, _els = await _gate_run(rig, [])
+    _file(rig, run.run_id, "f_bin", data, mime)
+    with pytest.raises(ProtocolError, match="unsupported"):
+        await rig.ctl.read(run.run_id, None, "f_bin", 0)
+
+
+async def test_an_observation_reaches_the_wire_saying_its_text_was_cut(rig):
+    run, _els = await _gate_run(rig, [], text="word\n" * 5000)
+    assert (await observe(rig, run.run_id)).to_wire()["text_cut"] is True
+    rig.page().show(A_START, "short")
+    assert "text_cut" not in (await observe(rig, run.run_id)).to_wire()
+
+
+# --------------------------------------------------------------------------- plan and approval
+
+PLAN = "Create the wishlist Deck on Site A\nAdd:\n1 Sol Ring\n2 Island"
+ASK_PLAN = {"verdict": "ask", "category": "account_change", "reason": "changes the account",
+            "question": {"text": "Create the wishlist and add 3 cards? Nothing is paid.",
+                         "confirm_label": "Add 3 cards", "extra_options": ["Fewer"],
+                         "screenshot": "useful", "highlight": [], "text_incomplete": False}}
+GO_APPROVED = {"verdict": "go", "category": "account_change", "reason": "adds the listed cards"}
+
+
+async def approve(rig, run, label="Create", plan=PLAN):
+    """The plan's question, tapped Yes and run: the run now holds the approval."""
+    wire = await judged(rig, run.run_id, label, plan=plan)
+    assert json.loads(wire["judgement"]["packet"])["plan"] == plan
+    qid = (await verdict(rig, run.run_id, wire, ASK_PLAN))["question_id"]
+    rj = await tap(rig, run.run_id, qid)
+    assert (await verdict(rig, run.run_id, rj, SAME))["outcome"] == "done"
+    return qid
+
+
+async def test_a_go_on_account_change_without_approved_asks(rig):
+    run, _els = await _gate_run(rig, [dict(role="button", name="Add")])
+    wire = await judged(rig, run.run_id, "Add", plan=PLAN)
+    assert "approved" not in json.loads(wire["judgement"]["packet"])
+    reply = await verdict(rig, run.run_id, wire, GO_APPROVED)
+    assert reply["outcome"] == "asked" and presses(rig) == []
+    view = (await rig.ctl.get_question(run.run_id, reply["question_id"]))["view"]
+    assert view["confirm_offered"] is False and "plan" not in view
+
+
+async def test_a_go_on_account_change_with_approved_runs_and_is_recorded_as_a_change(rig):
+    run, _els = await _gate_run(rig, [dict(role="button", name="Create"), dict(role="button", name="Add")])
+    await approve(rig, run)
+    assert len(rig.ctl.active.changes) == 1
+    wire = await judged(rig, run.run_id, "Add")
+    packet = json.loads(wire["judgement"]["packet"])
+    assert packet["approved"] == PLAN and "plan" not in packet
+    assert (await verdict(rig, run.run_id, wire, GO_APPROVED))["outcome"] == "done"
+    assert presses(rig, "Add") == [("click", "Add")]
+    change = rig.ctl.active.changes[-1]
+    assert change.kind == "action_confirmed" and "Add" in change.after_masked
+    await rig.ctl.finish(run.run_id, manifest())
+    await rig.settle()
+    record = rig.store.records_for("finance", rig.clock.now.replace(year=2000))[-1]
+    assert [c.kind for c in record.changes] == ["action_confirmed", "action_confirmed"]
+
+
+async def test_a_fee_shown_after_the_judgement_is_never_pressed_on_the_approval(rig):
+    """The judged packet held no fee; one appears before the press. Nothing is pressed, and the
+    step is judged afresh on the page with the fee."""
+    run, _els = await _gate_run(rig, [dict(role="button", name="Create"), dict(role="button", name="Add")],
+                                text="Wishlist\nAdding is free")
+    await approve(rig, run)
+    wire = await judged(rig, run.run_id, "Add")
+    assert "fee" not in json.loads(wire["judgement"]["packet"])["page"]["blocks"][-1]["text"]
+    rig.page().text = "Wishlist\nEUR 25 fee, charged immediately"
+    reply = await verdict(rig, run.run_id, wire, GO_APPROVED)
+    assert reply["outcome"] == "judgement_required" and presses(rig, "Add") == []
+    assert "EUR 25 fee" in reply["judgement"]["packet"]
+    assert len(rig.ctl.active.changes) == 1
+    asked_ = await verdict(rig, run.run_id, reply, {**ASK, "category": "payment"})
+    assert asked_["outcome"] == "asked" and presses(rig, "Add") == []
+
+
+@pytest.mark.parametrize("change", ["title", "url", "has_cc"])
+async def test_a_title_address_or_card_field_since_the_judgement_is_never_pressed(rig, change):
+    run, _els = await _gate_run(rig, [dict(role="button", name="Create"), dict(role="button", name="Add")])
+    await approve(rig, run)
+    wire = await judged(rig, run.run_id, "Add")
+    page = rig.page()
+    if change == "title":
+        page.title = "Adding charges EUR 25 to your saved payment method"
+    elif change == "url":
+        page.url = A_START + "#/checkout"
+    else:
+        page.has_cc = True
+    reply = await verdict(rig, run.run_id, wire, GO_APPROVED)
+    assert reply["outcome"] != "done" and presses(rig, "Add") == []
+
+
+async def test_an_approved_go_on_a_capped_reading_still_runs(rig):
+    """A long list's page reaches the reading's limits: the same page is still the same."""
+    run, _els = await _gate_run(rig, [dict(role="button", name="Create"), dict(role="button", name="Add")])
+    await approve(rig, run)
+    rig.page().complete = False
+    wire = await judged(rig, run.run_id, "Add")
+    assert (await verdict(rig, run.run_id, wire, GO_APPROVED))["outcome"] == "done"
+    assert presses(rig, "Add") == [("click", "Add")]
+
+
+async def test_a_reading_go_is_held_to_the_target_alone_as_before(rig):
+    run, _els = await _gate_run(rig, [dict(role="button", name="Open")], text="Page\nTime 12:00")
+    wire = await judged(rig, run.run_id, "Open")
+    rig.page().text = "Page\nTime 12:01"
+    assert (await verdict(rig, run.run_id, wire, GO))["outcome"] == "done"
+
+
+async def test_an_approved_go_with_enter_is_not_run(rig):
+    run, els = await _gate_run(rig, [dict(role="button", name="Create"),
+                                     dict(role="textbox", name="Box", field=True)])
+    await approve(rig, run)
+    wire = await judged(rig, run.run_id, "Box", kind="type", text="Sol Ring", enter=True)
+    reply = await verdict(rig, run.run_id, wire, GO_APPROVED)
+    assert reply["outcome"] == "asked" and els[1].value == ""
+    assert not [e for e in rig.log if e[0] == "enter"]
+
+
+async def test_an_approved_long_list_is_inserted_once(rig):
+    """The paste under an approval: the whole-page guard passes at the click, and the field
+    filling afterwards is no change that judges it again."""
+    run, els = await _gate_run(rig, [dict(role="button", name="Create"),
+                                     dict(role="textbox", name="List", field=True, facts={"tag": "textarea"})])
+    await approve(rig, run)
+    wire = await judged(rig, run.run_id, "List", kind="type", text=LIST, plan="The task")
+    reply = await verdict(rig, run.run_id, wire, GO_APPROVED)
+    assert reply["outcome"] == "done" and els[1].value == LIST
+    assert len([e for e in rig.log if e[0] == "insert"]) == 1
+
+
+async def test_a_reading_go_under_an_approval_records_no_change(rig):
+    run, _els = await _gate_run(rig, [dict(role="button", name="Create"), dict(role="button", name="Open")])
+    await approve(rig, run)
+    wire = await judged(rig, run.run_id, "Open")
+    await verdict(rig, run.run_id, wire, GO)
+    assert len(rig.ctl.active.changes) == 1
+
+
+async def test_approved_is_left_out_on_another_site_and_on_a_card_page(rig):
+    sites = (("sa", "account"), ("sp", "public"))
+    run = await rig.run(spec(sites=sites))
+    els = rig.page().show(A_START, "Wishlist", [dict(role="button", name="Create"),
+                                                dict(role="button", name="Add")])
+    await approve(rig, run)
+    # a card field on the same site: left out, and F2 stops the go
+    rig.page().has_cc = True
+    wire = await judged(rig, run.run_id, "Add")
+    assert "approved" not in json.loads(wire["judgement"]["packet"])
+    assert (await verdict(rig, run.run_id, wire, GO_APPROVED))["outcome"] == "asked"
+    q = (await rig.ctl.list_active())[0].pending_question
+    await tap(rig, run.run_id, q, "not_now")
+    rig.page().has_cc = False
+    assert "approved" in json.loads((await judged(rig, run.run_id, "Add"))["judgement"]["packet"])
+    # another site of the run
+    rig.page().show(A_START, "Wishlist", [dict(role="button", name="Create")])
+    obs = await observe(rig, run.run_id)
+    await act(rig, run.run_id, "navigate", handle_of(obs, "Public B"), obs)
+    rig.page().show(B_PAGE, "Other", [dict(role="button", name="Add")])
+    assert (await rig.ctl.list_active())[0].approved == PLAN
+    wire = await judged(rig, run.run_id, "Add")
+    assert "approved" not in json.loads(wire["judgement"]["packet"])
+    assert (await verdict(rig, run.run_id, wire, GO_APPROVED))["outcome"] == "asked"
+    assert presses(rig, "Add") == []
+
+
+async def test_approved_is_left_out_on_a_site_with_the_same_display_name(tmp_path):
+    """Two registered sites both called Shop, other origins: an approval on one covers nothing
+    on the other; nor on a public origin."""
+    shop_a = Site("s1", "Shop", ("https://shop-a.example",), (), None, (), "https://shop-a.example/", 1)
+    shop_b = Site("s2", "Shop", ("https://shop-b.example",), (), None, (), "https://shop-b.example/", 1)
+    rig = Rig(tmp_path, sites=(shop_a, shop_b))
+    await rig.start()
+    try:
+        run = await rig.run(spec(mode="open_web", sites=(("s1", "public"), ("s2", "public"))))
+        active = rig.ctl.active
+        assert rig.ctl._site_key(active, "https://shop-a.example/x") == "s1"
+        assert rig.ctl._site_key(active, "https://shop-b.example/x") == "s2"
+        assert rig.ctl._site_key(active, "https://public.example/x") == "https://public.example"
+        assert rig.ctl._site_key(active, "about:blank") is None
+        active.approved = {"site_key": "s1", "plan": PLAN}
+        reading = {"has_cc": False}
+        assert rig.ctl._approved_here(active, "https://shop-a.example/x", reading) == PLAN
+        assert rig.ctl._approved_here(active, "https://shop-b.example/x", reading) is None
+        assert rig.ctl._approved_here(active, "https://public.example/x", reading) is None
+        assert rig.ctl._approved_here(active, "https://shop-a.example/x", {"has_cc": True}) is None
+        active.approved = {"site_key": None, "plan": PLAN}
+        assert rig.ctl._approved_here(active, "about:blank", reading) is None
+        assert run.run_id
+    finally:
+        await rig.ctl.shutdown()
+        rig.close()
+
+
+@pytest.mark.parametrize("category", ["payment", "commitment"])
+async def test_payment_and_commitment_ask_with_approved_in_the_packet(rig, category):
+    run, _els = await _gate_run(rig, [dict(role="button", name="Create"), dict(role="button", name="Pay")])
+    await approve(rig, run)
+    wire = await judged(rig, run.run_id, "Pay", plan="Pay for everything")
+    assert "approved" in json.loads(wire["judgement"]["packet"])
+    # a go is stopped by F2 whatever the packet carries
+    reply = await verdict(rig, run.run_id, wire, {"verdict": "go", "category": category, "reason": "r"})
+    assert reply["outcome"] == "asked" and presses(rig, "Pay") == []
+    q = (await rig.ctl.list_active())[0].pending_question
+    await tap(rig, run.run_id, q, "not_now")
+    wire = await judged(rig, run.run_id, "Pay", plan="Pay for everything")
+    ask = {**ASK, "category": category}
+    qid = (await verdict(rig, run.run_id, wire, ask))["question_id"]
+    view = (await rig.ctl.get_question(run.run_id, qid))["view"]
+    assert view["screenshot_id"] and "plan" not in view
+    rj = await tap(rig, run.run_id, qid)
+    assert (await verdict(rig, run.run_id, rj, SAME))["outcome"] == "done"
+    assert rig.ctl.active.approved["plan"] == PLAN      # its Yes leaves the approval as it was
+
+
+async def test_a_tap_on_an_account_change_plan_question_keeps_approved_after_the_press(rig):
+    run, _els = await _gate_run(rig, [dict(role="button", name="Create")])
+    wire = await judged(rig, run.run_id, "Create", plan=PLAN)
+    qid = (await verdict(rig, run.run_id, wire, ASK_PLAN))["question_id"]
+    view = (await rig.ctl.get_question(run.run_id, qid))["view"]
+    assert view["plan"] == PLAN and view["screenshot_id"] is None and view["confirm_offered"]
+    assert rig.ctl.active.approved is None
+    rj = await tap(rig, run.run_id, qid)
+    assert rig.ctl.active.approved is None       # the tap alone approves nothing
+    packet = json.loads(rj["judgement"]["packet"])
+    assert packet["approved_packet"]["plan"] == packet["current_packet"]["plan"] == PLAN
+    assert rig.ctl.active.approved is None
+    assert (await verdict(rig, run.run_id, rj, SAME))["outcome"] == "done"
+    assert rig.ctl.active.approved == {"site_key": "sa", "plan": PLAN}
+    assert (await rig.ctl.list_active())[0].approved == PLAN
+
+
+async def test_a_plan_on_a_money_question_is_no_plan_card(rig):
+    run, _els = await _gate_run(rig, [dict(role="button", name="Pay now")])
+    for setup, v in ((lambda: None, ASK),
+                     (lambda: setattr(rig.page(), "has_cc", True), ASK_PLAN)):
+        setup()
+        wire = await judged(rig, run.run_id, "Pay now", plan=PLAN)
+        qid = (await verdict(rig, run.run_id, wire, v))["question_id"]
+        view = (await rig.ctl.get_question(run.run_id, qid))["view"]
+        assert view["screenshot_id"] and "plan" not in view
+        rj = await tap(rig, run.run_id, qid)
+        assert (await verdict(rig, run.run_id, rj, SAME))["outcome"] == "done"
+        assert rig.ctl.active.approved is None
+
+
+async def test_a_plan_question_with_no_confirm_is_no_plan_card(rig):
+    run, _els = await _gate_run(rig, [dict(role="button", name="Create")])
+    wire = await judged(rig, run.run_id, "Create", plan=PLAN)
+    v = {**ASK_PLAN, "question": {**ASK_PLAN["question"], "text_incomplete": True}}
+    qid = (await verdict(rig, run.run_id, wire, v))["question_id"]
+    view = (await rig.ctl.get_question(run.run_id, qid))["view"]
+    assert not view["confirm_offered"] and "plan" not in view and view["screenshot_id"]
+
+
+async def test_a_changed_page_at_the_tap_keeps_the_plan_in_the_fresh_question(rig):
+    run, _els = await _gate_run(rig, [dict(role="button", name="Create")], text="Wishlists\nNone yet")
+    wire = await judged(rig, run.run_id, "Create", plan=PLAN)
+    qid = (await verdict(rig, run.run_id, wire, ASK_PLAN))["question_id"]
+    rig.page().text = "Wishlists\nOne already"
+    rj = await tap(rig, run.run_id, qid)
+    packet = json.loads(rj["judgement"]["packet"])
+    assert packet["difference"] and packet["current_packet"]["plan"] == PLAN
+    fresh = await verdict(rig, run.run_id, rj, CHANGED)      # _lapse, then _refreeze
+    assert fresh["outcome"] == "judgement_required"
+    assert json.loads(fresh["judgement"]["packet"])["plan"] == PLAN
+    assert rig.ctl.active.approved is None and presses(rig, "Create") == []
+    again = await verdict(rig, run.run_id, fresh, ASK_PLAN)
+    assert (await rig.ctl.get_question(run.run_id, again["question_id"]))["view"]["plan"] == PLAN
+
+
+@pytest.mark.parametrize("choice", ["not_now", {"extra": 0}])
+async def test_not_now_and_an_extra_option_keep_no_approval(rig, choice):
+    run, _els = await _gate_run(rig, [dict(role="button", name="Create")])
+    wire = await judged(rig, run.run_id, "Create", plan=PLAN)
+    qid = (await verdict(rig, run.run_id, wire, ASK_PLAN))["question_id"]
+    await tap(rig, run.run_id, qid, choice)
+    assert rig.ctl.active.approved is None and presses(rig, "Create") == []
+
+
+async def test_a_later_plan_replaces_approved_only_on_its_own_tap(rig):
+    run, _els = await _gate_run(rig, [dict(role="button", name="Create"), dict(role="button", name="More")])
+    await approve(rig, run)
+    wire = await judged(rig, run.run_id, "More", plan="Also add 1 Forest")
+    packet = json.loads(wire["judgement"]["packet"])
+    assert packet["plan"] == "Also add 1 Forest" and packet["approved"] == PLAN
+    qid = (await verdict(rig, run.run_id, wire, ASK_PLAN))["question_id"]
+    assert rig.ctl.active.approved["plan"] == PLAN
+    rj = await tap(rig, run.run_id, qid)
+    assert rig.ctl.active.approved["plan"] == PLAN
+    current = json.loads(rj["judgement"]["packet"])["current_packet"]
+    assert current["approved"] == PLAN and current["plan"] == "Also add 1 Forest"
+    await verdict(rig, run.run_id, rj, SAME)
+    assert rig.ctl.active.approved["plan"] == "Also add 1 Forest"
+
+
+# --------------------------------------------------------------------------- bulk paste
+
+
+LIST = "1 Sol Ring\n" * 500
+
+
+async def test_a_long_text_into_a_textarea_is_one_insertion(rig):
+    run, els = await _gate_run(rig, [dict(role="textbox", name="List", field=True, value="old",
+                                          facts={"tag": "textarea"})])
+    wire = await judged(rig, run.run_id, "List", kind="type", text=LIST, plan="The task")
+    assert json.loads(wire["judgement"]["packet"])["action"]["text"] == LIST     # judged whole
+    reply = await verdict(rig, run.run_id, wire, GO)
+    assert reply["outcome"] == "done" and reply["typed"] == "shown" and els[0].value == LIST
+    assert ("insert", "List", len(LIST)) in rig.log
+
+
+@pytest.mark.parametrize("text", [LIST, "x" * 500])
+async def test_a_field_that_stops_being_a_textarea_takes_no_insertion(rig, text):
+    run, els = await _gate_run(rig, [dict(role="textbox", name="List", field=True,
+                                          facts={"tag": "textarea"})])
+    wire = await judged(rig, run.run_id, "List", kind="type", text=text, plan="The task")
+    real = rig.ctl.ops.text_facts
+
+    async def turned(element, text=None):
+        return {**await real(element, text), "textarea": False}
+    rig.ctl.ops.text_facts = turned
+    reply = await verdict(rig, run.run_id, wire, GO)
+    assert reply["outcome"] != "done" and els[0].value == ""
+    assert not [e for e in rig.log if e[0] == "insert"]
+
+
+@pytest.mark.parametrize("facts, text, enter", [
+    ({"tag": "textarea"}, "x" * 200, False),      # short: by key
+    ({}, "x" * 500, False),                       # an <input>: by key
+    ({"tag": "textarea"}, "x" * 500, True),       # Enter after it: by key
+])
+async def test_a_short_text_and_an_input_still_type_by_key(rig, facts, text, enter):
+    run, els = await _gate_run(rig, [dict(role="textbox", name="Box", field=True, facts=facts)])
+    wire = await judged(rig, run.run_id, "Box", kind="type", text=text, enter=enter, plan="The task")
+    await verdict(rig, run.run_id, wire, GO)
+    assert ("type", "Box", len(text), False) in rig.log
+    assert not [e for e in rig.log if e[0] == "insert"]
+
+
+# -- past the list's cap: a Yes presses; a reading the app cannot see whole offers no Yes -----------
+
+def read_as(rig, **extra):
+    """Every gate reading of the page carries ``extra``, as a real one past the list's cap does;
+    a callable value is asked each time."""
+    real = rig.ctl.ops.read_page
+
+    async def read_page(*args, **kw):
+        reading = await real(*args, **kw)
+        reading.data.update({k: v() if callable(v) else v for k, v in extra.items()})
+        return reading
+    rig.ctl.ops.read_page = read_page
+
+
+async def test_a_capped_page_keeps_its_yes_and_it_presses(rig):
+    run, els = await _gate_run(rig, [dict(role="button", name="Save")])
+    read_as(rig, complete=False, all_controls=["one"])
+    qid = await asked(rig, run, els, "Save", ASK_CHANGE)
+    view = (await rig.ctl.get_question(run.run_id, qid))["view"]
+    assert view["confirm_offered"] is True and view["live_only_copy"] is None
+    rj = await tap(rig, run.run_id, qid)
+    assert rj["outcome"] == "rejudgement_required"
+    assert json.loads(rj["judgement"]["packet"])["difference"] == {}
+    assert (await verdict(rig, run.run_id, rj, SAME))["outcome"] == "done"
+    assert presses(rig, "Save") == [("click", "Save")]
+
+
+async def test_a_change_beyond_the_list_is_told_to_the_check_at_the_tap(rig):
+    run, els = await _gate_run(rig, [dict(role="button", name="Save")])
+    digest = ["one"]
+    read_as(rig, complete=False, all_controls=lambda: list(digest))
+    qid = await asked(rig, run, els, "Save", ASK_CHANGE)
+    digest[0] = "two"
+    rj = await tap(rig, run.run_id, qid)
+    difference = json.loads(rj["judgement"]["packet"])["difference"]
+    assert difference == {"controls_beyond_list_changed": True}
+    assert (await verdict(rig, run.run_id, rj, CHANGED))["outcome"] != "done"
+    assert presses(rig) == []
+
+
+async def test_a_change_beyond_the_list_at_the_final_read_presses_nothing(rig):
+    run, els = await _gate_run(rig, [dict(role="button", name="Save")])
+    digest = ["one"]
+    read_as(rig, complete=False, all_controls=lambda: list(digest))
+    qid = await asked(rig, run, els, "Save", ASK_CHANGE)
+    rj = await tap(rig, run.run_id, qid)
+    digest[0] = "two"
+    again = await verdict(rig, run.run_id, rj, SAME)
+    assert again["outcome"] == "rejudgement_required"
+    assert json.loads(again["judgement"]["packet"])["difference"] == {
+        "controls_beyond_list_changed": True}
+    assert presses(rig) == []
+
+
+async def test_a_blind_reading_offers_no_yes_and_says_why(rig):
+    run, els = await _gate_run(rig, [dict(role="button", name="Save")])
+    read_as(rig, complete=False, blind=True)
+    qid = await asked(rig, run, els, "Save", ASK_CHANGE)
+    view = (await rig.ctl.get_question(run.run_id, qid))["view"]
+    assert view["confirm_offered"] is False
+    assert view["live_only_copy"] == ("I can't re-check this page before pressing, so please do it "
+                                      "in the live view.")
+    assert view["text"] == ASK_CHANGE["question"]["text"]
+    with pytest.raises(ProtocolError, match="unsupported"):
+        await tap(rig, run.run_id, qid)
+    assert presses(rig) == []
+
+
+async def test_a_blind_capped_reading_offers_no_yes_either(rig):
+    run, els = await _gate_run(rig, [dict(role="button", name="Save")])
+    read_as(rig, complete=False, blind=True, all_controls=["one"])
+    qid = await asked(rig, run, els, "Save", ASK_CHANGE)
+    assert (await rig.ctl.get_question(run.run_id, qid))["view"]["confirm_offered"] is False
+
+
+async def test_a_closed_shadow_root_with_a_field_offers_no_yes(rig):
+    run, els = await _gate_run(rig, [dict(role="button", name="Save")])
+    rig.page().closed_shadow = True
+    qid = await asked(rig, run, els, "Save", ASK_CHANGE)
+    assert (await rig.ctl.get_question(run.run_id, qid))["view"]["confirm_offered"] is False
+
+
+@pytest.mark.parametrize("blind,offered", [(True, False), (False, True)])
+async def test_a_plan_card_is_never_offered_on_a_blind_reading(rig, blind, offered):
+    run, els = await _gate_run(rig, [dict(role="button", name="Create")])
+    read_as(rig, complete=False, all_controls=["one"], **({"blind": True} if blind else {}))
+    wire = await judged(rig, run.run_id, "Create", plan="Create the list")
+    reply = await verdict(rig, run.run_id, wire, ASK_CHANGE)
+    view = (await rig.ctl.get_question(run.run_id, reply["question_id"]))["view"]
+    assert ("plan" in view) is offered and view["confirm_offered"] is offered
+
+
+async def test_a_page_gone_blind_since_the_question_lapses_at_the_tap(rig):
+    run, els = await _gate_run(rig, [dict(role="button", name="Save")])
+    qid = await asked(rig, run, els, "Save", ASK_CHANGE)
+    read_as(rig, complete=False, blind=True, all_controls=["one"])
+    reply = await tap(rig, run.run_id, qid)
+    assert reply["outcome"] == "lapsed" and reply["reason"] == "incomplete"
+    assert presses(rig) == []

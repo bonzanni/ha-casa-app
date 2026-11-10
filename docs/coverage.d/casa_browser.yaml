@@ -17,11 +17,11 @@
 - item: casa_browser/rootfs/opt/casa_browser/pacing.py
   doc: reference/casa-browser-browser.md
 - item: casa_browser/rootfs/opt/casa_browser/handles.py
-  doc: reference/casa-browser-browser.md
+  doc: reference/casa-browser-observations.md
 - item: casa_browser/rootfs/opt/casa_browser/masking.py
-  doc: reference/casa-browser-browser.md
+  doc: reference/casa-browser-observations.md
 - item: casa_browser/rootfs/opt/casa_browser/observe.py
-  doc: reference/casa-browser-browser.md
+  doc: reference/casa-browser-observations.md
 - item: casa_browser/rootfs/opt/casa_browser/identity.py
   doc: reference/casa-browser.md
 - item: casa_browser/rootfs/opt/casa_browser/infra.py
@@ -134,11 +134,19 @@
   doc: reference/casa-browser.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/download
   doc: reference/casa-browser.md
+- item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/fetch
+  doc: reference/casa-browser.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/finish
   doc: reference/casa-browser.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/live
   doc: reference/casa-browser.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/login-code
+  doc: reference/casa-browser-actions.md
+- item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/look
+  doc: reference/casa-browser-observations.md
+- item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/read
+  doc: reference/casa-browser-observations.md
+- item: route:casa_browser/rootfs/opt/casa_browser/api.py:GET:/v1/control/runs/{run}/judgements/{judgement}/picture
   doc: reference/casa-browser-actions.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/sign-in
   doc: reference/casa-browser-signin.md

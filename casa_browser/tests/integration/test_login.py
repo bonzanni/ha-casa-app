@@ -1700,26 +1700,6 @@ def test_a_form_that_comes_back_gets_the_password_once(tmp_path):
         assert [r[2] for r in sites.receipts.requests if r[0] == 'POST'] == ['/finish']
 
 
-def test_the_real_reading_moves_when_a_widget_solves_and_then_holds(tmp_path):
-    """gate.same_reading on Chrome's DOM, the reading a verdict is held to: a button a widget
-    turns on changes it (so the check judges afresh, once), the solved page then reads the same.
-    A held button with nothing happening reads the same (a verdict holds as it was)."""
-    from casa_browser.proxy_client import encode_policy
-    policy = encode_policy(h.account_policy(sites=(h.site(origins=('https://' + ACCOUNT,),
-                                                          login=('https://' + LOGIN,)),)))
-    with ChromeSites([LOGIN, ACCOUNT, OTHER]) as sites:
-        install(sites)
-        sites.pages['/signin'] = ('text/html', _HELD_BY_WIDGET, {})
-        sites.pages['/held'] = ('text/html', _HELD_BY_FORM, {})
-        sites.pages['/frame'] = ('text/html', b'<p>widget</p>', {})
-        widget = run_scenario([{'open': {'site_id': 's1'}}, {'goto': 'https://' + LOGIN + '/signin'},
-                               {'reading_pair': {'wait': 4, 'policy': policy}}])
-        form = run_scenario([{'open': {'site_id': 's1'}}, {'goto': 'https://' + LOGIN + '/held'},
-                             {'reading_pair': {'wait': 1, 'policy': policy}}])
-    assert widget[-1] == {'after_solve': False, 'after_that': True}, widget[-1]
-    assert form[-1] == {'after_solve': True, 'after_that': True}, form[-1]
-
-
 def test_a_capture_opens_beside_a_frame_elsewhere_and_chrome_stays(tmp_path):
     """The live view's capture on the widget page, a cross-origin frame in it: armed, then
     closed with the same Chrome running (the session generation unchanged)."""

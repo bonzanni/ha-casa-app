@@ -176,6 +176,10 @@ def one():
             if not c: break
             data += c
         r = data.split(b" ")[1].decode() if data else "empty"
+        if r != "200":     # who answered: the upstream (its Server header) or the proxy itself
+            head = data.split(b"\r\n\r\n", 1)[0].lower()
+            r += " from " + next((l.split(b":", 1)[1].strip().decode() for l in head.split(b"\r\n")
+                                  if l.startswith(b"server:")), "no server header")
     except Exception as e:
         r = "err:" + type(e).__name__
     with lock: res[r] += 1

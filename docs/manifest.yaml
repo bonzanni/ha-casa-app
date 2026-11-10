@@ -2,7 +2,11 @@
 
 - doc: manifest.d/casa_browser.yaml
   kind: meta
-  summary: Manifest shard — the optional Casa Browser app's reference documents.
+  summary: Manifest shard — the optional Casa Browser app's reference documents, except those of casa_browser-runs.yaml.
+
+- doc: manifest.d/casa_browser-runs.yaml
+  kind: meta
+  summary: Manifest shard — the Casa Browser app's run controller, action gate, questions and /v1 contract.
 
 - doc: manifest.d/architecture-a-d.yaml
   kind: meta

@@ -367,6 +367,24 @@ def test_17_type_enter_question_whose_total_changes_while_typing(tmp_path):
     assert hits(req, "/msg") == []
 
 
+def test_type_replaces_an_input_or_textarea_and_stays_at_a_contenteditable_caret(tmp_path):
+    """Real Chrome, the real pacer: 1 then 3 is 3, an empty text clears, a contenteditable keeps
+    what it holds."""
+    html = page('<label>Qty <input id="q" value="1"></label>'
+                '<label>Phone <input id="m" type="tel" value="111"></label>'
+                '<label>Note <textarea id="n">old note</textarea></label>'
+                '<label id="sl">Sig</label><div id="s" contenteditable="true" aria-labelledby="sl" '
+                'style="min-height:20px">kept</div>')
+    out, _req = gate_run(tmp_path, html, [
+        act("type", "Qty", text="3"), act("type", "Phone", text="222"),
+        act("type", "Note", text=""), act("type", "Sig", text="!"),
+        js("() => ['q', 'm', 'n'].map((i) => document.getElementById(i).value)"),
+        js("() => document.getElementById('s').innerText")])
+    assert [r["typed"] for r in out[:4]] == ["shown"] * 4, out[:4]
+    assert out[4] == ["3", "222", ""]
+    assert out[5].replace("\n", "") in ("kept!", "!kept")
+
+
 def test_16b_tapped_type_enter_runs_once(tmp_path):
     out, req = gate_run(tmp_path, page(MSG), [
         act("type", "Bericht", text="Klopt dit?", enter=True), verdict(ASK_CHANGE), tap(),
@@ -474,7 +492,7 @@ def test_26_disabled_select_enabled_later_with_a_changed_option(tmp_path):
                         "o = document.getElementById('o'); s.disabled = false;"
                         "o.textContent = '€ 90'; o.value = '90'; }, 2500);")
     out, req = gate_run(tmp_path, html, [
-        act("select", "Amount", choice="€ 10"), verdict(GO), {"sleep": 3}])
+        act("select", "Amount", choice="€ 10", plan="Top up"), verdict(GO), {"sleep": 3}])
     assert out[1]["outcome"] in ("judgement_required", "not_run")
     assert hits(req, "/save") == []
 
@@ -486,7 +504,7 @@ def test_27_option_disabled_after_the_guard_then_reenabled_at_90(tmp_path):
                 "window.flip = () => { o.disabled = true; setTimeout(() => { o.disabled = false;"
                 "o.textContent = '€ 90'; o.value = '90'; }, 30); };")
     out, req = gate_run(tmp_path, html, [
-        act("select", "Amount", choice="€ 10"), js("() => window.flip()"), verdict(GO),
+        act("select", "Amount", choice="€ 10", plan="Top up"), js("() => window.flip()"), verdict(GO),
         {"sleep": 1}])
     assert [r for r in hits(req, "/save") if "90" in r[2]] == []
 
@@ -498,9 +516,9 @@ PERIOD = ('<main><p>Orders</p><label>Period <select id="p" onchange="fetch(\'/sa
 
 def test_28_collapsed_period_select_selects_once(tmp_path):
     out, req = gate_run(tmp_path, page(PERIOD), [
-        act("select", "Period", choice="2025"), verdict(GO), landed("/save?2025"), MARGIN,
+        act("select", "Period", choice="2025"), landed("/save?2025"), MARGIN,
         js("() => document.getElementById('p').value")])
-    assert out[1]["outcome"] == "done" and out[-1] == "2025"
+    assert out[0]["outcome"] == "done" and out[-1] == "2025"
     assert [r[2] for r in hits(req, "/save")] == ["/save?2025"]
 
 
@@ -646,11 +664,16 @@ def test_r2_option_labels_are_masked_and_card_selects_refused(tmp_path):
                 '<option>2031</option></select></label><label>Bank <select><option>Choose</option>'
                 '<option>https://bank.example/pay?token=SELQUERY</option></select></label></main>')
     out, req = gate_run(tmp_path, html, [
-        act("select", "Expiry", choice="2031"),
-        act("select", "Bank", choice="bank.example")])
-    assert out[0] == {"error": "unsupported"}
-    assert "SELQUERY" not in out[1]["judgement"]["packet"]
-    assert packet(out[1])["action"]["option"].startswith("https://bank.example")
+        OBS,
+        act("select", "Expiry", choice="bank.example"),
+        act("select", "Bank", choice="bank.example", plan="Choose a bank")])
+    # A card select lists no options, so no handle names its choice; another select's option
+    # borrowed for it is refused.
+    assert [lb for lb in out[0]["labels"] if "2030" in lb or "2031" in lb] == []
+    assert "2031" not in out[0]["text"]
+    assert out[1] == {"error": "unsupported"}
+    assert "SELQUERY" not in out[2]["judgement"]["packet"]
+    assert packet(out[2])["action"]["option"].startswith("https://bank.example")
 
 
 # --------------------------------------------------------------------------- round r3's cases
@@ -831,6 +854,138 @@ def test_ab_a_buttonless_form_is_judged_and_its_enter_sent_once(tmp_path):
         MARGIN])
     assert packet(out[0])["target"]["enter_submission"]["entries"] == [["q", "[the typed field]"]]
     assert out[1]["outcome"] == "done" and len(hits(req, "/zoek")) == 1
+
+
+PASTE = "".join(f"item {i:05d}\n" for i in range(2_500)) + "trailing item zz"   # 27,516 characters
+PASTE_PAGES = {
+    "in-the-form": ('<main><form action="/save" method="post"><label>List '
+                    '<textarea name="list" style="width:600px;height:200px"></textarea></label>'
+                    '<button>Save</button></form></main>'),
+    # no form owner: the page's own script sends what the field holds
+    "no-form-owner": ('<main><label>List <textarea id="l" style="width:600px;height:200px">'
+                      '</textarea></label><button type="button" onclick="fetch(\'/save\', '
+                      '{method: \'POST\', body: document.getElementById(\'l\').value})">Save</button>'
+                      '</main>'),
+}
+
+
+@pytest.mark.parametrize("case", list(PASTE_PAGES))
+def test_a_long_paste_reaches_the_check_whole_exactly_once(tmp_path, case):
+    """Astra S1 (run-r1), in Chrome with the gate's own READ: a 27,516-character list typed into
+    a textarea (one insertion, sending nothing) is in the Save press's packet whole: its trailing
+    item exactly once, with or without a form owner. Nothing is sent before a verdict."""
+    out, req = gate_run(tmp_path, page(PASTE_PAGES[case]), [
+        act("type", "List", text=PASTE),
+        js("() => document.querySelector('textarea').value"),
+        act("click", "Save")])
+    assert out[0]["outcome"] == "done", out[0]
+    assert out[1] == PASTE
+    text = out[2]["judgement"]["packet"]
+    assert text.count("trailing item zz") == 1, case
+    assert text.count("item 01250") == 1 and text.count("item 02499") == 1
+    assert hits(req, "/save") == []
+
+
+ROWS_PAGE = ('<main><nav><ul><li><a href="/x">Menu</a></li></ul></nav><table>'
+             + "".join(f'<tr><td>Line {i}</td><td><label>Qty {i} <input value="{i}"></label></td>'
+                       f'<td><input type="checkbox" aria-label="Keep {i}"{" checked" if i % 2 else ""}>'
+                       f'</td><td><button>Save {i}</button></td></tr>' for i in range(450))
+             + '<tr><td>Secret row</td><td><input type="password" aria-label="Pin" value="PW445566">'
+               '</td></tr></table><div hidden><ul><li>Hidden item</li></ul></div></main>')
+
+
+def test_rows_read_every_record_with_its_field_values_past_the_control_cap(tmp_path):
+    """The design's rows reading in Chrome: one JSON line per visible record holding no other,
+    with what each field holds (past the 400-control cap, which page text never shows), its
+    buttons, a secret value never, a hidden record not at all."""
+    out, _req = gate_run(tmp_path, page(ROWS_PAGE), [{"read": {"name": R, "rows": True}}])
+    got = out[0]
+    lines = [json.loads(line) for line in got["text"].split("\n")]
+    assert got["last"]["complete"] is True
+    assert len(lines) == 452, len(lines)                  # the menu item, 450 rows, the secret row
+    assert lines[0] == {"text": "Menu", "fields": [], "press": ["Menu"]}
+    assert lines[450] == {"text": "Line 449 Qty 449 Save 449", "fields": [["Qty 449", "449"],
+                                                                ["Keep 449", True]],
+                          "press": ["Save 449"]}
+    # a secret field is named as an observation names it: never by what the page puts on it
+    assert lines[451]["fields"] == [["", "[not shown]"]]
+    assert "PW445566" not in got["text"] and "Hidden item" not in got["text"]
+
+
+def test_rows_join_a_value_split_across_spans_before_masking(tmp_path):
+    """A token the page splits across inline spans reaches masking whole, as the gate's own
+    reader joins it, so neither half reaches the pad; cells still read apart."""
+    html = page('<main><ul><li>Token: <span>ghp_</span><span>abcdefghijklmnopqrstuvwxyzABCDEF</span></li>'
+                '<li><span>ghp_</span><div>x</div><span>abcdefghijklmnopqrstuvwxyzABCDEF</span></li>'
+                '</ul><table><tr><td>Alpha</td><td>Beta</td></tr></table></main>')
+    out, _req = gate_run(tmp_path, html, [{"read": {"name": R, "rows": True}}])
+    text = out[0]["text"]
+    # The second item has a block between the halves: its own text still joins, as an
+    # observation joins it.
+    assert text.count("[masked]") == 2, text
+    assert "abcdefghijklmnop" not in text and "ghp_" not in text
+    assert '"Alpha Beta"' in text, text
+
+
+def test_rows_read_a_record_that_is_a_field_or_hosts_its_own_shadow_root(tmp_path):
+    """A record that is itself editable, and a record whose content lives in its own shadow
+    root, are read whole: none of their values is silently dropped."""
+    html = page('<main><ul><li contenteditable="true">MARKER-EDIT-1</li></ul>'
+                '<div role="row" id="h"></div></main>'
+                '<script>const s = document.getElementById("h").attachShadow({mode: "open"});'
+                's.innerHTML = "<span>MARKER-SHADOW-2</span> <input aria-label=Qty value=MARKER-INPUT-3>";'
+                '</script>')
+    out, _req = gate_run(tmp_path, html, [{"read": {"name": R, "rows": True}}])
+    text = out[0]["text"]
+    for marker in ("MARKER-EDIT-1", "MARKER-SHADOW-2", "MARKER-INPUT-3"):
+        assert text.count(marker) == 1, (marker, text)
+
+
+def test_rows_are_the_observations_reading_grouped_by_record(tmp_path):
+    """Rows read what an observation reads, by the same code: a select shows its option's label,
+    masked; nothing a record holds is lost — a record with no box of its own, a list editable
+    through its parent, a parent's own text around a nested record — and text no record holds
+    comes last, in one row marked outside."""
+    token = "abcdefghijklmnopqrstuvwxyzABCDEF"
+    html = page(f'<main><ul><li><select aria-label="Pick"><option label="ghp_{token}" selected>{token}'
+                '</option></select></li></ul>'
+                '<div role="row" style="display:contents">NOTE-CONTENTS<input aria-label="F" '
+                'value="FIELD-CONTENTS"></div>'
+                '<ul contenteditable="true"><li>NOTE-EDITABLE</li></ul>'
+                '<article>OUTER-NOTE<input aria-label="O" value="OUTER-FIELD"><div id="h"></div></article>'
+                '<article><div>-----BEGIN PRIVATE KEY-----</div><article>YWJjZGVmZ2hpamts</article>'  # gitleaks:allow - synthetic fixture; this test exists to prove masking works
+                '<div>-----END PRIVATE KEY-----</div></article>'
+                '<article>PRESSHOST<details><summary aria-label="SUMMARYMARK"></summary>X</details>'
+                '<div tabindex="0" style="cursor:pointer;width:30px;height:30px" aria-label="CLICKMARK">'
+                '</div></article>'
+                '<article><select aria-label="Cat" size="3"><option selected label="MARKCHOSEN"></option>'
+                '<option label="MARKOTHER"></option></select>'
+                '<select autocomplete="cc-exp-year" aria-label="Exp"><option>2030</option>'
+                '<option selected>2031</option></select></article>'
+                '<p>LOOSE-NOTE</p></main>'
+                '<script>document.getElementById("h").attachShadow({mode: "open"}).innerHTML = '
+                '"<div role=row>INNER-NOTE</div>";</script>')
+    out, _req = gate_run(tmp_path, html, [{"read": {"name": R, "rows": True}}])
+    text = out[0]["text"]
+    lines = [json.loads(line) for line in text.split("\n")]
+    # the option label, and the key masked whole across its two records
+    assert token not in text, text
+    assert "YWJjZGVmZ2hpamts" not in text, text
+    assert text.count("[masked]") == 3, text     # the select's value, its listed option, the key
+    for marker in ("SUMMARYMARK", "CLICKMARK"):              # what an observation lists
+        assert text.count(marker) == 1, (marker, text)
+    # a select gives its options as an observation lists them; a card select gives none
+    cats = [f for ln in lines for f in ln["fields"] if f[0] == "Cat"]
+    assert cats == [["Cat", "MARKCHOSEN", ["MARKCHOSEN", "MARKOTHER"]]], lines
+    assert "2030" not in text and "2031" not in text, text
+    for marker in ("NOTE-CONTENTS", "FIELD-CONTENTS", "NOTE-EDITABLE", "OUTER-NOTE", "OUTER-FIELD",
+                   "INNER-NOTE", "LOOSE-NOTE"):
+        assert text.count(marker) == 1, (marker, text)
+    outer = [ln for ln in lines if "OUTER-NOTE" in ln["text"]]
+    assert len(outer) == 1 and "INNER-NOTE" not in json.dumps(outer[0]), lines
+    assert outer[0]["fields"] == [["O", "OUTER-FIELD"]], lines
+    assert lines[-1].get("outside") is True and "LOOSE-NOTE" in lines[-1]["text"], lines
+    assert sum(1 for ln in lines if ln.get("outside")) == 1, lines
 
 
 def test_s4_a_signed_in_sites_buttonless_search_loads_its_result_page(tmp_path):
@@ -1087,13 +1242,10 @@ def test_s5g_a_time_field_takes_the_judged_value_and_the_form_submits_it(tmp_pat
                 "document.getElementById('t').addEventListener('change', e => "
                 "document.getElementById('seen').textContent = 'seen ' + e.target.value);")
     out, req = gate_run(tmp_path, html, [
-        act("type", "Pickup time", text="19:30"), verdict(GO), {"sleep": 0.5}, OBS,
+        act("type", "Pickup time", text="19:30"), {"sleep": 0.5}, OBS,
         act("click", "Order"), verdict(GO), landed("/submit?t=19%3A30"), MARGIN])
-    pkt = packet(out[0])
-    assert pkt["action"] == {"kind": "type", "text": "19:30", "then_enter": False}
-    assert pkt["target"]["input_type"] == "time"
-    assert out[1]["outcome"] == "done" and out[1]["typed"] == "shown", out[1]
-    assert "seen 19:30" in out[3]["text"]
+    assert out[0]["outcome"] == "done" and out[0]["typed"] == "shown", out[0]
+    assert "seen 19:30" in out[2]["text"]
     assert [p for _m, _h, p in hits(req, "/submit")] == ["/submit?t=19%3A30"]
 
 
@@ -1265,10 +1417,11 @@ SHOWN = ("() => { const t = document.getElementById('t');"
 
 @pytest.mark.parametrize("how", ["go", "tap"])
 def test_s6b_multi_line_text_goes_into_a_chat_textarea_as_text(tmp_path, how):
-    """Slice 6b in Chrome: the check's packet holds the whole multi-line text; after a go (or a
-    tapped question) it lands in the real <textarea> with its line breaks as text: no Enter
-    key reaches the page's keydown handler, so the composer sends nothing."""
-    steps = [act("type", "Bericht", text=LETTER, raw=True)]
+    """Slice 6b in Chrome: on a step that carries a plan, the check's packet holds the whole
+    multi-line text; after a go (or a tapped question) it lands in the real <textarea> with its
+    line breaks as text: no Enter key reaches the page's keydown handler, so the composer sends
+    nothing."""
+    steps = [act("type", "Bericht", text=LETTER, raw=True, plan="Write the letter")]
     steps += ([verdict(GO)] if how == "go" else [verdict(ASK_CHANGE), tap(), verdict(SAME)])
     out, req = gate_run(tmp_path, page(CHAT, CHAT_JS), steps + [{"sleep": 1}, js(SHOWN)])
     pkt = packet(out[0])
@@ -1294,16 +1447,15 @@ def test_s6b_line_breaks_only_into_a_textarea_and_never_with_enter(tmp_path):
     assert hits(req, "/msg") == []
 
 
-def test_s6b_a_public_search_textarea_takes_no_line_break(tmp_path):
-    """Public search typing is free (unjudged), so it never takes a line break, even when the
-    search box is a textarea: every multi-line text is judged first."""
+def test_s6b_a_public_search_textarea_takes_a_line_break_as_text(tmp_path):
+    """Typing sends nothing: a line break goes into a real textarea as text, search box or not."""
     html = page('<main><form action="/submit" method="get"><label>Zoek <textarea id="q" '
                 'name="q" role="searchbox"></textarea></label></form></main>')
     out, req = gate_run(tmp_path, html, [
         act("type", "Zoek", text="pizza\nroma", raw=True), {"sleep": 0.5},
         js("() => document.getElementById('q').value")])
-    assert out[0]["outcome"] == "not_run" and out[0]["reason"] == "one_line", out[0]
-    assert out[-1] == "" and hits(req, "/submit") == []
+    assert out[0]["outcome"] == "done", out[0]
+    assert out[-1] == "pizza\nroma" and hits(req, "/submit") == []
 
 
 async def test_s6b_chrome_says_which_field_is_a_textarea():
@@ -1347,7 +1499,7 @@ def test_s5m_a_time_field_in_a_written_frame_is_seen_set_and_read_back(tmp_path)
     observation shows it, and the frame's form submits exactly that value."""
     out, req = gate_run(tmp_path, page(FRAMED_TIME, WRITE_FRAME), [
         {"observe": {"name": R, "values": True}},
-        act("type", "Pickup time", text="19:30"), verdict(GO), {"sleep": 0.5},
+        act("type", "Pickup time", text="19:30", plan="Set the time"), verdict(GO), {"sleep": 0.5},
         {"observe": {"name": R, "values": True}},
         act("click", "Order"), verdict(GO), landed("/submit?t=19%3A30"), MARGIN])
     seen, judged, typed, _, after = out[:5]
@@ -1360,3 +1512,435 @@ def test_s5m_a_time_field_in_a_written_frame_is_seen_set_and_read_back(tmp_path)
     assert after["values"]["Pickup time"] == "19:30", after
     assert "seen 19:30" in after["text"], after["text"]
     assert [p for _m, _h, p in hits(req, "/submit")] == ["/submit?t=19%3A30"]
+
+
+# --------------------------------------------------------------------------- general abilities
+
+R_ = {"read": {"name": R}}
+ASK_PLAN = {"verdict": "ask", "category": "account_change", "reason": "adds the listed cards",
+            "question": {"text": "Add the 2 listed cards to the wishlist? Nothing is paid.",
+                         "confirm_label": "Add 2 cards", "extra_options": [], "screenshot": "useful",
+                         "highlight": [], "text_incomplete": False}}
+GO_APPROVED = {"verdict": "go", "category": "account_change", "reason": "carries out the plan"}
+PLAN_STEPS = """<button id=c data-k=create onclick="%s">Create</button>
+<button id=a data-k=add onclick="%s">Add</button>""" % (SUBMIT, SUBMIT)
+
+
+PASSWORD_MANAGER_BUTTON = """const pm = document.createElement('com-pm-button'); document.body.append(pm);
+  pm.attachShadow({mode: 'closed'}).innerHTML = '<button>Fill</button><div>menu</div>';"""
+
+
+def test_a_yes_on_a_page_with_a_password_managers_button_runs_once(tmp_path):
+    """A closed root with no field leaves the reading whole, so his Yes is re-judged and runs
+    instead of lapsing as too much to compare."""
+    out, req = gate_run(tmp_path, page(PAY_FORM, PASSWORD_MANAGER_BUTTON), [
+        act("click", "Pay now"), verdict(ASK), tap(), verdict(SAME), landed("/submit?pay"), MARGIN])
+    assert out[2]["outcome"] == "rejudgement_required", out[2]
+    assert out[3]["outcome"] == "done", out[3]
+    assert len(hits(req, "/submit")) == 1
+
+
+def test_a_field_in_a_closed_root_still_has_no_same(tmp_path):
+    field = """const h = document.createElement('div'); document.body.append(h);
+      h.attachShadow({mode: 'closed'}).innerHTML = '<input value="hidden">';"""
+    out, req = gate_run(tmp_path, page(PAY_FORM, field), [act("click", "Pay now"), verdict(ASK), tap()])
+    assert out[1]["outcome"] == "asked", out[1]
+    assert out[2] == {"error": "unsupported"}, out[2]        # the live view only: no Yes to press
+    assert hits(req, "/submit") == []
+
+
+CHURN = """let n = 0; setInterval(() => { document.getElementById('price').textContent = 'Now ' + (++n); }, 150);"""
+CHURN_PAGE = ('<p id="price">Now 0</p><button id="one" data-k="one" onclick="%s">One</button>'
+              '<button id="two" data-k="two" onclick="%s">Two</button>' % (SUBMIT, SUBMIT))
+
+
+def test_a_reading_step_runs_under_a_changing_price(tmp_path):
+    out, req = gate_run(tmp_path, page(CHURN_PAGE, CHURN), [
+        act("click", "One"), verdict(GO), landed("/submit?one"), MARGIN])
+    assert out[1]["outcome"] == "done", out[1]
+    assert len(hits(req, "/submit?one")) == 1
+
+
+def test_a_page_that_loads_on_scroll_is_judged_with_its_picture_and_runs_once(tmp_path):
+    """The target scrolls into view for the picture; the page loads more text as it does. The
+    packet, read after the picture, holds that text; the go runs once, with no fresh judgement."""
+    html = page(f'''<div style="height:3000px">Top</div><button id=b data-k=one onclick="{SUBMIT}">Open</button>
+        <div id=more></div>''', """
+        new IntersectionObserver((seen, io) => { if (seen[0].isIntersecting) {
+          document.getElementById('more').textContent = 'Loaded when it scrolled in'; io.disconnect(); }
+        }).observe(document.getElementById('b'));""")
+    out, req = gate_run(tmp_path, html, [act("click", "Open"), {"picture": {"name": R}},
+                                         verdict(GO), landed("/submit?one"), MARGIN])
+    assert "Loaded when it scrolled in" in out[0]["judgement"]["packet"]
+    assert out[1]["png"] is True and out[1]["png_bytes"] > 100
+    assert out[2]["outcome"] == "done"
+    assert len(hits(req, "/submit")) == 1
+
+
+def test_a_long_list_replaces_the_field_as_one_insertion_exact(tmp_path):
+    """5,489 characters over old text: the field holds exactly it, no key event reached the page,
+    in a moment."""
+    text = "\n".join(f"{n} Card number {n}" for n in range(1, 287))[:5489]
+    html = page("""<label>List <textarea id=t rows=5
+        onkeydown="window.keys = (window.keys || 0) + 1">old text here</textarea></label>""")
+    value = "document.getElementById('t').value"
+    out, req = gate_run(tmp_path, html, [
+        js("Date.now()"), act("type", "List", text=text), js("Date.now()"),
+        js(value), js("window.keys || 0")])
+    assert len(text) == 5489
+    assert out[1]["outcome"] == "done" and out[1]["typed"] == "shown"
+    assert out[2] - out[0] < 5000
+    assert out[3] == text
+    assert out[4] == 0
+
+
+def test_a_field_whose_page_refuses_an_insertion_answers_not_shown(tmp_path):
+    html = page("""<label>List <textarea id=t oninput="this.value = ''"></textarea></label>""")
+    out, _req = gate_run(tmp_path, html, [act("type", "List", text="1 Card\n" * 100)])
+    assert out[0]["outcome"] == "done" and out[0]["typed"] == "not_shown"
+
+
+def _lines(count):
+    return "".join(f"<p>line {n:06d} of the list</p>" for n in range(count))
+
+
+def test_a_150000_character_page_reads_whole_through_next_offset(tmp_path):
+    count = 150_000 // 23 + 1
+    out, _req = gate_run(tmp_path, page(_lines(count)), [OBS, R_])
+    assert out[0]["text_cut"] is True and len(out[0]["text"]) == 20_000
+    read = out[1]
+    assert read["text"].splitlines() == [f"line {n:06d} of the list" for n in range(count)]
+    assert read["windows"] == 6 and read["last"]["complete"] is True
+    assert read["last"]["next_offset"] is None and read["last"]["masked"] is False
+
+
+def test_a_page_past_400000_characters_is_never_complete(tmp_path):
+    count = 450_000 // 23
+    out, _req = gate_run(tmp_path, page(_lines(count)), [OBS, R_],
+                         timeout=600)
+    assert out[0]["text_cut"] is True
+    read = out[1]
+    assert read["last"]["complete"] is False and read["last"]["next_offset"] is None
+    assert read["text"].startswith("line 000000") and 399_000 < len(read["text"]) <= 400_000
+
+
+def test_a_plan_runs_on_one_yes_and_each_press_once(tmp_path):
+    """The whole path on a real page: the plan's question, the tap, the press; the next step of
+    the plan runs on a go under the approval; each control is pressed once."""
+    out, req = gate_run(tmp_path, page(PLAN_STEPS), [
+        act("click", "Create", plan="Create the wishlist\nAdd 2 cards"), verdict(ASK_PLAN),
+        {"question": {"name": R}}, tap(), verdict(SAME), landed("/submit?create"),
+        OBS, act("click", "Add"), verdict(GO_APPROVED), landed("/submit?add"), MARGIN])
+    assert packet(out[0])["plan"] == "Create the wishlist\nAdd 2 cards"
+    assert out[2]["view"]["plan"] == "Create the wishlist\nAdd 2 cards"
+    assert out[2]["view"]["screenshot_id"] is None
+    assert out[4]["outcome"] == "done"
+    assert packet(out[7])["approved"] == "Create the wishlist\nAdd 2 cards"
+    assert out[8]["outcome"] == "done"
+    assert len(hits(req, "/submit?create")) == 1 and len(hits(req, "/submit?add")) == 1
+
+
+def test_a_fee_shown_after_the_judgement_is_never_pressed_on_the_approval(tmp_path):
+    """On a real page: under the approval, a fee that appears after the judged reading stops the
+    press; the step is judged afresh with the fee in its packet."""
+    out, req = gate_run(tmp_path, page(PLAN_STEPS + "<p id=note>Adding is free</p>"), [
+        act("click", "Create", plan="Create the wishlist\nAdd 2 cards"), verdict(ASK_PLAN), tap(),
+        verdict(SAME), landed("/submit?create"), OBS, act("click", "Add"),
+        js("() => { document.getElementById('note').textContent = 'EUR 25 fee, charged now'; }"),
+        verdict(GO_APPROVED), {"sleep": 1}])
+    assert "approved" in packet(out[6]) and "EUR 25 fee" not in out[6]["judgement"]["packet"]
+    assert out[8]["outcome"] == "judgement_required" and "EUR 25 fee" in out[8]["judgement"]["packet"]
+    assert hits(req, "/submit?add") == []
+
+
+# --------------------------------------------------------------------------- filling in
+
+FILL = ('<main><h1>Checkout</h1><p>Total € 84,20</p><form action="/pay?quote=Q84" method="post">'
+        '<label>Note <input name="note"></label>'
+        '<label>Lines <textarea name="lines"></textarea></label>'
+        '<label><input type="checkbox" name="insure" value="yes"> Extra insurance € 40,00</label>'
+        '<label><input type="radio" name="ship" value="air"> By air € 15,00</label>'
+        '<label>Bank <select name="bank"><option>ING</option><option>ABN AMRO</option></select></label>'
+        '<details><summary>Terms</summary>The terms.</details>'
+        '<button type="button" aria-expanded="false">More options</button>'
+        '<button type="submit">Pay now</button></form></main>')
+
+
+def fill_steps():
+    return [act("type", "Note", text="Ring twice"), act("type", "Lines", text="one\ntwo", raw=True),
+            act("click", "Extra insurance"), act("click", "By air"),
+            act("select", "Bank", choice="ABN AMRO"), act("click", "Terms"), act("click", "More options"),
+            OBS]
+
+
+def test_filling_in_runs_unjudged_and_the_press_that_pays_is_judged_on_all_of_it(tmp_path):
+    out, req = gate_run(tmp_path, page(FILL), [
+        *fill_steps(), act("click", "Pay now"), verdict(ASK), {"sleep": 1}, tap(), verdict(SAME),
+        landed("/pay"), MARGIN])
+    filled, pressed, asked = out[:7], out[8], out[9]
+    assert [r["outcome"] for r in filled] == ["done"] * 7
+    assert filled[0]["typed"] == "shown"
+    assert not any("judgement" in r for r in filled)
+    # The press is judged, and its packet holds every tick and value made without a check.
+    assert pressed["outcome"] == "judgement_required" and asked["outcome"] == "asked"
+    target = packet(pressed)["target"]
+    fields = {f["label"]: f for f in target["form"]["fields"]}
+    assert fields["Note"]["value"] == "Ring twice" and fields["Lines"]["value"] == "one\ntwo"
+    assert fields["Extra insurance € 40,00"]["checked"] is True
+    assert fields["By air € 15,00"]["checked"] is True and fields["Bank"]["selected"] == "ABN AMRO"
+    assert sorted(target["submission"]["entries"]) == [
+        ["bank", "ABN AMRO"], ["insure", "yes"], ["lines", "one\ntwo"], ["note", "Ring twice"],
+        ["ship", "air"]]
+    # Nothing left before the operator's Yes; the Yes sends once.
+    assert out[10:13][2]["outcome"] == "done"
+    assert len(hits(req, "/pay")) == 1 and hits(req, "/submit") == []
+
+
+def test_enter_after_filling_in_is_judged_on_all_of_it(tmp_path):
+    out, req = gate_run(tmp_path, page(FILL), [
+        act("click", "Extra insurance"), OBS, act("type", "Note", text="x", enter=True), {"sleep": 1}])
+    pressed = out[2]
+    assert out[0]["outcome"] == "done" and pressed["outcome"] == "judgement_required"
+    target = packet(pressed)["target"]
+    assert ["insure", "yes"] in target["enter_submission"]["entries"]
+    assert hits(req, "/pay") == []
+
+
+def test_a_tick_after_the_question_voids_the_yes(tmp_path):
+    """A box ticked with no check while nothing else moved: the frozen submission at the press
+    differs, so a Yes on the earlier reading does not send it."""
+    out, req = gate_run(tmp_path, page(FILL), [
+        act("click", "Pay now"), verdict(ASK),
+        js("() => { document.querySelector('[name=insure]').checked = true; }"),
+        tap(), verdict(CHANGED), {"sleep": 1}])
+    assert "submission_changed" in packet(out[3])["difference"]
+    assert hits(req, "/pay") == []
+
+
+@pytest.mark.parametrize("control, label, nth", [
+    ('<button type="submit" role="checkbox" aria-checked="false">Accept</button>', "Accept", 0),
+    ('<button aria-expanded="false">Plan</button>', "Plan", 0),        # no type: it submits
+    ('<label><input type="image" alt="Buy" role="radio" src="/x.png"> Buy</label>', "Buy", 0),
+    ('<button type="button" onclick="fetch(\'/submit\')">Delete</button>', "Delete", 0),
+    ('<div role="switch" tabindex="0" aria-checked="false">Auto renew</div>', "Auto renew", 0),
+    ('<div role="menuitem" tabindex="0">Cancel plan</div>', "Cancel plan", 0),
+    # Measured in Chromium: a click on these runs the enclosing link or button as well (the
+    # second control of that name is the inner one; the first, the link, is free in public).
+    ('<a href="/pay?x=1"><button type="button" aria-expanded="false">Plan menu</button></a>', "Plan menu", 1),
+    ('<a href="/pay?x=1"><div role="checkbox" tabindex="0">Keep it</div></a>', "Keep it", 1),
+    ('<a href="/pay?x=1"><summary>Odd summary</summary></a>', "Odd summary", 1),
+    ('<button><summary>Odd summary</summary></button>', "Odd summary", 1),
+    ('<button><span role="button" tabindex="0" aria-expanded="false">Span menu</span></button>', "Span menu", 1),
+    ('<button>Buy <span id="l">Inner menu</span><input type="button" aria-labelledby="l" '
+     'aria-expanded="false"></button>', "Inner menu", -1),
+    ('<button>Buy <span id="l">Inner box</span><input type="checkbox" aria-labelledby="l"></button>', "Inner box", -1),
+    # An SVG link is one too.
+    ('<svg width="300" height="100"><a href="/pay?x=1"><g role="button" aria-expanded="false"><rect width="220" '
+     'height="60" fill="blue"/><text x="10" y="35">Svg menu</text></g></a></svg>', "Svg menu", -1),
+    ('<svg width="300" height="100" xmlns:xlink="http://www.w3.org/1999/xlink"><a xlink:href="/pay?x=1"><g role="button" '
+     'aria-expanded="false"><rect width="220" height="60" fill="blue"/><text x="10" y="35">Old svg menu</text></g></a></svg>',
+     "Old svg menu", -1),
+])
+def test_what_can_send_stays_judged(tmp_path, control, label, nth):
+    out, req = gate_run(tmp_path, page(f'<main><form action="/pay" method="post">{control}</form></main>'),
+                        [act("click", label, nth=nth), {"sleep": 0.5}])
+    assert out[0]["outcome"] == "judgement_required", out[0]
+    assert hits(req, "/pay") == [] and hits(req, "/submit") == []
+
+
+@pytest.mark.parametrize("child", [
+    '<button style="width:100%;height:60px">Pay</button>',
+    '<a href="/pay?x=1" style="display:block;height:60px">Pay</a>'], ids=["submit", "link"])
+def test_a_box_holding_a_submit_or_link_never_presses_it(tmp_path, child):
+    """The press point lands on the child: the hit test says moved, and nothing is sent."""
+    out, req = gate_run(tmp_path, page('<main><form action="/pay" method="post"><div role="checkbox" '
+                                       f'tabindex="0" style="width:300px">Wrap {child}</div></form></main>'),
+                        [act("click", "Wrap"), {"sleep": 1}])
+    assert out[0]["outcome"] == "not_run" and out[0]["reason"] == "moved", out[0]
+    assert hits(req, "/pay") == []
+
+
+def test_a_field_inside_a_link_is_judged(tmp_path):
+    """Measured in Chromium: the click into a text field inside a link follows the link."""
+    out, req = gate_run(tmp_path, page('<main><a href="/pay"><label>Odd field <input></label></a></main>'),
+                        [act("type", "Odd field", text="x", nth=-1), {"sleep": 0.5}])
+    assert out[0]["outcome"] == "judgement_required", out[0]
+    assert packet(out[0])["target"]["destination"]["path"] == "/pay"
+    assert hits(req, "/pay") == []
+
+
+def test_a_field_inside_a_submit_button_is_judged(tmp_path):
+    out, req = gate_run(tmp_path, page('<main><form action="/pay" method="post"><button>Buy '
+                                       '<span id="l">Odd field</span><input aria-labelledby="l"></button></form></main>'),
+                        [act("type", "Odd field", text="x", nth=-1), {"sleep": 0.5}])
+    assert out[0]["outcome"] == "judgement_required", out[0]
+    assert packet(out[0])["target"]["submission"]["method"] == "post"
+    assert hits(req, "/pay") == []
+
+
+def test_a_link_on_a_signed_in_site_keeps_its_check(tmp_path):
+    out, _req = gate_run(tmp_path, b"", [act("click", "Pay by link"), {"sleep": 0.5}], account_html=page(
+        '<main><a role="checkbox" href="/pay">Pay by link</a><a href="/x" aria-expanded="false">Menu</a></main>'))
+    assert out[0]["outcome"] == "judgement_required", out[0]
+
+
+def test_an_address_on_the_host_open_runs_with_no_check(tmp_path):
+    """Real Chrome, the signed-in session: a navigation and an address search on the host open run
+    with no packet; the requests are plain GETs, each once. Clicking the same link, a fragment link
+    and a press stay checked, and nothing they would send goes."""
+    account = page('<main><a href="/next">Next</a>'
+                   '<a href="#top">Top</a><button id="b">Send</button></main>')
+    pages = {path: page(f'<main><p>{path}</p></main>') for path in ("/next", "/next3")}
+    out, req = gate_run(tmp_path, b"", [
+        act("click", "Top"), {"sleep": 0.3},
+        act("click", "Send"), {"sleep": 0.3},
+        act("click", "Next"), {"sleep": 0.3},
+        js("() => location.pathname"),
+        act("navigate", "Next"), landed("/next"), MARGIN, OBS,
+        {"search": {"name": R, "query": f"https://{A}/next3"}}, landed("/next3"), MARGIN],
+        account_html=account, pages=pages)
+    assert [out[n]["outcome"] for n in (0, 2, 4)] == ["judgement_required"] * 3, out[:5]
+    assert out[6] != "/next"
+    assert out[7]["outcome"] == "done", out[7]
+    assert out[11].get("outcome") == "done", out[11]
+    assert [(m, p) for m, _h, p in hits(req, "/next")] == [("GET", "/next"), ("GET", "/next3")], req
+
+
+def test_a_script_behind_a_link_on_the_host_open_waits_for_the_check(tmp_path):
+    """Real Chrome: a link whose click runs a script that sends. Nothing is sent until the check,
+    which sees the link's visible name, says go; then the real press runs it once."""
+    account = page('<main><a href="/next" onclick="fetch(\'/delete\', {method: \'POST\'}); '
+                   'return false">Remove all</a></main>')
+    out, req = gate_run(tmp_path, b"", [
+        act("click", "Remove all"), {"sleep": 0.5}, js("() => 1"), verdict(GO), MARGIN],
+        account_html=account)
+    assert out[0]["outcome"] == "judgement_required", out[0]
+    assert packet(out[0])["target"]["name"] == "Remove all"
+    assert out[3]["outcome"] == "done", out[3]
+    assert [m for m, _h, _p in hits(req, "/delete")] == ["POST"], req
+
+
+def test_a_box_that_turned_into_a_submit_is_not_pressed(tmp_path):
+    """Checked at delivery: the target's facts at the press are those it was free for."""
+    html = page('<main><form action="/pay" method="post"><label><input id="c" type="checkbox" name="b" value="1"> Box</label>'
+                '</form></main>',
+                "const c = document.getElementById('c'); c.addEventListener('mousemove', () => { c.type = 'submit'; });")
+    out, req = gate_run(tmp_path, html, [act("click", "Box"), {"sleep": 1}])
+    assert out[0] == {**out[0], "outcome": "not_run", "reason": "changed"}
+    assert hits(req, "/pay") == []
+
+
+def test_a_step_carrying_a_plan_goes_to_the_check(tmp_path):
+    out, _req = gate_run(tmp_path, page(FILL), [
+        act("type", "Note", text="x", plan="Add a note and pay")])
+    assert out[0]["outcome"] == "judgement_required"
+    assert packet(out[0])["plan"] == "Add a note and pay"
+
+
+# ------------------------------------------------------------- a long page: a Yes that can press
+
+LONG_LIST = "".join(f'<button>Item {n}</button><br>' for n in range(420))
+SAVE = f'<button id="go" data-k="go" onclick="{SUBMIT}">Save</button>'
+TO_THE_END = "() => { scrollTo(0, document.body.scrollHeight); }"
+
+
+def test_a_yes_presses_on_a_stable_long_page_scrolled_meanwhile(tmp_path):
+    out, req = gate_run(tmp_path, page(SAVE + LONG_LIST), [
+        act("click", "Save"), verdict(ASK_CHANGE), {"question": {"name": R}}, js(TO_THE_END),
+        tap(), verdict(SAME), landed("/submit?go"), MARGIN])
+    _, asked, question, _, rejudge, done, _, _ = out
+    assert asked["outcome"] == "asked" and question["view"]["confirm_offered"] is True
+    assert rejudge["outcome"] == "rejudgement_required"
+    assert packet(rejudge)["difference"] == {}
+    assert done["outcome"] == "done"
+    assert len(hits(req, "/submit?go")) == 1
+
+
+def test_a_yes_presses_on_a_long_page_with_a_hover_cursor_rule(tmp_path):
+    """The pointer's arrival adds a control to the list before the guard's final read."""
+    wrapped = ('<style>.wrap:hover { cursor: pointer; }</style><div class="wrap">' + SAVE
+               + '<div>Row text <span tabindex="0">Inner</span></div></div>')
+    out, req = gate_run(tmp_path, page(wrapped + LONG_LIST), [
+        act("click", "Save"), verdict(ASK_CHANGE), tap(), verdict(SAME), landed("/submit?go"),
+        MARGIN])
+    assert out[3]["outcome"] == "done"
+    assert len(hits(req, "/submit?go")) == 1
+
+
+def test_an_unlisted_control_changing_during_the_wait_stops_the_press(tmp_path):
+    beyond = LONG_LIST + '<a id="l" href="/one">A link</a>'
+    out, req = gate_run(tmp_path, page(SAVE + beyond), [
+        act("click", "Save"), verdict(ASK_CHANGE), tap(),
+        js("() => { document.getElementById('l').href = '/two'; }"), verdict(SAME)])
+    assert out[-1]["outcome"] == "rejudgement_required"
+    assert packet(out[-1])["difference"] == {"controls_beyond_list_changed": True}
+    assert hits(req, "/submit") == []
+
+
+REMOVE_ROWS = ('<table>'
+               '<tr data-k="alice"><td>Alice</td><td><button class="rm">Remove</button></td></tr>'
+               '<tr data-k="bob"><td>Bob</td><td><button class="rm">Remove</button></td></tr>'
+               '</table>')
+REMOVE_ON_ITS_ROW = ("document.addEventListener('click', (e) => { if (e.target.matches('.rm')) "
+                     "fetch('/submit?' + e.target.closest('tr').dataset.k, {method: 'POST'}); });")
+SWAP_THE_BUTTONS = """() => { const [x, y] = document.querySelectorAll('.rm');
+  const px = x.parentNode, py = y.parentNode; px.append(y); py.append(x); }"""
+
+
+@pytest.mark.parametrize("filler", ["", LONG_LIST], ids=["fits", "long"])
+def test_a_button_moved_to_another_row_during_the_wait_presses_nothing(tmp_path, filler):
+    out, req = gate_run(tmp_path, page(REMOVE_ROWS + filler, REMOVE_ON_ITS_ROW), [
+        act("click", "Remove"), verdict(ASK_CHANGE), tap(), js(SWAP_THE_BUTTONS), verdict(SAME)])
+    assert out[-1]["outcome"] == "rejudgement_required"
+    assert packet(out[-1])["difference"] == {"target_record_changed": {
+        "before": ["Alice", "Remove"], "after": ["Bob", "Remove"]}}
+    assert hits(req, "/submit") == []
+
+
+SELECT_ROWS = ('<div id="a" tabindex="0" aria-checked="true">Alice</div>'
+               '<div id="b" tabindex="0" aria-checked="false">Bob</div>'
+               f'<button id="rm" data-k="selected" onclick="{SUBMIT}">Remove selected</button>')
+MOVE_SELECTION = """() => { document.getElementById('a').setAttribute('aria-checked', 'false');
+  document.getElementById('b').setAttribute('aria-checked', 'true'); }"""
+
+
+def test_a_selection_held_in_tabindex_rows_moving_during_the_wait_presses_nothing(tmp_path):
+    out, req = gate_run(tmp_path, page(SELECT_ROWS + LONG_LIST), [
+        act("click", "Remove selected"), verdict(ASK_CHANGE), tap(), js(MOVE_SELECTION),
+        verdict(SAME)])
+    assert out[-1]["outcome"] == "rejudgement_required"
+    assert packet(out[-1])["difference"]["controls_beyond_list_changed"] is True
+    assert hits(req, "/submit") == []
+
+
+def test_a_checkbox_in_a_small_frame_beside_a_long_page_changing_presses_nothing(tmp_path):
+    small = page('<label><input id="c" type="checkbox"> Share profile publicly</label>')
+    frame = '<iframe id="fr" src="/small" style="width:300px;height:100px"></iframe>'
+    tick = ("() => { document.getElementById('fr').contentDocument"
+            ".getElementById('c').checked = true; }")
+    out, req = gate_run(tmp_path, page(frame + SAVE + LONG_LIST), [
+        act("click", "Save"), verdict(ASK_CHANGE), tap(), js(tick), verdict(SAME)],
+        pages={"/small": small})
+    assert out[-1]["outcome"] == "rejudgement_required"
+    difference = packet(out[-1])["difference"]
+    assert difference["controls_beyond_list_changed"] is True
+    assert len(difference["controls_changed"]) == 1
+    assert hits(req, "/submit") == []
+
+
+CLOSED_FIELD = ('<div id="h"></div>', "document.getElementById('h').attachShadow({mode: 'closed'})"
+                                      ".innerHTML = '<input>';")
+
+
+@pytest.mark.parametrize("body,script", [
+    CLOSED_FIELD, ("<p>" + "word " * 41_000 + "</p>", "")], ids=["closed_shadow", "long_block"])
+def test_a_page_the_app_cannot_read_whole_offers_no_yes(tmp_path, body, script):
+    out, req = gate_run(tmp_path, page(SAVE + body, script), [
+        act("click", "Save"), verdict(ASK_CHANGE), {"question": {"name": R}}, tap()])
+    _, asked, question, tapped = out
+    assert asked["outcome"] == "asked"
+    assert question["view"]["confirm_offered"] is False
+    assert question["view"]["live_only_copy"] == ("I can't re-check this page before pressing, "
+                                                  "so please do it in the live view.")
+    assert tapped == {"error": "unsupported"}
+    assert hits(req, "/submit") == []

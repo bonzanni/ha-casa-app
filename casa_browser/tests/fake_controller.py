@@ -58,6 +58,7 @@ class FakeController:
         self.store = Store(store_path)
         self.clock = clock
         self.observe_flags: list[bool] = []    # each observe's sign_in flag, in order
+        self.observe_finds: list = []          # each observe's words, in order
         self.configured = configured
         self.needs_locale = needs_locale
         self.language_source = None if needs_locale else language_source
@@ -172,8 +173,10 @@ class FakeController:
     async def events(self, run_id: str, after: int) -> list[SafeEvent]:
         return self.store.events_after(run_id, after)
 
-    async def observe(self, run_id: str, sign_in: bool = False) -> Observation:
+    async def observe(self, run_id: str, sign_in: bool = False,
+                      find: str | None = None) -> Observation:
         self.observe_flags.append(sign_in)
+        self.observe_finds.append(find)
         run = self._require_running(run_id)
         gen = self.generation.setdefault(run_id, 1)
         source_id = None
@@ -214,6 +217,10 @@ class FakeController:
 
     async def search(self, run_id: str, query: str) -> Observation:
         return await self.observe(run_id)
+
+    async def fetch(self, run_id: str, url: str, fields: tuple[str, ...]):
+        self._require_running(run_id)
+        return ActionResult("not_run", 0, {"reason": "http_403"})
 
     async def download(self, run_id: str, handle: str):
         run = self._require_running(run_id)
@@ -481,6 +488,21 @@ class FakeController:
         if data is None:
             raise ProtocolError("not_found")
         return data
+
+    async def judgement_picture(self, run_id: str, judgement_id: str) -> bytes:
+        p = self.pending.get(run_id)
+        if p is None or p["id"] != judgement_id:
+            raise ProtocolError("not_found")
+        return b"\x89PNG\r\n\x1a\n" + b"\0" * 32
+
+    async def look(self, run_id: str, handle: str | None) -> str | None:
+        self._require_running(run_id)
+        return "iVBORw0KGgo="
+
+    async def read(self, run_id: str, handle: str | None, file_id: str | None, offset: int,
+                   rows: bool = False) -> dict:
+        self._require_running(run_id)
+        return {"text": "page text"[offset:], "next_offset": None, "complete": True, "masked": False}
 
     async def take_screenshot(self, run_id: str) -> str:
         run = self._run(run_id)

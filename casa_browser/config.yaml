@@ -1,6 +1,6 @@
 name: "Casa Browser"
 description: "A sandboxed browser that Casa's browsing specialist drives on your registered sites and the open web"
-version: "0.1.11"
+version: "0.1.12"
 slug: casa_browser
 url: https://github.com/bonzanni/ha-casa-app
 image: "ghcr.io/bonzanni/casa_browser"

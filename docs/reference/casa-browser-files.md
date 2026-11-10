@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-21
+last_reviewed: 2026-11-07
 ---
 
 # Casa Browser — downloads, files and delivery records
@@ -13,14 +13,15 @@ recorded: `casa_browser/rootfs/opt/casa_browser/downloads.py`, the file and deli
 `store.py`, and the browser's downloads directory made by root bootstrap. The request policy
 the downloads obey is [`casa-browser.md`](casa-browser.md); the proxy that enforces it is
 [`casa-browser-runtime.md`](casa-browser-runtime.md); handles and the page-view gate are
-[`casa-browser-browser.md`](casa-browser-browser.md). The run controller calls these methods
+[`casa-browser-observations.md`](casa-browser-observations.md). The run controller calls these methods
 from the `/v1` download, archive, file and delivery routes
 ([`casa-browser-runs.md`](casa-browser-runs.md)).
 
 ## Mental model
 
-**The controller fetches, the policy decides every hop.** A model never names an address: it
-names a link handle from the current observation. The controller resolves the handle (same run,
+**The controller fetches, the policy decides every hop.** For a download a model never names an
+address: it names a link handle from the current observation (a plain read, below, is the one
+place it names one, and no cookie goes with it). The controller resolves the handle (same run,
 same page generation, and the page still belonging to the session) and fetches the link's
 address itself — through the enforcing proxy's own download listener, with the proxy's CA,
 never through Patchright's request client. Each hop is a download hop: the floor, the
@@ -84,6 +85,55 @@ removes one a crash left (`cleanup_partials`).
 
 **INV-BRW-046**: A public link download whose detected type is outside the document set is recorded only when a go verdict or an executed confirmation for its own pending judgement keeps it, and at any other end of that judgement its bytes are deleted.
 
+## Plain reading
+
+`Downloader.fetch_plain(run, url, policy, agent)` reads a public address with no browser: the
+hops of a link download (`_fetch_http`), the run's policy asked about each, the proxy's download
+listener, no `Authorization`, with an address the model holds. The controller checks the address
+with `start_url_ok` first (`not_run` `bad_address`) and hands in the User-Agent it kept.
+
+**Never a cookie.** It takes no session, and passes `_fetch_http` an empty cookie scope, because
+`_cookie_scope` would add the account site's origins during an account session even with no page
+origin. Reading the signed-in site's own address sends nothing of the sign-in.
+
+**INV-BRW-064**: A plain fetch carries no cookie, whatever the session or destination, sends no hop the policy or the floor refuses, and neither reads nor changes Chrome, the session or the installed policy; only its own answer keeps addresses whole, and a file downloaded or captured from a page stays fully masked.
+
+**What the answer becomes.** The one request's answer decides, so nothing asks twice
+(`_fetch_http`'s `last_hop` holds the status and the address of the hop that ended it). A 200 with a
+whole plain body is a stored file, like any other. Anything else keeps nothing and is `not_run`:
+
+| Reason | Answer |
+|---|---|
+| `http_<status>` | the site's own status when the hop that ended the fetch was not a whole plain 200: 403, 404, 503, a 206. A 200 whose body came compressed against `identity`, or broke off, is `http_200`. The proxy's floor refusal of a name that resolves privately is a 403 too |
+| `blocked` | no answer: the policy refused a hop before it was sent, the address did not connect, or there were too many hops |
+| `not_document` | a 200 of a type outside the document set: not kept, because a public link download of it waits for the check, and a plain read must not be the way around that |
+
+A body past the file bound is the protocol's `file_too_large`, as for a download.
+
+**The reply.** The first `MAX_READ` window of the file as `read` serves it, with its `file`,
+`next_offset` and `source_id`, and `url`, the address that answered, so relative links can be
+resolved after a redirect; `read` with the `file_id` goes on. A type that is not
+readable text comes back with its file and `text` null.
+
+`text/html` is read as plain text by `downloads.html_text` (stdlib `html.parser`; script and style
+and template dropped; undecodable bytes replaced), downloaded pages too. A page's links stand inline:
+on a plain read they are resolved from the address that answered and the page's first `<base>`, as a
+browser would, so each can be read directly; on a downloaded page they stand as the page writes them.
+
+**Addresses stay whole on a plain read.** There are no handles to follow here, so
+`mask_text(..., keep_addresses=True)` leaves addresses out of the address pass: the reply, `read` of a file in `_Active.plain_files`, the
+`fields` reply and `url`. The known formats stay masked, and a secret-shaped token is masked in
+place (`_TOKEN_IN_ADDRESS`, judged between an address's separators, so a path holding a word and a
+number stays an address). A file downloaded or captured from a page is fully masked, as ever: its
+address can carry what only the operator can see. A documented residual: no cookie goes with a plain
+read, but a site that recognises the requester some other way (its source address, a token in the
+address) can still answer with a private link, and the reader sees it whole.
+
+`fields` (dotted paths, JSON only) are `downloads.pick_fields`: the reply holds the same shape with
+only those members, a step onto a list maps over it, and a path that is not there is absent. Past
+one window it says `complete: false` and has no `next_offset`, because the rest is the file's, not
+the fields'. A body that is not JSON sets `not_json` and the reply is the ordinary window.
+
 ## Browser downloads
 
 A file the browser downloads itself — a button that builds a `blob:` and clicks it, or a form
@@ -142,6 +192,7 @@ lists every attempt of the run's files, oldest first — a withheld one included
 
 **Tests**
 - `casa_browser/tests/test_downloads.py`
+- `casa_browser/tests/test_plain_fetch.py`
 - `casa_browser/tests/integration/test_file_downloads.py`
 
 **Related**
