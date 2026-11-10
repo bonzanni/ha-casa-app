@@ -38,7 +38,7 @@ def test_each_job_gets_its_own_brief_uuid():
 def test_job_session_options_set_ceiling_window_and_echo():
     base = ClaudeAgentOptions(max_turns=5, env={"KEEP": "1"},
                               extra_args={"other": "x"})
-    opts = jobs.job_session_options(base, object())
+    opts = jobs.job_session_options(base, _rec())
     assert opts.max_turns == jobs.JOB_MAX_TURNS == 1000
     assert opts.env == {"KEEP": "1",
                         "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "200000"}
@@ -57,7 +57,7 @@ def test_the_cli_command_carries_the_echo_flag_and_ceiling():
     from claude_agent_sdk._internal.transport.subprocess_cli import (
         SubprocessCLITransport)
     opts = jobs.job_session_options(
-        ClaudeAgentOptions(cli_path="/usr/local/bin/claude"), object())
+        ClaudeAgentOptions(cli_path="/usr/local/bin/claude"), _rec())
     command = SubprocessCLITransport(prompt="x", options=opts)._build_command()
     assert "--replay-user-messages" in command
     assert command[command.index("--max-turns") + 1] == "1000"

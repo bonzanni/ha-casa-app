@@ -26,6 +26,7 @@ import pytest
 
 import agent
 import background_jobs as jobs
+import scratchpad
 import tools
 from engagement_registry import EngagementRegistry
 
@@ -247,7 +248,8 @@ class TestCompactionHeader:
         fire = hooks[0].hooks[0]
         out = await fire({"hook_event_name": "SessionStart", "source": "compact"}, None, None)
         header = out["hookSpecificOutput"]["additionalContext"]
-        assert header == jobs.job_header(rec)
+        # the job's pad follows the header (INV-PAD-011)
+        assert header == f"{jobs.job_header(rec)}\n\n{scratchpad.reinject_text(rec.id)}"
         assert_starter(header, rec.id, "operator")
         assert await fire({"hook_event_name": "SessionStart", "source": "resume"},
                           None, None) == {}

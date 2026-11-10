@@ -35,7 +35,7 @@ async def test_boot_resumes_only_the_jobs_open_before_the_channels_started(monke
             resumed.append(rec.id)
 
     monkeypatch.setattr(background_jobs, "_runner", _Runner())
-    monkeypatch.setattr(casa_core, "_settle_ended_job_journals",
+    monkeypatch.setattr(casa_core, "_settle_ended_job_state",
                         lambda reg, drv: _none())
     reg = _Registry([_job("open-at-stop"), _job("launched-since")])
     await casa_core._resume_background_jobs(reg, object(),

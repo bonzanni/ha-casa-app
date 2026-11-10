@@ -25,8 +25,9 @@ receipts, specialist instance tuples, installed stores, staging areas, agent hom
 environment file are all present, all operator-visible, and none of them admitted by it. If you are relying on git history to
 recover something there, check the whitelist first.
 
-**Not everything a turn keeps is state.** A [scratchpad](scratchpad.md) is memory alone: no file,
-no inventory entry, no corrupt-file policy, and every pad is gone after a restart.
+**Not everything a turn keeps is state.** A delegated run's [scratchpad](scratchpad.md) is memory
+alone: no file, no inventory entry, no corrupt-file policy, and every such pad is gone after a
+restart. A background job's pad is the exception, below.
 
 **A missing file is usually a valid empty state, not an error.** Most loaders treat absence
 as "nothing yet" and carry on. That is why a fresh install and a wiped state directory both
@@ -73,6 +74,13 @@ publication instead. Its contract is [`plugin-handoff.md`](plugin-handoff.md).
 until its session has read them, or until they were told as lost; the file goes with the job,
 and boot settles one a crash left behind. Its contract is
 [`background-job-message-journal.md`](background-job-message-journal.md).
+
+**A background job's scratchpad has a file too.** `/data/job-pads/<id>.pad` (0600, in a 0700
+directory in the private-state inventory) holds the job's notes as one JSON list of lines,
+rewritten atomically on every change; a resume loads it. An unreadable or invalid file is logged,
+left in place and read as an empty pad, which the next change overwrites. The file goes when the
+job ends, and boot removes one whose job is unknown or durably ended. Its contract is
+[`scratchpad.md`](scratchpad.md) (INV-PAD-010).
 
 **Memory has a directory of its own, and a registry of everywhere else it lives.**
 `/data/memory/` (0700, in the private-state inventory) holds `memory.db`, a SQLite store in

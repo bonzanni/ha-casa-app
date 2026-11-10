@@ -80,8 +80,10 @@ transcript line makes that message be redelivered once, marked as sent before th
 quiet run's promotion write, and the wait for a pending terminal write, happen in the seam before
 the commit, inside that same window. The terminal branch runs on the path that ends the job, after
 the terminal write: a Casa death between the two leaves that job's file behind, and the next boot
-settles it the same way (`casa_core._settle_ended_job_journals`, after the live jobs are resumed),
-removing any file whose record is gone. Settlements of one job run one at a time, each reading
+settles it the same way (`casa_core._settle_ended_job_state`, before the live jobs are resumed
+and also when there is no channel or job runner to resume them with; a job counts as ended only by
+its durable status, `settled_terminal_state`, and without a driver the file waits for a later
+boot), removing any file whose record is gone. Settlements of one job run one at a time, each reading
 the file under that job's lock, so a boot settle racing a live terminal path tells each entry
 once.
 

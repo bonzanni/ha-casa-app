@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-09
+last_reviewed: 2026-11-10
 ---
 
 # Background jobs: one long session
@@ -68,7 +68,17 @@ which the CLI compacts mid-turn. After a compaction a `SessionStart` callback ho
 (`background_jobs.compaction_hook_matcher`) re-states the job header
 (`background_jobs.job_header`): title, skill, `Job id:`, `Started by:`, the request, and that
 the context was just summarised. `background_jobs.job_session_options` applies all of this —
-ceiling, env, echo flag, hook — in the launch, resident-worker and resume builders alike.
+ceiling, env, echo flag, hook, scratchpad — in the launch, resident-worker and resume builders
+alike.
+
+**The job keeps its own notes.** Every job session has a scratchpad under the job's engagement
+id, its tool loaded up front, and its prompt says the notes last through compaction and a Casa
+restart and go when the job ends. The launch opens it with a `## brief` section (the request, its
+context, and the operator's words when the launching turn has them); every change is written to
+`/data/job-pads/<id>.pad`, a resume loads that file, and after each compaction the hook adds the
+pad's shape and brief to the header. Every path that ends the job deletes the pad, and boot removes
+a file whose job has ended or is unknown ([`scratchpad.md`](scratchpad.md), INV-PAD-010,
+INV-PAD-011).
 
 **What survives what.** A Casa restart and an unexpected CLI exit both go through
 `InCasaDriver.recover`: the replacement session resumes the recorded transcript, the journal is
@@ -164,7 +174,7 @@ the job `error` with "could not be resumed after a restart".
 **INV-BGJOB-019**: Every job session runs with the long-session auto-compaction window env, the step ceiling and the take-up echo flag, and after a compaction its `SessionStart` hook re-states the job header; any other session start adds nothing.
 
 The window is one shared constant (`claude_runtime.LONG_SESSION_COMPACT_WINDOW`) for every
-session meant to run long. The SDK's hook type does not list `SessionStart`, but the pinned CLI
+session meant to run long. After the header the hook adds the job's pad (INV-PAD-011). The SDK's hook type does not list `SessionStart`, but the pinned CLI
 accepts it as a callback hook, fires it with `source: "compact"` after manual and automatic
 compaction, and puts its `additionalContext` into the model's context. At every client open the
 driver logs the window and threshold the CLI actually applies (`get_context_usage`, no model

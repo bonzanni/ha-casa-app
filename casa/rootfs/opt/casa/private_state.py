@@ -134,6 +134,9 @@ DIRS: tuple[Entry, ...] = (
     Entry("/data/job-inbox", 0o700, PRIVATE,
           "Operator messages handed to a background job, kept until its "
           "session has read them or they were told as lost."),
+    Entry("/data/job-pads", 0o700, PRIVATE,
+          "A background job's scratchpad: the notes its session keeps, which "
+          "can hold page text, kept until the job ends."),
     Entry("/data/memory", 0o700, PRIVATE,
           "The memory store: every captured conversation turn verbatim, the "
           "ledgers written from them, and their exports."),

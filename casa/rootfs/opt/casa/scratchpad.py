@@ -2,22 +2,33 @@
 
 The place that opens a model client knows which conversation it opens, and builds a small tool
 server for that client with the pad's key fixed in the constructor (:func:`attach`). No tool
-argument names a pad and no file exists, so no lookup can pick the wrong one. Operations are
-plain Python on lines: exact or case-insensitive substring search, never a pattern language.
+argument names a pad, so no lookup can pick the wrong one. Operations are plain Python on
+lines: exact or case-insensitive substring search, never a pattern language.
+
+A delegated run's pad lives in memory only, and no file exists for it. A background job's pad is
+bound to a file of its own (``attach(..., path=...)``): every change is written through, a
+session built after a restart loads it, and it goes when the job ends.
 
 A plugin's own code reaches the same pad through ``POST /internal/broker/pad``
 (``operator_calls.build_pad_handler``), found by the broker client id the client was built with
 and only during that client's call in flight; text it puts there never starts a section.
 
-Who deletes a pad, and when: ``docs/architecture/scratchpad.md``. Leaf module: stdlib only, with
-the SDK and the broker's env key imported where a client is built."""
+Who deletes a pad, and when: ``docs/architecture/scratchpad.md``. Leaf module: stdlib and
+``atomic_io`` only, with the SDK and the broker's env key imported where a client is built."""
 from __future__ import annotations
 
 import collections
 import dataclasses
+import json
+import logging
+import os
 import threading
 import time
 from typing import Any, Callable
+
+from atomic_io import PRIVATE, atomic_write_json
+
+logger = logging.getLogger(__name__)
 
 SERVER = "casa-pad"
 TOOL = "scratchpad"
@@ -38,6 +49,8 @@ MATCH_CUT = 300
 SHAPE_SECTIONS = 20
 SHAPE_NAME_CUT = 60
 BRIEF = "brief"
+# What a job session is told of its pad after a compaction: the brief section, cut here.
+REINJECT_BRIEF_CHARS = 4_000
 # The pad route (``POST /internal/broker/pad``): what a plugin's code may do, and its read window.
 ROUTE_OPS = ("write", "append", "read")
 ROUTE_READ_CHARS = 30_000
@@ -372,6 +385,39 @@ _OPS: dict[str, Callable[[list[str], dict], tuple]] = {
 class _Pad:
     lines: list[str]
     used: float
+    # The file a job's pad is written through to; None for a pad that lives in memory only.
+    path: "str | None" = None
+
+
+def _save(pad: _Pad) -> None:
+    """Write a bound pad's lines to its file, under the store's lock, so the order of changes on
+    disk is their order in memory. A failure is logged: the change in memory stands."""
+    if pad.path is None:
+        return
+    try:
+        os.makedirs(os.path.dirname(pad.path) or ".", mode=0o700, exist_ok=True)
+        atomic_write_json(pad.path, pad.lines, indent=None, mode=PRIVATE,
+                          prefix=f".{os.path.basename(pad.path)}.")
+    except Exception as exc:  # noqa: BLE001 — the change and its reply stand
+        logger.warning("scratchpad %s not written: %s", pad.path, exc)
+
+
+def _load(path: str) -> "list[str] | None":
+    """The lines a pad's file holds; None when there is no file. A file that cannot be read, or
+    is not a list of lines within the cap, is logged, left on disk and read as empty."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = json.load(fh)
+    except FileNotFoundError:
+        return None
+    except Exception as exc:  # noqa: BLE001 — a bad file is no worse than no pad
+        logger.warning("scratchpad %s unreadable, starting empty: %s", path, exc)
+        return []
+    if (not isinstance(lines, list) or not all(isinstance(line, str) for line in lines)
+            or _size(lines) > MAX_BYTES):
+        logger.warning("scratchpad %s is not a pad's lines, starting empty", path)
+        return []
+    return lines
 
 
 class PadStore:
@@ -409,6 +455,7 @@ class PadStore:
                 self._pads[key] = _Pad(kept, self._now())
             else:
                 pad.lines = kept
+                _save(pad)
             return f"{_shape(kept)}\n{note}{said} {_delta(lines, kept)}", False
 
     def register(self, client: str, key: str) -> None:
@@ -447,6 +494,7 @@ class PadStore:
                 self._pads[key] = _Pad(kept, self._now())
             else:
                 pad.lines, pad.used = kept, self._now()
+                _save(pad)
             section = _required(kept, name)
             body_lines = kept[section.first:section.end]
             return {"lines": len(body_lines), "bytes": _size(body_lines)}
@@ -466,13 +514,46 @@ class PadStore:
             if key not in self._pads and _size(lines) <= MAX_BYTES:
                 self._pads[key] = _Pad(list(lines), self._now())
 
+    def bind(self, key: str, path: str, *, brief: "list[str] | None" = None) -> None:
+        """*key*'s pad is written through to *path* from now on. A pad in memory keeps its lines;
+        else the file's lines are loaded; else the pad starts with *brief* (only a job's launch
+        passes one), or empty when there is none or it passes the cap, and is written."""
+        path = os.fspath(path)
+        with self._lock:
+            pad = self._pads.get(key)
+            if pad is not None:
+                pad.path = path
+                return
+            loaded = _load(path)
+            if loaded is not None:
+                self._pads[key] = _Pad(loaded, self._now(), path)
+                return
+            lines = list(brief) if brief is not None and _size(brief) <= MAX_BYTES else []
+            pad = self._pads[key] = _Pad(lines, self._now(), path)
+            _save(pad)
+
     def put(self, key: str, lines: list[str]) -> None:
         with self._lock:
-            self._pads[key] = _Pad(list(lines), self._now())
+            held = self._pads.get(key)
+            pad = self._pads[key] = _Pad(list(lines), self._now(),
+                                         held.path if held is not None else None)
+            _save(pad)
 
-    def discard(self, key: str) -> None:
+    def discard(self, key: str, path: "str | None" = None) -> None:
+        """*key*'s pad goes, and its file: the pad's own, or *path* when no pad in memory has
+        one, so a job that ended before this process opened its pad still loses its file."""
         with self._lock:
+            pad = self._pads.get(key)
+            target = (pad.path if pad is not None else None) or path
             self._drop_locked(key)
+            if target is None:
+                return
+            try:
+                os.unlink(target)
+            except FileNotFoundError:
+                pass
+            except Exception as exc:  # noqa: BLE001 — the pad is gone from memory regardless
+                logger.warning("scratchpad %s not removed: %s", target, exc)
 
     def _drop_locked(self, key: str) -> None:
         """*key*'s pad goes, and with it every client id that finds it."""
@@ -492,11 +573,13 @@ class PadStore:
                 self._drop_locked(old)
 
     def expire(self, owned: Callable[[str], bool]) -> int:
-        """Drop each pad unused for IDLE_S that nothing owns; returns how many. *owned* is asked
+        """Drop each pad unused for IDLE_S that nothing owns; returns how many. A job's pad, one
+        with a path, is never dropped here: the job may wait days for a reply. *owned* is asked
         outside this store's lock, since the binding store calls in here under its own."""
         cutoff = self._now() - IDLE_S
         with self._lock:
-            idle = [key for key, pad in self._pads.items() if pad.used <= cutoff]
+            idle = [key for key, pad in self._pads.items()
+                    if pad.used <= cutoff and pad.path is None]
         dropped = 0
         for key in idle:
             if owned(key):
@@ -512,14 +595,37 @@ class PadStore:
 PADS = PadStore()
 
 
+def reinject_text(key: str) -> str:
+    """What a job session is told of its pad after a compaction: the page-text sentence, the
+    pad's shape and its brief section, cut at REINJECT_BRIEF_CHARS. "" when it has no pad or
+    an empty one. Reads memory only."""
+    lines = PADS.lines(key)
+    if not lines:
+        return ""
+    parts = [PAGE_NOTE, _shape(lines)]
+    brief = next((s for s in _sections(lines) if s.header >= 0 and s.name == BRIEF), None)
+    if brief is not None:
+        text = "\n".join(lines[brief.header:brief.end])
+        if len(text) > REINJECT_BRIEF_CHARS:
+            text = (f"{text[:REINJECT_BRIEF_CHARS]}…[cut: the brief has {len(text)} "
+                    "characters; read it in your pad]")
+        parts.append(text)
+    parts.append("Read your pad before you continue.")
+    return "\n".join(parts)
+
+
 def attach(options: Any, key: str, *, eager: bool = False, task: "str | None" = None,
-           words: "str | None" = None) -> Any:
+           words: "str | None" = None, path: Any = None, prompt_line: str = PROMPT_LINE,
+           description: str = DESCRIPTION) -> Any:
     """A copy of *options* with this conversation's pad tool: its own server, its grant, and a
     line in its system prompt, which this path always passes as a string. A role that disallows
     it is told nothing and gets neither. The server stays deferred unless *eager*: tool search
     loses a schema at each compaction, so a role whose requests are long conversations keeps it
     in sight. The first attach of a conversation passes its *task*, and the operator's *words*
-    when the turn has them: they open a pad that does not exist yet as its brief section."""
+    when the turn has them: they open a pad that does not exist yet as its brief section.
+
+    With *path*, the pad is a job's: it is bound to that file (:meth:`PadStore.bind`), and the
+    session is told *prompt_line* and *description* instead of the conversation's."""
     from claude_agent_sdk import create_sdk_mcp_server, tool
 
     if {GRANT, f"mcp__{SERVER}"} & set(options.disallowed_tools):
@@ -528,10 +634,12 @@ def attach(options: Any, key: str, *, eager: bool = False, task: "str | None" = 
     from result_broker import ENV_CLIENT
     if client := (options.env or {}).get(ENV_CLIENT):
         PADS.register(client, key)
-    if task is not None:
+    if path is not None:
+        PADS.bind(key, path, brief=_brief(task, words) if task is not None else None)
+    elif task is not None:
         PADS.seed(key, _brief(task, words))
 
-    @tool(TOOL, DESCRIPTION, SCHEMA)
+    @tool(TOOL, description, SCHEMA)
     async def _scratchpad(args: dict) -> dict:
         text, refused = PADS.respond(key, args)
         return {"content": [{"type": "text", "text": text}], "is_error": refused}
@@ -541,7 +649,7 @@ def attach(options: Any, key: str, *, eager: bool = False, task: "str | None" = 
         server["alwaysLoad"] = True
     prompt = options.system_prompt or ""
     if isinstance(prompt, str):
-        prompt = f"{prompt}\n\n{PROMPT_LINE}" if prompt else PROMPT_LINE
+        prompt = f"{prompt}\n\n{prompt_line}" if prompt else prompt_line
     return dataclasses.replace(options, mcp_servers={**options.mcp_servers, SERVER: server},
                                allowed_tools=[*options.allowed_tools, GRANT],
                                system_prompt=prompt)

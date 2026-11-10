@@ -1894,10 +1894,15 @@ async def _resume_background_jobs(registry, channel, skip=frozenset(),
     close (#1095) — a disabled specialist's job is never resumed; the next
     ``agents`` sweep retries closing it. *only*: the jobs that were open when
     Casa stopped, taken right after the registry loaded — a job launched
-    after the channels started is its launch's, never resumed here."""
+    after the channels started is its launch's, never resumed here.
+
+    It first settles what jobs that ended left behind
+    (:func:`_settle_ended_job_state`), even when there is no channel or job
+    runner to resume with."""
     import background_jobs
 
     runner = background_jobs._runner
+    await _settle_ended_job_state(registry, getattr(runner, "driver", None))
     if channel is None or runner is None:
         return
     for rec in registry.active_and_idle():
@@ -1913,16 +1918,37 @@ async def _resume_background_jobs(registry, channel, skip=frozenset(),
             except Exception:  # noqa: BLE001 — one job must not stop the boot
                 logger.warning("resuming background job %s failed", rec.id[:8],
                                exc_info=True)
-    await _settle_ended_job_journals(registry, getattr(runner, "driver", None))
 
 
-async def _settle_ended_job_journals(registry, driver) -> None:
-    """A job that ended while Casa died before its message journal was
-    settled still has a journal file: settle it now, so each message its
-    transcript lacks is told as lost once. A file whose record is gone
-    altogether is removed."""
+# How long the boot waits for one record's terminal write to settle.
+_SETTLED_STATE_TIMEOUT_S = 10.0
+
+
+async def _settle_ended_job_state(registry, driver) -> None:
+    """What a job that ended while Casa died leaves behind, settled at boot.
+
+    Its message journal: settled now, so each message its transcript lacks
+    is told as lost once; without a driver the file waits for a later boot.
+    Its scratchpad file: removed. A journal or a pad whose record is gone
+    altogether is removed too; a live job's is kept.
+
+    "Ended" is the durable status (``settled_terminal_state``), which waits
+    out a pending terminal write: one that rolls back leaves the job live,
+    its journal unsettled and its pad in place."""
+    import background_jobs
     import job_inbox
+    import scratchpad
     import tools
+
+    async def ended(eid: str) -> bool:
+        try:
+            status, _told = await asyncio.wait_for(
+                registry.settled_terminal_state(eid), _SETTLED_STATE_TIMEOUT_S)
+        except asyncio.TimeoutError:  # undecided: kept for a later boot
+            logger.warning("boot: the state of job %s did not settle in %.0fs",
+                           eid[:8], _SETTLED_STATE_TIMEOUT_S)
+            return False
+        return status in ("completed", "cancelled", "error")
 
     for eid in job_inbox.journaled_ids():
         rec = registry.get(eid)
@@ -1930,8 +1956,19 @@ async def _settle_ended_job_journals(registry, driver) -> None:
             logger.warning("job inbox for unknown engagement %s removed",
                            eid[:8])
             job_inbox.discard(eid)
-        elif rec.status in ("completed", "cancelled", "error"):
+        elif await ended(eid):
             await tools._settle_job_journal(rec, driver)
+    try:
+        pads = sorted(p.stem for p in background_jobs.JOB_PAD_ROOT.glob("*.pad"))
+    except OSError as exc:
+        logger.warning("job pads %s not listable: %s", background_jobs.JOB_PAD_ROOT, exc)
+        pads = []
+    for eid in pads:
+        if registry.get(eid) is None:
+            logger.warning("job pad for unknown engagement %s removed", eid[:8])
+        elif not await ended(eid):
+            continue
+        scratchpad.PADS.discard(eid, path=background_jobs.job_pad_path(eid))
 
 
 async def _notify_recovered_engagement_outcomes(

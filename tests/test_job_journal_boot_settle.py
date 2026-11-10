@@ -18,6 +18,10 @@ class _Registry:
     def get(self, eid):
         return self._records.get(eid)
 
+    async def settled_terminal_state(self, eid):
+        rec = self._records.get(eid)
+        return (rec.status if rec is not None else "", False)
+
 
 def _rec(eid, status):
     return SimpleNamespace(id=eid, status=status)
@@ -38,7 +42,7 @@ async def test_boot_settles_the_journal_of_a_job_that_ended_and_drops_an_orphan(
     registry = _Registry([_rec("ended", "cancelled"), _rec("live", "active")])
     driver = object()
 
-    await casa_core._settle_ended_job_journals(registry, driver)
+    await casa_core._settle_ended_job_state(registry, driver)
 
     assert settled == [("ended", driver)]
     assert job_inbox.journaled_ids() == ["live"]

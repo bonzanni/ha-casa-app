@@ -3276,9 +3276,13 @@ _PLUGIN_JOB_PROMPT = (
 
 
 def _build_plugin_job_options(rec, resolution,
-                              plan_out: "list | None" = None) -> ClaudeAgentOptions:
+                              plan_out: "list | None" = None,
+                              brief: "tuple[str, str | None] | None" = None,
+                              ) -> ClaudeAgentOptions:
     """Build a worker from its pinned plugin and launch settings. ``plan_out``
-    (S8): the applied ``ProfilePlan`` is appended when a list is given."""
+    (S8): the applied ``ProfilePlan`` is appended when a list is given.
+    ``brief``: the launch's ``(task, operator words)`` that open the job's
+    scratchpad; a resume passes none (``background_jobs.job_session_options``)."""
     import result_broker
     from authz_grants import AuthzDeps, CHALLENGES, GRANTS, make_resident_authz_hook
     from plugin_grants import protected_map
@@ -3343,7 +3347,7 @@ def _build_plugin_job_options(rec, resolution,
         env={**sanitized_env_for_resolution(resolution),
              **result_broker.broker_env(client_id)},
         can_use_tool=make_fail_closed_can_use_tool(role),
-    ), rec)
+    ), rec, brief=brief)
 
 
 def build_engagement_resume_options(
@@ -7298,19 +7302,26 @@ async def _launch_interactive_engagement(
             except Exception as exc:  # noqa: BLE001
                 logger.warning("set_initial_state_emoji(active) failed: %s", exc)
 
-            # Build options + start driver (off-loop: registry resolve is file IO).
+            # Build options + start driver (off-loop: registry resolve is file IO,
+            # and so is opening the job's scratchpad with its brief).
             _applied_plans: list = []
+            _ctx = origin["job"].get("context")
+            _pad_brief = (f"{task_text}\nContext: {_ctx}" if _ctx else task_text,
+                          operator_words(origin))
+
+            def _specialist_job_options():
+                return background_jobs.job_session_options(
+                    _build_specialist_options(
+                        cfg, resolution=_spec_res, extra_casa_tools=casa_grants,
+                        plan_out=_applied_plans),
+                    rec, brief=_pad_brief)
             try:
                 if plugin_host is not None:
                     options = await asyncio.to_thread(
                         _build_plugin_job_options, rec, _spec_res,
-                        plan_out=_applied_plans)
+                        plan_out=_applied_plans, brief=_pad_brief)
                 else:
-                    options = background_jobs.job_session_options(
-                        await asyncio.to_thread(
-                            _build_specialist_options, cfg, resolution=_spec_res,
-                            extra_casa_tools=casa_grants, plan_out=_applied_plans,
-                        ), rec)
+                    options = await asyncio.to_thread(_specialist_job_options)
             except Exception as exc:
                 _abort = await _abort_launch_inline(
                     channel, rec, topic_id,
@@ -10246,22 +10257,28 @@ async def _settle_job_journal(engagement: Any, driver: Any) -> None:
     path after the job's client is closed: each operator message the session
     transcript lacks is told as lost once (in reply to it, or in the topic);
     one it holds goes silently, and the journal goes with the record. Each
-    notice is bounded by the channel. Never raises."""
-    settle = getattr(driver, "settle_journal_terminal", None)
-    if not callable(settle):
-        return
-    tch = (_channel_manager.get("telegram")
-           if _channel_manager is not None else None)
-    teller = getattr(tch, "tell_journal_lost", None)
-
-    async def _untold(_rec: Any, _entry: dict) -> None:
-        raise RuntimeError("no channel to tell a lost message")
-
+    notice is bounded by the channel. Then the job's scratchpad goes, in
+    memory and on disk, whatever the journal's settle did. Never raises."""
     try:
-        await settle(engagement, teller if callable(teller) else _untold)
-    except Exception as exc:  # noqa: BLE001 — never stops a terminal path
-        logger.warning("engagement %s: settling the message journal failed: %s",
-                       getattr(engagement, "id", "?")[:8], exc)
+        settle = getattr(driver, "settle_journal_terminal", None)
+        if not callable(settle):
+            return
+        tch = (_channel_manager.get("telegram")
+               if _channel_manager is not None else None)
+        teller = getattr(tch, "tell_journal_lost", None)
+
+        async def _untold(_rec: Any, _entry: dict) -> None:
+            raise RuntimeError("no channel to tell a lost message")
+
+        try:
+            await settle(engagement, teller if callable(teller) else _untold)
+        except Exception as exc:  # noqa: BLE001 — never stops a terminal path
+            logger.warning("engagement %s: settling the message journal failed: %s",
+                           getattr(engagement, "id", "?")[:8], exc)
+    finally:
+        eid = getattr(engagement, "id", None)
+        if isinstance(eid, str):
+            scratchpad.PADS.discard(eid, path=background_jobs.job_pad_path(eid))
 
 
 async def _cancel_driver_bounded(driver: Any, rec: Any) -> None:
@@ -11375,7 +11392,7 @@ async def _finalize_engagement_tail(
                 "finalize engagement %s: driver.cancel failed: %s",
                 engagement.id[:8], exc,
             )
-        await _settle_job_journal(engagement, driver)
+    await _settle_job_journal(engagement, driver)
     if await_turn_end:
         _paint_job_end(engagement)
 

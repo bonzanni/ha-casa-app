@@ -25,7 +25,10 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable
+
+import scratchpad
 
 logger = logging.getLogger(__name__)
 
@@ -48,26 +51,53 @@ PLUGIN_JOB_CASA_GRANTS: tuple[str, ...] = (
 # it is a continuation boundary, not a stop, so it only bounds a loop.
 JOB_MAX_TURNS: int = 1000
 
+# A job's scratchpad: one file per job, written through on every change, kept
+# while the job lives and deleted when it ends.
+JOB_PAD_ROOT = Path("/data/job-pads")
+JOB_PROMPT_LINE = (
+    "You have a scratchpad for this job. Keep your list and your progress "
+    "there and read it after a summary; it lasts through compaction and a "
+    "Casa restart, and goes when the job ends.")
+# The tool's own text, with the lifetime clause a job's pad does not have.
+JOB_DESCRIPTION = scratchpad.DESCRIPTION.replace(
+    "they go when it ends or Casa restarts",
+    "they last through a Casa restart and go when the job ends")
 
-def job_session_options(options: Any, rec: Any) -> Any:
+
+def job_pad_path(engagement_id: str) -> Path:
+    """The file a job's scratchpad is written through to."""
+    return JOB_PAD_ROOT / f"{engagement_id}.pad"
+
+
+def job_session_options(options: Any, rec: Any, *,
+                        brief: "tuple[str, str | None] | None" = None) -> Any:
     """*options* as every job session runs: the high step ceiling, the
     long-session auto-compaction window, the CLI's echo of each written
-    message at take-up, and the ``SessionStart`` hook that re-states the job
-    after a compaction. Applied by the three job options builders (launch,
-    resident-hosted worker, resume), so a resumed session runs exactly as the
-    launched one did."""
+    message at take-up, the ``SessionStart`` hook that re-states the job
+    after a compaction, and the job's scratchpad. Applied by the job options
+    builders (launch and resume, for a specialist and for a resident-hosted
+    worker alike), so a resumed session runs exactly as the launched one did.
+
+    *brief* is ``(task, operator words)``, passed only at a launch: it opens
+    a pad that does not exist yet. A resume passes none and finds its pad in
+    memory or in its file, or starts an empty one bound to the file."""
     import dataclasses
     from claude_runtime import REPLAY_USER_MESSAGES_ARG, long_session_env
     hooks = dict(options.hooks or {})
     hooks["SessionStart"] = [*hooks.get("SessionStart", []),
                              compaction_hook_matcher(rec)]
-    return dataclasses.replace(
+    options = dataclasses.replace(
         options,
         max_turns=JOB_MAX_TURNS,
         env={**(options.env or {}), **long_session_env()},
         extra_args={**(options.extra_args or {}), REPLAY_USER_MESSAGES_ARG: None},
         hooks=hooks,
     )
+    task, words = brief if brief is not None else (None, None)
+    return scratchpad.attach(
+        options, rec.id, eager=True, task=task, words=words,
+        path=job_pad_path(rec.id), prompt_line=JOB_PROMPT_LINE,
+        description=JOB_DESCRIPTION)
 
 
 def job_header(rec: Any) -> str:
@@ -93,7 +123,8 @@ def compaction_hook_matcher(rec: Any) -> Any:
     ``additionalContext`` into the model's context (measured). Any other
     source adds nothing.
 
-    The job's scratchpad, once jobs have one, is re-stated here too."""
+    The job's scratchpad is re-stated after the header: its shape and its
+    brief (:func:`scratchpad.reinject_text`)."""
     from claude_agent_sdk import HookMatcher
 
     async def re_state_job(hook_input: Any, tool_use_id: Any, context: Any) -> dict:
@@ -101,8 +132,11 @@ def compaction_hook_matcher(rec: Any) -> Any:
         if source != "compact":
             return {}
         logger.info("job %s context compacted: job header re-stated", rec.id[:8])
+        text = job_header(rec)
+        if pad := scratchpad.reinject_text(rec.id):
+            text = f"{text}\n\n{pad}"
         return {"hookSpecificOutput": {"hookEventName": "SessionStart",
-                                       "additionalContext": job_header(rec)}}
+                                       "additionalContext": text}}
 
     return HookMatcher(matcher=None, hooks=[re_state_job])
 

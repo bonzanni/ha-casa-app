@@ -10,6 +10,7 @@ from claude_agent_sdk import ClaudeAgentOptions, PermissionResultDeny
 
 import background_jobs as jobs
 import plugin_registry
+import scratchpad
 import tools
 from config import CharacterConfig, HooksConfig
 from engagement_registry import EngagementRegistry
@@ -63,7 +64,8 @@ async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
     rec = worker.registry.get(result['engagement_id'])
     opts = Client.instances[0].options
     assert isinstance(opts, ClaudeAgentOptions)
-    assert opts.allowed_tools == ['Skill', 'ToolSearch', 'mcp__plugin_ledger_ledger', *jobs.PLUGIN_JOB_CASA_GRANTS]
+    assert opts.allowed_tools == ['Skill', 'ToolSearch', 'mcp__plugin_ledger_ledger', *jobs.PLUGIN_JOB_CASA_GRANTS,
+                                  scratchpad.GRANT]
     assert opts.disallowed_tools == ['Agent', 'Task', 'AskUserQuestion', 'Bash',
                                     'SendMessage', 'ListAgents', 'PushNotification',
                                     'ScheduleWakeup', 'CronCreate', 'CronDelete',
@@ -72,12 +74,12 @@ async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
     assert opts.permission_mode == 'default' and opts.setting_sources == []
     assert opts.skills == 'all' and opts.model == 'sonnet'
     assert opts.plugins == [{'type': 'local', 'path': str(worker.root)}]
-    assert set(opts.mcp_servers) == {'casa-framework'}
+    assert set(opts.mcp_servers) == {'casa-framework', scratchpad.SERVER}
     assert set(worker.selected) == {'report_job_progress', 'emit_completion'}
     assert cli_limit(opts) == str(jobs.JOB_MAX_TURNS)
     assert Path(opts.cwd) == tools._PLUGIN_JOB_ROOT / rec.id / 'plugin-job'
     assert Path(opts.cwd).is_dir()
-    assert opts.system_prompt == tools._PLUGIN_JOB_PROMPT
+    assert opts.system_prompt == f'{tools._PLUGIN_JOB_PROMPT}\n\n{jobs.JOB_PROMPT_LINE}'
     assert 'PERSONA SECRET' not in opts.system_prompt
     for fragment in ('worker', 'one long session', 'Do not ask questions', 'report_job_progress', 'emit_completion', 'no delegation', 'resident memory'):
         assert fragment in opts.system_prompt
