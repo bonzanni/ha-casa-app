@@ -62,7 +62,3 @@
   defines_invariants: [INV-ENG-019]
   invariant_tests:
     INV-ENG-019: [tests/test_launch_failure_terminal_authority.py::TestOnlyADurableWinMayCloseTheTopic::test_a_lost_terminal_race_leaves_the_topic_open, tests/test_launch_failure_terminal_authority.py::TestOnlyADurableWinMayCloseTheTopic::test_a_rolled_back_persist_leaves_the_topic_open, tests/test_launch_failure_terminal_authority.py::TestOnlyADurableWinMayCloseTheTopic::test_a_durable_win_still_paints_closes_and_appends_once, tests/test_launch_failure_terminal_authority.py::TestTheAuthorityOutlivesItsLauncher::test_cancelling_the_awaiter_does_not_cancel_the_abort]
-
-- doc: architecture/engagement-turn-outcomes.md
-  summary: "Retired: per-turn outcome reporting for engagements, removed when every engagement became one long job session."
-  when_changing: nothing; this retired document is deleted in a docs-only change
