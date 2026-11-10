@@ -148,6 +148,18 @@ refused with `DuplicateEndpoint`, and that endpoint stays stopped.
 What it does not cover: whether the operator's chat is configured; a route says which bot,
 never which chat.
 
+**INV-TG-022**: A turn born before Casa's endpoint is ready, and every record persisted from it, delivers once through that endpoint after its `getMe` succeeds; until then each method behaves as the unready endpoint does, and an identity that must name Casa's bot before its post is not formed, so no broker, grant, challenge or question store changes.
+
+Enforced by the route a birth gets (Casa's persisted id, else `CASA`), which resolves to Casa's
+endpoint at delivery whatever id it then verifies; by the transport passing each call to that
+endpoint unchanged (`send` reports not delivered, `send_media` is `channel_unavailable` and the
+file stays owed, a streamed reply's callable is harmless); and by every writer that forms an
+identity before it posts reading the endpoint's `bot_id`, which raises `EndpointNotReady`, and
+answering as when its post fails before it touches a store.
+
+What it does not cover: a message sent in that window. It is reported not delivered, as it was
+with one channel, and is not queued for later.
+
 ## Failure behavior
 
 - **No route in a delivery context**: `RouteMissing`, naming the call site. No endpoint is
@@ -199,6 +211,8 @@ both its write and its read path.
 - `tests/test_job_addresses.py`
 - `tests/test_ask_scopes.py`
 - `tests/test_plugin_identities.py`
+- `tests/test_bot_boundary_invariants.py`
+- `tests/test_bot_boundary_sites.py`
 
 **Related**
 - [`architecture/telegram.md`](../architecture/telegram.md)
