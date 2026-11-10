@@ -23,6 +23,7 @@ import time
 
 import httpx
 from dataclasses import dataclass
+from datetime import datetime
 from io import BytesIO
 from typing import Any, Awaitable, Callable
 
@@ -1760,7 +1761,12 @@ class TelegramChannel(Channel):
             # desk: the job is the one that is waiting on the operator.
             if await self._maybe_route_job_reply(update, chat_id):
                 return
-            if await self._maybe_route_desk_reply(update, chat_id):
+            # #1522: a reply to an ended job's post is the resident's turn,
+            # with the job's end in its note — never the desk, which cannot
+            # see the job.
+            ended = self._ended_job_quoted(
+                chat_id, update.effective_user, update.message.reply_to_message)
+            if ended is None and await self._maybe_route_desk_reply(update, chat_id):
                 return
         # /new reset — intercept before rate-limiting or bus dispatch (spec §4.2 #2, C2).
         text = (update.message.text or "").strip()
@@ -1982,7 +1988,12 @@ class TelegramChannel(Channel):
             bot_id = getattr(bot, "id", None)
         except Exception:  # noqa: BLE001 — an uninitialised bot has no id yet
             bot_id = None
-        if record is not None:
+        ended_job = self._ended_job_quoted(chat_id, sender, quoted)
+        if ended_job is not None:
+            # #1522: ahead of the post map, which names a specialist-hosted
+            # job's plugin post as that specialist's
+            who = self._ended_job_phrase(ended_job)
+        elif record is not None:
             who = ("a message Casa posted on your behalf" if record.role == self.default_agent
                    else f"a message Casa posted for {specialist_desk.label_for(record.role)}")
         elif (getattr(quoted, "sender_chat", None) is not None
@@ -2030,13 +2041,7 @@ class TelegramChannel(Channel):
             return False
         quoted = update.message.reply_to_message
         rec = owner_of(getattr(quoted, "message_id", None))
-        origin = getattr(rec, "origin", None)
-        if not isinstance(origin, dict):
-            return False
-        owner = strict_positive_id(origin.get("user_id"))
-        job_chat = origin.get("chat_id")
-        if owner is None or owner != user.id or (
-                job_chat is not None and strict_positive_id(job_chat) != chat):
+        if not self._job_is_theirs(rec, user, chat):
             return False
         if self._rate_limiter is not None and self._rate_limiter.enabled:
             decision = self._rate_limiter.check(chat_id)
@@ -2054,6 +2059,54 @@ class TelegramChannel(Channel):
             user_name=getattr(user, "first_name", None) or "unknown",
             user_id=user.id)
         return True
+
+    @staticmethod
+    def _job_is_theirs(rec, user, chat: "int | None") -> bool:
+        """The job record was started by *user* in *chat*: its origin names
+        that user, and that chat when it names one."""
+        origin = getattr(rec, "origin", None)
+        if not isinstance(origin, dict) or user is None or chat is None:
+            return False
+        owner = strict_positive_id(origin.get("user_id"))
+        job_chat = origin.get("chat_id")
+        return owner is not None and owner == getattr(user, "id", None) and (
+            job_chat is None or strict_positive_id(job_chat) == chat)
+
+    def _ended_job_quoted(self, chat_id: Any, user: Any, quoted: Any):
+        """#1522: the ended job record whose direct chat post *quoted* is,
+        when the sender is the authenticated operator who started that job in
+        this chat — the live route's own checks; otherwise ``None``. Such a
+        reply is the resident's, with the job's end named, never the desk's:
+        the desk cannot see the job."""
+        reg = self._engagement_registry
+        owner_of = getattr(reg, "ended_job_post_owner", None) if reg is not None else None
+        chat = strict_positive_id(chat_id)
+        if (owner_of is None or quoted is None or chat is None
+                or not self._sender_is_operator(user)):
+            return None
+        rec = owner_of(getattr(quoted, "message_id", None))
+        return rec if self._job_is_theirs(rec, user, chat) else None
+
+    def _ended_job_phrase(self, rec) -> str:
+        """#1522: who posted a quoted message of an ended job, and how and when
+        the job ended — every fact read from its record."""
+        if rec.role_or_type == self.default_agent:
+            whose = "your"
+        else:
+            whose = f"{self._job_agent_name(rec)}'s"
+        plugin_job = (getattr(rec, "origin", None) or {}).get("plugin_job")
+        plugin = plugin_job.get("plugin") if isinstance(plugin_job, dict) else None
+        via = f" (run by the plugin {plugin})" if isinstance(plugin, str) and plugin else ""
+        ended = f"which ended ({rec.status})"
+        completed_at = getattr(rec, "completed_at", None)
+        if isinstance(completed_at, (int, float)) and not isinstance(completed_at, bool):
+            try:
+                ended += " at " + datetime.fromtimestamp(
+                    completed_at, tz=resolve_tz()).strftime("%Y-%m-%d %H:%M")
+            except (OverflowError, OSError, ValueError):
+                pass
+        return (f"a message Casa posted for {whose} background job "
+                f"«{self._job_title(rec)}»{via}, {ended}")
 
     # ------------------------------------------------------------------
     # S4: the specialist desk — a swipe-reply on a specialist's post
@@ -3666,7 +3719,8 @@ class TelegramChannel(Channel):
         """S6 §2.1 step 1 — exactly one of: a swipe-reply on a retained specialist post for
         this operator (``("reply", record, role)``); a live 📎 arming in this chat for this
         operator (``("armed", None, role)``, consumed here — expired or not — before any
-        await); or ``None``: the file is the default agent's, today's path."""
+        await); or ``None``: the file is the default agent's, today's path — always for a
+        reply to an ended job's post (#1522)."""
         import result_broker
         chat = strict_positive_id(chat_id)
         if chat is None or user is None:
@@ -3676,6 +3730,10 @@ class TelegramChannel(Channel):
         # later file (INV-FILE-003; diff round 1, Terra)
         arming = self._armings.pop(chat, None)
         quoted = getattr(msg, "reply_to_message", None)
+        if self._ended_job_quoted(chat_id, user, quoted) is not None:
+            # #1522: a file sent as a reply to an ended job's post is the
+            # default agent's, never the desk's, which cannot see the job
+            return None
         if quoted is not None:
             record = result_broker.POST_MAP.get(chat, getattr(quoted, "message_id", None))
             if (record is not None and record.operator_id == getattr(user, "id", None)

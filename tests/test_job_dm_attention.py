@@ -296,8 +296,12 @@ class TestReplyRoute:
         await r.reg.try_transition_terminal(r.rec.id, "completed", strict=True)
         desk = AsyncMock(return_value=True)
         monkeypatch.setattr(r.ch, "_maybe_route_desk_reply", desk)
+        resident = AsyncMock(return_value=True)
+        monkeypatch.setattr(r.ch, "_dispatch_dm_turn", resident)
         await r.ch._handle_serialized(_reply_update("hello", 501), str(CHAT))
-        assert desk.await_count == 1
+        # #1522: past the job, to the resident's turn — never the desk
+        assert desk.await_count == 0
+        assert resident.await_count == 1
         assert r.delivered == []
 
     async def test_another_sender_falls_through(self, tmp_path, monkeypatch):
@@ -592,6 +596,7 @@ class TestStartLineCancelAndRetirement:
         await r.ch._file_job_keyboard(r.rec, 950, JOB_POST_QUESTION)
         assert [m["message_id"] for m in r.bot.markups] == [950]
         assert r.rec.ui_posts == []
+        assert r.reg.ended_job_post_owner(950) is r.rec
 
     async def test_boot_retires_what_an_ended_job_still_carries(
             self, tmp_path, monkeypatch):

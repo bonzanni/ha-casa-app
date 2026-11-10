@@ -134,15 +134,17 @@ class TestFilingAndIndex:
         reg.new_job_question(rec.id, "Which?", ["A"])
         assert await reg.try_transition_terminal(rec.id, "completed", strict=True)
         assert reg.job_post_owner(501) is None
-        assert rec.dm_posts == [] and rec.questions == {}
+        # The questions go; the posts stay as the ended job's (#1522).
+        assert rec.dm_posts == [501] and rec.questions == {}
         # The keyboard is kept until it is retired.
         assert rec.ui_posts == [[501, JOB_POST_QUESTION]]
         row = _disk(tmp_path, rec.id)
-        assert row["dm_posts"] == [] and row["questions"] == {}
+        assert row["dm_posts"] == [501] and row["questions"] == {}
         assert row["ui_posts"] == [[501, JOB_POST_QUESTION]]
-        # A terminal record files nothing more: its keyboard is the filer's
-        # to retire.
+        # A terminal record files nothing more as live: its keyboard is the
+        # filer's to retire.
         assert reg.record_job_post(rec.id, 502, keyboard=JOB_POST_QUESTION) is False
+        assert rec.ui_posts == [[501, JOB_POST_QUESTION]]
         again = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         await again.load()
         assert again.job_post_owner(501) is None
@@ -152,6 +154,97 @@ class TestFilingAndIndex:
         reg.record_job_post(rec.id, 501)
         assert await reg.mark_error(rec.id, kind="resume_failed", message="x")
         assert reg.job_post_owner(501) is None
+
+
+class TestEndedJobPosts:
+    """#1522: an ended job's posts stay known as that job's, so a reply to one
+    is told the job ended rather than sent where the job cannot be seen."""
+
+    async def test_settlement_moves_the_posts_to_the_ended_index_and_a_reload_keeps_them(
+            self, tmp_path):
+        from engagement_registry import EngagementRegistry, JOB_POST_START
+        reg, rec = await _job_record(tmp_path)
+        reg.record_job_post(rec.id, 501, keyboard=JOB_POST_START)
+        reg.record_job_post(rec.id, 502)
+        assert reg.ended_job_post_owner(501) is None          # live: not ended
+        assert await reg.try_transition_terminal(rec.id, "completed", strict=True)
+        assert reg.job_post_owner(501) is None
+        assert reg.ended_job_post_owner(501) is rec
+        assert reg.ended_job_post_owner(502) is rec
+        assert reg.ended_job_post_owner(503) is None
+        assert reg.ended_job_post_owner("501") is None
+        again = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
+        await again.load()
+        loaded = again.ended_job_post_owner(501)
+        assert loaded is not None and loaded.id == rec.id
+        assert again.ended_job_post_owner(502) is loaded
+        assert again.job_post_owner(501) is None
+
+    async def test_a_direct_mutator_moves_them_too(self, tmp_path):
+        reg, rec = await _job_record(tmp_path)
+        reg.record_job_post(rec.id, 501)
+        assert await reg.mark_error(rec.id, kind="resume_failed", message="x")
+        assert reg.ended_job_post_owner(501) is rec
+
+    async def test_a_post_landing_after_the_end_is_kept_as_the_ended_jobs(self, tmp_path):
+        from engagement_registry import EngagementRegistry, JOB_POST_QUESTION
+        reg, rec = await _job_record(tmp_path)
+        assert await reg.try_transition_terminal(rec.id, "completed", strict=True)
+        # not filed as live: the caller retires a keyboard itself
+        assert reg.record_job_post(rec.id, 777, keyboard=JOB_POST_QUESTION) is False
+        assert rec.ui_posts == []
+        assert reg.job_post_owner(777) is None
+        assert reg.ended_job_post_owner(777) is rec
+        await _flush(reg)
+        assert _disk(tmp_path, rec.id)["dm_posts"] == [777]
+        again = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
+        await again.load()
+        assert again.ended_job_post_owner(777).id == rec.id
+
+    async def test_what_is_not_a_job_post_is_still_refused(self, tmp_path):
+        reg, rec = await _job_record(tmp_path, job=False)
+        assert await reg.try_transition_terminal(rec.id, "completed", strict=True)
+        assert reg.record_job_post(rec.id, 801) is False
+        assert reg.ended_job_post_owner(801) is None
+        assert rec.dm_posts == []
+        (tmp_path / "two").mkdir()
+        reg2, job = await _job_record(tmp_path / "two")
+        assert await reg2.try_transition_terminal(job.id, "completed", strict=True)
+        assert reg2.record_job_post(job.id, "802") is False
+        assert reg2.record_job_post("no-such-id", 803) is False
+        assert reg2.ended_job_post_owner(803) is None
+        assert job.dm_posts == []
+
+    async def test_a_pending_terminal_record_is_live_not_ended(self, tmp_path):
+        reg, rec = await _job_record(tmp_path)
+        reg.record_job_post(rec.id, 501)
+        await _flush(reg)
+        held = _HeldWrite(reg)
+        transition = asyncio.ensure_future(
+            reg.try_transition_terminal(rec.id, "completed", strict=True))
+        await _wait_started(held)
+        assert reg.job_post_owner(501) is rec
+        assert reg.ended_job_post_owner(501) is None
+        assert reg.record_job_post(rec.id, 502) is True        # filed as live
+        held.release.set()
+        assert await transition is True
+        held.restore()
+        assert reg.ended_job_post_owner(502) is rec
+
+    async def test_a_record_aged_out_of_the_tombstone_leaves_the_index(self, tmp_path):
+        import time
+
+        from engagement_registry import _TERMINAL_RETENTION_DAYS, EngagementRegistry
+        reg, rec = await _job_record(tmp_path)
+        reg.record_job_post(rec.id, 501)
+        old = time.time() - (_TERMINAL_RETENTION_DAYS + 1) * 86400
+        assert await reg.try_transition_terminal(
+            rec.id, "completed", completed_at=old, strict=True)
+        await reg.mark_transcripts_reaped([rec.id])           # the write that prunes it
+        again = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
+        await again.load()
+        assert again.get(rec.id) is None
+        assert again.ended_job_post_owner(501) is None
 
 
 class TestPendingTerminalCountsAsLive:

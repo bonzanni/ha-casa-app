@@ -297,8 +297,10 @@ class EngagementRecord:
     # quoting one of them goes into the job while the record counts as live
     # (``EngagementRegistry.counts_as_live``). Unbounded while the job lives:
     # a job may run for days and every post it made stays
-    # steerable. Emptied, and dropped from the registry's index, by the write
-    # that settles the terminal transition.
+    # steerable. Kept past the end, with the tombstone, so a reply quoting
+    # one of them after the job ended is known as a reply to this job
+    # (``EngagementRegistry.ended_job_post_owner``); a post that lands after
+    # the end is added too.
     dm_posts: list = field(default_factory=list)
     # The subset of those posts that carry a keyboard, each
     # ``[message_id, kind]`` (``JOB_POST_START`` or ``JOB_POST_QUESTION``).
@@ -306,8 +308,8 @@ class EngagementRecord:
     # (``take_ui_posts``).
     ui_posts: list = field(default_factory=list)
     # The questions the job asked the operator, keyed by the random id their
-    # buttons carry: ``{"text": str, "options": [str, ...]}``. Emptied with
-    # ``dm_posts``.
+    # buttons carry: ``{"text": str, "options": [str, ...]}``. Emptied by the
+    # write that settles the terminal transition.
     questions: dict = field(default_factory=dict)
 
 
@@ -371,6 +373,12 @@ class EngagementRegistry:
         # extended by ``record_job_post`` and emptied for a record when its
         # terminal transition settles.
         self._job_post_index: dict[int, str] = {}
+        # #1522: DM message id -> the ended job record that posted it. Its
+        # posts move here from the index above when the terminal transition
+        # settles; a post landing after that is filed here directly. Rebuilt
+        # from terminal records at ``load()``, so a record that aged out of the
+        # tombstone leaves it at the next boot.
+        self._ended_post_index: dict[int, str] = {}
         # #678/#692: whether the terminal path CONFIRMED a telling into each
         # terminal engagement's topic. In-memory, never persisted — see
         # ``record_terminal_telling``. Bounded by the record set: dropped
@@ -503,9 +511,11 @@ class EngagementRegistry:
                 for message_id in rec.dm_posts:
                     self._job_post_index[message_id] = rec.id
             else:
-                # The settling write empties both; a row that still carries
-                # them is not steerable.
-                rec.dm_posts = []
+                # An ended job's posts are kept so a reply to one is known as
+                # a reply to this ended job; its questions are not
+                # answerable any more (the settling write stores them empty).
+                for message_id in rec.dm_posts:
+                    self._ended_post_index[message_id] = rec.id
                 rec.questions = {}
 
         # #1093: what the previous process left owed, captured here — before
@@ -649,6 +659,24 @@ class EngagementRegistry:
             return None
         return self._records.get(engagement_id)
 
+    def ended_job_post_owner(self, message_id: Any) -> "EngagementRecord | None":
+        """#1522: the ended job record that filed *message_id* as one of its
+        direct chat posts; ``None`` for any other message, and for a record
+        that still counts as live (``job_post_owner`` answers for it). A
+        record that is no longer held answers ``None``."""
+        if type(message_id) is not int:
+            return None
+        # The live index too: a direct terminal mutator has flipped the status
+        # before its write settles and the posts move.
+        engagement_id = (self._ended_post_index.get(message_id)
+                         or self._job_post_index.get(message_id))
+        rec = self._records.get(engagement_id) if engagement_id else None
+        if (rec is None or rec.status not in _TERMINAL_STATUSES
+                or self.counts_as_live(rec.id)
+                or not isinstance(rec.origin.get("job"), dict)):
+            return None
+        return rec
+
     def record_job_post(self, engagement_id: str, message_id: Any, *,
                         keyboard: str | None = None) -> bool:
         """File one landed direct chat post of a job: append it to the
@@ -656,17 +684,26 @@ class EngagementRegistry:
         index it, and schedule the tombstone write. SYNCHRONOUS — the
         channel calls it from the step in which the post landed.
 
-        ``False`` when nothing was filed: an unknown record, one that is not a
-        job, a message id that is not one, or a record whose terminal
-        transition has settled. A keyboard post refused for that last reason
-        is the caller's to retire, since the terminal-time retirement has
-        already run (``take_ui_posts``). A record whose terminal write is
-        still pending files the post, so a rollback leaves it steerable and a
-        commit's retirement still takes its keyboard."""
+        ``False`` when the post was not filed as a live job's: an unknown
+        record, one that is not a job, a message id that is not one, or a
+        record whose terminal transition has settled. A post of that last kind
+        is still kept as the ended job's (``ended_job_post_owner``), but its
+        keyboard is the caller's to retire, since the terminal-time
+        retirement has already run (``take_ui_posts``). A record whose
+        terminal write is still pending files the post as live, so a
+        rollback leaves it steerable and a commit's retirement still takes
+        its keyboard."""
         rec = self._records.get(engagement_id)
         if (rec is None or type(message_id) is not int
-                or not isinstance(rec.origin.get("job"), dict)
-                or not self.counts_as_live(engagement_id)):
+                or not isinstance(rec.origin.get("job"), dict)):
+            return False
+        if not self.counts_as_live(engagement_id):
+            # #1522: a job can end while one of its posts is still being
+            # sent; a reply to that post is a reply to the ended job.
+            if message_id not in rec.dm_posts:
+                rec.dm_posts.append(message_id)
+            self._ended_post_index[message_id] = engagement_id
+            self._schedule_tombstone_persist()
             return False
         if message_id not in rec.dm_posts:
             rec.dm_posts.append(message_id)
@@ -713,14 +750,15 @@ class EngagementRegistry:
         return qid
 
     def _settle_job_posts(self, rec: "EngagementRecord") -> None:
-        """A record whose terminal transition just settled leaves the job-post
-        index and forgets its posts and questions. The write that settled it
-        already stored both empty (``_write_tombstone_locked`` writes a
-        terminal record's lists empty), so memory now matches disk."""
+        """A record whose terminal transition just settled moves its posts
+        from the job-post index to the ended-post index (#1522) and forgets
+        its questions. The write that settled it already stored the questions
+        empty (``_write_tombstone_locked`` writes a terminal record's
+        questions empty) and kept the posts, so memory now matches disk."""
         for message_id in rec.dm_posts:
             if self._job_post_index.get(message_id) == rec.id:
                 del self._job_post_index[message_id]
-        rec.dm_posts = []
+            self._ended_post_index[message_id] = rec.id
         rec.questions = {}
 
     async def promote_from_quiet(self, engagement_id: str) -> bool:
@@ -840,11 +878,11 @@ class EngagementRegistry:
                     rec.terminal_notification_pending,
                 "transcripts_reaped": rec.transcripts_reaped,
                 "context_generation": rec.context_generation,
-                # A terminal record's posts and questions are stored empty:
-                # the write that commits the terminal status is the one that
-                # drops them (``_settle_job_posts`` then empties memory).
-                "dm_posts": ([] if rec.status in _TERMINAL_STATUSES
-                             else list(rec.dm_posts)),
+                # A terminal record's questions are stored empty: the write
+                # that commits the terminal status is the one that drops them
+                # (``_settle_job_posts`` then empties memory). Its posts are
+                # kept (#1522), so a reply to one names the ended job.
+                "dm_posts": list(rec.dm_posts),
                 "ui_posts": [list(post) for post in rec.ui_posts],
                 "questions": ({} if rec.status in _TERMINAL_STATUSES
                               else {qid: dict(q)
