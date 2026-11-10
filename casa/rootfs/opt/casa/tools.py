@@ -17352,8 +17352,9 @@ async def consent_reprompt(args: dict) -> dict:
     import authz_grants
     shown = {f"{r.get('kind')}_consent" for r in rows
              if r.get("status") in ("posted", "already_pending")}
-    live = authz_grants.CHALLENGES.live_kinds(chat_id=op[0],
-                                              operator_id=op[1])
+    # Casa's consent cards sit in the operator's private chat, whose id is the
+    # operator's own user id.
+    live = authz_grants.CHALLENGES.live_kinds(chat_id=op, operator_id=op)
     others = [k for k in live if k not in shown]
     message = (
         f"{posted} consent keyboard(s) (re)posted to the operator DM"
