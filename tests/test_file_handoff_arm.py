@@ -14,6 +14,7 @@ import pytest
 import result_broker as rb
 from test_proposal_slot import SLOT, _open, _proposal, env as slot_env  # noqa: F401
 from test_proposal_tap import OPERATOR, RID, _cq, _settle, _tap, env as tap_env  # noqa: F401
+from two_endpoints import CASA_BOT as BOT
 
 ARM = {"label": "📎 Add a document", "arm_file": True}
 CALL = {"label": "Yes", "call": {"tool": "apply", "arguments": {"choice": "yes", "match_id": 17}}}
@@ -106,7 +107,7 @@ async def test_a_later_arming_replaces_the_earlier_one_and_sends_nothing(tap_env
     rid2 = "e" * 32
     meta = _meta(**_mixed_meta(), role="travel", label="✈️ Travel", message_id=502)
     meta["deadline"] = asyncio.get_running_loop().time() + 3600
-    req, _ = tap_env.broker.register(namespace="proposal", scope=f"proposal:{OPERATOR}",
+    req, _ = tap_env.broker.register(namespace="proposal", scope=f"proposal:{BOT}:{OPERATOR}",
                                      request_id=rid2, timeout_s=3600, detached=True, meta=meta)
     tap_env.broker.set_finish_hook(req, tap_env.ch.proposal_finish_hook(rid=rid2, req=req))
     assert await _tap(tap_env, _cq(data=f"v1|proposal|{rid2}|1", message_id=502)) == "✔"

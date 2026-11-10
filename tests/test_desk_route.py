@@ -17,11 +17,14 @@ import result_broker as rb
 import specialist_desk as sd
 from bus import MessageBus
 from channels.telegram import TelegramChannel
+from channels.tg_address import TgAddress
+from two_endpoints import CASA_BOT
 from test_telegram_new_reset import _drain_bus, _noop
 
 pytestmark = pytest.mark.asyncio
 
 OPERATOR = 42
+BOT = CASA_BOT
 
 
 class _FakeBot:
@@ -36,7 +39,8 @@ class _FakeBot:
 def _channel():
     bus = MessageBus()
     bus.register("assistant", _noop)
-    ch = TelegramChannel(bot_token="T", chat_id=str(OPERATOR), default_agent="assistant", bus=bus)
+    ch = TelegramChannel(bot_token="T", chat_id=str(OPERATOR), default_agent="assistant", bus=bus,
+                         is_casa=True, known_bot_id=BOT)
     ch._start_typing = lambda *a, **k: None
     ch._app = types.SimpleNamespace(bot=_FakeBot())
     ch._session_registry = None
@@ -66,7 +70,7 @@ def routed(monkeypatch):
     monkeypatch.setattr(rb, "POST_MAP", pm)
     monkeypatch.setattr(sd, "DESKS", sd.DeskRegistry())
     monkeypatch.setattr(sd, "DESK_ECHO", rb.PostLedger(max_events=64))   # its notices must not reach a later test's prompt
-    pm.record(OPERATOR, 11, _record())
+    pm.record(TgAddress(BOT, OPERATOR, 11), _record())
     monkeypatch.setattr(sd, "desk_target_ok", lambda resident, role: role == "finance")
     spawned = AsyncMock(return_value=None)
     monkeypatch.setattr(sd, "handle_reply", spawned)
@@ -118,10 +122,10 @@ async def test_every_other_message_takes_todays_path(routed, monkeypatch, case):
     elif case == "unretained":
         upd = _update("hello", quoted_id=12)
     elif case == "other-operator":
-        pm.record(OPERATOR, 13, _record(operator_id=99))
+        pm.record(TgAddress(BOT, OPERATOR, 13), _record(operator_id=99))
         upd = _update("hello", quoted_id=13)
     elif case == "resident-post":
-        pm.record(OPERATOR, 14, _record(role="assistant"))
+        pm.record(TgAddress(BOT, OPERATOR, 14), _record(role="assistant"))
         upd = _update("hello", quoted_id=14)
         monkeypatch.setattr(sd, "desk_target_ok", lambda resident, role: True)   # only the resident check refuses
     elif case == "not-delegable":
@@ -227,7 +231,7 @@ async def test_a_guest_whose_own_retained_post_exists_is_not_routed_in_accept_al
     pm, spawned = routed
     ch, bus = _channel()
     ch.chat_id = ""                                            # accept-all: nobody is the operator
-    pm.record(OPERATOR, 15, _record(operator_id=7))
+    pm.record(TgAddress(BOT, OPERATOR, 15), _record(operator_id=7))
     await ch._handle(_update("hello", user_id=7, quoted_id=15), None)
     await _settle(ch)
     assert spawned.await_count == 0

@@ -1,7 +1,7 @@
 """S4 §2: the post map — every physical message Casa sends for a specialist's
 post (each page, each fallback chunk, the media message, the link message, a
-desk reply's pages) is recorded under its poster AS IT LANDS, keyed by the
-canonical (chat_id, message_id), FIFO-bounded, memory-only. A page that
+desk reply's pages) is recorded under its poster AS IT LANDS, keyed by its
+address (bot_id, chat_id, message_id), FIFO-bounded, memory-only. A page that
 reached the operator is routable even when a later page failed and the hook
 withheld the result. The S3 echo ledger gains a per-owner event cap.
 """
@@ -17,13 +17,22 @@ import result_broker as rb
 import tools as tools_mod
 from authz_grants import GrantIdentity
 from channels import DeliveryOutcome
+from channels.tg_address import TgAddress
 from channels.tg_richtext import render_paged
 from plugin_grants import PluginContract, ResultContractMap, ToolContract
+from telegram_channel_double import make_transport
+from two_endpoints import CASA_BOT, FINANCE_BOT
 
 ARTIFACT = "7" * 64
 REPORT = "mcp__plugin_probe_api__report"
 SLOT = "report"
 LABEL = "📊 Finance"
+BOT = CASA_BOT
+
+
+def A(chat, mid, bot=BOT):
+    """The address of message *mid* in *chat* on *bot*."""
+    return TgAddress(bot, chat, mid)
 
 
 def _record(**over) -> rb.PostRecord:
@@ -37,14 +46,25 @@ def _record(**over) -> rb.PostRecord:
 
 def test_the_map_is_keyed_by_chat_and_message_and_bounded_fifo():
     m = rb.PostMap(max_entries=3)
-    m.record(42, 1, _record(tool_use_id="a"))
-    m.record(42, 2, _record(tool_use_id="b"))
-    m.record(7, 1, _record(tool_use_id="c"))           # another chat, same id
-    assert m.get(42, 1).tool_use_id == "a" and m.get(7, 1).tool_use_id == "c"
-    assert m.get(42, 3) is None and m.get(43, 1) is None
-    m.record(42, 3, _record(tool_use_id="d"))          # evicts (42, 1)
-    assert m.get(42, 1) is None and m.get(42, 3).tool_use_id == "d"
+    m.record(A(42, 1), _record(tool_use_id="a"))
+    m.record(A(42, 2), _record(tool_use_id="b"))
+    m.record(A(7, 1), _record(tool_use_id="c"))        # another chat, same id
+    assert m.get(A(42, 1)).tool_use_id == "a" and m.get(A(7, 1)).tool_use_id == "c"
+    assert m.get(A(42, 3)) is None and m.get(A(43, 1)) is None
+    m.record(A(42, 3), _record(tool_use_id="d"))       # evicts (42, 1)
+    assert m.get(A(42, 1)) is None and m.get(A(42, 3)).tool_use_id == "d"
     assert rb.POST_MAP_MAX == 4096 and isinstance(rb.POST_MAP, rb.PostMap)
+
+
+def test_the_map_keeps_two_bots_messages_apart():
+    """Two bots number their messages independently in the same private chat:
+    a post on one bot is never found by a reply on the other."""
+    m = rb.PostMap()
+    m.record(A(42, 5), _record(tool_use_id="casa"))
+    assert m.get(A(42, 5, bot=FINANCE_BOT)) is None
+    m.record(A(42, 5, bot=FINANCE_BOT), _record(tool_use_id="finance"))
+    assert m.get(A(42, 5)).tool_use_id == "casa"
+    assert m.get(A(42, 5, bot=FINANCE_BOT)).tool_use_id == "finance"
 
 
 def test_the_map_lists_what_landed_for_an_owner_in_landing_order():
@@ -52,23 +72,24 @@ def test_the_map_lists_what_landed_for_an_owner_in_landing_order():
     turn — the desk's outcome predicate reads it by owner (every delivered
     slot, whatever its kind), evicted entries excluded."""
     m = rb.PostMap(max_entries=3)
-    m.record(42, 1, _record(tool_use_id="a", owner="t-1", kind=rb.OPERATOR_LINK))
-    m.record(42, 2, _record(tool_use_id="b", owner="t-2", kind=rb.OPERATOR_MESSAGE))
-    m.record(42, 3, _record(tool_use_id="c", owner="t-1", kind=rb.OPERATOR_FILE))
+    m.record(A(42, 1), _record(tool_use_id="a", owner="t-1", kind=rb.OPERATOR_LINK))
+    m.record(A(42, 2), _record(tool_use_id="b", owner="t-2", kind=rb.OPERATOR_MESSAGE))
+    m.record(A(42, 3), _record(tool_use_id="c", owner="t-1", kind=rb.OPERATOR_FILE))
     assert [r.tool_use_id for r in m.owned("t-1")] == ["a", "c"]
     assert [r.kind for r in m.owned("t-1")] == [rb.OPERATOR_LINK, rb.OPERATOR_FILE]
     assert m.owned("t-9") == [] and m.owned("") == []
-    m.record(42, 4, _record(tool_use_id="d", owner="t-2"))         # evicts (42, 1)
+    m.record(A(42, 4), _record(tool_use_id="d", owner="t-2"))      # evicts (42, 1)
     assert [r.tool_use_id for r in m.owned("t-1")] == ["c"]
     assert _record().kind == ""                                    # the kind is optional
 
 
 def test_the_map_refuses_non_positive_keys_silently():
     m = rb.PostMap()
-    m.record(0, 1, _record())
-    m.record(42, None, _record())
-    m.record("42", 5, _record())
-    assert m.get(42, 5) is None and m.get(0, 1) is None
+    m.record(A(0, 1), _record())
+    m.record(A(42, None), _record())
+    m.record((42, 5), _record())
+    m.record(None, _record())
+    assert m.get(A(42, 5)) is None and m.get(A(0, 1)) is None and m.get((42, 5)) is None
 
 
 def test_the_echo_ledger_caps_events_per_owner_only_when_asked():
@@ -90,7 +111,7 @@ def test_the_echo_ledger_caps_events_per_owner_only_when_asked():
 
 def _channel():
     from channels.telegram import TelegramChannel
-    ch = TelegramChannel(bot=MagicMock(), chat_id="42")
+    ch = TelegramChannel(bot=MagicMock(), chat_id="42", known_bot_id=BOT)
     app = MagicMock()
     ch._app = app
     return ch, app
@@ -120,7 +141,7 @@ async def test_every_page_and_fallback_chunk_of_a_message_is_recorded(monkeypatc
     app.bot.send_message = _sends([BadRequest("x"), 11, 12])
     rec = _record()
     assert await ch.deliver_operator_message(42, text, post=rec) is DeliveryOutcome.DELIVERED
-    assert pm.get(42, 11) is rec and pm.get(42, 12) is rec
+    assert pm.get(A(42, 11)) is rec and pm.get(A(42, 12)) is rec
     assert app.bot.send_message.await_count == 3
 
 
@@ -135,7 +156,7 @@ async def test_a_page_that_landed_is_recorded_even_when_a_later_page_fails(monke
     app.bot.send_message = _sends([21, TimedOut()])
     with pytest.raises(TimedOut):
         await ch.deliver_operator_message(42, text, post=_record())
-    assert pm.get(42, 21) is not None and pm.get(42, 22) is None
+    assert pm.get(A(42, 21)) is not None and pm.get(A(42, 22)) is None
 
 
 @pytest.mark.asyncio
@@ -146,12 +167,12 @@ async def test_a_file_and_a_link_are_recorded(monkeypatch):
     app.bot.send_document = AsyncMock(return_value=SimpleNamespace(message_id=31))
     assert await ch.deliver_operator_file(42, b"x", "text", "r.csv", LABEL,
                                           post=_record(slot="export")) is DeliveryOutcome.DELIVERED
-    assert pm.get(42, 31).slot == "export"
+    assert pm.get(A(42, 31)).slot == "export"
     text, entities, plain = rb.compose_operator_link("https://e.example/a", label="Open")
     app.bot.send_message = _sends([32])
     assert await ch.deliver_operator_link(42, text, entities, plain,
                                           post=_record(slot="link")) is DeliveryOutcome.DELIVERED
-    assert pm.get(42, 32).slot == "link"
+    assert pm.get(A(42, 32)).slot == "link"
 
 
 @pytest.mark.asyncio
@@ -161,7 +182,7 @@ async def test_without_a_record_nothing_is_recorded(monkeypatch):
     ch, app = _channel()
     app.bot.send_message = _sends([41])
     assert await ch.deliver_operator_message(42, LABEL + "\nhi") is DeliveryOutcome.DELIVERED
-    assert pm.get(42, 41) is None
+    assert pm.get(A(42, 41)) is None
 
 
 @pytest.mark.asyncio
@@ -180,20 +201,22 @@ async def test_a_resident_reply_records_when_its_context_carries_a_record(monkey
     app.bot.send_message = _sends(ids)
     rec = _record(tool_use_id="desk-1")
     assert await ch.send_response(body, {"chat_id": "42", "_post": rec}) is DeliveryOutcome.DELIVERED
-    assert all(pm.get(42, i) is rec for i in ids)
+    assert all(pm.get(A(42, i)) is rec for i in ids)
     # single page, same contract
     app.bot.send_message = _sends([99])
     assert await ch.send_response(casa_text(LABEL + "\n**one**"), {"chat_id": "42", "_post": rec}) is DeliveryOutcome.DELIVERED
-    assert pm.get(42, 99) is rec
+    assert pm.get(A(42, 99)) is rec
     # no record in the context: nothing recorded (every resident reply today)
     app.bot.send_message = _sends([100])
     await ch.send_response(casa_text(LABEL + "\n**one**"), {"chat_id": "42"})
-    assert pm.get(42, 100) is None
+    assert pm.get(A(42, 100)) is None
 
 
 # --- the hook hands the channel a record built from the identity ------------------
 
 class _Recorder:
+    default_agent, bot_id, has_bot_id, on_identity = "assistant", BOT, True, None
+
     def __init__(self):
         self.calls = []
 
@@ -202,12 +225,9 @@ class _Recorder:
         return DeliveryOutcome.DELIVERED
 
 
-class _Manager:
-    def __init__(self, ch):
-        self._ch = ch
-
-    def get(self, name):
-        return self._ch if name == "telegram" else None
+def _Manager(ch):
+    """The channel manager with Telegram's transport over *ch*, Casa's endpoint."""
+    return make_transport(ch)
 
 
 @pytest.mark.asyncio
@@ -222,7 +242,8 @@ async def test_the_hook_passes_a_record_with_the_identitys_role_and_operator(mon
     cmap = ResultContractMap(tools=tools, plugins={"probe": PluginContract(ARTIFACT, True, frozenset())})
     hook = rb.make_result_hook(cmap, client_id="c1", store=store)
     identity = GrantIdentity(operator_id=42, chat_id=42, enforcement_role="finance",
-                             artifact_id=ARTIFACT, engagement_id="", delegation_id="d-9")
+                             artifact_id=ARTIFACT, engagement_id="", delegation_id="d-9",
+                             bot_id=BOT)
     store.open_call(client_id="c1", artifact_id=ARTIFACT, tool_name=REPORT,
                     tool_use_id="call-7", identity=identity, provides=(SLOT,),
                     delivers={SLOT: "operator_message"})

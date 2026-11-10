@@ -29,6 +29,7 @@ from test_proposal_slot import (LABEL, SLOT, _Manager, _map, _open, _post,  # no
                                 _proposal)
 from test_desk_tap import _tap as _desk_tap, env as desk_env  # noqa: F401
 from test_proposal_tap import OPERATOR, RID, _channel, _meta
+from two_endpoints import CASA_BOT as BOT
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 32
 PHOTO = "/outbox/fido-0001.png"
@@ -56,6 +57,7 @@ class _Outbox:
 
 
 class _PhotoRecorder:
+    default_agent, bot_id, has_bot_id, on_identity = "assistant", BOT, True, None
     def __init__(self):
         self.cards: list[dict] = []
 
@@ -84,7 +86,7 @@ def penv(monkeypatch):
 
 
 def _live():
-    return vb.BROKER.pending(namespace="proposal", scope="proposal:42")
+    return vb.BROKER.pending(namespace="proposal", scope=f"proposal:{BOT}:42")
 
 
 # --- the deposit ---------------------------------------------------------------------
@@ -128,7 +130,7 @@ async def test_the_photo_card_is_one_message_its_photo_claimed_once(penv):
     assert card["text"] == f"{LABEL}\nPair invoice 17 with the Adobe payment?"
     assert penv.outbox.calls == [("claim", PHOTO), ("capture", "photo"), ("remove", f"claim:{PHOTO}")]
     (rid,) = _live()
-    assert vb.BROKER.get_meta(namespace="proposal", scope="proposal:42", request_id=rid)["photo"]
+    assert vb.BROKER.get_meta(namespace="proposal", scope=f"proposal:{BOT}:42", request_id=rid)["photo"]
     receipt = json.loads(out["hookSpecificOutput"]["updatedToolOutput"])
     assert receipt["casa_delivery"]["status"] == "delivered"
 

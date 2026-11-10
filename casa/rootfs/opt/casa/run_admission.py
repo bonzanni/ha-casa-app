@@ -32,7 +32,14 @@ actions reads them too. Site names
 come from the plugin's own code (the app's registered display names); checking
 that a run opens the sites it was admitted for is the plugin's and the app's.
 Meaning is judged by the model; the clean context is the guard, because no web
-text can reach it."""
+text can reach it.
+
+A request is identified by its plugin, the Telegram bot its binding's route
+resolves to, the operator and the plugin's request key: one plugin can serve
+agents on two bots, and its request keys may be equal on both. The bot is read
+from that endpoint when the request is decided; before Casa's bot has verified
+its id (a first boot, or a replaced token) the request is refused as not
+delivered, as when its card cannot be posted, and nothing is stored."""
 from __future__ import annotations
 
 import asyncio
@@ -40,6 +47,7 @@ import dataclasses
 import json
 
 from atomic_io import PRIVATE, atomic_write_json
+from channels.tg_address import AddressError, TgAddress
 import logging
 import re
 import threading
@@ -255,6 +263,7 @@ class Confirmation:
     of the key, or a status read, returns identically."""
     cid: str
     plugin: str
+    bot_id: int                 # the bot the request was asked on (its binding's route)
     operator_id: int
     binding_ref: str
     request_key: str
@@ -263,10 +272,32 @@ class Confirmation:
     created_at: float           # wall clock (survives a restart)
     answered_at: float = 0.0
     process: str = ""           # the process that posted a pending card
-    # the start or status card that carries the request's Stop (0: none landed): its message
-    # and its text as shown, so a Stop from any path marks it (``plugin_stop.settle_run_card``)
-    card_message_id: int = 0
+    # the start or status card that carries the request's Stop (None: none landed): its
+    # address ``[bot, chat, message]`` and its text as shown, so a Stop from any path marks it
+    # (``plugin_stop.settle_run_card``)
+    card: "list | None" = None
     card_text: str = ""
+
+    def card_address(self) -> "TgAddress | None":
+        """The card's address, or None when no card is held."""
+        return TgAddress.from_json(self.card) if self.card else None
+
+
+def _stored_ok(entry: Any) -> bool:
+    """A stored confirmation carries its bot, and its card (if any) is a full address."""
+    if not isinstance(entry, dict):
+        return False
+    bot = entry.get("bot_id")
+    if not isinstance(bot, int) or isinstance(bot, bool) or bot <= 0:
+        return False
+    card = entry.get("card")
+    if card is None:
+        return True
+    try:
+        TgAddress.from_json(card)
+    except AddressError:
+        return False
+    return True
 
 
 _PROCESS = uuid.uuid4().hex     # a pending card from another process is dead
@@ -299,14 +330,22 @@ class Confirmations:
             logger.warning("run admission: unreadable store %s ignored", self._path,
                            exc_info=True)
             return
+        refused = 0
         for entry in raw if isinstance(raw, list) else []:
+            if not _stored_ok(entry):
+                refused += 1
+                continue
             try:
                 c = Confirmation(**entry)
             except TypeError:
+                refused += 1
                 continue
             if c.status == "pending" and c.process != _PROCESS:
                 c.status, c.answered_at = "expired", self._now()
             self._items[c.cid] = c
+        if refused:
+            logger.error("run admission: %d stored request(s) without a bot or with a "
+                         "malformed card refused", refused)
 
     def _save_locked(self) -> None:
         now = self._now()
@@ -327,12 +366,13 @@ class Confirmations:
         except OSError:
             logger.warning("run admission: could not write %s", self._path, exc_info=True)
 
-    def by_key(self, *, plugin: str, operator_id: int, request_key: str) -> "Confirmation | None":
+    def by_key(self, *, plugin: str, bot_id: int, operator_id: int,
+               request_key: str) -> "Confirmation | None":
+        want = (plugin, int(bot_id), int(operator_id), request_key)
         with self._lock:
             self._load_locked()
             for c in self._items.values():
-                if (c.plugin, c.operator_id, c.request_key) == (plugin, int(operator_id),
-                                                                request_key):
+                if (c.plugin, c.bot_id, c.operator_id, c.request_key) == want:
                     return c
             return None
 
@@ -346,27 +386,27 @@ class Confirmations:
             self._items[c.cid] = c
             self._save_locked()
 
-    def settle(self, cid: str, status: str, admissions: list, *, card_message_id: int = 0,
-               card_text: str = "") -> "Confirmation | None":
+    def settle(self, cid: str, status: str, admissions: list, *,
+               card: "TgAddress | None" = None, card_text: str = "") -> "Confirmation | None":
         with self._lock:
             self._load_locked()
             c = self._items.get(cid)
             if c is None or c.status != "pending":
                 return None
             c.status, c.admissions, c.answered_at = status, admissions, self._now()
-            if card_message_id:
-                c.card_message_id, c.card_text = int(card_message_id), card_text
+            if card is not None:
+                c.card, c.card_text = card.to_json(), card_text
             self._save_locked()
             return c
 
-    def set_card(self, cid: str, message_id: int, text: str) -> None:
-        """The status card landed: its message and text are recorded with the request."""
+    def set_card(self, cid: str, card: TgAddress, text: str) -> None:
+        """The status card landed: its address and text are recorded with the request."""
         with self._lock:
             self._load_locked()
             c = self._items.get(cid)
             if c is None:
                 return
-            c.card_message_id, c.card_text = int(message_id), text
+            c.card, c.card_text = card.to_json(), text
             self._save_locked()
 
     def clear_card(self, cid: str) -> None:
@@ -375,9 +415,9 @@ class Confirmations:
         with self._lock:
             self._load_locked()
             c = self._items.get(cid)
-            if c is None or not c.card_message_id:
+            if c is None or not c.card:
                 return
-            c.card_message_id = 0
+            c.card = None
             self._save_locked()
 
     def peek(self, cid: Any) -> "Confirmation | None":
@@ -416,43 +456,60 @@ def _answer(c: Confirmation) -> dict:
 _KEY_LOCKS: dict[tuple, asyncio.Lock] = {}
 
 
+def _not_delivered(request_key: str) -> dict:
+    """The answer of a request whose card cannot be posted, when nothing was stored for it:
+    its bot has no id yet, so a later request with the key is decided afresh."""
+    return {"status": "refused", "reason": "not_delivered", "request_key": request_key,
+            "confirmation_id": "conf-" + uuid.uuid4().hex}
+
+
 async def request_admission(call, runs: list[dict], request_key: str) -> dict:
     """C2 for *call* (an ``operator_calls.OperatorCall``). A key this plugin
-    and operator used before gets that request's answer again — no second
-    reading, no second card — and requests with one key are decided one at a
-    time, so an overlapping retry waits for the first and gets its answer."""
-    key = (call.plugin, int(call.identity.operator_id), request_key)
+    and operator used before on the same bot gets that request's answer again —
+    no second reading, no second card — and requests with one key are decided
+    one at a time, so an overlapping retry waits for the first and gets its
+    answer."""
+    from operator_calls import binding_for
+    from plugin_bindings import ChannelUnavailable, binding_target
+    binding = binding_for(call)
+    try:
+        endpoint, bot_id = binding_target(binding)
+    except ChannelUnavailable:
+        logger.warning("run admission: refused, the binding's bot has no id yet")
+        return _not_delivered(request_key)
+    key = (call.plugin, bot_id, int(call.identity.operator_id), request_key)
     lock = _KEY_LOCKS.setdefault(key, asyncio.Lock())
     try:
         async with lock:
-            seen = CONFIRMATIONS.by_key(plugin=call.plugin,
+            seen = CONFIRMATIONS.by_key(plugin=call.plugin, bot_id=bot_id,
                                         operator_id=call.identity.operator_id,
                                         request_key=request_key)
             if seen is not None:
                 return _answer(seen)
-            return await _decide(call, runs, request_key)
+            return await _decide(call, runs, request_key, binding, endpoint, bot_id)
     finally:
         if not lock.locked() and _KEY_LOCKS.get(key) is lock:
             del _KEY_LOCKS[key]
 
 
-async def _decide(call, runs: list[dict], request_key: str) -> dict:
-    from operator_calls import binding_for, post_question
+async def _decide(call, runs: list[dict], request_key: str, binding, endpoint,
+                  bot_id: int) -> dict:
+    from operator_calls import post_question
 
     started = time.monotonic()
     extract_ms = None
-    binding = binding_for(call)
     cid = "conf-" + uuid.uuid4().hex
     if call.operator_words is not None:
         from action_judgement import WORDS
         for r in runs:      # his words for the task, admitted by them or not
-            WORDS.record(plugin=call.plugin, operator_id=call.identity.operator_id,
+            WORDS.record(plugin=call.plugin, bot_id=bot_id,
+                         operator_id=call.identity.operator_id,
                          spec_digest=r["spec_digest"], words=call.operator_words)
         t0 = time.monotonic()
         said = await sites_named(call.operator_words)
         extract_ms = int((time.monotonic() - t0) * 1000)
         if all(run_matches(r, said) for r in runs):
-            conf = Confirmation(cid=cid, plugin=call.plugin,
+            conf = Confirmation(cid=cid, plugin=call.plugin, bot_id=bot_id,
                                 operator_id=int(call.identity.operator_id),
                                 binding_ref=binding.ref, request_key=request_key,
                                 status="admitted", admissions=_admissions(runs),
@@ -461,10 +518,11 @@ async def _decide(call, runs: list[dict], request_key: str) -> dict:
             logger.info("run admission: %d run(s) admitted by his words extract_ms=%s "
                         "total_ms=%d", len(runs), extract_ms,
                         int((time.monotonic() - started) * 1000))
-            _spawn_status_card(call, runs, binding, cid)
+            _spawn_status_card(call, runs, binding, cid, endpoint)
             return _answer(conf)
     import tools as tools_mod
-    conf = Confirmation(cid=cid, plugin=call.plugin, operator_id=int(call.identity.operator_id),
+    conf = Confirmation(cid=cid, plugin=call.plugin, bot_id=bot_id,
+                        operator_id=int(call.identity.operator_id),
                         binding_ref=binding.ref, request_key=request_key, status="pending",
                         admissions=[], created_at=CONFIRMATIONS._now())
     CONFIRMATIONS.add(conf)
@@ -472,8 +530,7 @@ async def _decide(call, runs: list[dict], request_key: str) -> dict:
     async def _on_settle(outcome: dict) -> None:
         if outcome.get("outcome") == "answered" and outcome.get("choice") == 0:
             settled = CONFIRMATIONS.settle(
-                cid, "admitted", _admissions(runs),
-                card_message_id=int(outcome.get("message_id") or 0),
+                cid, "admitted", _admissions(runs), card=outcome.get("address"),
                 card_text=str(outcome.get("text") or ""))
         elif outcome.get("outcome") == "answered":
             settled = CONFIRMATIONS.settle(cid, "declined", [])
@@ -485,12 +542,17 @@ async def _decide(call, runs: list[dict], request_key: str) -> dict:
         if settled is not None:
             logger.info("run admission: confirmation %s settled %s", cid[:13], settled.status)
             import plugin_continuations
-            plugin_continuations.CONTINUATIONS.request(
-                binding, f"admission:{cid}", "operator_answer")
+            from plugin_bindings import ChannelUnavailable
+            try:
+                plugin_continuations.CONTINUATIONS.request(
+                    binding, f"admission:{cid}", "operator_answer")
+            except ChannelUnavailable:
+                logger.warning("run admission: no continuation queued, the binding's bot "
+                               "is unavailable; the driver sweep finds the run")
 
     start = "Start" if len(runs) == 1 else "Start all"
     landed = await post_question(
-        identity=call.identity, role=call.role,
+        endpoint=endpoint, identity=call.identity, role=call.role,
         text=compose_question(runs, tools_mod._display_name_for_role(binding.requester)),
         options=[start, "Not now"], timeout_s=CONFIRM_TIMEOUT_S, on_settle=_on_settle,
         after_choice={0: [stop_button(cid)]})
@@ -504,23 +566,21 @@ async def _decide(call, runs: list[dict], request_key: str) -> dict:
 _CARD_TASKS: set = set()
 
 
-def _spawn_status_card(call, runs: list[dict], binding, cid: str) -> None:
+def _spawn_status_card(call, runs: list[dict], binding, cid: str, endpoint) -> None:
     """His words admitted the runs, so no start card exists: one status card with the Stop
-    button is posted beside the answer (never awaited by it). A failed post is logged and
-    nothing else — Ellen's ``stop_work`` remains."""
+    button is posted beside the answer (never awaited by it), through *endpoint*, the
+    binding's route. A failed post is logged and nothing else — Ellen's ``stop_work``
+    remains."""
     async def _post() -> None:
         import tools as tools_mod
-        from result_broker import _telegram_channel, compose_operator_message, post_label
-        channel = _telegram_channel()
-        if channel is None:
-            return
+        from result_broker import compose_operator_message, post_label
         text = compose_operator_message(
             compose_status(runs, tools_mod._display_name_for_role(binding.requester)),
             post_label(call.role))
-        mid = await channel.deliver_run_card(int(call.identity.chat_id), text,
-                                             [stop_button(cid)])
+        chat_id = int(call.identity.chat_id)
+        mid = await endpoint.deliver_run_card(chat_id, text, [stop_button(cid)])
         if isinstance(mid, int) and not isinstance(mid, bool):
-            CONFIRMATIONS.set_card(cid, mid, text)
+            CONFIRMATIONS.set_card(cid, TgAddress(endpoint.bot_id, chat_id, mid), text)
         else:
             logger.warning("run admission: the status card was not posted")
 

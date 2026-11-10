@@ -14,6 +14,8 @@ import pytest
 import agent_inbox as ai
 import result_broker as rb
 import specialist_desk as sd
+from channels.tg_address import TgAddress
+from two_endpoints import CASA_BOT as BOT
 from test_inbound_files import (OPERATOR, PDF, _channel, _doc, _msg, _replies, _update,  # noqa: F401
                                 wired)
 
@@ -34,7 +36,7 @@ async def routed(wired, tmp_path, monkeypatch, fake_telegram_bot):
     ai._inboxes[FIN] = ai.open_inbox(FIN, root)                       # what wire() registers
     pm = rb.PostMap()
     monkeypatch.setattr(rb, "POST_MAP", pm)
-    pm.record(OPERATOR, 11, _record())
+    pm.record(TgAddress(BOT, OPERATOR, 11), _record())
     monkeypatch.setattr(sd, "DESKS", sd.DeskRegistry())
     ok = {"finance": True}
     monkeypatch.setattr(sd, "desk_target_ok", lambda resident, role: ok.get(role, False))
@@ -197,7 +199,7 @@ async def test_two_files_to_one_specialist_are_queued_in_sending_order(routed):
 
 
 async def test_a_reply_on_a_post_retained_for_another_operator_is_not_addressed(routed, wired):
-    routed.pm.record(OPERATOR, 12, _record(operator_id=99))
+    routed.pm.record(TgAddress(BOT, OPERATOR, 12), _record(operator_id=99))
     await routed.ch._on_non_text_message(_update(_reply_msg(quoted_id=12)))
     assert routed.spawned.await_count == 0 and ai.get_inbox(FIN).list_files() == []
     [reply] = _replies(routed.bot)

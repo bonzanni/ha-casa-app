@@ -13,6 +13,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from channels.tg_address import TgAddress
+from telegram_channel_double import make_transport
+from two_endpoints import CASA_BOT as BOT
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -480,6 +484,7 @@ async def test_an_interrupted_runs_step_line_is_deleted_at_boot(lease_file, monk
 
     class _DM:
         chat_id = "123"
+        default_agent, bot_id, has_bot_id, on_identity = "assistant", BOT, True, None
 
         async def send_step_line(self, chat_id, text):
             return 77
@@ -492,13 +497,13 @@ async def test_an_interrupted_runs_step_line_is_deleted_at_boot(lease_file, monk
             return True
 
     dm = _DM()
-    monkeypatch.setattr(tools, "_channel_manager", SimpleNamespace(get=lambda name: dm))
+    monkeypatch.setattr(tools, "_channel_manager", make_transport(dm))
     lease = await configurator_run.acquire(run_key="turn-9", via="desk", task="full audit")
     line = tools._configurator_step_line(_configurator_cfg(), {})
     line.step("reading files")
     for _ in range(10):
         await asyncio.sleep(0)
-    assert json.loads(lease_file.read_text()).get("step_line") == [123, 77]
+    assert json.loads(lease_file.read_text()).get("step_line") == [BOT, 123, 77]
     lease.release(keep_file=True)            # Casa stopped mid-run
 
     record = configurator_run.claim_interrupted()
@@ -507,9 +512,39 @@ async def test_an_interrupted_runs_step_line_is_deleted_at_boot(lease_file, monk
     async def _notify(text):
         sent.append(text)
 
+    async def _delete(addr):
+        assert addr.bot_id == BOT                   # the bot that posted the line
+        return await dm.delete_dm_message(addr.chat_id, addr.message_id)
+
     await configurator_run.announce_interrupted(
-        record, recovered_ids=set(), notify=_notify, delete=dm.delete_dm_message)
+        record, recovered_ids=set(), notify=_notify, delete=_delete)
     assert len(sent) == 1 and deleted == [(123, 77)]
+
+
+async def test_the_step_line_is_kept_and_deleted_by_its_address(lease_file):
+    """The lease names the step line by the bot that posted it; the boot deletes it at that
+    address. A line stored without its bot is not deleted (the interruption is still told)."""
+    import configurator_run
+    lease = await configurator_run.acquire(run_key="turn-3", via="desk", task="t")
+    configurator_run.record_step_line(TgAddress(BOT, 123, 77))
+    assert json.loads(lease_file.read_text())["step_line"] == [BOT, 123, 77]
+    lease.release(keep_file=True)
+    record = configurator_run.claim_interrupted()
+    deleted: list = []
+    sent: list = []
+
+    async def _delete(addr):
+        deleted.append(addr)
+
+    async def _notify(text):
+        sent.append(text)
+
+    await configurator_run.announce_interrupted(record, recovered_ids=set(), notify=_notify,
+                                                delete=_delete)
+    assert deleted == [TgAddress(BOT, 123, 77)] and len(sent) == 1
+    await configurator_run.announce_interrupted(
+        {**record, "step_line": [123, 77]}, recovered_ids=set(), notify=_notify, delete=_delete)
+    assert deleted == [TgAddress(BOT, 123, 77)] and len(sent) == 2
 
 
 async def test_the_boot_notice_is_skipped_when_the_job_registry_announces_the_run(lease_file):
@@ -535,6 +570,9 @@ async def test_an_unreadable_lease_file_counts_as_held(lease_file):
 # -- the Restart now button ----------------------------------------------------
 
 class _KeyboardChannel:
+    """Casa's own endpoint (bot 111) as far as its keyboard is concerned."""
+    default_agent, bot_id, has_bot_id, on_identity = "assistant", BOT, True, None
+
     def __init__(self):
         self.questions: list = []
         self.edits: list = []
@@ -552,7 +590,6 @@ async def test_restart_needed_in_a_run_offers_a_button_spent_on_its_first_tap(
         lease_file, monkeypatch):
     import agent as agent_mod
     import configurator_run
-    import result_broker
     import supervisor_restart
     import tools
     from verdict_broker import BROKER
@@ -565,7 +602,7 @@ async def test_restart_needed_in_a_run_offers_a_button_spent_on_its_first_tap(
 
     monkeypatch.setattr(supervisor_restart, "request_app_restart", _no_post)
     channel = _KeyboardChannel()
-    monkeypatch.setattr(result_broker, "_telegram_channel", lambda: channel)
+    monkeypatch.setattr(tools, "_channel_manager", make_transport(channel))
     monkeypatch.setattr(configurator_run, "_operator_identity",
                         lambda: SimpleNamespace(chat_id=123, operator_id=123))
 
@@ -584,7 +621,8 @@ async def test_restart_needed_in_a_run_offers_a_button_spent_on_its_first_tap(
     _, body, labels, rid = channel.questions[0]
     assert labels == ["Restart now"]
 
-    meta = BROKER.get_meta(namespace="resident_ask", scope="ask:123", request_id=rid)
+    meta = BROKER.get_meta(namespace="resident_ask", scope=f"ask:{BOT}:123", request_id=rid)
+    assert meta["bot_id"] == BOT
     claim = BROKER.claim(namespace="resident_ask", scope=meta["_scope"], request_id=rid,
                          option_index=0, actor_id=123)
     assert BROKER.commit(claim) is True
@@ -629,10 +667,10 @@ async def test_the_restart_tap_returns_before_the_restart_is_asked_for(monkeypat
 
 async def test_an_expired_restart_button_says_so(lease_file, monkeypatch):
     import configurator_run
-    import result_broker
+    import tools
     from verdict_broker import BROKER
     channel = _KeyboardChannel()
-    monkeypatch.setattr(result_broker, "_telegram_channel", lambda: channel)
+    monkeypatch.setattr(tools, "_channel_manager", make_transport(channel))
     monkeypatch.setattr(configurator_run, "_operator_identity",
                         lambda: SimpleNamespace(chat_id=123, operator_id=123))
     monkeypatch.setattr(configurator_run, "RESTART_BUTTON_TTL_S", 0.05)

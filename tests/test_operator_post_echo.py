@@ -27,6 +27,7 @@ from test_operator_message_delivery import (
     _post, _replacement, _store,
 )
 from test_result_broker import _Origin
+from two_endpoints import CASA_BOT as BOT
 
 
 @pytest.fixture
@@ -155,14 +156,14 @@ async def test_a_withheld_delivery_records_nothing(recorder, names, fresh_ledger
 async def test_a_sync_delegations_identity_carries_the_delegation_id_as_advisory_owner(recorder, names, fresh_ledger):
     delegated = {"role": "assistant", "execution_role": "finance", "channel": "telegram",
                  "chat_id": 42, "user_id": 100, "message_type": "channel_in",
-                 "source": "telegram", "_delegation_id": "d-1"}
+                 "source": "telegram", "_delegation_id": "d-1", "_tg_bot": BOT}
     with _Origin(delegated):
         identity, why = resolve_grant_identity("finance", artifact_id="5" * 64)
     assert why is None and identity.delegation_id == "d-1"
     # advisory: takes no part in equality, so a reference minted on this turn
     # compares equal to the identity derived later without it
     assert identity == GrantIdentity(operator_id=100, chat_id=42, enforcement_role="finance",
-                                     artifact_id="5" * 64, engagement_id="")
+                                     artifact_id="5" * 64, engagement_id="", bot_id=BOT)
     with _Origin({**delegated, "_delegation_id": 7}):
         identity2, _ = resolve_grant_identity("finance", artifact_id="5" * 64)
     assert identity2.delegation_id == ""                     # only a string is one

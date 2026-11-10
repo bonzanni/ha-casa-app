@@ -44,7 +44,8 @@ seam Casa owns is the CLI's hook protocol, and the boundary is built there:
   ``operator_link`` never reaches the model at all. After the structural
   check, the same PostToolUse hook takes the deposit once and posts ONE
   labelled-link message to the chat of the call's grant identity — the chat
-  the operator asked in, never a task topic — with the destination host
+  the operator asked in, never a task topic, through the Telegram bot that
+  identity was resolved on (never another bot) — with the destination host
   printed by Casa from the URL. Proven delivery REPLACES the result with a
   receipt (``casa_delivery.status = "delivered"``); anything short of it
   withholds the result and drops the deposit. The producer's own result is
@@ -78,6 +79,7 @@ from urllib.parse import urlsplit
 
 from aiohttp import web
 
+from channels.tg_address import EndpointNotReady, TgAddress, scope as lane_scope
 from media_policies import MEDIA_POLICIES
 
 logger = logging.getLogger(__name__)
@@ -564,32 +566,33 @@ POST_MAP_MAX = 4096
 
 
 class PostMap:
-    """``(chat_id, message_id) → PostRecord`` for every physical message a
-    delivered post produced — each page, each fallback chunk, the media
-    message, the link message, a desk reply's pages — recorded by the channel
-    AS IT LANDS, so a page the operator holds is routable even when a later
-    page failed and the hook withheld the result. Memory-only and
-    FIFO-bounded: a restart forgets it and an entry older than
-    ``POST_MAP_MAX`` newer messages is evicted — a reply on either is a plain
-    message to the resident (the fallback decision 2 names)."""
+    """``TgAddress(bot, chat, message) → PostRecord`` for every physical
+    message a delivered post produced — each page, each fallback chunk, the
+    media message, the link message, a desk reply's pages — recorded by the
+    channel AS IT LANDS, at the address the post returned, so a page the
+    operator holds is routable even when a later page failed and the hook
+    withheld the result. The bot is part of the key: two bots number their
+    messages independently in the same private chat, so a reply on one bot
+    never finds the other's post. Memory-only and FIFO-bounded: a restart
+    forgets it and an entry older than ``POST_MAP_MAX`` newer messages is
+    evicted — a reply on either is a plain message to the resident (the
+    fallback decision 2 names)."""
 
     def __init__(self, max_entries: int = POST_MAP_MAX) -> None:
-        self._entries: "collections.OrderedDict[tuple[int, int], PostRecord]" = collections.OrderedDict()
+        self._entries: "collections.OrderedDict[TgAddress, PostRecord]" = collections.OrderedDict()
         self._max = max_entries
         self._lock = threading.Lock()
 
     @staticmethod
-    def _key(chat_id: Any, message_id: Any):
-        if isinstance(chat_id, bool) or isinstance(message_id, bool):
+    def _key(addr: Any) -> "TgAddress | None":
+        if not isinstance(addr, TgAddress):
             return None
-        if not isinstance(chat_id, int) or not isinstance(message_id, int):
+        if addr.chat_id <= 0 or addr.message_id is None or addr.message_id <= 0:
             return None
-        if chat_id <= 0 or message_id <= 0:
-            return None
-        return (chat_id, message_id)
+        return addr
 
-    def record(self, chat_id: Any, message_id: Any, record: PostRecord) -> None:
-        key = self._key(chat_id, message_id)
+    def record(self, addr: Any, record: PostRecord) -> None:
+        key = self._key(addr)
         if key is None:
             return
         with self._lock:
@@ -598,8 +601,8 @@ class PostMap:
             while len(self._entries) > self._max:
                 self._entries.popitem(last=False)
 
-    def get(self, chat_id: Any, message_id: Any) -> PostRecord | None:
-        key = self._key(chat_id, message_id)
+    def get(self, addr: Any) -> PostRecord | None:
+        key = self._key(addr)
         if key is None:
             return None
         with self._lock:
@@ -1366,79 +1369,96 @@ def compose_operator_link_button(value: str, *, caption: str = "", label: str = 
     return (f"{head}\n{body}" if head else body), f"{label} ({host})"
 
 
-async def _post_operator_link(chat_id: int, text: str, entities, plain: str,
+async def _post_operator_link(to: TgAddress, text: str, entities, plain: str,
                               post: "PostRecord | None" = None,
                               button: "tuple[str, str, str] | None" = None):
-    """Reach the Telegram channel the way the delegated authz factory does
-    (``tools._channel_manager``); absent ⇒ ``NOT_DELIVERED``. ``post`` (S4)
-    is the record the channel files each landed message under; ``button``
-    (v0.347.3) is ``(text, button text, url)``, the message with the URL button."""
+    """Post to the chat *to* names through *to*'s bot (rule A); no Telegram ⇒
+    ``NOT_DELIVERED``. ``post`` (S4) is the record the channel files each
+    landed message under; ``button`` (v0.347.3) is ``(text, button text, url)``,
+    the message with the URL button."""
     from channels import DeliveryOutcome
-    channel = _telegram_channel()
+    channel = _endpoint_for(to)
     if channel is None:
         return DeliveryOutcome.NOT_DELIVERED
-    return await channel.deliver_operator_link(chat_id, text, entities, plain, post=post,
+    return await channel.deliver_operator_link(to.chat_id, text, entities, plain, post=post,
                                                button=button)
 
 
-def _telegram_channel():
-    """The Telegram channel the way the delegated authz factory reaches it
-    (``tools._channel_manager``); ``None`` when absent."""
-    import tools as tools_mod
-    manager = getattr(tools_mod, "_channel_manager", None)
-    return manager.get("telegram") if manager is not None else None
+def _transport():
+    """The Telegram transport, the way the delegated authz factory reaches it
+    (``tools._channel_manager``); ``None`` when Telegram is not configured."""
+    from channels.telegram_transport import telegram_transport
+    return telegram_transport()
 
 
-async def _post_operator_message(chat_id: int, text: str,
+def _endpoint_for(target: Any):
+    """Rule A: the endpoint of the bot *target* names — a grant identity's
+    bot, or an address's. ``None`` when Telegram is not configured; a bot
+    with no endpoint raises ``EndpointUnavailable``, so nothing is ever sent
+    through another bot."""
+    transport = _transport()
+    if transport is None:
+        return None
+    return transport.endpoint(int(target.bot_id))
+
+
+def _chat_of(identity: Any) -> TgAddress:
+    """The chat a delivery for *identity* goes to, on the identity's bot."""
+    return TgAddress(int(identity.bot_id), int(identity.chat_id))
+
+
+async def _post_operator_message(to: TgAddress, text: str,
                                  post: "PostRecord | None" = None):
-    """S3: the channel judges the whole physical plan of *text* before the
-    first send and posts every page; absent ⇒ ``NOT_DELIVERED``. ``post``
-    (S4) is the record the channel files each landed page under."""
+    """S3: the channel of *to*'s bot judges the whole physical plan of *text*
+    before the first send and posts every page; no Telegram ⇒
+    ``NOT_DELIVERED``. ``post`` (S4) is the record the channel files each
+    landed page under."""
     from channels import DeliveryOutcome
-    channel = _telegram_channel()
+    channel = _endpoint_for(to)
     if channel is None:
         return DeliveryOutcome.NOT_DELIVERED
-    return await channel.deliver_operator_message(chat_id, text, post=post)
+    return await channel.deliver_operator_message(to.chat_id, text, post=post)
 
 
-async def _post_operator_page(chat_id: int, text: str, post: "PostRecord | None" = None):
-    """#1377: one page before a card, as ONE message; absent ⇒ ``NOT_DELIVERED``."""
+async def _post_operator_page(to: TgAddress, text: str, post: "PostRecord | None" = None):
+    """#1377: one page before a card, as ONE message; no Telegram ⇒ ``NOT_DELIVERED``."""
     from channels import DeliveryOutcome
-    channel = _telegram_channel()
+    channel = _endpoint_for(to)
     if channel is None:
         return DeliveryOutcome.NOT_DELIVERED
-    return await channel.deliver_operator_page(chat_id, text, post=post)
+    return await channel.deliver_operator_page(to.chat_id, text, post=post)
 
 
-async def _post_operator_proposal(chat_id: int, text: str, labels: list, rid: str,
+async def _post_operator_proposal(to: TgAddress, text: str, labels: list, rid: str,
                                   post: "PostRecord | None" = None,
                                   photo: "tuple[bytes, str] | None" = None,
                                   urls: "list | None" = None):
-    """S5: the channel posts the labelled text with one button per label
-    (``v1|proposal|<rid>|<i>``) and files the sent message under *post*;
-    returns the message id, or ``None`` when nothing landed. Slice 5b: with
-    *photo* (its bytes and file name) the card is that photo with the text as
-    its caption — one message."""
-    channel = _telegram_channel()
+    """S5: the channel of *to*'s bot posts the labelled text with one button
+    per label (``v1|proposal|<rid>|<i>``) and files the sent message under
+    *post*; returns the message id, or ``None`` when nothing landed. Slice 5b:
+    with *photo* (its bytes and file name) the card is that photo with the
+    text as its caption — one message."""
+    channel = _endpoint_for(to)
     if channel is None:
         return None
     extra = {**({"photo": photo} if photo is not None else {}),
              **({"urls": urls} if urls else {})}
-    return await channel.deliver_operator_proposal(chat_id, text, labels, rid, post=post,
+    return await channel.deliver_operator_proposal(to.chat_id, text, labels, rid, post=post,
                                                    **extra)
 
 
-async def _edit_operator_proposal(chat_id: int, message_id: int, text: str, labels: list,
+async def _edit_operator_proposal(at: TgAddress, text: str, labels: list,
                                   rid: str, post: "PostRecord | None" = None,
                                   urls: "list | None" = None):
-    """#1339: the channel edits *message_id* to the labelled text with one
-    button per label (``v1|proposal|<rid>|<i>``); returns the message id, or
-    ``None`` when the edit did not land."""
-    channel = _telegram_channel()
+    """#1339: the bot that posted the message at *at* edits it to the
+    labelled text with one button per label (``v1|proposal|<rid>|<i>``);
+    returns the message id, or ``None`` when the edit did not land."""
+    channel = _endpoint_for(at)
     if channel is None:
         return None
-    return await channel.replace_operator_proposal(chat_id, message_id, text, labels, rid,
-                                                   post=post, **({"urls": urls} if urls else {}))
+    return await channel.replace_operator_proposal(at.chat_id, at.message_id, text, labels,
+                                                   rid, post=post,
+                                                   **({"urls": urls} if urls else {}))
 
 
 def _claim_and_capture(outbox, path: str, kind: str, delivered_name: str = ""):
@@ -1474,7 +1494,7 @@ def _claim_and_capture(outbox, path: str, kind: str, delivered_name: str = ""):
             logger.warning("operator file claim cleanup failed: %s", type(exc).__name__)
 
 
-async def _post_operator_file(chat_id: int, path: str, kind: str, caption: str,
+async def _post_operator_file(to: TgAddress, path: str, kind: str, caption: str,
                               post: "PostRecord | None" = None, delivered_name: str = ""):
     """S3: claim *path* from the plugin outbox exactly as ``send_media``
     claims it (the shared outbox), run the kind's policy through ``capture``, and send
@@ -1485,7 +1505,7 @@ async def _post_operator_file(chat_id: int, path: str, kind: str, caption: str,
     reads it as not proven."""
     import tools as tools_mod
     from channels import DeliveryOutcome
-    channel = _telegram_channel()
+    channel = _endpoint_for(to)
     if channel is None:
         return DeliveryOutcome.NOT_DELIVERED
     outbox = tools_mod.outbox_for_current_context()
@@ -1497,7 +1517,7 @@ async def _post_operator_file(chat_id: int, path: str, kind: str, caption: str,
         logger.warning("operator file not sent: %s", why)
         return DeliveryOutcome.NOT_DELIVERED
     content, filename = captured
-    return await channel.deliver_operator_file(chat_id, content, kind, filename, caption,
+    return await channel.deliver_operator_file(to.chat_id, content, kind, filename, caption,
                                                post=post)
 
 
@@ -1532,12 +1552,27 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
     page goes as one labelled message (``deliver_operator_page``, filed
     under *post* as it lands), all under one ``DELIVERY_TIMEOUT_S`` bound; a
     page that does not land sends no card and the record is unregistered. The
-    proof — and the receipt's ``pages`` count — needs every page and the card."""
+    proof — and the receipt's ``pages`` count — needs every page and the card.
+
+    The card goes through the bot the identity names (rule A). Its lane
+    (``proposal:<bot>:<chat>``, the open-proposal cap) and the bot stored with
+    it are that endpoint's id, read before the count and the register: an
+    endpoint with no id yet posts nothing and registers nothing, and the
+    proposal is withheld as not delivered."""
     from channels.tg_richtext import render_paged
     from text_util import utf16_len
     from verdict_broker import BROKER
     chat_id, role = int(identity.chat_id), str(identity.enforcement_role)
-    scope = f"proposal:{chat_id}"
+    channel = _endpoint_for(identity)
+    if channel is None:
+        return False, {}, None, None
+    try:
+        bot_id = channel.bot_id
+    except EndpointNotReady:
+        logger.warning("proposal withheld: the bot has no id yet")
+        return False, {}, None, None
+    to = TgAddress(bot_id, chat_id)
+    scope = lane_scope("proposal", bot_id, chat_id)
     revision = str(proposal.get("revision") or "")
     labels = [b["label"] for b in proposal["buttons"]]
     urls = [b.get("url") for b in proposal["buttons"]]
@@ -1568,7 +1603,7 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
     rid = uuid.uuid4().hex
     loop = asyncio.get_running_loop()
     meta = {
-        "deadline": loop.time() + PROPOSAL_TTL_S, "chat_id": chat_id,
+        "deadline": loop.time() + PROPOSAL_TTL_S, "chat_id": chat_id, "bot_id": bot_id,
         "operator_id": int(identity.operator_id), "role": role,
         "artifact_id": str(getattr(identity, "artifact_id", "") or ""),
         "plugin_seg": seg,
@@ -1592,8 +1627,7 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
         timeout_s=PROPOSAL_TTL_S, detached=True, supersede=False, meta=meta)
     if edit_message_id is not None:
         req.meta["message_id"] = edit_message_id
-        POST_MAP.record(chat_id, edit_message_id, post)
-    channel = _telegram_channel()
+        POST_MAP.record(TgAddress(bot_id, chat_id, edit_message_id), post)
     factory = getattr(channel, "proposal_finish_hook", None)
     if factory is not None:
         BROKER.set_finish_hook(req, factory(rid=rid, req=req))
@@ -1607,7 +1641,7 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
             async def _send_pages() -> bool:
                 nonlocal landed
                 for page in pages:
-                    outcome = await _post_operator_page(chat_id, page, post=post)
+                    outcome = await _post_operator_page(to, page, post=post)
                     if outcome is not DeliveryOutcome.DELIVERED:
                         return False
                     landed += 1
@@ -1633,12 +1667,12 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
                 return False, {}, None, None
         try:
             links = {"urls": urls} if any(urls) else {}
-            send = (_post_operator_proposal(chat_id, text, labels, rid, post=post,
+            send = (_post_operator_proposal(to, text, labels, rid, post=post,
                                             **({"photo": photo} if photo is not None else {}),
                                             **links)
                     if edit_message_id is None else
-                    _edit_operator_proposal(chat_id, edit_message_id, text, labels, rid,
-                                            post=post, **links))
+                    _edit_operator_proposal(TgAddress(bot_id, chat_id, edit_message_id), text,
+                                            labels, rid, post=post, **links))
             mid = await asyncio.wait_for(send, DELIVERY_TIMEOUT_S)
         except (asyncio.TimeoutError, UnconfirmedDelivery) as exc:
             # #1305: the card may be on screen. It stays registered until its
@@ -1719,14 +1753,15 @@ def _pages_reason(landed: int, total: int) -> str | None:
             "them; the card was withheld and holds no stored call — do not retry blindly")
 
 
-def _repeat_of(seg: str, identity: Any, key: str, dkind: str) -> dict | None:
-    """#1312: the remembered delivery this keyed deposit repeats, or None. A
-    proposal repeats only while its original keyboard is live, unclaimed and
-    registered under the same artifact as this call — after an update the tap
-    path refuses the old card, so a fresh one is posted instead."""
+def _repeat_of(seg: str, bot_id: int, identity: Any, key: str, dkind: str) -> dict | None:
+    """#1312: the remembered delivery this keyed deposit repeats on bot
+    *bot_id*, or None. A proposal repeats only while its original keyboard is
+    live, unclaimed and registered under the same artifact as this call —
+    after an update the tap path refuses the old card, so a fresh one is
+    posted instead."""
     from delivery_keys import KEYS
     try:
-        hit = KEYS.lookup(seg, int(identity.operator_id), key)
+        hit = KEYS.lookup(seg, bot_id, int(identity.operator_id), key)
     except Exception:  # noqa: BLE001 — an unusable memory never blocks a post
         logger.warning("delivery key lookup failed; delivering fresh", exc_info=True)
         return None
@@ -1781,7 +1816,7 @@ async def _settle_repeat(seg: str, identity: Any, dkind: str, value: str,
         except Exception as exc:  # noqa: BLE001 — the original delivery stands
             logger.warning("repeat file not consumed: %s", type(exc).__name__)
     if dkind == OPERATOR_PROPOSAL and warning:
-        channel = _telegram_channel()
+        channel = _endpoint_for(identity)
         notice = getattr(channel, "deliver_desk_notice", None)
         if notice is not None:
             try:
@@ -1820,14 +1855,21 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
     try:
         taken = store.take_for_delivery(call.deposits.get(slot, ""))
         key = taken[7] if taken is not None else ""
-        if not key:
+        bot_id = 0
+        if taken is not None:
+            # the bot the delivery goes through, read from its endpoint before
+            # any key is held or read: one with no id yet delivers nothing
+            # (EndpointNotReady, withheld below) and writes no key
+            channel = _endpoint_for(taken[3])
+            bot_id = channel.bot_id if channel is not None else 0
+        if not key or not bot_id:
             hold = contextlib.nullcontext()
         else:
             from delivery_keys import KEYS
-            hold = KEYS.hold(seg, int(taken[3].operator_id), key)
+            hold = KEYS.hold(seg, bot_id, int(taken[3].operator_id), key)
         async with hold:
-            if taken is not None and key:
-                hit = _repeat_of(seg, taken[3], key, dkind)
+            if taken is not None and key and bot_id:
+                hit = _repeat_of(seg, bot_id, taken[3], key, dkind)
                 if hit is not None:
                     # #1312: this post was already delivered — nothing is sent
                     # again; the call gets the original delivery's receipt
@@ -1839,7 +1881,7 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
                     # posted fresh (its tell already went out). Other kinds
                     # keep the first decision: a file's staged copy is consumed
                     if dkind == OPERATOR_PROPOSAL:
-                        hit = _repeat_of(seg, identity, key, dkind)
+                        hit = _repeat_of(seg, bot_id, identity, key, dkind)
                     if hit is not None:
                         delivered = True
                         detail = {**hit["detail"], "repeat": True}
@@ -1856,11 +1898,11 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
                 if proven_event is not None:
                     POSTS.record(_post_owner(identity), proven_event)
                     echoed = True
-                if not key:
+                if not key or not bot_id:
                     return
                 try:
                     from delivery_keys import KEYS
-                    KEYS.record(seg, int(identity.operator_id), key, kind=dkind,
+                    KEYS.record(seg, bot_id, int(identity.operator_id), key, kind=dkind,
                                 detail=proven, proposal=proposal_key)
                 except Exception:  # noqa: BLE001 — never undoes the delivery
                     logger.warning("delivery key not recorded", exc_info=True)
@@ -1878,7 +1920,7 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
                     head = post_label(identity.enforcement_role)
                     text = compose_operator_message(value, head)
                     outcome = await asyncio.wait_for(
-                        _post_operator_message(identity.chat_id, text, post=post),
+                        _post_operator_message(_chat_of(identity), text, post=post),
                         DELIVERY_TIMEOUT_S)
                     delivered = outcome is DeliveryOutcome.DELIVERED
                     if delivered:
@@ -1890,7 +1932,7 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
                 elif dkind == OPERATOR_FILE:
                     head = post_label(identity.enforcement_role)
                     outcome = await asyncio.wait_for(
-                        _post_operator_file(identity.chat_id, value, media_kind,
+                        _post_operator_file(_chat_of(identity), value, media_kind,
                                             compose_file_caption(head, caption),
                                             post=post, delivered_name=filename),
                         FILE_DELIVERY_TIMEOUT_S)
@@ -1911,7 +1953,7 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
                     button_text, button_label = compose_operator_link_button(
                         value, caption=caption, label=label, head=head)
                     outcome = await asyncio.wait_for(
-                        _post_operator_link(identity.chat_id, text, entities, plain,
+                        _post_operator_link(_chat_of(identity), text, entities, plain,
                                             post=post,
                                             button=(button_text, button_label, value)),
                         DELIVERY_TIMEOUT_S)

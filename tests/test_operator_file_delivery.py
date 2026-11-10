@@ -23,6 +23,8 @@ from authz_grants import GrantIdentity
 from channels import DeliveryOutcome
 from plugin_grants import PluginContract, ResultContractMap, ToolContract
 from plugin_outbox import PluginOutbox
+from telegram_channel_double import make_transport
+from two_endpoints import CASA_BOT as BOT
 
 ARTIFACT = "6" * 64
 PLUGIN = "probe"
@@ -34,7 +36,7 @@ DATA = b"quarter,revenue\nQ3,EXPORT-4e2a\n"
 
 def _identity(**over) -> GrantIdentity:
     base = dict(operator_id=42, chat_id=42, enforcement_role="finance",
-                artifact_id=ARTIFACT, engagement_id="")
+                artifact_id=ARTIFACT, engagement_id="", bot_id=BOT)
     base.update(over)
     return GrantIdentity(**base)
 
@@ -57,6 +59,7 @@ class _Clock:
 
 
 class _Recorder:
+    default_agent, bot_id, has_bot_id, on_identity = "assistant", BOT, True, None
     def __init__(self, outcome=DeliveryOutcome.DELIVERED, raise_exc=None,
                  sleep_s=0.0):
         self.outcome, self.raise_exc, self.sleep_s = outcome, raise_exc, sleep_s
@@ -80,12 +83,10 @@ class _Recorder:
         return DeliveryOutcome.DELIVERED
 
 
-class _Manager:
-    def __init__(self, channel):
-        self._channel = channel
-
-    def get(self, name):
-        return self._channel if name == "telegram" else None
+def _Manager(channel):
+    """The channel manager with Telegram's transport over *channel*, Casa's
+    endpoint on bot 111; ``None`` (no Telegram) for no channel."""
+    return make_transport(channel) if channel is not None else None
 
 
 @pytest.fixture
@@ -362,7 +363,7 @@ async def test_the_real_channel_method_sends_once_through_the_kinds_policy_metho
     from telegram import InputFile
     from telegram.error import TimedOut
     from channels.telegram import TelegramChannel
-    ch = TelegramChannel(bot=MagicMock(), chat_id="42")
+    ch = TelegramChannel(bot=MagicMock(), chat_id="42", known_bot_id=BOT)
     ch._app = None
     assert await ch.deliver_operator_file(42, DATA, "text", "r.csv", LABEL) is DeliveryOutcome.NOT_DELIVERED
     app = MagicMock()

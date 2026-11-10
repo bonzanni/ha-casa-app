@@ -15,10 +15,14 @@ from test_proposal_slot import ARTIFACT, SEG, SRV, _identity
 from test_proposal_slot import _tool as _slot_tool
 from test_proposal_tap import OPERATOR, RID, _cq, _settle, _tap, env as tap_env  # noqa: F401
 from test_tap_keep_card import APPLY, CONFIRM, labels  # noqa: F401
+from two_endpoints import CASA_BOT as BOT
 
 LINK = f"mcp__plugin_{SEG}_{SRV}__link"
 URL = "https://my.home-assistant.io/redirect/supervisor_app/?app=abc_casa_browser"
 OPEN = {"label": "Open live view", "url": URL}
+
+#: an endpoint with a bot id and none of the proposal hooks
+_NO_HOOKS = types.SimpleNamespace(bot_id=BOT)
 
 
 def _call(with_link: bool = True):
@@ -72,13 +76,13 @@ async def test_the_card_is_posted_with_the_link_button(labels, monkeypatch):
     parsed, _ = _deposit(CONFIRM, OPEN)
     seen = {}
 
-    async def fake_post(chat_id, text, labels_, rid, *, post=None, urls=None):
-        seen["meta"] = vb.BROKER.get_meta(namespace="proposal", scope=f"proposal:{chat_id}",
+    async def fake_post(to, text, labels_, rid, *, post=None, urls=None):
+        seen["meta"] = vb.BROKER.get_meta(namespace="proposal", scope=f"proposal:{to.bot_id}:{to.chat_id}",
                                          request_id=rid)
         seen["urls"] = urls
         return 501
     monkeypatch.setattr(rb, "_post_operator_proposal", fake_post)
-    monkeypatch.setattr(rb, "_telegram_channel", lambda: None)
+    monkeypatch.setattr(rb, "_endpoint_for", lambda target: _NO_HOOKS)
     post = rb.PostRecord(role="finance", operator_id=42, plugin=SEG, slot="proposal",
                          tool_use_id="call-1", owner="d-1", posted_at=1.0, kind="proposal")
     delivered, *_ = await rb._post_proposal(_identity(), SEG, "proposal", _call(), parsed,

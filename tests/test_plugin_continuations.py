@@ -25,15 +25,17 @@ from output_boundary import SILENCE_SENTINEL
 from test_delegated_transcript_retention import TRANSCRIPT, _Harness, _project, _write_session
 from test_memory_capture import captured_events, mem  # noqa: F401 — fixture
 from transcript_runs_support import rows
+from two_endpoints import CASA_BOT, build_two_endpoints
 
 try:
     from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
 except ImportError:
     from role_artifact_stub import STUB_ROLE_ARTIFACT
 
+BOT = CASA_BOT
 ORIGIN = {"role": "assistant", "channel": "telegram", "chat_id": 42, "user_id": 100,
           "user_name": "N", "_origin_route": "telegram", "_origin_clearance": "private",
-          "user_text": "collect them", "_operator_turn": True}
+          "user_text": "collect them", "_operator_turn": True, "_tg_bot": BOT}
 
 
 def _cfg(role, name, kind="specialist", budget=4000):
@@ -49,12 +51,14 @@ def roles(monkeypatch, tmp_path):
     monkeypatch.setattr(tools_mod, "_agent_role_map", m, raising=False)
     monkeypatch.setattr(plugin_bindings, "BINDINGS",
                         plugin_bindings.BindingStore(str(tmp_path / "b.json")))
+    monkeypatch.setattr(tools_mod, "_channel_manager", build_two_endpoints().manager,
+                        raising=False)
     return m
 
 
 def _binding(chain=("assistant", "browser"), plugin="browser"):
     ident = GrantIdentity(operator_id=100, chat_id=42, enforcement_role=chain[-1],
-                          artifact_id="1" * 64, engagement_id="")
+                          artifact_id="1" * 64, engagement_id="", bot_id=BOT)
     return plugin_bindings.BINDINGS.for_turn(plugin=plugin, turn_key="d-1", identity=ident,
                                              chain=chain, origin=ORIGIN)
 
@@ -172,7 +176,7 @@ async def test_the_answer_climbs_the_chain_one_requester_at_a_time(roles, desks,
     _recording_runner(monkeypatch, seen)
     reg, announced = announce
     b = _binding(("assistant", "finance", "browser"))
-    await pc.run_continuation(pc.Pending(b, "r-7", "operator_answer", 0.0), on_start=lambda: None)
+    await pc.run_continuation(pc.Pending(b, "r-7", "operator_answer", 0.0, bot_id=BOT), on_start=lambda: None)
     task, record = announced[0]
     out = await task
     assert [x[0] for x in seen] == ["browser", "finance"]
@@ -195,7 +199,7 @@ async def test_a_run_started_in_an_engagement_is_continued_as_its_specialist(
     engagement_turn = {**ORIGIN, "cid": "ellen-turn", "delegation_depth": 1,
                        "_operator_words": "order the pizza"}
     ident = GrantIdentity(operator_id=100, chat_id=42, enforcement_role="browser",
-                          artifact_id="1" * 64, engagement_id="")
+                          artifact_id="1" * 64, engagement_id="", bot_id=BOT)
     call = operator_calls.CALLS.open(
         client_id="c1", tool_use_id="tu", tool_name="mcp__plugin_browser_api__start_runs",
         role="browser", plugin="browser", identity=ident, origin=engagement_turn)
@@ -204,7 +208,7 @@ async def test_a_run_started_in_an_engagement_is_continued_as_its_specialist(
     seen: list = []
     _recording_runner(monkeypatch, seen)
     reg, announced = announce
-    await pc.run_continuation(pc.Pending(binding, "r-1", "sweep", 0.0), on_start=lambda: None)
+    await pc.run_continuation(pc.Pending(binding, "r-1", "sweep", 0.0, bot_id=BOT), on_start=lambda: None)
     task, record = announced[0]
     await task
     assert [x[0] for x in seen] == ["browser"]
@@ -222,7 +226,7 @@ async def test_a_continuation_addressed_to_a_resident_runs_nothing(roles, desks,
     reg, announced = announce
     b = _binding(("assistant",))
     with caplog.at_level("WARNING", logger="plugin_continuations"):
-        await pc.run_continuation(pc.Pending(b, "r-1", "sweep", 0.0), on_start=lambda: None)
+        await pc.run_continuation(pc.Pending(b, "r-1", "sweep", 0.0, bot_id=BOT), on_start=lambda: None)
     assert seen == [] and announced == [] and reg.records == []
     assert [r.message for r in caplog.records if r.levelname == "WARNING"] == [
         "continuation: role assistant is not a specialist — dropped"]
@@ -237,7 +241,7 @@ async def test_an_unloaded_requester_fails_the_relay_instead_of_passing_the_answ
     b = _binding(("assistant", "finance", "browser"))
     out = DelegatedOutput(text="browser secret answer")
     with pytest.raises(pc.RequesterUnavailable) as exc:
-        await pc._relay_up(b, "r-1", out, deadline=1e18)
+        await pc._relay_up(b, "r-1", out, bot_id=BOT, deadline=1e18)
     assert "browser secret answer" not in str(exc.value)
 
 
@@ -248,13 +252,13 @@ async def test_a_continuation_waits_for_the_desk_and_lets_it_go_after_its_own_tu
     gate = asyncio.Event()
     _recording_runner(monkeypatch, seen, gate=gate)
     reg, announced = announce
-    fido_desk = desks.get_or_create(42, "browser")
-    finance_desk = desks.get_or_create(42, "finance")
+    fido_desk = desks.get_or_create(BOT, 42, "browser")
+    finance_desk = desks.get_or_create(BOT, 42, "finance")
     b = _binding(("assistant", "finance", "browser"))
     starts: list = []
     async with fido_desk.use(fido_desk.reserve()):           # a Fido turn still drives the run
         worker = asyncio.create_task(pc.run_continuation(
-            pc.Pending(b, "r-1", "operator_answer", 0.0), on_start=lambda: starts.append(1)))
+            pc.Pending(b, "r-1", "operator_answer", 0.0, bot_id=BOT), on_start=lambda: starts.append(1)))
         for _ in range(20):
             await asyncio.sleep(0)
         assert starts == [] and reg.records == []
@@ -279,10 +283,10 @@ async def test_a_desk_that_faults_while_the_continuation_waits_runs_nothing(
     seen: list = []
     _recording_runner(monkeypatch, seen)
     reg, _ = announce
-    desk = desks.get_or_create(42, "browser")
+    desk = desks.get_or_create(BOT, 42, "browser")
     async with desk.use(desk.reserve()):
         worker = asyncio.create_task(pc.run_continuation(
-            pc.Pending(_binding(), "r-1", "sweep", 0.0), on_start=lambda: None))
+            pc.Pending(_binding(), "r-1", "sweep", 0.0, bot_id=BOT), on_start=lambda: None))
         for _ in range(20):
             await asyncio.sleep(0)
         desk.faulted = "unconfirmed"
@@ -298,7 +302,7 @@ async def test_a_binding_of_a_former_operator_is_never_continued(roles, desks, a
     seen: list = []
     _recording_runner(monkeypatch, seen)
     reg, _ = announce
-    await pc.run_continuation(pc.Pending(_binding(), "r-1", "sweep", 0.0), on_start=lambda: None)
+    await pc.run_continuation(pc.Pending(_binding(), "r-1", "sweep", 0.0, bot_id=BOT), on_start=lambda: None)
     assert seen == [] and reg.records == []
 
 
@@ -321,7 +325,7 @@ async def test_shutdown_cancels_a_running_continuation_turn(roles, desks, announ
     await asyncio.wait_for(entered.wait(), 2)
     await q.drain()
     assert cancelled.is_set()
-    assert not desks.get_or_create(42, "browser").lock.locked()
+    assert not desks.get_or_create(BOT, 42, "browser").lock.locked()
 
 
 @pytest.mark.asyncio
@@ -415,7 +419,7 @@ async def test_the_sweep_calls_the_declared_tool_and_queues_its_runs(roles, monk
     former = plugin_bindings.BINDINGS.for_turn(
         plugin="browser", turn_key="old", chain=("assistant", "browser"), origin=ORIGIN,
         identity=GrantIdentity(operator_id=999, chat_id=42, enforcement_role="browser",
-                               artifact_id="1" * 64, engagement_id=""))
+                               artifact_id="1" * 64, engagement_id="", bot_id=BOT))
     rp = _plugin(tmp_path, [{"run_ref": "r-1", "binding_ref": mine.ref},
                             {"run_ref": "r-2", "binding_ref": other.ref},
                             {"run_ref": "r-4", "binding_ref": former.ref},
@@ -662,8 +666,8 @@ async def test_a_turn_still_unwinding_keeps_the_desk_refused(roles, desks, annou
         return DelegatedOutput(text="done")
 
     monkeypatch.setattr(tools_mod, "_run_delegated_agent_bounded", _bounded)
-    await pc.run_continuation(pc.Pending(_binding(), "r-1", "sweep", 0.0), on_start=lambda: None)
-    desk = desks.get_or_create(42, "browser")
+    await pc.run_continuation(pc.Pending(_binding(), "r-1", "sweep", 0.0, bot_id=BOT), on_start=lambda: None)
+    desk = desks.get_or_create(BOT, 42, "browser")
     assert desk.faulted is not None
     leftover.set()
     for _ in range(10):
@@ -679,7 +683,7 @@ async def test_a_stop_during_the_relay_tells_the_resident_instead_of_going_silen
     seen: list = []
     _recording_runner(monkeypatch, seen)
     reg, announced = announce
-    finance_desk = desks.get_or_create(42, "finance")
+    finance_desk = desks.get_or_create(BOT, 42, "finance")
     q = pc.Continuations()
     async with finance_desk.use(finance_desk.reserve()):
         q.request(_binding(("assistant", "finance", "browser")), "r-9", "operator_answer")
@@ -749,7 +753,7 @@ async def test_a_progress_only_answer_climbs_no_further(roles, desks, announce, 
     _recording_runner(monkeypatch, seen, says={"browser": "<silent/>"})
     reg, announced = announce
     b = _binding(("assistant", "finance", "browser"))
-    await pc.run_continuation(pc.Pending(b, "r-9", "sweep", 0.0), on_start=lambda: None)
+    await pc.run_continuation(pc.Pending(b, "r-9", "sweep", 0.0, bot_id=BOT), on_start=lambda: None)
     out = await announced[0][0]
     assert [x[0] for x in seen] == ["browser"] and out.text == "<silent/>"
     assert reg.quiet[0](out) is True
@@ -764,7 +768,7 @@ async def test_only_the_exact_sentinel_declares_progress(roles, desks, announce,
     _recording_runner(monkeypatch, seen, says={"browser": said})
     reg, announced = announce
     b = _binding(("assistant", "finance", "browser"))
-    await pc.run_continuation(pc.Pending(b, "r-6", "sweep", 0.0), on_start=lambda: None)
+    await pc.run_continuation(pc.Pending(b, "r-6", "sweep", 0.0, bot_id=BOT), on_start=lambda: None)
     out = await announced[0][0]
     assert [x[0] for x in seen] == ["browser", "finance"]
     assert reg.quiet[0](out) is False
@@ -779,7 +783,7 @@ async def test_a_requesters_own_silence_never_hides_the_result(roles, desks, ann
     _recording_runner(monkeypatch, seen, says={"finance": "<silent/>"})
     reg, announced = announce
     b = _binding(("assistant", "finance", "browser"))
-    await pc.run_continuation(pc.Pending(b, "r-8", "sweep", 0.0), on_start=lambda: None)
+    await pc.run_continuation(pc.Pending(b, "r-8", "sweep", 0.0, bot_id=BOT), on_start=lambda: None)
     out = await announced[0][0]
     assert [x[0] for x in seen] == ["browser", "finance"] and out.text == "<silent/>"
     assert reg.quiet[0](out) is False
@@ -910,7 +914,7 @@ def _kept(conv, binding, sid=SID):
 async def _continue(conv, binding, run_ref="r-1"):
     """One continuation; returns its announced task, not yet awaited past the turn."""
     n = len(conv.announced)
-    await pc.run_continuation(pc.Pending(binding, run_ref, "sweep", 0.0), on_start=lambda: None)
+    await pc.run_continuation(pc.Pending(binding, run_ref, "sweep", 0.0, bot_id=BOT), on_start=lambda: None)
     return conv.announced[n][0]
 
 
@@ -936,7 +940,7 @@ async def test_the_first_turn_gives_the_binding_its_session(conv):
 
     async def _ask():
         ident = GrantIdentity(operator_id=100, chat_id=42, enforcement_role="browser",
-                              artifact_id="1" * 64, engagement_id="")
+                              artifact_id="1" * 64, engagement_id="", bot_id=BOT)
         call = operator_calls.OperatorCalls().open(
             client_id="c", tool_use_id="t", tool_name="x", role="browser", plugin="browser",
             identity=ident, origin=agent_mod.origin_var.get())
@@ -1064,7 +1068,7 @@ def test_a_binding_keeps_its_conversation_across_a_restart(tmp_path, monkeypatch
     path = tmp_path / "b.json"
     store = plugin_bindings.BindingStore(str(path))
     ident = GrantIdentity(operator_id=100, chat_id=42, enforcement_role="browser",
-                          artifact_id="1" * 64, engagement_id="")
+                          artifact_id="1" * 64, engagement_id="", bot_id=BOT)
     b = store.for_turn(plugin="browser", turn_key="d-1", identity=ident,
                        chain=("assistant", "browser"), origin={"_delegated_session_id": SID})
     assert b.session_id == SID

@@ -29,6 +29,7 @@ from channels import DeliveryOutcome
 from test_memory_capture import captured_events
 from test_memory_capture import mem  # noqa: F401 — fixture
 from test_no_retain_specialist import _cfg
+from two_endpoints import CASA_BOT as BOT
 
 pytestmark = [pytest.mark.asyncio]
 
@@ -48,7 +49,7 @@ def roles(monkeypatch):
 
 def _channel(chat_id: str = str(OPERATOR_CHAT)):
     from channels.telegram import TelegramChannel
-    ch = TelegramChannel(bot=MagicMock(), chat_id=chat_id,
+    ch = TelegramChannel(bot=MagicMock(), chat_id=chat_id, known_bot_id=BOT,
                          default_agent="assistant")
     ch._app = MagicMock()
     ids = iter(range(100, 200))
@@ -408,7 +409,7 @@ async def topic(tmp_path, roles, mem):
         attach_session(drv, rec, client)
 
     def channel(chat_id=str(OPERATOR_CHAT)):
-        ch = TelegramChannel(bot=MagicMock(), chat_id=chat_id,
+        ch = TelegramChannel(bot=MagicMock(), chat_id=chat_id, known_bot_id=BOT,
                              engagement_supergroup_id=SUPERGROUP,
                              default_agent="assistant")
         ch._engagement_registry = reg

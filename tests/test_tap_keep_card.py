@@ -23,10 +23,14 @@ from test_proposal_slot import ARTIFACT, SEG, SRV, _identity
 from test_proposal_slot import _tool as _slot_tool
 from test_proposal_tap import OPERATOR, RID, _cq, _settle, _tap, env as tap_env  # noqa: F401
 from test_tap_delivers_file import FILE, _respond
+from two_endpoints import CASA_BOT as BOT
 
 PDF = f"mcp__plugin_{SEG}_{SRV}__pdf"
 APPLY = f"mcp__plugin_{SEG}_{SRV}__apply"
 MORE = f"mcp__plugin_{SEG}_{SRV}__more"
+
+#: an endpoint with a bot id and none of the proposal hooks
+_NO_HOOKS = types.SimpleNamespace(bot_id=BOT)
 
 
 # --- the deposit -------------------------------------------------------------------
@@ -83,12 +87,12 @@ async def test_the_registered_kinds_name_the_keep_card_button(labels, monkeypatc
     parsed, _ = _deposit(CONFIRM, SEE)
     seen = {}
 
-    async def fake_post(chat_id, text, labels_, rid, *, post=None):
-        seen["meta"] = vb.BROKER.get_meta(namespace="proposal", scope=f"proposal:{chat_id}",
+    async def fake_post(to, text, labels_, rid, *, post=None):
+        seen["meta"] = vb.BROKER.get_meta(namespace="proposal", scope=f"proposal:{to.bot_id}:{to.chat_id}",
                                          request_id=rid)
         return 501
     monkeypatch.setattr(rb, "_post_operator_proposal", fake_post)
-    monkeypatch.setattr(rb, "_telegram_channel", lambda: None)
+    monkeypatch.setattr(rb, "_endpoint_for", lambda target: _NO_HOOKS)
     post = rb.PostRecord(role="finance", operator_id=42, plugin=SEG, slot="proposal",
                          tool_use_id="call-1", owner="d-1", posted_at=1.0, kind="proposal")
     delivered, *_ = await rb._post_proposal(_identity(), SEG, "proposal", _call(), parsed,
@@ -112,7 +116,7 @@ async def test_a_keep_tap_dispatches_and_leaves_the_card_live(tap_env):
     await _settle()
     assert len(tap_env.taps) == 1 and tap_env.taps[0]["idx"] == 1
     assert tap_env.bot.edited == [] and tap_env.bot.markups == [] and tap_env.bot.sent == []
-    assert tap_env.broker.is_live_unclaimed(namespace="proposal", scope=f"proposal:{OPERATOR}",
+    assert tap_env.broker.is_live_unclaimed(namespace="proposal", scope=f"proposal:{BOT}:{OPERATOR}",
                                             request_id=RID)
 
 
@@ -239,7 +243,7 @@ async def test_a_keep_tap_on_a_settled_card_known_only_to_the_broker_runs_nothin
     assert await _tap(tap_env, _cq(data=f"v1|proposal|{RID}|0")) == "✔"
     await _settle()
     tap_env.ch._proposal_settled.clear()
-    assert tap_env.broker.get_meta(namespace="proposal", scope=f"proposal:{OPERATOR}",
+    assert tap_env.broker.get_meta(namespace="proposal", scope=f"proposal:{BOT}:{OPERATOR}",
                                    request_id=RID) is not None
     assert await _tap(tap_env, _cq(data=f"v1|proposal|{RID}|1")) == "expired"
     await _settle()

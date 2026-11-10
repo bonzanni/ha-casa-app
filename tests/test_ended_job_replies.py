@@ -24,6 +24,8 @@ import agent_inbox as ai
 import result_broker as rb
 import specialist_desk as sd
 from test_desk_route import OPERATOR, _channel, _record, _settle, routed  # noqa: F401
+from channels.tg_address import TgAddress
+from test_desk_route import BOT
 from test_inbound_files import PDF, _doc, _msg
 from test_telegram_new_reset import _drain_bus
 from timekeeping import resolve_tz
@@ -116,7 +118,7 @@ async def test_a_reply_to_an_ended_jobs_plugin_post_never_reaches_the_desk(route
     pm, spawned = routed
     # the post landed while the job lived: filed on the record and in the map
     reg, rec = await _ended_job(tmp_path, posts=[(640, None)])
-    pm.record(OPERATOR, 640, _record(owner=rec.id))
+    pm.record(TgAddress(BOT, OPERATOR, 640), _record(owner=rec.id))
     ch, bus = _channel()
     ch._engagement_registry = reg
     [turn] = await _turns(ch, bus, _text_reply(quoted_id=640, quoted_text="📊 Finance\nrow 7"))
@@ -171,7 +173,7 @@ async def test_a_reply_from_someone_who_did_not_start_the_job_keeps_todays_note(
     reg, rec = await _ended_job(tmp_path, user=777, posts=[(501, None)])
     ch, bus = _channel()
     ch._engagement_registry = reg
-    pm.record(OPERATOR, 501, _record(owner=rec.id))
+    pm.record(TgAddress(BOT, OPERATOR, 501), _record(owner=rec.id))
     # not this operator's job: the post map's desk route, exactly as before
     assert await _turns(ch, bus, _text_reply(quoted_id=501, quoted_text="row 7")) == []
     assert spawned.await_count == 1
@@ -185,7 +187,7 @@ async def test_a_reply_to_an_ended_job_of_another_chat_keeps_todays_routes(route
     reg, rec = await _ended_job(tmp_path, chat=OPERATOR + 1, posts=[(501, None)])
     ch, bus = _channel()
     ch._engagement_registry = reg
-    pm.record(OPERATOR, 501, _record(owner=rec.id))
+    pm.record(TgAddress(BOT, OPERATOR, 501), _record(owner=rec.id))
     assert await _turns(ch, bus, _text_reply(quoted_id=501, quoted_text="row 7")) == []
     assert spawned.await_count == 1                      # the desk, as before
 
@@ -369,7 +371,7 @@ async def test_ended_jobs_of_two_chats_sharing_a_message_id_stay_apart(routed, t
         assert reg.record_job_post(recs[chat].id, 501) is True
         assert await reg.try_transition_terminal(
             recs[chat].id, "completed", completed_at=ENDED_AT, strict=True)
-    pm.record(OPERATOR, 501, _record(owner=recs[OPERATOR].id))
+    pm.record(TgAddress(BOT, OPERATOR, 501), _record(owner=recs[OPERATOR].id))
     again = EngagementRegistry(tombstone_path=path)
     await again.load()
     assert again.ended_job_post_owner(OPERATOR, 501).id == recs[OPERATOR].id

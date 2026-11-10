@@ -21,7 +21,14 @@ A binding also keeps its request's conversation: the session its continuation tu
 resume (``plugin_continuations``), how many of them raised in a row, and the session's
 cumulative cost when last counted. It therefore owns that session's pad (``scratchpad``): the pad
 follows a session the binding adopts, stays while the binding is kept, and goes when the binding
-is dropped, unless another binding still names the session."""
+is dropped, unless another binding still names the session.
+
+A binding keeps the Telegram route of the turn that asked (``origin._tg_bot``):
+the bot its later cards, continuations and deliveries go through, which may be
+``CASA`` when Casa's bot had not verified its id yet. Every per-bot identity a
+binding's work forms (an admission, a continuation, a Stop) reads its bot from
+the endpoint that route resolves to, when the identity is formed
+(:func:`binding_target`). A stored binding without a route is refused at load."""
 from __future__ import annotations
 
 import dataclasses
@@ -34,6 +41,8 @@ from typing import Any
 
 import scratchpad
 from atomic_io import PRIVATE, atomic_write_json
+from channels.tg_address import EndpointNotReady, EndpointUnavailable, is_route
+from provenance import ROUTING_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +55,7 @@ REF_PREFIX = "casa-bind-"
 # values only. Never the operator's words: a continuation has none
 # (``handoff.operator_words``), so a run it starts goes to his tap.
 _ORIGIN_KEYS = ("role", "channel", "chat_id", "user_id", "user_name",
-                "_origin_route", "_origin_clearance")
+                "_origin_route", "_origin_clearance", *ROUTING_KEYS)
 
 
 @dataclasses.dataclass
@@ -65,6 +74,46 @@ class Binding:
     session_id: "str | None" = None
     resume_failures: int = 0
     cost_seen: float = 0.0
+
+
+class ChannelUnavailable(RuntimeError):
+    """The binding's bot cannot be named now: Telegram is not configured, the
+    route's bot has no endpoint, or Casa's endpoint has not verified its id
+    yet (a first boot, or a replaced token)."""
+
+
+def route_target(context: dict) -> "tuple[Any, int]":
+    """The endpoint the route in *context* resolves to, and that endpoint's
+    bot id, read now. Raises :class:`ChannelUnavailable` when there is none
+    to read; the caller then answers as when its post cannot be made."""
+    from channels.telegram_transport import telegram_transport
+    transport = telegram_transport()
+    if transport is None:
+        raise ChannelUnavailable("Telegram is not configured")
+    try:
+        ep = transport.endpoint_for_route(context, site="plugin binding")
+        return ep, ep.bot_id
+    except (EndpointUnavailable, EndpointNotReady) as exc:
+        raise ChannelUnavailable(str(exc)) from exc
+
+
+def binding_target(binding: Binding) -> "tuple[Any, int]":
+    """:func:`route_target` of *binding*'s stored route."""
+    return route_target(binding.origin)
+
+
+def route_of(origin: dict, identity: Any) -> dict:
+    """The route a binding minted from *origin* keeps: the turn's own, or, on
+    a turn that carries none (an engagement's), the bot the call's grant
+    identity was resolved on."""
+    if "_tg_bot" in origin:
+        return {"_tg_bot": origin["_tg_bot"]}
+    return {"_tg_bot": int(identity.bot_id)}
+
+
+def _route_ok(entry: Any) -> bool:
+    origin = entry.get("origin") if isinstance(entry, dict) else None
+    return isinstance(origin, dict) and is_route(origin.get("_tg_bot"))
 
 
 def requester_kind(chain: tuple | list) -> str:
@@ -90,13 +139,20 @@ class BindingStore:
             import json
             with open(self._path, encoding="utf-8") as fh:
                 raw = json.load(fh)
+            refused = 0
             for entry in raw if isinstance(raw, list) else []:
+                if not _route_ok(entry):
+                    refused += 1
+                    continue
                 try:
                     b = Binding(**entry)
                 except TypeError:
                     continue
                 if isinstance(b.ref, str) and b.ref.startswith(REF_PREFIX):
                     self._items[b.ref] = b
+            if refused:
+                logger.error("plugin bindings: %d binding(s) without a Telegram route "
+                             "refused", refused)
         except FileNotFoundError:
             return
         except Exception:  # noqa: BLE001 — a corrupt store loses its bindings, loudly
@@ -126,7 +182,9 @@ class BindingStore:
 
     def for_turn(self, *, plugin: str, turn_key: str, identity: Any, chain: tuple,
                  origin: dict) -> Binding:
-        """The binding of this plugin's call in this turn — minted once."""
+        """The binding of this plugin's call in this turn — minted once. Its
+        route is the turn's; a turn that carries none (an engagement's) takes
+        the bot the call's grant identity was resolved on."""
         with self._lock:
             self._load_locked()
             for b in self._items.values():
@@ -140,7 +198,7 @@ class BindingStore:
                 operator_id=int(identity.operator_id), chat_id=int(identity.chat_id),
                 requester=chain[-2] if len(chain) >= 2 else (chain[0] if chain else ""),
                 requester_kind=requester_kind(chain), chain=list(chain),
-                origin={k: origin[k] for k in _ORIGIN_KEYS if k in origin},
+                origin=_kept_origin(origin, identity),
                 turn_key=turn_key, created_at=now, last_used=now,
                 session_id=origin.get("_delegated_session_id"))
             self._items[b.ref] = b
@@ -213,6 +271,11 @@ class BindingStore:
                     self._prune_and_save_locked()
                     return spent
         return cumulative
+
+
+def _kept_origin(origin: dict, identity: Any) -> dict:
+    return {**{k: origin[k] for k in _ORIGIN_KEYS if k in origin},
+            **route_of(origin, identity)}
 
 
 BINDINGS = BindingStore()
