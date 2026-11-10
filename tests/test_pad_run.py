@@ -250,6 +250,60 @@ async def test_a_pad_with_two_sections_of_one_name_refuses_before_the_spawn(runn
 # --- slots and the wall clock -------------------------------------------------------------------
 
 
+async def test_a_pad_with_an_empty_section_name_refuses_before_the_spawn(runner):
+    """Red case: the top and a `## ` header are one key to the script, so a pass run would
+    report success with the top's lines gone."""
+    spawner, _, store = runner
+    for lines in (["top", "## ", "body"], ["## ", "foo"], ["x", "##   ", "y", "## a", "z"]):
+        store.put("k", lines)
+        reply, error = await pad_run.run("k", {"op": "run", "text": "pass"})
+        assert error is True, lines
+        assert 'A section named "" and the top of the pad are one name to a run.' in reply
+        assert reply.endswith("Nothing changed.")
+        assert store.lines("k") == lines
+    assert spawner.calls == []
+
+
+async def test_a_result_that_names_a_section_twice_is_refused_in_one_pass(runner):
+    """Red case: a result of many pairs that all prepend to the top did quadratic work on
+    the event loop; now two keys naming one section refuse before anything is built."""
+    spawner, _, store = runner
+    _pad(store, "t\n## a\nx")
+    cases = [
+        ([["", "x\n"]] * 300_000, "the top of the pad 300000 times"),
+        ([["", "x\n"], [" ", "y\n"]], "the top of the pad 2 times"),
+        ([["", "x\n"], ["## a", "y\n"], ["a", "z\n"]], '"a" 2 times'),
+        ([["", ""], ["a", "x\n"], ["## a", "y\n"]], '"a" 2 times'),
+        ([["", ""], ["b", "x\n"], ["##  b  ", "y\n"]], '"b" 2 times'),
+    ]
+    for pairs, said in cases:
+        _scripted(spawner, stdout=FRAME + _result_line(pairs))
+        reply, error = await pad_run.run("k", {"op": "run", "text": "pass"})
+        assert error is True and f"The result names {said}; a name is one section. Nothing changed." in reply
+        assert store.lines("k") == ["t", "## a", "x"]
+    snapshot = pad_run.snapshot_sections(["t", "## a", "x"])
+    lines = pad_run.lines_from_result([["b", "1\n"], ["", "top\n"], ["a", "x\n"]], snapshot)
+    assert lines == ["top", "## b", "1", "## a", "x"]
+
+
+async def test_two_overlapping_takes_never_share_a_uid(runner):
+    """Red case: both takes read the parked slot as parked, both ran the ladder, and the
+    second write freed the slot the first had already taken."""
+    _, ladder, _ = runner
+    pad_run._state.slots = {199000: "parked", 199001: "busy"}
+    slow = Ladder()
+
+    async def slow_ladder(uid, **kwargs):
+        await asyncio.sleep(0.01)
+        return await slow(uid)
+    pad_run.LADDER = slow_ladder
+    taken = await asyncio.gather(pad_run._take_slot(), pad_run._take_slot())
+    got = [uid for uid in taken if uid is not None]
+    assert len(got) == len(set(got)) == 1 and got == [199000]
+    assert pad_run._state.slots == {199000: "busy", 199001: "busy"}
+    assert slow.calls == [199000]
+
+
 async def test_two_runs_at_a_time_one_per_pad(runner):
     spawner, ladder, store = runner
     for key in ("a", "b", "c"):
@@ -464,6 +518,9 @@ async def test_the_stderr_tail_is_shown_on_a_failure(runner):
 
 @pytest.mark.parametrize("last_line", [
     b'{"printed": "", "printed_total": 0, "pad": [[1, 2]]}',
+    b'{"printed": "", "printed_total": 0, "pad": [["a", 1]]}',
+    b'{"printed": "", "printed_total": 0, "pad": [[1, "a"]]}',
+    b"[" * 100_000 + b"]" * 100_000,
     b'{"printed": "", "printed_total": 0, "pad": [["a", "x", "y"]]}',
     b'{"printed": "", "printed_total": 0, "pad": [["a"]]}',
     b'{"printed": "", "printed_total": 0, "pad": [{"a": "x"}]}',
@@ -490,6 +547,32 @@ async def test_a_result_casa_does_not_accept_is_unreadable_and_applies_nothing(r
     assert f"{pad_run.UNREADABLE} Nothing changed." in reply
     assert store.lines("k") == ["x"]
     assert pad_run._state.available
+
+
+async def test_past_the_cap_nothing_is_kept_not_even_a_record_of_a_chunk(monkeypatch):
+    """Red case: an entry per discarded chunk, even an empty one, grows with what the
+    script prints for as long as the wall clock lets it."""
+    import tracemalloc
+    monkeypatch.setattr(pad_run, "STDOUT_CAP", 65536)
+    chunk = b"z" * 4096
+    post_cap = 200_000
+
+    class Endless:
+        def __init__(self):
+            self.left = 16 + post_cap
+
+        async def read(self, n=-1):
+            if self.left == 0:
+                return b""
+            self.left -= 1
+            return chunk
+    tracemalloc.start()
+    base = tracemalloc.get_traced_memory()[0]
+    kept, overflow = await pad_run._read_stdout(Endless())
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert (len(kept), overflow) == (65536, True)
+    assert peak - base < 2 * 65536 + 16384, peak - base
 
 
 async def test_a_result_with_no_final_newline_or_past_the_read_cap_is_unreadable(runner, monkeypatch):
@@ -545,7 +628,7 @@ async def test_the_apply_passes_the_stores_door(runner):
     _pad(store, "## ## a\nx")
     _scripted(spawner, stdout=FRAME + _result_line([["", ""], ["## a", "x\n"], ["## ## a", "y\n"]]))
     reply, error = await pad_run.run("k", {"op": "run", "text": "pass"})
-    assert error is True and 'This would make 2 sections named "## a"' in reply
+    assert error is True and 'The result names "## a" 2 times' in reply
     assert store.lines("k") == ["## ## a", "x"]
     _scripted(spawner, stdout=FRAME + _result_line([["", ""], ["## a", "x\n"], ["b\nc", "y\n"]]))
     reply, error = await pad_run.run("k", {"op": "run", "text": "pass"})
@@ -593,7 +676,7 @@ async def test_a_renamed_or_new_key_gets_a_normalised_header_and_a_kept_one_keep
     assert error is False and store.lines("k") == ["## ## a", "x", "## a", "collide"]
     store.put("k", ["## ## a", "x"])
     reply, error = await pad_run.run("k", {"op": "run", "text": "pad['## ## a'] = 'collide'"})
-    assert error is True and '2 sections named "## a"' in reply
+    assert error is True and 'The result names "## a" 2 times' in reply
     assert store.lines("k") == ["## ## a", "x"]
 
 

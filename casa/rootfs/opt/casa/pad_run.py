@@ -29,7 +29,7 @@ from typing import Any, Awaitable, Callable
 
 import uid_kill
 from scratchpad import (PADS, PAGE_NOTE, READ_CHARS, READ_CHARS_MAX, READ_CHARS_MIN,
-                        SECTION_MARK, _clean, _named, _Refused, _sections, _shape, _split)
+                        SECTION_MARK, _clean, _named, _quote, _Refused, _sections, _shape, _split)
 
 logger = logging.getLogger(__name__)
 
@@ -134,18 +134,22 @@ class Outcome:
 
 
 async def _read_stdout(stream) -> tuple[bytes, bool]:
-    chunks: list[bytes] = []
-    size = 0
+    """The first STDOUT_CAP bytes and whether more came. Past the cap the stream is drained
+    and nothing is kept, not even a record of a chunk, so what Casa holds for a box that
+    prints without end is the cap and no more."""
+    kept = bytearray()
     overflow = False
     while True:
         chunk = await stream.read(65536)
         if not chunk:
-            return b"".join(chunks), overflow
-        if size + len(chunk) > STDOUT_CAP:
-            overflow = True        # keep draining so the box is never blocked on its pipe
-            chunk = chunk[:STDOUT_CAP - size]
-        chunks.append(chunk)
-        size += len(chunk)
+            return bytes(kept), overflow
+        room = STDOUT_CAP - len(kept)
+        if len(chunk) > room:
+            overflow = True
+            if room > 0:
+                kept += chunk[:room]
+            continue
+        kept += chunk
 
 
 async def _read_stderr(stream) -> str:
@@ -238,7 +242,7 @@ def _result(outcome: Outcome) -> tuple[dict | None, int]:
     cut = rest.rfind(b"\n", 0, len(rest) - 1) + 1
     try:
         doc = json.loads(rest[cut:])
-    except ValueError:
+    except (ValueError, RecursionError):   # not JSON, or nested past what the decoder walks
         return None, len(rest)
     return (doc if _well_formed(doc) else None), max(cut - 1, 0)
 
@@ -249,55 +253,83 @@ def _result(outcome: Outcome) -> tuple[dict | None, int]:
 def snapshot_sections(lines: list[str]) -> list[tuple[str, str | None, str]]:
     """``(name, header line or None, text)`` for each section of *lines* as ``_sections``
     cuts them, the top first and always present; the text is the section's lines each ended
-    by a newline. A name two sections share refuses, as every operation on it does."""
+    by a newline. A name two sections share refuses, as every operation on it does, and so
+    does a header whose name is empty: to a run the top and that section would be one key,
+    and the script's dict would keep only the later text."""
     found = _sections(lines)
-    counts = collections.Counter(s.name for s in found if s.header >= 0)
-    for name, count in counts.items():
-        if count > 1:
-            _named(lines, name)         # raises with the operations' own wording
     out: list[tuple[str, str | None, str]] = []
     if not found or found[0].header >= 0:
         out.append(("", None, ""))
     for s in found:
         out.append((s.name, lines[s.header] if s.header >= 0 else None,
                     "".join(line + "\n" for line in lines[s.first:s.end])))
+    counts = collections.Counter(name for name, _, _ in out)
+    for name, count in counts.items():
+        if count > 1 and name:
+            _named(lines, name)         # raises with the operations' own wording
+        if count > 1:
+            raise _Refused('A section named "" and the top of the pad are one name to a run. '
+                           "Write the whole pad again, with no section, to rename it.",
+                           "duplicate_section")
     return out
 
 
 def lines_from_result(pairs: list, snapshot: list[tuple[str, str | None, str]]) -> list[str]:
     """The pad's lines after a run: a key the script kept takes its section's header line
     exactly as it was, a key that cleans to the empty name is the top, any other key gets a
-    normalised header; a line of a value beginning the mark is kept with one leading space."""
+    normalised header; a line of a value beginning the mark is kept with one leading space.
+    Two keys that name one section — the top included — refuse before anything is built,
+    so the work here is one pass over the result whatever its size."""
     headers = {name: header for name, header, _ in snapshot if header is not None}
-    lines: list[str] = []
-    for key, text in pairs:
-        body = [f" {line}" if line.startswith(SECTION_MARK) else line for line in _split(text)]
+    names = collections.Counter()
+    for key, _ in pairs:
         if key in headers:
-            lines += [headers[key], *body]
-        elif _clean(key) == "":
-            lines[0:0] = body
+            names[key] += 1
         else:
             if "\n" in key or "\r" in key:
                 raise _Refused("A section name is one line.", "bad_section")
-            lines += [SECTION_MARK + _clean(key), *body]
-    return lines
+            names[_clean(key)] += 1
+    for name, count in names.items():
+        if count > 1:
+            raise _Refused(f"The result names {_quote(name) if name else 'the top of the pad'} "
+                           f"{count} times; a name is one section.", "duplicate_section")
+    top: list[str] = []
+    rest: list[str] = []
+    for key, text in pairs:
+        body = [f" {line}" if line.startswith(SECTION_MARK) else line for line in _split(text)]
+        if key in headers:
+            rest += [headers[key], *body]
+        elif _clean(key) == "":
+            top = body
+        else:
+            rest += [SECTION_MARK + _clean(key), *body]
+    return top + rest
 
 
 # --- slots -----------------------------------------------------------------------------------
 
 
 async def _retry_parked() -> None:
-    for uid, state in list(_state.slots.items()):
-        if state == "parked":
-            result = await LADDER(uid)
-            if result.extinct:
-                _state.slots[uid] = "free"
-                logger.info("run slot uid %d cleared after %d passes", uid, result.passes)
+    """The ladder again on each parked slot. A slot is claimed as recovering before the
+    ladder is awaited, so two overlapping takes never both read it as parked, and only the
+    claim that still holds it writes its outcome back."""
+    for uid in list(_state.slots):
+        if _state.slots[uid] != "parked":
+            continue
+        _state.slots[uid] = "recovering"
+        result = await LADDER(uid)
+        if _state.slots.get(uid) != "recovering":
+            continue
+        if result.extinct:
+            _state.slots[uid] = "free"
+            logger.info("run slot uid %d cleared after %d passes", uid, result.passes)
+        else:
+            _state.slots[uid] = "parked"
 
 
 async def _take_slot() -> int | None:
     await _retry_parked()
-    for uid, state in _state.slots.items():
+    for uid, state in _state.slots.items():     # the state as it is now, after the awaits
         if state == "free":
             _state.slots[uid] = "busy"
             return uid

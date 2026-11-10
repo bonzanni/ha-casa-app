@@ -91,16 +91,20 @@ so the open is refused in both directions and the box refuses with exit 106.
 **Casa's side (`pad_run.run`).** Before the spawn: `run` is ready and available, the pad is
 not already running, a slot is free (parked slots get the ladder again first), the pad's
 snapshot is taken with its stamp and each section's header line kept aside
-(`snapshot_sections`; a name two sections share refuses). The payload is ASCII JSON. Stdout is
-read to 8 MiB (the result's bound for a full pad is 6.23 MiB) and discarded past it; stderr
+(`snapshot_sections`; a name two sections share refuses, and so does a `## ` header whose name
+is empty, since the top and that section would be one key to the script). The payload is ASCII
+JSON. Stdout is read to 8 MiB (the result's bound for a full pad is 6.23 MiB) and drained past
+it with nothing kept, not even a record of a chunk; stderr
 keeps its last 4 KiB; the wall clock kills at 30 s; the ladder kills the slot's uid after
 every run, and a slot whose kill is not verified `extinct` is parked with an ERROR. At exit 0
 Casa checks the result's shape itself, whatever the child said — a dict of exactly `printed`
 (str), `printed_total` (int) and `pad` (null, or a list of `[str, str]`) — and anything else,
 null included, is "The result could not be read". `lines_from_result` turns the pairs back
-into lines: a key the script kept takes its section's header line exactly as it was, a key
-that cleans to `""` is the top, any other key gets `## ` + its cleaned name, and a line of a
-value beginning `## ` is stored with one leading space. `PadStore.apply` then refuses when the
+into lines in one pass: two keys that name one section, the top included, refuse first; a key
+the script kept takes its section's header line exactly as it was, a key that cleans to `""`
+is the top, any other key gets `## ` + its cleaned name, and a line of a value beginning
+`## ` is stored with one leading space. A last line that is not JSON, or nested past what the
+decoder walks, is "could not be read" like any other unreadable result. `PadStore.apply` then refuses when the
 pad is gone or its stamp moved (every creation and every change moves it — a write, the
 route, a brief, a move, an expiry and recreation — so a pad changed and restored with the
 same lines is still another pad to the run), passes the same door as every change (no second
