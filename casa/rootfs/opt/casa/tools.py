@@ -7348,7 +7348,7 @@ async def _launch_interactive_engagement(
                     "message": _detail,
                 })
             # The brief: the job's first and only launch write. The delivery
-            # worker writes it, admitted at write time — a /cancel landing
+            # worker writes it, admitted at write time — a cancel landing
             # first means it is never written. From here the session's reader
             # owns the job.
             driver.enqueue_brief(rec, prompt)

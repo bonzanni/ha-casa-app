@@ -3096,16 +3096,6 @@ async def main() -> None:
             )
         telegram_channel._finalize_cancel = _finalize_cancel
 
-        async def _finalize_complete_user(rec):
-            # F2 (whole-branch r2): PROPAGATE the finalize bool (see above).
-            from tools import _finalize_engagement
-            return await _finalize_engagement(
-                rec, outcome="completed", text="User-marked complete.",
-                next_steps=[],
-                driver=engagement_driver,
-            )
-        telegram_channel._finalize_complete_user = _finalize_complete_user
-
     # 10b. Voice channel
     voice_sse_enabled = os.environ.get(
         "VOICE_SSE_ENABLED", "true",

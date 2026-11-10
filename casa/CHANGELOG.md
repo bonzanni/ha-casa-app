@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.356.0] - 2026-11-10
+
+Not backward compatible. Background jobs no longer open a topic each in the forum group, and nothing reads or cleans the topics older versions opened: they stay in the group until you delete them.
+
+### Changed
+
+- **The forum group is now optional, and holds one read-only log per agent instead of one topic per job.** Each specialist, the configurator and each assistant's plugin jobs (for example "Ellen · plugins") get one topic, created the first time they work. A log shows what the agent writes and one short line per step it takes, each line starting with the job's name. Casa posts silently, keeps within Telegram's limits for groups, and deletes each post after about two days. The option is now called "Agent log group chat ID"; the bot needs to be an admin with "Manage topics". Everyone in the group can read the logs.
+- **Background jobs no longer need the group.** Without one they work fully: everything that needs you is in our direct chat, as before: the start line with its Cancel button, questions, approvals and results. Reply to a job's message to steer it.
+- With a log group, the configurator's step line and the working of a specialist you talk to through the assistant go to their log; without one, the configurator keeps its step line in our chat.
+- Anything written in the log group gets one reply pointing to our direct chat. Nothing written there reaches an agent.
+- When you change a specialist while one of its jobs is running, the warning now says to cancel the job (with its Cancel button, or by asking the assistant) and start it again.
+
+### Fixed
+
+- A reply to a message of a background job that had just ended went to the specialist, who could not see the job and could contradict its result. It now reaches the assistant together with the job's name, how it ended and when, whether you reply in words or with a captioned file.
+
+### Removed
+
+- The topic per job, its title marks and icons, the six-hourly topic clean-up and the assistant's `cleanup_engagement_topics` tool.
+- The `/cancel`, `/complete` and `/help` commands in a job's topic.
+- The specialists' `react` tool, which only worked in a job's topic. A specialist that still asks for it is refused at install until it drops it.
+
 ## [0.355.1] - 2026-11-10
 
 ### Fixed

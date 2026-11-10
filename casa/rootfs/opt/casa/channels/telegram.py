@@ -1007,7 +1007,6 @@ class TelegramChannel(Channel):
         self._stopping = False
         self._engagement_driver = None
         self._finalize_cancel = None
-        self._finalize_complete_user = None
         self._session_registry = None   # wired in main() (Task 9); /new reset
         # The agent log sink (agent_logs.AgentLogs), wired in main(); its
         # check runs at every successful rebuild.
