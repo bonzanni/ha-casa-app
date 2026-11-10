@@ -373,6 +373,11 @@ async def _engagement_turn(kind="specialist", sid=None, script=None):
                 await asyncio.sleep(0.001)
     finally:
         await drv.cancel(rec)
+        # The worker captures the operator's message after writing it, so its
+        # capture can outlast a scripted turn: let it finish before reading.
+        pending = [t for t in drv._tasks if not t.done()]
+        if pending:
+            await asyncio.wait(pending, timeout=5)
     assert len(ended) == 1
     await transcript_runs.settle()
     return rec, sid
@@ -601,3 +606,130 @@ async def _with_origin_task(coro):
         return await coro
     finally:
         agent_mod.origin_var.reset(token)
+
+
+async def test_a_capture_in_flight_at_close_confirms_the_run_when_kept(home):
+    """A job's operator message is captured after it is written, so a short
+    turn can close its run while that capture is still in flight. The run is
+    confirmed when the capture is kept, not left unconfirmed. Red case: the
+    close that found a capture open left the row unconfirmed for good."""
+    run = await transcript_runs.Run.start(
+        transcript_runs.ENGAGEMENT, role="finance", directory=str(home.tmp),
+        session_id=str(uuid.uuid4()))
+    release = asyncio.Event()
+
+    async def capture_item():
+        await release.wait()
+        return True
+
+    pending = asyncio.create_task(run.kept(capture_item()))
+    await asyncio.sleep(0)
+    run.close()
+    await transcript_runs.settle()
+    assert [r["confirmed_at"] for r in rows(home.store)] == [None]
+
+    release.set()
+    assert await pending is True
+    await transcript_runs.settle()
+    assert [r["confirmed_at"] is not None for r in rows(home.store)] == [True]
+
+
+async def test_a_capture_cancelled_after_close_leaves_the_run_unconfirmed(
+        home, caplog):
+    """The capture still in flight at close is cancelled: what it owed may
+    never have been stored, so the row stays unconfirmed and the transcript
+    is kept, with one warning."""
+    run = await transcript_runs.Run.start(
+        transcript_runs.ENGAGEMENT, role="finance", directory=str(home.tmp),
+        session_id=str(uuid.uuid4()))
+
+    async def capture_item():
+        await asyncio.Event().wait()
+        return True
+
+    pending = asyncio.create_task(run.kept(capture_item()))
+    await asyncio.sleep(0)
+    run.close()
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    await transcript_runs.settle()
+    assert [r["confirmed_at"] for r in rows(home.store)] == [None]
+    assert sum("was interrupted" in r.getMessage()
+               for r in caplog.records) == 1
+
+
+def _bare_capture():
+    from drivers.in_casa_driver import _EngagementCapture
+    rec = SimpleNamespace(id="e" * 32, role_or_type="finance", kind="specialist",
+                          origin={}, sdk_session_id=None)
+    return _EngagementCapture(rec)
+
+
+async def test_a_reserved_operator_capture_holds_the_close_until_paid(home):
+    """The worker reserves the operator's capture before it writes, then waits
+    for the run's registration before capturing; the reader can close the
+    turn in between. The close waits for the reservation, so the run is not
+    confirmed while the operator's message is still owed. Red case: the close
+    confirmed the run before the worker entered its capture."""
+    cap = _bare_capture()
+    cap.run = await transcript_runs.Run.start(
+        transcript_runs.ENGAGEMENT, role="finance", directory=str(home.tmp),
+        session_id=str(uuid.uuid4()))
+    cap.owe()
+    cap.close()
+    await transcript_runs.settle()
+    assert [r["confirmed_at"] for r in rows(home.store)] == [None]
+
+    async def kept():
+        return True
+    assert await cap.run.kept(kept()) is True
+    cap.paid()
+    await transcript_runs.settle()
+    assert [r["confirmed_at"] is not None for r in rows(home.store)] == [True]
+
+
+async def test_a_cut_reserved_capture_leaves_the_run_unconfirmed(home, caplog):
+    """The reserved capture is cancelled before it reaches the run: the run
+    stays unconfirmed, with one warning."""
+    cap = _bare_capture()
+    cap.run = await transcript_runs.Run.start(
+        transcript_runs.ENGAGEMENT, role="finance", directory=str(home.tmp),
+        session_id=str(uuid.uuid4()))
+    cap.owe()
+    cap.close()
+    cap.paid(cut=True)
+    await transcript_runs.settle()
+    assert [r["confirmed_at"] for r in rows(home.store)] == [None]
+    assert sum("was interrupted" in r.getMessage()
+               for r in caplog.records) == 1
+
+
+@pytest.mark.parametrize("cut", [True, False])
+async def test_a_close_before_registration_lands_reaches_the_registered_run(
+        home, monkeypatch, caplog, cut):
+    """The turn closes, and a reserved capture is cut or released, while the
+    run's row is still being registered: both are applied to the registered
+    run once it lands, never only to the placeholder. Red case: the cut
+    interrupted the placeholder, and the registered row was confirmed (or,
+    with nothing owed, left unconfirmed for good)."""
+    import time as _time
+    real = transcript_runs.register
+
+    def slow(*a, **k):
+        _time.sleep(0.2)
+        return real(*a, **k)
+    monkeypatch.setattr(transcript_runs, "register", slow)
+    cap = _bare_capture()
+    monkeypatch.setattr("engagement_transcript_reaper.transcript_cwd",
+                        lambda _rec: str(home.tmp))
+    ready = asyncio.create_task(cap.register(str(uuid.uuid4())))
+    await asyncio.sleep(0)
+    cap.owe()
+    cap.close()
+    cap.paid(cut=cut)
+    await ready
+    await transcript_runs.settle()
+    confirmed = [r["confirmed_at"] is not None for r in rows(home.store)]
+    warned = sum("was interrupted" in r.getMessage() for r in caplog.records)
+    assert (confirmed, warned) == (([False], 1) if cut else ([True], 0))
