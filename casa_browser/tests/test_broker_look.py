@@ -225,7 +225,7 @@ async def test_a_binding_that_no_longer_holds_stops_the_sign_in(tmp_path, at):
     r = await Rig(tmp_path).setup()
     r.driver.steps = [Step(('username', 'password')), Step()]
     await _look(r)
-    r.driver.bound = lambda n: (True, 'binding-2') if n >= at else None
+    r.driver.bound = lambda n: (True, {'f1': ['other']}) if n >= at else None
     assert await _auto(r) == {'status': 'no_form', 'reason': 'page_moved'}
     assert len(r.driver.fills) == at - 1 and _count(r, 'submit') == 0
 
@@ -234,18 +234,39 @@ async def test_a_mark_that_is_gone_stops_the_sign_in(tmp_path):
     r = await Rig(tmp_path).setup()
     r.driver.steps = [Step(('username', 'password')), Step()]
     await _look(r)
-    r.driver.bound = lambda n: (False, 'binding-1')
+    r.driver.bound = lambda n: (False, None)
     assert await _auto(r) == {'status': 'no_form', 'reason': 'page_moved'}
     assert r.driver.fills == [] and _count(r, 'submit') == 0
 
 
-async def test_a_passkey_prompt_that_changed_is_never_answered(tmp_path):
-    """Terra r5: the prompt replaced in its notification frame changes the binding: 0
+async def test_a_named_field_gone_from_the_page_is_a_page_that_moved(tmp_path):
+    """A form drawn anew has new fields, which the look did not mark: nothing filled, and the
+    controller's one fresh look gets a chance."""
+    r = await Rig(tmp_path).setup()
+    r.driver.steps = [Step(('username', 'password'))]
+    await _look(r)
+    r.driver.steps = [Step()]
+    assert await _auto(r, fields={'username': 'f1', 'password': 'f2'}) == {
+        'status': 'no_form', 'reason': 'page_moved'}
+    assert r.driver.fills == []
+
+
+async def test_a_field_the_look_never_saw_stops_the_sign_in(tmp_path):
+    r = await Rig(tmp_path).setup()
+    r.driver.steps = [Step(('username', 'password')), Step()]
+    await _look(r)
+    r.driver.bound = lambda n: (True, {'f9': ['facts']})
+    assert await _auto(r) == {'status': 'no_form', 'reason': 'page_moved'}
+    assert r.driver.fills == [] and _count(r, 'submit') == 0
+
+
+async def test_a_passkey_prompt_that_moved_is_never_answered(tmp_path):
+    """The notification frame's new document no longer holds the look's mark: 0
     ``choose_passkey``."""
     r = await Rig(tmp_path).setup()
     r.driver.steps = [Step(passkey_frame=True), Step()]
     await _look(r)
-    r.driver.bound = lambda n: (True, 'binding-other-prompt')
+    r.driver.bound = lambda n: (False, None)
     assert await _auto(r) == {'status': 'no_form', 'reason': 'page_moved'}
     assert _count(r, 'choose_passkey') == 0
 

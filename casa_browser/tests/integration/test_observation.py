@@ -126,6 +126,25 @@ def test_observation_no_raw_targets_and_masked_screenshot():
         assert not all_black(px, res[7]), "control: the heading is visible"
 
 
+def test_the_models_picture_blacks_secret_fields_and_frames():
+    """The picture a model gets follows the operator screenshot's one rule, and leaves no file."""
+    with ChromeSites([SITE, OTHER]) as sites:
+        sites.pages["/invoices"] = ("text/html", PAGE, {})
+        sites.pages["/frame"] = ("text/html", b"<html><body>FRAME CONTENT</body></html>", {})
+        url = f"https://{SITE}/invoices"
+        policy = _policy(url)
+        from casa_browser.proxy_client import decode_policy
+        sites.install(decode_policy(policy))
+        res = run_scenario([{"open": {"site_id": "sa"}}, {"goto": url}, {"wait": 1},
+                            {"model_shot": policy}, {"box": "#pw"}, {"box": "h1"}, {"box": "iframe"}])
+        shot = res[3]
+        assert shot["png"] and shot["files"] == []
+        px = png_pixels(base64.b64decode(shot["png"]))
+        assert all_black(px, res[4]), "password field not masked"
+        assert all_black(px, res[6]), "frame not masked"
+        assert not all_black(px, res[5]), "control: the heading is visible"
+
+
 def test_pushstate_fragment_and_iframe_gate():
     """The page-view gate runs on the page's full current address (route and fragment
     included) and admits exactly the session's own pages."""
@@ -199,9 +218,55 @@ def test_model_text_has_no_editable_content_values_or_raw_roles():
             ["Private edited text"]
         wire = repr({**obs, "elements": [{k: v for k, v in e.items() if k != "value_masked"}
                                          for e in obs["elements"]]})
-        for leak in ("Private edited text", "Private submit value", "private-code", "/acct/991"):
+        for leak in ("Private edited text", "private-code", "/acct/991"):
             assert leak not in wire, leak
+        # A submit button's value is what it shows: its name, unlike a field's value.
+        assert "Private submit value" in [e["label_masked"] for e in obs["elements"]]
         assert {e["role"] for e in obs["elements"]} <= {"button", "link", "textbox"}
+
+
+PIXEL = "data:image/gif;base64,R0lGODlhAQABAAAAACw="
+SQUARE = "style='display:inline-block;width:20px;height:20px'"
+NAMES_PAGE = f"""<html><body><form action=/a>
+  <input type=submit value=Save><input type=submit value=Delete><input type=reset value=Clear>
+  <input type=button value=Show><input type=image alt=Find src="{PIXEL}" {SQUARE}>
+  <input value=Typed-Value-0301><input value=Typed-Value-0302 aria-label="Your name">
+  <input type=search title="Search box"><textarea>Typed-Value-0303</textarea>
+  <input type=password value=Secret-0304 aria-label=Secret-Label-0304 title=Secret-Title-0304>
+  <input autocomplete=one-time-code value=Secret-0305 aria-label=Secret-Label-0305>
+  <input autocomplete=cc-number value=Secret-0306 title=Secret-Title-0306>
+  <button aria-label=Secret-Label-0307 {SQUARE}><input type=password></button>
+  <input type=submit></form>
+  <button aria-label=Close {SQUARE}></button><button title=Help {SQUARE}></button>
+  <button aria-label=Hidden-Claim-0308>Visible wins</button>
+  <input type=button value="Value wins" aria-label=Hidden-Claim-0309>
+  <a href=/x><img alt="A picture" src="{PIXEL}" {SQUARE}></a>
+  <a href=/y aria-label="Go to y" {SQUARE}></a>
+  <div contenteditable=true aria-label=Editor>Typed-Value-0310</div>
+  <select aria-label=Pick><option>One</option></select></body></html>"""
+
+
+def test_an_element_with_no_visible_name_takes_what_the_page_calls_it():
+    """Both readings, as real Chrome gives them: a button input's value and the page's naming
+    attributes name an element with no visible name; visible text wins over them; a field's value
+    never names it, and nothing on or holding a secret does."""
+    with ChromeSites([SITE, OTHER]) as sites:
+        sites.pages["/names"] = ("text/html", NAMES_PAGE.encode(), {})
+        url = f"https://{SITE}/names"
+        policy = _policy(url)
+        from casa_browser.proxy_client import decode_policy
+        sites.install(decode_policy(policy))
+        res = run_scenario([{"open": {"site_id": "sa"}}, {"goto": url}, {"wait": 1},
+                            {"observe": policy}, {"gate_read": None}])
+        labels = [e["label_masked"] for e in res[3]["elements"]]
+        names = [c["name"] for c in res[4]["controls"]]
+        for got in (labels, names):
+            for want in ("Save", "Delete", "Clear", "Show", "Find", "Your name", "Search box",
+                         "Close", "Help", "Visible wins", "Value wins", "A picture", "Go to y",
+                         "Editor", "Pick"):
+                assert want in got, (want, got)
+            for leak in ("Typed-Value", "Secret-", "Hidden-Claim"):
+                assert not [n for n in got if leak in n], (leak, got)
 
 
 @pytest.mark.parametrize("path,html,boxes", [
@@ -292,7 +357,7 @@ def test_model_text_keeps_split_values_whole_and_skips_hidden_and_editable():
     attribute-only names never reach the model."""
     with ChromeSites([SITE, OTHER]) as sites:
         html = f"""<html><body>
-          <p>Reset link: https://bank.example/<wbr>reset/<wbr>acct-7781/<wbr>nicola?<wbr>code=991</p>
+          <p>Reset link: https://bank.example/<wbr>reset/<wbr>acct-7781/<wbr>robin?<wbr>code=991</p>
           <p>AWS: <span>{AKIA[:4]}</span><span>{AKIA[4:]}</span></p>
           <p><span style="display:inline-block">{AKIA[:8]}</span><span style="display:inline-block">{AKIA[8:]}</span></p>
           <div style="display:none"><p>HIDDEN-NESTED Hunter2pw</p></div>
@@ -324,9 +389,11 @@ def test_model_text_keeps_split_values_whole_and_skips_hidden_and_editable():
         assert "SHADOW-EDIT" not in repr(values) and "CE-CSS-NOTE" not in repr(values)
         for leak in ("/reset", "acct-7781", "code=991", AKIA, AKIA[:8], AKIA[8:], "IOSFODNN7EXAMPLE",
                      "HIDDEN-NESTED", "DETAILS-CLOSED", "CE-UPPER-NOTE", "CE-CSS-NOTE", "SHADOW-EDIT",
-                     "EDITOR-LABEL", "ATTR-ONLY-NAME", "HIDDEN-LABEL", "GLUED-CODE", "/reset?code", "BACKSLASH-PATH", "NO-SLASH-PATH", "FILE-PATH", "ONE-SLASH-PATH", "account=7781",
+                     "EDITOR-LABEL", "HIDDEN-LABEL", "GLUED-CODE", "/reset?code", "BACKSLASH-PATH", "NO-SLASH-PATH", "FILE-PATH", "ONE-SLASH-PATH", "account=7781",
                      KEY[:10], "CONTENTS-INVISIBLE", "CONTENTS-UNDER-NONE"):
             assert leak not in wire, leak
+        assert "ATTR-ONLY-NAME" not in obs["text"]             # a name, never page text
+        assert "ATTR-ONLY-NAME" in [e["label_masked"] for e in obs["elements"]]
         assert "https://bank.example" in obs["text"] and "Show password" in obs["text"]
         assert "CONTENTS-SHOWN [masked]" in obs["text"]
 

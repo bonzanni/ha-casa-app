@@ -53,7 +53,9 @@ a judged click on a "Log in" link, a redirect — is signed into by the look. So
 whose password field has a shown, empty box beside it in its form that the page marks with no
 role, such as a plain text username: the start page's sign-in does nothing there and answers
 `no_form`/`needs_check` (not counted in the ledger, its address taken out of `looked`), and the
-next observe looks. The plugin asks for the look:
+next observe looks. A start page that showed no form while its sign-in waited is the same
+(`no_form`/`no_form`, about two seconds): one `sign_in_nothing` event says so, and the next observe
+looks at the form if one rendered since. The plugin asks for the look:
 `POST /v1/runs/{run}/observe` with `{"sign_in": true}` (`api.py::_observe_body`; `{}` stays
 the plain observation, any other body is `unsupported`).
 
@@ -76,12 +78,10 @@ isolated world. It goes on only for a marked role or a password field on a login
 site's passkey request (`passkey_hint`) or 1Password's prompt. The same read binds what the
 check will judge: the look's mark in every credential-bearing frame document (the main document
 and each frame holding a planned field or the submit; 1Password's notification frame while it
-shows a prompt) and one digest of the marked fields' and buttons' facts (id, type,
-autocomplete, label, the form's resolved `action`/`method`, a button's own
-`formaction`/`formmethod`) and of each bound document's text (the prompt's text for the
-notification frame). The broker keeps the mark and the digest for the run and site; the
-controller keeps the bound frames (`login.py::DriverServer.sign_in_frames`) and its own reading
-of them.
+shows a prompt) and the marked fields' and buttons' facts by id (type, autocomplete, label, the
+form's resolved `action`/`method`, a button's own `formaction`/`formmethod`). The broker keeps the
+mark and the facts for the run and site; the controller reads the bound frames
+(`login.py::DriverServer.sign_in_frames`) to see they read whole. The page's text is not bound.
 
 **The check.** A page with sign-in fields becomes a `sign_in` judgement (`gate.py::sign_in_packet`:
 the site, the page as an action packet reads it, and `planned`: the fields by id, marked role,
@@ -99,14 +99,20 @@ the reading it was shown (`controller.py::_sign_in_mapping`, mechanical facts on
 is a planned field's, a password goes only into a password field and a username never does
 (so no field takes both), and a field the page marks keeps its role; otherwise nothing is
 filled (`sign_in_mapping`, `refused`). `sign_in`
-then applies only while the session and the address are the ones looked at, no step came
-between (the pair is still in `looked`), and a final read of the bound documents equals the
-judged one by the tap rule (`gate.py::same_reading`; `gate.py::PageOps.read_page_and_bound`,
+then applies only while the session and the address are the ones looked at and no step came
+between (the pair is still in `looked`); the page's text may have moved, a banner or a price
+beside the form changes nothing. The look's bound reading (`gate.py::PageOps.read_page_and_bound`,
 one pass giving the packet's reading and the bound one, so an unbound frame such as a CAPTCHA
-counts in neither reading). A reading that differs at the same address, with no step between
-(a widget solved and its button came on), brings one fresh look: its `sign_in` judgement is the
-verdict reply's successor, the password already sent carried, and nothing is filled on the old
-verdict; a verdict on that fresh look fills nothing if the reading differs again. Then the
+counts in neither reading) must be whole. A closed shadow root makes a reading incomplete only when it holds a
+form field, in the shadow trees below it too (`observe.py::closed_shadow_holds_field`; a failure
+to ask counts as one): a password manager's button and a CAPTCHA's frame hold none. A bound
+reading over its caps or with such a root, or a page that moved, is not judged; a page with
+sign-in fields (a password field, a field with a sign-in role, a passkey) then leaves one
+`sign_in_nothing` event, outcome `not_checked`, and a page with only plain boxes none. A sign-in
+whose judged fields or button moved (below) sends nothing (outcome `page_moved`) and brings one
+fresh look: its `sign_in` judgement is the verdict reply's successor, and a verdict on that fresh
+look fills nothing if they move again. The next observe after a step looks again, since an outcome
+that acted on nothing is not counted (the ledger, below). Otherwise the
 broker's `login` with `auto`, and the named fields as
 `fields`, signs in on the page as it is (no navigation): in the judged document only the
 look's planned fields count in the driver's discovery, a role the
@@ -116,13 +122,18 @@ page marks with it, and a password role goes only to a password field. A look pl
 most 200 fields. `not_sign_in`, no verdict, a verdict outside its
 bounds or a page that moved fill nothing. The reply is `{outcome: done, observation}`, the
 observation read after the sign-in, its `notice` the sign-in step the look recorded
-(`signed_in`: "Casa Browser signed in to {site} by itself.", or the `login_needed` text,
+(`sign_in_sent`: "Casa Browser filled in the sign-in of {site} and sent it; read the page to see whether it worked.", or the `login_needed` text,
 `needs_code` included), else null.
+
+**After the send.** A form still showing right after the password went out is the site answering
+(`broker/main.py::ANSWER_WAITS`: about ten seconds of reads, nothing filled or pressed); one that
+stays is `password_again`.
 
 **The sign-in** (`broker/main.py::Broker.login` with `auto`). Before each fill, submit or passkey
 answer of the judged step, the driver's `sign_in_bound` must report every bound document still
 marked, every field and the submit of the step one the look marked (so of the judged reading),
-no 1Password prompt the look did not bind, and the same digest; otherwise the
+no 1Password prompt the look did not bind, and those fields' and that submit's facts as the look
+read them (type, autocomplete, label, the form's destination, a button's own); otherwise the
 sign-in ends `no_form`/`page_moved` with nothing more done. The judged step is the ordinary step:
 `needs_guest` while the guest is not unlocked, 1Password's passkey prompt for the linked item,
 username, password and TOTP fills, the refusals `password_change_page` and `ambiguous_fields`; a
@@ -131,8 +142,9 @@ out sends nothing (`needs_live_view`/`empty_field`, the rule in
 [`casa-browser-credentials.md`](casa-browser-credentials.md)). After its first submit or passkey answer: a page with
 neither a password nor a code field to fill is the page after the sign-in (the completion rule);
 a password asked again ends `needs_live_view`/`password_again` (carried across the guest reload
-and an emailed code); no guest and no passkey answer. A first read that errors or finds no form
-is `no_form` (`probe_failed`, `no_form`).
+and an emailed code); no guest and no passkey answer. A first read that errors is `no_form`/`probe_failed`;
+one that finds no field to fill is `no_form`/`no_form`, or `no_form`/`page_moved` when the check
+named fields (a form drawn anew has new ones).
 
 **The guest reload.** On `needs_guest` the controller runs the guest flow, loads the looked
 address again and looks afresh: the new `sign_in` judgement is the verdict reply's successor
@@ -254,9 +266,9 @@ decline.
 
 What INV-BRW-053 and INV-BRW-048 do not cover (ruled residuals): an identifier-only save takes the value the site's own sign-in page shows as its one email field, so that page, on its own login origin, can plant a decoy email (a field hidden by CSS, say) that is saved instead of the one the operator typed; it is saved and filled only for that site, no secret leaks, and a code is never saved, because only an email address is an identifier on its own. A username-only sign-in with no password is not saved. A redirect after the sign-in to a host the card did not show is refused (`site_lock`).
 
-**INV-BRW-059**: Off the start page, Casa Browser fills or presses nothing of a sign-in without a `sign_in` verdict on that page, only fields of the judged reading (a field the page does not mark only as the verdict mapped it, a password only into a password field), and only while the documents, destinations, labels and text it judged are unchanged and no step came between; a look sends the password once, answers only its judged page's passkey, and signs in again only after a sign-in of the run that worked.
+**INV-BRW-059**: Off the start page, Casa Browser fills or presses nothing of a sign-in without a `sign_in` verdict on that page, only fields of the judged reading (a field the page does not mark only as the verdict mapped it, a password only into a password field), and only while the documents, fields, buttons, labels and destinations it judged are unchanged and no step came between; a look sends the password once, answers only its judged page's passkey, and signs in again only after a sign-in of the run that worked.
 
-What INV-BRW-059 does not cover (ruled residuals): the check can misjudge a page; a site's own script changing its form while Casa fills it (another control's value, the operation it submits) is out of scope, since that script can send any request to its own origin anyway; the later steps of a judged sign-in are not judged again, only the limits above apply; a page whose bound text changes by itself (a clock in the form's document) is not signed into automatically.
+What INV-BRW-059 does not cover (ruled residuals): the check can misjudge a page; a site's own script changing its form while Casa fills it (another control's value, the operation it submits) is out of scope, since that script can send any request to its own origin anyway; the later steps of a judged sign-in are not judged again, only the limits above apply; the text around the judged fields and button is not held after the check, so a same-document change that keeps their nodes, labels and destination but rewrites the page around them, changes another control or the words of 1Password's prompt (which still has to offer the linked item) goes on.
 
 **INV-BRW-048**: A live-view credential is written only from the capture's last attempt that the check judged `signed_in`, that did not fail, with no password typing after it, ending on one of the site's origins; it overwrites a linked item only when that item is `unverified` or its own password was rejected in this run, and never writes equal values.
 

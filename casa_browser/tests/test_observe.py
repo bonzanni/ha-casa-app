@@ -3,6 +3,7 @@ real extraction code runs in the image test ``integration/test_observation.py``)
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
@@ -10,7 +11,8 @@ import pytest
 
 import proxyharness as h
 from casa_browser.handles import HandleRegistry
-from casa_browser.observe import Extraction, ObservationRefused, Observer, page_view_allowed
+from casa_browser.observe import (Extraction, ObservationRefused, Observer, holds_words,
+                                 page_view_allowed, rows_text, search_ask)
 from casa_browser.policy import Lease
 
 BEARER = "https://files.site.example/invoices/in_1PqR9sT2uV3wX4yZ/download?token=tok_Q7w8E9r0T1y2U3i4"  # gitleaks:allow - synthetic fixture; this test exists to prove masking works
@@ -427,7 +429,7 @@ def test_crop_cuts_the_image_to_the_content_with_a_margin():
     from casa_browser.observe import crop_png
     page = _CropPage([8, 8, 700, 600, 1920, 1080], base64.b64encode(SMALL).decode())
     assert run(crop_png(page, PNG)) == (SMALL, (0, 0))
-    assert page.args[1][0][1:] == [0, 0, 724, 624]
+    assert page.args[1][0][1:] == [0, 0, 724, 624, 1]
 
 
 def test_crop_keeps_a_target_outside_the_text_and_a_minimum_size():
@@ -586,3 +588,274 @@ def test_a_written_frame_is_observed_and_its_written_child_of_a_withheld_frame_i
     assert "https://other.example/f" not in reads       # an unapproved web frame is never read
     assert got.text.count("[a frame on this page is not shown]") == 4
     assert [e.label_masked for e in got.elements] == ["Pickup"]
+
+
+# --------------------------------------------------------------------------- pictures for a model
+
+
+def test_capture_for_model_keeps_no_file_and_the_operators_capture_still_does(tmp_path):
+    policy, page = h.account_policy(), FakePage(URL)
+    log = []
+    e = ext(URL, "x", [{"role": "textbox", "name": "Password", "href": None, "field": True,
+                        "secret": True}], frames=1, log=log)
+    store = SimpleNamespace(rows=[], put_screenshot=lambda *a: store.rows.append(a))
+    o = observer({URL: e}, tmp_path)
+    o.store = store
+    png = run(o.capture_for_model(RUN, session(page), policy))
+    assert png.startswith(b"\x89PNG") and page.shots == 1
+    assert not (tmp_path / "screenshots").exists() and store.rows == []
+    # the same rule: the secret field and the frame were marked and the marks removed
+    assert len([x for x in log if x[0] == "mark"]) == 2 == len([x for x in log if x[0] == "unmark"])
+    assert run(o.capture_operator(RUN, session(page), policy))
+    assert len(list((tmp_path / "screenshots").iterdir())) == 1 and len(store.rows) == 1
+
+
+def test_capture_for_model_follows_the_gate_and_the_state(tmp_path):
+    policy = h.account_policy()
+    off = FakePage("https://other.example/x")
+    o = observer({off.url: ext(off.url, "x")}, tmp_path)
+    assert run(o.capture_for_model(RUN, session(off), policy)) is None and off.shots == 0
+    page = FakePage(URL)
+    o = observer({URL: ext(URL, "x")}, tmp_path)
+    for run_, sess in [(SimpleNamespace(run_id="r1", state="live"), session(page)),
+                       (RUN, session(page, login_active=True))]:
+        with pytest.raises(ObservationRefused):
+            run(o.capture_for_model(run_, sess, policy))
+    assert page.shots == 0
+
+
+# --------------------------------------------------------------------------- reading in full
+
+
+def test_an_observation_says_its_text_was_cut():
+    policy = h.account_policy()
+    page = FakePage(URL)
+    long = "word " * 5000
+    obs = run(observer({URL: ext(URL, long)}).observe(RUN, session(page), policy))
+    assert obs.text_cut and len(obs.text) == 20_000 and obs.text == long[:20_000]
+    assert "text_cut" in obs.to_wire()
+    obs = run(observer({URL: ext(URL, "short")}).observe(RUN, session(page), policy))
+    assert not obs.text_cut and "text_cut" not in obs.to_wire()
+    # the extraction's own cut says so even when what is left would fit
+    cut = replace_text_cut(ext(URL, "short"))
+    assert run(observer({URL: cut}).observe(RUN, session(page), policy)).text_cut
+
+
+def replace_text_cut(extraction):
+    extraction.text_cut = True
+    return extraction
+
+
+def test_read_text_is_the_whole_masked_text_and_issues_no_handle():
+    policy = h.account_policy()
+    page = FakePage(URL)
+    long = "word " * 20_000 + BEARER
+    o = observer({URL: ext(URL, long, [{"role": "button", "name": "Go", "href": None, "field": False}])})
+    issued = []
+    o.registry.issue = lambda *a: issued.append(a)
+    text, whole, masked = run(o.read_text(RUN, session(page), policy))
+    assert whole and masked and text.startswith("word word") and len(text) > 100_000
+    assert "tok_Q7w8E9r0T1y2U3i4" not in text and "https://files.site.example" in text
+    assert issued == []
+    assert run(observer({URL: ext(URL, "plain")}).read_text(RUN, session(page), policy)) == (
+        "plain", True, False)
+
+
+@pytest.mark.parametrize("how", ["incomplete", "cut", "too_long"])
+def test_read_text_never_calls_a_cut_text_whole(how):
+    policy = h.account_policy()
+    page = FakePage(URL)
+    e = ext(URL, "word " * 90_000 if how == "too_long" else "words")
+    e.complete = how != "incomplete"
+    e.text_cut = how == "cut"
+    assert run(observer({URL: e}).read_text(RUN, session(page), policy))[1] is False
+
+
+def test_read_text_refused_off_the_session_and_when_the_page_moves():
+    policy = h.account_policy()
+    off = FakePage("https://other.example/x")
+    with pytest.raises(ObservationRefused) as err:
+        run(observer({off.url: ext(off.url, "secret")}).read_text(RUN, session(off), policy))
+    assert err.value.code == "page_off_session"
+    page = FakePage(URL)
+    sess = session(page)
+
+    def moves(frame):
+        sess.view_generation += 1
+    with pytest.raises(ObservationRefused) as err:
+        run(observer({URL: ext(URL, "x")}, on_extract=moves).read_text(RUN, sess, policy))
+    assert err.value.code == "stale"
+
+
+def frame_reading(rows):
+    """A frame's rows reading (``observe.rows``) holding these rows, one record each."""
+    blocks, items = [], []
+    for i, r in enumerate(rows):
+        if r.get("text"):
+            blocks.append([i, r["text"]])
+        items += [[i, "field", n, v] for n, v in r.get("fields") or ()]
+        items += [[i, "press", p, None] for p in r.get("press") or ()]
+    return {"records": len(rows), "blocks": blocks, "items": items}
+
+
+def rows_observer(found, complete=True, frames=None):
+    seen = [] if frames is None else frames
+
+    async def reader(frame):
+        seen.append(frame)
+        return frame_reading(found), complete
+    o = observer({URL: ext(URL, "page")})
+    o.rows_reader = reader
+    return o
+
+
+def test_read_rows_is_masked_json_lines_and_issues_no_handle():
+    """The design's rows reading: one JSON line a row, each text masked on its own (an address
+    never swallows the line's punctuation), a secret value as the page reading left it."""
+    found = [{"text": "Line 1 see https://site.example/a?t=SECRETQ", "fields": [["Qty", "3"],
+              ["Code", "[not shown]"], ["Done", True]], "press": ["Save"]},
+             {"text": "Line 2", "fields": [], "press": []}]
+    frames: list = []
+    o = rows_observer(found, frames=frames)
+    issued = []
+    o.registry.issue = lambda *a: issued.append(a)
+    text, whole, masked = run(o.read_rows(RUN, session(FakePage(URL)), h.account_policy()))
+    lines = [json.loads(line) for line in text.split("\n")]
+    assert len(lines) == 2 and whole and masked and issued == []
+    assert lines[0]["fields"] == [["Qty", "3"], ["Code", "[not shown]"], ["Done", True]]
+    assert lines[0]["press"] == ["Save"] and "SECRETQ" not in text
+    assert lines[0]["text"].startswith("Line 1 see https://site.example ")
+    assert lines[1] == {"text": "Line 2", "fields": [], "press": []}
+    assert len(frames) == 1
+
+
+def test_rows_mask_a_value_across_records_as_one_text():
+    """Blocks are masked together, as an observation's text is: a private key whose delimiters
+    sit in a parent record and whose body is in a record nested in it shows no part of it."""
+    reading = {"records": 2, "items": [], "blocks": [
+        [0, "-----BEGIN PRIVATE KEY-----"], [1, "YWJjZGVmZ2hpamts"], [0, "-----END PRIVATE KEY-----"],
+        [1, "Nested note"], [-1, "Loose note"]]}
+    text, whole, masked = rows_text([reading])
+    lines = [json.loads(line) for line in text.split("\n")]
+    assert masked and whole and "YWJjZGVmZ2hpamts" not in text and "PRIVATE KEY" not in text
+    assert lines[0]["text"] == "[masked]" and lines[1]["text"] == "Nested note"
+    assert lines[2] == {"text": "Loose note", "fields": [], "press": [], "outside": True}
+
+
+def test_rows_give_a_selects_options_masked_with_its_field():
+    reading = {"records": 1, "blocks": [], "items": [
+        [0, "field", "Bank", "Choose", ["Choose", "https://bank.example/pay?token=SELQUERY"]]]}
+    text, _whole, masked = rows_text([reading])
+    field = json.loads(text)["fields"][0]
+    assert masked and "SELQUERY" not in text
+    assert field[:2] == ["Bank", "Choose"] and field[2][1].startswith("https://bank.example ")
+
+
+def test_read_rows_is_not_whole_past_its_limit_and_refused_off_the_session():
+    policy = h.account_policy()
+    assert run(rows_observer([], complete=False).read_rows(
+        RUN, session(FakePage(URL)), policy))[1] is False
+    off = FakePage("https://other.example/x")
+    o = rows_observer([])
+    o.extractor = lambda f: _const(ext(off.url, "x"))
+    with pytest.raises(ObservationRefused) as err:
+        run(o.read_rows(RUN, session(off), policy))
+    assert err.value.code == "page_off_session"
+    sess = session(FakePage(URL))
+    o = rows_observer([])
+
+    async def moves(frame):
+        sess.view_generation += 1             # the page moved while its rows were read
+        return frame_reading([{"text": "x", "fields": [], "press": []}]), True
+    o.rows_reader = moves
+    with pytest.raises(ObservationRefused) as err:
+        run(o.read_rows(RUN, sess, policy))
+    assert err.value.code == "stale"
+
+
+# -- a search (``find``) --------------------------------------------------------------------------
+
+async def _nothing_closed(_page):
+    return False
+
+
+def searching(extractions, terms=None, closed=_nothing_closed):
+    async def extractor(frame, find=None):
+        if terms is not None:
+            terms.append(find)
+        return extractions[frame.url]
+    return Observer(HandleRegistry(), __import__("pathlib").Path("/nonexistent"), extractor=extractor,
+                    closed_shadow=_no_closed_roots, closed_any=closed)
+
+
+def test_the_one_match_is_made_on_what_the_observation_would_show():
+    """Any case, plain words, on the masked name, the value and an option's name; only ordinals
+    leave it, with two neighbours either side."""
+    token = "".join(["ghp_", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"])
+    items = [{"name": f"Filler {n}", "value": None, "options": []} for n in range(9)]
+    items[2] = {"name": "Publish it", "value": None, "options": []}
+    items[6] = {"name": "Note", "value": "publish later", "options": []}
+    items[8] = {"name": "Where", "value": "Here", "options": ["Here", "Publish point"]}
+    assert search_ask(items, "PUBLISH") == {"found": [2, 6], "options": [[8, [1]]],
+                                            "near": [0, 1, 2, 3, 4, 5, 6, 7, 8]}
+    assert search_ask(items, "Pub.*it") == {"found": [], "options": [], "near": []}
+    items = [{"name": f"Key {token}", "value": f"https://site.example/a/{token}", "options": [token]}]
+    for part in (token[10:20], "/a/"):
+        assert search_ask(items, part) == {"found": [], "options": [], "near": []}, part
+    assert search_ask(items, "Key")["found"] == [0]
+
+
+def test_what_is_found_comes_from_that_one_match_and_a_field_secret_when_read_again_is_not():
+    policy = h.account_policy()
+    elements = [
+        {"role": "button", "name": "Publish it", "href": None, "field": False, "found": True},
+        {"role": "textbox", "name": "Note", "href": None, "field": True, "value": "publish later", "found": True},
+        {"role": "textbox", "name": "PIN", "href": None, "field": True, "value": "publish",
+         "now_secret": True, "found": True},
+        {"role": "button", "name": "Publish too", "href": None, "field": False, "found": False},
+        {"role": "button", "name": "", "href": None, "field": False},
+    ]
+    terms = []
+    obs = run(searching({URL: ext(URL, "x", elements)}, terms).observe_page(
+        RUN, session(FakePage(URL)), policy, "PUBLISH"))[0]
+    assert terms == ["PUBLISH"]
+    assert [e.found for e in obs.elements] == [True, True, False, False, False]
+    assert obs.find_whole is True and obs.to_wire()["find"] == {"whole": True, "left": 0}
+    assert [e.get("found") for e in obs.to_wire()["elements"]] == [True, True, None, None, None]
+
+
+def test_an_observation_with_no_search_says_nothing_of_one():
+    policy = h.account_policy()
+    obs = run(observer({URL: ext(URL, "x", [{"role": "button", "name": "A", "href": None,
+                                             "field": False}])}).observe(RUN, session(FakePage(URL)), policy))
+    assert obs.find_whole is None
+    assert not {"find", "controls_left"} & set(obs.to_wire()) and "found" not in obs.to_wire()["elements"][0]
+
+
+def test_the_counts_of_what_the_cap_left_out_reach_the_wire():
+    policy = h.account_policy()
+    extraction = ext(URL, "x", [{"role": "button", "name": "A", "href": None, "field": False}])
+    extraction.left, extraction.found_left = 30, 4
+    obs = run(searching({URL: extraction}).observe_page(RUN, session(FakePage(URL)), policy, "A"))[0]
+    wire = obs.to_wire()
+    assert wire["controls_left"] == 30 and wire["find"] == {"whole": True, "left": 4}
+    assert obs.text.startswith("[30 more controls on this page are not listed") and "find" in obs.text
+
+
+@pytest.mark.parametrize("cut", ["a limit", "a closed root", "a closed root unasked"])
+def test_a_search_that_could_not_be_whole_is_not_called_whole(cut):
+    policy = h.account_policy()
+    extraction = ext(URL, "x", [])
+    extraction.whole = cut != "a limit"
+
+    async def closed(_page):
+        return cut != "a limit"
+    obs = run(searching({URL: extraction}, closed=closed).observe_page(
+        RUN, session(FakePage(URL)), policy, "x"))[0]
+    assert obs.find_whole is False and obs.to_wire()["find"]["whole"] is False
+
+
+def test_any_case_means_any_case():
+    for words, text in (("STRASSE", "die Straße"), ("straße", "DIE STRASSE"), ("é", "É")):
+        assert holds_words(words, text), words
+    assert not holds_words("a.c", "abc") and not holds_words("x", None, "")

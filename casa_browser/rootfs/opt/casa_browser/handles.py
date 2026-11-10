@@ -1,6 +1,6 @@
 """Opaque handles for page targets (Plan 1 Task 7).
 
-The model never sees a selector, an address or an element attribute: it sees a random handle
+The model never sees a selector or an address: it sees a random handle
 per visible, actionable element of one observation, and the controller keeps the real target.
 A handle is bound to its run and to the page generation it was issued for; any navigation of
 the page (a new document, a client-side route or a fragment change, a frame navigation)
@@ -25,6 +25,7 @@ class PrivateTarget:
     element: object = field(default=None, repr=False)   # the browser's element handle
     href: str | None = field(default=None, repr=False)  # a link's raw address
     frame_url: str | None = field(default=None, repr=False)
+    label: str = ""                               # what the observation called it, masked
 
 
 @dataclass(frozen=True)

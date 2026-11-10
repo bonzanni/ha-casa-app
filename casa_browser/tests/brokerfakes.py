@@ -273,7 +273,7 @@ class FakeDriver:
         # Signing in off the start page: the look's binding as the driver reads it. ``binding``
         # is what read_sign_in reports; ``bound`` (callable(op_count) -> (ok, binding) or None
         # for "unchanged") stands for the page moving between the look and a fill.
-        self.binding = 'binding-1'
+        self.binding = {'f1': ['facts']}
         self.bound = None
         self.bound_checks = 0
         self.labels = {'username': 'Username', 'password': 'Password',

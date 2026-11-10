@@ -24,9 +24,12 @@ EXPECTED_ROUTES = {
     ("POST", "/v1/control/runs/{run}/screenshots"),
     ("GET", "/v1/control/runs/{run}/sources"), ("POST", "/v1/runs/{run}/observe"),
     ("POST", "/v1/runs/{run}/action"), ("POST", "/v1/runs/{run}/download"),
-    ("POST", "/v1/runs/{run}/search"), ("POST", "/v1/runs/{run}/archive"),
+    ("POST", "/v1/runs/{run}/search"), ("POST", "/v1/runs/{run}/fetch"),
+    ("POST", "/v1/runs/{run}/archive"),
     ("POST", "/v1/runs/{run}/login-code"),
     ("POST", "/v1/runs/{run}/sign-in"),
+    ("POST", "/v1/runs/{run}/look"), ("POST", "/v1/runs/{run}/read"),
+    ("GET", "/v1/control/runs/{run}/judgements/{judgement}/picture"),
     ("POST", "/v1/runs/{run}/live"),
     ("POST", "/v1/control/runs/{run}/live-complete"), ("POST", "/v1/runs/{run}/finish"),
     ("POST", "/v1/runs/{run}/cancel"), ("POST", "/v1/requests/cancel"),
@@ -311,6 +314,11 @@ async def test_fake_serves_every_route(aiohttp_client, tmp_path):
     assert judged["outcome"] == "judgement_required"
     sha = hashlib.sha256(judged["judgement"]["packet"].encode("utf-8")).hexdigest()
     jpath = f"/v1/control/runs/{rid}/judgements/{judged['judgement']['id']}"
+    await call("GET", "/v1/control/runs/{run}/judgements/{judgement}/picture", jpath + "/picture")
+    assert (await call("POST", "/v1/runs/{run}/look", f"/v1/runs/{rid}/look",
+                       {"handle": "el_1"}))["picture"]
+    assert (await call("POST", "/v1/runs/{run}/read", f"/v1/runs/{rid}/read",
+                       {"offset": 5}))["text"] == "text"
     template = "/v1/control/runs/{run}/judgements/{judgement}"
     ask = {"verdict": "ask", "category": "account_change", "reason": "saves a setting",
            "question": {"text": "Save it?", "confirm_label": "Save", "extra_options": [],
@@ -336,6 +344,9 @@ async def test_fake_serves_every_route(aiohttp_client, tmp_path):
                                    "text_incomplete": False}})
     assert done["outcome"] == "done"
     await call("POST", "/v1/runs/{run}/search", f"/v1/runs/{rid}/search", {"query": "invoices"})
+    fetched = await call("POST", "/v1/runs/{run}/fetch", f"/v1/runs/{rid}/fetch",
+                         {"url": "https://public.example/page", "fields": ["a.b"]})
+    assert fetched["outcome"] == "not_run" and fetched["reason"] == "http_403"
     fake.code_sites[rid] = "site_a"
     assert (await call("POST", "/v1/runs/{run}/login-code", f"/v1/runs/{rid}/login-code",
                        {"code": "482915", "site_id": "site_a"}))["outcome"] == "done"

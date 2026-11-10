@@ -5,9 +5,9 @@
   <div id="screen"></div>
   <div id="touch"></div>
   <div id="pill"><span id="host" role="button" tabindex="0"></span><div id="toast" role="status" hidden></div><input id="kb" type="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" writingsuggestions="false" enterkeyhint="done" aria-label="{{viewer_keyboard}}">
+    <div id="zoomctl"><button id="zoomout" type="button" aria-label="{{viewer_zoom_out}}" hidden>−</button><button id="zoomfit" type="button" hidden>{{viewer_fit}}</button><button id="zoomin" type="button" aria-label="{{viewer_zoom_in}}">+</button></div>
     <form method="post" action="{{done}}" id="doneform"><input type="hidden" name="nonce" value="{{nonce}}"><button id="done" type="submit">{{viewer_done}}</button></form></div>
   <pre id="dbg" hidden></pre>
-  <div id="zoomctl"><button id="zoomout" type="button" aria-label="{{viewer_zoom_out}}" hidden>−</button><button id="zoomfit" type="button" hidden>{{viewer_fit}}</button><button id="zoomin" type="button" aria-label="{{viewer_zoom_in}}">+</button></div>
   <div id="kbstrip" hidden><button id="pastebtn" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="4.5" width="12" height="16" rx="2.5"/><path d="M9.5 4.5h5v2.5h-5z"/></svg><span>{{viewer_paste}}</span></button><span class="sp"></span><button id="caretleft" type="button" aria-label="{{viewer_left}}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg></button><button id="caretright" type="button" aria-label="{{viewer_right}}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 5.5 16 12l-6.5 6.5"/></svg></button></div>
   <div id="status">{{js_connecting}}</div>
   <div id="cover" hidden><div id="covertext"></div></div>

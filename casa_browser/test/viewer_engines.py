@@ -31,7 +31,7 @@ Checks (live view K and the casa-test findings):
   goes;
 * F14 — without a session the viewer fits the visible part of its frame and refits Chrome;
 * F18/F33 — the toast in the bar; F37/F38 — every line fits, two lines at most, by measurement;
-* F19 — one finger; − · Fit · + zoom the picture (taps follow it); the page never scrolls; Done resets it;
+* F19 — one finger; − · Fit · + zoom the picture from the bar, off the picture (taps follow it); the page never scrolls; Done resets it;
 * F24 — after a reconnect only the new picture is on screen;
 * the picture shows and takes taps only once the first state named Chrome's toolbar, cropped;
 * F29 — Home Assistant is asked to hide its header again at every viewport change, not after
@@ -935,6 +935,14 @@ async def _scenario(pw, engine: str, problems: list[str]) -> None:
     width1 = await v.evaluate("document.querySelector('#screen canvas').getBoundingClientRect().width")
     if abs(z["z"] - 2) > 0.05 or abs(width1 / width0 - 2) > 0.1 or await v.evaluate("document.querySelector('#zoomfit').hidden"):
         bad(f"+ twice did not zoom the picture 2× with Fit shown: {z}, picture {width0} → {width1}")
+    # Operator 2026-11-06, on an iPhone: the control sat exactly over a site's button. All three
+    # are in the bar, in view, off the picture; Done and the site's name keep their place.
+    place = await v.evaluate("""() => { const r = (s) => document.querySelector(s).getBoundingClientRect();
+        const z = ['#zoomout', '#zoomfit', '#zoomin'].map(r), t = r('#touch'), d = r('#done'), h = r('#host');
+        return {off: z.every(b => b.bottom <= t.top && b.width > 0 && b.right <= d.left && b.left >= h.right),
+                done: d.right <= innerWidth && d.width > 0, host: h.width, width: innerWidth}; }""")
+    if not place["off"] or not place["done"] or place["host"] < 60 or place["width"] > 500:
+        bad(f"the zoom controls are not in the bar, off the picture, on a phone: {place}")
     scrolled = await page.evaluate("[scrollX, scrollY, document.querySelector('iframe').contentWindow.scrollY]")
     if scrolled != [0, 0, 0]:
         bad(f"the page scrolled: {scrolled}")

@@ -54,6 +54,9 @@ SUBMIT_POLL_S = 0.25
 #: reads of a field-free page a sign-in that filled nothing yet waits for a form with (5u):
 #: each is a settle (at least a quarter second) and a discovery, about two seconds in all
 FORM_WAITS = 6
+#: reads a sign-in that sent the password makes while the form still shows: a site that signs in by
+#: a background request keeps its form until the answer comes (measured: 1 s). About ten seconds
+ANSWER_WAITS = 30
 _AGAIN = object()     # a step's answer: read the page again (the late-form wait)
 # Slice 5v: a guest op's transport wait (above the driver's 45 s bound on the op, so the driver
 # answers first) and the whole guest flow (its two ops, under the run controller's 125 s).
@@ -347,7 +350,7 @@ class Broker:
         what a sign-in there would do, never a value or a handle: ``found`` (a role field on a
         login origin, the site's passkey request or 1Password's prompt), the roles, each field's
         label, whether there is one submit and its label, and whether a passkey is offered. A
-        found read's binding (its mark, its digest) is kept for ``login(auto=True)``."""
+        found read's binding (its mark, its fields' facts) is kept for ``login(auto=True)``."""
         site = self._account_site(run_id, site_id)
         key = (run_id, site_id)
         self._looks.pop(key, None)
@@ -442,6 +445,7 @@ class Broker:
         # One send of the password per sign-in, on either route.
         sent = password_sent
         in_form = False       # this sign-in put the password into the page, however it shows now
+        answer_waits = 0      # reads left for the answer to the send this sign-in just made
         touched = False       # a look's sign-in filled or clicked something
 
         async def unique_title():
@@ -475,7 +479,8 @@ class Broker:
                 return True
             reply = await drive('sign_in_bound', driver_session=driver_session,
                                 page_generation=generation, mark=look['mark'])
-            return reply.get('ok') is True and reply.get('binding') == look['binding']
+            return reply.get('ok') is True and all(
+                look['binding'].get(fid) == facts for fid, facts in reply['binding'].items())
 
         moved = {'status': 'no_form', 'reason': 'page_moved'}
 
@@ -495,7 +500,7 @@ class Broker:
             """One sign-in step: settle, read the form, fill it, submit it. The roles it filled
             once submitted; ``_AGAIN`` to read the page again; otherwise the sign-in's
             outcome."""
-            nonlocal approved, waits, passkey_answered, after, sent, in_form, touched
+            nonlocal approved, waits, passkey_answered, after, sent, in_form, touched, answer_waits
             remaining = deadline - self.clock()
             if remaining <= 0:
                 return {'status': 'failed', 'reason': 'timeout'}
@@ -567,8 +572,9 @@ class Broker:
                     # 5u, operator ruling): not a completion, whatever the page shows now.
                     return {'status': 'needs_live_view', 'reason': 'page_unsettled'}
                 if auto and not after:
-                    # The judged page shows no form now: nothing was filled, nothing is claimed.
-                    return {'status': 'no_form', 'reason': 'no_form'}
+                    # Nothing was filled, nothing is claimed. A field the check named is not on the
+                    # page now (a re-render makes new ones the look did not mark): it moved.
+                    return moved if mapping else {'status': 'no_form', 'reason': 'no_form'}
                 if previous_roles is None and not auto and waits < FORM_WAITS:
                     waits += 1               # nothing filled yet: a form may still render
                     return _AGAIN
@@ -584,6 +590,12 @@ class Broker:
                         return {'status': 'no_form', 'reason': 'passkey'}
                     return {'status': 'logged_in', 'reason': 'completed'}
                 return {'status': 'needs_live_view', 'reason': 'challenge'}
+            if answer_waits > 0 and 'password' in roles:
+                # The form still shows right after the send: nothing is filled or pressed while
+                # the site answers. A form that stays is ``password_again`` below.
+                answer_waits -= 1
+                approved = False         # this read approves nothing: a form gone next is the answer
+                return _AGAIN
             if fields.get('empty_box') and 'password' in roles:
                 # A shown box of the form that nothing here would fill: a password never goes
                 # out beside it. From the start page, with nothing done yet, the check names the
@@ -651,6 +663,7 @@ class Broker:
             # (another frame's navigation) reads the page again under the same binding.
             if 'password' in roles:
                 sent = True
+                answer_waits = ANSWER_WAITS
             after = auto
             return set(roles)
 

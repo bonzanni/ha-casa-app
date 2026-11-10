@@ -175,7 +175,8 @@ async def _scenario(steps: list[dict], broker: dict | None) -> list:
                     await asyncio.sleep(0.1)
                 out.append(store.get_run(run_id(arg["name"])).state)
             elif op == "observe":
-                obs = await attempt(ctl.observe(run_id(arg["name"])))
+                obs = await attempt(ctl.observe(run_id(arg["name"]), sign_in=arg.get("sign_in", False),
+                                                find=arg.get("find")))
                 if isinstance(obs, dict):
                     out.append(obs)
                     continue
@@ -183,6 +184,12 @@ async def _scenario(steps: list[dict], broker: dict | None) -> list:
                 seen.append(obs.to_wire())
                 out.append({"text": obs.text, "labels": [e.label_masked for e in obs.elements],
                             "source_id": obs.source_id, "generation": obs.generation})
+                if obs.text_cut:
+                    out[-1]["text_cut"] = True
+                if arg.get("find"):
+                    out[-1]["found"] = [e.label_masked for e in obs.elements if e.found]
+                    out[-1]["find"] = obs.to_wire()["find"]
+                    out[-1]["controls_left"] = obs.controls_left
                 if arg.get("values"):          # slice 5m: what each field shows the model
                     out[-1]["values"] = {e.label_masked: e.value_masked for e in obs.elements}
             elif op == "look":
@@ -197,7 +204,8 @@ async def _scenario(steps: list[dict], broker: dict | None) -> list:
                 wire = result.to_wire()
                 if "page_handle" in wire:
                     last[arg["name"]] = result
-                    out.append({"observation": True, "text": result.text, "seconds": took})
+                    out.append({"observation": True, "text": result.text, "seconds": took,
+                                "labels": [e.label_masked for e in result.elements]})
                 else:
                     out.append({**wire, "seconds": took})
                     track(arg["name"], wire)
@@ -208,7 +216,7 @@ async def _scenario(steps: list[dict], broker: dict | None) -> list:
                     # Through the wire parser, as the API route parses a body (S2-4 rule 1).
                     from casa_browser.protocol import parse_action
                     body = {"kind": arg["kind"], "handle": h, "generation": gen}
-                    for key in ("text", "enter"):
+                    for key in ("text", "enter", "plan"):
                         if key in arg:
                             body[key] = arg[key]
                     try:
@@ -219,7 +227,8 @@ async def _scenario(steps: list[dict], broker: dict | None) -> list:
                 else:
                     action_ = Action(arg["kind"], h, gen, text=arg.get("text"),
                                      choice_handle=choice, enter=arg.get("enter", False),
-                                     direction=arg.get("direction"), amount=arg.get("amount"))
+                                     direction=arg.get("direction"), amount=arg.get("amount"),
+                                     plan=arg.get("plan"))
                 result = await attempt(ctl.act(run_id(arg["name"]), action_))
                 reply = result if isinstance(result, dict) else result.to_wire()
                 if not arg.get("hold"):
@@ -241,6 +250,31 @@ async def _scenario(steps: list[dict], broker: dict | None) -> list:
                     gate_last[arg["name"]] = {"judgement": j}
                 out.append(reply)
                 track(arg["name"], reply)
+            elif op == "picture":
+                # What the relay fetches for the run's last judgement.
+                j = gate_last[arg["name"]]["judgement"]
+                got = await attempt(ctl.judgement_picture(run_id(arg["name"]), j["id"]))
+                out.append(got if isinstance(got, dict) else {"png_bytes": len(got),
+                                                              "png": got[:8] == b"\x89PNG\r\n\x1a\n"})
+            elif op == "run_look":
+                # What ``run_look`` gets: the page as a picture for a model, or None.
+                out.append(await attempt(ctl.look(run_id(arg["name"]), None)))
+            elif op == "read":
+                # ``run_read``'s windows (``rows``: of the page's rows), followed to their end.
+                parts, offset = [], 0
+                while True:
+                    got = await attempt(ctl.read(run_id(arg["name"]), None, None, offset,
+                                                 rows=arg.get("rows", False)))
+                    if "text" not in got:
+                        parts.append(got)
+                        break
+                    parts.append(got)
+                    if got["next_offset"] is None:
+                        break
+                    offset = got["next_offset"]
+                out.append({"text": "".join(p.get("text", "") for p in parts),
+                            "windows": len(parts), "last": {k: v for k, v in parts[-1].items()
+                                                            if k != "text"}})
             elif op == "tap":
                 qid = gate_question[arg["name"]]
                 q = await ctl.get_question(run_id(arg["name"]), qid)
@@ -286,6 +320,9 @@ async def _scenario(steps: list[dict], broker: dict | None) -> list:
                 obs = await attempt(ctl.search(run_id(arg["name"]), arg["query"]))
                 if isinstance(obs, dict):
                     out.append(obs)
+                    continue
+                if not hasattr(obs, "page_handle"):    # an address the check judges first
+                    out.append(await settle(arg["name"], obs.to_wire()))
                     continue
                 last[arg["name"]] = obs
                 seen.append(obs.to_wire())

@@ -48,16 +48,33 @@ Fido never decides alone whether a step may change something. Before a step runs
 checks it against your request and the page:
 
 - **Reading goes ahead.** On the open web, opening pages, following links, searching and
-  scrolling are not checked. On your signed-in sites every step but scrolling is checked, and
-  a step the check sees as only reading (opening a statement, downloading an invoice) goes
+  scrolling are not checked. On a signed-in site, an address Fido opens itself on the same host as
+  the page it is on is not checked either, so one that acts as soon as it is opened (an unsubscribe
+  address, say) does so without a question. A subdomain goes through the check, and pressing a link
+  to a signed-in site is still checked, by the name the link shows.
+  Any other step the check sees as only reading (opening a statement, downloading an invoice) goes
   ahead without a question.
+- **Filling in goes ahead.** Everywhere, typing without pressing Enter, ticking a box, choosing
+  from a list and opening a menu run without a check, since they send nothing yet. The check reads
+  the whole form, every tick and value, when Fido presses what sends it. A page whose own script
+  saves as soon as you tick or type (a setting that saves itself) does so without a question;
+  Fido touches such a box or field only when the task asks for that change.
 - **A change is put to you first.** When the check sees that a step would change something —
   sending a form, ordering, booking, paying, deleting, changing a setting — you are asked in
-  Telegram before it runs. On a public site, its buttons and forms, typing your details into
-  it and downloading anything but a document are checked the same way, so a booking or a
-  sign-up there is asked too.
+  Telegram before it runs. On a public site, its buttons, sending its forms and downloading
+  anything but a document are checked the same way, so a booking or a sign-up there is asked too.
+- **One Yes for one job.** When a task changes several things on one site, Fido first shows you
+  the whole plan, with its list, and asks once. After your Yes, each step that plainly carries
+  out the plan runs without another question, on that site, in that task. Every step is still
+  checked. Anything else is asked as usual, and so is anything with money, one step per
+  question, and any step on a page with a card field. Fido finishes by reading back what the site
+  holds and telling you every difference: no code compares a long list line by line.
 - **No check, no step.** If the check cannot be made, the step does not run, and Fido tells
   you the task cannot go on right now.
+
+The check and Fido can both see a picture of the page. Password, code and card fields and frames
+are blacked out; a key printed on a page is readable, as it is in any screenshot. Pictures for them
+are never stored by the app.
 
 **A question** is one message from Fido: the question (normally what the step would do, and what it
 would send) and its buttons, with a picture of the page, the button or field outlined,
@@ -75,7 +92,8 @@ whenever the check asks for one (always for a step that spends money). The butto
 
 A question stays open for an hour at most. Some questions come without **Yes**: when the
 picture of a step that spends money could not be taken, when a question's picture did not
-reach you, or when the check could not put the question in full. Their other buttons stay,
+reach you, when the check could not put the question in full, or when Casa Browser could not read
+the whole page and so could not check it again before pressing. Their other buttons stay,
 and you can do the step yourself in the live view.
 
 **Every picture** hides password, one-time-code and payment-card fields and shows frames
@@ -94,8 +112,8 @@ and pickers, and types text with several lines only into a page's own multi-line
   which of its fields take your username and password, so a site that does not mark its
   username field still signs in and a search box beside the form is never filled. It signs
   in only on the page it checked, sends your password at most once there, and tells Fido
-  "Casa Browser signed in to *site* by itself." A sign-in that did not work is not retried by
-  itself in the same task.
+  it sent the form; Fido reads the page to see whether it worked. A sign-in that did not work is
+  not retried by itself in the same task.
 - A site you registered without an item: Casa checks which items in the browsing vault fit
   it, and Fido asks you once — "To sign in to *address* I'd use your 1Password item
   *title*. OK?" (**Yes** / **No**), or, when several fit, which one (their titles and
@@ -158,7 +176,7 @@ you copied; the phone may ask you to allow it the first time) and **← →** to
 in the field. Tap the site name to show Chrome's own toolbar;
 tap its address bar to type an address there — return opens it (typed without `https://`, a
 registered site's address still opens over https). Use one finger: swipe to scroll the page,
-hold then drag to drag. The **+** button
+hold then drag to drag. The **+** button in the top bar
 zooms into the picture (then a swipe moves the picture, and scrolls the page at its edge);
 **Fit** shows it whole again. If you
 switch to another app (to approve a sign-in, say), the view reconnects by itself when you come

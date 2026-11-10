@@ -12,6 +12,12 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111;overscroll-behavi
 #pill form{margin:0}
 #pill button{border:0;border-radius:15px;height:30px;min-width:34px;padding:0 10px;font:600 14px system-ui,sans-serif;background:transparent;color:#fff}
 #pill #done{background:#1a73e8}
+/* the picture's zoom (− · Fit · +) lives in the bar: never over a site's button */
+#zoomctl{display:flex;flex:none}
+#zoomctl button{font-size:20px;font-weight:400;padding:0 8px}
+#zoomctl #zoomfit{font-size:14px;font-weight:600}
+#zoomctl button:active{background:#3c4043}
+#zoomctl button:disabled{opacity:.35}
 #host{flex:1;padding:0 6px 0 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
 #app.bar #screen,#app.bar #touch{top:calc(36px + var(--sa-top, env(safe-area-inset-top)))}
 /* the toast's own place: in the bar, beside the site's name (which keeps a third of it and still
@@ -32,12 +38,12 @@ html,body{margin:0;height:100%;overflow:hidden;background:#111;overscroll-behavi
    never over the picture, nothing for iOS to scroll into view; 16px so iOS does not zoom */
 #kb{position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;font-size:16px;
   caret-color:transparent;color:transparent;background:transparent;pointer-events:none}
-/* the strip above the phone's keyboard (Paste · ← · →) and the picture's zoom controls
-   (− · Fit · +), styled after iOS's own form bar: a translucent capsule, the system font, line
-   icons, light or dark with the phone. No touch on the page pans or zooms it, but the trace's. */
+/* the strip above the phone's keyboard (Paste · ← · →), styled after iOS's own form bar: a
+   translucent capsule, the system font, line icons, light or dark with the phone. No touch on the
+   page pans or zooms it, but the trace's. */
 html,body{touch-action:none}
 #dbg{touch-action:pan-y}
-#kbstrip,#zoomctl{display:flex;align-items:center;box-sizing:border-box;height:47px;padding:0 4px;border-radius:23.5px;
+#kbstrip{display:flex;align-items:center;box-sizing:border-box;height:47px;padding:0 4px;border-radius:23.5px;
   /* Liquid Glass: translucent, blurred and saturated backdrop, a thin light rim, a soft shadow */
   background:rgba(255,255,255,.38);-webkit-backdrop-filter:blur(18px) saturate(190%);backdrop-filter:blur(18px) saturate(190%);
   border:.5px solid rgba(255,255,255,.6);
@@ -45,20 +51,16 @@ html,body{touch-action:none}
   color:#1c1c1e;font:17px -apple-system,system-ui,sans-serif;z-index:7}
 /* the same inset as iOS's own form bar right below it (16 pt each side, measured on a 402-pt phone) */
 #kbstrip{position:absolute;left:16px;right:16px}
-#zoomctl{position:absolute;right:16px;top:calc(46px + var(--sa-top, env(safe-area-inset-top)))}
-#kbstrip button,#zoomctl button{min-width:44px;height:44px;border:0;border-radius:22px;background:transparent;color:inherit;
+#kbstrip button{min-width:44px;height:44px;border:0;border-radius:22px;background:transparent;color:inherit;
   font:inherit;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 12px;
   -webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none}
-#zoomctl button{font-size:22px;font-weight:300;padding:0 10px}
-#zoomctl #zoomfit{font-size:15px;font-weight:600}
-#kbstrip button:active,#zoomctl button:active{background:rgba(0,0,0,.08)}
-#zoomctl button:disabled{opacity:.35}
+#kbstrip button:active{background:rgba(0,0,0,.08)}
 #kbstrip .sp{flex:1}
 #kbstrip svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 @media (prefers-color-scheme: dark){
-  #kbstrip,#zoomctl{background:rgba(58,58,62,.42);border-color:rgba(255,255,255,.2);color:#fff;
+  #kbstrip{background:rgba(58,58,62,.42);border-color:rgba(255,255,255,.2);color:#fff;
     box-shadow:inset 0 1px 0 rgba(255,255,255,.18),inset 0 -1px 0 rgba(0,0,0,.2),0 6px 22px rgba(0,0,0,.35),0 0 0 .5px rgba(0,0,0,.3)}
-  #kbstrip button:active,#zoomctl button:active{background:rgba(255,255,255,.14)}
+  #kbstrip button:active{background:rgba(255,255,255,.14)}
 }
 #dbg{position:absolute;left:4px;right:4px;top:calc(40px + var(--sa-top, env(safe-area-inset-top)));max-height:60%;overflow:auto;
   margin:0;padding:6px;background:rgba(0,0,0,.85);color:#9f9;font:10px/1.3 ui-monospace,monospace;z-index:9;white-space:pre-wrap}

@@ -1,3 +1,3 @@
 """Casa Browser: a sandboxed, policy-enforcing browser app driven by Casa's browsing specialist."""
 
-__version__ = "0.1.11"  # equals casa_browser/config.yaml version (test_scaffold pins it)
+__version__ = "0.1.12"  # equals casa_browser/config.yaml version (test_scaffold pins it)

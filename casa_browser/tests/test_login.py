@@ -462,14 +462,17 @@ async def test_capture_binding_survives_destroyed_context(tmp_path):
 
 @pytest.mark.parametrize('op', ['settle', 'find_login_fields', '_on_site'])
 @pytest.mark.parametrize('persistent', [False, True])
-async def test_driver_reads_retry_navigation(tmp_path, op, persistent):
-    """A destroyed document is retried; repeated navigation ends with a fixed timeout."""
+@pytest.mark.parametrize('gone', ['Execution context was destroyed, most likely because of a navigation',
+                                  'Frame.evaluate: Frame was detached'])   # as Patchright says them
+async def test_driver_reads_retry_navigation(tmp_path, op, persistent, gone):
+    """A read the page moved under (its document destroyed, one of its frames gone) is retried;
+    a page that keeps moving ends with a fixed timeout, never an error that ends the run."""
     from unittest.mock import AsyncMock
     from casa_browser.broker import BrokerError
 
     server, _, session, page, proxy = driver(tmp_path)
     origin = 'https://my.1password.eu'
-    destroyed = RuntimeError('Execution context was destroyed, most likely because of a navigation')
+    destroyed = RuntimeError(gone)
     frame = SimpleNamespace(url=origin + '/', evaluate=AsyncMock(
         side_effect=destroyed if persistent else [destroyed, origin, 'unlocked']),
         query_selector_all=AsyncMock(return_value=[]))

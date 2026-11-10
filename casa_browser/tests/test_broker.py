@@ -492,7 +492,7 @@ async def test_list_login_items_only_login_and_password_active_no_values(tmp_pat
     _overview_item(r, 'pw', 'RunPod', 'Password', ['https://www.runpod.io/console'])
     _overview_item(r, 'note', 'RunPod recovery', 'SecureNote')
     _overview_item(r, 'old', 'RunPod (old)')
-    _overview_item(r, 'bare', 'Ziggo', websites=['mijn.ziggo.nl'])
+    _overview_item(r, 'bare', 'Examplenet', websites=['my.examplenet.example'])
     r.sdk.archived.add('old')
     secrets_ = [f.value for i in r.sdk.saved.values() for f in i.fields]
     reply = await r.call('list_login_items', run_id='run', site_id='site')
@@ -500,7 +500,7 @@ async def test_list_login_items_only_login_and_password_active_no_values(tmp_pat
     got = {i['item_id']: i for i in reply['items']}
     assert set(got) == {'item', 'pw', 'bare'}
     assert got['pw'] == {'item_id': 'pw', 'title': 'RunPod', 'website_hosts': ['www.runpod.io']}
-    assert got['bare']['website_hosts'] == ['mijn.ziggo.nl']    # no scheme: read as https
+    assert got['bare']['website_hosts'] == ['my.examplenet.example']    # no scheme: read as https
     assert all(v not in json.dumps(reply) for v in secrets_)
     assert [c for c in r.sdk.calls if c[0] == 'items.list'] == [('items.list', 'vault', 1)]
     for run, site in (('other', 'site'), ('run', 'other')):

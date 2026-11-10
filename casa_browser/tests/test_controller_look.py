@@ -124,10 +124,10 @@ async def test_the_phone_sequence_signs_in_on_the_page_it_landed_on(rig):
     reply = await verdict(rig, run.run_id, result)
     assert len(auto_logins(rig)) == 1 and gotos_since(rig, mark) == []
     assert auto_logins(rig)[0]["fields"] == {"username": "f1", "password": "f2"}
-    assert [e.outcome for e in rig.events(run.run_id, "signed_in")] == ["logged_in"]
+    assert [e.outcome for e in rig.events(run.run_id, "sign_in_sent")] == ["submitted"]
     assert rig.events(run.run_id, "login_needed") == []
     assert reply["outcome"] == "done"
-    assert reply["observation"]["notice"] == "Casa Browser signed in to Site A by itself."
+    assert reply["observation"]["notice"] == "Casa Browser filled in the sign-in of Site A and sent it; read the page to see whether it worked."
 
 
 async def test_a_page_judged_not_a_sign_in_is_never_filled_nor_asked_about_again(rig):
@@ -165,12 +165,14 @@ async def test_a_step_between_the_look_and_the_verdict_cancels_the_sign_in(rig):
     assert auto_logins(rig) == []
 
 
-async def test_a_page_that_changed_since_the_look_is_never_filled(rig):
+async def test_text_moving_since_the_look_still_signs_in(rig):
+    """A banner, a price, a widget solved: the same address, no step, no second judgement. The
+    judged fields and button are the broker's binding to hold."""
     run = await phone(rig)
     result = await look(rig, run.run_id)
-    rig.page().text = "Confirm with your password\nPassword"   # same address, other text
+    rig.page().text = "We use cookies\nLogin Page\nUsername\nPassword"
     await verdict(rig, run.run_id, result)
-    assert auto_logins(rig) == []
+    assert len(auto_logins(rig)) == 1 and len(reads(rig)) == 1
 
 
 async def test_an_address_is_looked_at_once_between_two_steps(rig):
@@ -286,7 +288,7 @@ async def test_the_guest_unlock_reloads_and_judges_the_page_afresh(rig):
     last = rig.broker.logins[-1]
     assert len(auto_logins(rig)) == 2 and last["guest_ask"] is False
     assert last["password_sent"] is True
-    assert done["observation"]["notice"] == "Casa Browser signed in to Site A by itself."
+    assert done["observation"]["notice"] == "Casa Browser filled in the sign-in of Site A and sent it; read the page to see whether it worked."
 
 
 async def test_the_reloaded_page_judged_not_a_sign_in_is_not_filled(rig):
@@ -325,30 +327,15 @@ async def test_the_observe_route_takes_the_flag_and_nothing_else(aiohttp_client,
     fake.store.transition(rid, "starting", "running")
     for body, status in (({}, 200), ({"sign_in": True}, 200), ({"sign_in": False}, 200),
                          ({"sign_in": 1}, 400), ({"sign_in": True, "x": 1}, 400),
-                         ({"look": True}, 400)):
+                         ({"look": True}, 400), ({"find": "Publish"}, 200),
+                         ({"sign_in": True, "find": "a"}, 200), ({"find": ""}, 400),
+                         ({"find": 1}, 400), ({"find": None}, 400), ({"find": "x" * 201}, 400),
+                         ({"find": "x" * 200}, 200)):
         resp = await client.post(f"/v1/runs/{rid}/observe", json=body, headers=h)
         assert resp.status == status, body
-    assert fake.observe_flags == [False, True, False]
+    assert fake.observe_flags == [False, True, False, False, True, False]
+    assert fake.observe_finds == [None, None, None, "Publish", "a", "x" * 200]
     assert ProtocolError                                        # imported for the route's codes
-
-
-async def test_the_packet_and_the_reading_the_verdict_is_held_to_are_one_read(rig):
-    """Astra (applied diff r3): the page the check is shown and the bound reading the verdict
-    is held to come from one pass over the page, so a control changed right after it (a box
-    ticked by the page) is a difference at the verdict: 0 sign-ins."""
-    run = await phone(rig)
-    page = rig.page()
-    start = page.reads
-
-    def tick(p, n):
-        if n == start + 2:               # the read after the look's one pass
-            p.elements[0].value = "changed by the page"
-    page.read_hook = tick
-    result = await look(rig, run.run_id)
-    assert page.reads == start + 1
-    await verdict(rig, run.run_id, result)
-    assert auto_logins(rig) == []
-
 
 
 @pytest.mark.parametrize("fields, sent", [
@@ -461,27 +448,48 @@ async def test_needs_check_clears_an_older_look_at_the_same_page(rig):
     assert (await look(rig, run.run_id)).outcome == "judgement_required"
 
 
-async def test_a_page_that_changed_under_the_verdict_is_judged_again_once(rig):
-    """A widget solved between the look and the verdict: the same address reads differently.
-    Nothing filled on the old verdict; one successor judgement, and its verdict signs in."""
-    run = await phone(rig)
-    result = await look(rig, run.run_id)
-    rig.page().text = "Login Page\nUsername\nPassword\nYou are verified"
-    reply = await verdict(rig, run.run_id, result)
-    assert reply["outcome"] == "judgement_required" and auto_logins(rig) == []
-    assert len(reads(rig)) == 2
-    await verdict(rig, run.run_id, reply)
-    assert len(auto_logins(rig)) == 1
+async def test_a_form_that_rendered_after_the_start_page_gave_up_is_looked_at(rig):
+    """The start page's sign-in found no form yet and says so, once; the page is the look's."""
+    _pages(rig)
+    rig.browser.contents[START] = rig.browser.contents[LOGIN]
+    rig.broker.login_reply = {"status": "no_form", "reason": "no_form"}
+    run = await rig.run()
+    assert [e.outcome for e in rig.events(run.run_id, "sign_in_nothing")] == ["no_form"]
+    rig.broker.sign_in_read = READ
+    assert (await look(rig, run.run_id)).outcome == "judgement_required"
 
 
-async def test_a_page_that_keeps_changing_is_judged_again_only_once(rig):
+async def test_a_look_that_cannot_be_checked_says_nothing_was_filled(rig):
     run = await phone(rig)
+    rig.page().closed_shadow = True
     result = await look(rig, run.run_id)
-    rig.page().text = "changed once"
-    reply = await verdict(rig, run.run_id, result)
-    rig.page().text = "changed twice"
-    last = await verdict(rig, run.run_id, reply)
-    assert last["outcome"] == "done" and auto_logins(rig) == [] and len(reads(rig)) == 2
+    assert "page_handle" in result.to_wire() and auto_logins(rig) == []
+    assert [e.outcome for e in rig.events(run.run_id, "sign_in_nothing")][-1] == "not_checked"
+
+
+async def test_a_page_that_moved_during_the_fills_is_judged_again_once(rig):
+    """Nothing went out; a fresh judgement, and a second move ends it with the page as it is."""
+    run = await phone(rig)
+    rig.broker.login_reply = {"status": "no_form", "reason": "page_moved"}
+    result = await look(rig, run.run_id)
+    again = await verdict(rig, run.run_id, result)
+    assert again["outcome"] == "judgement_required" and len(auto_logins(rig)) == 1
+    reply = await verdict(rig, run.run_id, again)
+    assert "observation" in reply and len(auto_logins(rig)) == 2
+    assert [e.outcome for e in rig.events(run.run_id, "sign_in_nothing")][-2:] == ["page_moved"] * 2
+    assert rig.events(run.run_id, "sign_in_sent") == []
+
+
+async def test_a_plain_box_on_a_page_that_cannot_be_read_whole_says_nothing(rig):
+    """A search box or a quantity on a long page is no sign-in that went unchecked (a deck page
+    said so on every step)."""
+    run = await phone(rig)
+    rig.broker.sign_in_read = {"found": True, "passkey": False, "fields": [
+        {"id": "f1", "role": None, "label": "Search", "password": False, "button": None}]}
+    rig.page().complete = False
+    result = await look(rig, run.run_id)
+    assert "page_handle" in result.to_wire() and auto_logins(rig) == []
+    assert "not_checked" not in [e.outcome for e in rig.events(run.run_id, "sign_in_nothing")]
 
 
 async def test_another_address_under_the_verdict_is_not_judged_again(rig):

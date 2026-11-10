@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 from casa_browser.broker import BrokerError
 from casa_browser.browser import BrowserSession
-from casa_browser.downloads import DownloadRefused
+from casa_browser.downloads import DownloadRefused, PlainAnswer
 from casa_browser.observe import Extraction, Observer
 from casa_browser.protocol import (
     Admission,
@@ -72,6 +72,7 @@ class FakeElement:
         self.options = list(options or [])      # a select's options: [(label, value), …]
         self.selected = None
         self.covered = covered
+        self.hidden = False
         self.mark = None
 
     async def evaluate(self, js, *args):
@@ -89,6 +90,9 @@ class FakeElement:
 
     def item(self):
         return {"role": self.role, "name": self.name, "href": self.href, "field": self.field}
+
+    async def is_visible(self):
+        return not self.hidden
 
     async def scroll_into_view_if_needed(self, timeout=None):
         return None
@@ -125,7 +129,7 @@ class FakePage:
         # shadow root, the focused element, and hooks a test uses to change the page.
         self.complete = True
         self.has_cc = False
-        self.closed_shadow = False
+        self.closed_shadow = False      # a closed shadow root holds a field
         self.focus = None
         self.read_hook = None       # callable(page, n) run before the n-th gate reading
         self.reads = 0
@@ -188,12 +192,23 @@ class FakeContext:
     def __init__(self, page):
         self.pages = [page]
         self.handlers = {}
+        self.jar = []                # the cookies Chrome holds
+        self.cookies_error = None    # raised by ``cookies``
+        self.add_error = None        # raised by ``add_cookies``
 
     def on(self, event, fn):
         self.handlers.setdefault(event, []).append(fn)
 
     async def cookies(self, urls=None):
-        return []
+        if self.cookies_error is not None:
+            raise self.cookies_error
+        return [dict(c) for c in self.jar]
+
+    async def add_cookies(self, cookies):
+        if self.add_error is not None:
+            raise self.add_error
+        self.pages[0].log.append(("add_cookies", sorted(c["name"] for c in cookies)))
+        self.jar.extend(cookies)
 
     async def close(self):
         for p in self.pages:
@@ -277,13 +292,22 @@ class FakePacer:
         self.move_hook = None
         self.key_hook = None        # callable(n) before the n-th character
         self.enter_gate = None      # holds the Enter after its keydown (a cut lands there)
+        self.refuse = None          # the target is refused with this code, before any move
+        self.scroll_to_position = None   # what ``scroll_to`` answers: None, it was in view
 
     async def _maybe_wait(self):
         if self.gate is not None:
             await self.gate.wait()
 
+    async def shown(self, el):
+        from casa_browser.pacing import ActionError
+        if el.hidden:
+            raise ActionError("not_visible")
+
     async def click(self, el, *, guard=None, on_dispatch=None):
         from casa_browser.pacing import ActionError, GuardRefused
+        if self.refuse is not None:
+            raise ActionError(self.refuse)
         self.log.append(("move", el.name))
         if self.move_hook is not None:
             self.move_hook(el)
@@ -311,6 +335,8 @@ class FakePacer:
             raise ActionError("unsupported")
         await self.click(el, guard=guard, on_dispatch=on_dispatch)
         self.page.focus = el
+        if not el.facts.get("contenteditable"):      # the select: the text replaces the value
+            el.value = ""
         for n, ch in enumerate(text):
             if self.key_hook is not None:
                 self.key_hook(n)
@@ -319,6 +345,15 @@ class FakePacer:
                 raise GuardRefused("changed")
             el.value += ch
         self.log.append(("type", el.name, len(text), line_breaks))
+
+    async def insert(self, el, text, *, guard=None, on_dispatch=None, focus=None):
+        from casa_browser.pacing import GuardRefused
+        await self.click(el, guard=guard, on_dispatch=on_dispatch)
+        self.page.focus = el
+        if focus is not None and not await focus():
+            raise GuardRefused("changed")
+        el.value = text
+        self.log.append(("insert", el.name, len(text)))
 
     async def press_enter(self, guard, on_dispatch=None):
         from casa_browser.pacing import GuardRefused
@@ -332,8 +367,15 @@ class FakePacer:
         if self.enter_gate is not None:
             await self.enter_gate.wait()
 
+    async def scroll_to(self, el):
+        await self.shown(el)
+        await el.scroll_into_view_if_needed()
+        self.log.append(("scroll_to", el.name))
+        return self.scroll_to_position
+
     async def scroll(self, direction, amount):
         self.log.append(("scroll", direction, amount))
+        return {"top": 0, "end": 0, "moved": False}
 
 
 TEXT_TYPES = ("", "text", "search", "email", "tel", "url", "number")
@@ -460,18 +502,20 @@ class FakeOps:
 
 
 def make_observer(registry, artifacts, store):
-    async def extractor(frame):
+    async def extractor(frame, find=None):
         page = frame.page
         els = page.elements
         return Extraction(href=page.url, title=page.title, text=page.text,
-                          elements=[e.item() for e in els], element_handles=list(els),
+                          elements=[dict(e.item(), found=bool(find) and find.casefold() in e.name.casefold())
+                                    for e in els], element_handles=list(els),
                           field_handles=[e for e in els if e.field], frame_handles=[],
                           complete=not getattr(page, "unfaithful", False))
 
     async def no_shadow(page):
         return False
 
-    return Observer(registry, artifacts, store, extractor=extractor, closed_shadow=no_shadow)
+    return Observer(registry, artifacts, store, extractor=extractor, closed_shadow=no_shadow,
+                    closed_any=no_shadow)
 
 
 # --------------------------------------------------------------------------- proxy
@@ -760,6 +804,8 @@ class FakeDownloader:
         self.gate: asyncio.Event | None = None
         self.ids = itertools.count(1)
         self.cleaned = 0
+        self.plain = None           # PlainAnswer or (body, mime) a plain fetch comes to
+        self.plain_url = None       # the address that served it, when not the one asked
 
     def _record(self, run, handle, data=b"%PDF-1.7 synthetic"):
         file_id = f"f{next(self.ids)}"
@@ -783,6 +829,24 @@ class FakeDownloader:
         if self.gate is not None:
             await self.gate.wait()
         return self._record(run, handle)
+
+    async def user_agent(self, session):
+        return "Mozilla/5.0 synthetic"
+
+    async def fetch_plain(self, run, url, policy, agent):
+        self.log.append(("fetch_plain", url, agent))
+        if self.gate is not None:
+            await self.gate.wait()
+        if isinstance(self.plain, tuple):
+            data, mime = self.plain
+            file_id = f"f{next(self.ids)}"
+            path = self.root / file_id
+            path.write_bytes(data)
+            record = FileRecord(file_id, run.run_id, run.spec.requester_id, "page", mime, len(data),
+                                hashlib.sha256(data).hexdigest(), str(path), None)
+            self.store.put_file(record)
+            return PlainAnswer(record=record, url=self.plain_url or url)
+        return self.plain
 
     async def capture_browser_download(self, run, download, session, policy):
         self.log.append(("capture_download",))

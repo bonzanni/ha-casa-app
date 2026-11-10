@@ -179,6 +179,8 @@ Routes (`{run}` scoped routes answer only for that run's own ids):
 | `POST /v1/runs`, `GET /v1/runs?state=active`, `GET /v1/runs/{run}` | the run (201 new, 200 repeat); `{runs: [ActiveRun]}`; the run with `stopped` (its request id is in `cancelled_requests`) |
 | `GET /v1/runs/{run}/events?after=N` | `{events: [...]}` in sequence order |
 | `POST /v1/runs/{run}/{observe,action,search,download,archive}` | `Observation` (with `{"sign_in": true}`, a page with sign-in fields answers a `sign_in` judgement first: [`casa-browser-signin.md`](casa-browser-signin.md)); action result; `Observation`; file record; file record |
+| `POST /v1/runs/{run}/fetch` | a step: a public address read with no browser ([`casa-browser-files.md`](casa-browser-files.md)) |
+| `POST /v1/runs/{run}/{look,read}`, `GET /v1/control/runs/{run}/judgements/{judgement}/picture` | `{picture}`; `{text, next_offset, complete, masked}`; a PNG ([`casa-browser-contract.md`](casa-browser-contract.md)) |
 | `POST /v1/runs/{run}/live` (`login`, `assist`), `POST /v1/control/runs/{run}/live-complete` | live-view envelope; the run |
 | `POST /v1/runs/{run}/{finish,cancel}`, `POST /v1/control/sites/{site}/forget` | the run; `{site_id, status}` |
 | `POST /v1/requests/cancel` | `{requests: [{request_id, run_id, stopped, state}]}` (below) |
@@ -338,6 +340,7 @@ request forwarded undecided.
 
 **Tests**
 - `casa_browser/tests/test_scaffold.py`
+- `casa_browser/tests/test_generic_terms.py`
 - `casa_browser/tests/test_options.py`
 - `casa_browser/tests/test_store.py`
 - `casa_browser/tests/test_retention.py`

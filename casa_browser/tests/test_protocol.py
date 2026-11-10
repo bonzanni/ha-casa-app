@@ -12,7 +12,9 @@ import pytest
 from casa_browser.protocol import (
     ERROR_CODES,
     ERROR_STATUS,
+    ActiveRun,
     FileRecord,
+    Observation,
     ProtocolError,
     ProviderBinding,
     Site,
@@ -22,6 +24,8 @@ from casa_browser.protocol import (
     parse_finish,
     parse_login_code,
     parse_live,
+    parse_look,
+    parse_read,
     parse_run_spec,
     parse_site_registration,
 )
@@ -95,6 +99,15 @@ def test_parse_finish_and_delivery():
                            "outcome": "handed_off"})["outcome"] == "handed_off"
     with pytest.raises(ProtocolError):
         parse_delivery({"requester_id": "finance", "delivery_id": "d1", "outcome": "lost"})
+
+
+def test_parse_action_takes_ask_first_as_a_boolean_only():
+    base = {"kind": "click", "handle": "el_1", "generation": 3}
+    assert parse_action(base).ask_first is False
+    assert parse_action({**base, "ask_first": True}).ask_first is True
+    for bad in ("yes", 1, None):
+        with pytest.raises(ProtocolError):
+            parse_action({**base, "ask_first": bad})
 
 
 def test_parse_action_shapes():
@@ -228,3 +241,57 @@ def test_login_code_refusals_never_echo(body):
         parse_login_code(body)
     if isinstance(body, dict) and isinstance(body.get("code"), str):
         assert body["code"] not in str(caught.value) and body["code"] not in repr(caught.value)
+
+
+def test_text_bounds():
+    """One line stays within what typing takes; a text with line breaks may be a whole list."""
+    def body(text):
+        return {"kind": "type", "handle": "h", "generation": 1, "text": text}
+    assert parse_action(body("x" * 2000)).text == "x" * 2000
+    with pytest.raises(ProtocolError):
+        parse_action(body("x" * 2001))
+    long = ("x" * 99 + "\n") * 320
+    assert parse_action(body(long)).text == long and len(long) == 32_000
+    with pytest.raises(ProtocolError):
+        parse_action(body(long + "x"))
+    assert parse_action(body(("x" * 2500) + "\r\ny")).text == "x" * 2500 + "\ny"
+
+
+def test_parse_action_bounds_the_plan():
+    def body(plan):
+        return {"kind": "click", "handle": "h", "generation": 1, "plan": plan}
+    action = parse_action(body("Add:\r\n1 Sol Ring"))
+    assert action.plan == "Add:\n1 Sol Ring" and "Sol Ring" not in repr(action)
+    assert len(parse_action(body("x" * 12_000)).plan) == 12_000
+    for bad in ("x" * 12_001, "", "  \n", "a\x07b", 5):
+        with pytest.raises(ProtocolError):
+            parse_action(body(bad))
+    assert parse_action({"kind": "click", "handle": "h", "generation": 1}).plan is None
+
+
+def test_active_run_carries_approved_on_the_wire():
+    at = datetime(2026, 11, 6, tzinfo=timezone.utc)
+    assert ActiveRun("r", "q", "running", at).to_wire()["approved"] is None
+    assert ActiveRun("r", "q", "running", at, approved="the plan").to_wire()["approved"] == "the plan"
+
+
+def test_an_observation_says_it_was_cut_only_when_it_was():
+    plain = Observation("p", 1, "text", ())
+    assert "text_cut" not in plain.to_wire()
+    assert Observation("p", 1, "text", (), text_cut=True).to_wire()["text_cut"] is True
+
+
+def test_parse_look_and_read():
+    assert parse_look({}) is None and parse_look({"handle": "h1"}) == "h1"
+    assert parse_read({}) == (None, None, 0, False)
+    assert parse_read({"handle": "h1", "offset": 30}) == ("h1", None, 30, False)
+    assert parse_read({"file_id": "f1"}) == (None, "f1", 0, False)
+    assert parse_read({"rows": True, "offset": 5}) == (None, None, 5, True)
+    assert parse_read({"rows": False, "handle": "h1"}) == ("h1", None, 0, False)
+    for bad in ({"handle": "h", "file_id": "f"}, {"offset": -1}, {"offset": "1"}, {"other": 1},
+                {"handle": "a b"}, {"rows": 1}, {"rows": True, "handle": "h"},
+                {"rows": True, "file_id": "f"}):
+        with pytest.raises(ProtocolError):
+            parse_read(bad)
+    with pytest.raises(ProtocolError):
+        parse_look({"offset": 1})

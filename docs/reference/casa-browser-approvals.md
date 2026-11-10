@@ -29,33 +29,63 @@ stored, so a lost reply is replayed, never re-executed.
 the stored response; one `open` or `confirming` per run) and moves the run to
 `waiting_approval`; the frozen operation stays in controller memory. The view
 (`confirmations.py::build_view`) holds the check's text, confirm label, extra options,
-highlight strings, the question screenshot's id, `confirm_offered` and the live-only copy.
+highlight strings, the question screenshot's id, `confirm_offered` and the live-only copy; and
+`after_lapse` when the action is judged afresh because his Yes lapsed (`controller.py::_lapse`), so
+the new card can say his last Yes did not run.
 **F6:** a `payment`, a `commitment` the check wants a `required` screenshot for, or a page
 holding a payment-card field needs the app's faithful question screenshot
 (`observe.py::Observer.capture_question`: secret fields and child frames masked, the target
 outlined); without one, no confirm button. **F6a:** `text_incomplete: true` means no confirm
-button. The view never holds an exact destination. `GET /v1/control/runs/{run}/questions/{question}`
+button. **A blind reading** (below) means no confirm button and no plan card: the view keeps the
+check's text and adds copy that the app cannot re-check this page, offering the live view
+(`confirmations.py::COPY_BLIND`). A plan card's view adds `plan`, verbatim, with no screenshot
+([`casa-browser-actions.md`](casa-browser-actions.md)); the plugin posts it in pages above the question. The view never holds an exact destination. `GET /v1/control/runs/{run}/questions/{question}`
 returns it.
 
 `POST /v1/control/runs/{run}/questions/{question}/answer` (`answer_question`) is a
 compare-and-set on question, revision, digest and state (**F7**): a repeat of an answered
 revision returns its stored response with `repeat: true`; a lapsed, superseded, expired or
 other-revision tap is `not_current`. `not_now` declines and an extra option answers — neither
-executes. `confirm` builds a fresh whole reading and the re-judgement input
+executes. The plugin also uses `not_now` to take back a question the operator never saw, with an
+`operator_ref` of `fido:<why>`; the event then says so, not that he declined. `confirm` builds a fresh whole reading and the re-judgement input
 (`{approved_packet, approved_question, current_packet, difference, destination_changed}`,
 `gate.py::difference` over the whole readings, never the capped packets) and answers
 `rejudgement_required` (a change is decided on the complete raw values and shown masked and
-uncut); an incomplete reading or a difference over 12,000 characters has no
-`same` and lapses with the live-view copy.
+uncut); a blind reading or a difference over 12,000 characters has no
+`same` and lapses, nothing pressed, with its `reason` (`incomplete`, `too_much`) and its own `copy`
+saying which: the page cannot be read whole (`confirmations.py::COPY_INCOMPLETE`), or it changed too
+much (`confirmations.py::COPY_TOO_MUCH`). A reading only past the control cap is neither. A target that cannot be re-found lapses with `target_gone`;
+two controls the reading cannot tell apart count as that too, so its event says so.
 
 A re-judgement's `changed`, no verdict, or `same` with `text_incomplete` or
 `destination_changed` lapses the question and judges the action afresh. `same` leads to the
-**final read** inside the guard: every block, every control's state and every exact destination
-must equal the reading the re-judgement judged (`gate.py::same_reading`, no exemption); a
-difference reruns the re-judgement, at most twice for the tap, then the question lapses. An
+**final read** inside the guard: every block, the text of the target's own record
+(`gate.py::target_record`, the same button moved to another row is a difference), every control's
+state and every exact destination must equal the reading the re-judgement judged
+(`gate.py::same_reading`, no exemption); a difference reruns the re-judgement, at most twice for the
+tap, then the question lapses. An
 executed tap records `Change("action_confirmed")` and an `action` event carrying the question
 screenshot. A run's end expires its questions; a restart marks an open question `expired` and a
 `confirming` one `outcome_unknown`.
+
+**A long page, and a blind reading.** A reading lists at most 400 controls a frame, those in view
+first, so past that cap its list moves with the viewport. Past the cap a reading also carries
+`all_controls`, one value per shown frame in frame order: for a frame that overflowed, a SHA-256,
+keyed by the app's salt, of its semantic controls and those it marks with `tabindex` or `onclick`, in
+document order, each by role, name, tag, input type, state, link and enclosing link address, and
+submit and Enter action, method and target (`gate.py::COMPARED`); for a smaller frame beside it, a digest of
+the same facts of its list. A withheld frame stays compared under `frames_withheld`. Past the cap the
+final read compares `all_controls` instead of the list, so a stable page's Yes presses however it was
+scrolled, and one reading with the value and one without are unequal. In the `difference` equal values
+drop every `controls_*` member; unequal ones drop `controls_added` and `controls_removed`, keep
+`controls_changed` and add `controls_beyond_list_changed: true` for the check to weigh; code decides nothing on that flag.
+A page that fits has no `all_controls` and is compared by its list. A reading short for
+any other cause is **blind** (`gate.py::blind`: 5,000 shadow roots, 20,000 blocks, one block over 200,000
+characters, an unreadable frame, a closed shadow root that holds a field): it offers no
+confirm and has no final read. Two residuals: a control known only by its pointer cursor is not
+in the digest (a `:hover` cursor rule changes it as the pointer reaches the target; its text is in the
+blocks and it carries no destination), and neither the list nor the digest reads `data-*` attributes.
+A `go` under an approved plan is held to `gate.py::same_as_judged` instead, which compares the list.
 
 **Posting.** The plugin's own code renders the question from this view; no model words it. A
 question with a screenshot is ONE message: the picture, the check's question as its caption,
@@ -103,7 +133,9 @@ that moment stays the operator's and returns the run to `running` at Done); noth
 
 **INV-BRW-037**: A tap executes the frozen operation at most once, and only after a `same` re-judgement and a final read identical to the reading it judged.
 
-**INV-BRW-038**: A question offers a confirm button only when the check stated its facts (`text_incomplete` false) and, for a money question, the app holds a faithful question screenshot.
+**INV-BRW-038**: A question offers a confirm button only when the check stated its facts (`text_incomplete` false), the reading is not blind and, for a money question, the app holds a faithful question screenshot.
+
+**INV-BRW-066**: Past a reading's control cap a stable page's confirm presses however it was scrolled, and a change in any comparable control, listed or not, in any shown frame, or in the text of the target's own record, stops the press.
 
 **INV-BRW-054**: Only `confirm` can execute a question's frozen operation: `not_now` declines and an extra option answers, neither pressing anything, and a tap on a question that is no longer current (another revision or digest, lapsed, expired) executes nothing.
 
@@ -120,7 +152,9 @@ that moment stays the operator's and returns the run to `running` at Done); noth
 
 **Tests**
 - `casa_browser/tests/test_controller.py`
+- `casa_browser/tests/test_gate.py`
 - `casa_browser/tests/integration/test_action_gate.py`
+- `casa_browser/tests/integration/test_long_page_final_read.py`
 
 **Related**
 - [`reference/casa-browser-actions.md`](../reference/casa-browser-actions.md)

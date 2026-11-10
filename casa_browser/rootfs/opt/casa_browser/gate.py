@@ -3,7 +3,7 @@ one browsing action, where the check runs, and what the app compares before it p
 
 * ``in_scope`` is design §3's table, rows for rows, over mechanical facts only: the session the
   input is delivered in, the action kind, whether the target is an http(s) link, whether it is
-  a search field, and how a download is made.
+  a search field, how a download is made, and whether a load stays on the host open.
 * ``READ`` is the gate's own fixed reading of a page, in the isolated world like
   ``observe.EXTRACT``, whose primitives it copies: numbered blocks with their enclosing
   landmarks and record (table row, list item, article), every actionable control with its
@@ -15,7 +15,8 @@ one browsing action, where the check runs, and what the app compares before it p
 * ``canonical``/``digest``: the packet's canonical UTF-8 JSON and its SHA-256, which binds a
   verdict to the bytes judged.
 * ``difference`` is computed over two whole readings, never the capped packets; ``same_reading``
-  is the final read's comparison, with no exemption.
+  is the final read's comparison, with no exemption; ``all_controls`` carries it past the list's
+  cap, and a ``blind`` reading has no final read.
 * ``PendingJudgement`` is one frozen action awaiting its verdict (memory only: the element
   handle cannot be stored).
 """
@@ -28,7 +29,7 @@ import re
 import secrets
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urldefrag, urlsplit
 
 from casa_browser.masking import looks_random, mask_text
 
@@ -37,6 +38,7 @@ MAX_DIFFERENCE = 12_000      # a larger serialised difference has no "same" (des
 MAX_RECORD_BLOCKS = 200
 JUDGEMENT_TTL_S = 180.0      # the check's 90 s timeout twice: the plugin's one retry fits
 MAX_NOTE = 600
+MAX_JUDGE_PICTURE_BYTES = 2 * 1024 * 1024
 MAX_REASON_SHOWN = 300
 
 # The check's reply bounds: the app's own copy of Casa's (``action_judgement.parse_reply``).
@@ -73,18 +75,40 @@ def scope_kind(action_kind: str, *, is_link: bool = False, search_field: bool = 
 
 
 def in_scope(session_kind: str, action_kind: str, *, is_link: bool = False,
-             search_field: bool = False, download_via: str | None = None) -> bool:
-    """Whether the check runs. ``session_kind`` is the session the input will be delivered in
-    (for a navigation, the destination's), ``"account"`` or ``"public"``. ``scroll`` is free
-    everywhere; on a public session navigation, a link click, ``back``, a search, typing into a
-    search field and a link download are free; everything else is checked."""
+             search_field: bool = False, download_via: str | None = None,
+             same_host: bool = False) -> bool:
+    """Whether the check runs (``sends_nothing`` has already taken what only prepares).
+    ``session_kind`` is the session the input will be delivered in (for a navigation, the
+    destination's), ``"account"`` or ``"public"``. ``scroll`` is free everywhere; on a public
+    session navigation, a link click, ``back``, a search, typing into a search field and a link
+    download are free; on an account session a navigation to the host of the page open
+    (``same_host``, the controller's facts) is free, and never a click, which is a real press;
+    everything else is checked."""
     row = scope_kind(action_kind, is_link=is_link, search_field=search_field,
                      download_via=download_via)
     if row == "scroll":
         return False
     if session_kind == "public" and row in FREE_IN_PUBLIC:
         return False
+    if session_kind == "account" and same_host and row == "navigate":
+        return False
     return True
+
+
+def sends_nothing(kind: str, target: dict | None, *, enter: bool = False) -> bool:
+    """An action that prepares and sends nothing by itself, on any site: typing without Enter,
+    choosing a select's value, ticking a checkbox or radio, opening a disclosure (a ``summary``, a
+    button with ``aria-expanded``). The check judges what these prepared when something sends it:
+    the press or Enter reads the whole form and page. ``target`` is its element's facts; anything
+    with a destination (a link, a submitter, a control inside one) always sends."""
+    if not target or target.get("secret") or exact_destination(target):
+        return False
+    if kind == "type":
+        return not enter
+    if kind == "select":
+        return True
+    return kind == "click" and (target["role"] in ("checkbox", "radio") or target["tag"] == "summary"
+            or (target["role"] == "button" and "expanded" in (target.get("state") or {})))
 
 
 # --------------------------------------------------------------------------- the reading
@@ -140,53 +164,90 @@ FIELD_KINDS = INPUT_KINDS | {MULTI_LINE}
 
 # Slice 5g: which elements are actionable — one rule for the observation (``observe.EXTRACT``)
 # and the gate's reading (the gate re-finds a target among the controls it reads, design §2.6).
-# First the semantic controls (``CONTROL_SEL``, up to the cap; reaching it makes a reading
-# incomplete, as before), with room kept for their selects' options (the observation lists
-# them). Then, only in the room the cap leaves, what the page itself makes
-# actionable without saying what it is (a custom widget's parts): an element in the tab order
-# (``tabindex`` ≥ 0) or with an inline ``onclick``; and, where the page shows its own pointer
-# cursor, each element holding its own text there (a list entry, a calendar cell, a menu row;
-# its descendants are part of it) and each icon (an ``svg``, an ``img``, or an element with no
-# content). Never a label (its control is listed), anything inside a semantic control or holding
-# one. Mechanical facts only; nothing is decided by what the text says. Spliced into each
-# script, which define ``all``, ``box``, ``seen``, ``up`` and ``shown``.
+# The semantic controls (``CONTROL_SEL``), and what the page itself makes actionable without
+# saying what it is (a custom widget's parts): an element in the tab order (``tabindex`` ≥ 0) or
+# with an inline ``onclick``; and, where the page shows its own pointer cursor, each element
+# holding its own text there (a list entry, a calendar cell, a menu row; its descendants are part
+# of it) and each icon (an ``svg``, an ``img``, or an element with no content). Never a label (its
+# control is listed), anything inside a semantic control or holding one.
+# One cap for both, a semantic select counting its options (the observation lists them, as many as
+# fit). When the semantic controls and their options fit, they all stay and the others take the
+# room left, those in view first. When they do not fit, what is in view (the viewport: an open menu
+# wherever the page keeps it in its document) goes first, then the rest in page order; leaving out
+# a semantic control makes a reading incomplete. The list itself stays in document order. Mechanical facts
+# only; nothing is decided by what the text says. Spliced into each script, which define ``all``,
+# ``box``, ``seen``, ``up`` and ``shown``. When they do not fit, it also names what a final read
+# compares past the list: the semantic ones and those the page marks by attribute, in document
+# order and whatever is in view. Never those known by their pointer: a ``:hover`` cursor rule
+# changes them as the pointer reaches the target.
+# ``pageName`` is what the page itself calls an element that has no visible name, an icon button
+# or an image link: a button input's value (what it shows), its ``aria-label``, ``title`` or ``alt``,
+# else the ``alt`` of an image it holds, loaded or not: a lazy image has no size until the page is
+# scrolled to it, which changes nothing about the control. Never a field's value, and nothing on or
+# holding a secret.
+# ``ahead``, passed by the observation's search alone (``observe.EXTRACT``), never by ``READ``: given
+# the elements in document order, a Map of those to rank before all others, by rank, from ordinals
+# matched outside the page. It only changes which elements take the cap's room: the comparable ones
+# and every count stay what they are.
 CONTROLS_JS = r"""
+  const BUTTON_INPUTS = ['submit','button','reset','image'];
+  const pageName = (e) => {
+    if (hidesSecret(e)) return '';
+    const said = (a) => (e.getAttribute(a) || '').trim();
+    const pic = e.querySelector('img[alt]:not([alt=""])');
+    return (e.tagName === 'INPUT' && BUTTON_INPUTS.includes(e.type) ? e.value.trim() : '')
+      || said('aria-label') || said('title') || said('alt')
+      || (pic && seen(pic) ? pic.getAttribute('alt').trim() : '');
+  };
   const CONTROL_SEL = 'a[href],button,input:not([type=hidden]),select,textarea,summary,[role],[contenteditable]';
   const pointer = (e) => getComputedStyle(e).cursor === 'pointer';
   const ownText = (e) => { for (const n of e.childNodes) if (n.nodeType === 3 && n.data.trim()) return shown(e);
     return false; };
-  // [elements in document order, the semantic ones as a Set, whether the semantic ones overflowed]
-  const actionable = (cap, accept) => {
+  const inView = (e) => { const r = e.getBoundingClientRect();
+    return r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth; };
+  // [elements in document order, the semantic ones as a Set, whether a semantic one was left out,
+  //  the room for their options, how many were left out, the comparable ones or null when all fit]
+  const actionable = (cap, accept, ahead) => {
     const order = all('*'), pos = new Map();
     order.forEach((e, i) => pos.set(e, i));
-    const base = [];
-    let over = false;
-    for (const e of all(CONTROL_SEL)) {
-      if (!box(e) || !seen(e) || !accept(e)) continue;
-      if (base.length >= cap) { over = true; break; }
-      base.push(e);
-    }
-    const baseSet = new Set(base), holders = new Set(), stop = new Set(), extra = [];
+    const base = all(CONTROL_SEL).filter((e) => box(e) && seen(e) && accept(e));
+    const baseSet = new Set(base), holders = new Set(), stop = new Set(), extra = [], marked = [];
     for (const b of base) for (let c = up(b); c && !holders.has(c); c = up(c)) holders.add(c);
-    // One budget for both lists (r1 Terra, Astra): the observation lists each semantic select's
-    // options after it, so they are reserved before any extra element takes a place.
-    const options = base.reduce((n, b) => n + (b.tagName === 'SELECT' ? b.options.length : 0), 0);
-    const room = cap - base.length - options;
     for (const e of order) {
-      if (extra.length >= room) break;
       if (baseSet.has(e) || holders.has(e) || e.tagName === 'LABEL' || e.ownerSVGElement) continue;
-      let under = false;
-      for (let c = up(e); c; c = up(c)) if (baseSet.has(c) || stop.has(c)) { under = true; break; }
-      if (under || !box(e) || !seen(e)) continue;
+      let inBase = false, under = false;
+      for (let c = up(e); c; c = up(c)) {
+        if (baseSet.has(c)) { inBase = true; break; }
+        if (stop.has(c)) under = true; }
+      if (inBase || !box(e) || !seen(e)) continue;
       const ti = e.getAttribute('tabindex');
-      if ((ti !== null && /^\s*\d+\s*$/.test(ti)) || e.hasAttribute('onclick')) { extra.push(e); continue; }
+      const byAttribute = (ti !== null && /^\s*\d+\s*$/.test(ti)) || e.hasAttribute('onclick');
+      if (byAttribute) marked.push(e);   // whatever a pointer rule does to what holds it
+      if (under) continue;
+      if (byAttribute) { extra.push(e); continue; }
       if (!pointer(e)) continue;
       if (ownText(e)) { extra.push(e); stop.add(e); continue; }
       const tag = e.tagName.toLowerCase();
       if (tag === 'svg' || tag === 'img' || (!e.children.length && !(e.textContent || '').trim())) extra.push(e);
     }
-    const els = base.concat(extra).sort((a, b) => pos.get(a) - pos.get(b));
-    return [els, baseSet, over, Math.max(0, cap - els.length)];
+    const cost = (e) => 1 + (e.tagName === 'SELECT' && baseSet.has(e) ? e.options.length : 0);
+    const fits = base.reduce((n, e) => n + cost(e), 0) <= cap;
+    const first = ahead ? ahead(base.concat(extra).sort((a, b) => pos.get(a) - pos.get(b))) : new Map();
+    const rank = (e) => (first.has(e) ? first.get(e) : baseSet.has(e) ? (fits || inView(e) ? 0 : 2) : (inView(e) ? 1 : 3));
+    const ranked = base.concat(extra).map((e) => [rank(e), pos.get(e), e]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const els = [];
+    let used = 0;
+    for (const [, , e] of ranked) {
+      const room = cap - used;
+      if (room <= 0) break;
+      // A select with more options than the room stays, with half of it; others can still fit.
+      used += cost(e) <= room ? cost(e) : Math.ceil(room / 2);
+      els.push(e);
+    }
+    els.sort((a, b) => pos.get(a) - pos.get(b));
+    const kept = new Set(els);
+    return [els, baseSet, base.some((e) => !kept.has(e)), cap - els.length, ranked.length - els.length,
+            fits ? null : base.concat(marked).sort((a, b) => pos.get(a) - pos.get(b))];
   };
 """
 
@@ -218,12 +279,12 @@ READ = r"""([target, SALT]) => {
     return H.map(x => (x >>> 0).toString(16).padStart(8, '0')).join('');
   };
   const MAX_EL = 400, MAX_BLOCKS = 20000, MAX_BLOCK_TEXT = 200000;
-  let complete = true;
+  let blind = false;      // short for a cause other than the control cap
   const roots = [document];
   for (let i = 0; i < roots.length && roots.length < 5000; i++) {
     for (const e of roots[i].querySelectorAll('*')) if (e.shadowRoot) roots.push(e.shadowRoot);
   }
-  if (roots.length >= 5000) complete = false;
+  if (roots.length >= 5000) blind = true;
   const all = (sel) => roots.flatMap(r => [...r.querySelectorAll(sel)]);
   const box = (e) => { const r = e.getBoundingClientRect(); return r.width >= 1 && r.height >= 1; };
   const seen = (e) => e.checkVisibility({checkOpacity: true, checkVisibilityCSS: true});
@@ -283,11 +344,11 @@ READ = r"""([target, SALT]) => {
       if (!b || full.has(b)) continue;
       if (!blocks.has(b)) {
         if (!t.trim()) continue;
-        if (blocks.size >= MAX_BLOCKS) { complete = false; continue; }
+        if (blocks.size >= MAX_BLOCKS) { blind = true; continue; }
         blocks.set(b, '');
       }
       const v = blocks.get(b) + t;
-      if (v.length > MAX_BLOCK_TEXT) { complete = false; full.add(b); continue; }
+      if (v.length > MAX_BLOCK_TEXT) { blind = true; full.add(b); continue; }
       blocks.set(b, v);
     }
   }
@@ -357,13 +418,25 @@ READ = r"""([target, SALT]) => {
   // The element whose activation a press on ``e`` runs: the nearest flat-tree ancestor (``e``
   // included) with activation behaviour, a label forwarding to its control. Its facts — a
   // link's address, a submitter's submission — are what the press does.
-  const ACTIVE = 'a[href],area[href],button,input:not([type=hidden]),label,summary';
+  const ACTIVE = 'a[*|href],area[href],button,input:not([type=hidden]),label,details>summary:first-of-type';
+  // Chromium hands a click on up when the inner control does not take it (measured: a type=button or
+  // a text field inside a link follows it, an input inside a submit button submits). So an enclosing
+  // link or submit button wins over a nearer control.
   const activatorOf = (e) => {
+    let first = null;
     for (let c = e; c; c = c.assignedSlot || c.parentElement ||
          ((c.getRootNode && c.getRootNode() instanceof ShadowRoot) ? c.getRootNode().host : null))
-      if (c.matches && c.matches(ACTIVE)) return c.tagName === 'LABEL' ? (c.control || c) : c;
-    return e;
+      if (c.matches && c.matches(ACTIVE)) {
+        const a = c.tagName === 'LABEL' ? (c.control || c) : c;
+        if (a.matches('a[*|href]') || isSubmitter(a)) return a;
+        first = first || a;
+      }
+    return first || e;
   };
+  // A link's address, an SVG <a>'s too (its href is an SVGAnimatedString; a broken one still is one).
+  const linkUrl = (a) => { const h = a.href;
+    if (!h || h.baseVal === undefined) return h;
+    try { return new URL(h.baseVal, a.baseURI).href; } catch (_) { return h.baseVal; } };
   const isSubmitter = (e) => {
     const tag = e.tagName.toLowerCase();
     if (tag === 'button') return e.type === 'submit' && !!e.form;
@@ -461,35 +534,27 @@ READ = r"""([target, SALT]) => {
     if (tag === 'input') return TEXT_TYPES.includes(type);
     return tag === 'textarea' || e.isContentEditable;
   };
-  const controlOf = (e, idx) => {
+  // What two readings can compare of a control (``COMPARED``, and ``is_submitter``): no id of one
+  // read, and nothing that walks the page's blocks, as ``all_controls`` asks it of every control.
+  const factsOf = (e) => {
     const attrRole = (e.getAttribute('role') || '').toLowerCase();
     const role = ROLES.has(attrRole) ? attrRole : tagRole(e);
     const field = editable(e);
     let name = labelOf(e);
     if (!name && !field) name = textOf(e);
+    if (!name) name = pageName(e);
     const tag = e.tagName.toLowerCase();
     const form = e.form || closestAcross(e, 'form');
     const act = activatorOf(e), sub = isSubmitter(act);
-    const c = {idx, role, name: name.slice(0, 2000), tag,
+    const c = {role, name: name.slice(0, 2000), tag,
       input_type: (e.getAttribute('type') || '').toLowerCase() || null,
-      href: tag === 'a' ? e.href : null,
-      activator_href: (act !== e && act.tagName === 'A') ? act.href : null,
+      href: tag === 'a' ? linkUrl(e) : null,
+      activator_href: (act !== e && act.localName === 'a') ? linkUrl(act) : null,
       is_submitter: sub,
       submit_action: sub ? subAction(act, act.form) : null,
       submit_method: sub ? subMethod(act, act.form) : null,
       submit_target: sub ? subTarget(act, act.form) : null,
-      form: formFacts(form),
-      container: idOf(closestAcross(e, LANDMARK)),
-      record: idOf(closestAcross(e, RECORD)),
-      block: blockIndexOf(e),
-      heading: headingOf(e),
-      state: stateOf(e),
-      secret: hidesSecret(e),
-      download_attr: tag === 'a' && e.hasAttribute('download'),
-      form_self: form ? [...formEls(form)].filter(x => { const t = (x.getAttribute('type') || x.tagName).toLowerCase();
-        return !(t === 'hidden' || t === 'fieldset' || ['submit','button','reset','image'].includes(t) || x.tagName === 'BUTTON'); }).indexOf(e) : -1,
-      editable_text: editableText(e),
-      search_field: role === 'searchbox' || (tag === 'input' && (e.getAttribute('type') || '').toLowerCase() === 'search')};
+      state: stateOf(e)};
     // A text field's Enter submits through its form's default button: the first submit button
     // in tree order whose form owner is the form (an image input included, which form.elements
     // omits). Every text-like input qualifies, whatever its role attribute.
@@ -502,12 +567,30 @@ READ = r"""([target, SALT]) => {
     }
     return c;
   };
+  const controlOf = (e, idx) => {
+    const c = factsOf(e), form = e.form || closestAcross(e, 'form');
+    return Object.assign(c, {idx,
+      form: formFacts(form),
+      container: idOf(closestAcross(e, LANDMARK)),
+      record: idOf(closestAcross(e, RECORD)),
+      block: blockIndexOf(e),
+      heading: headingOf(e),
+      secret: hidesSecret(e),
+      download_attr: c.tag === 'a' && e.hasAttribute('download'),
+      form_self: form ? [...formEls(form)].filter(x => { const t = (x.getAttribute('type') || x.tagName).toLowerCase();
+        return !(t === 'hidden' || t === 'fieldset' || ['submit','button','reset','image'].includes(t) || x.tagName === 'BUTTON'); }).indexOf(e) : -1,
+      editable_text: editableText(e),
+      search_field: c.role === 'searchbox' || (c.tag === 'input' && (e.getAttribute('type') || '').toLowerCase() === 'search')});
+  };
   /*CONTROLS*/
   const controls = [], els = [];
-  const [found, semantic, over] = actionable(MAX_EL, (e) => {
+  const [found, semantic, over, , , comparable] = actionable(MAX_EL, (e) => {
     const attrRole = (e.getAttribute('role') || '').toLowerCase();
     return !(attrRole && !ROLES.has(attrRole) && tagRole(e) === 'other'); });
-  if (over) complete = false;
+  // Overflowed: every comparable control, as one salted digest of what it is and does.
+  const allControls = comparable && sha256(SALT + JSON.stringify(comparable.map((e) => {
+    const c = factsOf(e);
+    return /*COMPARED*/.map((k) => c[k]); })));
   for (const e of found) {
     const c = controlOf(e, controls.length);
     if (!semantic.has(e)) c.role = 'clickable';
@@ -524,7 +607,8 @@ READ = r"""([target, SALT]) => {
       enter_submission: enterSubmission(target)}); }
   }
   const hasCc = all('input,select,textarea').some(isCc);
-  return {data: JSON.stringify({href: location.href, origin: self.origin, title: document.title, complete,
+  return {data: JSON.stringify({href: location.href, origin: self.origin, title: document.title,
+    complete: !blind && !over, blind: blind || undefined, all_controls: allControls || undefined,
     blocks: blockList.map(b => ({text: b.text, containers: b.containers, record: b.record})),
     controls, target: tFacts, target_idx: tIdx, has_cc: hasCc}), els};
 }"""
@@ -538,7 +622,8 @@ _SALT = secrets.token_hex(16)
 @dataclass
 class Reading:
     """One reading of a page (``READ``'s data): ``href``, ``title``, ``complete``, ``blocks``,
-    ``controls``, ``target``, ``target_idx``, ``has_cc``. Exact destinations are app-private."""
+    ``controls``, ``target``, ``target_idx``, ``has_cc``, and only when they apply ``blind`` and
+    ``all_controls``. Exact destinations are app-private."""
 
     data: dict
     handles: list | None = field(default=None, repr=False)
@@ -552,6 +637,10 @@ class Reading:
         return self.data.get("target")
 
 
+# What ``all_controls`` binds of each control, in ``READ``'s digest and ``listed_digest`` alike.
+COMPARED = ("role", "name", "tag", "input_type", "state", "href", "activator_href",
+            "submit_action", "submit_method", "submit_target",
+            "enter_action", "enter_method", "enter_target")
 FRAME_WITHHELD = "[a frame on this page is not shown]"
 _ID_STRIDE = 1_000_000       # keeps each frame's landmark and record ids apart
 
@@ -562,6 +651,8 @@ def merge_frame(base: dict, other: dict, k: int, *, shown: bool) -> None:
     as a digest (``frames_withheld``), so any change in it is a difference."""
     base["complete"] = bool(base.get("complete")) and bool(other.get("complete"))
     base["has_cc"] = bool(base.get("has_cc")) or bool(other.get("has_cc"))
+    if other.get("blind"):
+        base["blind"] = True
     if not shown:
         base["blocks"].append({"text": FRAME_WITHHELD, "containers": [], "record": None})
         base.setdefault("frames_withheld", []).append(digest(canonical(other)))
@@ -575,8 +666,16 @@ def merge_frame(base: dict, other: dict, k: int, *, shown: bool) -> None:
     for c in other.get("controls") or ():
         c = dict(c, idx=nc + c["idx"], record=shift(c.get("record")),
                  container=shift(c.get("container")), frame_href=other.get("href"))
+        if c.get("form"):
+            c["form"] = dict(c["form"], id=shift(c["form"].get("id")))
         c["block"] = nb + c["block"] if c.get("block") is not None and c["block"] >= 0 else -1
         base["controls"].append(c)
+
+
+def listed_digest(frame_data: dict) -> str:
+    """An uncapped frame's ``all_controls`` value beside a capped one: all it has is listed."""
+    return digest(canonical([[c.get(k) for k in COMPARED]
+                             for c in frame_data.get("controls") or ()]))
 
 
 async def read(frame, target=None, *, with_handles: bool = False) -> Reading:
@@ -617,6 +716,29 @@ def _site_of(host: str | None) -> str:
     return ".".join((host or "").split(".")[-2:])
 
 
+def address_name(url: str) -> str:
+    """An address as an event names a step: host and masked path, no scheme and no query."""
+    try:
+        return f"{urlsplit(url).hostname or ''}{masked_path(url)}"
+    except ValueError:
+        return ""
+
+
+def same_host_load(url: str, page_url: str) -> bool:
+    """``url`` loads another page of the host of the open web page ``page_url``: the same hostname,
+    so a subdomain or a neighbour under one public suffix is another host. A caller holds the
+    destination to its own session's site as well. The open page's own address with a fragment loads
+    nothing: it only tells the page's script."""
+    try:
+        here, there = urlsplit(page_url), urlsplit(url)
+        hosts = here.hostname, there.hostname
+    except ValueError:
+        return False
+    return (here.scheme in ("http", "https") and there.scheme in ("http", "https") and all(hosts)
+            and hosts[0] == hosts[1]
+            and not (there.fragment and urldefrag(url).url == urldefrag(page_url).url))
+
+
 def destination(url: str | None, page_url: str) -> dict:
     """What a packet says of an address: origin, masked path, same site or not."""
     if not url or not url.lower().startswith(("http://", "https://")):
@@ -647,21 +769,39 @@ def _masked(v):
     return v
 
 
-def masked_state(st: dict | None, *, cut_options: bool = False) -> dict:
+def _whole(v):
+    """A field's value as the one place a packet shows it: masked, never cut, so a long text
+    typed or pasted into it reaches the check entire; a secret value stays ``[not shown]``."""
+    return v if v == NOT_SHOWN else _mf(v)
+
+
+def masked_state(st: dict | None, *, cut_options: bool = False, whole_value: bool = False) -> dict:
     """A control's state as a packet shows it: every text masked (a value also cut to 200
-    characters; in a control line a select's options to 12); a secret value stays
-    ``[not shown]``."""
+    characters, unless ``whole_value``; in a control line a select's options to 12); a secret
+    value stays ``[not shown]``."""
     out = {}
     for k, v in (st or {}).items():
         if cut_options and k == "options" and isinstance(v, list):
             v = v[:12]
-        out[k] = _shown(v)[:200] if k == "value" and isinstance(v, str) else _masked(v)
+        if k == "value" and isinstance(v, str):
+            out[k] = _whole(v) if whole_value else _shown(v)[:200]
+        else:
+            out[k] = _masked(v)
     return out
 
 
-def control_line(c: dict) -> str:
+def in_target_form(c: dict, target: dict | None) -> bool:
+    """Whether the packet's ``target.form.fields`` lists this control: one of the fields of the
+    target's own form, in the target's frame (``merge_frame`` keeps other frames' ids apart)."""
+    tf, cf = (target or {}).get("form"), c.get("form")
+    return bool(tf and cf and cf.get("id") == tf.get("id") and c.get("form_self", -1) >= 0)
+
+
+def control_line(c: dict, *, whole_value: bool = False) -> str:
+    """A control as ``page.controls`` lists it. ``whole_value``: its value is shown whole here,
+    because no other member of the packet shows it."""
     name = _mt(c.get("name")).strip() or "(unnamed)"
-    st = masked_state(c.get("state"), cut_options=True)
+    st = masked_state(c.get("state"), cut_options=True, whole_value=whole_value)
     s = f'{c["role"]}: {name[:200]}'
     if st:
         s += " " + json.dumps(st, ensure_ascii=False)
@@ -690,11 +830,12 @@ def block_order(blocks: list, target: dict | None) -> list[int]:
 
 
 def build_packet(reading: dict, target: dict | None, action: dict, *, task: str, session: str,
-                 site: str, run_so_far=(), download: dict | None = None) -> dict:
+                 site: str, run_so_far=(), download: dict | None = None,
+                 plan: str | None = None, approved: str | None = None) -> dict:
     """The packet of design §2.2, exactly the measured members, from one reading (``READ``'s
     data, or a measurement capture of the same shape). ``target`` is the target's control
     facts, or None for a page-level action (``back``). ``session`` is ``signed_in`` or
-    ``public``."""
+    ``public``. ``plan`` and ``approved`` are members only when present."""
     page_url = reading["href"]
     blocks = reading["blocks"]
     controls = reading["controls"]
@@ -735,8 +876,11 @@ def build_packet(reading: dict, target: dict | None, action: dict, *, task: str,
             tgt["state"] = masked_state(t["state"])
         f = t.get("form")
         if f:
+            # A field's value is whole here, and only here: what a press sends of a list pasted
+            # into the form is what the check reads.
             tgt["form"] = {"method": f["method"], "destination": destination(f["action"], page_url),
-                           "fields": [{k: (v if k == "type" else _masked(v))
+                           "fields": [{k: (v if k == "type" else _whole(v) if k == "value"
+                                           else _masked(v))
                                        for k, v in fld.items()} for fld in f["fields"]]}
         if t.get("is_submitter"):
             tgt["submits_form"] = {"method": t["submit_method"],
@@ -752,12 +896,26 @@ def build_packet(reading: dict, target: dict | None, action: dict, *, task: str,
         pkt["target"] = tgt
     else:
         pkt["target"] = {"role": "page"}
+    # Every field's value is shown whole exactly once: in ``target.form.fields`` when the target's
+    # form lists it, else in its control line (a field with no form owner, or another form's).
     pkt["page"] = {"blocks": out, "page_truncated": truncated,
-                   "controls": [control_line(c) for c in controls]}
+                   "controls": [control_line(c, whole_value=not in_target_form(c, target))
+                                for c in controls]}
     pkt["run_so_far"] = list(run_so_far)
     if download:
         pkt["downloaded_file"] = download
+    if plan is not None:
+        pkt["plan"] = plan
+    if approved is not None:
+        pkt["approved"] = approved
     return pkt
+
+
+def go_allowed(category: str, packet: dict) -> bool:
+    """F2: reading and local steps, and an account change only under what he approved, with no
+    Enter after typing (nothing re-reads the whole page between the typing and the Enter)."""
+    return category in GO_CATEGORIES or (category == "account_change" and "approved" in packet
+                                         and not packet["action"].get("then_enter"))
 
 
 MAX_SHOWN_ENTRIES = 100
@@ -873,13 +1031,48 @@ def _projection(reading: dict) -> tuple:
     return blocks, controls
 
 
-def same_reading(a: dict, b: dict) -> bool:
-    """The final read (ruling 8, no exemption): every block's text, every control's state and
-    every exact destination equal, every withheld frame's content equal, and both readings
-    complete."""
-    return (bool(a.get("complete")) and bool(b.get("complete")) and _projection(a) == _projection(b)
-            and list(a.get("frames_withheld") or ()) == list(b.get("frames_withheld") or ())
+def _same_view(a: dict, b: dict) -> bool:
+    return _projection(a) == _projection(b) and _same_beside_the_page(a, b)
+
+
+def _same_beside_the_page(a: dict, b: dict) -> bool:
+    return (list(a.get("frames_withheld") or ()) == list(b.get("frames_withheld") or ())
             and _submissions(a) == _submissions(b))
+
+
+def blind(reading: dict) -> bool:
+    """The reading fell short for a cause other than the control cap (a limit on roots or blocks,
+    an unreadable frame, a closed shadow root), so nothing can tell two of them apart. A reading
+    that says it is short and is not capped counts as one."""
+    return bool(reading.get("blind")) or not (reading.get("complete") or "all_controls" in reading)
+
+
+def target_record(reading: dict) -> list[str]:
+    """The text of the target's record (table row, list item, article): its blocks, in document
+    order. Empty for a target outside any record. The ids belong to one reading, never compared."""
+    record = (reading.get("target") or {}).get("record")
+    if record is None:
+        return []
+    return [b["text"] for b in reading.get("blocks") or () if b.get("record") == record]
+
+
+def same_reading(a: dict, b: dict) -> bool:
+    """The final read (ruling 8, no exemption): neither reading blind, every block's text, the
+    target's record, every withheld frame's content and what it would submit equal; and every
+    control's state and exact destination equal: past the list's cap (``all_controls`` on either
+    side) all of them per frame, otherwise the list itself."""
+    if blind(a) or blind(b) or target_record(a) != target_record(b):
+        return False
+    if "all_controls" not in a and "all_controls" not in b:
+        return _same_view(a, b)
+    return (a.get("all_controls") == b.get("all_controls")
+            and _projection(a)[0] == _projection(b)[0] and _same_beside_the_page(a, b))
+
+
+def same_as_judged(a: dict, b: dict) -> bool:
+    """A go under an approval: everything the judged packet was built from is unchanged, its
+    title, address and card fields too; a capped reading is held to what it shows."""
+    return all(a.get(k) == b.get(k) for k in ("title", "href", "has_cc")) and _same_view(a, b)
 
 
 def _submissions(r: dict) -> tuple:
@@ -926,11 +1119,12 @@ def _changed(before: str, after: str) -> dict:
 def difference(a: dict, b: dict) -> dict:
     """The difference between two whole readings (never the capped packets): blocks added,
     removed or changed, and controls whose role, name or state changed, matched by index and
-    then by role and name. Whether something changed is decided on the complete raw values;
-    what the check is shown is masked and never cut."""
+    then by role and name; a change in the text of the target's record; past the list's cap, not
+    the list's shifts but whether any control changed. Whether something changed is decided on the
+    complete raw values; what the check is shown is masked and never cut."""
     A = [x["text"] for x in a.get("blocks") or ()]
     B = [x["text"] for x in b.get("blocks") or ()]
-    out: dict[str, list] = {"blocks_added": [], "blocks_removed": [], "blocks_changed": [],
+    out: dict[str, Any] = {"blocks_added": [], "blocks_removed": [], "blocks_changed": [],
                             "controls_changed": [], "controls_added": [], "controls_removed": []}
     for op, old, new in _pairs(A, B):
         if op == "insert":
@@ -980,6 +1174,17 @@ def difference(a: dict, b: dict) -> dict:
     if fa != fb:
         out["frames_not_shown_changed"] = [n + 1 for n in range(max(len(fa), len(fb)))
                                            if fa[n:n + 1] != fb[n:n + 1]]
+    ra, rb = target_record(a), target_record(b)
+    if ra != rb:
+        out["target_record_changed"] = _changed([_mf(t) for t in ra], [_mf(t) for t in rb])
+    if "all_controls" in a or "all_controls" in b:
+        # Past the cap the list shifts with the viewport, which is no change: only the digests say
+        # whether a control changed, and code decides nothing on it beyond telling the check.
+        out["controls_added"], out["controls_removed"] = [], []
+        if a.get("all_controls") == b.get("all_controls"):
+            out["controls_changed"] = []
+        else:
+            out["controls_beyond_list_changed"] = True
     return {k: v for k, v in out.items() if v}
 
 
@@ -1182,7 +1387,10 @@ class PendingJudgement:
     entry_name: str = ""            # an app-issued link's label
     typed_judged: bool = False      # a tapped type+Enter whose typed page was re-judged
     destination_changed: bool = False   # a re-judgement's private destination fact
+    after_lapse: bool = False        # judged afresh because his Yes lapsed: its card says so
     frame_url: str | None = field(default=None, repr=False)   # the target's frame address
+    # The page's picture for the check: memory only, gone once the verdict starts applying.
+    picture: bytes | None = field(default=None, repr=False)
     # A re-judgement (kind ``rejudge``): the question it serves, how many re-judgements this
     # tap has run, and whether it judges the typed page of a tapped type+Enter.
     question_id: str | None = None
@@ -1388,7 +1596,7 @@ class PageOps:
         frame rule the observation shows frames by (``observe.frame_shown``, slice 5m), else as
         a placeholder whose content is compared by digest. Frames are read parents first.
         ``complete`` is false when any frame's reading is, or cannot be had, or a closed shadow
-        root exists."""
+        root holds a field; all but the control cap also make it ``blind``."""
         frame, got, views = await self._read_frames(page, target, policy, with_handles)
         shadow = await self.closed_shadow(page)
         return self._assemble(frame, got, views, with_handles, shadow)
@@ -1447,6 +1655,7 @@ class PageOps:
                               for c in primary.data["controls"]])
         if any(r is None for _f, r in got):
             data["complete"] = False
+            data["blind"] = True
         handles = list(primary.handles or ()) if with_handles else None
         k = 0
         for f, r in got:
@@ -1461,11 +1670,17 @@ class PageOps:
                 handles += list(r.handles or ())
         if shadow:
             data["complete"] = False
+            data["blind"] = True
+        if any(r is not None and r.data.get("all_controls") for _f, r in got):
+            # One value per shown frame, in frame order: a change in a small frame beside a long
+            # one counts. A withheld frame is compared under ``frames_withheld``.
+            data["all_controls"] = [r.data.get("all_controls") or listed_digest(r.data)
+                                    for f, r in got if r is not None and views[id(f)][0]]
         return Reading(data, handles)
 
     async def closed_shadow(self, page) -> bool:
-        from casa_browser.observe import has_closed_shadow_root
-        return await has_closed_shadow_root(page)
+        from casa_browser.observe import closed_shadow_holds_field
+        return await closed_shadow_holds_field(page)
 
     async def frame_of(self, page, element):
         if element is None:
@@ -1565,7 +1780,8 @@ class PageOps:
         return await select.evaluate(_SELECT_ONE, [option, label, value])
 
 
-READ = READ.replace("/*SECRET*/", SECRET_JS).replace("/*CONTROLS*/", CONTROLS_JS)
+READ = READ.replace("/*SECRET*/", SECRET_JS).replace("/*CONTROLS*/", CONTROLS_JS).replace(
+    "/*COMPARED*/", json.dumps(list(COMPARED)))
 _TEXT_FACTS = _TEXT_FACTS.replace("/*SECRET*/", SECRET_JS).replace(
     "/*VALUE_TYPES*/", json.dumps(sorted(VALUE_TYPES)))
 _SET_VALUE = _SET_VALUE.replace("/*SECRET*/", SECRET_JS)

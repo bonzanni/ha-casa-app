@@ -124,6 +124,39 @@ def test_profile_switch_public_download_and_cancel(tmp_path):
         assert not _chrome_processes()
 
 
+def test_a_public_excursion_keeps_a_session_cookie_sign_in(tmp_path):
+    """Production controller, Chrome through the launcher, the enforcing proxy: a session cookie
+    set in the account session is sent again after a public address and a checked address on the
+    site, and the public site never gets it."""
+    config = fixture_config(tmp_path)
+    with ChromeSites([A, B]) as sites:
+        _controller_uid(sites)
+        sites.pages["/start"] = ("text/html", b"<title>Account</title><p>Account home</p>",
+                                 {"Set-Cookie": "sid=SessionOnly123; Secure; HttpOnly; Path=/"})
+        sites.pages["/read"] = ("text/html", b"<title>Public</title><p>Public page</p>", {})
+        sites.pages["/whoami"] = ("text/html", b"<title>Account</title><p>Who am I</p>", {})
+        steps = [
+            {"site": {"site_id": "sa", "name": "Site A", "origins": [f"https://{A}"],
+                      "start": f"https://{A}/start"}},
+            {"run": {"name": "r", "request_id": "it-away", "sites": [["sa", "account"]]}},
+            {"wait_state": {"name": "r", "state": "running"}},
+            {"observe": {"name": "r"}},
+            {"search": {"name": "r", "query": f"https://{B}/read"}},
+            {"search": {"name": "r", "query": f"https://{A}/whoami"}},
+            {"observe": {"name": "r"}},
+            {"cancel": {"name": "r"}},
+        ]
+        out = run_lifecycle(steps, home=controller_home(tmp_path), broker_fixture=config)
+        assert "Account home" in out[3]["text"]
+        assert "Public page" in out[4]["text"]
+        assert out[5]["outcome"] == "done" and "observation" not in out[5]
+        assert "Who am I" in out[6]["text"]
+        assert any(c[0].startswith(A) and c[1] == "/whoami" and "sid=SessionOnly123" in c[2]
+                   for c in sites.receipts.cookies), sites.receipts.cookies
+        assert not [c for c in sites.receipts.cookies if c[0].startswith(B)]
+        assert not _chrome_processes()
+
+
 def test_broker_login_through_the_driver(tmp_path):
     config = fixture_config(tmp_path)
     with ChromeSites([LOGIN, A]) as sites:
@@ -297,13 +330,268 @@ def test_s5n_a_sign_in_card_registers_the_browsers_origin_and_signs_in(tmp_path)
         assert out[10] == "completed"
 
 
+# A challenge page in front of a site, as measured on a real one: its widget's frames in a closed
+# root go away with no navigation while it works, then it posts itself and its answer is the page.
+# No field anywhere: the start page's sign-in only reads it, and sees frames go under the read.
+_CHALLENGE = ("text/html", f"""<!doctype html><title>Just a moment</title><form id=done method=post
+action="/signin"></form><div id=w></div><script>
+const root = document.getElementById('w').attachShadow({{mode: 'closed'}});
+const frames = [];
+for (let i = 0; i < 40; i++) {{ const f = document.createElement('iframe');
+  f.src = i % 2 ? 'https://{B}/widget' : '/widget'; root.append(f); frames.push(f); }}
+setTimeout(() => {{ const go = setInterval(() => {{ const f = frames.pop();
+  if (f) f.remove(); else clearInterval(go); }}, 75); }}, 1500);
+setTimeout(() => document.getElementById('done').submit(), 6000);
+</script>""".encode(), {})
+
+
+@pytest.mark.parametrize("grants", [["s1"], ["s1", "s2"]], ids=["one_site", "two_sites"])
+def test_a_challenge_page_whose_frames_go_away_does_not_end_the_run(tmp_path, grants):
+    """A real site's challenge page ended two runs at their start (``broker_internal``): a frame
+    went while the start page's sign-in was reading it. A page moving under a read ends nothing:
+    the run starts and nothing is sent but the challenge's own post."""
+    config = fixture_config(tmp_path)
+    other = f"https://{LOGIN}"
+    with ChromeSites([A, B, LOGIN]) as sites:
+        _controller_uid(sites)
+        sites.pages["/start"] = _CHALLENGE
+        sites.pages["/signin"] = ("text/html", b"<title>Home</title><h1>Welcome</h1>", {})
+        sites.pages["/widget"] = ("text/html", b"<div>widget</div>", {})
+        out = run_lifecycle([
+            {"site": {"site_id": "s1", "name": "Example", "origins": [f"https://{A}"],
+                      "login": [f"https://{A}"], "item": "item", "start": f"https://{A}/start"}},
+            {"site": {"site_id": "s2", "name": "Other", "origins": [other], "login": [other],
+                      "item": "item", "start": f"{other}/start"}},
+            {"broker": {"op": "register_item", "site_id": "s1", "item_id": "item",
+                        "login_origins": [f"https://{A}"], "operator_ref": "op"}},
+            {"broker": {"op": "register_item", "site_id": "s2", "item_id": "item",
+                        "login_origins": [other], "operator_ref": "op"}},
+            {"run": {"name": "r", "request_id": "it-challenge",
+                     "sites": [[site, "account"] for site in grants]}},
+            {"wait_state": {"name": "r", "state": "running", "timeout": 150}},
+            {"events": {"name": "r"}},
+            {"finish": {"name": "r"}},
+        ], home=controller_home(tmp_path), broker_fixture=config)
+        kinds = out[6]
+        assert ["run_started", "running"] in kinds, kinds
+        assert "run_interrupted" not in [k for k, _o in kinds], kinds
+        assert {r[2] for r in sites.receipts.requests if r[0] == "POST"} <= {"/signin"}
+        assert out[7] == "completed", out
+
+
+def _captcha_sign_in(render_ms, also_in_root=""):
+    """A sign-in page as measured: a client-rendered form with a plain username, a button held
+    until a CAPTCHA solves, the CAPTCHA's other-origin frame alone in a closed shadow root
+    (Turnstile puts it there)."""
+    return ("text/html", f"""<!doctype html><title>Sign In // Example</title><div id=app></div>
+<script>setTimeout(() => {{
+  document.getElementById('app').innerHTML = `<h1>Sign in to Example</h1>
+    <form method=post action="/session"><label for=u>Username</label><input type=text id=u name=user>
+    <label for=p>Password</label><input type=password id=p name=pass><div id=w></div>
+    <button id=go type=submit disabled>Sign In</button></form>`;
+  const root = document.getElementById('w').attachShadow({{mode: 'closed'}});
+  const frame = document.createElement('iframe');
+  frame.src = 'https://{B}/widget'; root.append(frame);
+  {also_in_root}
+  setTimeout(() => {{ document.getElementById('go').disabled = false; }}, 1500);
+}}, {render_ms});</script>""".encode(), {})
+
+
+def _captcha_run(tmp_path, page, *tail):
+    config = fixture_config(tmp_path)
+    with ChromeSites([A, B]) as sites:
+        _controller_uid(sites)
+        sites.pages["/signin"] = page
+        sites.pages["/widget"] = ("text/html", b"<div>widget</div>", {})
+        sites.pages["/session"] = ("text/html", b"", {"Location": f"https://{A}/home"})
+        sites.status["/session"] = 303
+        sites.pages["/home"] = ("text/html", b"<title>Home</title><h1>Your decks</h1>", {})
+        out = run_lifecycle([
+            {"site": {"site_id": "s1", "name": "Example", "origins": [f"https://{A}"],
+                      "login": [f"https://{A}"], "item": "item", "start": f"https://{A}/signin"}},
+            {"broker": {"op": "register_item", "site_id": "s1", "item_id": "item",
+                        "login_origins": [f"https://{A}"], "operator_ref": "op"}},
+            {"run": {"name": "r", "request_id": "it-captcha", "sites": [["s1", "account"]]}},
+            {"wait_state": {"name": "r", "state": "running", "timeout": 150}},
+            {"sleep": 10},
+            {"look": {"name": "r"}},
+            *tail,
+            {"events": {"name": "r"}},
+            {"finish": {"name": "r"}},
+        ], home=controller_home(tmp_path), broker_fixture=config)
+        return out, [r for r in sites.receipts.requests if r[0] == "POST"]
+
+
+@pytest.mark.parametrize("render_ms", [500, 9000])
+def test_a_sign_in_form_beside_a_captcha_in_a_closed_shadow_root_is_signed_into(tmp_path, render_ms):
+    """The start page's own form, whether its sign-in sent it to the check (500 ms) or gave up
+    before it rendered (9 s, which leaves its event): the first observe looks and the verdict
+    signs in with one POST."""
+    sign_in = {"verdict": "sign_in", "reason": "the site's login form",
+               "fields": {"username": "f1", "password": "f2"}}
+    out, posts = _captcha_run(tmp_path, _captcha_sign_in(render_ms),
+                              {"verdict": {"name": "r", "verdict": sign_in}})
+    assert out[5]["outcome"] == "judgement_required", out
+    assert out[6]["observation"]["notice"] == "Casa Browser filled in the sign-in of Example and sent it; read the page to see whether it worked.", out
+    assert [p[2] for p in posts] == ["/session"], posts
+    from urllib.parse import parse_qs
+    body = parse_qs(posts[0][3].decode())
+    assert body["user"][0] and body["pass"][0]
+    kinds = [k for k, _o in out[7]]
+    assert kinds.count("sign_in_sent") == 1 and "login_needed" not in kinds, out
+    assert (["sign_in_nothing", "no_form"] in out[7]) == (render_ms == 9000), out
+    assert out[8] == "completed"
+
+
+# A password manager's button as measured in Chrome with 1Password: a closed root holding a
+# button, a stylesheet link and a box, no field.
+PASSWORD_MANAGER = """const pm = document.createElement('com-pm-button'); document.body.append(pm);
+  pm.attachShadow({mode: 'closed'}).innerHTML = '<button>Fill</button><link rel=stylesheet href="data:text/css,"><div>menu</div>';"""
+
+
+@pytest.mark.parametrize("announce", ["", """const line = document.createElement('div');
+  line.setAttribute('aria-live', 'polite');
+  line.textContent = 'The menu is available. Press down arrow to select.';
+  document.body.append(line);"""])
+def test_a_sign_in_form_beside_a_password_managers_button_is_signed_into(tmp_path, announce):
+    """A closed root with no field keeps nothing from the check: one verdict, one POST, on the
+    site's own origin, with the username and the password it mapped."""
+    sign_in = {"verdict": "sign_in", "reason": "the site's login form",
+               "fields": {"username": "f1", "password": "f2"}}
+    out, posts = _captcha_run(tmp_path, _captcha_sign_in(500, PASSWORD_MANAGER + announce),
+                              {"verdict": {"name": "r", "verdict": sign_in}})
+    assert out[5]["outcome"] == "judgement_required", out
+    assert out[6]["observation"]["notice"] == "Casa Browser filled in the sign-in of Example and sent it; read the page to see whether it worked.", out
+    assert [p[2] for p in posts] == ["/session"] and posts[0][1] == A, posts
+    assert ["sign_in_nothing", "not_checked"] not in out[7], out
+
+
+def test_a_form_that_goes_away_on_a_refusal_claims_nothing(tmp_path):
+    """The site answers the submit with a refusal and no form: no word of being signed in, and the
+    model reads the refusal on the page."""
+    refusing = """document.querySelector('form').addEventListener('submit', (e) => {
+      e.preventDefault(); document.getElementById('app').innerHTML = '<h1>Account locked</h1>'; });
+      setTimeout(() => { document.getElementById('go').disabled = false; }, 0);"""
+    sign_in = {"verdict": {"name": "r", "verdict": {
+        "verdict": "sign_in", "reason": "the site's login form",
+        "fields": {"username": "f1", "password": "f2"}}}}
+    out, posts = _captcha_run(tmp_path, _captcha_sign_in(500, refusing), sign_in)
+    observation = out[6]["observation"]
+    assert "read the page to see whether it worked" in observation["notice"], out
+    assert "Account locked" in observation["text"], observation["text"]
+    kinds = [k for k, _o in out[7]]
+    assert kinds.count("sign_in_sent") == 1 and "signed_in" not in kinds, out[7]
+
+
+SIGN_IN_VERDICT = {"verdict": "sign_in", "reason": "the site's login form",
+                   "fields": {"username": "f1", "password": "f2"}}
+
+
+def _background_sign_in(answer_ms):
+    """A form that signs in by a background request, as a real site does: the form stays while its
+    request runs and goes away only when (``answer_ms``) the answer comes, or never. A plain
+    username, a redraw of the form's own part on input, a CAPTCHA's frame in a closed root and a
+    password manager's button in another."""
+    gone = ("" if answer_ms is None else
+            "setTimeout(() => { document.getElementById('app').innerHTML = '<h1>Your decks</h1>'; }, %d);" % answer_ms)
+    return _captcha_sign_in(500, PASSWORD_MANAGER + """
+      const f = document.querySelector('form');
+      f.addEventListener('input', () => { document.getElementById('w').dataset.n = Date.now(); });
+      f.addEventListener('submit', (e) => { e.preventDefault();
+        fetch('/session', {method: 'POST', body: new URLSearchParams(new FormData(f))}); %s });
+      """ % gone)
+
+
+@pytest.mark.parametrize("answer_ms", [1500, None], ids=["answered", "never_answered"])
+def test_a_form_that_stays_while_its_request_runs_is_sent_once(tmp_path, answer_ms):
+    """Measured on a real site: the form was still there when the flow read the page right after
+    its send, and the sign-in worked 0.8 s later. The flow waits for the answer, pressing nothing;
+    a form that stays goes to the live view, and either way exactly one POST left."""
+    out, posts = _captcha_run(tmp_path, _background_sign_in(answer_ms),
+                              {"verdict": {"name": "r", "verdict": SIGN_IN_VERDICT}})
+    assert [p[2] for p in posts] == ["/session"], posts
+    kinds = out[7]
+    if answer_ms is None:
+        assert ["login_needed", "password_again"] in kinds, kinds
+    else:
+        assert "read the page to see whether it worked" in out[6]["observation"]["notice"], out
+        assert "Your decks" in out[6]["observation"]["text"], out[6]
+        assert ["sign_in_sent", "submitted"] in kinds and "login_needed" not in [k for k, _o in kinds], kinds
+
+
+_TICKING = """let tick = 0; const shown = document.querySelector('h1');
+  setInterval(() => { shown.textContent = 'From ' + (++tick) + ' EUR'; }, 300);"""
+_LINE_ON_FILL = """document.getElementById('u').addEventListener('input', () => {
+  const line = document.createElement('div'); line.setAttribute('aria-live', 'polite');
+  line.textContent = 'The menu is available.'; document.body.append(line); });"""
+_ROTATING_SEARCH = """const search = document.createElement('form'); document.body.append(search);
+  search.innerHTML = '<input type=search name=q placeholder=Search><button>Go</button>';
+  let turn = 0; setInterval(() => { search.q.placeholder = 'Search ' + (++turn); }, 300);"""
+_BANNER = """const banner = document.createElement('div'); banner.innerHTML = '<p>We use cookies.</p>'
+  + '<form action="/consent" method=post><button>Accept all</button></form>'
+  + '<form action="/consent" method=post><button>Only required</button></form>';
+  document.body.prepend(banner);"""
+
+
+@pytest.mark.parametrize("moving, between", [
+    (_TICKING, None), (_LINE_ON_FILL, None), (_ROTATING_SEARCH, None), ("", _BANNER),
+    (_LINE_ON_FILL, _BANNER)], ids=["price", "line_on_fill", "search_box", "banner", "banner_and_line"])
+def test_what_moves_around_the_judged_form_never_stops_the_sign_in(tmp_path, moving, between):
+    """Page text beside the form (a price, a password manager's line when a field fills, a cookie
+    banner while the check runs) and a box the sign-in does not use: one judgement, one POST."""
+    tail = [{"js": {"code": between}}] if between else []
+    out, posts = _captcha_run(tmp_path, _captcha_sign_in(500, moving), *tail, {"sleep": 2.5},
+                              {"verdict": {"name": "r", "verdict": SIGN_IN_VERDICT}})
+    verdict, kinds = out[-3], out[-2]
+    assert verdict["observation"]["notice"].endswith("read the page to see whether it worked."), out
+    assert [p[2] for p in posts] == ["/session"], posts
+    assert kinds.count(["judgement", "sign_in"]) == 1 and "sign_in_nothing" not in [k for k, _o in kinds], kinds
+
+
+@pytest.mark.parametrize("once", [True, False], ids=["once", "every_time"])
+def test_a_form_drawn_anew_after_the_look_is_judged_again_once(tmp_path, once):
+    """New nodes are not the ones the look marked, so nothing goes out and the check judges the
+    page as it now is. A form drawn anew once then signs in; one drawn anew again claims nothing."""
+    redraw = {"js": {"code": "const f = document.querySelector('form'); f.outerHTML = f.outerHTML;"}}
+    verdict = {"verdict": {"name": "r", "verdict": SIGN_IN_VERDICT}}
+    out, posts = _captcha_run(tmp_path, _captcha_sign_in(500), redraw, verdict,
+                              *([] if once else [redraw]), verdict)
+    assert out[7]["outcome"] == "judgement_required", out
+    kinds, final = out[-2], out[-3]
+    assert kinds.count(["sign_in_nothing", "page_moved"]) == (1 if once else 2), kinds
+    if once:
+        assert final["observation"]["notice"].endswith("read the page to see whether it worked."), out
+        assert [p[2] for p in posts] == ["/session"], posts
+    else:
+        assert final["observation"].get("notice") is None, out
+        assert posts == [] and "sign_in_sent" not in [k for k, _o in kinds], (posts, kinds)
+
+
+@pytest.mark.parametrize("field", [
+    "const x = document.createElement('input'); x.type = 'password'; root.append(x);",
+    """const d = document.createElement('div'); root.append(d);
+       d.attachShadow({mode: 'closed'}).innerHTML = '<input type=password>';""",
+    """const d = document.createElement('div'); root.append(d);
+       d.attachShadow({mode: 'open'}).innerHTML = '<form><input type=password></form>';""",
+    "root.innerHTML += '<div contenteditable=true autocomplete=one-time-code></div>';"],
+    ids=["direct", "closed_in_closed", "open_in_closed", "editable"])
+def test_a_field_in_a_closed_shadow_root_keeps_the_page_from_the_check(tmp_path, field):
+    """A closed root holding a field, however deep, could hide the form's password: no judgement,
+    nothing filled, and the run says so."""
+    out, posts = _captcha_run(tmp_path, _captcha_sign_in(500, field))
+    assert out[5].get("observation") is True, out
+    assert posts == [], posts
+    assert ["sign_in_nothing", "not_checked"] in out[6] and "sign_in_sent" not in [k for k, _o in out[6]], out
+    assert out[7] == "completed"
+
+
 def test_signing_in_off_the_start_page(tmp_path):
     """Signing in off the start page, in real Chrome with the production controller, driver and
     broker (the phone sequence of casa-test 2026-11-02): the site's start page is its root,
     which has no form (``no_form``, silent); Fido's judged step opens /login; observe with
     ``sign_in`` looks at it (timed) and returns the ``sign_in`` judgement; its verdict (scripted
     here; the real check's verdicts on this page shape are measured, M9) signs in on the page as
-    it is: one POST, the secure area, one ``signed_in``, no ``login_needed``. Then the reset
+    it is: one POST, the secure area, one ``sign_in_sent``, no ``login_needed``. Then the reset
     page, judged ``not_sign_in``: nothing filled, nothing posted to it."""
     config = fixture_config(tmp_path)
     with ChromeSites([A]) as sites:
@@ -354,7 +642,7 @@ def test_signing_in_off_the_start_page(tmp_path):
         assert look["judgement"]["kind"] == "sign_in"
         done = out[8]
         assert done["outcome"] == "done", done
-        assert done["observation"]["notice"] == "Casa Browser signed in to The Internet by itself."
+        assert done["observation"]["notice"] == "Casa Browser filled in the sign-in of The Internet and sent it; read the page to see whether it worked."
         assert "Secure Area" in done["observation"]["text"], done
         assert out[11]["outcome"] == "judgement_required", out
         assert out[12]["outcome"] == "done" and out[12]["observation"]["notice"] is None, out
@@ -364,6 +652,6 @@ def test_signing_in_off_the_start_page(tmp_path):
         body = parse_qs(posts[0][3].decode())
         assert body["username"][0] and body["password"][0]   # the plain username was filled
         kinds = [k for k, _o in out[13]]
-        assert kinds.count("signed_in") == 1 and "login_needed" not in kinds, out[13]
+        assert kinds.count("sign_in_sent") == 1 and "login_needed" not in kinds, out[13]
         print("LOOK_SECONDS", look["seconds"], out[11]["seconds"])
         assert out[14] == "completed"

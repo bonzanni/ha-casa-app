@@ -14,6 +14,12 @@ page-view gate).
   keeps one reference. A value the page splits (across layout boxes, or by whitespace inside
   an address) is judged piece by piece: a documented residual.
 
+With ``keep_addresses`` (a plain fetch's answer, which carries no cookie: a reader has no other way
+to follow a link) an address stays whole, the known formats are masked in place, and a token is
+judged between an address's separators, so a path with a word and a number stays an address. A site
+that recognises the requester some other way (its source address, a token in the address) can still
+show a private link here: a documented residual.
+
 It is a property of the string, not a classifier: a short secret such as an 8-character
 recovery code is not caught (``test_short_recovery_code_residual``); only pages that belong
 to the session are observed at all, which is the first layer.
@@ -23,6 +29,8 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import sys
+from bisect import bisect_left
 from collections import Counter
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -55,12 +63,14 @@ _URL = re.compile(r"%s:[\\/]*[^\s\\/]\S*|[a-z][a-z0-9+.-]{0,31}://\S+" % _SPECIA
 _SPECIAL_PREFIX = re.compile(r"(%s):[\\/]*" % _SPECIAL, re.I)
 _HOST = re.compile(r"[a-z0-9.-]+|[0-9a-f:.]+")  # what an origin may show of a host
 _TOKEN = re.compile(r"[A-Za-z0-9_+/=.~-]{%d,}" % MIN_RANDOM)
+_TOKEN_IN_ADDRESS = re.compile(r"[A-Za-z0-9+]{%d,}" % MIN_RANDOM)
 
 
 @dataclass(frozen=True)
 class MaskedText:
     text: str
     spans: tuple[tuple[int, int], ...]  # masked regions, in the original text
+    replacements: tuple[str, ...] = ()  # what took each region's place, in step with ``spans``
 
 
 def looks_random(token: str) -> bool:
@@ -98,7 +108,7 @@ def _origin(url: str) -> str:
     return f"{parts.scheme.lower()}://{f'[{host}]' if ':' in host else host}{port}"
 
 
-def mask_text(text: str, *, limit: int = MAX_TEXT) -> MaskedText:
+def mask_text(text: str, *, limit: int = MAX_TEXT, keep_addresses: bool = False) -> MaskedText:
     """Masks the whole text first and cuts the result to ``limit`` afterwards, so a cut never
     leaves part of a value that would have been recognised whole."""
     if not isinstance(text, str):
@@ -112,11 +122,12 @@ def mask_text(text: str, *, limit: int = MAX_TEXT) -> MaskedText:
     refs: dict[str, str] = {}
 
     def claim(start: int, end: int, replacement: str) -> None:
-        if any(s < end and start < e for s, e, _ in regions):
+        i = bisect_left(regions, (start,))    # regions stay sorted and apart: two neighbours decide
+        if (i and regions[i - 1][1] > start) or (i < len(regions) and regions[i][0] < end):
             return
-        regions.append((start, end, replacement))
+        regions.insert(i, (start, end, replacement))
 
-    for m in _URL.finditer(text):
+    for m in () if keep_addresses else _URL.finditer(text):
         url = m.group(0).rstrip(".,;:!?)]}'\"`>")
         if text.startswith(" ⟨r", m.start() + len(url)) and url == _origin(url):
             continue  # already an origin and its reference
@@ -128,17 +139,24 @@ def mask_text(text: str, *, limit: int = MAX_TEXT) -> MaskedText:
     for pattern in _KNOWN:
         for m in pattern.finditer(text):
             claim(m.start(), m.end(), MASK)
-    for m in _TOKEN.finditer(text):
+    for m in (_TOKEN_IN_ADDRESS if keep_addresses else _TOKEN).finditer(text):
         if looks_random(m.group(0)):
             claim(m.start(), m.end(), MASK)
-    regions.sort()
     out, cursor = [], 0
     for start, end, replacement in regions:
         out.append(text[cursor:start])
         out.append(replacement)
         cursor = end
     out.append(text[cursor:])
-    return MaskedText("".join(out)[:limit], tuple((s, e) for s, e, _ in regions))
+    return MaskedText("".join(out)[:limit], tuple((s, e) for s, e, _ in regions),
+                      tuple(r for _s, _e, r in regions))
+
+
+def mask_whole(text: str, *, keep_addresses: bool = False) -> tuple[str, bool, bool]:
+    """The whole text masked with no output limit (masking can lengthen it): the masked text,
+    whether the input limit left it whole, and whether anything was replaced."""
+    got = mask_text(text, limit=sys.maxsize, keep_addresses=keep_addresses)
+    return got.text, len(text) <= MAX_INPUT, bool(got.spans)
 
 
 def reference(url: str) -> str:

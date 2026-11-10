@@ -1,9 +1,9 @@
 """The look's binding in the login driver (R7, rev 5.1): what a ``sign_in`` verdict covers is
 marked in every credential-bearing frame document (and 1Password's notification frame) at the
 look's read, and ``sign_in_bound`` holds only while every bound document keeps its mark, every
-field and the submit stay in a bound document, and the destinations, the shape, the texts and
-the passkey prompt read as they did. Page-free: a document is a small double; the real DOM
-reads are image-tested."""
+field and the submit stay in a bound document, and those fields' and that submit's facts read as
+they did. The text around them is not bound. Page-free: a document is a small double; the real
+DOM reads are image-tested."""
 from __future__ import annotations
 
 import pytest
@@ -41,10 +41,6 @@ class Frame:
             return True
         if script == login._SIGN_IN_MARKED:
             return self.doc.mark == arg
-        if script == login._DOCUMENT_TEXT:
-            return self.doc.text
-        if script == login._PROMPT_TEXT:
-            return self.doc.prompt
         if script == login._PROMPT_SHOWN:
             return bool(self.doc.prompt)
         if script == login._PLAN:              # as the script does: mark, then report
@@ -62,8 +58,8 @@ class Frame:
                             'button': buttons[0].label if buttons else None})
             return out
         if script == login._SCAN:
-            return [[e.planned[1], e.tag, e.type, e.autocomplete, e.label, *e.dest]
-                    for e in self.doc.els if e.planned and e.planned[0] == arg]
+            return {e.planned[1]: e.facts() for e in self.doc.els
+                    if e.planned and e.planned[0] == arg}
         raise AssertionError(script)
 
 
@@ -73,9 +69,13 @@ class El:
         self.label, self.tag, self.type, self.role = label, tag, type, role
         self.autocomplete, self.dest, self.planned = autocomplete, [action, 'post', None, None], None
 
+    def facts(self):
+        return [self.tag, self.type, self.autocomplete, self.label, *self.dest]
+
     async def evaluate(self, script, arg=None):
-        if script == login._PLANNED:
-            return self.planned[1] if self.planned and self.planned[0] == arg else None
+        if script == login._FACTS:
+            return ([self.planned[1], self.facts()] if self.planned and self.planned[0] == arg
+                    else None)
         raise AssertionError(script)
 
 
@@ -180,7 +180,8 @@ async def test_an_unbound_frame_that_navigates_changes_nothing(tmp_path):
 
 async def _moved(r, read):
     reply = await r.bound()
-    return not (reply.get('ok') is True and reply.get('binding') == read['binding'])
+    return not (reply.get('ok') is True and all(
+        read['binding'].get(fid) == facts for fid, facts in reply['binding'].items()))
 
 
 async def test_the_same_address_reloaded_into_a_confirmation_is_not_bound(tmp_path):
@@ -190,11 +191,32 @@ async def test_the_same_address_reloaded_into_a_confirmation_is_not_bound(tmp_pa
     assert await _moved(r, read)
 
 
-async def test_a_same_document_update_with_other_text_is_not_bound(tmp_path):
+async def test_the_text_around_the_form_is_not_bound(tmp_path):
+    """A banner, a price, a password manager's line: the judged fields and button are unchanged."""
     r = await Rig(tmp_path).open()
     read = await r.read()
-    r.form.doc.text = 'Confirm with your password Password Log in'
+    r.main.doc.text = 'We use cookies. From 2 EUR'
+    r.form.doc.text = 'The menu is available. Username Password Log in'
+    assert not await _moved(r, read)
+
+
+async def test_a_judged_field_with_another_label_is_not_bound(tmp_path):
+    r = await Rig(tmp_path).open()
+    read = await r.read()
+    r.password.label = 'Confirm your password'
     assert await _moved(r, read)
+
+
+async def test_a_field_the_step_does_not_use_is_not_held_to_its_facts(tmp_path):
+    """A search box beside the form, planned by the look with a placeholder that rotates: only
+    what the step fills and presses is held, under its own id."""
+    r = await Rig(tmp_path).open()
+    search = El('Search')
+    r.main.doc.els = [search]
+    read = await r.read()
+    assert len(read['binding']) == 4
+    search.label = 'Search Black Lotus'
+    assert not await _moved(r, read)
 
 
 async def test_a_same_shaped_form_with_another_destination_is_not_bound(tmp_path):
@@ -219,19 +241,17 @@ async def test_a_field_moved_into_an_unbound_frame_is_not_bound(tmp_path):
     assert read['binding']
 
 
-async def test_a_passkey_prompt_replaced_in_its_frame_is_not_bound(tmp_path):
-    """Terra r5: the notification frame is bound with its prompt's text."""
+async def test_a_passkey_prompt_in_a_new_document_is_not_bound(tmp_path):
+    """The notification frame's document is bound by its mark, not its prompt's text (the prompt's
+    answer itself still needs the linked item's title and username: ``_PASSKEY_BUTTON``)."""
     r = await Rig(tmp_path, passkey=True).open()
     read = await r.read()
     assert r.note.doc.mark
     assert await r.bound() == {'ok': True, 'binding': read['binding']}
-    r.note.doc.prompt = 'Confirm the transfer with a passkey'
+    r.note.doc.prompt = 'Sign in with a passkey, 1 item'
+    assert not await _moved(r, read)
+    r.note.doc = Doc('', 'Sign in with a passkey')             # its frame's new document
     assert await _moved(r, read)
-    (tmp_path / 'b').mkdir()
-    r2 = await Rig(tmp_path / 'b', passkey=True).open()
-    read = await r2.read()
-    r2.note.doc = Doc('', 'Sign in with a passkey')            # its frame's new document
-    assert await _moved(r2, read)
 
 
 async def test_another_mark_is_not_the_looks(tmp_path):

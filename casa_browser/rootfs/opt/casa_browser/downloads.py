@@ -17,6 +17,9 @@ Three ways a file enters a run, all through the same policy boundary:
   admitted). Kept only when the page it came from is the session's current page and belongs
   to the session.
 * ``Downloader.make_archive(run, file_ids)``: a zip of the run's own files.
+* ``Downloader.fetch_plain(run, url, policy, agent)``: a public read with no browser. The same
+  hops as a link's, with an address the model holds, the browser's User-Agent the controller
+  kept, and never a cookie: it takes no session, so Chrome is not touched.
 
 Every file is streamed into a private temporary file, bounded (100 MiB a file, 500 MiB an
 archive: ``file_too_large``, never a truncated file), hashed, and renamed into place only
@@ -29,13 +32,14 @@ would change anywhere becomes ``download``. Raw addresses, cookies and paths sta
 Cookies: a hop carries the browser context's cookies for its address only when the hop's
 origin is the origin of the page the link was on or a registered origin of the active account
 site; any other hop — the cross-origin step of a redirect included — carries none. No hop
-carries an ``Authorization`` header.
+carries an ``Authorization`` header. A plain fetch's scope is empty, whatever the destination.
 """
 from __future__ import annotations
 
 import asyncio
 import base64
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -44,6 +48,7 @@ import unicodedata
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import AsyncIterator, Callable
 from urllib.parse import unquote, urljoin, urlsplit
@@ -53,7 +58,7 @@ from casa_browser.identity import IdentityError, address
 from casa_browser.masking import mask_text
 from casa_browser.observe import page_view_allowed
 from casa_browser.policy import RequestMeta, RunPolicy, decide
-from casa_browser.protocol import DELIVERY_OUTCOMES, FileRecord, ProtocolError
+from casa_browser.protocol import DELIVERY_OUTCOMES, MAX_START_URL_BYTES, FileRecord, ProtocolError
 
 PROXY_URL = "http://127.0.0.1:3130"     # the downloader's own listener (netfloor)
 CA_PUBLIC = Path("/run/casa-browser/ca/ca.pem")
@@ -67,6 +72,9 @@ HOP_TIMEOUT = 120.0
 CHUNK = 64 * 1024
 PARTIAL_PREFIX = ".partial-"
 SNIFF_BYTES = 1024
+# A plain fetch's User-Agent until the browser's own has been read.
+FALLBACK_USER_AGENT = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/151.0.0.0 Safari/537.36")
 
 class DownloadRefused(ProtocolError):
     """A typed refusal (a protocol error code)."""
@@ -200,6 +208,126 @@ def _origin(url: str) -> str | None:
         return address(url)[0]
     except IdentityError:
         return None
+
+
+# --------------------------------------------------------------------------- plain reading
+
+
+class _PlainText(HTMLParser):
+    """A page's text, one block a line, its links inline: resolved from its address and its first
+    ``<base>`` when the address is known, as a browser would, else as the page writes them."""
+
+    _DROP = frozenset({"script", "style", "template"})
+    _BLOCK = frozenset({"address", "article", "aside", "blockquote", "br", "dd", "div", "dl", "dt",
+                        "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5",
+                        "h6", "header", "hr", "li", "main", "nav", "ol", "p", "pre", "section",
+                        "table", "td", "th", "title", "tr", "ul"})
+
+    def __init__(self, address: str = ""):
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.dropping = 0
+        self.links: list[str] = []
+        self.base = address
+        self.base_seen = False
+
+    def _link(self, href: str) -> str:
+        try:
+            return urljoin(self.base, href)
+        except ValueError:          # a malformed address stands as the page wrote it
+            return href
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._DROP:
+            self.dropping += 1
+        elif self.dropping:
+            return
+        elif tag == "base" and not self.base_seen:
+            self.base_seen = True
+            href = (dict(attrs).get("href") or "").strip()
+            if href and len(href) <= MAX_START_URL_BYTES:   # no page multiplies its text through it
+                try:
+                    self.base = urljoin(self.base, href)
+                except ValueError:
+                    pass
+        elif tag in self._BLOCK:
+            self.parts.append("\n")
+        elif tag == "a":
+            self.links.append((dict(attrs).get("href") or "").strip())
+
+    def handle_endtag(self, tag):
+        if tag in self._DROP:
+            self.dropping = max(0, self.dropping - 1)
+        elif self.dropping:
+            return
+        elif tag in self._BLOCK:
+            self.parts.append("\n")
+        elif tag == "a" and self.links:
+            href = self.links.pop()
+            if href and not href.lower().startswith(("#", "javascript:")):
+                self.parts.append(f" ({self._link(href)})")
+
+    def handle_data(self, data):
+        if not self.dropping:
+            self.parts.append(data)
+
+
+def html_text(raw: bytes, address: str = "") -> str:
+    """``raw`` HTML as plain text: script, style and template dropped, links inline, whole when
+    the ``address`` that answered is known. The bytes a page claims are never trusted to be clean
+    UTF-8: what cannot be decoded is replaced."""
+    parser = _PlainText(address)
+    parser.feed(raw.decode("utf-8", "replace"))
+    parser.close()
+    lines = (" ".join(line.split()) for line in "".join(parser.parts).split("\n"))
+    return "\n".join(line for line in lines if line)
+
+
+_ABSENT = object()
+
+
+def _project(value, wanted: dict):
+    if not wanted:
+        return value
+    if isinstance(value, list):
+        picked = [p for p in (_project(item, wanted) for item in value) if p is not _ABSENT]
+        return picked if picked or not value else _ABSENT
+    if isinstance(value, dict):
+        picked = {k: p for k, sub in wanted.items()
+                  if k in value and (p := _project(value[k], sub)) is not _ABSENT}
+        return picked if picked else _ABSENT
+    return _ABSENT
+
+
+def pick_fields(raw: bytes, fields) -> str | None:
+    """The dotted ``fields`` of a JSON body as JSON, keeping its shape, so a list's objects stay
+    whole and each value stays beside its neighbours: a step onto a list maps over it, and a
+    path that is not there is simply absent. ``None``: the body is not JSON."""
+    wanted: dict = {}
+    for path in fields:
+        node = wanted
+        for key in path.split("."):
+            node = node.setdefault(key, {})
+    try:
+        picked = _project(json.loads(raw), wanted)
+        return json.dumps({} if picked is _ABSENT else picked, ensure_ascii=False)
+    except (ValueError, RecursionError):        # too deep to narrow reads as the whole text
+        return None
+
+
+@dataclass
+class _LastHop:
+    """What the hop that ended a fetch answered, so a caller need not ask twice."""
+    status: int | None = None
+    url: str | None = field(default=None, repr=False)
+
+
+@dataclass
+class PlainAnswer:
+    """A plain fetch: the file and the address that served it, or the reason there is none."""
+    reason: str | None = None
+    record: FileRecord | None = None
+    url: str | None = field(default=None, repr=False)
 
 
 # --------------------------------------------------------------------------- the downloader
@@ -357,6 +485,24 @@ class Downloader:
                                              on_send=on_send, quarantine=quarantine)
         raise DownloadRefused("unsupported")
 
+    async def fetch_plain(self, run, url: str, policy: RunPolicy | None,
+                          agent: str) -> PlainAnswer:
+        """A public read with no browser: no session, no cookie. A refusal the model can act on
+        is a reason; a type outside the document set is not kept, as a public link download's
+        would not be before the check, and stays the browser's to fetch."""
+        last = _LastHop()
+        try:
+            got = await self._fetch_http(run, url, None, None, policy, None, agent=agent,
+                                         cookie_scope=frozenset(), quarantine=True, last_hop=last)
+        except DownloadRefused as err:
+            if err.code != "blocked":
+                raise
+            return PlainAnswer("blocked" if last.status is None else f"http_{last.status}")
+        if isinstance(got, Quarantined):
+            self.discard(got)
+            return PlainAnswer("not_document")
+        return PlainAnswer(record=got, url=last.url)
+
     def _cookie_scope(self, session, policy: RunPolicy, page_origin: str | None) -> set[str]:
         scope = {page_origin} if page_origin else set()
         if session.kind == "account":
@@ -376,16 +522,22 @@ class Downloader:
 
     async def _fetch_http(self, run, url: str, handle: str, session, policy: RunPolicy | None,
                           page_origin: str | None, *, on_send=None,
-                          quarantine: bool = False) -> FileRecord | Quarantined:
+                          quarantine: bool = False, agent: str | None = None,
+                          cookie_scope=None, last_hop: _LastHop | None = None
+                          ) -> FileRecord | Quarantined:
+        """``agent`` and ``cookie_scope``, when given, leave ``session`` unread; ``last_hop``
+        receives what the hop that ended the fetch answered."""
         import aiohttp
 
         if policy is None:
             raise DownloadRefused("blocked")
-        scope = self._cookie_scope(session, policy, page_origin)
-        try:
-            agent = await self.user_agent(session)
-        except Exception:
-            raise DownloadRefused("internal") from None
+        scope = (self._cookie_scope(session, policy, page_origin) if cookie_scope is None
+                 else cookie_scope)
+        if agent is None:
+            try:
+                agent = await self.user_agent(session)
+            except Exception:
+                raise DownloadRefused("internal") from None
         ctx = ssl.create_default_context(cafile=str(self.ca_file))
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=HOP_TIMEOUT)
         async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar(), trust_env=False,
@@ -439,6 +591,8 @@ class Downloader:
                             raise DownloadRefused("blocked")
                         url = urljoin(url, location)
                         continue
+                    if last_hop is not None:
+                        last_hop.status, last_hop.url = response.status, sent
                     encoding = response.headers.get("Content-Encoding", "identity").strip().lower()
                     if response.status != 200 or encoding not in ("", "identity"):
                         # Only a complete representation is a file: a 206 part, a 204, a

@@ -280,22 +280,6 @@ async def _scenario(steps: list[dict]) -> list:
                     out.append(await credential_driver.dispatch(request))
                 else:
                     raise ValueError('unknown credential instruction')
-            elif op == "reading_pair":
-                # The reading a sign_in verdict is held to, at the look, after ``wait`` seconds
-                # and once more, compared as the verdict's final read compares them.
-                from casa_browser import gate
-                page = mgr.session.page
-                pair_policy = decode_policy(arg['policy'])
-                async def bound():
-                    _whole, reading = await gate.PageOps().read_page_and_bound(
-                        page, (), policy=pair_policy)
-                    return dict(reading.data)
-                first = await bound()
-                await asyncio.sleep(arg['wait'])
-                second = await bound()
-                third = await bound()
-                out.append({'after_solve': gate.same_reading(first, second),
-                            'after_that': gate.same_reading(second, third)})
             elif op == "chrome_alive":
                 out.append({'pages': [p.url for p in mgr.session.context.pages],
                             'generation': mgr.session.generation})
@@ -395,6 +379,18 @@ async def _scenario(steps: list[dict]) -> list:
                 out.append({"id": sid, "png": base64.b64encode(path.read_bytes()).decode() if sid else None,
                             "files": sorted(x.name for x in path.parent.iterdir()) if sid else [],
                             "clip": shot_clip})
+            elif op == "model_shot":           # the picture a model gets: memory only
+                import base64
+                from casa_browser.observe import content_clip
+                kept = Path(os.environ["HOME"]) / "artifacts" / "screenshots"
+                # this home outlives a test: only what this capture left counts
+                names = lambda: {x.name for x in kept.iterdir()} if kept.exists() else set()  # noqa: E731
+                before = names()
+                png = await get_observer().capture_for_model(run_, mgr.session, decode_policy(arg))
+                clip = await content_clip(page)
+                shot_clip = {"x": clip["x"], "y": clip["y"]} if clip else {"x": 0, "y": 0}
+                out.append({"png": base64.b64encode(png).decode() if png else None,
+                            "files": sorted(names() - before)})
             elif op == "question_shot":
                 import base64
                 observer = get_observer()
