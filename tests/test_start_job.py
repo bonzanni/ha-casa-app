@@ -13,7 +13,6 @@ import agent
 import background_jobs as jobs
 import tools
 from bus import MessageBus
-from channels import ChannelManager
 from channels.telegram import TelegramChannel
 from drivers.in_casa_driver import InCasaDriver
 from engagement_registry import EngagementRegistry
@@ -22,8 +21,11 @@ from specialist_limits import SpecialistLimiter
 from specialist_registry import SpecialistRegistry
 from test_delegate_to_agent_interactive import _make_alex_cfg, _make_assistant_cfg
 from test_in_casa_launch_terminal_artifact import ScriptedCompleteClient
+from telegram_channel_double import make_transport
 
 pytestmark = pytest.mark.asyncio
+#: Casa's bot: the turn that starts a job came in on it.
+BOT = 111
 DECL = jobs.JobDecl('ledger:classify', 'ledger', 'classify', 'ledger:classify',
                     'Classify entries', None)
 
@@ -74,15 +76,15 @@ async def runtime(tmp_path, monkeypatch):
         edit_message_text=AsyncMock(return_value=SimpleNamespace(message_id=100)),
         send_chat_action=AsyncMock(return_value=True),
     )
-    # No forum group: a job needs none.
-    channel = TelegramChannel(chat_id='1', bot=bot, bus=bus)
+    # No forum group: a job needs none. Casa's own bot, 111.
+    channel = TelegramChannel(chat_id='1', bot=bot, bus=bus, is_casa=True,
+                              known_bot_id=BOT)
     channel._app = SimpleNamespace(bot=bot)
     registry = EngagementRegistry(tombstone_path=str(tmp_path / 'eng.json'))
     channel._engagement_registry = registry
     driver = InCasaDriver(persist_session_id=registry.persist_session_id,
                           record_lookup=registry.get)
-    cm = ChannelManager()
-    cm.register(channel)
+    cm = make_transport(channel)
     specialists = SpecialistRegistry(str(tmp_path / 'specialists'),
                                      tombstone_path=str(tmp_path / 'del.json'))
     cfg = _make_alex_cfg()
@@ -122,7 +124,8 @@ async def runtime(tmp_path, monkeypatch):
 async def call(tool=None, *, channel='telegram', chat='1', **args):
     token = agent.origin_var.set(dict(role='assistant', execution_role='assistant',
                                     channel=channel, chat_id=chat, cid='test',
-                                    user_text='classify', _operator_turn=True))
+                                    user_text='classify', _operator_turn=True,
+                                    _tg_bot=BOT))
     try:
         envelope = await (tool or tools.start_job).handler(
             dict(job=DECL.qualified_name, task='Classify the ledger', context='all rows', **args))
@@ -290,7 +293,7 @@ async def test_a_job_starts_acts_and_is_busy_refused_with_no_group(runtime):
     token = agent.origin_var.set(dict(role='assistant', execution_role='assistant',
                                       channel='telegram', chat_id='1', user_id='7',
                                       cid='test', user_text='classify',
-                                      _operator_turn=True))
+                                      _operator_turn=True, _tg_bot=BOT))
     try:
         first = json.loads((await tools.start_job.handler(dict(
             job=DECL.qualified_name, task='Classify the ledger', context='')))['content'][0]['text'])

@@ -89,10 +89,25 @@ class _FakeChannel:
         return self._dispatch_result
 
 
+#: The bot the asking turn came in on (Casa's own, in these tests).
+BOT = 111
+
+
+def _as_endpoint(channel, *, bot_id=BOT, role="assistant"):
+    """Give a channel double the endpoint attributes the Telegram transport
+    reads when it registers one."""
+    channel.default_agent = role
+    channel.has_bot_id = True
+    channel.bot_id = bot_id
+    channel.on_identity = None
+    return channel
+
+
 def _mk_cm(channel):
-    cm = MagicMock()
-    cm.get = MagicMock(return_value=channel)
-    return cm
+    """A channel manager whose ``"telegram"`` is the transport over the
+    double, registered as Casa's endpoint — the way ``casa_core`` does."""
+    from telegram_channel_double import make_transport
+    return make_transport(_as_endpoint(channel))
 
 
 def _payload(res):
@@ -108,6 +123,8 @@ def _set_origin(agent_mod, **overrides):
         "message_type": "channel_in",
         "source": "telegram",
         "execution_role": "assistant",
+        # the route the receiving bot stamped on the DM turn
+        "_tg_bot": BOT,
     }
     origin.update(overrides)
     return agent_mod.origin_var.set(with_scope(origin))
@@ -200,7 +217,7 @@ class TestValidation:
         assert payload["status"] == "error"
         assert payload["kind"] == "invalid_arguments"
         assert channel.calls == []
-        assert _fresh_broker.pending(namespace="resident_ask", scope="dm:500") == []
+        assert _fresh_broker.pending(namespace="resident_ask", scope="dm:111:500") == []
 
     async def test_long_plain_option_refusal_names_the_fix(
         self, monkeypatch, _fresh_broker,
@@ -287,7 +304,7 @@ class TestProvenanceGate:
         assert payload["status"] == "error"
         assert payload["kind"] == "unsupported_origin"
         assert ch.calls == []
-        assert _fresh_broker.pending(namespace="resident_ask", scope="dm:500") == []
+        assert _fresh_broker.pending(namespace="resident_ask", scope="dm:111:500") == []
 
     async def test_button_delegated_rejected(self, monkeypatch, _fresh_broker):
         _res, payload, ch = await _ask(
@@ -369,7 +386,7 @@ class TestRegisterPostReturnOrder:
     async def test_detached_survival(self, monkeypatch, _fresh_broker):
         _res, payload, _ch = await _ask(monkeypatch)
         rid = payload["request_id"]
-        assert rid in _fresh_broker.pending(namespace="resident_ask", scope="dm:500")
+        assert rid in _fresh_broker.pending(namespace="resident_ask", scope="dm:111:500")
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +400,7 @@ class TestSupersession:
     ):
         # Seed a sibling authz: record for the SAME chat — disjoint scope.
         authz_req, created = _fresh_broker.register(
-            namespace="resident_ask", scope="authz:500", request_id="authz-1",
+            namespace="resident_ask", scope="authz:111:500", request_id="authz-1",
             timeout_s=120.0, meta={"kind": "authz", "chat_id": 500},
         )
         assert created is True
@@ -398,21 +415,21 @@ class TestSupersession:
 
         outcome1 = await asyncio.wait_for(
             _fresh_broker.await_result(
-                _first_req_stub(_fresh_broker, "dm:500", rid1),
+                _first_req_stub(_fresh_broker, "dm:111:500", rid1),
             ),
             0.5,
         )
         assert outcome1 == {"outcome": "cancelled", "reason": "superseded"}
 
         # second ask is still live
-        assert rid2 in _fresh_broker.pending(namespace="resident_ask", scope="dm:500")
+        assert rid2 in _fresh_broker.pending(namespace="resident_ask", scope="dm:111:500")
 
         # authz: sibling record is completely untouched — still live, meta unchanged.
         assert "authz-1" in _fresh_broker.pending(
-            namespace="resident_ask", scope="authz:500",
+            namespace="resident_ask", scope="authz:111:500",
         )
         assert _fresh_broker.get_meta(
-            namespace="resident_ask", scope="authz:500", request_id="authz-1",
+            namespace="resident_ask", scope="authz:111:500", request_id="authz-1",
         ) == {"kind": "authz", "chat_id": 500}
         assert authz_req is not None  # keeps the seeded req referenced for clarity
 
@@ -438,14 +455,14 @@ class TestPostFailure:
         _res, payload, _ch = await _ask(monkeypatch, channel=channel)
         assert payload["status"] == "error"
         assert payload["kind"] == "delivery_failed"
-        assert _fresh_broker.pending(namespace="resident_ask", scope="dm:500") == []
+        assert _fresh_broker.pending(namespace="resident_ask", scope="dm:111:500") == []
 
     async def test_post_raises(self, monkeypatch, _fresh_broker):
         channel = _FakeChannel(post_raises=RuntimeError("boom"))
         _res, payload, _ch = await _ask(monkeypatch, channel=channel)
         assert payload["status"] == "error"
         assert payload["kind"] == "delivery_failed"
-        assert _fresh_broker.pending(namespace="resident_ask", scope="dm:500") == []
+        assert _fresh_broker.pending(namespace="resident_ask", scope="dm:111:500") == []
 
     async def test_no_channel_manager(self, monkeypatch, _fresh_broker):
         _res, payload, _ch = await _ask(monkeypatch, no_channel_manager=True)
@@ -485,7 +502,7 @@ class TestFinishHookShape:
         rid = payload["request_id"]
 
         assert deliver(_fresh_broker, 
-            namespace="resident_ask", scope="dm:500", request_id=rid,
+            namespace="resident_ask", scope="dm:111:500", request_id=rid,
             option_index=0, actor_id=999,
         ) == "delivered"
         await _settle(lambda: len(ch.edits) >= 1 and any(
@@ -514,7 +531,7 @@ class TestFinishHookShape:
         rid = payload["request_id"]
 
         deliver(_fresh_broker, 
-            namespace="resident_ask", scope="dm:500", request_id=rid,
+            namespace="resident_ask", scope="dm:111:500", request_id=rid,
             option_index=1, actor_id=999,
         )
         await _settle(lambda: len(ch.edits) >= 2)
@@ -535,7 +552,7 @@ class TestFinishHookShape:
         channel = _FakeChannel()
         _res, payload, ch = await _ask(monkeypatch, channel=channel)
         rid = payload["request_id"]
-        _fresh_broker._on_timeout(("resident_ask", "dm:500", rid))
+        _fresh_broker._on_timeout(("resident_ask", "dm:111:500", rid))
         await _settle(lambda: len(ch.edits) >= 1)
         assert sum("expired" in e[2].lower() for e in ch.edits) == 1
         assert not any(c[0] == "dispatch" for c in ch.calls)
@@ -560,7 +577,7 @@ class TestFinishHookShape:
         channel = _FakeChannel()
         _res, payload, ch = await _ask(monkeypatch, channel=channel)
         assert _fresh_broker.cancel_scope(
-            namespace="resident_ask", scope="dm:500", reason=reason,
+            namespace="resident_ask", scope="dm:111:500", reason=reason,
         ) == 1
         await _settle(lambda: len(ch.edits) >= 1)
 
@@ -646,7 +663,7 @@ class TestDmReadableButtons:
                            f"1. {long_a}\n2. {long_b}\n3. Wait")
         rid = payload["request_id"]
         assert deliver(_fresh_broker,
-            namespace="resident_ask", scope="dm:500", request_id=rid,
+            namespace="resident_ask", scope="dm:111:500", request_id=rid,
             option_index=1, actor_id=999,
         ) == "delivered"
         await _settle(lambda: any(c[0] == "dispatch" for c in ch.calls))
@@ -723,7 +740,7 @@ class TestDmReadableButtons:
         )
         rid = payload["request_id"]
         assert deliver(_fresh_broker, 
-            namespace="resident_ask", scope="dm:500", request_id=rid,
+            namespace="resident_ask", scope="dm:111:500", request_id=rid,
             option_index=0, actor_id=999,
         ) == "delivered"
         await _settle(lambda: len(ch.edits) >= 1 and any(
@@ -756,7 +773,7 @@ class TestTTLExpiry:
         rid = payload["request_id"]
 
         await asyncio.wait_for(
-            _fresh_broker.await_result(_first_req_stub(_fresh_broker, "dm:500", rid)),
+            _fresh_broker.await_result(_first_req_stub(_fresh_broker, "dm:111:500", rid)),
             2.0,
         )
         await _settle(lambda: len(ch.edits) >= 1)

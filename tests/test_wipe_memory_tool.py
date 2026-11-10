@@ -58,10 +58,19 @@ def _intent():
     return maintenance.read_intent()
 
 
+#: Casa's own bot: the wipe card always goes through it.
+CASA_BOT = 111
+
+
 class _FakeChannel:
-    """Operator DM double: positive chat_id makes operator_identity resolve."""
+    """Casa's endpoint double: a positive chat_id makes the operator
+    resolve."""
 
     chat_id = "500"
+    default_agent = "assistant"
+    has_bot_id = True
+    bot_id = CASA_BOT
+    on_identity = None
 
     def __init__(self, *, post_result=42):
         self.posts: list[tuple] = []
@@ -111,8 +120,8 @@ async def _invoke_raw(monkeypatch, *, channel=None, registry=None,
 
     if channel is None:
         channel = _FakeChannel()
-    cm = MagicMock()
-    cm.get = MagicMock(return_value=channel)
+    from telegram_channel_double import make_transport
+    cm = make_transport(channel)
     tools_mod.init_tools(
         channel_manager=cm, bus=MagicMock(),
         specialist_registry=MagicMock(), mcp_registry=MagicMock(),
@@ -163,9 +172,11 @@ class _BlockingPostChannel(_FakeChannel):
 async def _tap(broker, channel, *, chat_id=500, actor_id=500, idx=0):
     """Commit the consent like the telegram callback route would: claim →
     commit → (finish hook fires broker-owned)."""
-    rid = broker.pending(namespace="resident_ask", scope=f"authz:{chat_id}")[0]
+    rid = broker.pending(namespace="resident_ask",
+                         scope=f"authz:{CASA_BOT}:{chat_id}")[0]
     claim = broker.claim(
-        namespace="resident_ask", scope=f"authz:{chat_id}", request_id=rid,
+        namespace="resident_ask", scope=f"authz:{CASA_BOT}:{chat_id}",
+        request_id=rid,
         option_index=idx, actor_id=actor_id,
     )
     assert not isinstance(claim, str), f"claim failed: {claim}"
@@ -213,7 +224,7 @@ class TestConsentFlow:
         payload, channel = await _invoke(monkeypatch)
         assert payload["status"] == "awaiting_user"
         assert len(channel.posts) == 1
-        assert _fresh_broker.pending(namespace="resident_ask", scope="authz:500")
+        assert _fresh_broker.pending(namespace="resident_ask", scope="authz:111:500")
 
     async def test_cancel_during_post_returns_neutral_settlement(
         self, monkeypatch, _fresh_broker, restarts,
@@ -228,11 +239,11 @@ class TestConsentFlow:
         task = asyncio.create_task(_invoke_raw(monkeypatch, channel=channel))
         await asyncio.wait_for(channel.post_started.wait(), 5.0)
 
-        live = _fresh_broker.pending(namespace="resident_ask", scope="authz:500")
+        live = _fresh_broker.pending(namespace="resident_ask", scope="authz:111:500")
         assert len(live) == 1
         rid = live[0]
         assert _fresh_broker.cancel_scope(
-            namespace="resident_ask", scope="authz:500",
+            namespace="resident_ask", scope="authz:111:500",
             reason="new_session") == 1
 
         channel.release_post.set()
@@ -258,7 +269,7 @@ class TestConsentFlow:
         assert sum("is_error" in envelope for envelope in [raw]) == 0
 
         assert len(_fresh_broker.pending(
-            namespace="resident_ask", scope="authz:500")) == 0
+            namespace="resident_ask", scope="authz:111:500")) == 0
         assert len(channel.posts) == 1
         assert len(channel.edits) == 1
         assert sum("(this question was cancelled by /new — nothing was "
@@ -282,7 +293,7 @@ class TestConsentFlow:
         assert sum(_wire(raw) == expected for _ in [0]) == 1
         assert sum("is_error" in envelope for envelope in [raw]) == 0
         assert len(_fresh_broker.pending(
-            namespace="resident_ask", scope="authz:500")) == 1
+            namespace="resident_ask", scope="authz:111:500")) == 1
 
     async def test_approve_records_the_intent_and_requests_the_restart(
         self, monkeypatch, _fresh_broker, restarts,
@@ -314,9 +325,9 @@ class TestConsentFlow:
         """#469 operator-bound verdicts: a different actor's tap is forbidden
         at the broker, before any claim state is revealed."""
         payload, channel = await _invoke(monkeypatch)
-        rid = _fresh_broker.pending(namespace="resident_ask", scope="authz:500")[0]
+        rid = _fresh_broker.pending(namespace="resident_ask", scope="authz:111:500")[0]
         claim = _fresh_broker.claim(
-            namespace="resident_ask", scope="authz:500", request_id=rid,
+            namespace="resident_ask", scope="authz:111:500", request_id=rid,
             option_index=0, actor_id=666,
         )
         assert claim == "forbidden"
@@ -327,7 +338,7 @@ class TestConsentFlow:
         """A /new-style cancel_scope can only DENY — never execute."""
         payload, channel = await _invoke(monkeypatch)
         n = _fresh_broker.cancel_scope(
-            namespace="resident_ask", scope="authz:500", reason="new_session",
+            namespace="resident_ask", scope="authz:111:500", reason="new_session",
         )
         assert n == 1
         await asyncio.sleep(0)
@@ -350,8 +361,8 @@ class TestConsentFlow:
         """
         payload, channel = await _invoke(monkeypatch)
         rid = _fresh_broker.pending(
-            namespace="resident_ask", scope="authz:500")[0]
-        _fresh_broker._on_timeout(("resident_ask", "authz:500", rid))
+            namespace="resident_ask", scope="authz:111:500")[0]
+        _fresh_broker._on_timeout(("resident_ask", "authz:111:500", rid))
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         await _fresh_broker.drain_hooks()
