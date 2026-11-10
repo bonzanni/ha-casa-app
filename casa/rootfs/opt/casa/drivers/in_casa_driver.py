@@ -165,6 +165,9 @@ class _EngagementCapture:
             str(origin.get("channel", "")))
         self.run = transcript_runs.unregistered(
             transcript_runs.ENGAGEMENT, role=engagement.role_or_type)
+        self._owed = 0
+        self._closing = False
+        self._cut = False
 
     @classmethod
     def for_turn(cls, engagement: EngagementRecord) -> "_EngagementCapture | None":
@@ -188,6 +191,9 @@ class _EngagementCapture:
         self.run = await transcript_runs.Run.start(
             transcript_runs.ENGAGEMENT, role=self._engagement.role_or_type,
             directory=directory, session_id=session_id)
+        # A close or a cut that came while the row was being registered was
+        # applied to the placeholder; apply it to the registered run.
+        self._settle()
 
     async def _record(self, source, text: str, **fields) -> None:
         await self.run.kept(self._kept(source, text, **fields))
@@ -222,7 +228,29 @@ class _EngagementCapture:
                           else "third_party"),
             session_id=self._engagement.sdk_session_id)
 
+    def owe(self) -> None:
+        """Reserve one capture before anything it waits on: a job's operator
+        message is written first and captured after, and the turn can end in
+        between. The turn's close waits until every reserved capture is
+        :meth:`paid`."""
+        self._owed += 1
+
+    def paid(self, *, cut: bool = False) -> None:
+        """A reserved capture is over; ``cut`` when it was cancelled before it
+        was kept, which leaves the run unconfirmed."""
+        self._owed -= 1
+        self._cut = self._cut or cut
+        self._settle()
+
     def close(self) -> None:
+        self._closing = True
+        self._settle()
+
+    def _settle(self) -> None:
+        if not self._closing or self._owed:
+            return
+        if self._cut:
+            self.run.interrupt()
         self.run.close()
 
     async def answer(self, sdk_msg: Any, session_id: str | None) -> None:
@@ -1130,9 +1158,20 @@ class InCasaDriver(DriverProtocol):
             if opening and session.segment is None:
                 self._open_segment(session, rec)
             segment = session.segment
+            owed = (segment.capture if segment is not None
+                    and segment.capture is not None and ticket.kind == OPERATOR
+                    and ticket.tg_message_id is not None else None)
+            if owed is not None:
+                owed.owe()
             try:
                 await session.client.query(_one_message(_user_payload(ticket, text)))
-            except Exception as exc:  # noqa: BLE001 — the CLI died during the write
+            except BaseException as exc:  # noqa: BLE001 — the CLI died during the write
+                if owed is not None:
+                    # A failed write is retried and owes nothing here; a write
+                    # cancelled midway may have landed, so the run stays open.
+                    owed.paid(cut=not isinstance(exc, Exception))
+                if not isinstance(exc, Exception):
+                    raise
                 failure: BaseException | None = exc
             else:
                 failure = None
@@ -1156,14 +1195,18 @@ class InCasaDriver(DriverProtocol):
                 except Exception:  # noqa: BLE001
                     logger.warning("operator-written hook failed for %s",
                                    eid[:8], exc_info=True)
-            if (segment is not None and segment.capture is not None
-                    and ticket.tg_message_id is not None):
+            if owed is not None:
+                cut = True
                 try:
-                    await segment.capture_ready
-                    await segment.capture.operator(ticket.text, ticket.tg_message_id)
+                    await asyncio.shield(segment.capture_ready)
+                    await owed.operator(ticket.text, ticket.tg_message_id)
+                    cut = False
                 except Exception:  # noqa: BLE001 — capture never fails delivery
+                    cut = False     # a failed capture is the run's to record
                     logger.warning("operator capture failed for %s", eid[:8],
                                    exc_info=True)
+                finally:
+                    owed.paid(cut=cut)
 
     # -- the reader ------------------------------------------------------------
 
@@ -1279,7 +1322,7 @@ class InCasaDriver(DriverProtocol):
             return
         if segment.capture is not None:
             try:
-                await segment.capture_ready
+                await asyncio.shield(segment.capture_ready)
                 await segment.capture.answer(sdk_msg, self._session_ids.get(rec.id))
             except Exception:  # noqa: BLE001
                 logger.warning("answer capture failed for %s", rec.id[:8],
@@ -1351,7 +1394,7 @@ class InCasaDriver(DriverProtocol):
             await _finalize_stream(segment.stream, final, rec)
         if segment.capture is not None:
             try:
-                await segment.capture_ready
+                await asyncio.shield(segment.capture_ready)
             except Exception:  # noqa: BLE001
                 pass
             segment.capture.close()

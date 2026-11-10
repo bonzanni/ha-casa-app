@@ -67,7 +67,7 @@ is still owed. `memory/transcript_runs.py` owns the `transcript_runs` table in `
 records the session each stream message comes from (for visibility: no deletion depends on
 it), every capture is awaited through `Run.kept`, and `Run.close` in
 the run's outermost `finally` confirms it when each capture was kept — a cancelled or failed
-run included, since the live rules capture nothing more for it. Registration and naming run on threads of their own, with a
+run included, since the live rules capture nothing more for it. A capture still in flight when the run closes confirms the run when it is kept; one that is cancelled leaves the run unconfirmed. A job's operator message is written first and captured after, so its capture is reserved before the write and the turn's close waits for it. Registration and naming run on threads of their own, with a
 capture's two bounds: they wait at most 50 ms on another writer's lock (`LOCK_WAIT_S`, the
 store's busy timeout), and the turn waits at most 500 ms for them at all (`STALL_GUARD_S`, a
 guard against a starved thread or a stalled disk, not a latency target). A registration that fails or times out is logged and the

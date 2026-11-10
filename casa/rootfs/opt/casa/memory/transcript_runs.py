@@ -340,7 +340,9 @@ class Run:
         self._store: MemoryStore | None = None
         self._open = 0
         self._failed = False
+        self._interrupted = False
         self._closed = False
+        self._settled = False
         self._ended = False
 
     @property
@@ -390,6 +392,7 @@ class Run:
         run.run_ids = [run_id]
         run._store = store
         run._closed = confirmed
+        run._settled = confirmed
         return run
 
     def _late_row(self, fut: asyncio.Future, store: MemoryStore,
@@ -430,27 +433,50 @@ class Run:
     async def kept(self, capture: Awaitable[bool]) -> bool:
         """Await one capture the run owes. It is kept when it returned a
         receipt or the live rules captured nothing; otherwise (or when a
-        cancellation interrupts it) the run stays unconfirmed."""
+        cancellation interrupts it) the run stays unconfirmed. A capture
+        still in flight when the run closes settles the run when it ends."""
         self._open += 1
-        ok = await capture
+        try:
+            ok = await capture
+        except BaseException:
+            self._open -= 1
+            self._interrupted = True
+            self._settle()
+            raise
         self._open -= 1
         if not ok:
             self._failed = True
+        self._settle()
         return ok
+
+    def interrupt(self) -> None:
+        """A capture the run owed was cancelled before the run saw it: the
+        run stays unconfirmed."""
+        self._interrupted = True
 
     def close(self) -> None:
         """From the run's outermost ``finally``: confirm it when every
-        capture it made was kept. Idempotent."""
+        capture it made was kept. A capture still in flight (a job's operator
+        message is captured after it is written, and a short turn can end
+        first) confirms the run when it is kept. Idempotent."""
         if self._closed:
             return
         self._closed = True
+        self._settle()
+
+    def _settle(self) -> None:
+        """Once the run is closed and no capture is in flight: confirm it, or
+        say why it stays unconfirmed. Runs once per row."""
+        if not self._closed or self._open or self._settled:
+            return
         if self.run_id is None or self._store is None:
             return
-        if self._open or self._failed:
+        self._settled = True
+        if self._interrupted or self._failed:
             logger.warning(
                 "%s run %s of %s left unconfirmed: a capture %s; its "
                 "transcript is kept", self.kind, self.run_id[:8], self.role,
-                "was interrupted" if self._open else "was not kept")
+                "was interrupted" if self._interrupted else "was not kept")
             return
         _detach(confirm, self._store, *self.run_ids)
 
