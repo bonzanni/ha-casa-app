@@ -3550,6 +3550,13 @@ async def main() -> None:
     if _maintenance_line is not None and telegram_channel is not None:
         await telegram_channel.notify_operator(_maintenance_line)
 
+    # 12''. The scratchpad's run operation: unavailable until its box has passed a
+    # preflight through the whole of it; a failure is one ERROR and one operator line.
+    import pad_run
+    await pad_run.boot(
+        notify=telegram_channel.notify_operator
+        if telegram_channel is not None else None)
+
     # #532: the event worker's boot pass (13d'' above) ran BEFORE the
     # channels started, so any operator notice it owed (an exhausted
     # delivery due at boot, a removal note) failed against a not-yet-ready

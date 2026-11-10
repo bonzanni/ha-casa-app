@@ -654,7 +654,8 @@ def test_task_creation_with_a_user_namespace_is_eagain_under_nproc_1_alone():
 
 def _run(script: str, sections: list) -> tuple[int, int, dict | None, str]:
     """``run_script`` then ``write_result`` in a forked child over a pipe, as main() does:
-    (status, stray bytes before the result line, the parsed result, stderr)."""
+    (status, bytes the script wrote to the real stdout before the result line, the parsed
+    result, stderr)."""
     def body():
         status, result = child.run_script(script, sections)
         out = io.TextIOWrapper(io.FileIO(1, "wb", closefd=False), encoding="utf-8")
@@ -663,7 +664,7 @@ def _run(script: str, sections: list) -> tuple[int, int, dict | None, str]:
         os._exit(status)
     code, out, err = _in_child(body)
     tail = out[out.rfind(b"\n", 0, len(out) - 1) + 1:] if out else b""
-    stray = len(out) - len(tail)
+    stray = len(out) - len(tail) - 1      # the box's own newline before the result
     try:
         doc = json.loads(tail)
     except ValueError:
@@ -674,7 +675,7 @@ def _run(script: str, sections: list) -> tuple[int, int, dict | None, str]:
 def test_a_script_changes_adds_and_deletes_sections():
     code, stray, doc, _ = _run("pad['b'] = 'new'\npad['a'] = pad['a'].upper()\ndel pad['']",
                                [["", "top"], ["a", "x"]])
-    assert (code, stray) == (0, 1)
+    assert (code, stray) == (0, 0)
     assert doc == {"printed": "", "printed_total": 0, "pad": [["a", "X"], ["b", "new"]]}
 
 
@@ -730,13 +731,13 @@ def test_a_mapping_whose_items_change_between_calls_yields_its_first_answer():
 
 def test_bytes_a_script_writes_to_the_real_stdout_are_stray_and_the_result_still_parses():
     code, stray, doc, _ = _run("import os; os.write(1, b'stray\\n')", [["", "t"]])
-    assert (code, stray) == (0, 7)
+    assert (code, stray) == (0, 6)
     assert doc["pad"] == [["", "t"]]
 
 
 def test_a_script_that_replaces_stdout_or_exits_in_finally_is_still_read_by_the_frame_rule():
     code, stray, doc, _ = _run("import sys; sys.stdout = sys.__stdout__; print('x')", [["", ""]])
-    assert (code, stray, doc["printed"], doc["pad"]) == (0, 3, "", [["", ""]])
+    assert (code, stray, doc["printed"], doc["pad"]) == (0, 2, "", [["", ""]])
     code, _, doc, _ = _run("try:\n    pad['a'] = 'y'\nfinally:\n    import sys; sys.exit(0)", [["", ""]])
     assert (code, doc["pad"]) == (0, [["", ""], ["a", "y"]])
 
@@ -764,7 +765,7 @@ def test_the_real_write_path_carries_every_text_back_identical(name, text):
     payload = json.dumps({"script": "pass", "sections": [["", ""], ["a", text]]}, ensure_ascii=True)
     assert payload.isascii()
     code, stray, doc, err = _run("pass", json.loads(payload)["sections"])
-    assert (code, stray, err) == (0, 1, "")
+    assert (code, stray, err) == (0, 0, "")
     assert dict(doc["pad"])["a"] == text
 
 
