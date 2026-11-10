@@ -128,7 +128,7 @@ carries `note` when Casa posted its hand-off line in the operator's chat, and a 
 own once that send has posted the line ([`delegation.md`](delegation.md)); and
 `wipe_memory`'s consent keyboard is Casa's own text. The rules are INV-OUT-002 to
 INV-OUT-005 in [`output-boundary.md`](output-boundary.md). Each call of `send_message`,
-`send_media`, `ask_user` or `relay_answer` is also recorded as a send attempt on that scope, refusals
+`send_media` or `ask_user` is also recorded as a send attempt on that scope, refusals
 included, by a wrapper outside the registered handler that changes no result (#1075).
 
 **Engagement mutation is a funnel, not parallel paths.** Completion and cancellation

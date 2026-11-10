@@ -177,24 +177,19 @@
     INV-CFG-013: [tests/test_pin_1095_removal_close.py::test_rc14_the_disabled_teardown_closes_and_tells, tests/test_pin_1095_removal_close.py::test_rc15_the_agents_sweep_reaches_a_disabled_specialist_with_no_agent, tests/test_pin_1095_removal_close.py::test_rc16a_the_boot_pass_runs_after_the_channels_and_before_job_resume, tests/test_pin_1095_removal_close.py::test_rc16b_the_boot_pass_closes_disabled_only, tests/test_pin_1095_removal_close.py::test_rc17_a_failed_disabled_close_is_told_named_and_retried, tests/test_1095_open_conversation_regressions.py::test_the_teardown_close_completes_under_the_reader_with_a_writer_queued, tests/test_1095_open_conversation_regressions.py::test_boot_does_not_resume_a_job_whose_disabled_close_failed]
     INV-CFG-012: [tests/test_reload_disabled_specialist_scopes.py::test_agents_sweep_retires_a_disabled_specialist_it_reports, tests/test_reload_disabled_specialist_scopes.py::test_policies_cascade_retires_instead_of_constructing, tests/test_reload_disabled_specialist_scopes.py::test_config_sync_inherits_the_agents_retirement, tests/test_reload_disabled_specialist_scopes.py::test_full_retires_once_and_never_constructs, tests/test_reload_disabled_specialist_scopes.py::test_triggers_unroutes_instead_of_registering, tests/test_reload_disabled_specialist_scopes.py::test_race_a_triggers_arm_reads_and_retires_under_the_role_lock, tests/test_reload_disabled_specialist_scopes.py::test_race_b_sweep_revalidates_under_the_role_lock_and_skips, tests/test_reload_disabled_specialist_scopes.py::test_failed_scheduled_ask_revoke_is_named_and_unroute_still_runs, tests/test_reload_disabled_specialist_scopes.py::test_failed_registry_rebuild_is_a_named_error_after_the_teardown]
 
-- doc: architecture/delegate-answer-relay.md
-  summary: A delegate's answer posted by Casa under the delegate's own header — the assistant chooses to relay it, Casa holds the delegate's words for it, posts them once, files the post for the delegate's desk, and what a failed send leaves.
-  when_changing: the relay_answer tool, the delegate answer Casa holds for it, the relay hint a delegation result or notice carries, or the post a relayed answer becomes
+- doc: architecture/delegate-closing-message.md
+  summary: What a delegation result or notice carries about the message the delegate closed its turn with — Casa's note when it is only silence, and the closing message itself, beside the result, when the length cap cut it away.
+  when_changing: the closing-silence note a delegation result or notice carries, the delegate's closing message, or the closing_message that travels beside a result the length cap cut
   covers:
-    - casa/rootfs/opt/casa/tools.py::relay_answer
-    - casa/rootfs/opt/casa/tools.py::_hold_answer
-    - casa/rootfs/opt/casa/tools.py::_relay_words
-    - casa/rootfs/opt/casa/tools.py::Relayable
+    - casa/rootfs/opt/casa/tools.py::_closing_words
+    - casa/rootfs/opt/casa/tools.py::_closing_beyond_cut
     - casa/rootfs/opt/casa/tools.py::_with_silent_close_note
   tests:
-    - tests/test_relay_answer.py
+    - tests/test_delegate_closing_words.py
   related: [architecture/delegation.md, architecture/delegation-announcements.md, architecture/specialist-desk.md]
-  defines_invariants: [INV-PASS-001, INV-PASS-002, INV-PASS-003, INV-PASS-004]
+  defines_invariants: [INV-PASS-004]
   invariant_tests:
-    INV-PASS-001: [tests/test_relay_answer.py::test_a_relay_posts_the_whole_answer_once_under_the_delegates_header, tests/test_relay_answer.py::test_a_second_relay_posts_nothing, tests/test_relay_answer.py::test_two_concurrent_relays_post_once, tests/test_relay_answer.py::test_a_send_proven_unsent_keeps_the_answer_relayable, tests/test_relay_answer.py::test_a_lost_acknowledgement_is_never_posted_again, tests/test_relay_answer.py::test_a_relay_cancelled_mid_send_is_never_posted_again, tests/test_relay_answer.py::test_an_answer_whose_send_is_in_flight_is_never_evicted, tests/test_relay_answer.py::test_a_posted_answer_is_still_known_as_posted_after_many_newer_ones, tests/test_relay_answer.py::test_a_refusal_after_a_page_landed_is_not_posted_again, tests/test_relay_answer.py::test_the_header_is_the_name_the_delegate_had_when_it_answered, tests/test_relay_answer.py::test_a_send_that_raised_after_a_page_landed_is_not_posted_again, tests/test_relay_answer.py::test_a_channel_that_delivers_nothing_keeps_the_answer_relayable, tests/test_relay_answer.py::test_a_casa_line_the_admission_adds_sits_above_the_header, tests/test_relay_answer.py::test_a_sync_delegation_holds_the_words_before_casas_echo, tests/test_relay_answer.py::test_a_late_answer_is_held_and_its_notice_says_it_is_relayable]
-    INV-PASS-002: [tests/test_relay_answer.py::test_another_conversations_answer_is_not_posted, tests/test_relay_answer.py::test_an_answer_held_while_an_approval_waits_is_not_posted, tests/test_relay_answer.py::test_a_sync_delegation_captures_the_childs_approval_wait_when_held, tests/test_relay_answer.py::test_a_turn_whose_reply_is_the_delivery_refuses, tests/test_relay_answer.py::test_an_unfinished_sync_answer_is_not_offered_for_relay, tests/test_relay_answer.py::test_an_unfinished_late_answer_is_not_offered_for_relay, tests/test_relay_answer.py::test_only_a_residents_telegram_answer_with_words_is_held]
-    INV-PASS-003: [tests/test_relay_answer.py::test_narration_then_a_closing_silence_holds_nothing, tests/test_relay_answer.py::test_only_the_closing_message_is_held_never_the_narration, tests/test_relay_answer.py::test_the_relayed_post_is_the_closing_message_alone, tests/test_relay_answer.py::test_a_sentinel_beside_the_words_is_dropped_the_words_are_held, tests/test_relay_answer.py::test_an_approval_cut_keeps_the_closing_message_for_the_late_answer]
-    INV-PASS-004: [tests/test_relay_answer.py::test_a_sync_closing_silence_is_told_as_silence, tests/test_relay_answer.py::test_a_sync_answer_carries_no_silence_note, tests/test_relay_answer.py::test_a_late_closing_silence_is_told_as_silence]
+    INV-PASS-004: [tests/test_delegate_closing_words.py::test_a_sync_closing_silence_is_told_as_silence, tests/test_delegate_closing_words.py::test_a_sync_answer_carries_no_silence_note, tests/test_delegate_closing_words.py::test_a_late_closing_silence_is_told_as_silence]
 
 - doc: architecture/delegation-announcements.md
   summary: What a finished delegation owes its creator — the delivery-acknowledged announcement, the answer retained for it, the boot replay's re-announcement, and how long the finished row is kept.

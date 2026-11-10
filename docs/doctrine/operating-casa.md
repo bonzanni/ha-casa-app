@@ -60,8 +60,8 @@ file and a tool call are the agent's own machinery: "per recipe step 6: commit, 
 `casa_reload(...)`" tells the operator nothing he can use. Say in plain words what was found,
 changed or is needed from him; a result an agent is told to relay verbatim stays as written.
 Nor are the agent's steps news for him ("now committing and reloading"), so they are not
-narrated; of a delegate's run only the message it closes with is posted under its name
-([`delegate-answer-relay.md`](../architecture/delegate-answer-relay.md)), so a question belongs
+narrated; a delegate's run is read whole, but its closing message is what survives a result
+the length cap cut ([`delegate-closing-message.md`](../architecture/delegate-closing-message.md)), so a question belongs
 at the end of the run. A completion text is written for him too: it says in plain words what the agent
 found or changed and what is left for him, and a commit SHA, a result field or a reload scope stays
 out of it. It is also all the engaging agent reads of the

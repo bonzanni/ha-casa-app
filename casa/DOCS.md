@@ -1132,19 +1132,19 @@ plugin the first delivery's receipt, so you do not get the message twice. A
 card with buttons counts as already delivered only while its buttons still
 work; otherwise you get a fresh card.
 
-#### A specialist's answer, in its own words (v0.346.0)
+#### A specialist's answer, told by the assistant (v0.358.0)
 
-When a specialist the assistant asked answers you, the assistant passes the
-answer on with its `relay_answer` tool instead of retelling it: Casa posts the
-message the specialist ended its turn with — not what it wrote while it
-worked — headed by `📊` and the specialist's name, once, and a swipe-reply to
-it reaches that specialist like a reply to its other posts. The assistant
-still decides whether an answer is meant for you. When Casa cannot post it (for
-example an answer cut off before its end, or after a restart), the assistant passes it on
-itself, as "Alex: …". An answer whose work still waits on your approval is not
-posted: you see the approval request instead.
+When a specialist the assistant asked answers you, the assistant tells you
+that answer herself, in her own words: the specialist's "I" becomes its name
+("Alex found €420 in October…"), and every amount, date, name and question it
+gave you reaches you as it gave it. Casa no longer posts a specialist's answer
+under its name. What a specialist posts itself — its cards, links, files
+and replies to your swipe-replies — still arrives headed by `📊` and its name.
 A specialist that ends its turn silently has nothing for you: Casa tells the
-assistant so, and she does not say it is still working.
+assistant so, and she does not say it is still working. When a specialist's
+answer is too long for what the assistant reads, Casa keeps the message the
+specialist ended its turn with and hands it to her beside the rest, so the
+answer is not lost to the cut.
 
 #### Reply to a specialist's post and the specialist answers (v0.341.0)
 

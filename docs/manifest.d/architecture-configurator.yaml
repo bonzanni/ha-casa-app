@@ -33,7 +33,7 @@
     - tests/test_turn_progress.py
     - tests/test_tools_specialist_install.py::test_approve_continues_the_configurator_through_its_desk
     - tests/test_casa_restart_supervised.py::TestCasaRestartSupervised
-  related: [architecture/delegation.md, architecture/delegate-answer-relay.md, architecture/specialist-desk.md, architecture/plugin-health.md, architecture/hook-resolution.md, architecture/tools-interface.md, architecture/configuration.md]
+  related: [architecture/delegation.md, architecture/delegate-closing-message.md, architecture/specialist-desk.md, architecture/plugin-health.md, architecture/hook-resolution.md, architecture/tools-interface.md, architecture/configuration.md]
   defines_invariants: [INV-CFG-014, INV-CFG-015, INV-CFG-016, INV-CFG-017, INV-CFG-018]
   invariant_tests:
     INV-CFG-014: [tests/test_configurator_run.py::test_a_second_same_chat_delegation_is_refused_at_the_bound, tests/test_desk_turn.py::test_a_reply_to_a_configurator_busy_in_this_chat_gets_the_busy_line_at_the_bound, tests/test_configurator_run.py::test_a_second_run_from_another_origin_waits_for_the_lease, tests/test_configurator_run.py::test_a_run_still_unwinding_past_the_teardown_bound_keeps_the_lease, tests/test_configurator_run.py::test_past_the_bound_a_second_run_is_refused_with_the_busy_text, tests/test_configurator_run.py::test_a_new_run_waits_for_running_plugin_erasures, tests/test_configurator_run.py::test_a_new_run_waits_for_surviving_bundle_transactions, tests/test_configurator_run.py::test_an_exception_before_the_run_releases_the_lease, tests/test_configurator_run.py::test_a_cancel_outside_shutdown_releases_the_file, tests/test_configurator_run.py::test_a_specialist_run_takes_no_lease]

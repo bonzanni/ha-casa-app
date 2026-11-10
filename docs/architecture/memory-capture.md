@@ -42,12 +42,10 @@ awaits the append, so every capture a turn made has returned by the time the tur
   memory-writing specialists.
 - **Casa's line that a specialist which keeps no memory posted to the operator's chat**, in
   the Telegram channel's `_record_post`, where every message Casa sends on a specialist's
-  behalf lands: a plugin's link, message, page, proposal or file, a desk reply, a stored-call
-  receipt and a delegate's answer relayed under its name. The line is Casa's own words with
-  the time, never anything of the post (INV-MEM-040): "Fido posted his answer to your chat."
-  when the path that sent the post carries his answer — a delegate's answer relayed under its
-  name, or a desk reply, the message the specialist's turn closed with
-  (`result_broker.ANSWER_KINDS`, read from the post record's `kind`) — and "Fido posted to
+  behalf lands: a plugin's link, message, page, proposal or file, a desk reply and a
+  stored-call receipt. The line is Casa's own words with the time, never anything of the post (INV-MEM-040): "Fido posted his answer to your chat."
+  when the path that sent the post carries his answer — a desk reply, the message the
+  specialist's turn closed with (`result_broker.ANSWER_KINDS`, read from the post record's `kind`) — and "Fido posted to
   your chat." for every other post, a desk reply cut at a call still waiting on the
   operator's approval included (its words are posted, the work is not done). A plugin's message, page, file, link or card and a
   stored-call receipt go out the same way mid-run and at the end, so nothing mechanical says
@@ -174,15 +172,15 @@ own reply, which is that specialist's own output; and a Casa whose tools were ne
 initialised (an empty role map), where nothing is gated. It is the capture half of the rule; what reads the store later (ledgers, search, export, restore) is held to it by
 the mechanisms that read.
 
-**INV-MEM-040**: When a message Casa sends on behalf of a specialist that writes no memory lands in the configured operator chat, exactly one event is captured per post — Casa's words "<name> posted his answer to your chat." when the post's kind is a relayed answer or a desk reply that closed its turn, and "<name> posted to your chat." for every other kind (a desk reply cut at a pending approval included), decided from the post record and never from its text, with the time, speaker `casa`, origin `system`, the chat's resident as its role, the specialist as its speaker id, a `private` floor — holding nothing of the post's body, caption, file name or buttons, and keyed by the post's identity (its owner, tool call and slot) so every page of it and a re-landing are one event; nothing is captured for a specialist that writes memory, another chat, or a channel with no operator chat.
+**INV-MEM-040**: When a message Casa sends on behalf of a specialist that writes no memory lands in the configured operator chat, exactly one event is captured per post — Casa's words "<name> posted his answer to your chat." when the post's kind is a desk reply that closed its turn, and "<name> posted to your chat." for every other kind (a desk reply cut at a pending approval included), decided from the post record and never from its text, with the time, speaker `casa`, origin `system`, the chat's resident as its role, the specialist as its speaker id, a `private` floor — holding nothing of the post's body, caption, file name or buttons, and keyed by the post's identity (its owner, tool call and slot) so every page of it and a re-landing are one event; nothing is captured for a specialist that writes memory, another chat, or a channel with no operator chat.
 
 The specialist's answer stays out of memory (INV-MEM-032), and so does Casa's notice carrying
 it, so without this line the writer saw a request handed to the specialist and then nothing,
 and kept the errand open. The seam is where every such message lands, `_record_post`, read
 with the same `role_writes_memory` switch; the name is the persona name the post's own label
 carries. Pinned by real channel sends over a fake bot against a real store: a canary in the
-post's body reaches no row, pages and a re-landing are one event, a desk reply and a relayed
-answer leave a line, and a failing capture still delivers the send.
+post's body reaches no row, pages and a re-landing are one event, a desk reply leaves a
+line, and a failing capture still delivers the send.
 
 What it does not cover: whether the post answered what was asked; the writer judges that from
 the line and what it already holds. Casa's own cards under a specialist's label — the start

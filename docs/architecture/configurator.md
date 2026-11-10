@@ -13,8 +13,8 @@ agent and how it joins the delegation role map, the three origins of a run, the 
 that admits one run at a time, the busy refusal, the interrupted-run notice at boot, the
 Restart now button, the continuations an approval or a plugin erasure owes it, the install
 time kept off its ceiling, the plugin-health hold while it installs, and its step line. How a
-delegation is launched and bounded is [`delegation.md`](delegation.md); how its answer is
-posted is [`delegate-answer-relay.md`](delegate-answer-relay.md); the desk a reply reaches is
+delegation is launched and bounded is [`delegation.md`](delegation.md); what its result
+carries beside the answer is [`delegate-closing-message.md`](delegate-closing-message.md); the desk a reply reaches is
 [`specialist-desk.md`](specialist-desk.md); what its recipes do to the config tree is
 [`configuration.md`](configuration.md) and [`tools-interface.md`](tools-interface.md).
 
@@ -40,8 +40,8 @@ an approval or a plugin erasure, as one desk turn too. `specialist_desk.has_desk
 configurator beside the specialists, so `desk_target_ok` and `desk_for_delegation` treat it
 as one. A delegation to it always runs detached (`tools.py::_delegation_mode_for` turns
 `sync` into `async`): a commit the run makes can reload the assistant, which would cancel a
-run her turn was awaiting. Its answer comes back to her as a delegation result and she posts
-it with `relay_answer`, under the configurator's own header.
+run her turn was awaiting. Its answer comes back to her as a delegation result and she tells the
+operator what it says, in her own words.
 
 **One run at a time, and a waiter is told who holds it.** Every run takes the lease in
 `configurator_run.py` before anything of it starts; the next one waits, and past the bound is
@@ -117,8 +117,8 @@ The need is keyed by the run's delegation id (`configurator_run.note_restart`) a
 by one `offer_restart`: at the end of the desk turn's handling for a desk run
 (`specialist_desk.handle_reply`), and after the assistant's turn that narrates the
 delegation's result for a delegated one (`agent._offers_configurator_restart` around
-`Agent.handle_message`) — after her own answer, whether or not she relayed the
-configurator's words, and not while Casa is stopping. The button is Casa's own keyboard
+`Agent.handle_message`) — after her own answer, whatever she told the operator of the
+configurator's answer, and not while Casa is stopping. The button is Casa's own keyboard
 (`operator_calls.post_question`, 24 h), claimed through the broker, so a second tap is
 refused; a tap calls `supervisor_restart.request_app_restart` from a task detached from the
 tap's handler, after the card's edit (that call returns only as Casa stops, and a shutdown
@@ -237,7 +237,7 @@ inside the run (INV-CFG-016).
 
 **Related**
 - [`architecture/delegation.md`](../architecture/delegation.md)
-- [`architecture/delegate-answer-relay.md`](../architecture/delegate-answer-relay.md)
+- [`architecture/delegate-closing-message.md`](../architecture/delegate-closing-message.md)
 - [`architecture/specialist-desk.md`](../architecture/specialist-desk.md)
 - [`architecture/plugin-health.md`](../architecture/plugin-health.md)
 - [`architecture/hook-resolution.md`](../architecture/hook-resolution.md)

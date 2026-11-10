@@ -24,9 +24,8 @@ keeps a resident row consumed; anything less returns it to `pending` with its re
 verdict kept, under a bounded budget, and exhaustion fails it with a note naming the
 manual run. A courier turn — the assistant
 delegating a specialist's setup — is judged on its delegation, by target, and on nothing
-else; its instruction then asks the assistant to pass the specialist's answer on with
-`relay_answer`, so the report reaches the operator under the specialist's own header
-([`delegate-answer-relay.md`](delegate-answer-relay.md)), and that relay settles nothing. Both
+else; its instruction then asks the assistant to tell the operator the outcome herself, in
+one short line, and what she tells the operator settles nothing. Both
 instructions (`plugin_setup_episodes._compose`) ask for the outcome as the operator should read
 it — one short plain line in the tool's own terms, without naming the tool — and the courier's
 asks the specialist to answer with that line alone. An ordinary turn in which the resident ran the setup tool itself settles the row
@@ -189,7 +188,7 @@ correlates the delegation by target (INV-PLUG-024): the agent records the target
 `delegate_to_agent` call it observes, canonicalises the targets of the calls that produced
 a non-error result exactly as the ACL resolves them (a persona display name becomes its
 role id), and hands the set over; a non-error delegation to the row's own specialist
-consumes the row (the specialist's own reply, relayed by the assistant, reports the setup
+consumes the row (the specialist's own reply, which the assistant tells the operator, reports the setup
 result), and nothing else does — a delegation to some other agent, an errored one, an
 absent or merely listed-but-uncalled one, all return the row to `pending` under the same
 bounded budget a resident row has, and exhaustion fails it with a note naming the
