@@ -38,7 +38,9 @@ is a real copy of the system one at an exact path, and the profile's rule
 other, transitions into the child. The child profile has no network rule (with the `abi`
 line every socket family is refused, unix and socketpair included), no exec rule, no mount,
 ptrace or capability rule, and read access only to the interpreter, the prelude, the C
-libraries, the standard library, the locale and zoneinfo data, `/etc/localtime`,
+libraries, the standard library, the locale data, glibc's charset table (the `gconv-modules`
+files only, which the C library reads as the interpreter starts; no converter is loadable),
+zoneinfo, `/etc/localtime`,
 `/etc/ssl/openssl.cnf`, a process's confinement label and its own descriptor listing. A
 `--no-new-privs` flag is deliberately absent: the kernel refuses a profile transition under
 `no_new_privs`; the prelude sets the bit itself after the transition.

@@ -97,7 +97,9 @@ def test_the_child_profile_reads_only_the_interpreter_its_prelude_the_stdlib_and
     assert set(paths) - set(sentinel) == {
         "/opt/casa/run/python3", "/opt/casa/run/child.py", "/etc/ld.so.cache",
         "/usr/lib/@{multiarch}/*.so*", "/usr/lib/python3.[0-9]*/", "/usr/lib/python3.[0-9]*/**",
-        "/usr/lib/locale/**", "/usr/share/zoneinfo/**", "/etc/localtime", "/etc/ssl/openssl.cnf",
+        "/usr/lib/locale/**", "/usr/lib/@{multiarch}/gconv/gconv-modules",
+        "/usr/lib/@{multiarch}/gconv/gconv-modules.cache", "/usr/lib/@{multiarch}/gconv/gconv-modules.d/",
+        "/usr/lib/@{multiarch}/gconv/gconv-modules.d/*.conf", "/usr/share/zoneinfo/**", "/etc/localtime", "/etc/ssl/openssl.cnf",
         "@{PROC}/@{pid}/attr/apparmor/current", "@{PROC}/@{pid}/attr/current",
         "@{PROC}/@{pid}/fd/"}
     for forbidden in ("/data", "/config", "/run/", "/opt/casa/**", "/proc/**", "/etc/**"):

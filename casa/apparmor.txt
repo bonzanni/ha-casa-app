@@ -80,7 +80,7 @@ profile casa flags=(attach_disconnected,mediate_deleted) {
   # The script runner's box. No network rule, so with the abi line every socket family is
   # refused; no x rule, so nothing can be run; no ptrace, no mount, no capability, no write
   # anywhere. It reads the interpreter, its own prelude, the C libraries, the standard library
-  # and the stdlib's public data (locale, zoneinfo, the OpenSSL config). Nothing under /data,
+  # and the stdlib's public data (locale, glibc's charset tables, zoneinfo, the OpenSSL config). Nothing under /data,
   # /config, /etc beyond the files named, /proc beyond a confinement label and its own fd
   # listing, /opt/casa beyond /opt/casa/run. What the profile does not mediate, the prelude's
   # syscall filter refuses. pyrun.<digest> names this text: /opt/casa/scripts/pyrun_digest.py
@@ -90,12 +90,16 @@ profile casa flags=(attach_disconnected,mediate_deleted) {
   profile pyrun flags=(mediate_deleted) {
     /opt/casa/run/python3 rm,
     /opt/casa/run/child.py r,
-    /opt/casa/run/pyrun.ee2f35704b81 r,
+    /opt/casa/run/pyrun.954209a51d6d r,
     /etc/ld.so.cache r,
     /usr/lib/@{multiarch}/*.so* rm,
     /usr/lib/python3.[0-9]*/ r,
     /usr/lib/python3.[0-9]*/** rm,
     /usr/lib/locale/** r,
+    /usr/lib/@{multiarch}/gconv/gconv-modules r,
+    /usr/lib/@{multiarch}/gconv/gconv-modules.cache r,
+    /usr/lib/@{multiarch}/gconv/gconv-modules.d/ r,
+    /usr/lib/@{multiarch}/gconv/gconv-modules.d/*.conf r,
     /usr/share/zoneinfo/** r,
     /etc/localtime r,
     /etc/ssl/openssl.cnf r,

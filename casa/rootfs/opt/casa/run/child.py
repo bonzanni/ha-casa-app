@@ -40,7 +40,7 @@ PRINTED_MAX = 40_000           # characters of printed output carried back (scra
 # sentinel line left out (scripts/pyrun_digest.py). The Dockerfile creates
 # /opt/casa/run/pyrun.<digest>, the profile allows exactly that path, and a test fails when
 # any of the three disagree. A child profile of another text cannot open it.
-PROFILE_DIGEST = "ee2f35704b81"
+PROFILE_DIGEST = "954209a51d6d"
 SENTINEL = f"/opt/casa/run/pyrun.{PROFILE_DIGEST}"
 MUST_REFUSE_READ = ("/etc/passwd", "/proc/1/cmdline")   # world-readable: only the profile refuses
 NICE = 10
