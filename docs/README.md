@@ -70,7 +70,6 @@ which is keyed on what you are about to do rather than on subsystem names.
 | installing or removing a persona, where a persona ref may resolve, persona install consent or its revocation, applying a persona override, or the persona sweep | [`architecture/persona-lifecycle.md`](architecture/persona-lifecycle.md) |
 | job persistence, restart recovery, or what a stop does to a delegation | [`architecture/jobs-and-delivery.md`](architecture/jobs-and-delivery.md) |
 | logging, correlation ids, redaction, or a health surface | [`architecture/observability.md`](architecture/observability.md) |
-| nothing; this retired document is deleted in a docs-only change | [`architecture/delegate-answer-relay.md`](architecture/delegate-answer-relay.md) |
 | personas, bindings, prompt composition, the per-surface admission ceilings, or the binding digest | [`architecture/personality.md`](architecture/personality.md) |
 | plugin environment resolution or withholding, the plugin env conf file, or the plugin media outbox | [`architecture/plugin-runtime.md`](architecture/plugin-runtime.md) |
 | plugin installation, artifact identity, or protected-tool declarations | [`architecture/plugins.md`](architecture/plugins.md) |
