@@ -46,6 +46,11 @@ else
   echo "    (no corpus yet — every other check applies in full)"
 fi
 
+# The script runner's child profile, its sentinel rule and child.py's constant must carry
+# one digest: a profile edited without regenerating it would refuse every run on the host.
+venv_test/bin/python casa/rootfs/opt/casa/scripts/pyrun_digest.py check \
+  casa/apparmor.txt casa/rootfs/opt/casa/run/child.py
+
 echo "==> 2/7 docs-impact — claimed surfaces vs the corpus"
 # THE binding copy of the drift gate. CI runs the same script, but a CI check
 # reports after a pull request exists, which leaves a red mark somebody can
