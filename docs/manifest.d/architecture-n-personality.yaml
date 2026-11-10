@@ -67,16 +67,13 @@
     - casa/rootfs/opt/casa/trusted_path.py::trusted_path
     - casa/rootfs/opt/casa/trusted_path.py::_root_path_fragment
     - casa/config.yaml::options
-    - casa/rootfs/opt/casa/uid_kill.py::kill_uid_until_empty
-    - casa/rootfs/opt/casa/uid_kill.py::live_pids_for_uid
     - casa/apparmor.txt
   tests:
     - tests/test_casa_core_agent_loading.py
     - tests/test_setup_nginx_ingress.py
-    - tests/test_uid_kill.py
     - tests/test_trusted_path.py
     - tests/test_apparmor_profile.py
-  related: [architecture/agent-taxonomy.md, architecture/turn-loop.md, architecture/sdk-client-pool.md]
+  related: [architecture/agent-taxonomy.md, architecture/turn-loop.md, architecture/sdk-client-pool.md, architecture/script-runner.md]
   defines_invariants: [INV-SYS-001, INV-SYS-002]
   invariant_tests:
     INV-SYS-001: [tests/test_pin_g1_invariants.py::test_pin_inv_sys_001_materialisation_depends_on_validation]

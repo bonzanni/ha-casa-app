@@ -47,16 +47,16 @@ Two small modules hold mechanisms kept for the future script runner rather than 
 caller in every path. `trusted_path.py` holds the plugin-tools-free PATH rule: the Python
 form (`trusted_path`) for programs Casa runs as root, and the same rule as POSIX shell
 (`_root_path_fragment`), which the core interpreter above carries byte for byte.
-`uid_kill.py` holds the observed kill-by-uid ladder: `kill_uid_until_empty` sends `SIGKILL`
-to every live process under one uid through a pid-pinning primitive, re-enumerates until two
-consecutive scans find none, and claims extinction only on that observation, never on "we
-signalled everything we saw"; with no such primitive it signals nothing and reports the kill
-unverified. `live_pids_for_uid` is the enumeration it reads, zombies excluded.
+`uid_kill.py` holds the observed kill-by-uid ladder the script runner kills its slot uids
+with ([`script-runner.md`](script-runner.md)): `kill_uid_until_empty` claims extinction only
+on two consecutive empty scans, never on "we signalled everything we saw".
 
 The whole container runs under the app's AppArmor profile, `casa/apparmor.txt`; every process
-in it, `docker exec` included, carries the same label. File access is open (`file,`), and the
-capabilities are listed one by one: `kill` is the one the ladder above needs, because an
-engagement's processes run under that engagement's own uid. The profile's first line is an
+in it, `docker exec` included, carries the same label — except the script runner's box, which
+a dedicated interpreter path transitions into the nested child profile `pyrun`
+([`script-runner.md`](script-runner.md)). File access is open (`file,`), and the
+capabilities are listed one by one: `kill` is the one the ladder above needs, because the
+runner's box runs under its own uid. The profile's first line is an
 `abi` line, and without it the kernel enforces none of the network rules. With it, the rules
 keep TCP and UDP open to any destination over IPv4 and IPv6, keep `netlink raw` because glibc's
 `getaddrinfo` reads addresses over NETLINK_ROUTE (in Python and in the agent CLI alike), and
@@ -165,14 +165,11 @@ is what the host renders.
 - `casa/rootfs/opt/casa/trusted_path.py::trusted_path`
 - `casa/rootfs/opt/casa/trusted_path.py::_root_path_fragment`
 - `casa/config.yaml::options`
-- `casa/rootfs/opt/casa/uid_kill.py::kill_uid_until_empty`
-- `casa/rootfs/opt/casa/uid_kill.py::live_pids_for_uid`
 - `casa/apparmor.txt`
 
 **Tests**
 - `tests/test_casa_core_agent_loading.py`
 - `tests/test_setup_nginx_ingress.py`
-- `tests/test_uid_kill.py`
 - `tests/test_trusted_path.py`
 - `tests/test_apparmor_profile.py`
 
@@ -180,4 +177,5 @@ is what the host renders.
 - [`architecture/agent-taxonomy.md`](../architecture/agent-taxonomy.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
 - [`architecture/sdk-client-pool.md`](../architecture/sdk-client-pool.md)
+- [`architecture/script-runner.md`](../architecture/script-runner.md)
 <!-- END SOURCEMAP -->

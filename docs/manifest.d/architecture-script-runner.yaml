@@ -1,0 +1,27 @@
+# Manifest shard: the script runner document (born in its own shard: the S shard stands
+# just under the index ceiling).
+- doc: architecture/script-runner.md
+  summary: The scratchpad's run operation — the AppArmor child profile and the prelude that proves its refusals on every run, the syscall denylist, the digest that ties the loaded profile to the code, Casa's slots, wall clock, frame rule and apply under the pad's stamp, and the kill-by-uid ladder.
+  when_changing: the scratchpad's run operation, the script runner's child profile or its sentinel digest, the prelude or its checks, the syscall denylist, the runner's slots, wall clock or reply, the result's shape, the kill-by-uid ladder or its floor, or the runner's boot preflight
+  covers:
+    - casa/rootfs/opt/casa/pad_run.py
+    - casa/rootfs/opt/casa/run/child.py
+    - casa/rootfs/opt/casa/scripts/pyrun_digest.py
+    - casa/rootfs/opt/casa/uid_kill.py::kill_uid_until_empty
+    - casa/rootfs/opt/casa/uid_kill.py::live_pids_for_uid
+    - casa/rootfs/opt/casa/scratchpad.py::PadStore.snapshot
+    - casa/rootfs/opt/casa/scratchpad.py::PadStore.apply
+    - casa/apparmor.txt
+  tests:
+    - tests/test_pad_run.py
+    - tests/test_run_child.py
+    - tests/test_pyrun_digest.py
+    - tests/test_run_image.py
+    - tests/test_uid_kill.py
+    - tests/test_apparmor_profile.py
+  related: [architecture/scratchpad.md, architecture/overview.md, architecture/delegation.md, architecture/background-job-session.md]
+  defines_invariants: [INV-PAD-012, INV-PAD-013, INV-PAD-014]
+  invariant_tests:
+    INV-PAD-012: [tests/test_pad_run.py::test_no_frame_is_the_boxs_failure_whatever_the_status, tests/test_pad_run.py::test_after_the_frame_every_status_is_the_scripts, tests/test_pad_run.py::test_a_result_casa_does_not_accept_is_unreadable_and_applies_nothing, tests/test_pad_run.py::test_a_result_with_no_final_newline_or_past_the_read_cap_is_unreadable, tests/test_pad_run.py::test_a_pad_written_during_the_run_refuses_the_result, tests/test_pad_run.py::test_a_pad_deleted_during_the_run_refuses_the_result, tests/test_pad_run.py::test_the_apply_passes_the_stores_door, tests/test_pad_run.py::test_pass_is_a_byte_identical_no_op, tests/test_pad_run.py::test_a_renamed_or_new_key_gets_a_normalised_header_and_a_kept_one_keeps_its_spelling, tests/test_pad_run.py::test_the_wall_clock_kills_and_nothing_changes, tests/test_pad_run.py::test_no_reply_reaches_the_clis_save_to_file_threshold, tests/test_scratchpad.py::test_a_pad_changed_and_restored_during_a_run_is_another_pad_to_it, tests/test_scratchpad.py::test_a_pad_expired_and_recreated_with_the_same_lines_is_another_pad_to_it, tests/test_scratchpad.py::test_an_unchanged_pad_applies_once_and_the_same_snapshot_never_twice, tests/test_scratchpad.py::test_a_pad_moved_during_a_run_refuses_under_both_keys, tests/test_scratchpad.py::test_a_route_write_of_identical_text_during_a_run_is_a_change, tests/test_scratchpad.py::test_apply_passes_the_same_door_as_every_change, tests/test_scratchpad.py::test_every_creation_and_change_moves_the_stamp_and_nothing_else_does, tests/test_run_child.py::test_the_real_write_path_carries_every_text_back_identical]
+    INV-PAD-013: [tests/test_run_child.py::test_the_prelude_refuses_on_this_machine_before_running_anything, tests/test_run_child.py::test_the_tree_carries_one_digest, tests/test_run_child.py::test_the_label_must_be_the_enforced_child_label, tests/test_run_child.py::test_a_sentinel_that_does_not_open_refuses, tests/test_run_child.py::test_a_socket_that_opens_or_fails_otherwise_refuses, tests/test_run_child.py::test_a_world_readable_file_that_opens_refuses, tests/test_run_child.py::test_the_descriptor_check_takes_its_exact_form, tests/test_run_child.py::test_a_parent_that_is_not_casa_refuses, tests/test_run_child.py::test_an_identity_that_is_not_the_slots_refuses, tests/test_run_child.py::test_the_environment_may_hold_only_the_coerced_locale, tests/test_run_child.py::test_a_filter_that_does_not_install_or_does_not_refuse_refuses, tests/test_run_child.py::test_the_filter_decodes_to_the_table, tests/test_run_child.py::test_the_filter_refuses_each_class_and_leaves_the_stdlib_working, tests/test_run_child.py::test_main_writes_the_frame_then_the_result_and_exits_with_the_scripts_status, tests/test_pyrun_digest.py::test_check_refuses_a_child_text_edited_without_regenerating, tests/test_pyrun_digest.py::test_check_refuses_any_other_rule_whose_path_can_match_a_sentinel, tests/test_pad_run.py::test_no_frame_is_the_boxs_failure_whatever_the_status, tests/test_pad_run.py::test_the_spawn_line_is_exactly_the_boxs, tests/test_pad_run.py::test_boot_refuses_a_label_that_is_not_an_enforced_name, tests/test_pad_run.py::test_boot_refuses_a_preflight_that_does_not_pass, tests/test_apparmor_profile.py::test_the_child_profile_has_no_network_exec_mount_capability_or_write_rule, tests/test_apparmor_profile.py::test_the_interpreter_copy_transitions_into_the_child_profile]
+    INV-PAD-014: [tests/test_pad_run.py::test_every_run_ends_with_the_ladder_and_a_survivor_parks_the_slot, tests/test_pad_run.py::test_both_slots_parked_is_unavailable_until_one_clears, tests/test_pad_run.py::test_two_runs_at_a_time_one_per_pad, tests/test_pad_run.py::test_boot_parks_a_slot_whose_uid_still_holds_processes, tests/test_uid_kill.py::test_kill_loop_reports_extinct_only_after_observing_empty, tests/test_uid_kill.py::test_a_survivor_is_reported_not_claimed, tests/test_uid_kill.py::test_the_ladder_refuses_a_uid_below_the_floor]
