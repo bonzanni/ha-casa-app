@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.359.0] - 2026-11-11
+
+Not backward compatible. Casa now records which Telegram bot every message, button and job belongs to, so that it can later run more than one bot (one per agent that speaks for itself). Records an older version wrote without that are refused at startup and skipped; an existing installation is converted once with an upgrade step before this version first starts. Approvals that were waiting at the upgrade are asked again.
+
+### Changed
+
+- **Each Telegram bot is its own endpoint.** Casa keeps every message, button, job post, scheduled question, approval and delivery record together with the bot it went through, and always answers through that bot. With today's single bot nothing changes in what you see.
+- **Telegram's webhook address now names the bot** (`/telegram/update/<bot id>`, with a secret per bot). Casa registers it with Telegram itself; nothing to configure.
+- Casa remembers its own bot's id between restarts, so a message that arrives while the bot is still connecting is answered through it once it is up.
+
+### Fixed
+
+- Asking the assistant to re-send a pending consent request crashed instead of reporting what is still waiting.
+
 ## [0.358.0] - 2026-11-10
 
 Not backward compatible. The assistant's `relay_answer` tool is gone; a stored scheduled prompt or a custom assistant prompt that still tells the assistant to call it gets an error for that call, and the assistant answers in its own words instead.
