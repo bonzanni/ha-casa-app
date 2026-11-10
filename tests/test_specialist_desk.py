@@ -17,19 +17,22 @@ import tools as tools_mod
 
 def _desk(now=1000.0):
     reg = sd.DeskRegistry(now=lambda: now)
-    return reg, reg.get_or_create(42, "finance")
+    return reg, reg.get_or_create(111, 42, "finance")
 
 
 # --- registry and window ---------------------------------------------------------
 
-def test_a_desk_is_keyed_by_int_chat_and_role_and_created_once():
+def test_a_desk_is_keyed_by_bot_int_chat_and_role_and_created_once():
     reg = sd.DeskRegistry()
-    a = reg.get_or_create(42, "finance")
-    assert reg.get_or_create(42, "finance") is a
-    assert reg.get_or_create(42, "concierge") is not a
-    assert reg.get_or_create(43, "finance") is not a
-    assert reg.get(42, "finance") is a and reg.get(7, "finance") is None
-    assert (a.chat_id, a.role, a.log, a.last_used, a.waiting) == (42, "finance", [], None, 0)
+    a = reg.get_or_create(111, 42, "finance")
+    assert reg.get_or_create(111, 42, "finance") is a
+    assert reg.get_or_create(111, 42, "concierge") is not a
+    assert reg.get_or_create(111, 43, "finance") is not a
+    assert reg.get_or_create(222, 42, "finance") is not a           # another bot, same chat
+    assert reg.get(111, 42, "finance") is a and reg.get(111, 7, "finance") is None
+    assert reg.get(333, 42, "finance") is None
+    assert (a.bot_id, a.chat_id, a.role, a.log, a.last_used, a.waiting) == (
+        111, 42, "finance", [], None, 0)
     assert isinstance(a.lock, asyncio.Lock)
     assert isinstance(sd.DESKS, sd.DeskRegistry)
 
@@ -281,7 +284,7 @@ def test_a_desk_target_is_a_specialist_never_another_resident(monkeypatch):
     assert sd.is_specialist(tools_mod._agent_role_map["gary"]) is False
     assert sd.is_specialist(SimpleNamespace()) is False               # no kind: not a specialist
     # the delegation gate is the same predicate: a resident target is no desk use
-    origin = {"_operator_turn": True, "channel": "telegram", "chat_id": 42}
+    origin = {"_operator_turn": True, "channel": "telegram", "chat_id": 42, "_tg_bot": 111}
     assert sd.desk_for_delegation(origin, tools_mod._agent_role_map["gary"], "gary") is None
     assert sd.desk_for_delegation(origin, tools_mod._agent_role_map["finance"], "finance") is not None
 
@@ -293,11 +296,11 @@ def test_only_a_plain_operator_dm_turns_delegation_enters_a_desk(monkeypatch):
     and a plugin-setup turn delegate exactly as in v0.340.0: no desk."""
     monkeypatch.setattr(sd, "DESKS", sd.DeskRegistry())
     cfg = SimpleNamespace(kind="specialist", delegates=())
-    dm = {"_operator_turn": True, "channel": "telegram", "chat_id": 42}
+    dm = {"_operator_turn": True, "channel": "telegram", "chat_id": 42, "_tg_bot": 111}
     assert sd.desk_for_delegation(dm, cfg, "finance") is not None
     for marker in ("button", "plugin_setup", "anything"):
         assert sd.desk_for_delegation({**dm, "synthetic": marker}, cfg, "finance") is None, marker
-    assert sd.DESKS.get(42, "finance") is not None and len(sd.DESKS._desks) == 1
+    assert sd.DESKS.get(111, 42, "finance") is not None and len(sd.DESKS._desks) == 1
 
 
 # --- the resident's echo ---------------------------------------------------------
@@ -305,19 +308,19 @@ def test_only_a_plain_operator_dm_turns_delegation_enters_a_desk(monkeypatch):
 def test_the_echo_is_drained_once_bounded_and_body_free(monkeypatch):
     import result_broker as rb
     monkeypatch.setattr(sd, "DESK_ECHO", rb.PostLedger(max_events=64))
-    assert sd.prompt_prefix(42) == ""
+    assert sd.prompt_prefix(111, 42) == ""
     for i in range(7):
-        sd.record_echo(42, f"📊 Finance answered your reply ({i + 1} pages).")
-    sd.record_echo(42, "📊 Finance " + "n" * 200)
-    lines = sd.drain_echo_lines(42)
+        sd.record_echo(111, 42, f"📊 Finance answered your reply ({i + 1} pages).")
+    sd.record_echo(111, 42, "📊 Finance " + "n" * 200)
+    lines = sd.drain_echo_lines(111, 42)
     assert len(lines) == rb.ECHO_MAX_LINES + 1 and lines[-1] == "…and 3 more."
     assert all(len(line) <= rb.ECHO_LINE_MAX for line in lines)
-    assert sd.drain_echo_lines(42) == []                            # once
-    sd.record_echo(42, "📊 Finance answered your reply (1 page).")
-    assert sd.prompt_prefix(42) == "(front desk) 📊 Finance answered your reply (1 page).\n\n"
-    assert sd.prompt_prefix(42) == ""
-    sd.record_echo(0, "never recorded")
-    assert sd.prompt_prefix(0) == ""
+    assert sd.drain_echo_lines(111, 42) == []                            # once
+    sd.record_echo(111, 42, "📊 Finance answered your reply (1 page).")
+    assert sd.prompt_prefix(111, 42) == "(front desk) 📊 Finance answered your reply (1 page).\n\n"
+    assert sd.prompt_prefix(111, 42) == ""
+    sd.record_echo(111, 0, "never recorded")
+    assert sd.prompt_prefix(111, 0) == ""
 
 
 # --- round 2 folds: admission follows reservation order ------------------------------

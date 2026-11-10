@@ -129,6 +129,17 @@ def _under_pass_lock(fn):
 
 logger = logging.getLogger(__name__)
 
+
+def _fresh_route(role: str) -> dict:
+    """The route a swept reminder turn is born with: ``route_for(role)`` at creation
+    (the role's own bot, else Casa's), decided once so that every later reply,
+    question or post of the turn goes through that bot even if the role's
+    endpoint changes meanwhile. Nothing when Telegram is not configured."""
+    from channels.telegram_transport import telegram_transport
+    transport = telegram_transport()
+    return {} if transport is None else {"_tg_bot": transport.route_for(role)}
+
+
 REMINDER_PREFIX = "reminder-"
 
 REPEATS: tuple[str, ...] = ("none", "daily", "weekdays", "weekly", "monthly")
@@ -1149,6 +1160,7 @@ async def sweep_reminders(runtime, now: datetime) -> int:
                         "trigger": name,
                         "cid": new_cid(),
                         "late": True,
+                        **_fresh_route(role),
                         # #485: the SAME rule the scheduler applies — a
                         # reminder delivered late (the restart case this sweep
                         # exists for) must be able to send exactly what it

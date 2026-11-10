@@ -131,7 +131,8 @@ def capture_desk_reply(*, channel, chat_id, user_id, user_name,
     Speaker ``operator``, origin ``operator``, no floor, the chat's
     *resident* as its role, keyed by the provider's message id. Detached,
     like Casa's post line: his words come from no run's transcript, so no
-    run waits on the write. Never raises."""
+    run waits on the write. *channel* is the endpoint that received the
+    reply; its bot is part of the key. Never raises."""
     import logging
     try:
         operator_chat = str(getattr(channel, "chat_id", "") or "").strip()
@@ -147,7 +148,8 @@ def capture_desk_reply(*, channel, chat_id, user_id, user_name,
         if rule is None:
             return
         item = capture.event(
-            source_key=(occurrence.provider_key(name, str(chat_id), str(message_id))
+            source_key=(occurrence.message_key(name, channel.bot_id, str(chat_id),
+                                               str(message_id))
                         if message_id is not None else None),
             role=resident, channel=name, speaker_kind="operator",
             origin_kind="operator", text=text, eligibility=rule,
@@ -177,7 +179,8 @@ def capture_job_reply(*, channel, engagement, user_id, user_name,
     origin ``operator``, no floor, the chat's *resident* as its role, keyed by
     their message (``engagement_key``, the key a memory-writing specialist's
     engagement gives it). Detached, like the desk reply: no run's transcript
-    holds his words. Never raises."""
+    holds his words. *channel* is the endpoint that received the reply; its
+    bot is part of the key. Never raises."""
     import logging
     try:
         if (getattr(engagement, "kind", "") != "specialist"
@@ -193,8 +196,8 @@ def capture_job_reply(*, channel, engagement, user_id, user_name,
         if rule is None:
             return
         item = capture.event(
-            source_key=(occurrence.engagement_key(name, engagement.id,
-                                                  str(message_id))
+            source_key=(occurrence.engagement_key(name, channel.bot_id,
+                                                  engagement.id, str(message_id))
                         if message_id is not None else None),
             role=resident, channel=name, speaker_kind="operator",
             origin_kind="operator", text=text, eligibility=rule,

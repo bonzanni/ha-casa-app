@@ -27,6 +27,7 @@ pytestmark = pytest.mark.asyncio
 _REAL_BOUNDED = tools_mod._run_delegated_agent_bounded
 
 OPERATOR = 42
+BOT = 111          # the endpoint the operator wrote to
 LABEL = "📊 Finance"
 
 
@@ -59,6 +60,8 @@ class _Limiter:
 
 
 class _Channel:
+    bot_id = BOT
+
     def __init__(self, fail_send=False):
         self.replies = []
         self.notices = []
@@ -109,7 +112,7 @@ def env(monkeypatch):
     env = SimpleNamespace(clock=clock, limiter=limiter, calls=calls, respond=_default)
     monkeypatch.setattr(tools_mod, "_run_delegated_agent_bounded", runner)
     env.channel = _Channel()
-    env.desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    env.desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     limiter.desk_holder.append(env.desk)
     return env
 
@@ -148,7 +151,7 @@ async def test_a_reply_runs_one_specialist_turn_and_posts_the_labelled_admitted_
         ("operator", "  more detail please "), ("specialist", "Here you go: **42**")]
     assert env.desk.last_used == 1000.0 and env.desk.waiting == 0
     assert env.channel.notices == []
-    assert sd.prompt_prefix(OPERATOR) == "(front desk) 📊 Finance answered your reply (1 page).\n\n"
+    assert sd.prompt_prefix(BOT, OPERATOR) == "(front desk) 📊 Finance answered your reply (1 page).\n\n"
     assert env.channel.released == [(str(OPERATOR), "cid-1")]
     assert not env.desk.lock.locked()
 
@@ -356,7 +359,7 @@ async def test_an_aborted_run_posts_no_text_and_one_notice(env):
     assert env.channel.replies == []
     assert env.channel.notices == [(OPERATOR, LABEL + " could not handle your reply (specialist_turn_limit).")]
     assert [(e.who, e.text) for e in env.desk.log] == [("operator", "  more detail please "), ("specialist", sd.NO_REPLY)]
-    assert "could not handle your reply" in sd.prompt_prefix(OPERATOR)
+    assert "could not handle your reply" in sd.prompt_prefix(BOT, OPERATOR)
     assert env.channel.released and not env.desk.lock.locked()
 
 
@@ -379,7 +382,7 @@ async def test_a_silent_turn_whose_plugin_posted_is_silent_and_logged_as_a_view(
     await _reply(env)
     assert env.channel.replies == [] and env.channel.notices == []
     assert [e.text for e in env.desk.log] == ["  more detail please ", sd.POSTED_VIEW]
-    prefix = sd.prompt_prefix(OPERATOR)
+    prefix = sd.prompt_prefix(BOT, OPERATOR)
     assert "posted to your chat (2 pages)" in prefix and "answered" not in prefix
 
 
@@ -398,7 +401,7 @@ async def test_a_failed_reply_send_is_logged_and_noticed(env):
     assert len(env.channel.replies) == 1
     assert env.channel.notices == [(OPERATOR, LABEL + " answered; complete delivery could not be confirmed.")]
     assert [e.text for e in env.desk.log] == ["  more detail please ", "Here you go: **42**"]
-    assert "could not be confirmed" in sd.prompt_prefix(OPERATOR)
+    assert "could not be confirmed" in sd.prompt_prefix(BOT, OPERATOR)
 
 
 async def test_a_refused_permit_is_a_busy_notice_and_runs_nothing(env):
@@ -481,7 +484,7 @@ async def test_a_silent_turn_whose_only_outcome_was_a_delivered_file_still_echoe
     await _reply(env)
     assert env.channel.replies == [] and env.channel.notices == []
     assert [e.text for e in env.desk.log] == ["  more detail please ", sd.POSTED_VIEW]
-    prefix = sd.prompt_prefix(OPERATOR)
+    prefix = sd.prompt_prefix(BOT, OPERATOR)
     assert prefix == "(front desk) 📊 Finance sent you a file.\n\n"
 
 
@@ -499,7 +502,7 @@ async def test_a_silent_turns_echo_names_what_was_sent_not_always_a_file(env):
     await _reply(env)
     assert env.channel.replies == [] and env.channel.notices == []
     assert env.desk.log[-1].text == sd.POSTED_VIEW
-    assert sd.prompt_prefix(OPERATOR) == (
+    assert sd.prompt_prefix(BOT, OPERATOR) == (
         "(front desk) 📊 Finance asked you a question.\n"
         "(front desk) 📊 Finance sent you a message.\n\n")
 
@@ -519,7 +522,7 @@ async def test_a_silent_turn_after_a_delivered_link_is_a_view_with_a_casa_line(e
     await _reply(env)
     assert env.channel.replies == [] and env.channel.notices == []
     assert [e.text for e in env.desk.log] == ["  more detail please ", sd.POSTED_VIEW]
-    assert sd.prompt_prefix(OPERATOR) == "(front desk) 📊 Finance posted a link to your chat.\n\n"
+    assert sd.prompt_prefix(BOT, OPERATOR) == "(front desk) 📊 Finance posted a link to your chat.\n\n"
 
 
 async def test_a_landed_message_post_echoes_exactly_its_s3_line(env, monkeypatch):
@@ -538,7 +541,7 @@ async def test_a_landed_message_post_echoes_exactly_its_s3_line(env, monkeypatch
     env.respond = respond
     await _reply(env)
     assert env.channel.notices == []
-    assert sd.prompt_prefix(OPERATOR) == "(front desk) 📊 Finance posted to your chat (2 pages).\n\n"
+    assert sd.prompt_prefix(BOT, OPERATOR) == "(front desk) 📊 Finance posted to your chat (2 pages).\n\n"
 
 
 async def test_one_delivered_send_is_an_outcome_even_when_a_later_send_failed(env):
@@ -554,7 +557,7 @@ async def test_one_delivered_send_is_an_outcome_even_when_a_later_send_failed(en
     await _reply(env)
     assert env.channel.replies == [] and env.channel.notices == []
     assert env.desk.log[-1].text == sd.POSTED_VIEW
-    assert sd.prompt_prefix(OPERATOR) == "(front desk) 📊 Finance sent you a file.\n\n"
+    assert sd.prompt_prefix(BOT, OPERATOR) == "(front desk) 📊 Finance sent you a file.\n\n"
 
 
 # --- #1197: a run cut off past its teardown bound keeps the desk ----------------
@@ -701,7 +704,7 @@ async def test_a_reply_to_a_configurator_busy_in_this_chat_gets_the_busy_line_at
         character=SimpleNamespace(name="Configurator"))
     lease = await configurator_run.acquire(run_key="d-1", via="delegation",
                                            task="do the full audit")
-    desk = sd.DESKS.get_or_create(OPERATOR, "configurator")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "configurator")
     await desk.lock.acquire()                 # the running request's desk use
     try:
         await asyncio.wait_for(_reply(env, desk_role="configurator"), 5)

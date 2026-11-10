@@ -28,6 +28,7 @@ import pytest
 import agent as agent_mod
 import tools
 from bus import BusMessage, MessageType
+from channels.tg_address import TgAddress
 from log_cid import cid_var
 from memory import capture, occurrence, transcript_runs
 from memory.store import MemoryStore
@@ -40,6 +41,7 @@ from test_specialist_memory_tiers import _FakeSDKClient, _specialist_cfg
 pytestmark = [pytest.mark.asyncio]
 
 CHAT = "4242"
+BOT = 111          # the bot that received the operator's messages
 
 
 @pytest.fixture
@@ -130,7 +132,7 @@ def _operator_msg(text: str = "ping", message_id: str = "501",
         content=text, channel="telegram",
         context={"chat_id": CHAT, "user_id": 9001, "message_id": message_id,
                  "_origin_route": "telegram", "_origin_clearance": "private",
-                 "_operator_turn": True, **context})
+                 "_operator_turn": True, "_tg_bot": BOT, **context})
     msg.trusted_user_origin = _person_typed()
     return msg
 
@@ -165,10 +167,11 @@ async def test_repeats_stay_distinct_retry_collapses(mem):
         assert receipt is not None and receipt.outcome == capture.STORED
     assert [e["text"] for e in events(mem)] == ["same words", "same words"]
 
-    key = occurrence.provider_key("telegram", CHAT, "77")
-    assert key == occurrence.provider_key("telegram", CHAT, "77")
-    assert key != occurrence.provider_key("telegram", CHAT, "78")
-    assert key != occurrence.provider_key("telegram", "4243", "77")
+    key = occurrence.message_key("telegram", BOT, CHAT, "77")
+    assert key == occurrence.message_key("telegram", BOT, CHAT, "77")
+    assert key != occurrence.message_key("telegram", BOT, CHAT, "78")
+    assert key != occurrence.message_key("telegram", BOT, "4243", "77")
+    assert key != occurrence.message_key("telegram", 222, CHAT, "77")
     for _ in range(2):
         capture.append(mem, _item("hello", source_key=key))
     assert [e["source_key"] for e in events(mem)].count(key) == 1
@@ -204,8 +207,8 @@ async def test_telegram_redelivery_collapses(mem, tmp_path):
         await agent._process(_operator_msg("ping", "501"))
     operator = [e for e in events(mem) if e["speaker_kind"] == "operator"]
     assert len(operator) == 1
-    assert operator[0]["source_key"] == occurrence.provider_key(
-        "telegram", CHAT, "501")
+    assert operator[0]["source_key"] == occurrence.message_key(
+        "telegram", BOT, CHAT, "501")
     assert operator[0]["provider_message_id"] == "501"
     assert operator[0]["text"] == "ping"
 
@@ -255,7 +258,7 @@ async def test_casas_notes_never_reach_the_captured_text(mem, tmp_path,
     import result_broker as rb
     import specialist_desk as sd
     monkeypatch.setattr(sd, "DESK_ECHO", rb.PostLedger(max_events=64))
-    sd.record_echo(int(CHAT), "📊 Finance answered your reply (1 page).")
+    sd.record_echo(BOT, int(CHAT), "📊 Finance answered your reply (1 page).")
     note = sd.reply_note("a message Casa posted for 📊 Finance",
                          "2026-10-06 21:40", "📊 Finance\nWhich quarter?")
     FakeClient.reset()
@@ -296,8 +299,8 @@ async def test_store_failure_spools_and_never_drops_a_turn(mem, tmp_path,
     lines = spool_lines(mem)
     assert [(ln["table"], ln["item"]["text"]) for ln in lines] == [
         ("events", "ping"), ("events", "pong")]
-    assert lines[0]["item"]["source_key"] == occurrence.provider_key(
-        "telegram", CHAT, "701")
+    assert lines[0]["item"]["source_key"] == occurrence.message_key(
+        "telegram", BOT, CHAT, "701")
     _up(mem)
     assert events(mem) == []
 
@@ -849,7 +852,8 @@ async def test_a_turn_a_delegation_and_an_engagement_turn_each_capture(
     from turn_scripted_session import attach_session
     attach_session(drv, rec, _engagement_client())
     try:
-        drv.submit_operator(rec, "topic message", tg_message_id=55)
+        drv.submit_operator(rec, "topic message",
+                            tg_message=TgAddress(BOT, int(CHAT), 55))
         await _rows_when(mem, 7)
     finally:
         await drv.cancel(rec)
@@ -858,8 +862,8 @@ async def test_a_turn_a_delegation_and_an_engagement_turn_each_capture(
     assert [(e["speaker_kind"], e["text"]) for e in rows[4:]] == [
         ("operator", "topic message"), ("specialist", "first part"),
         ("specialist", "second part")]
-    assert rows[4]["source_key"] == occurrence.provider_key(
-        "telegram", f"engagement:{rec.id}", "55")
+    assert rows[4]["source_key"] == occurrence.engagement_key(
+        "telegram", BOT, rec.id, "55")
 
 
 # --- the turn is never held by capture --------------------------------------

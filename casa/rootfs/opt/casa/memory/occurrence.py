@@ -6,9 +6,12 @@ live forms.
 
 * ``provider:<h>`` — an operator message that carries a provider message id
   (a Telegram DM, or the operator's reply into a job). ``h`` is the sha256 of
-  the channel, the chat and the provider's message id, joined by NUL bytes and
-  truncated to 128 bits, so the same message delivered twice collapses into
-  one event.
+  the channel, the bot that received the message, the chat and the provider's
+  message id, joined by NUL bytes and truncated to 128 bits, so the same
+  message delivered twice collapses into one event. The bot is part of the
+  key because Telegram numbers messages per bot, and two bots' private chats
+  with the operator share the chat id: without it, one bot's message N would
+  collapse into the other's.
 * ``event:<id>`` — every other live item: an operator turn with no provider id
   (a scheduled, reminder or trigger turn), each resident or specialist
   message, a delegated request and answer. ``id`` is a random 128-bit value
@@ -28,6 +31,8 @@ from __future__ import annotations
 import hashlib
 import uuid
 
+from channels.tg_address import AddressError
+
 PROVIDER = "provider"
 EVENT = "event"
 POST = "post"
@@ -38,17 +43,26 @@ def _digest(*parts) -> str:
         "utf-8")).hexdigest()[:32]
 
 
-def provider_key(channel: str, chat: str, provider_message_id: str) -> str:
-    """The key of an operator message that carries a provider message id."""
-    return f"{PROVIDER}:{_digest(channel, chat, provider_message_id)}"
+def _bot(bot: object) -> int:
+    """The receiving bot's id. Only an int names a bot: a route value such as
+    ``"casa"`` (an endpoint not yet verified) can never become part of a key."""
+    if not isinstance(bot, int) or isinstance(bot, bool) or bot <= 0:
+        raise AddressError(f"not a Telegram bot id: {bot!r}")
+    return bot
 
 
-def engagement_key(channel: str, engagement_id: str,
-                   provider_message_id: str) -> str:
-    """The key of an operator message handed to an engagement: one key per
-    message, whichever seam captures it."""
-    return provider_key(channel, f"engagement:{engagement_id}",
-                        provider_message_id)
+def message_key(channel: str, bot: int, chat, provider_message_id) -> str:
+    """The key of an operator message that carries a provider message id,
+    received by *bot* in *chat*."""
+    return f"{PROVIDER}:{_digest(channel, _bot(bot), chat, provider_message_id)}"
+
+
+def engagement_key(channel: str, bot: int, engagement_id: str,
+                   provider_message_id) -> str:
+    """The key of an operator message handed to an engagement, received by
+    *bot*: one key per message, whichever seam captures it."""
+    return message_key(channel, bot, f"engagement:{engagement_id}",
+                       provider_message_id)
 
 
 def post_key(channel: str, chat: str, owner: str, tool_use_id: str,
