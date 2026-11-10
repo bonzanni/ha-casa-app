@@ -156,8 +156,7 @@ async def _rig(tmp_path, monkeypatch, *, quiet=False, started_by="operator",
               "user_id": OPERATOR,
               "job": _job_state(started_by="scheduled" if quiet else started_by,
                                 quiet=quiet)}
-    r.rec = await r.reg.create(kind, "finance", "in_casa", "t", origin,
-                               topic_id=None)
+    r.rec = await r.reg.create(kind, "finance", "in_casa", "t", origin)
     ch = TelegramChannel(bot=r.bot, chat_id=str(CHAT))
     r.client = _Session()
     r.drv = InCasaDriver(
@@ -180,8 +179,6 @@ async def _rig(tmp_path, monkeypatch, *, quiet=False, started_by="operator",
         r.delivered.append(text)
         return ticket
     r.drv.submit_operator = _submit
-    r.topic_notices = AsyncMock()
-    ch._post_engagement_notice = r.topic_notices
 
     async def _finalize_cancel(rec, reason="user"):
         return await tools._finalize_engagement(
@@ -343,7 +340,6 @@ class TestOneNoticePerLostMessage:
         assert handed is False
         assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
             ("The job had just ended — not delivered, please resend.", 7)]
-        assert r.topic_notices.await_count == 0
         assert r.drv.inbound_unread_depth(r.rec.id) == 0
 
     async def test_cancel_racing_a_queued_reply_tells_it_exactly_once(
@@ -369,7 +365,6 @@ class TestOneNoticePerLostMessage:
         assert "stop at row 9" not in "".join(r.client.query_prompts)  # ... never written
         notices = [(m["text"], m["reply_to"]) for m in r.bot.replies()]
         assert notices == [("The job had just ended — not delivered, please resend.", 7)]
-        assert r.topic_notices.await_count == 0
         assert not job_inbox.path_for(r.rec.id).exists()
 
     async def test_a_tapped_answer_refused_is_told_once_on_the_question(
@@ -617,7 +612,7 @@ class TestStartLineCancelAndRetirement:
         r = await _rig(tmp_path, monkeypatch)
         r.reg.record_job_post(r.rec.id, 970, keyboard=JOB_POST_START)
         result = await tools._report_launch_death(
-            None, r.rec, None, kind="launch_incomplete", detail="x", driver=None)
+            None, r.rec, kind="launch_incomplete", detail="x", driver=None)
         assert result is tools.LaunchDeathResult.REPORTED
         await _drain(r)
         assert [(e["message_id"], e["text"]) for e in r.bot.edits] == [

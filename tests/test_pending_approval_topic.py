@@ -160,7 +160,7 @@ async def test_launch_pending_approval_keeps_prefix_from_sdk_context(
     logs = RecordingLogs()
     ends, on_turn_end = _turn_counter()
     drv = InCasaDriver(agent_logs=logs, on_turn_end=on_turn_end)
-    rec = _make_record(kind=kind, role_or_type=ROLE, topic_id=None,
+    rec = _make_record(kind=kind, role_or_type=ROLE,
                        origin={"chat_id": str(OPERATOR), "user_id": OPERATOR})
     await drv.open(rec, ClaudeAgentOptions(model="sonnet"))
     _OPEN.append((drv, rec))
@@ -274,7 +274,7 @@ class _Topic:
         self.ends, on_turn_end = _turn_counter()
         self.drv = InCasaDriver(agent_logs=self.logs, on_turn_end=on_turn_end)
         self.rec = _make_record(id=rec_id, kind=kind, role_or_type=ROLE,
-                                task=rec_id, topic_id=None,
+                                task=rec_id,
                                 origin={"chat_id": str(OPERATOR),
                                         "user_id": OPERATOR})
 

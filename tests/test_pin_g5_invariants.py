@@ -14,7 +14,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 import casa_eval
-import topic_ledger
+from agent_logs import AgentLogs
 from casa_core_middleware import cid_middleware
 from casa_eval.base import Suite, Tester
 from log_redact import RedactingFilter
@@ -126,18 +126,20 @@ def test_pin_inv_state_001_only_whitelist_admitted(tmp_path):
 
 async def test_pin_inv_state_002_missing_is_empty_corrupt_is_per_loader(tmp_path):
     """INV-STATE-002: a missing state file is a valid empty state; a corrupt
-    one is handled per-loader and inconsistently (ledger archives .casabak,
-    session registry renames .corrupt).
+    one is handled per-loader and inconsistently (the agent log's registry
+    archives .casabak, session registry renames .corrupt).
 
-    Red case demonstrated: making the topic ledger raise on a corrupt file
-    instead of archiving fails this test.
+    Red case demonstrated: making the agent log's registry raise on a corrupt
+    file instead of archiving fails this test.
     """
-    assert await topic_ledger.load(path=str(tmp_path / "missing.json")) == []
+    missing = AgentLogs(display_name=str, path=str(tmp_path / "missing.json"))
+    assert (missing._topics, missing._posts) == ({}, [])
 
-    ledger = tmp_path / "ledger.json"
-    ledger.write_text("{broken", encoding="utf-8")
-    assert await topic_ledger.load(path=str(ledger)) == []
-    assert (tmp_path / "ledger.json.casabak").exists()
+    registry = tmp_path / "log-topics.json"
+    registry.write_text("{broken", encoding="utf-8")
+    corrupt = AgentLogs(display_name=str, path=str(registry))
+    assert (corrupt._topics, corrupt._posts) == ({}, [])
+    assert (tmp_path / "log-topics.json.casabak").exists()
 
     sessions = tmp_path / "sessions.json"
     sessions.write_text("{broken", encoding="utf-8")

@@ -175,7 +175,6 @@ async def test_the_stop_drains_a_running_owner_and_reports_the_cancellation(tmp_
     assert rec.origin["error_kind"] == "launch_cancelled"
     assert rec.origin.get("shutdown_reason")
     assert probe.notice_texts == ["⚠️ stopped before reporting a result"]       # one line in the job's log
-    assert channel.close_topic.await_count == 0   # no topic: none was opened
     assert [m.content.kind for m in bus.messages] == ["launch_cancelled"]
     assert registry.launch_drains_complete() is True
 
@@ -213,7 +212,6 @@ async def test_a_stop_latched_during_open_mints_no_owner(tmp_path, monkeypatch):
     created_id = next(iter(registry._records))
     assert registry.get(created_id).status == "error"
     assert probe.notice_texts == ["⚠️ stopped before reporting a result"]
-    assert channel.close_topic.await_count == 0
     assert registry.get(created_id).terminal_notification_pending is False  # acked on return
     assert bus.messages == []                          # the envelope was the telling
     assert all(t.done() or t is asyncio.current_task() for t in asyncio.all_tasks())
@@ -385,7 +383,6 @@ async def test_a_stop_whose_cancellation_report_cannot_persist_still_tells(tmp_p
     rec = registry.get(created_id)
     assert rec.status == "active"                                  # rolled back, live
     assert probe.notice_texts == ["⚠️ could not be recorded"]
-    assert channel.close_topic.await_count == 0
     assert [m.content.kind for m in bus.messages] == ["launch_outcome_uncommitted"]
     assert rec.terminal_notification_pending is False
 
@@ -416,7 +413,6 @@ async def test_a_cancellation_owner_that_loses_to_a_telling_writer_sends_nothing
     assert rec.status == "cancelled"
     assert rec.terminal_notification_pending is True                # still the funnel's
     assert probe.notice_texts == []
-    assert channel.close_topic.await_count == 0
 
 
 # --- diff round 1 (Astra J3): a losing inline abort acknowledges nothing ------------
@@ -449,7 +445,6 @@ async def test_a_losing_inline_abort_does_not_clear_another_writers_obligation(t
     assert rec.terminal_notification_pending is True                 # NOT acknowledged by the loser
     assert [r.id for r in registry.records_owing_terminal_notification()] == [created_id]
     assert bus.messages == []
-    assert channel.close_topic.await_count == 0
 
 
 # --- diff round 1 (Astra J2): the compensator mints nothing after the drains ------------
@@ -499,7 +494,7 @@ async def test_an_inline_abort_reached_after_the_drains_mints_nothing(tmp_path, 
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
     rec = await registry.create(
-        kind="specialist", role_or_type="finance", driver="in_casa", topic_id=42,
+        kind="specialist", role_or_type="finance", driver="in_casa",
         origin={"role": "assistant", "channel": "telegram", "chat_id": "c1", "cid": "x"},
         task="t")
     registry.begin_launch_shutdown()          # the whole stop ran before this launch enrolled
@@ -509,7 +504,7 @@ async def test_an_inline_abort_reached_after_the_drains_mints_nothing(tmp_path, 
         handle = tools_mod._register_launch_safe(rec.id)   # enrolment cancels; not yet delivered
         try:
             return await tools_mod._abort_launch_inline(
-                channel, rec, 42, kind="plugin_superseded", message="moved")
+                channel, rec, kind="plugin_superseded", message="moved")
         finally:
             tools_mod._unregister_launch_safe(handle)
 
@@ -519,7 +514,7 @@ async def test_an_inline_abort_reached_after_the_drains_mints_nothing(tmp_path, 
         await asyncio.sleep(0)
     assert not tools_mod._LAUNCH_DEATH_TASKS     # no abort, no compensator
     assert registry.get(rec.id).status == "active"
-    assert bus.messages == [] and channel.close_topic.await_count == 0
+    assert bus.messages == []
     assert any("plugin_superseded abort after the stop's drains completed" in r.getMessage()
                for r in caplog.records), [r.getMessage() for r in caplog.records]
 
@@ -531,7 +526,7 @@ async def test_the_boot_replay_addresses_a_roleless_record_to_the_configured_ass
     from engagement_registry import EngagementRegistry
     registry = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await registry.create(kind="specialist", role_or_type="finance", driver="in_casa",
-                                topic_id=7, origin={"channel": "telegram", "cid": "c", "chat_id": "1"},
+                                origin={"channel": "telegram", "cid": "c", "chat_id": "1"},
                                 task="t")
     assert await registry.try_transition_terminal(
         rec.id, "error", strict=True, error_kind="x", error_message="m",
@@ -556,9 +551,8 @@ async def test_the_drain_awaits_the_telling_a_just_completed_abort_is_about_to_m
     abort's remaining steps: a task created here runs on the next loop
     iteration and completes, scheduling its done callbacks at the END of the
     ready queue — behind this coroutine's own `sleep(0)` wake-up, which was
-    queued first. (An earlier version relied on the real abort finishing in
-    the same step as its topic close; in CI a failing topic-ledger append
-    added a suspension and the precondition did not hold.)
+    queued first. (Relying on the real abort's own remaining steps made the
+    precondition depend on how many suspensions they happen to hold.)
     """
     import tools as tools_mod
     from engagement_registry import EngagementRegistry
@@ -568,7 +562,7 @@ async def test_the_drain_awaits_the_telling_a_just_completed_abort_is_about_to_m
     bus = _RecordingBus()
     tools_mod = _with_bus(monkeypatch, bus)
     rec = await registry.create(kind="specialist", role_or_type="finance", driver="in_casa",
-                                topic_id=42, origin={"role": "assistant", "channel": "telegram",
+                                origin={"role": "assistant", "channel": "telegram",
                                                      "cid": "c", "chat_id": "1"}, task="t")
     # the abort WON its transition and armed the obligation, as the inline arm does
     assert await registry.try_transition_terminal(
@@ -597,9 +591,8 @@ async def test_the_drain_awaits_the_telling_a_just_completed_abort_is_about_to_m
 # --- a launch that ends before its record exists leaves nothing behind -----------------
 
 async def test_a_cancellation_before_the_record_leaves_nothing_to_drain(tmp_path, monkeypatch):
-    """No topic is opened at launch, so a launch cancelled before its record
-    exists has nothing to undo: no abort task, no record, and the stop does
-    not wait on anything of it."""
+    """A launch cancelled before its record exists has nothing to undo: no
+    abort task, no record, and the stop does not wait on anything of it."""
     probe = _Probe()
     launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     import tools as tools_mod
@@ -617,10 +610,10 @@ async def test_a_cancellation_before_the_record_leaves_nothing_to_drain(tmp_path
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert not [x for x in tools_mod._ABORT_BG_TASKS if not x.done()]
+    assert not [x for x in tools_mod._CANCELLED_LAUNCH_TASKS if not x.done()]
+    assert not [x for x in tools_mod._LAUNCH_DEATH_TASKS if not x.done()]
     await asyncio.wait_for(tools_mod.stop_engagement_launches(registry), 5)
     assert registry._records == {}
-    assert channel.open_engagement_topic.await_count == 0
     assert probe.log_lines == []
 
 
@@ -638,19 +631,18 @@ async def test_a_failure_before_the_record_leaves_nothing_to_drain(tmp_path, mon
     envelope = await asyncio.wait_for(_launch(launcher), 5)
     payload = json.loads(envelope["content"][0]["text"])
     assert payload["kind"] == "record_persist_failed", payload
-    assert not [x for x in tools_mod._ABORT_BG_TASKS if not x.done()]
+    assert not [x for x in tools_mod._CANCELLED_LAUNCH_TASKS if not x.done()]
+    assert not [x for x in tools_mod._LAUNCH_DEATH_TASKS if not x.done()]
     assert registry._records == {}
-    assert channel.open_engagement_topic.await_count == 0
 
 
 # --- diff round 5 (Astra J2): the anchors drain to JOINT quiescence --------------------
 
 async def test_the_stop_returns_only_when_no_anchor_has_pending_work(tmp_path, monkeypatch):
-    """A task in the pre-record abort set completes and, in completing, mints
-    a task into the reporter set — the shape of a launcher released by a
-    finished topic abort whose named abort then tells. Three sequential drains
-    would have drained the reporter set first and marked with this reporter
-    pending."""
+    """A task in the cancelled-launch set completes and, in completing, mints
+    a task into the reporter set — the shape of a cancelled launch's owner
+    whose telling follows. Three sequential drains would have drained the
+    reporter set first and marked with this reporter pending."""
     import tools as tools_mod
     from engagement_registry import EngagementRegistry
     registry = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
@@ -660,15 +652,15 @@ async def test_the_stop_returns_only_when_no_anchor_has_pending_work(tmp_path, m
         await asyncio.sleep(0.05)
         told.append(True)
 
-    async def _pre_record_abort():
+    async def _cancelled_owner():
         await release.wait()
         tell = asyncio.ensure_future(_late_telling())      # minted into the OTHER anchor
         tools_mod._LAUNCH_DEATH_TASKS.add(tell)
         tell.add_done_callback(tools_mod._LAUNCH_DEATH_TASKS.discard)
 
-    abort = asyncio.ensure_future(_pre_record_abort())
-    tools_mod._ABORT_BG_TASKS.add(abort)
-    abort.add_done_callback(tools_mod._ABORT_BG_TASKS.discard)
+    owner = asyncio.ensure_future(_cancelled_owner())
+    tools_mod._CANCELLED_LAUNCH_TASKS.add(owner)
+    owner.add_done_callback(tools_mod._CANCELLED_LAUNCH_TASKS.discard)
 
     stop = asyncio.ensure_future(tools_mod.stop_engagement_launches(registry))
     await asyncio.sleep(0.02)

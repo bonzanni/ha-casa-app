@@ -1695,7 +1695,7 @@ async def _notify_plugin_health_locked(channel_manager: Any, path: str) -> None:
 
 
 # ------------------------------------------------------------------
-# Engagement-topic retention sweep (v0.65.0 [AR-8])
+# Agent log retention
 # ------------------------------------------------------------------
 
 async def _agent_log_retention(channel: Any, agent_logs: Any) -> None:
@@ -1709,73 +1709,6 @@ async def _agent_log_retention(channel: Any, agent_logs: Any) -> None:
         await agent_logs.retention_pass()
     except Exception:  # noqa: BLE001 — never kill the scheduler job
         logger.warning("agent log pass failed", exc_info=True)
-
-
-# Once-per-boot flag for the "grant me Delete messages" operator nag — the
-# notify_config_sync-style dedupe, held in module state (not a report file)
-# because the underlying condition (needs_permission) re-trips on every
-# 6-hour sweep until the operator grants the right. Consumed only on a
-# successful notify — a failed delivery is retried at the next sweep.
-_topic_permission_notified = False
-
-
-async def _sweep_engagement_topics(channel_manager: Any) -> None:
-    """Periodic topics pass — the ``workspace_sweep`` job [AR-8].
-
-    Deletes due terminal-engagement topics recorded in the topic ledger
-    through the telegram channel. When telegram is unconfigured (no
-    channel, or no engagement supergroup) the pass skips cleanly: entries
-    kept, no warning spam. Never raises — sweep_topics handles per-entry
-    telegram errors itself but can raise on a broken channel object, and a
-    broken pass must not kill the shared scheduler job.
-    """
-    global _topic_permission_notified  # noqa: PLW0603 — once-per-boot dedupe
-
-    channel = channel_manager.get("telegram") if channel_manager else None
-    if channel is None or not getattr(channel, "engagement_supergroup_id", None):
-        return
-
-    import topic_ledger
-
-    try:
-        res = await topic_ledger.sweep_topics(
-            channel,
-            chat_id=channel.engagement_supergroup_id,
-            scope="due",
-        )
-    except Exception as exc:  # noqa: BLE001 — never kill the scheduler job
-        logger.warning("topic sweep failed: %s", exc)
-        return
-
-    if res.get("deleted"):
-        logger.info(
-            "topic sweep: deleted=%s kept=%s dropped_mismatched=%s",
-            res.get("deleted"), res.get("kept"), res.get("dropped_mismatched"),
-        )
-
-    if res.get("needs_permission") and not _topic_permission_notified:
-        content = (
-            'Casa needs the "Delete messages" admin right in the engagement '
-            "supergroup to clean up finished topics — for now they are only "
-            "closed, not deleted. Grant it via the group's admin settings "
-            "for the bot (DOCS.md Setup step 6) and I'll retry at the next "
-            "sweep."
-        )
-        # #342: deterministic operator delivery as a DIRECT awaited channel
-        # send — never an LLM turn. The flag is consumed only when the SEND
-        # succeeds; the old bus enqueue consumed it before the outbound
-        # dispatch ran, so a transient Telegram failure suppressed the
-        # reminder for every later sweep that boot. Sol r1-2: is_ready
-        # gates the flag too — send() log-and-drops on an unstarted app.
-        if not getattr(channel, "is_ready", True):
-            return
-        try:
-            await channel.send(casa_text(content), {"cid": new_cid()})
-            _topic_permission_notified = True
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "topic sweep: permission nag notify failed: %s", exc,
-            )
 
 
 # ------------------------------------------------------------------
@@ -1900,7 +1833,7 @@ async def _close_disabled_specialist_engagements(engagement_registry: Any,
 async def _resume_background_jobs(registry, channel, skip=frozenset(),
                                   only=None) -> None:
     """Resume open in-casa jobs once channels and residents are running: each
-    through the job runner's boot path (the topic line, the resume, the
+    through the job runner's boot path (the resume line, the resume, the
     message journal reconciled against the session transcript, then the
     brief or the restart line and every message the session never read).
     *skip*: engagements the boot close of a disabled specialist could not
@@ -1945,7 +1878,7 @@ async def _settle_ended_job_state(registry, driver) -> None:
     Its scratchpad file: removed. A journal or a pad whose record is gone
     altogether is removed too; a live job's is kept.
 
-    "Ended" is the durable status (``settled_terminal_state``), which waits
+    "Ended" is the durable status (``settled_status``), which waits
     out a pending terminal write: one that rolls back leaves the job live,
     its journal unsettled and its pad in place."""
     import background_jobs
@@ -1955,8 +1888,8 @@ async def _settle_ended_job_state(registry, driver) -> None:
 
     async def ended(eid: str) -> bool:
         try:
-            status, _told = await asyncio.wait_for(
-                registry.settled_terminal_state(eid), _SETTLED_STATE_TIMEOUT_S)
+            status = await asyncio.wait_for(
+                registry.settled_status(eid), _SETTLED_STATE_TIMEOUT_S)
         except asyncio.TimeoutError:  # undecided: kept for a later boot
             logger.warning("boot: the state of job %s did not settle in %.0fs",
                            eid[:8], _SETTLED_STATE_TIMEOUT_S)
@@ -3780,21 +3713,6 @@ async def main() -> None:
         coalesce=True,
         max_instances=1,
         misfire_grace_time=60,
-    )
-    # v0.65.0 [AR-8]: every 6 hours, sweep due terminal-engagement topics off
-    # the Telegram sidebar (topic_ledger). The job id is historical.
-    async def _sweep_workspaces_and_topics() -> None:
-        await _sweep_engagement_topics(channel_manager)
-
-    scheduler.add_job(
-        _sweep_workspaces_and_topics,
-        trigger="interval",
-        id="workspace_sweep",
-        hours=6,
-        replace_existing=True,
-        coalesce=True,
-        max_instances=1,
-        misfire_grace_time=3600,
     )
     # Every 30 minutes: delete the agent log's posts before Telegram stops
     # letting the bot delete them (48 hours), and re-check a log that is

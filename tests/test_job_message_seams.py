@@ -75,8 +75,7 @@ async def rig(tmp_path, monkeypatch):
               "chat_id": str(OPERATOR), "user_id": OPERATOR,
               "_origin_clearance": "private",
               "job": jobs.initial_job_state(decl, started_by="operator")}
-    rec = await reg.create("specialist", "finance", "in_casa", "Check", origin,
-                           topic_id=TOPIC)
+    rec = await reg.create("specialist", "finance", "in_casa", "Check", origin)
     bot = _Bot()
     ch = TelegramChannel(bot=bot, chat_id=str(OPERATOR),
                          engagement_supergroup_id=SUPERGROUP)
@@ -85,15 +84,9 @@ async def rig(tmp_path, monkeypatch):
         lifecycle_lock=ch.engagement_lifecycle_lock)
     ch._engagement_registry = reg
     ch._engagement_driver = driver
-    topic_lines: list[str] = []
-
-    async def _notice(r, text):
-        topic_lines.append(text)
-    ch._post_engagement_notice = _notice
     await driver.open(rec, ClaudeAgentOptions())
     cli = FakeCLI.instances[-1]
-    yield SimpleNamespace(reg=reg, rec=rec, ch=ch, drv=driver, cli=cli, bot=bot,
-                          topic=topic_lines)
+    yield SimpleNamespace(reg=reg, rec=rec, ch=ch, drv=driver, cli=cli, bot=bot)
     await driver.cancel(rec)
 
 
@@ -108,7 +101,6 @@ async def test_a_reply_is_accepted_without_waiting_on_the_session(rig):
     assert rig.cli.written == []
     rig.cli.gate.set()
     await until(lambda: rig.cli.texts() == ["use Q3 only"])
-    assert rig.topic == []
 
 
 async def test_a_second_message_is_accepted_while_the_first_write_hangs(rig):
@@ -138,7 +130,6 @@ async def test_a_message_in_the_log_group_never_reaches_the_job(rig, user):
     assert [(m["chat_id"], m["thread"], m["text"]) for m in rig.bot.sent] == [
         (SUPERGROUP, TOPIC,
          "This group is a read-only log. Talk to me in our direct chat.")]
-    assert rig.topic == []
     assert job_inbox.load(rig.rec.id) == []
     assert rig.drv.inbound_unread_depth(rig.rec.id) == 0
     await asyncio.sleep(0.01)
@@ -154,7 +145,6 @@ async def test_a_message_the_journal_cannot_take_is_told_once(rig, tmp_path,
     assert await _reply(rig, "lost?", message_id=41) is False
     assert [(m["reply_to"], m["text"]) for m in rig.bot.sent] == [
         (41, "Your message could not be delivered — please resend it.")]
-    assert rig.topic == []
     assert rig.drv.inbound_unread_depth(rig.rec.id) == 0
 
 
@@ -199,7 +189,9 @@ async def test_a_tapped_answer_hands_its_reservation_to_the_ticket(rig):
     rig.cli.gate.set()
 
 
-async def test_a_lost_journal_entry_is_told_in_reply_to_its_message(rig):
+async def test_a_lost_journal_entry_is_told_in_reply_to_its_message(rig, caplog):
+    """Every journaled operator message names the direct chat message or
+    card to reply to; an entry without one is logged and discharged."""
     await rig.reg.try_transition_terminal(rig.rec.id, "completed", strict=True)
     await rig.ch.tell_journal_lost(
         rig.rec, {"uuid": "u", "text": "x",
@@ -207,11 +199,14 @@ async def test_a_lost_journal_entry_is_told_in_reply_to_its_message(rig):
     await rig.ch.tell_journal_lost(
         rig.rec, {"uuid": "v", "text": "y",
                   "notice": {"chat_id": OPERATOR, "message_id": 40, "answer": True}})
-    await rig.ch.tell_journal_lost(rig.rec, {"uuid": "w", "text": "z", "notice": None})
+    with caplog.at_level("WARNING", logger="channels.telegram"):
+        await rig.ch.tell_journal_lost(
+            rig.rec, {"uuid": "w", "text": "z", "notice": None})
     assert [(m["reply_to"], m["text"]) for m in rig.bot.sent] == [
         (31, "The job had just ended — not delivered, please resend."),
         (40, "The job had already ended; your answer wasn't used.")]
-    assert rig.topic == ["Your message could not be delivered — please resend it."]
+    assert any("no direct chat message to reply to" in r.message
+               for r in caplog.records if r.levelname == "WARNING")
 
 
 async def test_the_finalize_funnel_tells_each_unread_message_once(rig, monkeypatch):

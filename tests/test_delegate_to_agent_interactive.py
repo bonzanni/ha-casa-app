@@ -88,10 +88,7 @@ class TestJobLaunchEngagement:
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
-        tch.engagement_permission_ok = True
         tch.engagement_supergroup_id = -1001
-        tch.open_engagement_topic = AsyncMock(return_value=555)
-        tch.send_to_topic = AsyncMock()
         cm = MagicMock(); cm.get.return_value = tch
         specialist_reg = MagicMock()
         specialist_reg.get.return_value = _make_alex_cfg()
@@ -110,11 +107,9 @@ class TestJobLaunchEngagement:
         payload = json.loads(res["content"][0]["text"])
         assert payload["status"] == "pending"
         assert "topic_id" not in payload
-        tch.open_engagement_topic.assert_not_awaited()
-        tch.setup_engagement_features.assert_not_called()
         driver.open.assert_awaited_once()
         rec = reg.get(payload["engagement_id"])
-        assert rec is not None and rec.topic_id is None
+        assert rec is not None
         # the brief is the session's first write, queued once
         assert driver.enqueue_brief.call_count == 1
         assert driver.enqueue_brief.call_args.args[0] is rec
@@ -144,10 +139,7 @@ class TestJobLaunchEngagement:
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
-        tch.engagement_permission_ok = True
         tch.engagement_supergroup_id = -1001
-        tch.open_engagement_topic = AsyncMock(return_value=556)
-        tch.send_to_topic = AsyncMock()
         cm = MagicMock(); cm.get.return_value = tch
         specialist_reg = MagicMock()
         specialist_reg.get.return_value = _make_alex_cfg()
@@ -178,7 +170,6 @@ class TestJobLaunchEngagement:
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
-        tch.engagement_permission_ok = False
         tch.engagement_supergroup_id = 0
         cm = MagicMock(); cm.get.return_value = tch
         specialist_reg = MagicMock()
@@ -236,12 +227,7 @@ class TestJobLaunchEngagement:
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
-        tch.engagement_permission_ok = True
         tch.engagement_supergroup_id = -1001
-        tch.open_engagement_topic = AsyncMock(return_value=555)
-        tch.send_to_topic = AsyncMock()
-        tch.update_topic_state = AsyncMock()
-        tch.close_topic = AsyncMock()
         cm = MagicMock(); cm.get.return_value = tch
         specialist_reg = MagicMock()
         specialist_reg.get.return_value = _make_alex_cfg()
@@ -265,8 +251,6 @@ class TestJobLaunchEngagement:
         [rec] = list(reg._records.values())
         assert rec.status == "error"
         assert rec.origin["error_kind"] == "driver_start_failed"
-        tch.open_engagement_topic.assert_not_awaited()
-        tch.close_topic.assert_not_awaited()
 
 
 class TestInteractiveModeRetired:
@@ -282,9 +266,7 @@ class TestInteractiveModeRetired:
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
-        tch.engagement_permission_ok = True
         tch.engagement_supergroup_id = -1001
-        tch.open_engagement_topic = AsyncMock(return_value=555)
         cm = MagicMock(); cm.get.return_value = tch
         specialist_reg = MagicMock()
         specialist_reg.get.return_value = _make_alex_cfg()
@@ -329,7 +311,6 @@ class TestInteractiveModeRetired:
         assert "mode='sync'" in payload["message"]
         assert "reply" in payload["message"]
         # nothing launched, nothing silently coerced into another mode
-        tch.open_engagement_topic.assert_not_awaited()
         driver.open.assert_not_awaited()
         assert driver.enqueue_brief.call_count == 0
         assert reg.active_and_idle() == []
@@ -369,8 +350,7 @@ class TestInteractiveModeRetired:
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="Walk me through Q2",
             origin={"role": "assistant", "channel": "telegram", "chat_id": "c1",
-                    "delegation_depth": 1},
-            topic_id=777)
+                    "delegation_depth": 1})
 
         reg, tch, driver = self._wire(tmp_path)
         await reg.load()
@@ -390,4 +370,3 @@ class TestInteractiveModeRetired:
         payload = json.loads((await launch_job("Classify"))["content"][0]["text"])
         assert payload["kind"] == "engagement_busy"
         assert payload["engagement_id"] == legacy.id
-        tch.open_engagement_topic.assert_not_awaited()

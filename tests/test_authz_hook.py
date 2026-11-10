@@ -74,7 +74,7 @@ def _engagement(**overrides):
     specialist with a topic and an operator DM in its own origin. The authz hook
     only ``getattr``s these fields, so a SimpleNamespace is a faithful double."""
     base = dict(
-        id="eng-abc123", kind="specialist", status="active", topic_id=7,
+        id="eng-abc123", kind="specialist", status="active",
         role_or_type="finance",
         origin={"user_id": 100, "chat_id": "42"},
     )

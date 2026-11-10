@@ -30,7 +30,7 @@ async def test_update_plugin_profiles_persists_the_effective_profile(tmp_path):
     reg = await _registry(tmp_path)
     rec = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
-        task="t", origin={}, topic_id=1,
+        task="t", origin={},
         plugin_artifacts=({"name": "gmail", "artifact_id": "a", "path": "/p",
                            "manifest_name": "gmail", "profile": None},
                           {"name": "other", "artifact_id": "b", "path": "/q",
@@ -110,7 +110,7 @@ async def _driver_persists_before_open(monkeypatch, tmp_path, method):
     drv = InCasaDriver(persist_plugin_profiles=persist)
     eng = SimpleNamespace(
         id="eng-1", kind="specialist", role_or_type="finance", origin={},
-        sdk_session_id="sess-1", context_generation=0,
+        sdk_session_id="sess-1",
         plugin_artifacts=({"name": "gmail", "artifact_id": "a", "path": "/p",
                            "manifest_name": "gmail", "profile": None},))
     await getattr(drv, method)(eng, *(["sess-1"] if method == "resume" else []))
@@ -142,7 +142,7 @@ async def test_update_plugin_profiles_touches_only_the_named_rows(tmp_path):
     reg = await _registry(tmp_path)
     rec = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
-        task="t", origin={}, topic_id=1,
+        task="t", origin={},
         plugin_artifacts=({"name": "gmail", "artifact_id": "a", "path": "/p",
                            "manifest_name": "gmail", "profile": "read"},
                           {"name": "other", "artifact_id": "b", "path": "/q",
@@ -219,7 +219,7 @@ async def _driver_refuses_open_when_persist_fails(monkeypatch, method):
     drv = InCasaDriver(persist_plugin_profiles=persist)
     eng = SimpleNamespace(
         id="eng-1", kind="specialist", role_or_type="finance", origin={},
-        sdk_session_id="sess-1", context_generation=0,
+        sdk_session_id="sess-1",
         plugin_artifacts=({"name": "gmail", "artifact_id": "a", "path": "/p",
                            "manifest_name": "gmail", "profile": None},))
     with pytest.raises(OSError):
@@ -245,7 +245,7 @@ async def _real_writer_failure_refuses_open(monkeypatch, tmp_path, method):
     reg = await _registry(tmp_path)
     rec = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
-        task="t", origin={}, topic_id=1,
+        task="t", origin={},
         plugin_artifacts=({"name": "gmail", "artifact_id": "a", "path": "/p",
                            "manifest_name": "gmail", "profile": None},))
     rec.sdk_session_id = "sess-1"

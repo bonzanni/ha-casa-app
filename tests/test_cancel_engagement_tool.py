@@ -19,9 +19,8 @@ class TestCancelEngagement:
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram"},
-            topic_id=42,
         )
-        tch = MagicMock(); tch.send_to_topic = AsyncMock(); tch.close_topic = AsyncMock()
+        tch = MagicMock()
         cm = MagicMock(); cm.get.return_value = tch
         bus = MagicMock(); bus.notify = AsyncMock()
         init_tools(
@@ -65,12 +64,9 @@ async def test_cancel_tells_the_requester(tmp_path, monkeypatch):
             "role": "assistant", "channel": "telegram",
             "chat_id": "123", "cid": "abc",
         },
-        topic_id=42,
     )
 
     tch = MagicMock()
-    tch.send_to_topic = AsyncMock()
-    tch.close_topic = AsyncMock()
     cm = MagicMock()
     cm.get.return_value = tch
     bus = MagicMock()
@@ -107,11 +103,8 @@ class TestCancelFinalizeContract:
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram"},
-            topic_id=42,
         )
         tch = MagicMock()
-        tch.send_to_topic = AsyncMock()
-        tch.close_topic = AsyncMock()
         cm = MagicMock()
         cm.get.return_value = tch
         bus = MagicMock()

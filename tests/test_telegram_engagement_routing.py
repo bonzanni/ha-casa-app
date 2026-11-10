@@ -84,10 +84,11 @@ class TestTheLogGroupIsReadOnly:
         """Even in the thread an older job's topic used: the message, a
         /cancel and the operator's own words reach nothing."""
         ch, drv = _log_group_channel(fake_telegram_bot, engagement_fixture)
-        rec = engagement_fixture.active_record          # its old topic: 555
+        rec = engagement_fixture.active_record
+        old_topic = 555                                  # a thread from before
         for text in ("Alex please continue", "/cancel", "/help"):
             await ch.handle_update(_mk_update(
-                chat_id=-1001, text=text, thread_id=rec.topic_id, user_id=100))
+                chat_id=-1001, text=text, thread_id=old_topic, user_id=100))
         assert drv.submitted == []
         ch._route_to_assistant.assert_not_awaited()
         assert engagement_fixture.registry.get(rec.id).status == "active"

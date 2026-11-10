@@ -433,9 +433,6 @@ WRITES_TO_A_CHAT_ELSEWHERE = {
         "stops a specialist's own work (browsing) and may mark that request's card; it "
         "is refused on every turn but the operator's own live message, so it has no "
         "scheduled arm",
-    "tools.py::react":
-        "sets a reaction on an active engagement's current inbound message and "
-        "does nothing without one; a reaction is not a message",
 }
 
 # CONDITIONAL: one declaration, and whether a call to it is the turn's delivery
@@ -492,7 +489,6 @@ NOT_A_DELIVERY = {
     "tools.py::casa_reload",
     "tools.py::casa_reload_triggers",
     "tools.py::casa_restart_supervised",
-    "tools.py::cleanup_engagement_topics",
     "tools.py::config_git_commit",
     "tools.py::config_trigger_delete",
     "tools.py::config_trigger_upsert",

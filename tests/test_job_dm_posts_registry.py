@@ -39,8 +39,7 @@ async def _job_record(tmp_path, *, quiet: bool = False, job: bool = True):
               "user_id": 100}
     if job:
         origin["job"] = _job(quiet)
-    rec = await reg.create("specialist", "finance", "in_casa", "t", origin,
-                           topic_id=None)
+    rec = await reg.create("specialist", "finance", "in_casa", "t", origin)
     return reg, rec
 
 

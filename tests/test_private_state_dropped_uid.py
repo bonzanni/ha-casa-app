@@ -97,7 +97,7 @@ def _fixture_tree(root: Path) -> None:
         "run/s6/container_environment/HASSIO_TOKEN",
         "data/webhook_secret",
         "data/sessions.json",
-        "data/topic-ledger.json",
+        "data/log-topics.json",
         "data/jobs.json",
         "data/plugin-health.json",
         "data/plugin-setup-episodes.json",
@@ -107,7 +107,7 @@ def _fixture_tree(root: Path) -> None:
         "data/persona_install_acks.json",
         "data/specialist_install_acks.json",
         "data/sessions.json.corrupt",
-        "data/topic-ledger.json.casabak",
+        "data/log-topics.json.casabak",
     ):
         p = root / rel
         p.write_text("sensitive", encoding="utf-8")
@@ -200,7 +200,7 @@ def test_contents_of_a_tightened_directory_are_unreachable(
 
 @pytestmark_root_only
 def test_quarantine_aliases_are_unreachable(enforced: Path) -> None:
-    for rel in ("data/sessions.json.corrupt", "data/topic-ledger.json.casabak"):
+    for rel in ("data/sessions.json.corrupt", "data/log-topics.json.casabak"):
         assert not _readable_as_dropped(str(enforced / rel)), rel
 
 

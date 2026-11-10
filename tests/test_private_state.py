@@ -67,7 +67,6 @@ def test_inventory_pins_every_path_the_advisory_named() -> None:
         "/run/s6/container_environment/HASSIO_TOKEN",
         "/data/webhook_secret",
         "/data/sessions.json",
-        "/data/topic-ledger.json",
         "/data/jobs.json",
         "/data/plugin-health.json",
         "/data/plugin-setup-episodes.json",
@@ -122,7 +121,7 @@ def test_enforce_repairs_a_preexisting_world_readable_file(tmp_path: Path) -> No
     """The upgrade case. On a deployed install every affected file ALREADY
     exists at 0644, and atomic_io preserves an existing file's mode — so
     correct write sites alone repair nothing until the next write, which for
-    e.g. topic-ledger.json may be days away."""
+    e.g. log-topics.json may be days away."""
     secret = _touch(tmp_path, "/data/webhook_secret", 0o644)
     report = private_state.enforce(root=str(tmp_path))
     assert _mode(secret) == 0o600
@@ -143,11 +142,11 @@ def test_enforce_repairs_directories_without_recursing(tmp_path: Path) -> None:
 def test_enforce_covers_the_quarantine_alias_shape(tmp_path: Path) -> None:
     """A corrupt private file is archived aside by os.replace, which PRESERVES
     the pre-upgrade 0644 inode under a name no per-file entry covers
-    (session_registry.py -> sessions.json.corrupt, topic_ledger.py ->
-    topic-ledger.json.casabak). Globbing the suffix closes the shape rather
+    (session_registry.py -> sessions.json.corrupt, agent_logs.py ->
+    log-topics.json.casabak). Globbing the suffix closes the shape rather
     than the two current instances."""
     corrupt = _touch(tmp_path, "/data/sessions.json.corrupt", 0o644)
-    casabak = _touch(tmp_path, "/data/topic-ledger.json.casabak", 0o644)
+    casabak = _touch(tmp_path, "/data/log-topics.json.casabak", 0o644)
     private_state.enforce(root=str(tmp_path))
     assert _mode(corrupt) == 0o600
     assert _mode(casabak) == 0o600
@@ -209,7 +208,7 @@ def test_enforce_does_not_treat_a_private_failure_as_a_credential_one(
 ) -> None:
     """Confidentiality loss is not credential loss: it logs and continues, and
     must never refuse engagement startup."""
-    ledger = _touch(tmp_path, "/data/topic-ledger.json", 0o644)
+    ledger = _touch(tmp_path, "/data/log-topics.json", 0o644)
     real_chmod = os.chmod
 
     def boom(path, mode, *args, **kwargs):  # noqa: ANN001
@@ -289,7 +288,7 @@ def test_credential_modes_ok_ignores_group_only_readability_of_private_files(
 ) -> None:
     """Only the three credential paths gate startup. A non-credential file left
     world-readable is an ERROR in the log, not a refusal to run."""
-    _touch(tmp_path, "/data/topic-ledger.json", 0o644)
+    _touch(tmp_path, "/data/log-topics.json", 0o644)
     assert private_state.credential_modes_ok(root=str(tmp_path)) == []
 
 

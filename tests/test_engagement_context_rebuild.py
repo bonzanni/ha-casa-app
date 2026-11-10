@@ -20,7 +20,7 @@ async def _make(tmp_path, **origin_extra):
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa",
-        task="secret task", topic_id=7,
+        task="secret task",
         origin={"channel": "telegram", "_origin_route": "telegram_dm",
                 "_origin_clearance": "private", **origin_extra},
     )

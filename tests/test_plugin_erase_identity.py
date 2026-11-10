@@ -120,7 +120,7 @@ def test_the_erase_stamps_are_reserved():
 def test_an_erase_marked_engagement_yields_nothing(live_operator):
     stored = _erase_origin(target="finance")
     rec = SimpleNamespace(id="eng-9", kind="specialist", status="active",
-                          topic_id=555, role_or_type="finance", origin=stored)
+                          role_or_type="finance", origin=stored)
     with _Origin(None, engagement=rec):
         assert resolve_grant_identity("finance") == (None, "setup_engagement")
 
@@ -133,6 +133,5 @@ async def test_an_erase_turn_delegates_only_in_sync_mode(monkeypatch, mode):
     payload, is_error = await _delegate(tm, origin, mode)
     assert payload["kind"] == "mode_unsupported_on_setup_turn" and is_error is True
     assert eng_reg.create.await_count == 0
-    assert tch.open_engagement_topic.await_count == 0
     payload, is_error = await _delegate(tm, origin, "sync")
     assert payload["status"] == "ok" and not is_error

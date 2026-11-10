@@ -85,7 +85,7 @@ async def test_a_quiet_scheduled_run_posts_nothing_and_logs_like_any_job(
         runtime, monkeypatch):
     logs = _logs(runtime, monkeypatch)
     rec = await _launch(runtime, QUIET, scheduled=True)
-    assert rec.topic_id is None and jobs.is_quiet_run(rec)
+    assert jobs.is_quiet_run(rec)
     assert rec.status == "active"
     runtime.bot.create_forum_topic.assert_not_awaited()
     # the brief's turn ran and nothing was posted in the direct chat
@@ -125,19 +125,8 @@ async def test_a_quiet_runs_later_turn_and_progress_are_logged_not_posted(
 @pytest.mark.parametrize("decl,scheduled", [(QUIET, False), (DECL, True), (DECL, False)])
 async def test_every_other_run_is_not_quiet_and_opens_no_topic(runtime, decl, scheduled):
     rec = await _launch(runtime, decl, scheduled=scheduled)
-    assert rec.topic_id is None and not jobs.is_quiet_run(rec)
+    assert not jobs.is_quiet_run(rec)
     runtime.bot.create_forum_topic.assert_not_awaited()
-
-
-async def test_a_topic_send_without_a_topic_refuses_rather_than_post_to_general(runtime):
-    for send in (runtime.channel.send_to_topic, runtime.channel.send_to_topic_rich,
-                 runtime.channel.send_response_to_topic):
-        with pytest.raises(ValueError):
-            await send(None, "text")
-    with pytest.raises(ValueError):
-        await runtime.channel.close_topic(None)
-    runtime.bot.send_message.assert_not_awaited()
-    runtime.bot.close_forum_topic.assert_not_awaited()
 
 
 # --- the plugin's delivered slots -------------------------------------------------------
@@ -159,7 +148,7 @@ def _identity(rec):
 async def test_a_job_keeps_the_operators_grant_identity_without_a_topic(job):
     """No job has a topic any more: an active job whose origin names the
     operator and their chat binds its protected calls to them, quiet or not."""
-    rec = SimpleNamespace(id="job-q", kind="specialist", status="active", topic_id=None,
+    rec = SimpleNamespace(id="job-q", kind="specialist", status="active",
                           role_or_type="finance",
                           origin={"chat_id": 1, "user_id": 7, "job": job})
     identity, why = _identity(rec)
@@ -191,7 +180,7 @@ async def test_a_completed_quiet_run_is_told_nowhere_and_a_failed_one_is_told(
         assert [c.status for c in told] == ["error"]
         assert rec.terminal_notification_pending is True
     runtime.bot.send_message.assert_not_awaited()
-    runtime.bot.close_forum_topic.assert_not_awaited()
+    runtime.bot.create_forum_topic.assert_not_awaited()
 
 
 async def test_a_completed_run_that_is_not_quiet_is_still_told(runtime, monkeypatch):
@@ -207,13 +196,13 @@ async def test_a_completed_run_that_is_not_quiet_is_still_told(runtime, monkeypa
 
 
 async def test_a_busy_refusal_for_a_quiet_run_does_not_point_at_a_topic():
-    quiet = SimpleNamespace(id="job-q", topic_id=None, origin={"job": {"quiet": True}})
+    quiet = SimpleNamespace(id="job-q", origin={"job": {"quiet": True}})
     refusal = jobs._job_busy_refusal("ledger", "ledger:classify", "Classify entries", quiet)
     assert refusal["message"] == ("ledger is already running Classify entries on its "
                                   "schedule. Wait for it to finish.")
     assert "topic_id" not in refusal
     # quietness is the record's stamp, not a missing topic: every job lacks one now
-    loud = SimpleNamespace(id="job-l", topic_id=None, origin={"job": {}})
+    loud = SimpleNamespace(id="job-l", origin={"job": {}})
     refusal = jobs._job_busy_refusal("ledger", "ledger:classify", "Classify entries", loud)
     assert refusal["message"] == (
         "ledger already has a running job: Classify entries. Wait for it to finish, "

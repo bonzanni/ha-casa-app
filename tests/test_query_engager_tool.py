@@ -31,7 +31,6 @@ class TestQueryEngager:
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram",
                               "chat_id": "c1"},
-            topic_id=42,
         )
         bus = MagicMock(); bus.notify = AsyncMock()
         init_tools(
@@ -65,7 +64,6 @@ class TestQueryEngager:
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram",
                               "chat_id": "c1"},
-            topic_id=42,
         )
         bus = MagicMock(); bus.notify = AsyncMock()
         init_tools(
@@ -212,7 +210,6 @@ class TestSynthesizeAnswerMaxTokens:
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram",
                               "chat_id": "c1"},
-            topic_id=42,
         )
         bus = MagicMock(); bus.notify = AsyncMock()
         init_tools(

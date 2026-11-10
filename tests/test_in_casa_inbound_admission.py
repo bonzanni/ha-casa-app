@@ -86,8 +86,7 @@ async def _mk_driver_rec(tmp_path, client):
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         "executor", "configurator", "in_casa", "t",
-        {"role": "assistant", "channel": "telegram", "user_id": 77},
-        topic_id=555)
+        {"role": "assistant", "channel": "telegram", "user_id": 77})
     drv = InCasaDriver(record_lookup=reg.get,
                        begin_turn_delivery=reg.begin_turn_delivery)
     attach_session(drv, rec, client)
@@ -158,8 +157,18 @@ async def _mk_channel(tmp_path, fake_telegram_bot, client):
                          engagement_supergroup_id=-1001)
     ch._engagement_registry = reg
     ch._engagement_driver = drv
-    ch._post_engagement_notice = AsyncMock()
+    ch._send_dm_reply = AsyncMock()
     return ch, reg, rec, drv
+
+
+def _card():
+    """The approval card a continuation answers: where its one notice goes."""
+    from channels.telegram import _NoticeTarget
+    return _NoticeTarget(chat_id=100, message_id=5)
+
+
+def _notices(ch):
+    return [c.args[2] for c in ch._send_dm_reply.await_args_list]
 
 
 async def _drain(ch):
@@ -260,16 +269,16 @@ class TestSystemSeamAdmission:
         ch, reg, rec, drv = await _mk_channel(
             tmp_path, fake_telegram_bot, client)
         await reg.mark_error(rec.id, kind="x", message="dead")
-        accepted = await ch.deliver_system_turn(rec, "resume")
+        accepted = await ch.deliver_system_turn(rec, "resume",
+                                                notice_target=_card())
         await _drain(ch)
         import job_inbox
         assert accepted is False
         assert drv.inbound_unread_depth(rec.id) == 0
         assert job_inbox.load(rec.id) == []
         assert client.query_prompts == []
-        notices = [c.args[1] for c in
-                   ch._post_engagement_notice.await_args_list]
-        assert sum("could not be delivered" in n for n in notices) == 1
+        notices = _notices(ch)
+        assert len(notices) == 1 and "resend" in notices[0]
 
     async def test_a_journal_failure_applies_visibility_law(
             self, tmp_path, fake_telegram_bot, monkeypatch):
@@ -284,12 +293,12 @@ class TestSystemSeamAdmission:
         def _refuse(*a, **kw):
             raise job_inbox.JournalError("disk full")
         monkeypatch.setattr(job_inbox, "append", _refuse)
-        accepted = await ch.deliver_system_turn(rec, "resume")
+        accepted = await ch.deliver_system_turn(rec, "resume",
+                                                notice_target=_card())
         assert accepted is False
         assert drv.inbound_unread_depth(rec.id) == 0
-        notices = [c.args[1] for c in
-                   ch._post_engagement_notice.await_args_list]
-        assert sum("could not be delivered" in n for n in notices) == 1
+        notices = _notices(ch)
+        assert len(notices) == 1 and "resend" in notices[0]
 
     async def test_stop_gate_refuses_new_delivery(
             self, tmp_path, fake_telegram_bot):
@@ -299,14 +308,14 @@ class TestSystemSeamAdmission:
         ch, reg, rec, drv = await _mk_channel(
             tmp_path, fake_telegram_bot, client)
         ch._stopping = True
-        accepted = await ch.deliver_system_turn(rec, "resume")
+        accepted = await ch.deliver_system_turn(rec, "resume",
+                                                notice_target=_card())
         await _drain(ch)
         assert accepted is False
         assert client.query_prompts == []
         assert drv.inbound_unread_depth(rec.id) == 0
-        notices = [c.args[1] for c in
-                   ch._post_engagement_notice.await_args_list]
-        assert sum("could not be delivered" in n for n in notices) == 1
+        notices = _notices(ch)
+        assert len(notices) == 1 and "resend" in notices[0]
 
 
 # ===========================================================================
@@ -328,9 +337,6 @@ class TestUngatedTerminalKeepsTheTicket:
         client = _HeldClient()                 # the session never reads it
         reg, rec, drv = await _mk_driver_rec(tmp_path, client)
         tch = MagicMock()
-        tch.send_to_topic = AsyncMock()
-        tch.send_response_to_topic = AsyncMock()
-        tch.close_topic = AsyncMock()
         tch.tell_journal_lost = AsyncMock()
         cm = MagicMock()
         cm.get.return_value = tch
@@ -347,10 +353,8 @@ class TestUngatedTerminalKeepsTheTicket:
                 rec, outcome="cancelled", text="",
                 next_steps=[], driver=drv)
             assert bool(fin) is True
-            posted = "".join(
-                str(c.args) + str(c.kwargs)
-                for c in (list(tch.send_to_topic.call_args_list)
-                          + list(tch.send_response_to_topic.call_args_list)))
+            posted = "".join(str(c) for c in tch.mock_calls
+                             if c[0] != "tell_journal_lost")
             assert "approval resume that died" not in posted
             assert "inbound message(s)" not in posted
             assert tch.tell_journal_lost.await_count == 1

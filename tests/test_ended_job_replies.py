@@ -60,7 +60,7 @@ async def _ended_job(tmp_path, *, role="finance", chat=OPERATOR, user=OPERATOR,
     if plugin is not None:
         origin["plugin_job"] = {"plugin": plugin, "model": "m"}
     rec = await reg.create("plugin" if plugin else "specialist", role, "in_casa",
-                           "t", origin, topic_id=None)
+                           "t", origin)
     for mid, keyboard in posts:
         assert reg.record_job_post(rec.id, mid, keyboard=keyboard) is True
     assert await reg.try_transition_terminal(
@@ -288,7 +288,7 @@ async def test_the_ended_route_never_outranks_a_live_job(routed, tmp_path):
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     origin = {"role": "assistant", "channel": "telegram", "chat_id": str(OPERATOR),
               "user_id": OPERATOR, "job": _job_state()}
-    rec = await reg.create("specialist", "finance", "in_casa", "t", origin, topic_id=None)
+    rec = await reg.create("specialist", "finance", "in_casa", "t", origin)
     reg.record_job_post(rec.id, 501)
     while reg._deferred_persists:
         await asyncio.gather(*list(reg._deferred_persists), return_exceptions=True)
@@ -365,8 +365,7 @@ async def test_ended_jobs_of_two_chats_sharing_a_message_id_stay_apart(routed, t
     for chat, role in ((OPERATOR, "finance"), (99, "travel")):
         origin = {"role": "assistant", "channel": "telegram", "chat_id": str(chat),
                   "user_id": OPERATOR, "job": _job_state()}
-        recs[chat] = await reg.create("specialist", role, "in_casa", "t", origin,
-                                      topic_id=None)
+        recs[chat] = await reg.create("specialist", role, "in_casa", "t", origin)
         assert reg.record_job_post(recs[chat].id, 501) is True
         assert await reg.try_transition_terminal(
             recs[chat].id, "completed", completed_at=ENDED_AT, strict=True)

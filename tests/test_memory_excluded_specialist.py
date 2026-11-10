@@ -172,10 +172,8 @@ async def _finalize(tmp_path, monkeypatch, roles, role, text):
     rec = await reg.create(kind="specialist", role_or_type=role,
                            driver="in_casa", task="t",
                            origin={"role": "assistant", "channel": "telegram",
-                                   "chat_id": "12345"}, topic_id=42)
+                                   "chat_id": "12345"})
     telegram = MagicMock()
-    telegram.send_to_topic = AsyncMock()
-    telegram.close_topic = AsyncMock()
     cm = MagicMock()
     cm.get.return_value = telegram
     bus = MagicMock()
@@ -202,14 +200,6 @@ async def test_a_finalized_engagement_captures_nothing(roles, mem, tmp_path,
     await _assert_no_canary(mem)
 
 
-class _TopicStream:
-    async def emit(self, text):
-        return None
-
-    async def finalize(self, text):
-        return None
-
-
 class _TopicClient:
     async def query(self, prompt):
         return None
@@ -234,7 +224,7 @@ async def test_an_excluded_specialists_engagement_turn_captures_nothing(
     drv = InCasaDriver(on_turn_end=lambda rec, result, api_error: ended.append(rec))
     rec = EngagementRecord(
         id="b" * 32, kind="specialist", role_or_type="browser",
-        driver="in_casa", status="active", topic_id=7, started_at=0.0,
+        driver="in_casa", status="active", started_at=0.0,
         last_user_turn_ts=0.0, completed_at=None,
         sdk_session_id=None, task="t", origin={"channel": "telegram"})
     attach_session(drv, rec, _Session())

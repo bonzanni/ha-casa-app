@@ -2,8 +2,8 @@
 
 These cases were written against ``engage_executor``, the configurator's
 engagement launcher. The configurator is a delegated run now and that tool is
-gone; what they pin about an engagement LAUNCH — the engagement-supergroup
-checks and their in-line retry, the engager's ``engagement_var`` scope, and the
+gone; what they pin about an engagement LAUNCH — that it needs no forum
+group, the engager's ``engagement_var`` scope, and the
 compensation of a launch cancelled after its record exists — belongs to the one
 launcher left, ``tools._launch_interactive_engagement`` (a background job's
 engagement), and is pinned here through it. The configurator-only cases (types,
@@ -33,14 +33,10 @@ _ORIGIN = {"role": "assistant", "channel": "telegram",
            "chat_id": "c1", "cid": "x", "user_text": "hi"}
 
 
-def _channel(*, supergroup=-100123, permission_ok=True):
+def _channel(*, supergroup=-100123):
     channel = MagicMock()
     channel.engagement_supergroup_id = supergroup
-    channel.engagement_permission_ok = permission_ok
-    channel.setup_engagement_features = AsyncMock()
-    channel.open_engagement_topic = AsyncMock(return_value=42)
     channel.bot = MagicMock()
-    channel.bot.edit_forum_topic = AsyncMock()
     return channel
 
 
@@ -72,19 +68,17 @@ class TestEngageExecutorReal:
         """No forum group: the launch neither refuses nor sets anything up
         in the group; the job starts."""
         import agent as agent_mod
-        channel = _channel(supergroup=0, permission_ok=False)
+        channel = _channel(supergroup=0)
         _wire(channel, _registry(tmp_path))
         monkeypatch.setattr(agent_mod, "active_engagement_driver",
                             MagicMock(open=AsyncMock()), raising=False)
         payload = _payload(await launch_job("t", origin=dict(_ORIGIN)))
         assert payload["status"] == "pending", payload
-        assert channel.setup_engagement_features.await_count == 0
-        assert channel.open_engagement_topic.await_count == 0
 
     async def test_non_telegram_origin_gets_accurate_error(self, tmp_path):
         """R-2 (v0.69.7): a non-Telegram origin is told jobs originate from
         Telegram."""
-        _wire(_channel(supergroup=0, permission_ok=False), _registry(tmp_path))
+        _wire(_channel(supergroup=0), _registry(tmp_path))
         payload = _payload(await launch_job(
             "t", origin={**_ORIGIN, "channel": "webhook"}))
         assert payload["kind"] == "engagement_wrong_origin"
@@ -148,15 +142,13 @@ class TestCancelledLaunchAfterRecordCompensates:
             await task
 
         await tools_mod.drain_launch_death_reports()
-        pending = list(tools_mod._ABORT_BG_TASKS)
+        pending = list(tools_mod._CANCELLED_LAUNCH_TASKS)
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
         # The record is terminally errored — not left active with no driver.
         recs = list(registry._records.values())
         assert len(recs) == 1
         assert recs[0].status == "error"
-        assert recs[0].topic_id is None
-        channel.open_engagement_topic.assert_not_awaited()
         # Terra/Sol r2: the driver may have gone LIVE before the cancellation
         # — the compensation runs its idempotent terminal teardown.
         fake_driver.cancel.assert_awaited_once()

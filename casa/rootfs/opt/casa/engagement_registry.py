@@ -8,8 +8,8 @@ Symmetric with :mod:`specialist_registry`. Owns:
 - Idle sweep (session-suspends live clients idle past a day)
 - Orphan recovery (startup: load the file; "active" rows are reconciled to
   idle — no driver survives a restart — and remain dormant until the next
-  user turn in their topic; ``tools.reap_stale_engagements`` retires them
-  after the reap TTL)
+  message for them; ``tools.reap_stale_engagements`` retires them after the
+  reap TTL)
 
 See docs/superpowers/specs/2026-04-22-3.5-plan2-engagement-primitive-design.md.
 """
@@ -200,8 +200,8 @@ class EngagementRecord:
       active ──first idle sweep past 24h──▶ idle
       active ──registry load after restart──▶ idle   (D-4 boot reconcile)
       idle    ──next user turn──▶ active
-      active  ──emit_completion / /complete──▶ completed
-      active  ──/cancel / cancel_engagement──▶ cancelled
+      active  ──emit_completion──▶ completed
+      active  ──Cancel button / cancel_engagement──▶ cancelled
       active/idle ──reap sweep past ENGAGEMENT_REAP_DAYS──▶ cancelled  (D-4)
       active  ──resume twice failed / sweep orphan──▶ error
     """
@@ -211,14 +211,12 @@ class EngagementRecord:
     role_or_type: str
     driver: str
     status: str
-    topic_id: int | None
     started_at: float
     last_user_turn_ts: float
     completed_at: float | None
     sdk_session_id: str | None
     origin: dict[str, Any]
     task: str
-    current_state_emoji: str | None = None
     # C-1 v0.37.2: snapshot of executor's tools.allowed at engagement
     # creation.
     tools_allowed: tuple[str, ...] = ()
@@ -230,21 +228,13 @@ class EngagementRecord:
     # rebuilds from THESE recorded paths, never a re-resolution of current
     # assignments. Preserved by every rewrite.
     plugin_artifacts: tuple[dict, ...] = ()
-    # #369: set (durably, in the same strict write as the clearance clamp)
-    # when a downgrade invalidates this engagement's session context. While
-    # True, every resume path refuses to resume the recorded session and the
-    # tool choke points refuse to bind the record — the flag clears only once
-    # a fresh session has been established at the clamped floor. One-way per
-    # downgrade: a crash between clamp and rebuild leaves a record that
-    # refuses resume, never one that resurrects the pre-clamp transcript.
+    # Set by a memory wipe (written into the record file while Casa is down)
+    # on every live in_casa engagement: the wipe removed its session
+    # transcripts, so there is nothing to resume. While True, every resume
+    # path refuses to resume the recorded session and the tool choke points
+    # refuse to bind the record (``tools._engagement_rebuild_fence``); the
+    # job ends as one that could not be resumed. Never cleared.
     context_rebuild_pending: bool = False
-    # #369 (Terra diff-gate r2): monotonic generation, bumped by every clamp
-    # that moves the record. The boolean above cannot protect a launch that
-    # was suspended across a full clamp→rebuild→flag-clear cycle — the stale
-    # launch resumes, sees False, and delivers its pre-clamp prompt. A
-    # launcher captures this at prompt-source time and the drivers compare it
-    # immediately before the initial enqueue; any change aborts the launch.
-    context_generation: int = 0
     # Task 6 (spec §4.6): the concurrency Permit this specialist
     # engagement holds, if any (set by tools.py's
     # _launch_interactive_engagement right after `create()`, None for executor
@@ -253,7 +243,7 @@ class EngagementRecord:
     # — a live Permit cannot survive a restart; concurrency state is
     # memory-only and resets with the process. Released exactly once by
     # `_finalize_engagement` (the shared completion/cancel/reap funnel)
-    # or, for a pre-finalize failure (topic/driver-start), inline at the
+    # or, for a pre-finalize failure (driver start), inline at the
     # point of failure — see _launch_interactive_engagement.
     permit: Any = None
     # #283: the agent-spawn occupancy token (specialist_limits.SpawnToken)
@@ -267,14 +257,6 @@ class EngagementRecord:
     # not release a token whose marked record remains live). Released
     # exactly once by ``_release_permit`` on every terminal transition.
     agent_spawn_permit: Any = None
-    # W-R6 (v0.81.0): the persisted SHORT topic title (~40 chars). Set once at
-    # launch (a launcher-supplied ``topic_title`` normalized, or a
-    # Casa-derived fallback from the task), then read by BOTH the
-    # topic-name state edit (telegram.update_topic_state) — a single durable
-    # source.
-    # Additive + absent-tolerant on load (legacy rows have no key → "" → each
-    # reader falls back to the derived concise_task label, no crash).
-    topic_title: str = ""
     # #766: this record's terminal outcome was committed by the FINALIZATION
     # FUNNEL, which announces it to the party that asked for the work — and
     # that telling has not yet been acknowledged. Set in the same durable write
@@ -374,7 +356,6 @@ class EngagementRegistry:
         # BEFORE ``load()`` runs (design r3, Sol: casa_core's boot order).
         self._agent_spawn_limiter = agent_spawn_limiter
         self._records: dict[str, EngagementRecord] = {}
-        self._topic_index: dict[int, str] = {}
         # DM message id -> the job record that posted it, for every post of a
         # record that counts as live. Rebuilt from the records at ``load()``,
         # extended by ``record_job_post`` and emptied for a record when its
@@ -388,11 +369,6 @@ class EngagementRegistry:
         # terminal records at ``load()``, so a record that aged out of the
         # tombstone leaves it at the next boot.
         self._ended_post_index: dict[tuple[int | None, int], str] = {}
-        # #678/#692: whether the terminal path CONFIRMED a telling into each
-        # terminal engagement's topic. In-memory, never persisted — see
-        # ``record_terminal_telling``. Bounded by the record set: dropped
-        # wherever a record is dropped.
-        self._terminal_telling: dict[str, bool] = {}
         self._lock = asyncio.Lock()
         # #588: strong refs for the background tombstone persists scheduled by
         # ``begin_turn_delivery`` (which may not await). Without a reference the
@@ -458,18 +434,15 @@ class EngagementRegistry:
                     role_or_type=row["role_or_type"],
                     driver=row["driver"],
                     status=row["status"],
-                    topic_id=row.get("topic_id"),
                     started_at=float(row["started_at"]),
                     last_user_turn_ts=float(row["last_user_turn_ts"]),
                     completed_at=row.get("completed_at"),
                     sdk_session_id=row.get("sdk_session_id"),
                     origin=dict(row.get("origin") or {}),
                     task=row.get("task", ""),
-                    current_state_emoji=row.get("current_state_emoji"),
                     tools_allowed=tuple(row.get("tools_allowed") or ()),
                     permission_mode=row.get("permission_mode") or "acceptEdits",
                     plugin_artifacts=tuple(row.get("plugin_artifacts") or ()),
-                    topic_title=row.get("topic_title", "") or "",
                     context_rebuild_pending=bool(
                         row.get("context_rebuild_pending", False)),
                     # #766: a row written before this field existed owes
@@ -480,8 +453,6 @@ class EngagementRegistry:
                         row.get("terminal_notification_pending", False)),
                     transcripts_reaped=bool(
                         row.get("transcripts_reaped", False)),
-                    context_generation=int(
-                        row.get("context_generation", 0) or 0),
                     dm_posts=_message_ids(row.get("dm_posts")),
                     ui_posts=_keyboard_posts(row.get("ui_posts")),
                     questions=_question_map(row.get("questions")),
@@ -492,7 +463,7 @@ class EngagementRegistry:
             # D-4 boot reconcile (v0.69.0): a record loaded as "active" claims
             # a live driver, but no driver survives a restart — the process
             # that ran it died with the old container. Idle is the truthful
-            # state: dormant, resumable on the next user turn in its topic
+            # state: dormant, resumable on the next message for it
             # (update_user_turn flips it back), and visible to the reap sweep.
             if rec.status == "active":
                 rec.status = "idle"
@@ -514,8 +485,6 @@ class EngagementRegistry:
                 rec.agent_spawn_permit = self._agent_spawn_limiter.restore()
             self._records[rec.id] = rec
             loaded[rec.id] = rec
-            if rec.topic_id is not None:
-                self._topic_index[rec.topic_id] = rec.id
             if rec.status in ("active", "idle"):
                 for message_id in rec.dm_posts:
                     self._job_post_index[message_id] = rec.id
@@ -566,59 +535,16 @@ class EngagementRegistry:
     def get(self, engagement_id: str) -> EngagementRecord | None:
         return self._records.get(engagement_id)
 
-    def record_terminal_telling(
-        self, engagement_id: str, confirmed: bool,
-    ) -> None:
-        """#678/#692: record whether the terminal path CONFIRMED a telling into
-        this engagement's topic — the completion summary or, failing that, the
-        plain disclosure that replaces it.
+    async def settled_status(self, engagement_id: str) -> str:
+        """#692: the record's status, read UNDER the registry lock; ``""`` for
+        an unknown id.
 
-        In-memory, NEVER persisted, and deliberately not a record field. It
-        coordinates two tasks inside one process — the finalize funnel and the
-        delivery task of a follow-up turn that is still in flight — and it has
-        no meaning after a restart, because a restart has no surviving turn to
-        adjudicate. Making it durable would make it a second terminal state,
-        which is a change to the engagement state machine and is not this.
-
-        Written only from inside the funnel's topic block, BEFORE the topic
-        close and therefore before the tail's ``driver.cancel`` ends the
-        response iterator that the reader is waiting on. Synchronous, so it
-        cannot be reordered across an await.
-
-        Bounded by the record set: the entry is dropped wherever its record is.
-        """
-        self._terminal_telling[engagement_id] = bool(confirmed)
-
-    async def settled_terminal_state(
-        self, engagement_id: str,
-    ) -> tuple[str, bool]:
-        """#692: the record's status AND whether the terminal path confirmed a
-        telling into its topic, read together UNDER the registry lock.
-
-        Two reasons it is one compound accessor rather than two reads.
-
-        The lock, first. :meth:`get` is lock-free by design and every existing
-        caller wants that. This one does not: ``try_transition_terminal``'s
-        strict path commits the terminal fields IN MEMORY, then awaits the
-        tombstone write, then FULL-FIELD restores them if that write fails —
-        all inside ``self._lock``. A lock-free reader landing in that window
-        sees ``completed`` for a transition that rolls back live. The follow-up
-        cutoff owner uses that answer to decide whether to stay silent, so
-        reading the transient value there means swallowing a notice that is
-        owed — the exact harm #692 exists to remove.
-
-        The compounding, second, and it is a review ruling rather than a
-        convenience: a terminal STATUS is not proof that anything was told, and
-        leaving a status-only accessor beside this one "invites the same proxy
-        regression" (Terra, second design round) — the next caller asks the
-        cheap question and re-creates the defect. So there is one question to
-        ask here, and it is the whole question. It also costs one lock
-        acquisition instead of two.
-
-        ``(status, told)``. An unknown id reads ``("", False)``. A record with
-        no recorded telling reads ``False``: not knowing that the topic was
-        told is not knowing that it was, and on this path the fail-open
-        direction is toward telling the operator.
+        :meth:`get` is lock-free by design and every other caller wants that.
+        This one does not: ``try_transition_terminal``'s strict path commits
+        the terminal fields IN MEMORY, then awaits the tombstone write, then
+        FULL-FIELD restores them if that write fails — all inside
+        ``self._lock``. A lock-free reader landing in that window sees
+        ``completed`` for a transition that rolls back live.
 
         Nothing is awaited inside the critical section, so this adds no new
         suspension point to the lock's own holders. Callers must still bound
@@ -628,9 +554,7 @@ class EngagementRegistry:
         """
         async with self._lock:
             rec = self._records.get(engagement_id)
-            if rec is None:
-                return ("", False)
-            return (rec.status, self._terminal_telling.get(engagement_id, False))
+            return "" if rec is None else rec.status
 
     def counts_as_live(self, engagement_id: str) -> bool:
         """Whether the record is live for routing and filing a job's direct
@@ -809,10 +733,6 @@ class EngagementRegistry:
                 return False
             return True
 
-    def by_topic_id(self, topic_id: int) -> EngagementRecord | None:
-        rec_id = self._topic_index.get(topic_id)
-        return self._records.get(rec_id) if rec_id else None
-
     # -- Persist helper ---------------------------------------------------
 
     async def _write_tombstone_locked(self, *, strict: bool = False) -> None:
@@ -824,10 +744,9 @@ class EngagementRegistry:
         the file.
 
         ``strict`` (B3, Sol r1): when True, a persistence failure PROPAGATES
-        instead of being swallowed — used by ``set_channel_state(strict=True)``
-        (#529), whose sentinel scheme needs a durable write-ahead barrier. All other
-        callers keep the best-effort warn-and-continue semantics
-        (strict=False).
+        instead of being swallowed — used by the strict mutators, whose
+        in-memory change must match disk. All other callers keep the
+        best-effort warn-and-continue semantics (strict=False).
 
         #529 settle-on-cancel: the ``to_thread`` write cannot be interrupted,
         only abandoned — and an abandoned write's ``os.replace`` can land a
@@ -876,23 +795,19 @@ class EngagementRegistry:
                 "role_or_type": rec.role_or_type,
                 "driver": rec.driver,
                 "status": rec.status,
-                "topic_id": rec.topic_id,
                 "started_at": rec.started_at,
                 "last_user_turn_ts": rec.last_user_turn_ts,
                 "completed_at": rec.completed_at,
                 "sdk_session_id": rec.sdk_session_id,
                 "origin": _persistable_origin(rec.origin),
                 "task": rec.task,
-                "current_state_emoji": rec.current_state_emoji,
                 "tools_allowed": list(rec.tools_allowed),
                 "permission_mode": rec.permission_mode,
                 "plugin_artifacts": [dict(pa) for pa in rec.plugin_artifacts],
-                "topic_title": rec.topic_title,
                 "context_rebuild_pending": rec.context_rebuild_pending,
                 "terminal_notification_pending":
                     rec.terminal_notification_pending,
                 "transcripts_reaped": rec.transcripts_reaped,
-                "context_generation": rec.context_generation,
                 # A terminal record's questions are stored empty: the write
                 # that commits the terminal status is the one that drops them
                 # (``_settle_job_posts`` then empties memory). Its posts are
@@ -941,11 +856,9 @@ class EngagementRegistry:
         driver: str,
         task: str,
         origin: dict[str, Any],
-        topic_id: int | None,
         tools_allowed: tuple[str, ...] | list[str] = (),
         permission_mode: str = "acceptEdits",
         plugin_artifacts: tuple[dict, ...] | list[dict] = (),
-        topic_title: str = "",
         agent_spawn_permit: Any = None,
     ) -> EngagementRecord:
         # #283 belt-and-suspenders: a record whose origin carries the
@@ -969,7 +882,6 @@ class EngagementRegistry:
             role_or_type=role_or_type,
             driver=driver,
             status="active",
-            topic_id=topic_id,
             started_at=now,
             last_user_turn_ts=now,
             completed_at=None,
@@ -979,7 +891,6 @@ class EngagementRegistry:
             tools_allowed=tuple(tools_allowed),
             permission_mode=permission_mode or "acceptEdits",
             plugin_artifacts=tuple(dict(pa) for pa in plugin_artifacts),
-            topic_title=topic_title,
             # #283 (design r4): ownership transfers HERE, at create — once
             # this call returns successfully, terminal transitions own the
             # release. If create raises (rollback ran, no record exists),
@@ -989,12 +900,10 @@ class EngagementRegistry:
         )
         async with self._lock:
             self._records[engagement_id] = rec
-            if topic_id is not None:
-                self._topic_index[topic_id] = engagement_id
 
             # #326: STRICT persistence — the record's whole point is crash
             # recovery, so reporting success after a swallowed write failure
-            # hands the caller a running topic/workspace that a restart will
+            # hands the caller a running workspace that a restart will
             # neither recover nor reap. On failure the in-memory insert is
             # rolled back and the error propagates (the engage/delegate call
             # sites already surface launch-path failures as tool errors).
@@ -1002,10 +911,6 @@ class EngagementRegistry:
             # cancelled mid-``to_thread`` cannot tear memory from disk.
             def _rollback() -> None:
                 self._records.pop(engagement_id, None)
-                self._terminal_telling.pop(engagement_id, None)
-                if (topic_id is not None
-                        and self._topic_index.get(topic_id) == engagement_id):
-                    del self._topic_index[topic_id]
 
             async def _persist() -> None:
                 try:
@@ -1056,8 +961,8 @@ class EngagementRegistry:
                         )
                 raise
         logger.info(
-            "Engagement %s created (kind=%s role_or_type=%s topic_id=%s)",
-            engagement_id[:8], kind, role_or_type, topic_id,
+            "Engagement %s created (kind=%s role_or_type=%s)",
+            engagement_id[:8], kind, role_or_type,
         )
         return rec
 
@@ -1350,7 +1255,7 @@ class EngagementRegistry:
     async def mark_error(self, engagement_id: str, kind: str, message: str) -> bool:
         """Returns True when THIS call flipped the record to ``error`` — like
         ``try_transition_terminal``, only the winner may run terminal side
-        effects (topic cleanup). False for an unknown record or one a
+        effects. False for an unknown record or one a
         concurrent finalizer already committed terminal (#326): a failed
         resume racing a /cancel must not overwrite ``cancelled`` with
         ``error`` and run duplicate cleanup."""
@@ -1391,7 +1296,7 @@ class EngagementRegistry:
         suspension points (e.g. a forced-reload await), so a concurrent
         /cancel can race between them. This method is the single
         authoritative gate — only the first caller to flip the record
-        terminal may run finalize side effects (topic close, DelegationComplete
+        terminal may run finalize side effects (DelegationComplete
         NOTIFICATION, summary retain).
 
         ``stale_before`` (reap, v0.69.6): win ONLY if ``last_user_turn_ts`` is
@@ -1418,7 +1323,7 @@ class EngagementRegistry:
         ``strict`` (v0.79.0 §3, Sol r6-2/r7-2): the finalize path uses STRICT
         transactional persistence. Non-strict callers keep the historical
         best-effort behavior (a tombstone write failure is swallowed and the
-        in-memory flip stands, which could leave a closed topic with no
+        in-memory flip stands, which could leave an ended job with no
         terminal record for boot reconciliation to find). Strict snapshots
         EVERY field the transition mutates (status, completed_at, and the
         error metadata on ``origin``) and, on tombstone-write failure, restores
@@ -1547,9 +1452,9 @@ class EngagementRegistry:
                 # not an `Exception`, so it used to escape leaving memory
                 # terminal while disk still said live — the INV-ENG-002 split
                 # this path exists to prevent. Guarded by
-                # ``_last_tombstone_ok`` exactly as ``set_channel_state``
-                # does (#529): a cancellation whose settled write COMMITTED
-                # keeps the mutation, because memory and disk already agree.
+                # ``_last_tombstone_ok`` (#529): a cancellation whose settled
+                # write COMMITTED keeps the mutation, because memory and disk
+                # already agree.
                 except BaseException:
                     if not self._last_tombstone_ok:
                         _restore()
@@ -1778,63 +1683,6 @@ class EngagementRegistry:
                 raise cancelled
             if task.exception() is not None:
                 raise task.exception()
-
-    async def set_channel_state(
-        self,
-        engagement_id: str,
-        *,
-        current_state_emoji: str | None = None,
-        strict: bool = False,
-    ) -> None:
-        """E-12 (v0.37.0): update the channel-state subset on a record.
-
-        ``current_state_emoji`` is applied only if not None; omitting it leaves
-        the current value untouched. Unknown ``engagement_id`` is a no-op (matches
-        the other mutators' tolerance for stale callers).
-
-        ``strict`` (#529): a persistence failure PROPAGATES and the in-memory
-        fields ROLL BACK to their prior values — memory must never claim what
-        disk refused, because ``update_topic_state``'s no-op guard reads the
-        live record and a restart reloads the disk truth. The rollback also
-        runs when a cancellation propagated with the settled write FAILED
-        (``_last_tombstone_ok`` False); a cancellation whose settled write
-        committed keeps the mutation (memory and disk agree).
-        """
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                return
-            prior = rec.current_state_emoji
-            if current_state_emoji is not None:
-                rec.current_state_emoji = current_state_emoji
-            try:
-                await self._write_tombstone_locked(strict=strict)
-            except BaseException:
-                if strict and not self._last_tombstone_ok:
-                    rec.current_state_emoji = prior
-                raise
-
-    async def set_initial_state_emoji(
-        self, engagement_id: str, emoji: str,
-    ) -> None:
-        """#529 (Terra design-r2): launch-time initial-emoji publication —
-        sets ``current_state_emoji`` ONLY when the record is non-terminal and
-        no emoji state exists yet (``None``). An unconditional launch-path
-        write could overwrite a settled terminal paint's emoji (disk says
-        active on a closed topic, with no later repaint to repair it) or an
-        in-flight paint's uncertain ``""`` sentinel (re-arming the wrongful
-        no-op the sentinel exists to break). Best-effort persistence, like
-        the launch paths it serves."""
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                return
-            if rec.status in ("completed", "cancelled", "error"):
-                return
-            if rec.current_state_emoji is not None:
-                return
-            rec.current_state_emoji = emoji
-            await self._write_tombstone_locked()
 
     # -- v0.79.0 (§4) question numbering + open-question ledger --------------
 

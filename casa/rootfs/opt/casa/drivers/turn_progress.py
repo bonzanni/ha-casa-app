@@ -40,7 +40,7 @@ _ACTIVITY_RESEARCH = frozenset({"WebFetch", "WebSearch"})
 
 
 # #1350: Casa's own tools, in the operator's words — "using casa-framework
-# tools" told a configurator topic nothing about what was happening. Keyed on
+# tools" told the operator nothing about what was happening. Keyed on
 # the tool name after the ``mcp__casa-framework__`` prefix: exact names first,
 # then name prefixes; anything unlisted keeps the generic phrase.
 _CASA_TOOL_PREFIX = "mcp__casa-framework__"

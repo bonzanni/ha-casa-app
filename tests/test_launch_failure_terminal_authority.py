@@ -1,40 +1,14 @@
-"""#757 red case — INV-ENG-019: what authorizes an irreversible topic close.
+"""#757 — a named launch-failure arm acts only on a transition it won.
 
-Specified by **sol** in the drive redcase round (MODE: SPECIFY) against
-``f414c4c6a149aefa08c097b1fbf98ee771cc937e``, with a convergent specification
-from terra. Accepted by **terra**.
+A launch-failure arm settles its job (the message journal) only on the
+strength of a terminal transition this call both WON and durably persisted. A
+transition another writer won, and a transition whose persist rolled back
+leaving the record live, each leave the record to its owner. The arm still
+answers its caller with its own named fault, and posts no notice.
 
-The invariant this module pins:
-
-    A launch-failure arm aborts its engagement's topic only on the strength of a
-    terminal transition this call both WON and durably persisted. A transition
-    another writer won, and a transition whose persist rolled back leaving the
-    record live, each leave the topic open and the record to its owner. The arm
-    still answers its caller with its own named fault, and still posts no notice.
-
-Pre-fix terminus, read at ``f414c4c6``:
-
-  - ``engagement_registry.py:1325-1420`` — the strict arm snapshots every
-    mutated field and, on a persist failure, restores the FULL snapshot and
-    re-raises, so the record is left LIVE with memory equal to disk; a
-    non-winner is refused with ``False``.
-  - ``tools.py:8129-8143`` — ``LaunchDeathResult`` is three-way ON PURPOSE
-    because collapsing these to one value "conflates a LOST terminal race …
-    with a ROLLED-BACK persist".
-  - ``tools.py:8488-8499`` — ``_abort_engagement_topic``, the irreversible act
-    performed unconditionally after the discarded mark.
-  - ``docs/architecture/engagement-failure-and-restart.md:39`` — INV-ENG-019,
-    which SETTLES what #757 left open: the abort rides only on a terminal
-    transition this call both won and durably persisted. `:123` says so in
-    terms — the named-fault exemption "buys these arms their silence, never the
-    authority to close a topic on a transition they did not win or did not
-    persist".
-
-**Every assertion here is on an OUTCOME**, never on an arrangement: painted /
-closed / ledger-appended counts, and the status read back OUT OF THE TOMBSTONE
-FILE. Nothing in this module configures ``mark_error`` as a mock, so the truthy
-``MagicMock`` default that keeps ``test_engage_executor_tool.py:1362`` green
-with the defect live cannot reach it.
+**Every assertion here is on an OUTCOME**, never on an arrangement: the
+journal settles and channel calls counted, and the status read back OUT OF THE
+TOMBSTONE FILE. Nothing in this module configures ``mark_error`` as a mock.
 """
 
 from __future__ import annotations
@@ -64,50 +38,39 @@ pytestmark = [pytest.mark.asyncio]
 # --------------------------------------------------------------------------
 
 class _Effects:
-    """Every operator-visible effect a launch-failure arm can produce."""
+    """What a launch-failure arm can do beyond its record: settle the job's
+    journal, and post through the channel."""
 
     def __init__(self) -> None:
-        self.painted: list[tuple] = []
-        self.closed: list[int] = []
-        self.ledger: list[tuple] = []
-        self.notices = 0
+        self.settled: list[str] = []
+        self.channel: MagicMock | None = None
 
     @property
-    def counts(self) -> tuple[int, int, int, int]:
-        return (len(self.painted), len(self.closed), len(self.ledger),
-                self.notices)
+    def posts(self) -> list:
+        """Every call on the channel that would put a message somewhere."""
+        calls = self.channel.mock_calls if self.channel else []
+        return [c for c in calls
+                if c[0].lstrip("_").startswith(("send", "post", "deliver",
+                                                 "notify", "tell"))]
+
+    @property
+    def counts(self) -> tuple[int, int]:
+        return (len(self.settled), len(self.posts))
 
 
-def _channel(effects: _Effects, topic_id: int):
+def _channel(effects: _Effects):
     ch = MagicMock()
-    ch.engagement_permission_ok = True
-    ch.engagement_supergroup_id = -1001
-    ch.open_engagement_topic = AsyncMock(return_value=topic_id)
-    ch.send_to_topic = AsyncMock()
-
-    async def _paint(*, engagement_id, new_state):
-        effects.painted.append((engagement_id, new_state))
-
-    async def _close(*, thread_id):
-        effects.closed.append(thread_id)
-
-    async def _notice(*a, **kw):
-        effects.notices += 1
-
-    ch.update_topic_state = AsyncMock(side_effect=_paint)
-    ch.close_topic = AsyncMock(side_effect=_close)
-    ch._post_engagement_notice = AsyncMock(side_effect=_notice)
+    effects.channel = ch
     return ch
 
 
-def _ledger_spy(monkeypatch, effects: _Effects):
-    import topic_ledger
+def _settle_spy(monkeypatch, effects: _Effects):
+    import tools
 
-    async def _append(*, engagement_id, chat_id, topic_id, outcome,
-                      closed_at=None, path=None):
-        effects.ledger.append((engagement_id, topic_id, outcome))
+    async def _settle(rec, driver):
+        effects.settled.append(rec.id)
 
-    monkeypatch.setattr(topic_ledger, "append", _append)
+    monkeypatch.setattr(tools, "_settle_job_journal", _settle)
 
 
 def _disk_rows(tombstone) -> list[dict]:
@@ -194,8 +157,7 @@ def _build_job(tmp_path, monkeypatch, effects, *, arm):
 
     tombstone = tmp_path / "engagements.json"
     registry = EngagementRegistry(tombstone_path=str(tombstone))
-    channel = _channel(effects, 555)
-    _ledger_spy(monkeypatch, effects)
+    channel = _channel(effects)
 
     cm = MagicMock()
     cm.get = MagicMock(return_value=channel)
@@ -273,21 +235,22 @@ async def _run(family, tmp_path, monkeypatch, effects, *, arm, sabotage=None):
 # the red cases
 # --------------------------------------------------------------------------
 
-class TestOnlyADurableWinMayCloseTheTopic:
-    """INV-ENG-019, the two arms the base gets wrong."""
+class TestOnlyADurableWinSettlesTheJob:
+    """The two arms of a specialist-hosted job's launch."""
 
     @pytest.mark.parametrize(
         "case,family,arm,kind", ARMS, ids=[a[0] for a in ARMS])
-    async def test_a_lost_terminal_race_leaves_the_topic_open(
+    async def test_a_lost_terminal_race_leaves_the_record_to_its_owner(
         self, case, family, arm, kind, tmp_path, monkeypatch,
     ):
         """Another writer committed the terminal first.
 
         The winner owns every terminal side effect (INV-ENG-001), so this arm
-        may paint nothing, close nothing and append nothing — while still
-        answering its caller with its own named fault.
+        settles nothing and posts nothing — while still answering its caller
+        with its own named fault.
         """
         effects = _Effects()
+        _settle_spy(monkeypatch, effects)
         payload, registry, tombstone = await _run(
             family, tmp_path, monkeypatch, effects,
             arm=arm, sabotage=lambda reg, _t: _cancel_on_create(reg))
@@ -296,7 +259,7 @@ class TestOnlyADurableWinMayCloseTheTopic:
         assert payload["kind"] == kind, payload
 
         # The outcome, not the arrangement.
-        assert effects.counts == (0, 0, 0, 0), effects.counts
+        assert effects.counts == (0, 0), effects.counts
 
         rows = _disk_rows(tombstone)
         assert [r["status"] for r in rows] == ["cancelled"], rows
@@ -304,16 +267,16 @@ class TestOnlyADurableWinMayCloseTheTopic:
 
     @pytest.mark.parametrize(
         "case,family,arm,kind", ARMS, ids=[a[0] for a in ARMS])
-    async def test_a_rolled_back_persist_leaves_the_topic_open(
+    async def test_a_rolled_back_persist_leaves_the_record_live(
         self, case, family, arm, kind, tmp_path, monkeypatch,
     ):
         """The terminal mark never reached disk.
 
         The strict arm restores the full snapshot and re-raises, so the record
-        is still LIVE and memory equals disk. An irreversible close here would
-        orphan a record boot replay will resume into a topic that is gone.
+        is still LIVE and memory equals disk; its job is not settled.
         """
         effects = _Effects()
+        _settle_spy(monkeypatch, effects)
         payload, registry, tombstone = await _run(
             family, tmp_path, monkeypatch, effects,
             arm=arm, sabotage=_fail_terminal_write)
@@ -321,7 +284,7 @@ class TestOnlyADurableWinMayCloseTheTopic:
         assert payload["status"] == "error", payload
         assert payload["kind"] == kind, payload
 
-        assert effects.counts == (0, 0, 0, 0), effects.counts
+        assert effects.counts == (0, 0), effects.counts
 
         rows = _disk_rows(tombstone)
         assert [r["status"] for r in rows] == ["active"], rows
@@ -332,26 +295,25 @@ class TestOnlyADurableWinMayCloseTheTopic:
 
     @pytest.mark.parametrize(
         "case,family,arm,kind", ARMS, ids=[a[0] for a in ARMS])
-    async def test_a_durable_win_ends_the_record_and_opens_no_topic(
+    async def test_a_durable_win_ends_the_record_and_settles_the_job(
         self, case, family, arm, kind, tmp_path, monkeypatch,
     ):
         """The regression control for every arm: the arm's own transition
-        wins and persists, the record is ``error`` on disk, and since a job
-        opens no topic at launch there is nothing to paint, close or record
-        for retention — and still no notice."""
+        wins and persists, the record is ``error`` on disk, its job is
+        settled once — and still no notice."""
         effects = _Effects()
+        _settle_spy(monkeypatch, effects)
         payload, registry, tombstone = await _run(
             family, tmp_path, monkeypatch, effects, arm=arm)
 
         assert payload["status"] == "error", payload
         assert payload["kind"] == kind, payload
 
-        assert effects.counts == (0, 0, 0, 0), effects.counts
-
         rows = _disk_rows(tombstone)
+        assert effects.counts == (1, 0), effects.counts
+        assert effects.settled == [rows[0]["id"]]
         assert [r["status"] for r in rows] == ["error"], rows
         assert rows[0]["origin"]["error_kind"] == kind, rows[0]["origin"]
-        assert rows[0].get("topic_id") is None, rows[0]
 
 
 class TestTheAuthorityOutlivesItsLauncher:
@@ -414,5 +376,5 @@ class TestTheAuthorityOutlivesItsLauncher:
 
         # The abort outlived its launcher: the journal was settled.
         assert len(settled) == 1, settled
-        assert effects.counts == (0, 0, 0, 0)
+        assert effects.posts == []
         assert [r["status"] for r in _disk_rows(tombstone)] == ["error"]

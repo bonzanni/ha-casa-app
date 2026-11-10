@@ -22,7 +22,6 @@ class TestEngagementRecord:
             role_or_type="finance",
             driver="in_casa",
             status="active",
-            topic_id=12345,
             started_at=1000.0,
             last_user_turn_ts=1000.0,
             completed_at=None,
@@ -32,7 +31,6 @@ class TestEngagementRecord:
         )
         assert rec.id == "e1"
         assert rec.kind == "specialist"
-        assert rec.topic_id == 12345
         assert rec.sdk_session_id is None
         assert rec.origin["role"] == "assistant"
 
@@ -57,7 +55,6 @@ class TestRegistryInitAndLoad:
                 "role_or_type": "finance",
                 "driver": "in_casa",
                 "status": "active",
-                "topic_id": 42,
                 "started_at": 1000.0,
                 "last_user_turn_ts": 1000.0,
                 "last_idle_reminder_ts": 0.0,
@@ -72,7 +69,29 @@ class TestRegistryInitAndLoad:
         records = reg.active_and_idle()
         assert len(records) == 1
         assert records[0].id == "e1"
-        assert records[0].topic_id == 42
+
+    async def test_an_older_rows_dropped_keys_load_and_are_not_written_back(
+            self, tmp_path):
+        """A row an older version wrote still loads (the loader reads named
+        keys); the keys no field holds any more are dropped at the next
+        write."""
+        from engagement_registry import EngagementRegistry
+
+        tombstone = tmp_path / "engagements.json"
+        tombstone.write_text(json.dumps([{
+            "id": "e1", "kind": "specialist", "role_or_type": "finance",
+            "driver": "in_casa", "status": "active", "topic_id": 42,
+            "topic_title": "Q3", "current_state_emoji": "🟢",
+            "context_generation": 3, "started_at": 1000.0,
+            "last_user_turn_ts": 1000.0, "origin": {}, "task": "x",
+        }]))
+        reg = EngagementRegistry(tombstone_path=str(tombstone))
+        await reg.load()
+        assert reg.get("e1").status == "idle"
+        (row,) = json.loads(tombstone.read_text())
+        assert row["id"] == "e1"
+        assert not {"topic_id", "topic_title", "current_state_emoji",
+                    "context_generation"} & set(row)
 
     async def test_load_corrupt_tombstone_truncates_and_returns_empty(self, tmp_path, caplog):
         from engagement_registry import EngagementRegistry
@@ -88,7 +107,7 @@ class TestRegistryInitAndLoad:
 
 
 class TestRegistryCreate:
-    async def test_create_assigns_uuid_and_indexes_topic(self, tmp_path):
+    async def test_create_assigns_uuid_and_writes_tombstone(self, tmp_path):
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
@@ -98,25 +117,12 @@ class TestRegistryCreate:
             driver="in_casa",
             task="task text",
             origin={"role": "assistant"},
-            topic_id=777,
         )
         assert rec.id and len(rec.id) >= 32
         assert rec.status == "active"
         assert reg.get(rec.id) is rec
-        assert reg.by_topic_id(777) is rec
         # Tombstone written
         assert (tmp_path / "e.json").exists()
-
-    async def test_create_without_topic_id_still_writes_tombstone(self, tmp_path):
-        from engagement_registry import EngagementRegistry
-
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-        rec = await reg.create(
-            kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t", origin={}, topic_id=None,
-        )
-        assert rec.topic_id is None
-        assert reg.by_topic_id(0) is None
 
     async def test_create_strips_non_persistable_origin_from_tombstone(self, tmp_path):
         """Task 10: origin snapshots may carry LIVE, non-JSON objects (a
@@ -147,7 +153,6 @@ class TestRegistryCreate:
                 "_voice_handoff_reservation": _LiveReservation(),
                 "voice_route_capabilities": frozenset({"cap"}),
             },
-            topic_id=None,
         )
         # In-memory record keeps the live objects for in-process use.
         assert rec.origin["speaker_provenance"] is prov
@@ -168,13 +173,13 @@ class TestRegistryStateTransitions:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-        rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
+        rec = await reg.create("specialist", "finance", "in_casa", "t", {})
         await reg.mark_completed(rec.id, completed_at=time.time())
         assert rec.status == "completed"
         rows = json.loads((tmp_path / "e.json").read_text())
         assert [r["id"] for r in rows] == [rec.id]
         assert rows[0]["status"] == "completed"
-        # Still in memory for short-term lookups (by_topic_id after /cancel)
+        # Still in memory for short-term lookups
         assert reg.get(rec.id) is rec
 
     async def test_terminal_tombstones_pruned_after_retention(self, tmp_path):
@@ -183,11 +188,11 @@ class TestRegistryStateTransitions:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-        old = await reg.create("executor", "configurator", "in_casa", "t1", {}, 1)
+        old = await reg.create("executor", "configurator", "in_casa", "t1", {})
         await reg.mark_completed(old.id, completed_at=time.time() - 31 * 86400)
         # An in_casa record ages out only once the transcript reaper is done.
         await reg.mark_transcripts_reaped([old.id])
-        fresh = await reg.create("specialist", "finance", "in_casa", "t2", {}, 2)
+        fresh = await reg.create("specialist", "finance", "in_casa", "t2", {})
         rows = json.loads((tmp_path / "e.json").read_text())
         ids = [r["id"] for r in rows]
         assert fresh.id in ids
@@ -206,10 +211,10 @@ class TestRegistryStateTransitions:
         }
         tombstone = tmp_path / "engagements.json"
         tombstone.write_text(json.dumps([
-            {**base, "id": "e-active", "status": "active", "topic_id": 1},
-            {**base, "id": "e-idle", "status": "idle", "topic_id": 2},
+            {**base, "id": "e-active", "status": "active"},
+            {**base, "id": "e-idle", "status": "idle"},
             # recent completed_at so the 30d tombstone-prune keeps it.
-            {**base, "id": "e-done", "status": "completed", "topic_id": 3,
+            {**base, "id": "e-done", "status": "completed",
              "completed_at": time.time()},
         ]))
         reg = EngagementRegistry(tombstone_path=str(tombstone))
@@ -234,7 +239,7 @@ class TestRegistryStateTransitions:
         tombstone = tmp_path / "engagements.json"
         tombstone.write_text(json.dumps([{
             "id": "e-idle", "kind": "specialist", "role_or_type": "finance",
-            "driver": "in_casa", "status": "idle", "topic_id": 2,
+            "driver": "in_casa", "status": "idle",
             "started_at": 1000.0, "last_user_turn_ts": 1000.0,
             "origin": {}, "task": "t",
         }]))
@@ -247,7 +252,7 @@ class TestRegistryStateTransitions:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-        rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
+        rec = await reg.create("specialist", "finance", "in_casa", "t", {})
         await reg.mark_idle(rec.id)
         assert rec.status == "idle"
         await reg.update_user_turn(rec.id, ts=3000.0)
@@ -258,7 +263,7 @@ class TestRegistryStateTransitions:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-        rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
+        rec = await reg.create("specialist", "finance", "in_casa", "t", {})
         await reg.persist_session_id(rec.id, "sess-abc")
         assert rec.sdk_session_id == "sess-abc"
 
@@ -273,7 +278,7 @@ class TestRegistryStateTransitions:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-        rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
+        rec = await reg.create("specialist", "finance", "in_casa", "t", {})
 
         def boom(snapshot):
             raise OSError("disk full")
@@ -287,7 +292,7 @@ class TestRegistryStateTransitions:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-        rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
+        rec = await reg.create("specialist", "finance", "in_casa", "t", {})
         await reg.mark_error(rec.id, kind="resume_failed", message="SDK rotated")
         assert rec.status == "error"
         assert rec.origin.get("error_kind") == "resume_failed"
@@ -300,7 +305,7 @@ class TestRegistryStateTransitions:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-        rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
+        rec = await reg.create("specialist", "finance", "in_casa", "t", {})
 
         won = await reg.try_transition_terminal(rec.id, "cancelled")
         assert won is True
@@ -322,7 +327,7 @@ class TestRegistryStateTransitions:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-        rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
+        rec = await reg.create("specialist", "finance", "in_casa", "t", {})
         won = await reg.try_transition_terminal(
             rec.id, "error", error_kind="emit_completion_error", error_message="boom",
         )
@@ -340,11 +345,11 @@ class TestRegistryStateTransitions:
         """v0.79.0 (§3, Sol r7-2): the STRICT terminal transition snapshots
         EVERY mutated field (status, completed_at, error metadata) and, on a
         tombstone-write failure, restores the FULL snapshot and re-raises — no
-        closed topic with a torn (memory ≠ disk) terminal record."""
+        torn (memory ≠ disk) terminal record."""
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-        rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
+        rec = await reg.create("specialist", "finance", "in_casa", "t", {})
         # Baseline: an active record with no error metadata.
         assert rec.status == "active"
         assert "error_kind" not in rec.origin
@@ -378,7 +383,7 @@ class TestRegistryStateTransitions:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-        rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
+        rec = await reg.create("specialist", "finance", "in_casa", "t", {})
 
         async def _driver():
             await reg.try_transition_terminal(rec.id, "completed", strict=True)
@@ -402,7 +407,7 @@ class TestRegistryStateTransitions:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-        rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
+        rec = await reg.create("specialist", "finance", "in_casa", "t", {})
         with _mock.patch.object(
             reg, "_write_tombstone", side_effect=OSError("disk full"),
         ):
@@ -414,8 +419,8 @@ class TestRegistryStateTransitions:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-        live = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
-        gone = await reg.create("specialist", "ops", "in_casa", "t", {}, 2)
+        live = await reg.create("specialist", "finance", "in_casa", "t", {})
+        gone = await reg.create("specialist", "ops", "in_casa", "t", {})
         await reg.try_transition_terminal(gone.id, "completed")
         ids = {r.id for r in reg.terminal_records()}
         assert gone.id in ids and live.id not in ids
@@ -445,70 +450,6 @@ class TestRegistryStateTransitions:
         assert "procedural_epoch" not in row
 
 
-class TestChannelStateFields:
-    """E-12 (v0.37.0): EngagementRecord carries channel-side state."""
-
-    async def test_record_has_channel_fields_with_defaults(self, tmp_path):
-        from engagement_registry import EngagementRegistry
-        reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "engagements.json"),
-        )
-        rec = await reg.create(
-            kind="executor", role_or_type="configurator",
-            driver="in_casa", task="t", origin={}, topic_id=42,
-        )
-        assert rec.current_state_emoji is None
-
-    async def test_set_channel_state_persists_each_field(self, tmp_path):
-        from engagement_registry import EngagementRegistry
-        reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "engagements.json"),
-        )
-        rec = await reg.create(
-            kind="executor", role_or_type="configurator",
-            driver="in_casa", task="t", origin={}, topic_id=42,
-        )
-        await reg.set_channel_state(rec.id, current_state_emoji="🟢")
-        assert rec.current_state_emoji == "🟢"
-
-    async def test_set_channel_state_leaves_omitted_fields_untouched(self, tmp_path):
-        from engagement_registry import EngagementRegistry
-        reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "engagements.json"),
-        )
-        rec = await reg.create(
-            kind="executor", role_or_type="configurator",
-            driver="in_casa", task="t", origin={}, topic_id=42,
-        )
-        await reg.set_channel_state(rec.id, current_state_emoji="🟡")
-        await reg.set_channel_state(rec.id)
-        assert rec.current_state_emoji == "🟡"
-
-    async def test_channel_fields_round_trip_through_tombstone(self, tmp_path):
-        from engagement_registry import EngagementRegistry
-        tombstone = tmp_path / "engagements.json"
-        reg = EngagementRegistry(tombstone_path=str(tombstone))
-        rec = await reg.create(
-            kind="executor", role_or_type="configurator",
-            driver="in_casa", task="t", origin={}, topic_id=42,
-        )
-        await reg.set_channel_state(rec.id, current_state_emoji="🟢")
-
-        reg2 = EngagementRegistry(tombstone_path=str(tombstone))
-        await reg2.load()
-        rec2 = reg2.get(rec.id)
-        assert rec2 is not None
-        assert rec2.current_state_emoji == "🟢"
-
-    async def test_set_channel_state_unknown_engagement_noop(self, tmp_path):
-        from engagement_registry import EngagementRegistry
-        reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "engagements.json"),
-        )
-        # Should not raise.
-        await reg.set_channel_state("does-not-exist", current_state_emoji="🟢")
-
-
 @pytest.fixture
 def registry(tmp_path):
     from engagement_registry import EngagementRegistry
@@ -525,7 +466,6 @@ class TestToolsAllowedField:
             driver="in_casa",
             task="probe",
             origin={},
-            topic_id=None,
         )
         assert rec.tools_allowed == ()
 
@@ -537,7 +477,6 @@ class TestToolsAllowedField:
             driver="in_casa",
             task="probe",
             origin={},
-            topic_id=None,
             tools_allowed=allow,
         )
         assert rec.tools_allowed == allow
@@ -553,7 +492,6 @@ class TestToolsAllowedField:
             driver="in_casa",
             task="t",
             origin={},
-            topic_id=None,
             tools_allowed=("Bash(npm*)", "Read"),
         )
         # Fresh registry reading the same tombstone:
@@ -609,7 +547,6 @@ class TestTombstoneAtomicity:
         rec = await reg.create(
             kind="executor", role_or_type="configurator", driver="in_casa",
             task="keep me", origin={"channel": "telegram", "chat_id": 1},
-            topic_id=7,
         )
         first = json.loads(tombstone.read_text(encoding="utf-8"))
         assert first[0]["id"] == rec.id
@@ -647,7 +584,7 @@ class TestTerminalGuards:
     async def test_mark_idle_never_overwrites_terminal(self, registry):
         rec = await registry.create(
             kind="executor", role_or_type="configurator", driver="in_casa",
-            task="t", origin={}, topic_id=1,
+            task="t", origin={},
         )
         assert await registry.try_transition_terminal(rec.id, "cancelled")
         await registry.mark_idle(rec.id)
@@ -656,7 +593,7 @@ class TestTerminalGuards:
     async def test_mark_error_loses_to_terminal_winner(self, registry):
         rec = await registry.create(
             kind="executor", role_or_type="configurator", driver="in_casa",
-            task="t", origin={}, topic_id=1,
+            task="t", origin={},
         )
         assert await registry.try_transition_terminal(rec.id, "cancelled")
         won = await registry.mark_error(rec.id, kind="resume_failed", message="x")
@@ -667,7 +604,7 @@ class TestTerminalGuards:
     async def test_mark_error_wins_on_live_record(self, registry):
         rec = await registry.create(
             kind="executor", role_or_type="configurator", driver="in_casa",
-            task="t", origin={}, topic_id=1,
+            task="t", origin={},
         )
         won = await registry.mark_error(rec.id, kind="boom", message="m")
         assert won is True
@@ -677,14 +614,14 @@ class TestTerminalGuards:
     async def test_mark_completed_and_cancelled_respect_terminal(self, registry):
         rec = await registry.create(
             kind="executor", role_or_type="configurator", driver="in_casa",
-            task="t", origin={}, topic_id=1,
+            task="t", origin={},
         )
         assert await registry.try_transition_terminal(rec.id, "cancelled")
         await registry.mark_completed(rec.id, completed_at=123.0)
         assert registry.get(rec.id).status == "cancelled"
         rec2 = await registry.create(
             kind="executor", role_or_type="configurator", driver="in_casa",
-            task="t", origin={}, topic_id=2,
+            task="t", origin={},
         )
         assert await registry.try_transition_terminal(rec2.id, "completed")
         await registry.mark_cancelled(rec2.id)
@@ -705,17 +642,16 @@ class TestTerminalGuards:
         with pytest.raises(OSError):
             await registry.create(
                 kind="executor", role_or_type="configurator", driver="in_casa",
-                task="t", origin={}, topic_id=99,
+                task="t", origin={},
             )
         assert registry.active_and_idle() == []
-        assert registry.by_topic_id(99) is None
 
     async def test_sweep_does_not_resurrect_concurrently_finalized(self, registry):
         """#326: the idle sweep awaits driver.cancel(); a finalizer that commits
         a terminal status during that await must not be flipped back to idle."""
         rec = await registry.create(
             kind="executor", role_or_type="configurator", driver="in_casa",
-            task="t", origin={}, topic_id=5,
+            task="t", origin={},
         )
         now = time.time()
         rec.last_user_turn_ts = now - 90000  # > _SESSION_SUSPEND_IDLE_S
@@ -762,7 +698,7 @@ class TestCreateCancellationSafety:
 
         create_task = asyncio.ensure_future(registry.create(
             kind="executor", role_or_type="configurator", driver="in_casa",
-            task="t", origin={}, topic_id=44,
+            task="t", origin={},
         ))
         await asyncio.to_thread(write_entered.wait, 5)
         create_task.cancel()
@@ -771,7 +707,6 @@ class TestCreateCancellationSafety:
             await create_task
 
         assert registry.active_and_idle() == []
-        assert registry.by_topic_id(44) is None
         # The compensating write persisted the removal: no row on disk.
         rows = json.loads(Path(registry._tombstone_path).read_text())
         assert rows == []
@@ -803,7 +738,7 @@ class TestCreateCancellationSafety:
 
         create_task = asyncio.ensure_future(registry.create(
             kind="executor", role_or_type="configurator", driver="in_casa",
-            task="t", origin={}, topic_id=45,
+            task="t", origin={},
         ))
         await asyncio.to_thread(write_entered.wait, 5)
         create_task.cancel()
@@ -815,7 +750,6 @@ class TestCreateCancellationSafety:
             await create_task
 
         assert registry.active_and_idle() == []
-        assert registry.by_topic_id(45) is None
         rows = json.loads(Path(registry._tombstone_path).read_text())
         assert rows == []
 
@@ -833,7 +767,7 @@ class TestPersistSessionIdCancellationSafety:
 
         reg = EngagementRegistry(
             tombstone_path=str(tmp_path / "e.json"))
-        rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
+        rec = await reg.create("specialist", "finance", "in_casa", "t", {})
 
         release = threading.Event()
 
@@ -860,7 +794,7 @@ class TestPersistSessionIdCancellationSafety:
 
         reg = EngagementRegistry(
             tombstone_path=str(tmp_path / "e.json"))
-        rec = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
+        rec = await reg.create("specialist", "finance", "in_casa", "t", {})
 
         release = threading.Event()
         real_write = reg._write_tombstone
@@ -880,55 +814,10 @@ class TestPersistSessionIdCancellationSafety:
         assert rec.sdk_session_id == "sess-abc"
 
 
-class TestChannelStateStrictAndInitial:
-    """#529: the topic-state sentinel scheme needs (a) a STRICT
-    ``set_channel_state`` whose persistence failure propagates and rolls the
-    in-memory field back (memory must never claim what disk refused — the
-    telegram no-op guard reads the live record), (b) a tombstone write that
-    SETTLES before a cancellation propagates (a detached ``to_thread`` write
-    could land a stale snapshot over a newer one after the lock released),
-    and (c) launch-time initial-emoji writers that cannot clobber a settled
-    terminal emoji or an in-flight paint's sentinel."""
-
-    async def _mk(self, tmp_path):
-        from engagement_registry import EngagementRegistry
-        reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "engagements.json"),
-        )
-        rec = await reg.create(
-            kind="executor", role_or_type="configurator",
-            driver="in_casa", task="t", origin={}, topic_id=42,
-        )
-        return reg, rec
-
-    async def test_strict_write_failure_propagates_and_rolls_back(
-            self, tmp_path, monkeypatch):
-        reg, rec = await self._mk(tmp_path)
-        await reg.set_channel_state(rec.id, current_state_emoji="🟢")
-
-        def boom(snapshot):
-            raise OSError("disk full")
-
-        monkeypatch.setattr(reg, "_write_tombstone", boom)
-        with pytest.raises(OSError):
-            await reg.set_channel_state(
-                rec.id, current_state_emoji="", strict=True,
-            )
-        assert rec.current_state_emoji == "🟢"  # rolled back
-
-    async def test_non_strict_write_failure_keeps_todays_semantics(
-            self, tmp_path, monkeypatch):
-        reg, rec = await self._mk(tmp_path)
-        await reg.set_channel_state(rec.id, current_state_emoji="🟢")
-
-        def boom(snapshot):
-            raise OSError("disk full")
-
-        monkeypatch.setattr(reg, "_write_tombstone", boom)
-        # Best-effort caller: swallowed, and the in-memory value KEEPS the
-        # mutation (unchanged pre-#529 behavior).
-        await reg.set_channel_state(rec.id, current_state_emoji="🟡")
-        assert rec.current_state_emoji == "🟡"
+class TestTombstoneWriteSettlesOnCancel:
+    """#529: a tombstone write SETTLES before a cancellation propagates — a
+    detached ``to_thread`` write could land a stale snapshot over a newer one
+    after the lock released."""
 
     async def test_cancelled_tombstone_write_settles_before_raising(
             self, tmp_path, monkeypatch):
@@ -937,7 +826,14 @@ class TestChannelStateStrictAndInitial:
         propagates — so a later writer can never be overtaken by a detached
         stale ``os.replace``."""
         import threading
-        reg, rec = await self._mk(tmp_path)
+        from engagement_registry import EngagementRegistry
+        reg = EngagementRegistry(
+            tombstone_path=str(tmp_path / "engagements.json"),
+        )
+        rec = await reg.create(
+            kind="executor", role_or_type="configurator",
+            driver="in_casa", task="t", origin={},
+        )
         release = threading.Event()
         done = threading.Event()
         real_write = reg._write_tombstone
@@ -948,8 +844,7 @@ class TestChannelStateStrictAndInitial:
             done.set()
 
         monkeypatch.setattr(reg, "_write_tombstone", slow_write)
-        task = asyncio.ensure_future(
-            reg.set_channel_state(rec.id, current_state_emoji="🟡"))
+        task = asyncio.ensure_future(reg.update_user_turn(rec.id, 2000.0))
         await asyncio.sleep(0.05)      # write is blocked in the thread
         task.cancel()
         await asyncio.sleep(0.05)
@@ -958,36 +853,6 @@ class TestChannelStateStrictAndInitial:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert done.is_set()           # the write ran to completion first
-
-    async def test_initial_emoji_declines_when_any_state_established(
-            self, tmp_path):
-        reg, rec = await self._mk(tmp_path)
-        # Fresh record: sets.
-        await reg.set_initial_state_emoji(rec.id, "🟢")
-        assert rec.current_state_emoji == "🟢"
-        # Established state (a terminal paint's emoji): declines.
-        await reg.set_channel_state(rec.id, current_state_emoji="✅")
-        await reg.set_initial_state_emoji(rec.id, "🟢")
-        assert rec.current_state_emoji == "✅"
-
-    async def test_initial_emoji_declines_over_sentinel_and_terminal(
-            self, tmp_path):
-        reg, rec = await self._mk(tmp_path)
-        # An in-flight paint's uncertain sentinel must survive (a launch-path
-        # overwrite would re-arm the wrongful no-op the sentinel exists to
-        # break).
-        await reg.set_channel_state(rec.id, current_state_emoji="")
-        await reg.set_initial_state_emoji(rec.id, "🟢")
-        assert rec.current_state_emoji == ""
-        # Terminal record: declines even with no emoji at all.
-        reg2, rec2 = await self._mk(tmp_path)
-        await reg2.mark_completed(rec2.id, time.time())
-        await reg2.set_initial_state_emoji(rec2.id, "🟢")
-        assert rec2.current_state_emoji is None
-
-    async def test_initial_emoji_unknown_engagement_is_noop(self, tmp_path):
-        reg, _rec = await self._mk(tmp_path)
-        await reg.set_initial_state_emoji("nope", "🟢")  # no boom
 
 
 class TestBeginTurnDelivery:
@@ -1008,7 +873,7 @@ class TestBeginTurnDelivery:
         reg = EngagementRegistry(
             tombstone_path=str(tmp_path / name))
         rec = await reg.create(
-            "executor", "configurator", "in_casa", "t", {}, 1)
+            "executor", "configurator", "in_casa", "t", {})
         return reg, rec
 
     async def test_seam_is_not_a_coroutine_function(self):

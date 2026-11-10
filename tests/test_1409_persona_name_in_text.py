@@ -1,6 +1,5 @@
 """#1409: text a model or the operator reads names the CONFIGURED assistant,
 never the default persona hard-coded."""
-import json
 from types import SimpleNamespace
 
 
@@ -22,8 +21,6 @@ def test_persona_name_reads_the_configured_persona(monkeypatch):
 
 def test_no_default_persona_name_in_static_text():
     import tools
-    from channels.telegram import TelegramChannel
     assert "Ellen" not in tools.emit_completion.description
     assert "Ellen" not in tools.SPECIALIST_OPEN_CONVERSATION_NOTICE_TEMPLATE
-    assert "Ellen" not in json.dumps(TelegramChannel.ENGAGEMENT_COMMANDS)
 

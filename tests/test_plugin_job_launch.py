@@ -94,8 +94,7 @@ async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
                                      'path': str(worker.root), 'artifact_id': worker.host.plugin.artifact_id,
                                      # S8: the record stores the EFFECTIVE profile the build applied
                                      'profile': None},)
-    # No topic: a plugin job's lines go to its resident's plugin log.
-    assert rec.topic_id is None and rec.topic_title == ''
+    # A plugin job's lines go to its resident's plugin log.
     worker.bot.create_forum_topic.assert_not_awaited()
     from agent_logs import LogKey
     assert jobs.job_log_key(rec) == LogKey('plugins', 'assistant')
@@ -107,7 +106,6 @@ async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
     restored = loaded.get(rec.id)
     assert restored.origin == rec.origin
     assert restored.plugin_artifacts == rec.plugin_artifacts
-    assert restored.topic_title == rec.topic_title
 
 
 async def test_env_withheld_before_topic(worker, monkeypatch):

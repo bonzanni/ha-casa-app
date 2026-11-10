@@ -15,7 +15,7 @@ import pytest
 from telegram import MessageEntity
 from telegram.error import BadRequest, TimedOut
 
-from test_telegram_topic_stream import _mk_channel_with_fake_bot
+from telegram_channel_double import _mk_channel_with_fake_bot
 from output_boundary_testing import admitted
 
 # asyncio mode is AUTO (pytest.ini); the sync helper tests below take no mark.
@@ -178,29 +178,6 @@ async def test_send_response_overflowing_fallback_sends_display_then_target():
 
 
 # ------------------------------------------------- kwargs, latch, and fences
-
-
-async def test_topic_fallback_chunks_carry_first_page_kwargs_only():
-    ch, bot = _mk_channel_with_fake_bot()
-    calls: list[tuple[str, bool]] = []
-
-    async def _send(**kwargs):
-        calls.append((kwargs["text"], "reply_parameters" in kwargs))
-        if kwargs.get("entities"):
-            raise BadRequest("bad entity")
-        return MagicMock(message_id=12345)
-
-    bot.send_message = AsyncMock(side_effect=_send)
-    label = "L" * 4090
-    await ch.send_response_to_topic(
-        42, f"[{label}]({URL})\n\n{TAIL}", reply_parameters="anchor")
-
-    assert calls == [
-        (label, True),    # the rejected rich page keeps the anchor
-        (label, True),    # its first fallback chunk is that same message
-        (URL, False),     # the destination is a follow-on message
-        (TAIL, False),
-    ]
 
 
 async def test_head_chunk_landing_stamps_delivery_before_the_tail_raises():

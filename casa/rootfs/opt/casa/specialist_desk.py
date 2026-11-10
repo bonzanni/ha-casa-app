@@ -746,7 +746,7 @@ def _desk_origin(*, resident_role: str, desk_role: str, chat_id: int, user_id: i
         "_delegation_id": turn_id,
         "_origin_route": "telegram",
         # The desk is the operator's own: the operator writing to a specialist
-        # in its topic reads at his clearance, as a delegation from his
+        # on its desk reads at his clearance, as a delegation from his
         # private chat does.
         "_origin_clearance": "private",
         "_operator_turn": True,

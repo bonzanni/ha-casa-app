@@ -179,34 +179,6 @@ def test_required_self_use_tools_present() -> None:
     assert not missing, "missing required tools:\n  " + "\n  ".join(missing)
 
 
-def test_cleanup_engagement_topics_grant_limited_to_configurator_and_assistant() -> None:
-    """Grant pin (updated #1373): cleanup_engagement_topics irreversibly
-    deletes Telegram topics. Since X2 resolved (v0.62.0 — webhook trust =
-    authenticated), the assistant (Ellen) holds the tool; since #1373 she may
-    run the immediate `all_terminal` purge too, after a dry run and the
-    operator's confirmation. The tool's own role guard refuses that purge for
-    every other caller (see test_topic_cleanup_tool
-    test_tool_all_terminal_refused_for_other_roles). The grant must never
-    spread beyond {configurator, assistant} — any other role is a security
-    regression, not a convenience. Since v0.351.0 the
-    configurator no longer holds it (it opens no topics)."""
-    granted = {
-        role
-        for role, _path, data in _agent_configs()
-        if any(
-            "cleanup_engagement_topics" in str(entry)
-            for entry in (data.get("tools") or {}).get("allowed") or []
-        )
-    }
-    assert granted <= {"configurator", "assistant"}, (
-        f"cleanup_engagement_topics must be granted ONLY to the configurator "
-        f"and the assistant; currently granted to: "
-        f"{sorted(granted)}"
-    )
-    # Positive control: the predicate still sees a real grant.
-    assert "assistant" in granted
-
-
 def test_trigger_prompt_files_and_channels_resolve() -> None:
     """Invariant D (triggers): every trigger's prompt_file exists and channel is set."""
     violations: list[str] = []

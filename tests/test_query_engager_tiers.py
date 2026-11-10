@@ -51,7 +51,6 @@ async def _engagement(tmp_path, **markers):
         kind="specialist", role_or_type="finance", driver="in_casa",
         task="t", origin={"role": "assistant", "channel": "telegram",
                           "chat_id": "c1", **markers},
-        topic_id=42,
     )
     return reg, rec
 

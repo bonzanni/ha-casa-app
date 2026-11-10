@@ -148,7 +148,7 @@ class Registry:
 
 def _record(eid="e" * 32):
     return SimpleNamespace(
-        id=eid, kind="plugin", role_or_type="assistant", topic_id=None,
+        id=eid, kind="plugin", role_or_type="assistant",
         origin={"job": {"brief_uuid": BRIEF_UUID, "title": "Rows"}},
         status="active", sdk_session_id="sess-1", started_at=0.0,
         context_rebuild_pending=False, plugin_artifacts=())
@@ -697,7 +697,7 @@ async def _completing_job(env, tmp_path, monkeypatch):
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
-        task="rows", topic_id=None,
+        task="rows",
         origin={"role": "assistant", "channel": "telegram", "chat_id": "100",
                 "job": {"brief_uuid": BRIEF_UUID, "title": "Rows"}})
     rec.sdk_session_id = "sess-1"

@@ -151,7 +151,7 @@ async def test_the_notice_is_admitted_text_on_the_real_channel():
     not see that the real channel refuses text that did not pass admission
     (INV-OUT-001). The real channel, a recording bot: one Bot API call, the
     notice on the wire, the path cleared."""
-    from test_telegram_topic_stream import _mk_channel_with_fake_bot
+    from telegram_channel_double import _mk_channel_with_fake_bot
 
     ch, bot = _mk_channel_with_fake_bot()
     reminders._placeholder_pending.add(PATH)

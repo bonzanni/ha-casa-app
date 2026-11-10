@@ -282,7 +282,7 @@ async def test_a_specialists_own_start_during_its_jobs_pending_terminal_write_is
     reg = runtime.registry
     rec = await reg.create("specialist", "finance", "in_casa", "classify",
                            {"job": {"name": "ledger:classify", "title": "Classify"},
-                            "plugin_job": {"plugin": "ledger"}}, 7)
+                            "plugin_job": {"plugin": "ledger"}})
     entered, release = threading.Event(), threading.Event()
     real_write = reg._write_tombstone
 

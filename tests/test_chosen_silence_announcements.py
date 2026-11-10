@@ -499,10 +499,6 @@ async def test_replayed_engagement_chosen_silence_clears_durable_obligation(
     tombstone = tmp_path / "engagements.json"
     reg = EngagementRegistry(tombstone_path=str(tombstone))
     topic = MagicMock()
-    topic.send_to_topic = AsyncMock()
-    topic.send_response_to_topic = AsyncMock()
-    topic.close_topic = AsyncMock()
-    topic.update_topic_state = AsyncMock()
     topic_cm = MagicMock()
     topic_cm.get.return_value = topic
     tools.init_tools(
@@ -514,8 +510,7 @@ async def test_replayed_engagement_chosen_silence_clears_durable_obligation(
         kind="specialist", role_or_type="finance", driver="in_casa",
         task="reconcile the ledger",
         origin={"role": ROLE, "channel": "telegram", "chat_id": "123",
-                "cid": "route-1", "user_text": QUESTION},
-        topic_id=None)
+                "cid": "route-1", "user_text": QUESTION})
     await tools._finalize_engagement(
         rec, outcome="completed", text="reconciled",
         next_steps=[], driver=_driver_double())

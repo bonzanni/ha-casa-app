@@ -34,10 +34,6 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 def _channel(ok=True):
     ch = MagicMock()
     ch.engagement_supergroup_id = -100123 if ok else 0
-    ch.engagement_permission_ok = ok
-    ch.setup_engagement_features = AsyncMock()
-    ch.open_engagement_topic = AsyncMock(return_value=42)
-    ch.send_to_topic = AsyncMock()
     return ch
 
 
@@ -94,8 +90,6 @@ class TestEngageExecutorSpawnCap:
         ch = _wire(tmp_path, limiter=lim)
         payload = await _engage(_AGENT_ORIGIN)  # no _operator_turn = agent
         assert payload["kind"] == "agent_spawn_cap_exceeded"
-        ch.setup_engagement_features.assert_not_awaited()
-        ch.open_engagement_topic.assert_not_awaited()
         assert lim.occupancy == 1  # nothing acquired for the refused call
 
     async def test_operator_marked_turn_takes_no_occupancy(self, tmp_path):
@@ -158,7 +152,6 @@ class TestEngageExecutorSpawnCap:
             agent_mod.origin_var.reset(token)
         payload = json.loads(r["content"][0]["text"])
         assert payload["kind"] == "agent_spawn_cap_exceeded"
-        ch.open_engagement_topic.assert_not_awaited()
         assert lim.occupancy == 1
 
     async def test_no_limiter_wired_means_cap_off(self, tmp_path):
@@ -237,7 +230,6 @@ class TestJobEngagementSpawn:
             tombstone_path=str(tmp_path / "e.json"),
             agent_spawn_limiter=lim)
         tch = _channel(ok=True)
-        tch.open_engagement_topic = AsyncMock(return_value=555)
         cm = MagicMock(); cm.get.return_value = tch
         specialist_reg = MagicMock()
         specialist_reg.get.return_value = self._alex_cfg()
@@ -281,7 +273,6 @@ class TestJobEngagementSpawn:
             tombstone_path=str(tmp_path / "e.json"),
             agent_spawn_limiter=lim)
         tch = _channel(ok=True)
-        tch.open_engagement_topic = AsyncMock(return_value=556)
         cm = MagicMock(); cm.get.return_value = tch
         specialist_reg = MagicMock()
         specialist_reg.get.return_value = self._alex_cfg()

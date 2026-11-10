@@ -398,13 +398,6 @@ class TestLogOnceAtChannelLevel:
         assert len(infos) == 1, [r.message for r in infos]
 
 
-# ---------------------------------------------------------------------------
-# E-F (v0.30.0): setup_engagement_features must run inside _rebuild AFTER
-# self._app is set, so a transient first-boot setWebhook NetworkError no
-# longer leaves engagement_permission_ok=False forever.
-# ---------------------------------------------------------------------------
-
-
 class TestTeardownPerStep:
     """M8 (v0.52.0): a failing teardown step must not skip the others, and a
     partial bring-up in _rebuild must roll back the started Application."""

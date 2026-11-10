@@ -135,10 +135,7 @@ async def test_launch_withheld_profiled_plugin_stays_profiled_after_unassign(
 
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     tch = MagicMock()
-    tch.engagement_permission_ok = True
     tch.engagement_supergroup_id = -1001
-    tch.open_engagement_topic = AsyncMock(return_value=1186)
-    tch.send_to_topic = AsyncMock()
     cm = MagicMock(); cm.get.return_value = tch
     specialist_reg = MagicMock(); specialist_reg.get.return_value = alex
     bus = MagicMock(); bus.notify = AsyncMock()
@@ -322,7 +319,7 @@ async def test_withheld_profile_survives_a_build_that_loads_another_plugin(tmp_p
          "path": str(store / e["name"] / e["artifact_id"]),
          "manifest_name": e["name"], "profile": None} for e in (g, m2, led))
     rec = await reg.create(kind="specialist", role_or_type="finance", driver="in_casa",
-                           task="t", origin={}, topic_id=1, plugin_artifacts=rows)
+                           task="t", origin={}, plugin_artifacts=rows)
 
     monkeypatch.delenv(VAR, raising=False)
     drv = InCasaDriver(persist_plugin_profiles=reg.update_plugin_profiles)

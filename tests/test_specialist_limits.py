@@ -757,7 +757,7 @@ class TestInteractiveEngagementPermitRelease:
 
         rec = await eng_reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t", origin=_origin(chat_id="room-1"), topic_id=None,
+            task="t", origin=_origin(chat_id="room-1"),
         )
         rec.permit = permit
 
@@ -787,10 +787,7 @@ class TestInteractiveEngagementPermitRelease:
         limiter = SpecialistLimiter(max_global=1)
         eng_reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
-        tch.engagement_permission_ok = True
         tch.engagement_supergroup_id = -1001
-        tch.open_engagement_topic = AsyncMock(return_value=555)
-        tch.send_to_topic = AsyncMock()
         cm = MagicMock()
         cm.get.return_value = tch
         bus = MagicMock()
@@ -816,7 +813,7 @@ class TestInteractiveEngagementPermitRelease:
         assert payload["status"] == "pending"
 
         rec = eng_reg.get(payload["engagement_id"])
-        assert rec is not None and rec.topic_id is None
+        assert rec is not None
         assert rec.permit is not None
         # The scope is held — a second job launch on the same specialist
         # from the same room must be denied as busy.
@@ -841,12 +838,7 @@ class TestInteractiveEngagementPermitRelease:
         limiter = SpecialistLimiter(max_global=1)
         eng_reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         tch = MagicMock()
-        tch.engagement_permission_ok = True
         tch.engagement_supergroup_id = -1001
-        tch.open_engagement_topic = AsyncMock(return_value=555)
-        tch.send_to_topic = AsyncMock()
-        tch.update_topic_state = AsyncMock()
-        tch.close_topic = AsyncMock()
         cm = MagicMock()
         cm.get.return_value = tch
         bus = MagicMock()
@@ -896,7 +888,7 @@ class TestInteractiveEngagementPermitRelease:
 
         rec = await eng_reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t", origin=_origin(chat_id="room-1"), topic_id=None,
+            task="t", origin=_origin(chat_id="room-1"),
         )
         rec.permit = permit
 
@@ -955,7 +947,7 @@ def _engagement(eid, kind, role):
     from engagement_registry import EngagementRecord
     return EngagementRecord(
         id=eid, kind=kind, role_or_type=role,
-        driver="in_casa", status="active", topic_id=99,
+        driver="in_casa", status="active",
         started_at=0.0, last_user_turn_ts=0.0,
         completed_at=None, sdk_session_id=None, origin={}, task="t",
     )

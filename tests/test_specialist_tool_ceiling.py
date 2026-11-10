@@ -31,7 +31,7 @@ def test_allowlist_is_exactly_the_converged_set():
     # The three memory reads replace the one recall tool; correct_memory
     # marks a resident turn's opening message and is not grantable here.
     assert SPECIALIST_CASA_TOOL_ALLOWLIST == frozenset({
-        "query_engager", "emit_completion", "react", "ask_user",
+        "query_engager", "emit_completion", "ask_user",
         "search_memory", "browse_memory_day", "open_memory", "ack_event",
         "get_schedule", "send_media",
     })

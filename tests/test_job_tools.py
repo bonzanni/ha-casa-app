@@ -5,7 +5,7 @@ waiting for the operator, so the turn-end guard does not nudge it."""
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -24,10 +24,9 @@ async def job(tmp_path):
     rec = await reg.create(
         "specialist", "finance", "in_casa", "t",
         {"role": "assistant", "channel": "telegram",
-         "job": bj.initial_job_state(decl, started_by="operator")}, topic_id=9)
+         "job": bj.initial_job_state(decl, started_by="operator")})
     from agent_log_double import RecordingLogs
     channel = MagicMock()
-    channel._post_engagement_notice = AsyncMock()
     channel.logs = RecordingLogs()
     cm = MagicMock()
     cm.get.return_value = channel
@@ -54,7 +53,6 @@ async def test_a_progress_line_is_logged_and_recorded(job):
     assert out == {"ok": True}
     assert channel.logs.lines == [(LogKey("agent", "finance"), "Accounting check",
                                    "📊 12 rows classified · 12 done · 28 left")]
-    channel._post_engagement_notice.assert_not_awaited()
     assert rec.origin["job"]["last_summary"] == "12 rows classified"
     assert bj._state(rec.id).progress is True
 

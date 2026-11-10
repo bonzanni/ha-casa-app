@@ -100,10 +100,10 @@ async def test_terminal_sdk_transcripts_are_reaped(
     p, s1, s2 = (str(uuid.uuid4()) for _ in range(3))
     plugin = await registry.create(
         kind="plugin", role_or_type="researcher", driver="in_casa",
-        task="t", origin={}, topic_id=None)
+        task="t", origin={})
     job = await registry.create(
         kind="specialist", role_or_type="researcher", driver="in_casa",
-        task="t", origin={"job": {}}, topic_id=None)
+        task="t", origin={"job": {}})
     await registry.persist_session_id(plugin.id, p)
     await registry.persist_session_id(job.id, s1)
     await _terminal(registry, plugin.id, outcome)

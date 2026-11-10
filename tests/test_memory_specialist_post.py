@@ -431,11 +431,11 @@ async def topic(tmp_path, roles, mem):
               "user_id": OPERATOR_CHAT}
     recs = {
         "browser": await reg.create("specialist", "browser", "in_casa", "t",
-                                    dict(origin), topic_id=TOPIC),
+                                    dict(origin)),
         "finance": await reg.create("specialist", "finance", "in_casa", "t",
-                                    dict(origin), topic_id=TOPIC + 1),
+                                    dict(origin)),
         "executor": await reg.create("executor", "configurator", "in_casa",
-                                     "t", dict(origin), topic_id=TOPIC + 2),
+                                     "t", dict(origin)),
     }
     drv = InCasaDriver(record_lookup=reg.get,
                        begin_turn_delivery=reg.begin_turn_delivery)
@@ -454,7 +454,6 @@ async def topic(tmp_path, roles, mem):
         ch._engagement_registry = reg
         ch._engagement_driver = drv
         ch._driver_advance_high_water = AsyncMock()
-        ch._post_engagement_notice = AsyncMock()
         return ch
 
     yield SimpleNamespace(recs=recs, clients=clients, channel=channel, drv=drv)

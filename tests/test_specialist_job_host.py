@@ -510,7 +510,7 @@ async def _specialist_ledger_job(tmp_path, limiter, prior):
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "engagements.json"))
     rec = await reg.create("specialist", "finance", "in_casa", "classify",
                            {"job": dict(_LEDGER_JOB),
-                            "plugin_job": {"plugin": "finance.ledger"}}, 7)
+                            "plugin_job": {"plugin": "finance.ledger"}})
     rec.permit = limiter.try_acquire("finance:engagement")
     assert rec.permit is not None
     if prior == "idle":
@@ -577,7 +577,7 @@ async def test_a_start_during_a_pending_strict_terminal_write_is_refused(
             # rollback, beside the restored one.
             await reg.create("specialist", host.role, "in_casa", "scan",
                              {"job": {"name": host.decl.qualified_name, "title": "Scan"},
-                              "plugin_job": {"plugin": plugin}}, 8)
+                              "plugin_job": {"plugin": plugin}})
     finally:
         jobs.release_job_start(plugin)
 
@@ -701,7 +701,7 @@ async def test_the_installed_plugin_check_also_counts_a_pending_terminal_write(
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "engagements.json"))
     rec = await reg.create("specialist", "finance", "in_casa", "classify",
                            {"job": {"name": "oldledger:classify", "title": "Classify"},
-                            "plugin_job": {"plugin": "finance.ledger"}}, 7)
+                            "plugin_job": {"plugin": "finance.ledger"}})
     rec.permit = SpecialistLimiter(2).try_acquire("finance:engagement")
     host = _ledger_host("resident", "assistant", "finance.ledger")
     jobs.release_job_start("finance.ledger")

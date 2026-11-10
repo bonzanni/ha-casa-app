@@ -43,7 +43,7 @@ async def _record(registry, *, kind="specialist", role="researcher",
                   origin=None, sid=None, outcome="completed"):
     rec = await registry.create(
         kind=kind, role_or_type=role, driver="in_casa", task="t",
-        origin=dict(origin or {}), topic_id=None)
+        origin=dict(origin or {}))
     if sid is not None:
         await registry.persist_session_id(rec.id, sid)
     if outcome in ("completed", "cancelled", "error"):

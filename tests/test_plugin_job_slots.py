@@ -44,7 +44,7 @@ def test_a_record_naming_another_installed_plugin_does_not_block_this_one():
     bundled = SimpleNamespace(
         origin={"job": {"name": "ledger:classify", "title": "Classify"}},
         plugin_artifacts=({"name": "finance.ledger", "manifest_name": "ledger"},),
-        id="eng-1", topic_id=42)
+        id="eng-1")
     assert jobs.running_job_for_plugin(Registry([bundled]), "ledger") is None
     assert jobs.running_job_for_plugin(Registry([bundled]), "finance.ledger") is bundled
 
@@ -54,5 +54,5 @@ def test_a_record_with_no_recorded_identity_still_blocks_its_manifest():
     identified by its qualified job name, so a second start is still refused."""
     legacy = SimpleNamespace(
         origin={"job": {"name": "ledger:classify", "title": "Classify"}},
-        plugin_artifacts=(), id="eng-2", topic_id=7)
+        plugin_artifacts=(), id="eng-2")
     assert jobs.running_job_for_plugin(Registry([legacy]), "ledger") is legacy

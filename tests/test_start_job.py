@@ -72,8 +72,6 @@ async def runtime(tmp_path, monkeypatch):
         create_forum_topic=AsyncMock(return_value=SimpleNamespace(message_thread_id=42)),
         send_message=AsyncMock(return_value=SimpleNamespace(message_id=100)),
         edit_message_text=AsyncMock(return_value=SimpleNamespace(message_id=100)),
-        edit_forum_topic=AsyncMock(return_value=True),
-        close_forum_topic=AsyncMock(return_value=True),
         send_chat_action=AsyncMock(return_value=True),
     )
     # No forum group: a job needs none.
@@ -153,7 +151,6 @@ async def test_launch_limit_prompt_envelope_and_persistence(runtime):
     assert client.prompts == [jobs.launch_prompt(DECL, 'Classify the ledger', 'all rows',
                                                  job_id=rec.id, started_by='operator')]
     assert runtime.bot.create_forum_topic.await_count == 0
-    assert rec.topic_id is None
     expected = {**jobs.initial_job_state(DECL, started_by='operator', context='all rows'),
                 'brief_uuid': rec.origin['job']['brief_uuid']}
     # The cost a turn end adds is pinned in test_job_cost.py.
@@ -302,7 +299,6 @@ async def test_a_job_starts_acts_and_is_busy_refused_with_no_group(runtime):
     assert first['status'] == 'pending', first
     await drain_launch_turns()
     rec = runtime.registry.get(first['engagement_id'])
-    assert rec.topic_id is None
 
     token_o = agent.origin_var.set({'role': 'finance', 'execution_role': 'finance',
                                     'channel': 'telegram', 'source': 'telegram',

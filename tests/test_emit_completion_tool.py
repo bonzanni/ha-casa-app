@@ -20,9 +20,8 @@ class TestEmitCompletionHandler:
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram"},
-            topic_id=42,
         )
-        tch = MagicMock(); tch.send_to_topic = AsyncMock(); tch.send_response_to_topic = AsyncMock(); tch.close_topic = AsyncMock()
+        tch = MagicMock()
         cm = MagicMock(); cm.get.return_value = tch
         bus = MagicMock(); bus.notify = AsyncMock()
         init_tools(
@@ -63,9 +62,8 @@ class TestEmitCompletionHandler:
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram"},
-            topic_id=42,
         )
-        tch = MagicMock(); tch.send_to_topic = AsyncMock(); tch.send_response_to_topic = AsyncMock(); tch.close_topic = AsyncMock()
+        tch = MagicMock()
         cm = MagicMock(); cm.get.return_value = tch
         bus = MagicMock(); bus.notify = AsyncMock()
         init_tools(
@@ -96,12 +94,8 @@ class TestEmitCompletionIdempotency:
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram"},
-            topic_id=42,
         )
         tch = MagicMock()
-        tch.send_to_topic = AsyncMock()
-        tch.send_response_to_topic = AsyncMock()
-        tch.close_topic = AsyncMock()
         cm = MagicMock()
         cm.get.return_value = tch
         bus = MagicMock()
@@ -126,7 +120,6 @@ class TestEmitCompletionIdempotency:
             assert rec.status == "completed"
 
             # Snapshot side-effect counts after the legitimate first call.
-            close_calls_before = tch.close_topic.await_count
             notify_calls_before = bus.notify.await_count
 
             # Re-emit (the bug scenario).
@@ -140,7 +133,6 @@ class TestEmitCompletionIdempotency:
         assert payload2["kind"] == "already_terminal"
 
         # Critical assertion: side effects did NOT fire a second time.
-        assert tch.close_topic.await_count == close_calls_before
         assert bus.notify.await_count == notify_calls_before
 
     async def test_re_emit_after_cancel_is_noop(self, tmp_path):
@@ -156,8 +148,7 @@ class TestEmitCompletionIdempotency:
             engagement_var.reset(token)
         payload = json.loads(res["content"][0]["text"])
         assert payload["kind"] == "already_terminal"
-        # Topic close / bus.notify NEVER fired.
-        assert tch.close_topic.await_count == 0
+        # bus.notify NEVER fired.
         assert bus.notify.await_count == 0
 
 
@@ -167,7 +158,7 @@ def _wire_engagement(tmp_path):
     from tools import init_tools
 
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-    tch = MagicMock(); tch.send_to_topic = AsyncMock(); tch.send_response_to_topic = AsyncMock(); tch.close_topic = AsyncMock()
+    tch = MagicMock()
     cm = MagicMock(); cm.get.return_value = tch
     bus = MagicMock(); bus.notify = AsyncMock()
     init_tools(
@@ -200,7 +191,6 @@ class TestEmitCompletionValidation:
         return await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram"},
-            topic_id=42,
         )
 
     async def test_unknown_status_is_tool_error_not_engagement_failure(self, tmp_path):
@@ -211,7 +201,6 @@ class TestEmitCompletionValidation:
         assert payload["kind"] == "invalid_status"
         assert "ok" in payload["message"] and "partial" in payload["message"]
         assert rec.status == "active"          # engagement NOT finalized
-        tch.close_topic.assert_not_awaited()   # agent gets to retry
 
     async def test_cancelled_status_finalizes_cancelled_not_error(self, tmp_path):
         reg, tch, bus = _wire_engagement(tmp_path)
@@ -227,8 +216,8 @@ class TestEmitCompletionValidation:
         payload = await self._emit(reg, rec, {"text": "did 2 of 3", "status": "partial"})
         assert payload["status"] == "acknowledged"
         assert rec.status == "completed"
-        sent = " ".join(str(c.args) for c in (list(tch.send_to_topic.await_args_list) + list(tch.send_response_to_topic.await_args_list)))
-        assert "partial" in sent.lower()
+        told = bus.notify.await_args.args[0].content.text
+        assert told.startswith("[partial]")
 
     async def test_failed_status_finalizes_error(self, tmp_path):
         reg, tch, bus = _wire_engagement(tmp_path)
@@ -276,11 +265,8 @@ class TestFinalizeResultMapping:
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram"},
-            topic_id=42,
         )
-        tch = MagicMock(); tch.send_to_topic = AsyncMock()
-        tch.send_response_to_topic = AsyncMock()
-        tch.close_topic = AsyncMock()
+        tch = MagicMock()
         cm = MagicMock(); cm.get.return_value = tch
         bus = MagicMock(); bus.notify = AsyncMock()
         init_tools(
@@ -371,11 +357,9 @@ class TestCompletionInboundGate:
         rec = await reg.create(
             kind="specialist", role_or_type="probe-exec",
             driver="in_casa", task="t",
-            origin={"role": "assistant", "channel": "telegram"}, topic_id=42,
+            origin={"role": "assistant", "channel": "telegram"},
         )
-        tch = MagicMock(); tch.send_to_topic = AsyncMock()
-        tch.send_response_to_topic = AsyncMock()
-        tch.close_topic = AsyncMock()
+        tch = MagicMock()
         cm = MagicMock(); cm.get.return_value = tch
         bus = MagicMock(); bus.notify = AsyncMock()
         init_tools(
@@ -471,9 +455,7 @@ class TestCompletionInboundGate:
             agent_mod.active_engagement_driver = None
         assert payload["status"] == "acknowledged"
         assert rec.status == "error"
-        posted = "".join(str(c.args) + str(c.kwargs)
-                         for c in (list(tch.send_to_topic.call_args_list)
-                                   + list(tch.send_response_to_topic.call_args_list)))
+        posted = "".join(str(c) for c in tch.mock_calls)
         assert "inbound message(s)" not in posted
         assert "msg-that-was-never-read" not in posted
 
@@ -511,11 +493,9 @@ class TestReservationGate:
         rec = await reg.create(
             kind="specialist", role_or_type="probe-exec",
             driver="in_casa", task="t",
-            origin={"role": "assistant", "channel": "telegram"}, topic_id=42,
+            origin={"role": "assistant", "channel": "telegram"},
         )
-        tch = MagicMock(); tch.send_to_topic = AsyncMock()
-        tch.send_response_to_topic = AsyncMock()
-        tch.close_topic = AsyncMock()
+        tch = MagicMock()
         cm = MagicMock(); cm.get.return_value = tch
         bus = MagicMock(); bus.notify = AsyncMock()
         init_tools(
@@ -528,10 +508,8 @@ class TestReservationGate:
 
     @staticmethod
     def _posted(tch):
-        return "".join(
-            str(c.args) + str(c.kwargs)
-            for c in (list(tch.send_to_topic.call_args_list)
-                      + list(tch.send_response_to_topic.call_args_list)))
+        """Everything handed to the channel, in any call."""
+        return "".join(str(c) for c in tch.mock_calls)
 
     async def test_command_reservations_still_veto_completion(self, tmp_path):
         """The exclusion is DISCLOSURE-only: the gate keeps the raw total,
@@ -607,7 +585,6 @@ class TestEmitCompletionCancellation:
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram"},
-            topic_id=None,
         )
         events: list[str] = []
 
@@ -700,7 +677,6 @@ class TestFinalizeTailObservability:
                 "role": "assistant", "channel": "telegram",
                 "_origin_clearance": "private",
             },
-            topic_id=None,
         )
         bus = MagicMock()
         bus.notify = AsyncMock(side_effect=notify)
@@ -878,12 +854,8 @@ class TestOneFailingAccessorCostsOnlyItsOwnInput:
         rec = await reg.create(
             kind="specialist", role_or_type="probe-exec", driver="in_casa",
             task="t", origin={"role": "assistant", "channel": "telegram"},
-            topic_id=42,
         )
         tch = MagicMock()
-        tch.send_to_topic = AsyncMock(return_value=11)
-        tch.send_response_to_topic = AsyncMock(return_value=12)
-        tch.close_topic = AsyncMock()
         cm = MagicMock(); cm.get.return_value = tch
         bus = MagicMock(); bus.notify = AsyncMock()
         init_tools(
@@ -895,10 +867,8 @@ class TestOneFailingAccessorCostsOnlyItsOwnInput:
 
     @staticmethod
     def _posted(tch):
-        return "".join(
-            str(c.args) + str(c.kwargs)
-            for c in (list(tch.send_to_topic.call_args_list)
-                      + list(tch.send_response_to_topic.call_args_list)))
+        """Everything handed to the channel, in any call."""
+        return "".join(str(c) for c in tch.mock_calls)
 
     @staticmethod
     async def _finalize(rec, drv, *, outcome, gate):
@@ -931,7 +901,6 @@ class TestOneFailingAccessorCostsOnlyItsOwnInput:
 
         assert result is FinalizeResult.PRECONDITION_FAILED
         assert rec.status not in ("completed", "error", "cancelled")
-        assert tch.send_response_to_topic.await_count == 0
         assert drv.calls.get({"depth": "inbound_unread_depth",
                               "reservations": "inbound_reservations"}[arm]) == 1
 

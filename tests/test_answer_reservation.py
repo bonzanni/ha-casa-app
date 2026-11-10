@@ -100,7 +100,7 @@ async def _handler_ctx(tmp_path, fake_telegram_bot):
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         "executor", "configurator", "in_casa", "t",
-        {"user_id": 77}, topic_id=555)
+        {"user_id": 77})
     client = _OneShotClient()
     ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
                          engagement_supergroup_id=-1001)
@@ -110,7 +110,6 @@ async def _handler_ctx(tmp_path, fake_telegram_bot):
     attach_session(drv, rec, client)
     ch._engagement_registry = reg
     ch._engagement_driver = drv
-    ch._post_engagement_notice = AsyncMock()
     return ch, reg, rec, drv, client
 
 
@@ -160,7 +159,6 @@ class TestInboundIngressReservation:
         assert client.query_prompts == []
         assert (drv.inbound_unread_depth(rec.id),
                 drv.inbound_reservations(rec.id)) == (0, 0)
-        ch._post_engagement_notice.assert_not_awaited()
         await drv.cancel(rec)
 
 
@@ -227,8 +225,7 @@ class TestInCasaCompletionInboundGate:
             tombstone_path=str(tmp_path / "e.json"))
         rec = await reg.create(
             "executor", "configurator", "in_casa", "t",
-            {"role": "assistant", "channel": "telegram", "user_id": 77},
-            topic_id=555)
+            {"role": "assistant", "channel": "telegram", "user_id": 77})
 
         client = _InCasaRedCaseClient()
         drv = InCasaDriver(record_lookup=reg.get,
@@ -236,9 +233,6 @@ class TestInCasaCompletionInboundGate:
         attach_session(drv, rec, client)
 
         tch = MagicMock()
-        tch.send_to_topic = AsyncMock()
-        tch.send_response_to_topic = AsyncMock()
-        tch.close_topic = AsyncMock()
         cm = MagicMock()
         cm.get.return_value = tch
         bus = MagicMock()
@@ -254,7 +248,6 @@ class TestInCasaCompletionInboundGate:
                              engagement_supergroup_id=-1001)
         ch._engagement_registry = reg
         ch._engagement_driver = drv
-        ch._post_engagement_notice = AsyncMock()
         return ch, reg, rec, drv, client, tch
 
     async def _emit_ok(self, rec):

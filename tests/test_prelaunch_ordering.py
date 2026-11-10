@@ -114,7 +114,6 @@ class TestPrelaunchOrdering:
         import tools as tm
 
         tch = MagicMock()
-        tch.open_engagement_topic = AsyncMock(return_value=555)
         cm = MagicMock()
         cm.get.return_value = tch
         reg = MagicMock()
@@ -146,7 +145,6 @@ class TestPrelaunchOrdering:
 
         payload = json.loads(res["content"][0]["text"])
         assert payload["kind"] == "mode_unsupported_on_voice"
-        tch.open_engagement_topic.assert_not_awaited()
         eng_reg.create.assert_not_awaited()
         # Progress is the LAST _prelaunch step — a mode denial precedes it.
         assert progress_calls == []

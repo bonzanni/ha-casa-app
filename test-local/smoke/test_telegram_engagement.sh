@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Manual smoke test: exercises the REAL Telegram Bot API against the
-# configured test supergroup. Requires:
+# Manual smoke test: exercises the REAL Telegram Bot API calls the agent log
+# makes against the configured test supergroup. Requires:
 #   TELEGRAM_BOT_TOKEN            — same bot token Casa uses
 #   TELEGRAM_TEST_SUPERGROUP_ID   — a dedicated test forum supergroup
 #
@@ -45,45 +45,34 @@ TOPIC_ID=$(echo "$TOPIC_JSON" | python3 -c 'import sys, json; print(json.load(sy
 
 # --- 3. sendMessage into topic ------------------------------------------
 log "3. sendMessage with message_thread_id"
-SEND_OK=$(curl -s -X POST "${API}/sendMessage" \
+MSG_ID=$(curl -s -X POST "${API}/sendMessage" \
     -d chat_id="${TELEGRAM_TEST_SUPERGROUP_ID}" \
     -d message_thread_id="${TOPIC_ID}" \
-    -d text="Smoke test message" \
-    | python3 -c 'import sys, json; d=json.load(sys.stdin); print(d.get("ok"))')
-[ "$SEND_OK" = "True" ] || fail "sendMessage in topic failed"
+    -d disable_notification=true \
+    -d text="Smoke log line" \
+    | python3 -c 'import sys, json; print(json.load(sys.stdin)["result"]["message_id"])')
+[ -n "$MSG_ID" ] || fail "sendMessage in topic returned no message_id"
 
-# --- 4. editForumTopic — flip icon to ✅ --------------------------------
-log "4. editForumTopic (✅ icon)"
-EDIT_OK=$(curl -s -X POST "${API}/editForumTopic" \
+# --- 4. editMessageText — the log's rolling message ---------------------
+log "4. editMessageText (rolling log message)"
+EDIT_OK=$(curl -s -X POST "${API}/editMessageText" \
     -d chat_id="${TELEGRAM_TEST_SUPERGROUP_ID}" \
-    -d message_thread_id="${TOPIC_ID}" \
-    -d name="Smoke #$(date +%s) ✅" \
+    -d message_id="${MSG_ID}" \
+    -d text="Smoke log line
+second line" \
     | python3 -c 'import sys, json; d=json.load(sys.stdin); print(d.get("ok"))')
-[ "$EDIT_OK" = "True" ] || fail "editForumTopic failed"
+[ "$EDIT_OK" = "True" ] || fail "editMessageText failed"
 
-# --- 5. closeForumTopic -------------------------------------------------
-log "5. closeForumTopic"
-CLOSE_OK=$(curl -s -X POST "${API}/closeForumTopic" \
+# --- 5. deleteMessages — the log's retention ----------------------------
+log "5. deleteMessages (retention)"
+DEL_OK=$(curl -s -X POST "${API}/deleteMessages" \
     -d chat_id="${TELEGRAM_TEST_SUPERGROUP_ID}" \
-    -d message_thread_id="${TOPIC_ID}" \
+    --data-urlencode "message_ids=[${MSG_ID}]" \
     | python3 -c 'import sys, json; d=json.load(sys.stdin); print(d.get("ok"))')
-[ "$CLOSE_OK" = "True" ] || fail "closeForumTopic failed"
+[ "$DEL_OK" = "True" ] || fail "deleteMessages failed"
 
-# --- 6. setMyCommands + getMyCommands -----------------------------------
-log "6. setMyCommands + getMyCommands (supergroup scope)"
-SCOPE_JSON="$(python3 -c 'import json; print(json.dumps({"type":"chat","chat_id":'${TELEGRAM_TEST_SUPERGROUP_ID}'}))')"
-CMDS_JSON='[{"command":"cancel","description":"Cancel this engagement"},{"command":"complete","description":"Mark complete"}]'
-curl -s -X POST "${API}/setMyCommands" \
-    --data-urlencode "scope=${SCOPE_JSON}" \
-    --data-urlencode "commands=${CMDS_JSON}" \
-    > /dev/null
-GOT=$(curl -s -X POST "${API}/getMyCommands" \
-    --data-urlencode "scope=${SCOPE_JSON}" \
-    | python3 -c 'import sys, json; print(len(json.load(sys.stdin)["result"]))')
-[ "$GOT" = "2" ] || fail "setMyCommands/getMyCommands roundtrip got $GOT commands"
-
-# --- 7. deleteForumTopic (cleanup) --------------------------------------
-log "7. cleanup — deleteForumTopic"
+# --- 6. deleteForumTopic (cleanup) --------------------------------------
+log "6. cleanup — deleteForumTopic"
 curl -s -X POST "${API}/deleteForumTopic" \
     -d chat_id="${TELEGRAM_TEST_SUPERGROUP_ID}" \
     -d message_thread_id="${TOPIC_ID}" \

@@ -208,7 +208,7 @@ def test_a_non_telegram_shaped_setup_origin_is_unsupported(live_operator):
 
 
 def _engagement(origin, **over):
-    base = dict(id="eng-9", kind="specialist", status="active", topic_id=555,
+    base = dict(id="eng-9", kind="specialist", status="active",
                 role_or_type="finance", origin=origin)
     base.update(over)
     return SimpleNamespace(**base)

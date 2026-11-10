@@ -674,7 +674,7 @@ async def test_a_flood_limited_card_edit_is_retried_once(failures, landed, calls
     not stay ⏳ on one transient failure."""
     from unittest.mock import AsyncMock
     from telegram.error import NetworkError, RetryAfter
-    from test_telegram_topic_stream import _mk_channel_with_fake_bot
+    from telegram_channel_double import _mk_channel_with_fake_bot
     import channels.telegram as tg_mod
     waits = []
 

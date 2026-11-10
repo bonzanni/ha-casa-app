@@ -128,10 +128,6 @@ async def _build(tmp_path, *, bus=None):
     bus = bus if bus is not None else _CapturingBus()
 
     channel = MagicMock()
-    channel.send_to_topic = AsyncMock()
-    channel.send_response_to_topic = AsyncMock()
-    channel.close_topic = AsyncMock()
-    channel.update_topic_state = AsyncMock()
     cm = MagicMock()
     cm.get.return_value = channel
 
@@ -170,7 +166,7 @@ class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
         reg, bus, tombstone = await _build(tmp_path)
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t", origin=_origin(), topic_id=None,
+            task="t", origin=_origin(),
         )
 
         result = await _finalize_engagement(
@@ -244,7 +240,7 @@ class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
         reg, bus, tombstone = await _build(tmp_path)
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t", origin=_origin(), topic_id=None,
+            task="t", origin=_origin(),
         )
 
         real = reg._write_tombstone
@@ -278,7 +274,7 @@ class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
         reg, bus, tombstone = await _build(tmp_path)
         rec = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t", origin=_origin(), topic_id=None,
+            task="t", origin=_origin(),
         )
         await _finalize_engagement(
             rec, outcome="completed", text="x", next_steps=[],
@@ -318,29 +314,29 @@ class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
 
         funnel = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t", origin=_origin(), topic_id=None)
+            task="t", origin=_origin())
         reported = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t2", origin=_origin(), topic_id=None)
+            task="t2", origin=_origin())
 
         marked_error = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t3", origin=_origin(), topic_id=None)
+            task="t3", origin=_origin())
         marked_cancelled = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t4", origin=_origin(), topic_id=None)
+            task="t4", origin=_origin())
         marked_completed = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t5", origin=_origin(), topic_id=None)
+            task="t5", origin=_origin())
         bare_transition = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t6", origin=_origin(), topic_id=None)
+            task="t6", origin=_origin())
 
         await _finalize_engagement(
             funnel, outcome="error", text="it broke",
             next_steps=[], driver=_driver_double())
         await _report_launch_death(
-            None, reported, None, kind="launch_turn_incomplete",
+            None, reported, kind="launch_turn_incomplete",
             detail="the turn left nothing", driver=None)
         await reg.mark_error(marked_error.id, kind="no_driver", message="x")
         await reg.mark_cancelled(marked_cancelled.id)
@@ -375,10 +371,10 @@ class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
         reg, bus, tombstone = await _build(tmp_path)
         owing = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
-            task="owed", origin=_origin(), topic_id=None)
+            task="owed", origin=_origin())
         settled = await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
-            task="settled", origin=_origin(), topic_id=None)
+            task="settled", origin=_origin())
 
         for rec in (owing, settled):
             await _finalize_engagement(
@@ -395,7 +391,7 @@ class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
         # Any later write re-runs the expiry filter over the whole set.
         await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
-            task="a later engagement", origin=_origin(), topic_id=None)
+            task="a later engagement", origin=_origin())
 
         surviving_terminals = {
             r["id"] for r in _rows(tombstone)

@@ -21,7 +21,6 @@ def _make_engagement(role: str = "configurator"):
         role_or_type=role,
         driver="in_casa",
         status="active",
-        topic_id=42,
         started_at=0.0,
         last_user_turn_ts=0.0,
         completed_at=None,

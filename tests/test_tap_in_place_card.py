@@ -169,7 +169,7 @@ async def test_a_settlement_during_the_edit_is_marked_again_after_the_edit_lands
 
 
 async def test_the_finish_hook_records_the_terminal_line_of_a_bound_record():
-    from test_telegram_topic_stream import _mk_channel_with_fake_bot
+    from telegram_channel_double import _mk_channel_with_fake_bot
     ch, bot = _mk_channel_with_fake_bot()
     meta = {"chat_id": OPERATOR, "message_id": TAPPED, "text": "card", "deadline": 1e12}
     hook = ch.proposal_finish_hook(rid="r1", req=SimpleNamespace(meta=meta))
@@ -246,7 +246,7 @@ async def test_a_tapped_card_without_a_message_id_falls_back(edit_env):
 # --- the channel's edit -------------------------------------------------------------
 
 def _channel_with_bot():
-    from test_telegram_topic_stream import _mk_channel_with_fake_bot
+    from telegram_channel_double import _mk_channel_with_fake_bot
     return _mk_channel_with_fake_bot()
 
 

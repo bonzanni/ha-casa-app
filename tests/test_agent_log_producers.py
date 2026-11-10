@@ -75,7 +75,8 @@ async def test_a_specialists_run_logs_its_start_words_steps_and_end(desk, logs):
     keys = {k for k, _r, _t in logs.lines}
     assert keys == {FINANCE}
     texts = logs.texts()
-    assert texts[0].startswith("▶ ") and "March total" in texts[0]
+    # the run is named by its task; its first line only says it started
+    assert texts[0] == "▶ started" and "March total" in logs.lines[0][1]
     # the main loop's step is logged; the sub-agent's is not
     assert texts[1:] == ["Looking.", "🔧 Reading files", "The total is 40.",
                          "✓ answered"]
@@ -153,7 +154,7 @@ async def test_only_a_specialist_or_the_configurator_logs_a_delegated_run(
         assert logs.lines == []
     else:
         assert logs.lines == [
-            (key, "Plan Q2\nsecond line", "▶ Plan Q2"),
+            (key, "Plan Q2\nsecond line", "▶ started"),
             (key, "Plan Q2\nsecond line", "one"),
             (key, "Plan Q2\nsecond line", "🔧 Reading files"),
             (key, "Plan Q2\nsecond line", "✓ answered"),
@@ -195,8 +196,7 @@ async def test_the_finalize_funnel_logs_the_end(monkeypatch, tmp_path, outcome, 
     rec = await reg.create(
         "specialist", "finance", "in_casa", "t",
         {"role": "assistant", "channel": "telegram", "chat_id": "1", "user_id": 7,
-         "job": jobs.initial_job_state(decl, started_by="operator")},
-        topic_id=None)
+         "job": jobs.initial_job_state(decl, started_by="operator")})
     tools_mod.init_tools(channel_manager=None, bus=None, specialist_registry=MagicMock(),
                          engagement_registry=reg, agent_logs=logs)
     monkeypatch.setattr(tools_mod, "send_engagement_outcome", AsyncMock())

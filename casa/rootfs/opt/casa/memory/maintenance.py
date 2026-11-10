@@ -622,7 +622,7 @@ def _staging_matches(root: str, pattern: str) -> list[str]:
 
 #: ``time.monotonic()`` when the Supervisor accepted the restart request, or
 #: ``None``. Read only through :func:`restart_pending`, by the operator DM
-#: path and the engagement-topic path.
+#: path and the path that hands an operator message to a job.
 restart_accepted_at: float | None = None
 #: What the last restart request was for (``wipe`` or ``restore``): the
 #: courtesy line and the failure line name it.

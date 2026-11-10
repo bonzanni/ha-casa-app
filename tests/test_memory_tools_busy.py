@@ -54,7 +54,7 @@ async def _engager(question: str) -> dict:
     reg = EngagementRegistry(tombstone_path=_engager.tmp + "/e.json")
     rec = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
-        task="t", topic_id=1,
+        task="t",
         origin={"role": "assistant", "channel": "telegram", "chat_id": "1",
                 "_origin_route": "telegram", "_origin_clearance": "private"})
     token = tools.engagement_var.set(rec)

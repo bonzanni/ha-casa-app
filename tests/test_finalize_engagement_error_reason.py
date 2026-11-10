@@ -43,7 +43,6 @@ async def test_outcome_error_emits_warning_with_reason(tmp_path, caplog):
         kind="executor", role_or_type="configurator", driver="in_casa",
         task="t",
         origin={"role": "assistant", "channel": "telegram", "chat_id": "12345"},
-        topic_id=42,
     )
     init_tools(
         channel_manager=None, bus=None,
@@ -94,7 +93,6 @@ async def test_outcome_error_handles_empty_text(tmp_path, caplog):
     rec = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa",
         task="t", origin={"role": "assistant", "channel": "telegram"},
-        topic_id=42,
     )
     init_tools(
         channel_manager=None, bus=None,
@@ -124,11 +122,11 @@ async def test_outcome_error_handles_empty_text(tmp_path, caplog):
     )
 
 
-async def test_completed_engagement_posts_the_plain_summary(
+async def test_completed_engagement_tells_the_plain_summary(
     tmp_path,
 ) -> None:
-    """Sanity: a completed engagement gets the plain completion summary,
-    with nothing appended."""
+    """Sanity: a completed engagement's end carries the plain completion
+    summary, with nothing appended."""
     from engagement_registry import EngagementRegistry
     from tools import _finalize_engagement, init_tools
 
@@ -136,17 +134,13 @@ async def test_completed_engagement_posts_the_plain_summary(
     rec = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa",
         task="t", origin={"role": "assistant", "channel": "telegram"},
-        topic_id=42,
     )
 
-    tch = MagicMock()
-    tch.send_to_topic = AsyncMock()
-    tch.send_response_to_topic = AsyncMock()
-    tch.close_topic = AsyncMock()
     cm = MagicMock()
-    cm.get.return_value = tch
+    cm.get.return_value = MagicMock()
+    bus = MagicMock(notify=AsyncMock())
     init_tools(
-        channel_manager=cm, bus=MagicMock(notify=AsyncMock()),
+        channel_manager=cm, bus=bus,
         specialist_registry=MagicMock(), mcp_registry=MagicMock(),
         trigger_registry=MagicMock(), engagement_registry=reg,
     )
@@ -156,9 +150,8 @@ async def test_completed_engagement_posts_the_plain_summary(
         next_steps=[], driver=None,
     )
 
-    tch.send_response_to_topic.assert_awaited_once()  # v0.109.0 rich summary
-    posted_text = tch.send_response_to_topic.await_args.args[1]
-    assert posted_text == "Engagement completed. Summary:\nall done"
+    bus.notify.assert_awaited_once()
+    assert bus.notify.await_args.args[0].content.text == "all done"
 
 
 async def test_outcome_completed_stays_at_info_level(tmp_path, caplog):
@@ -170,7 +163,6 @@ async def test_outcome_completed_stays_at_info_level(tmp_path, caplog):
     rec = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa",
         task="t", origin={"role": "assistant", "channel": "telegram"},
-        topic_id=42,
     )
     init_tools(
         channel_manager=None, bus=None,

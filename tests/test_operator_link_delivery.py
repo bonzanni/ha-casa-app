@@ -103,10 +103,6 @@ class _Recorder:
         self.other_sends.append(("send", message, context))
         return DeliveryOutcome.DELIVERED
 
-    async def send_to_topic(self, *a, **kw):
-        self.other_sends.append(("send_to_topic", a, kw))
-        return DeliveryOutcome.DELIVERED
-
 
 class _Manager:
     def __init__(self, channel):
@@ -529,7 +525,7 @@ async def test_an_engagements_link_goes_to_the_origin_chat_not_the_topic(recorde
     in; the topic (a negative supergroup id) receives nothing."""
     from test_result_broker import _Origin
     rec = SimpleNamespace(
-        id="eng-1", kind="specialist", status="active", topic_id=555,
+        id="eng-1", kind="specialist", status="active",
         role_or_type="finance",
         origin={"role": "assistant", "channel": "telegram", "chat_id": 42,
                 "user_id": 42, "message_type": "channel_in", "source": "telegram",

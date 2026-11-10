@@ -22,7 +22,7 @@ async def test_create_persists_plugin_artifacts_roundtrip(tmp_path):
     path = str(tmp_path / "e.json")
     reg = EngagementRegistry(tombstone_path=path)
     rec = await reg.create(
-        "executor", "configurator", "in_casa", "task", {}, 1,
+        "executor", "configurator", "in_casa", "task", {},
         plugin_artifacts=_ARTIFACTS)
     assert rec.plugin_artifacts == tuple(_ARTIFACTS)
     # Reload from disk — the field survives serialization.
@@ -37,7 +37,7 @@ async def test_every_mutator_preserves_plugin_artifacts(tmp_path):
     path = str(tmp_path / "e.json")
     reg = EngagementRegistry(tombstone_path=path)
     rec = await reg.create(
-        "executor", "configurator", "in_casa", "task", {}, 1,
+        "executor", "configurator", "in_casa", "task", {},
         plugin_artifacts=_ARTIFACTS)
     await reg.mark_idle(rec.id)
     await reg.persist_session_id(rec.id, "sess-xyz")

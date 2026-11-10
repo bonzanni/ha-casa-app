@@ -161,23 +161,23 @@ def capture_desk_reply(*, channel, chat_id, user_id, user_name,
 
 
 # ---------------------------------------------------------------------------
-# INV-MEM-044: what the operator types to such a specialist's engagement — in
-# its topic, or as a reply in their direct chat to one of its job's posts —
-# reaches the specialist's turn, and that engagement captures nothing
-# (INV-MEM-032), so their words were lost. They are the operator's message like any other:
-# captured once, as they typed them, classified like any message of theirs.
+# INV-MEM-044: what the operator types to such a specialist's job — a reply in
+# their direct chat to one of its job's posts — reaches the specialist's turn,
+# and that engagement captures nothing (INV-MEM-032), so their words were lost.
+# They are the operator's message like any other: captured once, as they typed
+# them, classified like any message of theirs.
 # ---------------------------------------------------------------------------
 
-def capture_topic_message(*, channel, engagement, user_id, user_name,
-                          message_id, resident: str, text: str) -> None:
-    """Capture the operator's own words *text*, sent to *engagement* (in its
-    topic, or as a reply to one of its job's posts in their direct chat), as
-    their message: when it is a specialist's engagement, that
-    specialist keeps no memory and the sender is the channel's configured
-    operator. Speaker ``operator``, origin ``operator``, no floor, the chat's
-    *resident* as its role, keyed by their message (``engagement_key``,
-    the key a memory-writing specialist's engagement gives it). Detached,
-    like the desk reply: no run's transcript holds his words. Never raises."""
+def capture_job_reply(*, channel, engagement, user_id, user_name,
+                      message_id, resident: str, text: str) -> None:
+    """Capture the operator's own words *text*, sent to *engagement* as a
+    reply to one of its job's posts in their direct chat, as their message:
+    when it is a specialist's engagement, that specialist keeps no memory and
+    the sender is the channel's configured operator. Speaker ``operator``,
+    origin ``operator``, no floor, the chat's *resident* as its role, keyed by
+    their message (``engagement_key``, the key a memory-writing specialist's
+    engagement gives it). Detached, like the desk reply: no run's transcript
+    holds his words. Never raises."""
     import logging
     try:
         if (getattr(engagement, "kind", "") != "specialist"
@@ -187,7 +187,7 @@ def capture_topic_message(*, channel, engagement, user_id, user_name,
         from channel_policy import writes_to_bank
         from memory import capture, eligibility, occurrence
         rule = eligibility.admit(
-            eligibility.Source.TOPIC_MESSAGE, text=text,
+            eligibility.Source.JOB_REPLY, text=text,
             channel_writes=writes_to_bank(name),
             role_writes_memory=role_writes_memory(engagement.role_or_type))
         if rule is None:
@@ -202,6 +202,6 @@ def capture_topic_message(*, channel, engagement, user_id, user_name,
             speaker_name=user_name,
             provider_message_id=None if message_id is None else str(message_id))
         capture.record_detached(item)
-    except Exception:  # noqa: BLE001 — memory never fails a topic turn
+    except Exception:  # noqa: BLE001 — memory never fails a job reply
         logging.getLogger(__name__).exception(
-            "memory: the operator's topic message was not captured")
+            "memory: the operator's reply to a job was not captured")

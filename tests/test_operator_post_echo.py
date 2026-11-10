@@ -229,8 +229,7 @@ async def test_a_finished_engagements_notice_carries_the_echo_after_its_text(tmp
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
-        task="t", origin={"role": "assistant", "channel": "telegram", "chat_id": 42},
-        topic_id=42)
+        task="t", origin={"role": "assistant", "channel": "telegram", "chat_id": 42})
     bus = MagicMock()
     bus.notify = AsyncMock()
     init_tools(channel_manager=None, bus=bus, specialist_registry=MagicMock(),

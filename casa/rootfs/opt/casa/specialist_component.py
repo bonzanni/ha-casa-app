@@ -35,7 +35,7 @@ MAX_SCOPED_NAME_BYTES = 72
 # consent), agent_loader's load-time clamp (pre-existing installs), and the
 # dispatch-time ceiling in tools.py (already-live engagement records).
 SPECIALIST_CASA_TOOL_ALLOWLIST: frozenset[str] = frozenset({
-    "query_engager", "emit_completion", "react", "ask_user",
+    "query_engager", "emit_completion", "ask_user",
     "search_memory", "browse_memory_day", "open_memory", "ack_event",
     "get_schedule", "send_media",
 })

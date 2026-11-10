@@ -42,7 +42,7 @@ import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import ellen_topic_purge as base  # noqa: E402 — the system-prompt builder
+import ellen_prompt as base  # noqa: E402 — the system-prompt builder
 
 # The two live-check wordings (casa-test, v0.344.74) verbatim, plus a third.
 REQUESTS = [
@@ -66,7 +66,7 @@ WARM = [
     "How long should I let a cast-iron pan cool before washing it?",
 ]
 CASA_TOOLS = [
-    "cancel_engagement", "cleanup_engagement_topics", "start_job",
+    "cancel_engagement", "start_job",
     "delegate_to_agent", "ask_user", "get_schedule",
     "list_inbound_files", "share_inbound_file", "vault_drop_off",
     "plugin_status", "set_reminder", "cancel_reminder", "ack_event",

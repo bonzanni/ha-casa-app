@@ -113,7 +113,6 @@ class TestEveryBoundIsRealAndEveryCountIsOne:
 
         assert probe.notice_texts == ["⚠️ stopped before reporting a result"]
         assert probe.driver_cancel_calls == 1
-        assert channel.close_topic.await_count == 0
         assert not tools_mod._LAUNCH_DEATH_TASKS
         created_id = next(iter(registry._records))
         assert registry.get(created_id).status == "error"
@@ -152,8 +151,8 @@ class TestTheStrictTransitionIsTheAuthority:
         the PERSIST_FAILED branch → this fails.
 
         `mark_error` persists BEST-EFFORT: it swallows a tombstone-write
-        failure and still returns True, which would authorize an irreversible
-        topic close over a record disk still calls `active`. The strict
+        failure and still returns True, which would report a death over a
+        record disk still calls `active`. The strict
         primitive rolls the record back and re-raises, and the reporter then
         logs no death over a live record. It DOES retire the driver's
         session, so `is_alive` never hands the next message to a client the
@@ -185,7 +184,6 @@ class TestTheStrictTransitionIsTheAuthority:
         # The reporter logs no death over a live record; its owner logs one
         # line saying the outcome could not be recorded — that is the one.
         assert probe.notice_texts == ["⚠️ could not be recorded"]
-        assert channel.update_topic_state.await_count == 0
         assert probe.driver_cancel_calls == 1
         assert driver.is_alive(rec) is False
 
@@ -221,7 +219,6 @@ class TestTheStrictTransitionIsTheAuthority:
         assert registry.get(created_id).status == "completed"
         assert len(probe.transition_calls) == 2     # the winner's, then the loser's
         assert probe.notice_texts == []
-        assert channel.update_topic_state.await_count == 0
 
 
 class TestCancellationHasAnOwner:

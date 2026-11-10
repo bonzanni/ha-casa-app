@@ -32,7 +32,8 @@ build_image
 # We run the engagement e2e as a python harness executed via `docker exec`.
 # The container doesn't need a live Telegram application — the harness
 # constructs a TelegramChannel directly with bot_token="test" and a mock-TG
-# base URL so `createForumTopic` / `sendMessage` land in the mock's state.
+# base URL so the agent log's `createForumTopic` / `sendMessage` and the
+# group's pointer land in the mock's state.
 log "E-0b: boot container with engagement wiring"
 MSYS_NO_PATHCONV=1 docker run -d --rm --name "$NAME" \
     -p "${HOST_PORT}:8080" \
@@ -70,65 +71,70 @@ run_harness() {
 }
 
 # ---------------------------------------------------------------------------
-# E-1 — Engagement topic open (a specialist job's): channel.open_engagement_topic creates a
-# forum topic in the mock-TG supergroup and the registry records it.
+# E-1 — The agent log: with the forum group set up, the channel's rebuild
+# turns the log on, and an agent's first line opens that agent's topic and
+# lands in it (never in General).
 # ---------------------------------------------------------------------------
-log "E-1: an engagement opens a topic"
+log "E-1: an agent's log line opens its topic and lands there"
 curl -s -X POST "http://localhost:${MOCK_PORT}/_reset" >/dev/null
 
 read -r -d '' E1_PY <<'PY' || true
-import asyncio, os, sys, json
+import asyncio, os, sys, json, urllib.request
 sys.path.insert(0, "/opt/casa")
-from engagement_registry import EngagementRegistry
+from agent_logs import AgentLogs, LogKey
 from channels.telegram import TelegramChannel
+
+def inspect():
+    with urllib.request.urlopen(os.environ["MOCK_TG_BASE"] + "/_inspect") as r:
+        return json.loads(r.read())
 
 async def main():
     os.environ["TELEGRAM_BOT_API_BASE"] = os.environ["MOCK_TG_BASE"]
     supergroup = int(os.environ["SUPERGROUP_ID"])
-    reg = EngagementRegistry(tombstone_path="/tmp/_eng_e1.json")
-    await reg.load()
     ch = TelegramChannel(
         bot_token="test-token", chat_id="999", default_agent="assistant",
         bus=None, webhook_url="",
         engagement_supergroup_id=supergroup,
     )
-    # Stand up the PTB Application against the mock TG URL.
+    logs = AgentLogs(display_name=lambda role: "Finance",
+                     path="/tmp/_logs_e1.json")
+    ch._agent_logs = logs
+    # Stand up the PTB Application against the mock TG URL; the rebuild
+    # checks the group (getChatMember: Manage topics) and starts the writer.
     await ch._rebuild()
-    ch._engagement_registry = reg
-    tid = await ch.open_engagement_topic(name="E-1 test topic")
-    rec = await reg.create(
-        kind="specialist", role_or_type="finance", driver="in_casa",
-        task="E-1 task", origin={"channel": "telegram", "chat_id": "999"},
-        topic_id=tid,
-    )
-    assert tid is not None, "createForumTopic returned None"
-    assert reg.by_topic_id(tid) is rec, "by_topic_id did not resolve"
-    assert os.path.exists("/tmp/_eng_e1.json"), "tombstone not written"
-    with open("/tmp/_eng_e1.json") as fh:
-        assert json.load(fh), "tombstone empty"
+    assert logs.enabled, "the agent log did not turn on"
+    logs.log(LogKey("agent", "finance"), "E-1 run", "▶ started")
+    state = {}
+    for _ in range(200):
+        state = inspect()
+        if any(state.get("messages_by_thread", {}).values()):
+            break
+        await asyncio.sleep(0.05)
+    topics = state.get("topics", {})
+    assert len(topics) == 1, f"expected one log topic, got {topics}"
+    (tid,) = topics
+    lines = state["messages_by_thread"].get(tid, [])
+    assert lines and "▶ started" in lines[0], f"log line not in its topic: {state}"
+    assert state["main_feed_messages"] == [], "a log line reached General"
+    await logs.stop()
     await ch._teardown_app()
     print("OK")
 
 asyncio.run(main())
 PY
 run_harness "E-1" "$E1_PY"
-
-# Mock TG saw createForumTopic land (topic count ≥ 1).
-TOPICS=$(curl -s "http://localhost:${MOCK_PORT}/_inspect" \
-    | python3 -c 'import sys,json;print(len(json.load(sys.stdin).get("topics",{})))')
-[ "$TOPICS" -ge 1 ] || fail "E-1: expected ≥1 topic in mock TG, got $TOPICS"
-pass "E-1 engagement opens topic (mock TG topics=$TOPICS)"
+pass "E-1 agent log line lands in the agent's topic"
 
 # ---------------------------------------------------------------------------
-# E-2 — User turn routed: a user message inside an engagement topic reaches
-# the driver. We inject a real Telegram Update shape through handle_update
-# and assert the message was handed to the driver's submit_operator seam.
+# E-2 — The group is read-only: a person's message there, in any topic, gets
+# one pointer to the direct chat in the thread they wrote in, and reaches no
+# job.
 # ---------------------------------------------------------------------------
-log "E-2: user turn in topic routed to driver"
+log "E-2: a message in the log group draws one pointer and reaches no job"
 curl -s -X POST "http://localhost:${MOCK_PORT}/_reset" >/dev/null
 
 read -r -d '' E2_PY <<'PY' || true
-import asyncio, os, sys
+import asyncio, os, sys, json, urllib.request
 sys.path.insert(0, "/opt/casa")
 from types import SimpleNamespace
 from engagement_registry import EngagementRegistry
@@ -146,102 +152,80 @@ async def main():
     )
     await ch._rebuild()
 
-    # Stub driver: record turns, always alive.
     class StubDriver:
         def __init__(self): self.turns = []
-        def is_alive(self, rec): return True
         def submit_operator(self, rec, text, *, tg_message_id=None, notice=None):
             self.turns.append((rec.id, text))
-        async def resume(self, rec, sid): pass
-        def get_session_id(self, rec): return None
-        async def cancel(self, rec): pass
     drv = StubDriver()
     ch._engagement_registry = reg
     ch._engagement_driver = drv
+    await reg.create(kind="specialist", role_or_type="finance",
+                     driver="in_casa", task="", origin={"channel": "telegram"})
 
-    tid = await ch.open_engagement_topic(name="E-2")
-    rec = await reg.create(kind="specialist", role_or_type="finance",
-                            driver="in_casa", task="", origin={"channel":"telegram"},
-                            topic_id=tid)
-
-    # Synthetic Telegram update: user message in the topic.
-    update = SimpleNamespace(
-        message=SimpleNamespace(
-            message_id=90001,
-            chat=SimpleNamespace(id=supergroup),
-            message_thread_id=tid,
-            text="hello from user",
-            from_user=SimpleNamespace(id=7777),
-        ),
-    )
-    await ch.handle_update(update)
-    # M9 (v0.52.0): handle_update spawns the driver turn as a tracked
-    # background task; drain it before asserting.
-    while ch._turn_tasks:
-        await asyncio.gather(*list(ch._turn_tasks), return_exceptions=True)
-    assert len(drv.turns) == 1, f"expected 1 driver turn, got {len(drv.turns)}"
-    assert drv.turns[0][1] == "hello from user", f"wrong text: {drv.turns[0]}"
+    for text in ("hello from user", "/cancel"):
+        update = SimpleNamespace(
+            message=SimpleNamespace(
+                message_id=90001,
+                chat=SimpleNamespace(id=supergroup),
+                message_thread_id=1234,
+                text=text,
+                from_user=SimpleNamespace(id=7777, is_bot=False),
+            ),
+        )
+        await ch.handle_update(update)
+    assert drv.turns == [], f"a group message reached a job: {drv.turns}"
+    with urllib.request.urlopen(os.environ["MOCK_TG_BASE"] + "/_inspect") as r:
+        state = json.loads(r.read())
+    assert state["messages_by_thread"].get("1234") == [
+        "This group is a read-only log. Talk to me in our direct chat."], state
     await ch._teardown_app()
     print("OK")
 
 asyncio.run(main())
 PY
 run_harness "E-2" "$E2_PY"
-pass "E-2 user turn routed to driver"
+pass "E-2 log group is read-only"
 
 # ---------------------------------------------------------------------------
-# E-3 — emit_completion happy path: _finalize_engagement closes the topic
-# (icon=✅ on mock TG), marks record completed, and posts NOTIFICATION.
+# E-3 — emit_completion happy path with no group needed: _finalize_engagement
+# marks the record completed and posts the NOTIFICATION; no topic is opened.
 # ---------------------------------------------------------------------------
-log "E-3: emit_completion closes topic, ✅ icon, NOTIFICATION posted"
+log "E-3: emit_completion completes the job and NOTIFIES Ellen"
 curl -s -X POST "http://localhost:${MOCK_PORT}/_reset" >/dev/null
 
 read -r -d '' E3_PY <<'PY' || true
-import asyncio, os, sys, json
+import asyncio, os, sys, json, urllib.request
 sys.path.insert(0, "/opt/casa")
 from engagement_registry import EngagementRegistry
 from channels.telegram import TelegramChannel
 
 async def main():
     os.environ["TELEGRAM_BOT_API_BASE"] = os.environ["MOCK_TG_BASE"]
-    supergroup = int(os.environ["SUPERGROUP_ID"])
     reg = EngagementRegistry(tombstone_path="/tmp/_eng_e3.json")
     ch = TelegramChannel(
         bot_token="test-token", chat_id="999", default_agent="assistant",
         bus=None, webhook_url="",
-        engagement_supergroup_id=supergroup,
     )
     await ch._rebuild()
-    # v0.37.1 D-1: update_topic_state (called inside _finalize_engagement)
-    # reads ch._engagement_registry to look up the record's task/current
-    # state emoji. Without this wire it early-returns and the title
-    # never gets the ✅ state prefix.
     ch._engagement_registry = reg
 
-    # Minimal bus that captures NOTIFICATIONs.
     class StubBus:
         def __init__(self): self.notifs = []
         async def notify(self, msg): self.notifs.append(msg)
     bus = StubBus()
 
-    # Minimal channel_manager.get(...) that returns our channel.
     class StubChanMgr:
         def get(self, name): return ch
-    cm = StubChanMgr()
 
-    # Inject bus + channel_manager + registry into the tools module.
     import tools
     tools._engagement_registry = reg
     tools._bus = bus
-    tools._channel_manager = cm
+    tools._channel_manager = StubChanMgr()
 
-    tid = await ch.open_engagement_topic(name="E-3")
     rec = await reg.create(kind="specialist", role_or_type="finance",
-                            driver="in_casa", task="",
-                            origin={"channel":"telegram", "role":"assistant"},
-                            topic_id=tid)
+                           driver="in_casa", task="",
+                           origin={"channel": "telegram", "role": "assistant"})
 
-    # Stub driver (cancel is called inside _finalize_engagement)
     class StubDriver:
         async def cancel(self, rec): pass
     await tools._finalize_engagement(
@@ -250,20 +234,11 @@ async def main():
         driver=StubDriver(),
     )
 
-    # Inspect mock TG: topic must be closed with ✅ in the title prefix.
-    # v0.37.1 D-1: bubble icon is set once at open (role-based, numeric
-    # custom_emoji_id) and never edited. State transition lives in the
-    # title — compose_topic_title returns "✅ <short_task>" on completion.
-    import urllib.request
     with urllib.request.urlopen(os.environ["MOCK_TG_BASE"] + "/_inspect") as r:
         state = json.loads(r.read())
-    topic = state["topics"][str(tid)]
-    assert topic["closed"] is True, f"topic not closed: {topic}"
-    assert topic["name"].startswith("✅"), f"title missing ✅ state prefix: {topic}"
-    # Bus got one NOTIFICATION targeting assistant.
+    assert state["topics"] == {}, f"a topic was opened: {state['topics']}"
     assert len(bus.notifs) == 1, f"bus notifs: {len(bus.notifs)}"
     assert bus.notifs[0].target == "assistant"
-    # Record transitioned to completed.
     assert reg.get(rec.id).status == "completed"
     await ch._teardown_app()
     print("OK")
@@ -271,120 +246,31 @@ async def main():
 asyncio.run(main())
 PY
 run_harness "E-3" "$E3_PY"
-pass "E-3 emit_completion closes topic with ✅ + NOTIFY Ellen"
+pass "E-3 emit_completion completes + NOTIFY Ellen, no topic"
 
 # ---------------------------------------------------------------------------
-# E-4 — /cancel: user-driven cancellation closes the topic and marks the
-# record cancelled.
+# E-7 — Session suspend after 24h; the operator's next reply to the job, in
+# the direct chat, is handed to the driver.
 # ---------------------------------------------------------------------------
-log "E-4: /cancel user-driven"
-curl -s -X POST "http://localhost:${MOCK_PORT}/_reset" >/dev/null
-
-read -r -d '' E4_PY <<'PY' || true
-import asyncio, os, sys
-sys.path.insert(0, "/opt/casa")
-from types import SimpleNamespace
-from engagement_registry import EngagementRegistry
-from channels.telegram import TelegramChannel
-
-async def main():
-    os.environ["TELEGRAM_BOT_API_BASE"] = os.environ["MOCK_TG_BASE"]
-    supergroup = int(os.environ["SUPERGROUP_ID"])
-    reg = EngagementRegistry(tombstone_path="/tmp/_eng_e4.json")
-    ch = TelegramChannel(
-        bot_token="test-token", chat_id="999", default_agent="assistant",
-        bus=None, webhook_url="",
-        engagement_supergroup_id=supergroup,
-    )
-    await ch._rebuild()
-
-    import tools
-    class StubBus:
-        def __init__(self): self.notifs = []
-        async def notify(self, msg): self.notifs.append(msg)
-    class StubChanMgr:
-        def get(self, name): return ch
-    tools._engagement_registry = reg
-    tools._bus = StubBus()
-    tools._channel_manager = StubChanMgr()
-
-    # Stub driver to satisfy _finalize_engagement path triggered by _finalize_cancel.
-    class StubDriver:
-        def is_alive(self, rec): return False
-        async def cancel(self, rec): pass
-    # Bind into agent module so tools._finalize_cancel finds it.
-    import agent as agent_mod
-    agent_mod.active_engagement_driver = StubDriver()
-    agent_mod.active_memory_provider = None
-
-    ch._engagement_registry = reg
-    # Inject _finalize_cancel collaborator (prod wiring lives in casa_core.py).
-    drv = agent_mod.active_engagement_driver
-    async def _finalize_cancel(rec, reason="user"):
-        await tools._finalize_engagement(
-            rec, outcome="cancelled", text=f"Cancelled by {reason}.",
-            next_steps=[],
-            driver=drv,
-        )
-    ch._finalize_cancel = _finalize_cancel
-
-    tid = await ch.open_engagement_topic(name="E-4")
-    rec = await reg.create(kind="specialist", role_or_type="finance",
-                            driver="in_casa", task="",
-                            origin={"channel":"telegram","role":"assistant"},
-                            topic_id=tid)
-
-    update = SimpleNamespace(
-        message=SimpleNamespace(
-            message_id=90001,
-            chat=SimpleNamespace(id=supergroup),
-            message_thread_id=tid, text="/cancel",
-            from_user=SimpleNamespace(id=7777),
-        ),
-    )
-    await ch.handle_update(update)
-
-    # Record must be cancelled; topic closed in mock TG.
-    assert reg.get(rec.id).status == "cancelled", \
-        f"status: {reg.get(rec.id).status}"
-    import urllib.request, json as _json
-    with urllib.request.urlopen(os.environ["MOCK_TG_BASE"] + "/_inspect") as r:
-        state = _json.loads(r.read())
-    assert state["topics"][str(tid)]["closed"] is True
-    await ch._teardown_app()
-    print("OK")
-
-asyncio.run(main())
-PY
-run_harness "E-4" "$E4_PY"
-pass "E-4 /cancel marks record cancelled + closes topic"
-
-# ---------------------------------------------------------------------------
-# E-7 — Session suspend after 24h, resume on next user turn. Asserts the
-# driver transitions dead → alive via the resume path.
-# ---------------------------------------------------------------------------
-log "E-7: 24h idle suspends client; next turn goes to the driver"
+log "E-7: 24h idle suspends client; the next reply goes to the driver"
 curl -s -X POST "http://localhost:${MOCK_PORT}/_reset" >/dev/null
 
 read -r -d '' E7_PY <<'PY' || true
 import asyncio, os, sys
 sys.path.insert(0, "/opt/casa")
-from types import SimpleNamespace
 from engagement_registry import EngagementRegistry
 from channels.telegram import TelegramChannel
 
 async def main():
     os.environ["TELEGRAM_BOT_API_BASE"] = os.environ["MOCK_TG_BASE"]
-    supergroup = int(os.environ["SUPERGROUP_ID"])
     reg = EngagementRegistry(tombstone_path="/tmp/_eng_e7.json")
     ch = TelegramChannel(
         bot_token="test-token", chat_id="999", default_agent="assistant",
         bus=None, webhook_url="",
-        engagement_supergroup_id=supergroup,
     )
     await ch._rebuild()
 
-    # Stub driver: alive flag flips after cancel; resume restores it.
+    # Stub driver: alive flag flips after cancel.
     class StubDriver:
         def __init__(self):
             self._alive = {}
@@ -392,19 +278,15 @@ async def main():
         def is_alive(self, rec): return self._alive.get(rec.id, False)
         def get_session_id(self, rec): return "mock-session-e7"
         async def cancel(self, rec): self._alive.pop(rec.id, None)
-        async def resume(self, rec, session_id):
-            assert session_id == "mock-session-e7", f"resume got {session_id}"
-            self._alive[rec.id] = True
         def submit_operator(self, rec, text, *, tg_message_id=None, notice=None):
             self.turns.append(text)
     drv = StubDriver()
     ch._engagement_registry = reg
     ch._engagement_driver = drv
 
-    tid = await ch.open_engagement_topic(name="E-7")
     rec = await reg.create(kind="specialist", role_or_type="finance",
-                            driver="in_casa", task="",
-                            origin={"channel":"telegram"}, topic_id=tid)
+                           driver="in_casa", task="",
+                           origin={"channel": "telegram", "chat_id": "999"})
     drv._alive[rec.id] = True
 
     # Fast-forward 25h; sweep should suspend.
@@ -416,20 +298,12 @@ async def main():
     assert reg.get(rec.id).sdk_session_id == "mock-session-e7", \
         "sdk_session_id not persisted"
 
-    # User turn arrives — handle_update hands it to the driver, whose
-    # delivery worker resumes the suspended session before writing it.
-    update = SimpleNamespace(
-        message=SimpleNamespace(
-            message_id=90001,
-            chat=SimpleNamespace(id=supergroup),
-            message_thread_id=tid, text="are you there?",
-            from_user=SimpleNamespace(id=7777),
-        ),
-    )
-    await ch.handle_update(update)
-    # M9 (v0.52.0): turn delivery is a tracked background task — drain first.
-    while ch._turn_tasks:
-        await asyncio.gather(*list(ch._turn_tasks), return_exceptions=True)
+    # The operator replies to the job's post in the direct chat: the seam
+    # hands it to the driver, whose delivery worker resumes the session.
+    accepted = await ch.deliver_operator_reply(
+        reg.get(rec.id), "are you there?", chat_id=999, message_id=90001,
+        user_id=999)
+    assert accepted, "the reply was not accepted"
     assert drv.turns == ["are you there?"], f"turns: {drv.turns}"
     await ch._teardown_app()
     print("OK")
@@ -437,15 +311,15 @@ async def main():
 asyncio.run(main())
 PY
 run_harness "E-7" "$E7_PY"
-pass "E-7 suspend, then the next turn is handed to the driver"
+pass "E-7 suspend, then the next reply is handed to the driver"
 
 # ---------------------------------------------------------------------------
-# E-8 — Orphan recovery: pre-seed /data/engagements.json, restart container,
-# verify EngagementRegistry loads the record on startup.
+# E-8 — Orphan recovery: pre-seed /data/engagements.json with a row an older
+# version wrote (it still holds a topic_id), restart, verify
+# EngagementRegistry loads the record on startup.
 # ---------------------------------------------------------------------------
 log "E-8: startup with pre-seeded engagements.json"
 
-# Write a valid tombstone containing one active engagement.
 SEED_JSON='[{"id":"e8orphan0000000000000000000000","kind":"specialist","role_or_type":"finance","driver":"in_casa","status":"active","topic_id":9999,"started_at":1000.0,"last_user_turn_ts":1000.0,"last_idle_reminder_ts":0,"completed_at":null,"sdk_session_id":"mock-session-e8","origin":{"channel":"telegram"},"task":"E-8 orphan"}]'
 MSYS_NO_PATHCONV=1 docker exec "$NAME" sh -c \
     "printf '%s' '$SEED_JSON' > /data/engagements.json"
@@ -463,9 +337,11 @@ async def main():
     assert len(survivors) == 1, f"expected 1 survivor, got {len(survivors)}"
     rec = survivors[0]
     assert rec.id == "e8orphan0000000000000000000000"
-    assert rec.topic_id == 9999
     assert rec.sdk_session_id == "mock-session-e8"
-    assert reg.by_topic_id(9999) is rec, "topic index not built"
+    # The older row's topic_id is read by nothing and not written back.
+    with open("/data/engagements.json") as fh:
+        rows = json.load(fh)
+    assert "topic_id" not in rows[0], rows[0]
     print("OK")
 
 asyncio.run(main())
@@ -602,14 +478,10 @@ async def main():
     class StubDriver:
         async def cancel(self, rec): pass
 
-    tid = await ch.open_engagement_topic(
-        name="#[configurator] delete butler", role="configurator",
-    )
     rec = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa",
         task="delete butler resident",
         origin={"channel": "telegram", "chat_id": "999", "role": "assistant"},
-        topic_id=tid,
     )
 
     await _tools._finalize_engagement(

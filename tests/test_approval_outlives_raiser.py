@@ -140,11 +140,9 @@ class TestEngagementEndRetiresItsChallenges:
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         reg.set_terminal_observer(tools_mod._on_engagement_terminal)
         rec = await reg.create(kind="specialist", role_or_type="finance",
-                               driver="in_casa", task="purge", origin={},
-                               topic_id=None)
+                               driver="in_casa", task="purge", origin={})
         other = await reg.create(kind="specialist", role_or_type="finance",
-                                 driver="in_casa", task="other", origin={},
-                                 topic_id=None)
+                                 driver="in_casa", task="other", origin={})
         key, handle = _challenge(coord, channel, engagement_id=rec.id,
                                  target_role="finance")
         okey, ohandle = _challenge(coord, channel, engagement_id=other.id,
@@ -174,8 +172,7 @@ class TestEngagementEndRetiresItsChallenges:
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
         reg.set_terminal_observer(tools_mod._on_engagement_terminal)
         rec = await reg.create(kind="specialist", role_or_type="finance",
-                               driver="in_casa", task="purge", origin={},
-                               topic_id=None)
+                               driver="in_casa", task="purge", origin={})
         key, handle = _challenge(coord, channel, engagement_id=rec.id,
                                  target_role="finance")
         assert await handle.settled_post() == "posted"

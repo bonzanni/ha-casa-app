@@ -13,8 +13,7 @@ the boundary asks: who authored the words?
   consent body;
 * every raw Bot API text call (``bot.send_message`` / ``edit_message_text`` /
   media) by enclosing function — the function takes an ``Admitted``, is a
-  derived edit, is a Casa notice, streams what ``_emit`` admitted, or is an
-  engagement-topic method.
+  derived edit, is a Casa notice, or streams what ``_emit`` admitted.
 
 These catch an accidental bypass. They are not a sandbox against Casa
 deliberately fabricating admission (design §4.3).
@@ -73,7 +72,6 @@ CASA_TEXT_SITES = {
     ("authz_grants.py", "_post"): "a challenge raised with NO turn bound (a setup dispatch); with a turn it is admitted",
     ("casa_core.py", "_notify_plugin_health_locked"): "plugin-health notice, Casa template",
     ("casa_core.py", "notify_placeholder_rewrites"): "placeholder-rewrite notice, Casa template",
-    ("casa_core.py", "_sweep_engagement_topics"): "topic-permission notice, Casa template",
     ("casa_core.py", "_telegram_outbound"): "bus target for Casa notices only; a model reply never reaches it",
     ("casa_core.py", "operator_notify"): "operator notice, Casa template",
     ("tools.py", "_post"): "wipe_memory's confirmation keyboard, Casa template",
@@ -136,14 +134,6 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "post_job_start_line"): "notice",       # a job's start line with its Cancel, Casa template
     ("channels/telegram.py", "post_job_parked"): "notice",           # a parked job's line with its Cancel, Casa template quoting the job's last progress report
     ("channels/telegram.py", "_send_dm_reply"): "notice",            # a lost-message / turn notice in reply to the operator, Casa-composed
-    # topic — engagement-topic methods (out of this boundary)
-    ("channels/telegram.py", "edit_topic_message"): "topic",
-    ("channels/telegram.py", "emit"): "topic",                      # TopicStreamHandle
-    ("channels/telegram.py", "finalize"): "topic",                  # TopicStreamHandle
-    ("channels/telegram.py", "_send_page"): "topic",                # TopicStreamHandle: one page of finalize
-    ("channels/telegram.py", "send_response_to_topic"): "topic",
-    ("channels/telegram.py", "send_to_topic"): "topic",
-    ("channels/telegram.py", "send_to_topic_rich"): "topic",
 }
 
 
@@ -160,7 +150,6 @@ CHANNEL_METHOD_CALLERS = {
     ("casa_core.py", "operator_notify"): "casa_text",
     ("casa_core.py", "_notify_plugin_health_locked"): "casa_text",
     ("casa_core.py", "notify_placeholder_rewrites"): "casa_text",
-    ("casa_core.py", "_sweep_engagement_topics"): "casa_text",
     ("casa_core.py", "_telegram_outbound"): "casa_text",
     ("channels/telegram.py", "finalize_response_stream"): "forward",
     ("channels/telegram.py", "finalize_stream"): "forward",
@@ -224,14 +213,12 @@ def test_every_raw_transport_call_is_inside_a_recorded_function():
     assert raw == set(RAW_TRANSPORT_FUNCTIONS), {
         "unrecorded": sorted(raw - set(RAW_TRANSPORT_FUNCTIONS)),
         "gone": sorted(set(RAW_TRANSPORT_FUNCTIONS) - raw)}
-    assert set(RAW_TRANSPORT_FUNCTIONS.values()) <= {"admitted", "stream", "derived", "notice", "topic"}
+    assert set(RAW_TRANSPORT_FUNCTIONS.values()) <= {"admitted", "stream", "derived", "notice"}
 
 
 ADMITTED_METHODS = {"send", "send_response", "finalize_stream", "finalize_response_stream",
                     "post_dm_keyboard", "send_media", "post_job_question"}
 DERIVED_METHODS = {"edit_dm_message"}
-TOPIC_METHODS = {"send_to_topic", "send_to_topic_rich", "send_to_topic_paged",
-                 "send_response_to_topic", "edit_topic_message", "post_topic_message"}
 NOTICE_METHODS = {"deliver_operator_link", "deliver_operator_message", "deliver_operator_page",
                   "deliver_operator_file", "deliver_desk_notice", "send_handoff_line", "reply",
                   "deliver_operator_proposal", "replace_operator_proposal",
@@ -253,8 +240,8 @@ def test_channel_text_methods_are_classified():
         params = set(inspect.signature(member).parameters)
         if params & text_params:
             found.add(name)
-    classified = (ADMITTED_METHODS | DERIVED_METHODS | TOPIC_METHODS | NOTICE_METHODS
+    classified = (ADMITTED_METHODS | DERIVED_METHODS | NOTICE_METHODS
                   | DISPATCH_METHODS)
     assert found <= classified, sorted(found - classified)
-    assert not (ADMITTED_METHODS & (DERIVED_METHODS | TOPIC_METHODS | NOTICE_METHODS
+    assert not (ADMITTED_METHODS & (DERIVED_METHODS | NOTICE_METHODS
                                     | DISPATCH_METHODS))

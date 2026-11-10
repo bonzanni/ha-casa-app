@@ -519,7 +519,7 @@ class VerdictBroker:
             return
         if not isinstance(mid, int):
             # r10-B3: both keyboard APIs return int | None; None means the
-            # engagement/topic couldn't be resolved — treat as delivery failure.
+            # chat couldn't be resolved — treat as delivery failure.
             self.unregister(namespace=req.namespace, scope=req.scope, request_id=req.request_id)
             return
         req.meta["message_id"] = mid

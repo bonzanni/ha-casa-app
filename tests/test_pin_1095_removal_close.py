@@ -7,7 +7,7 @@ tells the operator right away.
 
 The close goes through the REAL terminal funnel (`_finalize_engagement`,
 outcome `cancelled`), over a REAL `EngagementRegistry`; the channel and the bus
-are doubles that count the topic close and the engager notification. The
+are doubles, and the bus counts the engager notification. The
 uninstall cases reuse `test_plugin_erase_flow`'s fixtures (the REAL erase gate);
 the disable cases reuse `test_reload_disabled_specialist_scopes`' harness (the
 REAL dispatcher, bus, runtime and teardown).
@@ -50,9 +50,6 @@ def funnel(monkeypatch):
     import tools as tools_mod
     tch = MagicMock(name="telegram")
     tch.chat_id = "42"
-    for m in ("send_to_topic", "send_response_to_topic", "close_topic",
-              "update_topic_state"):
-        setattr(tch, m, AsyncMock(return_value=1))
     cm = SimpleNamespace(get=lambda name: tch if name == "telegram" else None)
     bus = MagicMock(name="bus")
     bus.notify = AsyncMock()
@@ -61,13 +58,13 @@ def funnel(monkeypatch):
     return SimpleNamespace(tch=tch, bus=bus)
 
 
-async def _open(reg, *, slug="fin", topic=101, task="Review household budget",
+async def _open(reg, *, slug="fin", task="Review household budget",
                 kind="specialist", job=None):
     origin = {"channel": "telegram", "chat_id": "42", "user_id": 42, "role": "assistant"}
     if job is not None:
         origin["job"] = job
     return await reg.create(kind=kind, role_or_type=slug, driver="in_casa", task=task,
-                            origin=origin, topic_id=topic)
+                            origin=origin)
 
 
 def _out(r) -> dict:
@@ -105,7 +102,6 @@ async def test_rc11_a_confirmed_uninstall_closes_after_the_commit(reg, sflow, fu
     assert sflow.uninstalled == [True]
     assert order == [("reload", "active")]          # closed only after the reload
     assert _cancelled(reg, a.id) == 1
-    assert funnel.tch.close_topic.await_count == 1
     assert funnel.bus.notify.await_count == 1
     assert [r.get("engagement_id") for r in _closed_rows(out)] == [a.id], out
 
@@ -136,7 +132,7 @@ async def test_rc13_j2_an_arrival_during_the_erasure_is_closed_and_named(reg, sf
     pec.CHOICES.mint(prompt["key"], pec.ERASE)
     out = await _uninstall(tm, erase_data=True)
     assert out.get("kind") == "erasure_running", out
-    b = await _open(reg, topic=102, task="Plan the holiday budget")
+    b = await _open(reg, task="Plan the holiday budget")
     q = pe.QUESTIONS.current(SUBJECT)
     pe.RECORDS.put("plugin:fin.bank", "1" * 64, "complete", "bank gone", q)
     out = await _uninstall(tm, erase_data=True, acknowledged_conversations=[a.id])
@@ -166,12 +162,11 @@ async def test_rc14_the_disabled_teardown_closes_and_tells(reg, funnel, harness,
     import reload as reload_mod
     monkeypatch.setattr(reload_mod, "_INCOMPLETE_RETIREMENTS", set())
     a = await _open(reg, slug=ROLE)
-    other = await _open(reg, slug="travel", topic=103, task="Book the train")
+    other = await _open(reg, slug="travel", task="Book the train")
     actions: list = []
     await reload_mod._teardown_disabled_specialist(actions, harness.runtime, ROLE)
     assert _cancelled(reg, a.id) == 1
     assert reg.get(other.id).status == "active"
-    assert funnel.tch.close_topic.await_count == 1
     assert funnel.bus.notify.await_count == 1
     assert not any("teardown_incomplete" in str(x) for x in actions), actions
 
@@ -250,8 +245,8 @@ async def test_rc16b_the_boot_pass_closes_disabled_only(reg, funnel):
     import casa_core
     fn = getattr(casa_core, _BOOT_PASS, None)
     assert fn is not None, "no boot close pass"
-    dis = await _open(reg, slug="travel", topic=103, task="Book the train")
-    bad = await _open(reg, slug="broken", topic=104, task="Load failure keeps me")
+    dis = await _open(reg, slug="travel", task="Book the train")
+    bad = await _open(reg, slug="broken", task="Load failure keeps me")
     await reg.mark_idle(dis.id)
     await reg.mark_idle(bad.id)
 
@@ -264,4 +259,3 @@ async def test_rc16b_the_boot_pass_closes_disabled_only(reg, funnel):
     await fn(reg, _Specs())
     assert reg.get(dis.id).status == "cancelled"
     assert reg.get(bad.id).status == "idle"
-    assert funnel.tch.close_topic.await_count == 1

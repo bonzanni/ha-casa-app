@@ -1,8 +1,8 @@
-"""Task 6 — finalize_response_stream + TopicStreamHandle rich-text finalize.
+"""Task 6 — finalize_response_stream rich-text finalize.
 
 Covers every branch Sol flagged: entity edit, BadRequest→original-same-message,
-block-mode→send_response, stream-with-no-message_id→send_response, topic finalize
-after/without prior emit, and finalize_stream (error path) staying plain.
+block-mode→send_response, stream-with-no-message_id→send_response, and
+finalize_stream (error path) staying plain.
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 from telegram import MessageEntity
 from telegram.error import BadRequest
 
-from test_telegram_topic_stream import _mk_channel_with_fake_bot
+from telegram_channel_double import _mk_channel_with_fake_bot
 from output_boundary_testing import admitted
 
 pytestmark = pytest.mark.asyncio
@@ -75,29 +75,6 @@ async def test_finalize_stream_error_path_stays_plain():
     assert "entities" not in kw
 
 
-async def test_topic_finalize_after_emit_applies_entities():
-    ch, bot = _mk_channel_with_fake_bot()
-    handle = ch.create_topic_stream(topic_id=42)
-    await handle.emit("partial")  # message_id 12345
-    await handle.finalize("**hi**")
-    kw = bot.edit_message_text.await_args.kwargs
-    assert kw["text"] == "hi"
-    assert kw["message_id"] == 12345
-    assert kw["entities"][0].type == MessageEntity.BOLD
-
-
-async def test_topic_finalize_without_emit_applies_entities():
-    ch, bot = _mk_channel_with_fake_bot()
-    handle = ch.create_topic_stream(topic_id=42)
-    await handle.finalize("**hi** `x`")  # no prior emit → fresh rich message
-    assert bot.edit_message_text.await_count == 0
-    kw = bot.send_message.await_args.kwargs
-    assert kw["chat_id"] == -1001
-    assert kw["message_thread_id"] == 42
-    assert kw["text"] == "hi x"
-    assert {e.type for e in kw["entities"]} == {MessageEntity.BOLD, MessageEntity.CODE}
-
-
 async def test_stream_first_send_over_utf16_limit_is_skipped():
     """#305 (Sol r1): the FIRST stream send needs the same UTF-16 guard as
     the edits — an oversized first payload would be rejected by the Bot API
@@ -111,13 +88,3 @@ async def test_stream_first_send_over_utf16_limit_is_skipped():
     await ch.finalize_response_stream(
         admitted("\U0001F389" * 3000), {"chat_id": "42"}, on_token)
     assert bot.send_message.await_count >= 2  # split into UTF-16-sized chunks
-
-
-async def test_topic_stream_first_emit_over_utf16_limit_is_skipped():
-    """Sibling guard on the engagement-topic stream handle."""
-    ch, bot = _mk_channel_with_fake_bot()
-    ch.engagement_supergroup_id = 777
-    handle = ch.create_topic_stream(topic_id=5)
-    await handle.emit("\U0001F389" * 3000)
-    assert bot.send_message.await_count == 0
-    assert handle._message_id is None

@@ -13,7 +13,7 @@ launch suites.
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -124,7 +124,6 @@ class _Probe:
         self.mark_error_calls: list[tuple] = []
         self.driver_cancel_calls = 0
         self.finalize_count = 0
-        self.topic_closed = False
 
 
 class _ProbeLogs:
@@ -204,24 +203,8 @@ def _build(tmp_path, monkeypatch, probe, client_cls):
     # No forum group is configured: a job never needs one.
     channel = MagicMock()
     channel.engagement_supergroup_id = 0
-    channel.engagement_permission_ok = False
-    channel.open_engagement_topic = AsyncMock(return_value=42)
     channel.bot = MagicMock()
-    channel.bot.edit_forum_topic = AsyncMock()
 
-    async def _notice(rec, text):
-        probe.events.append("topic_notice")
-
-    async def _paint(*, engagement_id, new_state):
-        probe.events.append(f"paint:{new_state}")
-
-    async def _close(*, thread_id):
-        probe.events.append("topic_close")
-        probe.topic_closed = True
-
-    channel._post_engagement_notice = AsyncMock(side_effect=_notice)
-    channel.update_topic_state = AsyncMock(side_effect=_paint)
-    channel.close_topic = AsyncMock(side_effect=_close)
     cm = MagicMock()
     cm.get = MagicMock(return_value=channel)
 
@@ -273,9 +256,6 @@ class TestInCasaLaunchTerminalArtifact:
         assert registry.get(created_id).status == "active"
         assert probe.transition_calls == []
         assert probe.mark_error_calls == []
-        assert channel._post_engagement_notice.await_count == 0
-        assert channel.update_topic_state.await_count == 0
-        assert channel.close_topic.await_count == 0
         assert probe.driver_cancel_calls == 0
         assert probe.finalize_count == 1
         # The job's log: its start, the step and the words; no notice.

@@ -235,7 +235,7 @@ async def _record_file(path):
                                 ("e4" * 16, "in_casa", "idle")):
         reg._records[eid] = EngagementRecord(
             id=eid, kind="executor", role_or_type="configurator",
-            driver=driver, status=status, topic_id=7, started_at=0.0,
+            driver=driver, status=status, started_at=0.0,
             last_user_turn_ts=0.0,
             completed_at=None if status == "active" else time.time(),
             # e4 was persisted before its first session id was recorded
@@ -328,7 +328,7 @@ async def _wiped_job(tmp_path, monkeypatch, *, awaiting=None):
     writer = EngagementRegistry(tombstone_path=str(record))
     writer._records[JOB_ID] = EngagementRecord(
         id=JOB_ID, kind="specialist", role_or_type="finance",
-        driver="in_casa", status="active", topic_id=7, started_at=0.0,
+        driver="in_casa", status="active", started_at=0.0,
         last_user_turn_ts=0.0, completed_at=None, sdk_session_id=w.SID,
         origin={"channel": "telegram", "_origin_route": "telegram",
                 "_origin_clearance": "private", "job": job},
@@ -357,10 +357,16 @@ async def _wiped_job(tmp_path, monkeypatch, *, awaiting=None):
 
     class Channel:
         def __init__(self):
-            self.notices: list[str] = []
+            self.notices: list = []
 
-        async def _post_engagement_notice(self, rec, text):
-            self.notices.append(text)
+        def __getattr__(self, name):
+            # Any post or send is recorded, so "nothing posted" is checked.
+            if not name.lstrip("_").startswith(("send", "post", "deliver")):
+                raise AttributeError(name)
+
+            async def _record(*a, **kw):
+                self.notices.append((name, a, kw))
+            return _record
 
     reg = EngagementRegistry(tombstone_path=str(record))
     await reg.load()

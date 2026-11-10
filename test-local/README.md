@@ -88,7 +88,7 @@ product has not shipped for months — measured, and it cost two harness runs.
 | `e2e/test_external_surface.sh` | 2 | external HTTP surface on port 18065 |
 | `e2e/test_specialist_delegation.sh` | 2 | role-keyed specialist delegation |
 | `e2e/test_scheduling.sh` | 2 | scheduled-task primitives |
-| `e2e/test_engagement_E.sh` | 2 | E-0..E-10 — Tier-2 specialist + Configurator engagements (mock TG forum supergroup) |
+| `e2e/test_engagement_E.sh` | 2 | E-0..E-10 — the agent log and the read-only log group (mock TG forum group), job ends, suspend and resume, orphan load, configurator guard |
 | `e2e/test_concurrency.sh` | 3 | parallel `/invoke` with simulated SDK latency |
 
 `e2e/common.sh` provides shared helpers (`build_image`, `wait_healthy`,

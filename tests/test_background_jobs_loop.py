@@ -5,7 +5,7 @@ job. The turn-end guard that reads the reported progress is pinned in
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
@@ -36,10 +36,9 @@ async def job(tmp_path):
     rec = await reg.create(
         "specialist", "worker", "in_casa", "Process rows",
         {"role": "assistant", "channel": "telegram", "chat_id": "100", "user_id": 77,
-         "job": jobs.initial_job_state(decl)}, topic_id=555,
+         "job": jobs.initial_job_state(decl)},
         tools_allowed=tools.SPECIALIST_CASA_GRANTS + jobs.JOB_CASA_GRANTS)
     channel = MagicMock()
-    channel._post_engagement_notice = AsyncMock()
     cm = MagicMock()
     cm.get.return_value = channel
     from agent_log_double import RecordingLogs
@@ -68,7 +67,6 @@ async def test_progress_rejects_invalid_arguments(job, args):
     reg, rec, channel = job
     reply = await _report(rec, {"summary": "work", **args})
     assert reply == {"ok": False, "kind": "invalid_arguments"}
-    assert channel._post_engagement_notice.await_count == 0
     assert channel.logs.lines == []
     assert rec.origin["job"]["last_summary"] is None
     assert jobs._state(rec.id).progress is False
@@ -80,7 +78,6 @@ async def test_progress_format_persistence_and_grant(job, tmp_path):
                                 "done": 0, "remaining": 9})
     assert reply == {"ok": True}
     assert channel.logs.texts() == ["📊 " + "x" * 300 + " · 0 done · 9 left"]
-    channel._post_engagement_notice.assert_not_awaited()      # nothing awaited Telegram
     reloaded = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"))
     await reloaded.load()
     assert reloaded.get(rec.id).origin["job"]["last_summary"] == "x" * 300
@@ -99,4 +96,3 @@ async def test_progress_outside_live_job(job, context):
         await reg.mark_cancelled(rec.id)
     reply = await _report(None if context == "none" else rec, {"summary": "work"})
     assert reply == {"ok": False, "kind": "not_a_job"}
-    assert channel._post_engagement_notice.await_count == 0

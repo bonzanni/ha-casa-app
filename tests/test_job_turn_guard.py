@@ -90,15 +90,21 @@ class Channel:
     async def refresh_job_start_line(self, rec):
         self.refreshed += 1
 
-    async def _post_engagement_notice(self, rec, text):
-        self.notices.append(text)
+    def __getattr__(self, name):
+        # Any other post or send is recorded, so "nothing posted" is checked.
+        if not name.lstrip("_").startswith(("send", "post", "deliver")):
+            raise AttributeError(name)
+
+        async def _record(*a, **kw):
+            self.notices.append((name, a, kw))
+        return _record
 
 
 def _rec(kind="specialist", **job):
     return SimpleNamespace(
         id="j" * 32, kind=kind, role_or_type="finance", status="active",
         task="Check the accounts",
-        started_at=1000.0, completed_at=None, topic_id=7,
+        started_at=1000.0, completed_at=None,
         origin={"job": {"title": "Accounting check", "skill": "q:job",
                         "brief_uuid": "b-1", "context": "", **job}})
 

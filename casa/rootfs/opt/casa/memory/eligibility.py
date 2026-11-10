@@ -40,9 +40,9 @@ class Source(str, enum.Enum):
     DELEGATED_REQUEST = "delegated_request"
     #: A delegated run's answer, captured when the run completes.
     DELEGATED_ANSWER = "delegated_answer"
-    #: An operator message in an engagement topic.
+    #: An operator message handed to a job.
     ENGAGEMENT_TURN = "engagement_turn"
-    #: One text-bearing message a specialist writes in its engagement topic.
+    #: One text-bearing message a specialist writes in its job.
     ENGAGEMENT_ANSWER = "engagement_answer"
     #: Casa's own line that a specialist posted to the operator's chat, kept
     #: only for a specialist that keeps no memory (INV-MEM-040): its post is
@@ -51,9 +51,11 @@ class Source(str, enum.Enum):
     #: The operator's own words replying on the desk of a specialist that
     #: keeps no memory (INV-MEM-043): his message, never the specialist's.
     DESK_REPLY = "desk_reply"
-    #: The operator's own words in the engagement topic of a specialist that
-    #: keeps no memory (INV-MEM-044): his message, never the specialist's.
-    TOPIC_MESSAGE = "topic_message"
+    #: The operator's own words replying to a job's post, when the job is a
+    #: specialist's that keeps no memory (INV-MEM-044): his message, never the
+    #: specialist's. The value is stored as the item's admitting rule, so it
+    #: keeps the name it was first stored under.
+    JOB_REPLY = "topic_message"
 
 
 def admit(
@@ -88,6 +90,6 @@ def admit(
     if source in (Source.ENGAGEMENT_TURN, Source.ENGAGEMENT_ANSWER):
         return source.value if role_writes_memory else None
     if source in (Source.SPECIALIST_POST, Source.DESK_REPLY,
-                  Source.TOPIC_MESSAGE):
+                  Source.JOB_REPLY):
         return None if role_writes_memory else source.value
     raise ValueError(f"unknown capture source {source!r}")

@@ -1851,7 +1851,7 @@ class Agent:
             # now a second producer. A delegation row is converted at boot and
             # really did finish during the restart; an ENGAGEMENT outcome may
             # have finished long before it, and its summary may well still
-            # stand in its closed topic — so "completed during a Casa restart" and
+            # stand where it was told — so "completed during a Casa restart" and
             # "the answer itself is gone" were both false on that arm, and told
             # the operator something untrue about durable state. What is true of
             # both producers is only that this NOTICE does not carry the answer.

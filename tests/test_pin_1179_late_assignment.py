@@ -67,10 +67,7 @@ async def _launch(monkeypatch, *, requires: RequiresConfig | None,
         return ResolutionResult(registry_valid=True, plugins=list(after))
 
     tch = MagicMock()
-    tch.engagement_permission_ok = True
     tch.engagement_supergroup_id = -1001
-    tch.open_engagement_topic = AsyncMock(return_value=555)
-    tch.set_channel_state = AsyncMock()
     cm = MagicMock()
     cm.get.return_value = tch
     reg = MagicMock()
@@ -80,8 +77,6 @@ async def _launch(monkeypatch, *, requires: RequiresConfig | None,
     rec.id = "eng1"
     eng_reg.create = AsyncMock(return_value=rec)
     eng_reg.update_plugin_profiles = AsyncMock()
-    eng_reg.set_channel_state = AsyncMock()
-    eng_reg.set_initial_state_emoji = AsyncMock()
     eng_reg.launch_shutdown_active.return_value = False
 
     tm.init_tools(
@@ -104,7 +99,7 @@ async def _launch(monkeypatch, *, requires: RequiresConfig | None,
 
     monkeypatch.setattr(tm, "_requires_gate", _gate_then_assign)
     abort = AsyncMock()
-    monkeypatch.setattr(tm, "_abort_engagement_topic", abort)
+    monkeypatch.setattr(tm, "_abort_launch_with_fault", abort)
 
     built: list = []
 
@@ -126,7 +121,7 @@ async def _launch(monkeypatch, *, requires: RequiresConfig | None,
     })
     return {
         "payload": json.loads(res["content"][0]["text"]),
-        "topic": tch.open_engagement_topic, "create": eng_reg.create,
+        "create": eng_reg.create,
         "abort": abort, "built": built, "resolves": resolves,
         "driver": driver,
     }
@@ -146,7 +141,6 @@ class TestLateAssignmentDuringTopicAwait:
             before=[mtg], after=[mtg, late])
 
         assert obs["payload"]["status"] == "pending"
-        assert obs["topic"].await_count == 0          # no topic is opened
         assert obs["create"].await_count == 1
         assert obs["abort"].await_count == 0
         assert len(obs["built"]) == 1
@@ -163,7 +157,6 @@ class TestLateAssignmentDuringTopicAwait:
         obs = await _launch(monkeypatch, requires=None, before=[mtg], after=[mtg, late])
 
         assert obs["payload"]["status"] == "pending"
-        assert obs["topic"].await_count == 0          # no topic is opened
         assert obs["create"].await_count == 1
         assert obs["abort"].await_count == 0
         assert len(obs["built"]) == 1

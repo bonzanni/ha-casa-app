@@ -43,7 +43,6 @@ def _cfg(role: str, delegates: tuple[str, ...] = ()) -> AgentConfig:
 def _wire(monkeypatch):
     import tools as tm
     tch = MagicMock()
-    tch.open_engagement_topic = AsyncMock(return_value=555)
     cm = MagicMock()
     cm.get.return_value = tch
     reg = MagicMock()
@@ -107,7 +106,6 @@ async def test_a_non_sync_delegation_on_a_setup_turn_is_an_error_before_any_side
     assert payload["kind"] == "mode_unsupported_on_setup_turn"
     assert "sync" in payload["message"]
     assert eng_reg.create.await_count == 0                       # zero records
-    assert tch.open_engagement_topic.await_count == 0            # zero topics
     assert tm._specialist_registry.register_delegation.await_count == 0
 
 

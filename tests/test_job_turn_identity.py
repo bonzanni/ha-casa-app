@@ -132,7 +132,7 @@ async def rig(tmp_path, monkeypatch):
     rec = await reg.create(
         "specialist", "worker", "in_casa", "Process rows",
         {"role": "assistant", "channel": "telegram", "chat_id": "100",
-         "cid": ENGAGING, "job": jobs.initial_job_state(decl)}, topic_id=555)
+         "cid": ENGAGING, "job": jobs.initial_job_state(decl)})
     driver = InCasaDriver(record_lookup=reg.get,
                           begin_turn_delivery=reg.begin_turn_delivery)
     holder = {}

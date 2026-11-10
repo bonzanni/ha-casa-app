@@ -1214,7 +1214,7 @@ async def send_media(args: dict) -> dict:
         #    (HTTP engagement handlers bind engagement_var, not origin_var); a
         #    delegated specialist turn carries the origin via origin_var.
         eng = engagement_var.get(None)
-        # #369: mirror `react`'s live status re-check — media produced by a
+        # #369: a live status re-check — media produced by a
         # terminal (or torn-down) engagement must not still reach the origin
         # chat through a call that raced the transition.
         if eng is not None and getattr(eng, "status", "") != "active":
@@ -1352,83 +1352,6 @@ async def send_media(args: dict) -> dict:
     except Exception:  # noqa: BLE001 — nothing escapes; worst case is a result
         logger.exception("send_media: unexpected failure")
         return _result({"status": "error", "kind_error": "internal_error",
-                        "message": "unexpected failure"})
-
-
-# ---------------------------------------------------------------------------
-# react — lightweight emoji ack on the LATEST operator message (R5, v0.89.0)
-#
-# Stateless, order-safe, active-record-gated. Reads the current-inbound target
-# recorded by TelegramChannel.handle_update (keyed by engagement_id) and sets
-# ONE emoji reaction on it. The correctness guarantee is the NON-LIVE
-# REJECTION: only an ACTIVE bound engagement record reacts, so a
-# terminated/missing engagement is refused here and a stale target can never
-# produce a reaction. NEVER falls back to eng.origin; NEVER raises (a
-# raise would abort the turn) — every failure is a soft result.
-# ---------------------------------------------------------------------------
-
-
-@tool(
-    "react",
-    "Drop a lightweight emoji reaction (e.g. 👍 done, 👀 on it) on the "
-    "operator's LATEST message in this engagement topic. A non-decisional, "
-    "non-blocking acknowledgement — NEVER an approval or an answer to an "
-    "`ask`; route every decision through the verdict broker / `ask` instead.",
-    {"type": "object",
-     "properties": {"emoji": {"type": "string"}},
-     "required": ["emoji"]},
-)
-async def react(args: dict) -> dict:
-    try:
-        emoji = args.get("emoji")
-        if not isinstance(emoji, str) or not emoji.strip():
-            return _result({"status": "error", "kind": "invalid_arguments",
-                            "message": "emoji must be a non-empty string"})
-
-        # Non-live rejection = the correctness guarantee: a terminated /
-        # missing engagement fails soft. NEVER use eng.origin.
-        eng = engagement_var.get(None)
-        if eng is None or getattr(eng, "status", None) != "active":
-            return _result({"status": "no_current_inbound",
-                            "message": "no active engagement to react in"})
-
-        # The current-inbound target lives on the TelegramChannel (the only
-        # channel with engagement topics). No target = restart / no inbound
-        # yet / cleared → soft no-op.
-        ch = _channel_manager.get("telegram") if _channel_manager is not None else None
-        if ch is None or not hasattr(ch, "get_current_inbound"):
-            return _result({"status": "no_current_inbound",
-                            "message": "no channel able to set reactions"})
-        target = ch.get_current_inbound(eng.id)
-        if target is None:
-            return _result({"status": "no_current_inbound",
-                            "message": "no current inbound message recorded"})
-        chat_id, _topic_id, message_id = target
-
-        from telegram.error import (
-            BadRequest, Forbidden, NetworkError, RetryAfter, TelegramError,
-            TimedOut,
-        )
-        try:
-            await ch.set_reaction(chat_id, message_id, emoji)
-        except (BadRequest, Forbidden) as exc:
-            return _result({"status": "error", "kind": "invalid_emoji",
-                            "message": f"telegram refused reaction: "
-                                       f"{type(exc).__name__}"})
-        except (TimedOut, NetworkError, RetryAfter, TelegramError) as exc:
-            return _result({"status": "error", "kind": "delivery_uncertain",
-                            "message": f"reaction delivery uncertain: "
-                                       f"{type(exc).__name__}; not retried"})
-        except RuntimeError:
-            return _result({"status": "no_current_inbound",
-                            "message": "channel not started"})
-        return _result({"status": "ok", "reaction": emoji,
-                        "message_id": message_id,
-                        "summary": f"reacted {emoji} on the latest operator "
-                                   "message"})
-    except Exception:  # noqa: BLE001 — never abort a turn; worst case is a result
-        logger.exception("react: unexpected failure")
-        return _result({"status": "error", "kind": "internal_error",
                         "message": "unexpected failure"})
 
 
@@ -2833,15 +2756,11 @@ SPECIALIST_CASA_GRANTS: tuple[str, ...] = (
     "mcp__casa-framework__query_engager",
     "mcp__casa-framework__emit_completion",
 )
-# `react` is deliberately NOT a launch/resume-mandatory grant: an executor gets
-# it only from its OWN definition.
 
 # The two casa-framework tools EVERY engagement receives at
 # launch, both kinds, independent of its definition (query_engager to read the
 # conversation, emit_completion to end it). They are the same for specialists
-# and executors — `react` is NOT here, because it is granted only by an
-# executor definition that lists it (plus the resume builder), so gate-granting
-# it universally would over-grant e.g. the configurator (Sol review r1).
+# and executors.
 MANDATORY_BRIDGE_CASA_GRANTS: tuple[str, ...] = SPECIALIST_CASA_GRANTS
 
 # S7a: the one grant a specialist's desk or delegated build may be offered for
@@ -3864,7 +3783,8 @@ def _int_or_none(value: object) -> int | None:
 
 class _DelegatedRunLog:
     """A delegated run of a specialist or the configurator, in that agent's
-    log: ``▶ <task>`` at its start, its words and its main loop's steps as
+    log: ``▶ started`` at its start (the run's name is already its task),
+    its words and its main loop's steps as
     they come, and ``✓ answered`` or ``⚠️ aborted`` at its end. Any other
     run (a resident's) logs nothing.
 
@@ -3873,8 +3793,6 @@ class _DelegatedRunLog:
     clears the cut, and never when the run ends with the cut in place. Steps
     are not held: a step names the tool, never its outcome. Every call is
     synchronous and never waits on Telegram."""
-
-    _TASK_LINE_MAX = 300
 
     def __init__(self, cfg: Any, task_text: str) -> None:
         from agent_logs import LogKey
@@ -3891,8 +3809,7 @@ class _DelegatedRunLog:
             _agent_logs.log(self._key, self._run, text)
 
     def start(self) -> None:
-        first = (self._run.strip().splitlines() or [""])[0].strip()
-        self._log(f"▶ {first[:self._TASK_LINE_MAX]}".rstrip())
+        self._log("▶ started")
 
     def words(self, messages: list, cut: "int | None") -> None:
         """Log the words not yet logged, unless an approval holds them."""
@@ -5377,10 +5294,11 @@ def _missing_required_plugins(required: list[str], plugins) -> list[str]:
 
 def _with_late_assignments(admitted, fresh):
     """#1179: *admitted* (the requires gate's resolution) plus each plugin in
-    *fresh* (a resolve taken after the topic exists) that it lacks by registry
-    name AND by runtime name — two entries sharing a runtime name would share
-    one MCP namespace. Add-only: every admitted entry is kept as the gate's own
-    object and nothing is re-checked, so no denial can follow the topic. With
+    *fresh* (a resolve taken after the launch's earlier awaits) that it lacks
+    by registry name AND by runtime name — two entries sharing a runtime name
+    would share one MCP namespace. Add-only: every admitted entry is kept as
+    the gate's own object and nothing is re-checked, so no denial can follow
+    the gate's admission. With
     nothing to add, *admitted* itself is returned."""
     names = {rp.name for rp in admitted.plugins}
     runtime = {plugin_registry.runtime_name(rp) for rp in admitted.plugins}
@@ -5711,7 +5629,7 @@ async def _prelaunch(
     ``"interactive"`` (the engagement the job runs as).
 
     Runs EVERY pre-launch gate, in this order, so no gate is bypassable by
-    another and no side effect (topic, engagement/delegation record, task,
+    another and no side effect (engagement/delegation record, task,
     driver start, progress emission) can precede a clean return:
 
         ACL (Task 1) -> not-initialized -> input-size bounds (Task 6) ->
@@ -5751,7 +5669,7 @@ async def _prelaunch(
       (``_build_specialist_options(cfg, resolution=resolution)``) rather
       than re-resolving, so the gate's decision and what actually launches
       never drift. The one exception is a job's engagement launch,
-      whose session is built after the topic await: it keeps every plugin
+      whose session is built after the launch's awaits: it keeps every plugin
       this resolution admitted and may only ADD plugins assigned since
       (#1179, ``_with_late_assignments``) — never drop or re-check one. The
       caller (``delegate_to_agent``) owns the permit's lifetime from here.
@@ -5949,7 +5867,7 @@ async def _prelaunch(
     # mode. An async delegation or a job launch returns a non-error "pending"
     # result that the courier's outcome report would count as a delegation
     # that went through, while a later turn can never carry the setup
-    # identity; an error result here, BEFORE any record or topic exists,
+    # identity; an error result here, BEFORE any record exists,
     # returns the courier row to pending under its bounded budget instead of
     # consuming it.
     from provenance import CASA_PLUGIN_TURN_TARGETS
@@ -7278,7 +7196,6 @@ async def _launch_interactive_engagement(
                 # #1038: the brief's resolved disclosure rides the persisted
                 # origin; the engagement's DM sends inherit it (for_engagement).
                 task=task_text, origin=_launch_note(origin, task_text)[0],
-                topic_id=None,
                 plugin_artifacts=_spec_arts,
                 # v0.166.0: pin the specialist's OWN casa-framework grant so
                 # the bridge gate admits exactly what _build_specialist_options
@@ -7352,7 +7269,7 @@ async def _launch_interactive_engagement(
                     options = await asyncio.to_thread(_specialist_job_options)
             except Exception as exc:
                 _abort = await _abort_launch_inline(
-                    channel, rec, None,
+                    channel, rec,
                     kind="options_build_failed", message=str(exc))
                 if _abort is LaunchAbortResult.PERSIST_FAILED:
                     owned = None
@@ -7371,7 +7288,7 @@ async def _launch_interactive_engagement(
                 # A record that cannot say what this build enforces must not
                 # start: the next resume's fallback would read it.
                 _abort = await _abort_launch_inline(
-                    channel, rec, None,
+                    channel, rec,
                     kind="profile_persist_failed", message=str(exc))
                 if _abort is LaunchAbortResult.PERSIST_FAILED:
                     owned = None
@@ -7386,7 +7303,7 @@ async def _launch_interactive_engagement(
             driver = getattr(agent_mod, "active_engagement_driver", None)
             if driver is None:
                 _abort = await _abort_launch_inline(
-                    channel, rec, None,
+                    channel, rec,
                     kind="no_driver",
                     message="engagement driver not initialized")
                 # A durable win releases the permit inside the registry
@@ -7412,7 +7329,7 @@ async def _launch_interactive_engagement(
                 await driver.open(rec, options=options)
             except Exception as exc:  # noqa: BLE001
                 await _abort_launch_inline(
-                    channel, rec, None,
+                    channel, rec,
                     kind="driver_start_failed", message=str(exc))
                 return _result({"status": "error", "kind": "driver_start_failed",
                                 "message": str(exc)})
@@ -7420,7 +7337,7 @@ async def _launch_interactive_engagement(
                     and _engagement_registry.launch_shutdown_active()):
                 _detail = "Casa was stopping when this launch was cancelled"
                 await _report_launch_death_inline(
-                    channel, rec, None, kind="launch_cancelled",
+                    channel, rec, kind="launch_cancelled",
                     detail=_detail, driver=driver)
                 return _result({
                     "status": "error", "kind": "launch_cancelled",
@@ -7442,7 +7359,7 @@ async def _launch_interactive_engagement(
                 "mode": "interactive",
             })
         except asyncio.CancelledError:
-            _abort_launch_on_cancel(channel, rec, None)
+            _abort_launch_on_cancel(channel, rec)
             raise
         finally:
             _unregister_launch_safe(_launch_handle)
@@ -7703,7 +7620,7 @@ async def delegate_to_agent(args: dict) -> dict:
 
     ``mode="interactive"`` is retired and refused (``interactive_retired``)
     before any gate; a specialist's background job still runs as an
-    engagement in its own topic, through ``start_job``.
+    engagement, through ``start_job``.
     """
     # Import lazily — matches the `agent.py` origin_var ContextVar.
     import agent as agent_mod
@@ -9797,89 +9714,11 @@ async def casa_restart_supervised(_: dict) -> dict:
     return _result(await _post_supervisor_restart())
 
 
-def _engagement_supergroup_chat_id(channel: Any | None) -> int | None:
-    """Best-effort chat-id resolution for topic-ledger appends [AR-2].
-
-    Prefer the live telegram channel's configured supergroup id; fall back
-    to the boot env the channel would have been built from (casa_core), so
-    an append still records a chat_id when telegram is momentarily
-    unwired. None when neither is available — the ledger keeps such
-    entries but never auto-deletes them.
-    """
-    chat_id = getattr(channel, "engagement_supergroup_id", None)
-    if chat_id:
-        return chat_id
-    try:
-        return int(
-            os.environ.get("TELEGRAM_ENGAGEMENT_SUPERGROUP_ID", "0") or 0,
-        ) or None
-    except (TypeError, ValueError):
-        return None
-
-
-# #326 (review r3): strong refs for topic aborts scheduled from a CANCELLED
-# launch — the caller re-raises immediately, so without a registry the task
-# would be garbage-collectible mid-flight. _abort_engagement_topic never
-# raises, so these settle quietly.
-_ABORT_BG_TASKS: set = set()
-
-# #678: bounds on the launch-death reporter's waits on Telegram — the topic
-# notice, the failed-state paint and the close. Each is a wait on a
-# counterparty, never on the work (D21): one wedged Telegram call must not
-# starve the operator-visible effects behind it.
-_TOPIC_OP_TIMEOUT_S = 20.0
-
-
-def _abort_topic_on_cancel(channel: Any, engagement_id: str,
-                           topic_id: int | None) -> None:
-    """Schedule a best-effort topic abort that survives the caller's
-    cancellation (fire-and-forget, strong-ref'd until done).
-
-    Diff r4 (Astra): a launcher cancelled between creating its topic and
-    creating its record has NO record for the ledger walk to see, so the stop
-    could finish its drains with this abort still to be minted, and the
-    interpreter's final sweep destroyed it pending (present at the base). The
-    stop now drains this set too, and after its mark nothing is minted: the
-    residual — a topic with no record behind it — is logged loudly.
-    """
-    if not _spawn_pre_record_topic_abort(channel, engagement_id, topic_id):
-        logger.error(
-            "launch %s was cancelled before its record existed, after the stop's "
-            "drains completed — no topic abort minted; topic %s is left open with "
-            "no record", engagement_id, topic_id)
-
-
-def _abort_topic_on_failure(channel: Any, engagement_id: str,
-                            topic_id: int | None) -> None:
-    """#998: the pre-record FAILURE arms' topic abort — a failed ``create()``,
-    a duplicate refusal, a plugin-gate refusal. The launching tool call is in
-    no launch ledger until its record exists, so an abort it awaited inline
-    could still be closing the topic when the stop marked its drains
-    complete. It is handed to the same anchored, fenced owner as the
-    cancellation arm instead, and the call returns its envelope at once.
-    """
-    if not _spawn_pre_record_topic_abort(channel, engagement_id, topic_id):
-        logger.error(
-            "launch %s failed before its record existed, after the stop's "
-            "drains completed — no topic abort minted; topic %s is left open with "
-            "no record", engagement_id, topic_id)
-
-
-def _spawn_pre_record_topic_abort(channel: Any, engagement_id: str,
-                                  topic_id: int | None) -> bool:
-    """Mint one pre-record topic abort into ``_ABORT_BG_TASKS``, which the
-    stop drains, or — once the stop has marked its drains complete — mint
-    nothing and return False. The fence read and the anchoring are one
-    synchronous block, so the stop's last drain pass sees every abort minted
-    before its mark."""
-    if _engagement_registry is not None and _engagement_registry.launch_drains_complete() is True:
-        return False
-    task = asyncio.ensure_future(
-        _abort_engagement_topic(channel, engagement_id, topic_id),
-    )
-    _ABORT_BG_TASKS.add(task)
-    task.add_done_callback(_ABORT_BG_TASKS.discard)
-    return True
+# Strong references to the cancelled-launch owners
+# (``_abort_launch_on_cancel``): the cancelled launcher re-raises at once, so
+# without an anchor the task would be collectable mid-flight. The stop drains
+# it with the launch-death reporters.
+_CANCELLED_LAUNCH_TASKS: set = set()
 
 
 def _launch_cause_of(engagement_id: str) -> str:
@@ -9945,11 +9784,10 @@ async def stop_engagement_launches(registry: Any) -> None:
     except Exception:  # noqa: BLE001 — shutdown must complete
         logger.warning("graceful stop: draining engagement launches failed",
                        exc_info=True)
-    # Every anchored reporter, ack and abort, and the pre-record topic aborts
-    # — a launch cancelled between its topic and its record is in no ledger —
-    # drained together to joint quiescence (one anchor's completion can mint
-    # into another).
-    await _drain_anchored(_LAUNCH_DEATH_TASKS, _ABORT_BG_TASKS)
+    # Every anchored reporter, ack, abort and cancelled-launch owner, drained
+    # together to joint quiescence (one anchor's completion can mint into
+    # another).
+    await _drain_anchored(_LAUNCH_DEATH_TASKS, _CANCELLED_LAUNCH_TASKS)
     try:
         registry.mark_launch_drains_complete()
     except Exception:  # noqa: BLE001 — a fake registry without the mark
@@ -9966,9 +9804,8 @@ async def drain_launch_death_reports() -> None:
     #757: the set now anchors TWO owners — the launch-death reporters and the
     named-launch-failure aborts (``_spawn_launch_abort``) — so the termination
     argument is restated for both rather than counted per launch. Every
-    anchored owner is internally bounded (each ``_abort_engagement_topic``
-    await carries ``_TOPIC_OP_TIMEOUT_S``; a reporter adds the driver-cancel
-    and quiesce timeouts), NONE of them spawns another anchored owner, and a
+    anchored owner is internally bounded (a reporter by the driver-cancel and
+    quiesce timeouts), NONE of them spawns another anchored owner, and a
     completed task never re-enters a later snapshot — so the loop terminates by
     construction rather than by a clock, however many owners one launch's
     unwind produced.
@@ -9980,9 +9817,8 @@ async def _drain_anchored(*anchors: set) -> None:
     """§2.A, diff r3 (Astra J2): wait for every task in the given anchors,
     INCLUDING what the done callbacks of just-completed ones are about to mint,
     and (diff r5, Astra J2) to JOINT quiescence across all of them: a task in
-    one anchor may mint into another (a pre-record topic abort's completion
-    releases a launcher whose named abort mints a telling into the reporter
-    set), so three drains in sequence let work into an already-drained set —
+    one anchor may mint into another (a cancelled-launch owner's completion
+    can mint a telling into the reporter set), so three drains in sequence let work into an already-drained set —
     measured: the stop marked with 1 reporter pending. One pass that finds
     nothing pending in ANY anchor, after a yield, is the only exit.
 
@@ -10059,29 +9895,22 @@ async def drain_delegation_settlements() -> None:
             return
 
 
-def _abort_launch_on_cancel(channel: Any, rec: "EngagementRecord",
-                            topic_id: int | None) -> None:
+def _abort_launch_on_cancel(channel: Any, rec: "EngagementRecord") -> None:
     """Sol r1 (#363 family): background compensation for a launch cancelled
     AFTER its record was created but BEFORE its driver was confirmed live.
     Without this, the cancellation unwound the tool call leaving a
-    durably-active record and an open topic with nothing driving them.
+    durably-active record with nothing driving it.
 
     Terra/Sol r2: the driver may in fact have gone LIVE before the
     cancellation landed, so the compensation runs the driver's idempotent
-    terminal teardown (``cancel()``) as well as marking the record errored
-    and aborting the topic.
+    terminal teardown (``cancel()``) as well as marking the record errored.
     Fire-and-forget and strong-ref'd, since a cancelled task cannot await.
 
-    #678: the body is now the SHARED launch-death reporter, for three reasons
-    measured rather than assumed. (1) It posted NOTHING: a cancelled launch
-    flipped the topic to ❌ and closed it without a single message, so the
-    operator saw a failed title over an empty topic and could not tell whether
-    the task had mutated anything. (2) It awaited ``driver.cancel``
-    UNBOUNDED, ahead of everything else, so a wedged teardown meant the
-    record was never even marked. (3) It used
+    #678: the body is the SHARED launch-death reporter. It awaited
+    ``driver.cancel`` UNBOUNDED, ahead of everything else, so a wedged
+    teardown meant the record was never even marked; and it used
     ``mark_error``, which persists best-effort and so returns True over a
-    swallowed tombstone-write failure, authorizing an irreversible topic close
-    over a record disk still calls ``active``. The reporter marks first
+    swallowed tombstone-write failure. The reporter marks first
     (strictly), then tells, then tears down under a bound — the finalize
     funnel's own order, and safer here too: engagement tool authority is bound
     to ``active``, so flipping first revokes the dying engagement's tools
@@ -10100,33 +9929,32 @@ def _abort_launch_on_cancel(channel: Any, rec: "EngagementRecord",
               else "the tool call was cancelled during launch")
     if _engagement_registry is not None and _engagement_registry.launch_drains_complete() is True:
         # Diff r1 (Astra J2): a launcher cancelled after the stop's last drain
-        # (it was still creating its topic when the ledger was walked) must
-        # not mint a task the interpreter's final sweep destroys pending —
+        # (it was not yet enrolled when the ledger was walked) must not mint a task the interpreter's final sweep destroys pending —
         # the same rule as the owner's done callback. Loud; boot re-idles.
         logger.error(
             "launch %s was cancelled after the stop's drains completed — no "
             "compensation minted; record left live for boot", rec.id[:8])
         return
     task = asyncio.ensure_future(_cancelled_launch_owner(
-        channel, rec, topic_id, detail=detail, driver=driver))
+        channel, rec, detail=detail, driver=driver))
     _LAUNCH_DEATH_TASKS.add(task)
     task.add_done_callback(
         lambda t, _eid=rec.id: _launch_death_done(_eid, t))
-    _ABORT_BG_TASKS.add(task)
-    task.add_done_callback(_ABORT_BG_TASKS.discard)
+    _CANCELLED_LAUNCH_TASKS.add(task)
+    task.add_done_callback(_CANCELLED_LAUNCH_TASKS.discard)
 
 
 async def _cancelled_launch_owner(
-    channel: Any, rec: "EngagementRecord", topic_id: int | None,
+    channel: Any, rec: "EngagementRecord",
     *, detail: str, driver: Any | None,
 ) -> None:
     """§2.A: the cancellation owner reports the death with the obligation
     ARMED and then tells the engager what the report's outcome allows."""
     outcome = await _report_launch_death(
-        channel, rec, topic_id, kind="launch_cancelled", detail=detail,
+        channel, rec, kind="launch_cancelled", detail=detail,
         driver=driver, owes_terminal_notification=True)
     # REPORTED: tell live with the acknowledgement. PERSIST_FAILED (Astra
-    # J1.1): the record is live and its topic open — the bounded uncommitted
+    # J1.1): the record is live — the bounded uncommitted
     # notice and the unarmed `launch_outcome_uncommitted` telling. A LOST race
     # tells nobody: the winner owns its telling, and an armed bit alone is NOT
     # permission to send — a surviving funnel leaves it armed while its own
@@ -10177,7 +10005,7 @@ def _launch_death_done(engagement_id: str, task: Any) -> None:
 
 
 async def _report_launch_death(
-    channel: Any, rec: "EngagementRecord", topic_id: int | None,
+    channel: Any, rec: "EngagementRecord",
     *, kind: str, detail: str, driver: Any | None,
     owes_terminal_notification: bool = False,
 ) -> "LaunchDeathResult":
@@ -10190,8 +10018,8 @@ async def _report_launch_death(
     lock-free status read can observe the uncommitted window of a strict
     transition that a persist failure then rolls back, and ``mark_error``
     persists BEST-EFFORT, so it returns True over a swallowed tombstone-write
-    failure and would authorize an irreversible topic close over a record that
-    disk still calls ``active``. ``casa_core.py``'s boot-replay refusal already
+    failure and would report a death over a record that disk still calls
+    ``active``. ``casa_core.py``'s boot-replay refusal already
     reasoned to the same conclusion in a committed comment and uses this same
     primitive with ``strict=True``.
 
@@ -10215,9 +10043,7 @@ async def _report_launch_death(
             owes_terminal_notification=owes_terminal_notification,
         )
     except Exception as exc:  # noqa: BLE001 — strict persist failed + rolled back
-        # The record is STILL LIVE and disk agrees. Post nothing, paint
-        # nothing, close nothing: an open topic over a live record is
-        # recoverable, a closed topic over a live record is not. But RETIRE
+        # The record is STILL LIVE and disk agrees. Report nothing. But RETIRE
         # the driver client — with no exception out of the driver, start()'s
         # rollback never ran, so the client is registered over a transport
         # that may already be dead and ``is_alive`` would hand the next
@@ -10240,7 +10066,6 @@ async def _report_launch_death(
 
     await _cancel_driver_bounded(driver, rec)
     await _settle_job_journal(rec, driver)
-    await _abort_engagement_topic(channel, rec.id, topic_id)
     logger.warning(
         "Engagement %s launch reported dead: kind=%s detail=%s",
         rec.id[:8], kind, detail)
@@ -10250,7 +10075,7 @@ async def _report_launch_death(
 async def _settle_job_journal(engagement: Any, driver: Any) -> None:
     """The job's message journal, terminal branch, run by every terminal
     path after the job's client is closed: each operator message the session
-    transcript lacks is told as lost once (in reply to it, or in the topic);
+    transcript lacks is told as lost once, in reply to it;
     one it holds goes silently, and the journal goes with the record. Each
     notice is bounded by the channel. Then the job's scratchpad goes, in
     memory and on disk, whatever the journal's settle did. Never raises."""
@@ -10396,26 +10221,26 @@ def _refuse_inline_terminal_after_drains(rec: "EngagementRecord", kind: str) -> 
 
 
 async def _abort_launch_inline(
-    channel: Any, rec: "EngagementRecord", topic_id: int | None,
+    channel: Any, rec: "EngagementRecord",
     *, kind: str, message: str,
 ) -> "LaunchAbortResult":
     """The 17 named-fault arms: spawn the anchored abort, await it inline."""
     _refuse_inline_terminal_after_drains(rec, kind)
     return await _await_inline_terminal(
-        _spawn_launch_abort(channel, rec, topic_id, kind=kind, message=message),
+        _spawn_launch_abort(channel, rec, kind=kind, message=message),
         rec, channel, kind=kind, detail=message,
         won=lambda r: r is LaunchAbortResult.ABORTED)
 
 
 async def _report_launch_death_inline(
-    channel: Any, rec: "EngagementRecord", topic_id: int | None,
+    channel: Any, rec: "EngagementRecord",
     *, kind: str, detail: str, driver: Any | None,
 ) -> "LaunchDeathResult":
     """The latch blocks: the stop latched during ``open()``; report inline."""
     _refuse_inline_terminal_after_drains(rec, kind)
     return await _await_inline_terminal(
         _spawn_launch_death_report(
-            channel, rec, topic_id, kind=kind, detail=detail, driver=driver,
+            channel, rec, kind=kind, detail=detail, driver=driver,
             owes_terminal_notification=True),
         rec, channel, kind=kind, detail=detail,
         won=lambda r: r is LaunchDeathResult.REPORTED)
@@ -10504,7 +10329,7 @@ async def _tell_engager_launch_outcome(
 
 
 def _spawn_launch_death_report(
-    channel: Any, rec: "EngagementRecord", topic_id: int | None,
+    channel: Any, rec: "EngagementRecord",
     *, kind: str, detail: str, driver: Any | None,
     owes_terminal_notification: bool = False,
 ) -> Any:
@@ -10516,12 +10341,12 @@ def _spawn_launch_death_report(
     task cannot await). Both need this shape for the same reason: the registry
     deliberately KEEPS a durable terminal state and re-raises when a
     cancellation lands after its write committed, so an inline owner could
-    commit the flip and then never post, paint or close — and a second,
+    commit the flip and then never settle the job — and a second,
     compensating reporter would LOSE the transition and correctly do nothing,
     leaving the durable error with no side-effect owner at all.
     """
     task = asyncio.ensure_future(_report_launch_death(
-        channel, rec, topic_id, kind=kind, detail=detail, driver=driver,
+        channel, rec, kind=kind, detail=detail, driver=driver,
         owes_terminal_notification=owes_terminal_notification))
     _LAUNCH_DEATH_TASKS.add(task)
     task.add_done_callback(
@@ -10535,48 +10360,36 @@ class LaunchAbortResult(enum.Enum):
     Three-way for the reason :class:`LaunchDeathResult` is (see its docstring):
     a bool reconflates a LOST terminal race — where another writer owns every
     terminal side effect — with a ROLLED-BACK persist, where the record is
-    still LIVE. Those two want the same treatment of the topic and opposite
-    treatments of the record, and neither may close anything.
+    still LIVE.
     """
 
-    ABORTED = "aborted"                    # durable win; topic aborted
+    ABORTED = "aborted"                    # durable win; job settled
     ALREADY_TERMINAL = "already_terminal"  # another writer owns the effects
     PERSIST_FAILED = "persist_failed"      # rolled back; record still LIVE
 
 
 async def _abort_launch_with_fault(
-    channel: Any, rec: "EngagementRecord", topic_id: int | None,
+    channel: Any, rec: "EngagementRecord",
     *, kind: str, message: str,
 ) -> "LaunchAbortResult":
     """#757: the ONE owner of a launch that failed with a NAMED fault.
 
-    Every one of the thirteen named launch-failure arms routes here. It asks
-    the registry exactly ONE transactional question — flip this record to
-    ``error``, strictly — and lets the three outcomes decide whether the topic
-    may be aborted. Before this, each arm awaited ``mark_error`` in statement
-    position, DISCARDED its bool, and aborted the topic regardless; both of
-    that primitive's failures then authorized an irreversible close:
-
-    * a LOST race returns False, and the winner already owns the terminal side
-      effects (INV-ENG-001) — so the topic was painted with an outcome that
-      contradicted the durable record, and closed a second time;
-    * a swallowed tombstone-write failure still returns True, because
-      ``mark_error`` persists best-effort — so the topic was closed for ever
-      over a record that disk still called ``active``, which boot replay then
-      tried to resume into a topic that no longer existed.
+    Every one of the named launch-failure arms routes here. It asks the
+    registry exactly ONE transactional question — flip this record to
+    ``error``, strictly — and lets the three outcomes decide whether the job's
+    journal is settled. ``mark_error`` would not do: a LOST race returns False
+    while the winner already owns the terminal side effects (INV-ENG-001), and
+    a swallowed tombstone-write failure still returns True, because it
+    persists best-effort.
 
     Deliberately NOT ``_report_launch_death``. These arms carry a *named fault*
-    returned synchronously to a live caller, and their exemption from the death
-    path's bounded topic notice is a committed ruling
-    (``docs/architecture/engagement-failure-and-restart.md``). Nothing here
-    posts, and nothing here touches the bus: ``owes_terminal_notification`` is
-    passed FALSE explicitly rather than left to the default, so that arming it
-    is a visible edit rather than an omission.
+    returned synchronously to a live caller (see
+    ``docs/architecture/engagement-failure-and-restart.md``). Nothing here
+    posts, and nothing here touches the bus.
 
     Never raises. The caller gets its own named fault back on all three
     outcomes — this launch really did fail for that reason, whoever won the
-    record — so no arm's envelope changes, and the whole behavioural delta is
-    which arms touch the topic.
+    record — so no arm's envelope changes.
     """
     if _engagement_registry is None:
         return LaunchAbortResult.PERSIST_FAILED
@@ -10592,9 +10405,7 @@ async def _abort_launch_with_fault(
             owes_terminal_notification=True,
         )
     except Exception as exc:  # noqa: BLE001 — strict persist failed + rolled back
-        # Memory and disk agree that the record is LIVE. Paint nothing, close
-        # nothing: an open topic over a live record is recoverable, a closed
-        # one is not — the reasoning `_report_launch_death` already commits.
+        # Memory and disk agree that the record is LIVE: settle nothing.
         logger.error(
             "launch abort %s (%s): strict terminal transition did not persist "
             "(rolled back, record left live): %s", rec.id[:8], kind, exc)
@@ -10602,10 +10413,9 @@ async def _abort_launch_with_fault(
     if not won:
         logger.info(
             "launch abort %s (%s): record already terminal — another writer "
-            "owns the topic; painting and closing nothing", rec.id[:8], kind)
+            "owns its end", rec.id[:8], kind)
         return LaunchAbortResult.ALREADY_TERMINAL
     await _settle_job_journal(rec, _resolve_engagement_driver(rec))
-    await _abort_engagement_topic(channel, rec.id, topic_id)
     return LaunchAbortResult.ABORTED
 
 
@@ -10614,13 +10424,13 @@ def _launch_abort_done(engagement_id: str, task: Any) -> None:
 
     Same reasoning as ``_launch_death_done``, different message: this path
     posts no notice, so "the operator may not have been told" would be false
-    here. What is at stake is a topic left open over a terminal record.
+    here. What is at stake is a terminal record whose job was not settled.
     """
     _LAUNCH_DEATH_TASKS.discard(task)
     if task.cancelled():
         logger.error(
-            "launch abort for %s was CANCELLED — its topic may still be open "
-            "over a terminal record", engagement_id[:8])
+            "launch abort for %s was CANCELLED — its job may not be settled",
+            engagement_id[:8])
         return
     exc = task.exception()
     if exc is not None:
@@ -10629,14 +10439,14 @@ def _launch_abort_done(engagement_id: str, task: Any) -> None:
 
 
 def _spawn_launch_abort(
-    channel: Any, rec: "EngagementRecord", topic_id: int | None,
+    channel: Any, rec: "EngagementRecord",
     *, kind: str, message: str,
 ) -> Any:
     """#757: anchor the abort so it outlives its launcher.
 
-    A cancellation delivered between the durable terminal commit and the topic
-    close used to leave a terminal record with a permanently open topic: the
-    handler's ``except asyncio.CancelledError`` arm hands off to
+    A cancellation delivered between the durable terminal commit and the
+    abort's own side effects would leave them undone: the handler's
+    ``except asyncio.CancelledError`` arm hands off to
     ``_abort_launch_on_cancel``, whose reporter finds the record already
     terminal and by contract does nothing at all. Casa-owned
     ``asyncio.create_task`` — never ``Query.spawn_task``, so an SDK client
@@ -10645,78 +10455,11 @@ def _spawn_launch_abort(
     graceful stop.
     """
     task = asyncio.create_task(_abort_launch_with_fault(
-        channel, rec, topic_id, kind=kind, message=message))
+        channel, rec, kind=kind, message=message))
     _LAUNCH_DEATH_TASKS.add(task)
     task.add_done_callback(
         lambda tsk, _eid=rec.id: _launch_abort_done(_eid, tsk))
     return task
-
-
-async def _abort_engagement_topic(
-    channel: Any, engagement_id: str, topic_id: int | None,
-) -> None:
-    """Best-effort: flip a just-created topic to 'failed' and close it when
-    an engagement dies before its driver started. Never raises.
-
-    Do NOT route these failures through _finalize_engagement — it would
-    double-notify the assistant over the bus (the tool already returns the error
-    envelope synchronously), overwrite the specific error kind with
-    'emit_completion_error', and run memory-retention side effects.
-    """
-    if topic_id is None:
-        return
-    # Topic-retention ledger (2026-07-10 design): an aborted engagement's
-    # topic is today's most orphan-prone — record it for the retention
-    # sweep even when the channel is gone (gate only on topic_id, like the
-    # finalize funnel). Own try/except: this function never raises.
-    try:
-        import topic_ledger
-        await topic_ledger.append(
-            engagement_id=engagement_id,
-            chat_id=_engagement_supergroup_chat_id(channel),
-            topic_id=topic_id,
-            outcome="error",
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "abort topic %s: topic ledger append failed: %s", topic_id, exc,
-        )
-    if channel is None:
-        return
-    # #678 (Sol, seam round 5): bound each Telegram await SEPARATELY. Neither
-    # ``update_topic_state`` nor ``close_topic`` carries a caller-side bound, so
-    # a never-returning paint starved the close — measured `ledger=1, paint=1,
-    # close=0` — leaving a topic open over a durable terminal record. D21: bound
-    # the wait on a counterparty, never the work. A paint timeout still proceeds
-    # to the close; a close timeout still lets the caller retire.
-    if hasattr(channel, "update_topic_state"):
-        try:
-            await asyncio.wait_for(
-                channel.update_topic_state(
-                    engagement_id=engagement_id, new_state="failed",
-                ),
-                _TOPIC_OP_TIMEOUT_S,
-            )
-        except asyncio.TimeoutError:
-            logger.error(
-                "abort topic %s: update_topic_state exceeded %.0fs — "
-                "continuing to the close", topic_id, _TOPIC_OP_TIMEOUT_S,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "abort topic %s: update_topic_state failed: %s", topic_id, exc,
-            )
-    try:
-        await asyncio.wait_for(
-            channel.close_topic(thread_id=topic_id), _TOPIC_OP_TIMEOUT_S,
-        )
-    except asyncio.TimeoutError:
-        logger.error(
-            "abort topic %s: close_topic exceeded %.0fs", topic_id,
-            _TOPIC_OP_TIMEOUT_S,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("abort topic %s: close_topic failed: %s", topic_id, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -10741,52 +10484,6 @@ class FinalizeResult(enum.Enum):
 
 # #599: how long the finalize funnel gives the whole driver teardown.
 _DRIVER_CANCEL_TIMEOUT_S = 20.0
-
-_DISCLOSURE_UNCONFIRMED = (
-    "\u26a0\ufe0f This engagement is recorded as {outcome}, but its completion "
-    "summary could not be confirmed as posted here. The topic is left UNMARKED "
-    "on purpose, so the failure stays visible."
-)
-"""#678: what the finalize funnel says in a topic whose completion summary it
-could not confirm.
-
-"could not be CONFIRMED as posted", never "could not be posted": a Telegram
-``TimedOut`` can lose the acknowledgement of a message the wire accepted, so
-claiming the summary is absent would sometimes be false about a message the
-operator can see.
-
-"left UNMARKED" is a statement about what this funnel is about to do, which is
-the one topic-lifecycle fact it can make: the mark is skipped on exactly this
-branch. It says nothing about the close, which is attempted below and can fail.
-
-THE RULE THESE STRINGS OBEY, after the same finding shape three times. A notice
-posted from here may assert ONLY what its own site observed:
-
-  (a) the engagement's SETTLED terminal status, which is durable because the
-      strict transition commits memory and disk together or neither; and
-  (b) that the telling was NOT confirmed.
-
-Everything else was cut rather than reworded a fourth time. Three successive
-reviews found the same shape — prose asserting state the site cannot see: first
-"this turn did not finish … may be partial" (false when the stream carried
-text), then "the outcome was delivered to the engager and is in the engagement
-record" (the notify is best-effort and its failure is caught, and the record
-holds the terminal state rather than the summary text), then "this topic is
-closed … deleted with everything in it at its retention deadline" (the close
-can raise and the retention-ledger append is best-effort too). Sharpening the
-wording once more would have been the fourth patch on one mechanism. The
-mechanism is gone instead: there is no longer any sentence here about topic
-lifecycle, retention, the engager, or the record's contents.
-
-WHICH CONTROL HOLDS THIS, stated exactly, because a blacklist of forbidden
-phrases stood here and was CUT: the suite pins this sentence by WHOLE-SENTENCE
-EQUALITY, so it cannot change silently — a production-only reword fails a test.
-Nothing in the suite stops an author who edits this string and its expectation
-TOGETHER, and nothing can: whether a new sentence is TRUE is a judgment, and the
-blacklist that tried to encode it was bypassed three times by respelling the same
-false claims. So if you are editing this string, the rule above is the control,
-and it is on you. See `architecture/engagement-terminal-telling.md`.
-"""
 
 # #632: detached finalize tails, anchored so the event loop cannot collect
 # them mid-flight. A tail is created only on the in_casa self-emit path (see
@@ -10887,7 +10584,7 @@ async def _finalize_engagement(
     inbound_gate: bool = False,         # G4 D1/D2 (v0.96.0): emit/completed only
     detach_teardown_tail: bool = False,  # #632: in_casa self-emit only
 ) -> "FinalizeResult":
-    """End an engagement: update registry, close topic, NOTIFY the assistant.
+    """End an engagement: update registry, log its end, NOTIFY the assistant.
 
     Never raises on channel side-effects — logs warnings and continues
     so the registry always reaches a terminal state.
@@ -10913,9 +10610,9 @@ async def _finalize_engagement(
     #    call across a real suspension point, which the naive check-then-act
     #    in emit_completion cannot).
     #    v0.79.0 (§3, Sol r6-2): STRICT persistence — a tombstone-write failure
-    #    rolls the record back (full-field) and re-raises rather than leaving a
-    #    closed topic with no terminal record; treat that as "did not win" so
-    #    the record stays live for a retry / boot replay instead of a torn close.
+    #    rolls the record back (full-field) and re-raises rather than leaving an
+    #    ended job with no terminal record; treat that as "did not win" so
+    #    the record stays live for a retry / boot replay instead of a torn end.
     # G4 D2/D4 (v0.96.0): SYNCHRONOUS terminal hook, evaluated inside the
     # registry's terminal critical section (no suspension between check and
     # flip): the completion inbound GATE (inbound_gate=True: veto on unread
@@ -11043,8 +10740,8 @@ async def _finalize_engagement(
         engagement.permit.release()
 
     # #632: freeze the tail's payload inputs NOW — before the first await
-    # after the flip. This funnel suspends (broker drain, topic round-trips)
-    # between the flip and the notification's reads, and the live record's
+    # after the flip. This funnel suspends (the driver teardown, the
+    # journal's settle) between the flip and the notification's reads, and the live record's
     # ``origin`` can still be written meanwhile; without this snapshot such a
     # post-terminal write lands in the DelegationComplete payload. The completion notice carries the values
     # that won the flip.
@@ -11063,207 +10760,6 @@ async def _finalize_engagement(
 
     # The job's log ends with its outcome and the first line of its summary.
     _job_log(engagement, _end_log_line(outcome, text))
-
-    # [AR-4] Topic-retention ledger (2026-07-10 design): record the topic
-    # for the retention sweep the moment the record flips terminal — both
-    # drivers, all outcomes, regardless of whether close_topic below
-    # succeeds. Gated ONLY on topic_id, NOT on channel-manager presence:
-    # telegram may be momentarily unwired and the append must still land.
-    # Own try/except: a ledger failure must never abort this funnel — the
-    # idempotency guard above makes a partial finalize unretryable.
-    if engagement.topic_id is not None:
-        try:
-            import topic_ledger
-            ledger_ch = (_channel_manager.get("telegram")
-                         if _channel_manager is not None else None)
-            await topic_ledger.append(
-                engagement_id=engagement.id,
-                chat_id=_engagement_supergroup_chat_id(ledger_ch),
-                topic_id=engagement.topic_id,
-                outcome=outcome,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "finalize engagement %s: topic ledger append failed: %s",
-                engagement.id[:8], exc,
-            )
-
-    # 2. Post completion message into the topic (if any), flip U3 state, close.
-    if engagement.topic_id is not None and _channel_manager is not None:
-        tch = _channel_manager.get(engagement.origin.get("channel", "telegram"))
-        if tch is not None:
-            # #678 (INV-ENG-013): the U3 paint is CONDITIONAL on this. Until
-            # this release the completion post's exception was swallowed and
-            # the topic was painted ✅ over having received nothing. The CLOSE
-            # is not conditional (R2, seam review — see the close below).
-            # Local, not a shared helper: a sibling stream owns the
-            # neighbouring regions of this module.
-            completion_post_confirmed = False
-            try:
-                summary_text = (
-                    f"Engagement {outcome}. Summary:\n{text}"
-                    if text else f"Engagement {outcome}."
-                )
-                # v0.109.0 (G2/G5): executor completion summaries are
-                # markdown-heavy — render them, paginating past the
-                # 4096/100-entity caps (the in_casa configurator path was
-                # the dominant literal-``**`` topic surface). Channels
-                # without the paged rich sender keep the plain send.
-                #
-                # #678: CONFIRMATION is the returned message id, not the
-                # call returning. Both senders are typed ``-> int`` and
-                # raise on failure, so a non-None return is a wire
-                # acknowledgement — which is all it claims, never that a
-                # person read it.
-                if hasattr(tch, "send_response_to_topic"):
-                    _mid = await tch.send_response_to_topic(
-                        engagement.topic_id,
-                        summary_text,
-                    )
-                else:
-                    _mid = await tch.send_to_topic(
-                        engagement.topic_id,
-                        summary_text,
-                    )
-                completion_post_confirmed = _mid is not None
-            except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "finalize engagement %s: the completion post FAILED — the "
-                    "topic is left UNMARKED so the loss stays visible: %s",
-                    engagement.id[:8], exc,
-                )
-            # #678 (INV-ENG-013): whether the topic heard ANYTHING terminal.
-            # The disclosure below counts: if it lands, the topic was told why
-            # the engagement ended, which is the whole point of it.
-            telling_confirmed = completion_post_confirmed
-            if not completion_post_confirmed:
-                # ONE bounded plain disclosure attempt. Deliberately not the
-                # summary again — a paginated rich send can fail after posting
-                # some of its pages, so repeating it would double-post. Plain,
-                # so a rendering fault cannot be the thing that fails twice.
-                # Bounded, because this is a new await in a funnel whose record
-                # is already terminal and unretryable.
-                #
-                # The rule is UNIFORM across outcomes: a 🛑 over a topic that
-                # never heard why is the same lie as a ✅, and uniformity means
-                # nobody has to reason about which outcomes are covered.
-                #
-                # CONFIRMATION here is the returned message id, exactly as for
-                # the summary: a send that returns having sent nothing is not a
-                # telling (``send_to_topic`` is typed ``-> int``).
-                try:
-                    _did = await asyncio.wait_for(
-                        tch.send_to_topic(
-                            engagement.topic_id,
-                            _DISCLOSURE_UNCONFIRMED.format(outcome=outcome),
-                        ),
-                        _TOPIC_OP_TIMEOUT_S,
-                    )
-                    telling_confirmed = _did is not None
-                except BaseException as exc:  # noqa: BLE001 — one attempt
-                    logger.warning(
-                        "finalize engagement %s: the disclosure of the "
-                        "unconfirmed completion post also failed: %s",
-                        engagement.id[:8], exc,
-                    )
-            # #678/#692 (R2, seam review): RECORD whether this topic was told,
-            # for the delivery task of any follow-up turn still in flight.
-            #
-            # Terminal STATUS is not that fact, and a reviewer reproduced the
-            # composition where the difference is the whole defect: the summary
-            # fails, the disclosure fails, the tail's ``driver.cancel`` then
-            # ends that turn's iterator, and a status-only reader stays quiet —
-            # a terminal record over a topic that heard nothing, and nobody
-            # tells the operator. Written HERE, before the close and therefore
-            # before the tail, because the reader is woken BY the tail.
-            #
-            # Synchronous and in-memory (never persisted): it coordinates two
-            # tasks in one process and has no meaning after a restart, which
-            # has no surviving turn to adjudicate.
-            if _engagement_registry is not None and hasattr(
-                    _engagement_registry, "record_terminal_telling"):
-                try:
-                    _engagement_registry.record_terminal_telling(
-                        engagement.id, telling_confirmed)
-                except Exception:  # noqa: BLE001 — never abort finalize
-                    logger.warning(
-                        "finalize engagement %s: recording the terminal "
-                        "telling failed", engagement.id[:8], exc_info=True)
-            if completion_post_confirmed:
-                # E-12 (v0.37.0) Task 23: U3 terminal state — flip the topic
-                # title to <state-emoji>·<role-emoji> <task> before closing so
-                # the closed-topic sidebar carries the outcome at a glance.
-                #
-                # #678: the MARK is what is withheld when the post did not
-                # confirm — an outcome mark over a topic that was never told
-                # the outcome is the lie this invariant removes. It is gated on
-                # the SUMMARY's confirmation, not on ``telling_confirmed``: a
-                # disclosure that landed says the summary did NOT, so marking
-                # the topic done would contradict the sentence above it.
-                terminal_state = {
-                    "completed": "completed",
-                    "cancelled": "cancelled",
-                    "error": "failed",
-                    "failed": "failed",
-                }.get(outcome)
-                if terminal_state is not None and hasattr(
-                        tch, "update_topic_state"):
-                    try:
-                        await tch.update_topic_state(
-                            engagement_id=engagement.id,
-                            new_state=terminal_state,
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "finalize engagement %s: U3 state update failed: "
-                            "%s", engagement.id[:8], exc,
-                        )
-            # #678 (R2, seam review): the close is UNCONDITIONAL, and BOUNDED.
-            #
-            # Unconditional: an earlier revision of this change left the topic
-            # OPEN when the post did not confirm, as a visible failure signal.
-            # A reviewer showed that signal is not authoritative — the mark and
-            # the close are independent best-effort operations, so a CONFIRMED
-            # post whose mark and close both fail produces the identical
-            # visible state — while the open topic is not harmless: the
-            # retention-ledger append above already ran, unconditionally, and
-            # the sweep deletes the topic and every message in it, so a note
-            # the operator types into a topic that still accepts messages is
-            # deleted with it. The withheld MARK carries the whole signal; the
-            # open state added no authority to it and did add that loss path.
-            #
-            # Bounded: this await has no caller-side bound anywhere in this
-            # module's history, and making it unconditional put it on the path
-            # where the follow-up adjudication depends on the tail running. A
-            # close that never returns would strand ``driver.cancel`` and the
-            # bus notification behind it over an already-terminal record —
-            # and, because ``driver.cancel`` is what ends the response
-            # iterator, would strand the follow-up turn waiting to adjudicate
-            # its own cutoff. Same bound as ``_abort_engagement_topic``'s close.
-            try:
-                await asyncio.wait_for(
-                    tch.close_topic(thread_id=engagement.topic_id),
-                    _TOPIC_OP_TIMEOUT_S,
-                )
-            except asyncio.TimeoutError:
-                logger.error(
-                    "finalize engagement %s: close_topic exceeded %.0fs — "
-                    "continuing so the tail still runs",
-                    engagement.id[:8], _TOPIC_OP_TIMEOUT_S,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "finalize engagement %s: close_topic failed: %s",
-                    engagement.id[:8], exc,
-                )
-            # R5 (v0.89.0): drop the react target (map hygiene). Best-effort —
-            # a missed clear is harmless (react's non-live gate rejects it).
-            # Unconditional again, with the close it is hygiene for.
-            if hasattr(tch, "clear_inbound"):
-                try:
-                    tch.clear_inbound(engagement.id)
-                except Exception:  # noqa: BLE001
-                    pass
 
     # #632: everything from driver teardown to the finalized log runs in
     # _finalize_engagement_tail. On the in_casa self-emit path this funnel's
@@ -11358,7 +10854,7 @@ async def _finalize_engagement_tail(
     frozen: dict[str, Any],
     await_turn_end: bool = False,
 ) -> "FinalizeResult":
-    """#632: the finalize funnel's post-topic tail — driver teardown, the
+    """#632: the finalize funnel's tail — driver teardown, the
     completion notification and the finalized log, in that order.
 
     ``await_turn_end`` (a completion from inside a running turn): first wait,
@@ -11530,8 +11026,8 @@ async def reap_stale_engagements(*, ttl_days: float | None = None) -> int:
     2026-07-11). Runs in the daily engagement sweep BEFORE the idle-reminder
     pass so a to-be-reaped record doesn't get a pointless reminder in the
     same run. Goes through ``_finalize_engagement`` — the same funnel as a
-    manual cancel — so the topic is closed + ledger-recorded, the RIGHT
-    driver stops the process, and the assistant is notified.
+    manual cancel — so the RIGHT driver stops the process and the
+    assistant is notified.
     ``stale_before=cutoff`` makes the staleness check part of the
     locked terminal transition, so a record revived by a user turn between
     the snapshot below and the transition is NOT cancelled. Returns the
@@ -11742,7 +11238,7 @@ async def emit_completion(args: dict) -> dict:
 
     # Bug 9 (v0.14.6): idempotency. Re-emitting completion (e.g. SDK
     # retry, hook misfire) used to re-run _finalize_engagement, which
-    # double-closes the topic and double-NOTIFYs the assistant. Re-read the
+    # double-NOTIFYs the assistant. Re-read the
     # live registry
     # state so we catch transitions that happened on another in-flight
     # turn since this engagement_var snapshot was taken.
@@ -12453,93 +11949,6 @@ async def casa_reload_triggers(args: dict) -> dict:
     return _result(result)
 
 
-_TOPIC_CLEANUP_SCOPES = ("due", "all_terminal")
-
-# #1373: the roles that may run the immediate `all_terminal` purge: the
-# assistant, so the operator can ask her directly to remove every finished
-# topic (her prompt runs a dry run, tells the count and asks for confirmation
-# first); every other role keeps `due` only.
-_TOPIC_PURGE_ROLES = frozenset({"assistant"})
-
-
-@tool(
-    "cleanup_engagement_topics",
-    "Delete finished engagements' Telegram forum topics recorded in the "
-    "topic ledger. scope='due' (default) deletes only entries past the "
-    "7-day retention window; 'all_terminal' purges every ledger entry "
-    "immediately and is limited to the assistant. "
-    "Deletion is irreversible — pass dry_run=true first to preview what "
-    "would be deleted.",
-    # Explicit schema: the assistant prompt's `cleanup_engagement_topics()`
-    # passes nothing; the handler defaults scope to "due" (round 2 E3).
-    {"type": "object",
-     "properties": {"scope": {"type": "string"},
-                    "dry_run": {"type": "boolean"}},
-     "required": []},
-)
-async def cleanup_engagement_topics(args: dict) -> dict:
-    """On-demand topic cleanup [AR-7] — ledger-only.
-
-    Deletes ONLY topics recorded in the terminal-engagement ledger
-    (``/data/topic-ledger.json``): never guesses topic ids, never touches
-    active/idle engagements (they are not in the ledger). Deletion is
-    IRREVERSIBLE — it removes the topic and all its messages for every
-    member — so prefer a ``dry_run=true`` pass first and confirm the
-    counts before purging for real (configurator doctrine:
-    architecture.md "Engagement-topic cleanup"; the assistant's prompt,
-    "After a completion"). The result echoes
-    ``dry_run`` and lists the affected topics in ``targets``
-    (``{engagement_id, topic_id}`` pairs — would-be deletions under
-    dry_run, resolved deletions otherwise) alongside the counts.
-    Per-entry telegram failures are classified inside the sweep ([AR-5])
-    and reported in ``failures``; entries are retained for retry, never
-    dropped on an unrecognized error.
-    """
-    import topic_ledger
-
-    scope = (args.get("scope") or "due").strip()
-    if scope not in _TOPIC_CLEANUP_SCOPES:
-        return _result({
-            "status": "error", "kind": "bad_scope",
-            "message": (
-                f"scope must be one of {_TOPIC_CLEANUP_SCOPES}, "
-                f"got {scope!r}"
-            ),
-        })
-    # v0.69.12 gave the assistant `due`; #1373 gives her the
-    # irreversible `all_terminal` purge too (deletes EVERY ledger topic + all
-    # its messages immediately, for all members), on the operator's request.
-    # Any other caller requesting it is refused with a nudge to `due`.
-    if scope == "all_terminal" and _effective_caller_role() not in _TOPIC_PURGE_ROLES:
-        return _result({
-            "status": "error", "kind": "not_authorized",
-            "message": (
-                "scope='all_terminal' (immediate purge of every engagement "
-                "topic) is restricted to the assistant; "
-                "use scope='due' to delete only topics past the retention "
-                "window."
-            ),
-        })
-    dry_run = bool(args.get("dry_run", False))
-
-    channel = (_channel_manager.get("telegram")
-               if _channel_manager is not None else None)
-    if channel is None or not getattr(channel, "engagement_supergroup_id", None):
-        return _result({
-            "status": "error", "kind": "telegram_not_configured",
-            "message": ("telegram engagement supergroup is not configured "
-                        "— there are no topics to clean up"),
-        })
-
-    result = await topic_ledger.sweep_topics(
-        channel,
-        chat_id=channel.engagement_supergroup_id,
-        scope=scope,
-        dry_run=dry_run,
-    )
-    return _result({"status": "ok", **result})
-
-
 # ---------------------------------------------------------------------------
 # Plan 4b §7.1: marketplace_* Configurator MCP tools
 # ---------------------------------------------------------------------------
@@ -12627,8 +12036,8 @@ async def _settle_through_cancellation(coro):
     """Run *coro* as a task and wait for it even through cancellation; the
     original `CancelledError` is re-raised once it has settled.
 
-    The coroutine sibling of `topic_ledger._to_thread_uncancellable`, and the
-    same primitive for the same reason (v0.183.0): a cancelled caller that
+    The same primitive as a thread hop that settles through cancellation,
+    for the same reason (v0.183.0): a cancelled caller that
     releases a lock while its write is still in flight lets a concurrent
     operation write the correct state and then has its own stale write land
     last. The difference is WHAT it covers — a whole acquire-write-release unit
@@ -15255,7 +14664,8 @@ async def _settle_install_consent_post(handle) -> "dict | None":
 SPECIALIST_OPEN_CONVERSATION_NOTICE_TEMPLATE = (
     "When it resumes, it picks up Casa's updated settings, but it keeps its "
     "personality and the plugin versions it started with. To get everything "
-    "new, close it with `/complete` and ask {assistant} for a new conversation."
+    "new, cancel it with the Cancel button on its start line and ask "
+    "{assistant} for a new conversation."
 )
 
 
@@ -15358,7 +14768,7 @@ def _conversation_row(rec, operator_id: "int | None") -> dict:
     if (started_by not in (None, "") and operator_id is not None
             and str(started_by) != str(operator_id)):
         line += " — started by someone else"
-    return {"engagement_id": rec.id, "topic_id": rec.topic_id, "task": task,
+    return {"engagement_id": rec.id, "task": task,
             "background_job": job, "line": line}
 
 
@@ -15558,7 +14968,7 @@ async def close_specialist_engagements(slug: str, *, reason: str,
     stops the rest."""
     rows = []
     for rec in _open_specialist_engagements(slug):
-        row = {"engagement_id": rec.id, "topic_id": rec.topic_id}
+        row = {"engagement_id": rec.id}
         if acknowledged is not None:
             row["opened_after_confirmation"] = rec.id not in acknowledged
         try:
@@ -19491,7 +18901,6 @@ CASA_TOOLS: tuple = (
     relay_answer,                  # slice 5l — a delegate's answer under its header
     stop_work,                     # the resident's direct stop of a specialist's own work
     send_media,
-    react,
     ask_user,
     delegate_to_agent,
     hand_off,                      # browser executor §5.4 — specialists only,
@@ -19523,7 +18932,6 @@ CASA_TOOLS: tuple = (
     casa_reload_triggers,
     config_trigger_upsert,          # #403 — the ONE writer path for
     config_trigger_delete,          #        agents/<role>/triggers.yaml
-    cleanup_engagement_topics,     # v0.65.0 [AR-7] — configurator-only grant
     # Unified plugin architecture (§3.13) — registry tools.
     plugin_add,
     plugin_update,

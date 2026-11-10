@@ -319,7 +319,7 @@ async def test_the_finalize_funnel_deletes_the_pad(tmp_path, monkeypatch, in_mem
 async def test_a_launch_death_deletes_the_pad(tmp_path, monkeypatch):
     r = await _rig_with_pad(tmp_path, monkeypatch, in_memory=True)
     result = await tools._report_launch_death(
-        None, r.rec, None, kind="launch_incomplete", detail="x", driver=None)
+        None, r.rec, kind="launch_incomplete", detail="x", driver=None)
     assert result is tools.LaunchDeathResult.REPORTED
     assert scratchpad.PADS.lines(r.rec.id) is None and not _file(r.rec.id).exists()
 
@@ -349,8 +349,8 @@ async def test_a_journal_settle_that_raises_still_deletes_the_pad(tmp_path, monk
 
 async def _registry(tmp_path):
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "boot.json"))
-    live = await reg.create("specialist", "finance", "in_casa", "t", {"job": {}}, None)
-    ended = await reg.create("specialist", "finance", "in_casa", "t", {"job": {}}, None)
+    live = await reg.create("specialist", "finance", "in_casa", "t", {"job": {}})
+    ended = await reg.create("specialist", "finance", "in_casa", "t", {"job": {}})
     await reg.try_transition_terminal(ended.id, "cancelled", strict=True)
     for eid in (live.id, ended.id, "f" * 32):
         scratchpad.PADS.bind(eid, _file(eid), brief=["note"])  # "f" * 32: no record has it
