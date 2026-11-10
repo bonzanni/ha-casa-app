@@ -109,11 +109,11 @@ async def test_two_clients_have_two_pads(pads):
     assert (await _call(b, op="read"))[1] is False
 
 
-async def test_only_the_four_line_operations_remain():
+async def test_only_the_five_operations_remain():
     """What the pad no longer does is gone from its schema, so the model is never offered it."""
     client = await _pad("b\na\nb")
     (tool,) = (await _rpc(client, "tools/list", {}))["result"]["tools"]
-    assert tool["inputSchema"]["properties"]["op"]["enum"] == ["read", "write", "append", "search"]
+    assert tool["inputSchema"]["properties"]["op"]["enum"] == ["read", "write", "append", "search", "run"]
     for gone in ("other", "new", "all"):
         assert gone not in tool["inputSchema"]["properties"]
     for op in ("replace", "count", "sort", "dedupe", "compare", "delete"):
@@ -457,3 +457,177 @@ async def test_an_empty_named_header_is_not_the_top_of_the_pad(pads):
     assert pads.lines("S1") == ["top", "## ", "KEEP", "## target", "RIGHT"]
     headed = await _pad("## \nKEEP", "S2")
     assert "No lines in the top of the pad" in (await _call(headed, op="read", section=""))[0]
+
+
+# --- the stamp: a run applies only to the pad it read ------------------------------------
+
+
+def _store(now=None):
+    clock = {"now": 1000.0}
+    store = scratchpad.PadStore(now=lambda: clock["now"])
+    return store, clock
+
+
+def test_a_pad_changed_and_restored_during_a_run_is_another_pad_to_it():
+    """Red case for content equality: the lines are identical to the snapshot's, and an
+    apply keyed on content would land on top of the intervening writes."""
+    store, _ = _store()
+    store.respond("k", {"op": "write", "text": "old"})
+    stamp, lines = store.snapshot("k")
+    store.respond("k", {"op": "write", "text": "intervening"})
+    store.respond("k", {"op": "write", "text": "old"})
+    assert store.lines("k") == lines
+    assert store.apply("k", stamp, ["from the run"]) == ("The pad changed during the run.", True)
+    assert store.lines("k") == ["old"]
+
+
+def test_a_pad_expired_and_recreated_with_the_same_lines_is_another_pad_to_it():
+    store, clock = _store()
+    store.respond("k", {"op": "write", "text": "old"})
+    stamp, lines = store.snapshot("k")
+    clock["now"] += scratchpad.IDLE_S + 1
+    assert store.expire(lambda key: False) == 1
+    store.respond("k", {"op": "write", "text": "old"})
+    assert store.lines("k") == lines
+    assert store.apply("k", stamp, ["from the run"])[1] is True
+    assert store.lines("k") == ["old"]
+
+
+def test_an_unchanged_pad_applies_once_and_the_same_snapshot_never_twice():
+    store, _ = _store()
+    store.respond("k", {"op": "write", "text": "old"})
+    stamp, _ = store.snapshot("k")
+    said, refused = store.apply("k", stamp, ["new"])
+    assert refused is False and store.lines("k") == ["new"]
+    assert said == 'Sections: 1 changed (""). Lines 1 -> 1.'
+    assert store.apply("k", stamp, ["newer"])[1] is True
+    assert store.lines("k") == ["new"]
+    stamp, _ = store.snapshot("k")
+    assert store.apply("k", stamp, ["new"]) == ("Sections: none new, changed or removed. Lines 1 -> 1.", False)
+
+
+def test_a_pad_moved_during_a_run_refuses_under_both_keys():
+    store, _ = _store()
+    store.respond("k", {"op": "write", "text": "old"})
+    stamp, _ = store.snapshot("k")
+    store.move("k", "k2")
+    assert store.apply("k", stamp, ["x"])[1] is True
+    assert store.apply("k2", stamp, ["x"])[1] is True
+    assert store.lines("k2") == ["old"]
+
+
+def test_a_route_write_of_identical_text_during_a_run_is_a_change():
+    store, _ = _store()
+    store.respond("k", {"op": "write", "text": "## a\nold"})
+    store.register("c", "k")
+    stamp, _ = store.snapshot("k")
+    assert store.from_plugin("c", {"op": "write", "section": "a", "text": "old"}) == {"lines": 1, "bytes": 3}
+    assert store.lines("k") == ["## a", "old"]
+    assert store.apply("k", stamp, ["x"])[1] is True
+
+
+def test_apply_passes_the_same_door_as_every_change():
+    store, _ = _store()
+    store.respond("k", {"op": "write", "text": "old"})
+    stamp, _ = store.snapshot("k")
+    said, refused = store.apply("k", stamp, ["## a", "## a"])
+    assert refused is True and "2 sections named" in said
+    said, refused = store.apply("k", stamp, ["x" * (MAX_BYTES + 1)])
+    assert refused is True and "the cap is" in said
+    assert store.lines("k") == ["old"]
+    assert store.apply("k", stamp, ["still mine"])[1] is False
+
+
+def test_a_deleted_pad_refuses_the_apply():
+    store, _ = _store()
+    store.respond("k", {"op": "write", "text": "old"})
+    stamp, _ = store.snapshot("k")
+    store.discard("k")
+    assert store.apply("k", stamp, ["x"])[1] is True
+    assert store.lines("k") is None
+    assert store.snapshot("k") is None
+
+
+def test_every_creation_and_change_moves_the_stamp_and_nothing_else_does(tmp_path):
+    """Red case: a path that creates or changes a pad without a new stamp lets a run apply
+    over it."""
+    store, _ = _store()
+    store.register("c", "k")
+
+    def stamp(key="k"):
+        return store.snapshot(key)[0]
+
+    store.respond("k", {"op": "write", "text": "a"})
+    s1 = stamp()
+    store.respond("k", {"op": "read"})
+    store.respond("k", {"op": "search", "find": "a"})
+    store.from_plugin("c", {"op": "read", "section": "", "offset": 0})
+    assert stamp() == s1
+    store.respond("k", {"op": "append", "text": "b"})
+    s2 = stamp()
+    assert s2 > s1
+    store.from_plugin("c", {"op": "write", "section": "x", "text": "y"})
+    s3 = stamp()
+    assert s3 > s2
+    store.put("k", ["p"])
+    s4 = stamp()
+    assert s4 > s3
+    store.bind("k", str(tmp_path / "k.pad"))
+    assert stamp() == s4, "binding a pad in memory sets only its path"
+    assert store.apply("k", s4, ["q"])[1] is False
+    s5 = stamp()
+    assert s5 > s4
+    store.move("k", "k2")
+    assert stamp("k2") > s5
+    store.seed("s", ["brief"])
+    store.seed("s", ["again"])
+    s_seed = stamp("s")
+    assert s_seed > stamp("k2") and store.lines("s") == ["brief"]
+    store.register("d", "n")
+    store.from_plugin("d", {"op": "write", "section": "x", "text": "y"})
+    assert stamp("n") > s_seed
+    (tmp_path / "f.pad").write_text('["from file"]')
+    store.bind("f", str(tmp_path / "f.pad"))
+    store.bind("g", str(tmp_path / "g.pad"), brief=["b"])
+    assert stamp("g") > stamp("f") > stamp("n")
+    assert stamp("f") > stamp("n")
+
+
+def test_the_summary_names_at_most_ten_sections_and_counts_the_rest():
+    before = ["t", "## a", "1", "## keep", "k"] + [f"## r{i}" for i in range(12)]
+    after = ["t", "## a", "2", "## keep", "k", "## b", "## c"]
+    said = scratchpad._summary(before, after)
+    assert said == ('Sections: 2 new ("b", "c"), 1 changed ("a"), 12 removed ("r0", "r1", "r2", '
+                    '"r3", "r4", "r5", "r6" and 5 more). Lines 17 -> 7. Sections 14 -> 4: a line '
+                    'beginning "## " starts a section.')
+    only_removed = scratchpad._summary([f"## r{i}" for i in range(30)], [])
+    assert only_removed.startswith('Sections: 30 removed ("r0"')
+    assert only_removed.count('"') == 22 and "and 20 more" in only_removed
+    long = "n" * 100
+    assert scratchpad._summary([], ["## " + long]).startswith(f'Sections: 1 new ({scratchpad._quote(long)}). Lines 0 -> 1.')
+    assert scratchpad._summary(["x"], ["y"]) == 'Sections: 1 changed (""). Lines 1 -> 1.'
+
+
+async def test_run_is_dispatched_to_the_runner_with_the_clients_key(monkeypatch):
+    """The handler hands ``run`` to ``pad_run.run`` under the key it was built with, and the
+    runner's text and verdict are the reply; ``run`` carries the page-text sentence."""
+    import sys
+    import types
+    seen = []
+
+    async def fake_run(key, args):
+        seen.append((key, args))
+        return "ran", True
+    monkeypatch.setitem(sys.modules, "pad_run", types.SimpleNamespace(run=fake_run))
+    client = await _pad("x", "S9")
+    reply, error = await _call(client, op="run", text="pass", section="a", chars=300)
+    assert (reply, error) == ("ran", True)
+    assert seen == [("S9", {"op": "run", "text": "pass", "section": "a", "chars": 300})]
+    assert "run" in scratchpad._NOTED_OPS
+
+
+def test_the_description_tells_the_model_what_run_cannot_do():
+    for phrase in ("no threads, no processes, no asyncio event loop", "no network, no files, "
+                   "no other process", "30 s, 512 MiB", "only when the script exits 0",
+                   "run (text: a Python script, chars)"):
+        assert phrase in scratchpad.DESCRIPTION, phrase
