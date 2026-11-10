@@ -18,8 +18,9 @@ delivered slot is, and how a link, a message and a proposal are posted and recei
 ## Mental model
 
 **A plugin can name its post, so that a retry is the same post.** A plugin job posts a
-message, then records that it posted it, in a second tool call. If Casa ends the batch between
-the two, the next batch sees the post as unrecorded and posts it again. The plugin cannot close
+message, then records that it posted it, in a second tool call. If the job's session ends
+between the two — Casa restarts, or the session dies and is resumed — the job, continuing,
+sees the post as unrecorded and posts it again. The plugin cannot close
 that window itself: the post is an external write, and its record is a separate call. So the
 deposit may carry the plugin's own identifier for the post (`key`). Casa remembers each key it
 delivered, per installed plugin and operator. A later deposit with the same key is not sent;

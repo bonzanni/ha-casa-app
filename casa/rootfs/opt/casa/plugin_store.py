@@ -1237,14 +1237,9 @@ def manifest_requires(manifest: dict) -> list[dict]:
 
 
 _JOB_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
-_JOB_FIELDS = {
-    "name", "skill", "title", "summary", "batches", "turnsPerBatch", "session",
-    "host", "quietWhenScheduled",
-}
-# How a job's turns after its launch see the conversation: "resume" (the
-# default) continues one conversation, "fresh" resets it before every turn and
-# re-states the job brief (INV-BGJOB-005).
-_JOB_SESSIONS = ("resume", "fresh")
+# Strict: a manifest still declaring a field an older Casa read (the batch
+# count, the turns per batch, the session mode) is excluded as invalid.
+_JOB_FIELDS = {"name", "skill", "title", "summary", "host", "quietWhenScheduled"}
 # The only `host` a job may declare: it then runs on a specialist delegate and
 # is never offered to, or started on, a resident (S1b).
 _JOB_HOSTS = ("specialist",)
@@ -1292,19 +1287,6 @@ def manifest_jobs(manifest: dict) -> list[dict]:
                                   or not 1 <= len(summary) <= 200
                                   or "\n" in summary or "\r" in summary)):
             raise _jobs_invalid(index, "summary")
-        batches = job.get("batches")
-        if batches != "unlimited" and (isinstance(batches, bool)
-                                       or not isinstance(batches, int)
-                                       or batches < 1):
-            raise _jobs_invalid(index, "batches")
-        turns_per_batch = job.get("turnsPerBatch")
-        if ("turnsPerBatch" in job
-                and (isinstance(turns_per_batch, bool)
-                     or not isinstance(turns_per_batch, int)
-                     or turns_per_batch < 1)):
-            raise _jobs_invalid(index, "turnsPerBatch")
-        if "session" in job and job["session"] not in _JOB_SESSIONS:
-            raise _jobs_invalid(index, "session")
         if "host" in job and not (isinstance(job["host"], str)
                                   and job["host"] in _JOB_HOSTS):
             raise _jobs_invalid(index, "host")

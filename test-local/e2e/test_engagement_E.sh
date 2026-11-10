@@ -122,7 +122,7 @@ pass "E-1 engagement opens topic (mock TG topics=$TOPICS)"
 # ---------------------------------------------------------------------------
 # E-2 — User turn routed: a user message inside an engagement topic reaches
 # the driver. We inject a real Telegram Update shape through handle_update
-# and assert the driver's send_user_turn path was reached.
+# and assert the message was handed to the driver's submit_operator seam.
 # ---------------------------------------------------------------------------
 log "E-2: user turn in topic routed to driver"
 curl -s -X POST "http://localhost:${MOCK_PORT}/_reset" >/dev/null
@@ -150,14 +150,14 @@ async def main():
     class StubDriver:
         def __init__(self): self.turns = []
         def is_alive(self, rec): return True
-        async def send_user_turn(self, rec, text, *, tg_message_id=None): self.turns.append((rec.id, text))
+        def submit_operator(self, rec, text, *, tg_message_id=None, notice=None):
+            self.turns.append((rec.id, text))
         async def resume(self, rec, sid): pass
         def get_session_id(self, rec): return None
         async def cancel(self, rec): pass
     drv = StubDriver()
     ch._engagement_registry = reg
     ch._engagement_driver = drv
-    ch._driver_send_user_turn = drv.send_user_turn
 
     tid = await ch.open_engagement_topic(name="E-2")
     rec = await reg.create(kind="specialist", role_or_type="finance",
@@ -181,8 +181,6 @@ async def main():
         await asyncio.gather(*list(ch._turn_tasks), return_exceptions=True)
     assert len(drv.turns) == 1, f"expected 1 driver turn, got {len(drv.turns)}"
     assert drv.turns[0][1] == "hello from user", f"wrong text: {drv.turns[0]}"
-    # last_user_turn_ts should advance.
-    assert reg.get(rec.id).last_user_turn_ts > 0
     await ch._teardown_app()
     print("OK")
 
@@ -365,7 +363,7 @@ pass "E-4 /cancel marks record cancelled + closes topic"
 # E-7 — Session suspend after 24h, resume on next user turn. Asserts the
 # driver transitions dead → alive via the resume path.
 # ---------------------------------------------------------------------------
-log "E-7: 24h idle suspends client; next turn resumes"
+log "E-7: 24h idle suspends client; next turn goes to the driver"
 curl -s -X POST "http://localhost:${MOCK_PORT}/_reset" >/dev/null
 
 read -r -d '' E7_PY <<'PY' || true
@@ -397,11 +395,11 @@ async def main():
         async def resume(self, rec, session_id):
             assert session_id == "mock-session-e7", f"resume got {session_id}"
             self._alive[rec.id] = True
-        async def send_user_turn(self, rec, text, *, tg_message_id=None): self.turns.append(text)
+        def submit_operator(self, rec, text, *, tg_message_id=None, notice=None):
+            self.turns.append(text)
     drv = StubDriver()
     ch._engagement_registry = reg
     ch._engagement_driver = drv
-    ch._driver_send_user_turn = drv.send_user_turn
 
     tid = await ch.open_engagement_topic(name="E-7")
     rec = await reg.create(kind="specialist", role_or_type="finance",
@@ -418,7 +416,8 @@ async def main():
     assert reg.get(rec.id).sdk_session_id == "mock-session-e7", \
         "sdk_session_id not persisted"
 
-    # User turn arrives — handle_update should resume + forward the turn.
+    # User turn arrives — handle_update hands it to the driver, whose
+    # delivery worker resumes the suspended session before writing it.
     update = SimpleNamespace(
         message=SimpleNamespace(
             message_id=90001,
@@ -431,17 +430,14 @@ async def main():
     # M9 (v0.52.0): turn delivery is a tracked background task — drain first.
     while ch._turn_tasks:
         await asyncio.gather(*list(ch._turn_tasks), return_exceptions=True)
-    assert drv.is_alive(rec), "driver not alive after resume"
     assert drv.turns == ["are you there?"], f"turns: {drv.turns}"
-    assert reg.get(rec.id).status == "active", \
-        f"status after resume: {reg.get(rec.id).status}"
     await ch._teardown_app()
     print("OK")
 
 asyncio.run(main())
 PY
 run_harness "E-7" "$E7_PY"
-pass "E-7 suspend-then-resume on next turn"
+pass "E-7 suspend, then the next turn is handed to the driver"
 
 # ---------------------------------------------------------------------------
 # E-8 — Orphan recovery: pre-seed /data/engagements.json, restart container,

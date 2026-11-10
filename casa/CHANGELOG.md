@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.355.0] - 2026-11-10
+
+Not backward compatible. A background job that is running when you upgrade does not carry over: cancel it first and start it again afterwards. Plugins with background jobs must be updated too: quarterly-accounting 0.12.0 and the finance specialist 0.28.0 (tx-classifier, bank-feed). Casa does not load the older versions, so quarterly accounting and Finance don't work until you update them. Ask Ellen to update them right after upgrading Casa.
+
+### Changed
+
+- **A background job is now one long session instead of a series of batches.** It keeps working until it is finished and remembers everything it has done. When its conversation gets long, Claude summarises it on its own, and Casa then reminds the job what it is doing.
+- Each job has a scratchpad for its list and its progress. The scratchpad survives those summaries and a Casa restart, and is deleted when the job ends.
+- Your replies, taps and messages in a job's topic now reach the job while it works, at its next step, instead of waiting for a batch to end.
+- The job's start line in your chat shows how long it has been running and, once its first stretch of work has ended, what it has cost so far, for example "· 40 min · $2.40". The ended line and the assistant's report show the same.
+- A job that stops without finishing gets one nudge to carry on. If it stops again, Casa parks it and sends you one line, "«…» stopped without finishing. Reply to continue it, or Cancel.". Reply to that line to continue. Casa never ends a job because it is slow or expensive: the cost is shown, never capped.
+- After a Casa restart, an open job continues where it was. A message you sent that it had not read yet reaches it after the restart, marked as sent before the restart. If the job's own process stops unexpectedly, Casa restarts it once the same way; if that fails, the job ends and you are told.
+- A household member with less access than the job was started with cannot steer it. A message they write in its topic gets one line saying so, and does not reach the job.
+
+### Removed
+
+- The `batches`, `turnsPerBatch` and `session` fields of a plugin's background job declaration. A plugin that still declares them is refused until it is updated.
+- Casa's once-a-minute check that restarted stalled jobs. A job that stops making progress is now parked for you rather than ended.
+
 ## [0.354.0] - 2026-11-09
 
 ### Added

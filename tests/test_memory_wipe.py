@@ -226,29 +226,6 @@ def test_a_killed_intent_write_leaves_staging_the_wipe_deletes(tmp_path):
 
 # --- an open in_casa engagement after the wipe --------------------------------------
 
-class _InCasaDriver:
-    """The in_casa driver as the resume path sees it, with the CLI's measured
-    answer to a resume of a session whose transcript is gone."""
-
-    def __init__(self):
-        self.alive: set[str] = set()
-        self.calls: list[str] = []
-
-    def is_alive(self, rec):
-        return rec.id in self.alive
-
-    async def resume(self, rec, sid):
-        self.calls.append("resume")
-        raise RuntimeError(f"No conversation found with session ID: {sid}")
-
-    async def invalidate_session(self, rec):
-        self.calls.append("invalidate")
-
-    async def open_fresh(self, rec):
-        self.calls.append("open_fresh")
-        self.alive.add(rec.id)
-
-
 async def _record_file(path):
     from engagement_registry import EngagementRecord, EngagementRegistry
     reg = EngagementRegistry(tombstone_path=str(path))
@@ -268,83 +245,184 @@ async def _record_file(path):
     await reg._write_tombstone_locked(strict=True)
 
 
-async def _next_turn(path, eid):
-    """The engagement's next operator turn, through the real resume gate."""
-    from channels.telegram import TelegramChannel
+async def _resume(path, eid, monkeypatch):
+    """The job's resume through the real in_casa driver, over the record
+    file as the step left it. Returns the refusal (or ``None``), whether a
+    session was built for it, and the loaded record."""
+    import tools
+    from drivers.in_casa_driver import InCasaDriver
     from engagement_registry import EngagementRegistry
     reg = EngagementRegistry(tombstone_path=str(path))
     await reg.load()
-    driver, notices = _InCasaDriver(), []
-    channel = TelegramChannel(bot_token="T", chat_id="42",
-                              default_agent="assistant", bus=None)
-    channel._engagement_registry = reg
-    channel._engagement_driver = driver
-
-    async def rebuild(rec):
-        await driver.invalidate_session(rec)
-        await driver.open_fresh(rec)
-        return "[Context reset]"
-
-    async def to_topic(topic_id, text, *a, **k):
-        notices.append(text)
-
-    async def cleanup(rec):
-        notices.append("cleanup")
-
-    channel._engagement_context_rebuilder = rebuild
-    channel.send_to_topic = to_topic
-    channel._cleanup_error_topic = cleanup
-    ok = await channel._resume_and_ready(reg.get(eid))
-    return ok, driver.calls, notices, reg.get(eid)
+    built: list = []
+    monkeypatch.setattr(tools, "build_engagement_resume_options",
+                        lambda rec, sid: built.append(sid))
+    driver = InCasaDriver(topic_stream_factory=lambda tid: None,
+                          record_lookup=reg.get)
+    rec = reg.get(eid)
+    try:
+        await driver.resume(rec, rec.sdk_session_id or "")
+    except Exception as exc:  # noqa: BLE001 — the refusal is the result
+        refusal = exc
+    else:
+        refusal = None
+    return refusal, len(built), driver.is_alive(rec), rec
 
 
-@pytest.mark.parametrize("wiped", [True, False])
-async def test_an_open_in_casa_engagement_continues_fresh_after_the_wipe(
-        tmp_path, wiped):
+@pytest.mark.parametrize("eid", ["e1" * 16, "e4" * 16])
+async def test_an_open_in_casa_engagement_is_not_resumed_after_the_wipe(
+        tmp_path, monkeypatch, eid):
     """The CLI cannot resume a session whose transcript the wipe deleted
     (measured: "No conversation found", exit 1). The step marks every open
-    in_casa engagement for a context rebuild, so its next turn opens a fresh
-    session and the record stays open. Without the mark (the red case) the
-    turn tries the resume and is refused."""
+    in_casa record — active or idle, with a session or persisted before its
+    first one — and never a terminal one; the driver refuses to resume a
+    marked record before it builds a session for it."""
+    from drivers.in_casa_driver import DriverNotAliveError
     root, proc = tmp_path / "root", w.fake_proc(tmp_path)
     record = w.under(root, "/data/engagements.json")
     record.parent.mkdir(parents=True)
     await _record_file(record)
     w.write(w.under(root, f"/config/cc-home/.claude/projects/-cwd/{w.SID}.jsonl"),
             "turns")
-    if wiped:
-        assert maintenance.write_wipe_intent(str(root)) == "written"
-        assert w.run_oneshot(root, proc).stdout.strip() == "done"
-    else:
-        (w.under(root, f"/config/cc-home/.claude/projects/-cwd/{w.SID}.jsonl")
-         ).unlink()                       # the transcript is gone either way
-    ok, calls, notices, rec = await _next_turn(record, "e1" * 16)
-    if wiped:
-        assert (ok, calls, notices) == (True, ["invalidate", "open_fresh"], [])
-        assert (rec.status, rec.sdk_session_id, rec.context_rebuild_pending) == (
-            "active", None, False)
-        rows = {r["id"]: r for r in json.loads(record.read_text())}
-        assert rows["e2" * 16]["context_rebuild_pending"] is False
-        assert rows["e3" * 16]["context_rebuild_pending"] is False
-    else:
-        # A refusal that already told the topic returns a falsy marker.
-        assert (bool(ok), calls) == (False, ["resume"])
-        assert notices[0].startswith("Could not resume this engagement")
+    assert maintenance.write_wipe_intent(str(root)) == "written"
+    assert w.run_oneshot(root, proc).stdout.strip() == "done"
+    rows = {r["id"]: r for r in json.loads(record.read_text())}
+    assert sorted(i for i, r in rows.items() if r["context_rebuild_pending"]) == [
+        "e1" * 16, "e4" * 16]
+
+    refusal, built, alive, rec = await _resume(record, eid, monkeypatch)
+
+    assert isinstance(refusal, DriverNotAliveError)
+    assert (built, alive) == (0, False)
+    assert rec.status in ("active", "idle")
 
 
-async def test_an_open_engagement_with_no_session_yet_also_continues(tmp_path):
-    """r4 Astra S2: a record persisted before its first session id. It is
-    marked like the others, so its next turn opens a fresh session rather
-    than being refused as an orphan."""
+# --- a background job after the wipe ------------------------------------------------
+
+JOB_ID = "f1" * 16
+
+
+async def _wiped_job(tmp_path, monkeypatch, *, awaiting=None):
+    """One open job's record, through the container-start step, then Casa's
+    boot wiring around it: the real registry loaded from the file the step
+    left, the real in_casa driver and the real job runner wired as
+    ``casa_core`` wires them. The CLI is the session driver tests' fake; the
+    finalize funnel is recorded."""
+    import background_jobs as bj
+    import job_inbox
+    import tools
+    from claude_agent_sdk import ClaudeAgentOptions
+    from drivers import in_casa_driver as drv
+    from engagement_registry import EngagementRecord, EngagementRegistry
+    try:
+        from tests.test_job_session_driver import FakeCLI
+    except ImportError:  # pragma: no cover — direct-path collection
+        from test_job_session_driver import FakeCLI
+
     root, proc = tmp_path / "root", w.fake_proc(tmp_path)
     record = w.under(root, "/data/engagements.json")
     record.parent.mkdir(parents=True)
-    await _record_file(record)
+    job = {"title": "Garden notes", "skill": "q:job", "context": "",
+           "brief_uuid": "b0000000-0000-4000-8000-000000000001"}
+    if awaiting is not None:
+        job[bj.AWAITING_KEY] = awaiting
+    writer = EngagementRegistry(tombstone_path=str(record))
+    writer._records[JOB_ID] = EngagementRecord(
+        id=JOB_ID, kind="specialist", role_or_type="finance",
+        driver="in_casa", status="active", topic_id=7, started_at=0.0,
+        last_user_turn_ts=0.0, completed_at=None, sdk_session_id=w.SID,
+        origin={"channel": "telegram", "_origin_route": "telegram",
+                "_origin_clearance": "private", "job": job},
+        task="Tidy the garden notes")
+    await writer._write_tombstone_locked(strict=True)
+    w.write(w.under(root, f"/config/cc-home/.claude/projects/-cwd/{w.SID}.jsonl"),
+            "turns")
     assert maintenance.write_wipe_intent(str(root)) == "written"
     assert w.run_oneshot(root, proc).stdout.strip() == "done"
-    ok, calls, notices, rec = await _next_turn(record, "e4" * 16)
-    assert (ok, calls, notices) == (True, ["invalidate", "open_fresh"], [])
-    assert rec.status == "idle" or rec.status == "active"
+
+    FakeCLI.instances, FakeCLI.events = [], []
+    FakeCLI.on_enter = FakeCLI.hold_disconnect = None
+    monkeypatch.setattr(drv, "ClaudeSDKClient", FakeCLI)
+    monkeypatch.setattr(job_inbox, "INBOX_ROOT", tmp_path / "job-inbox")
+    transcript = tmp_path / f"{w.SID}.jsonl"
+    transcript.write_text("")
+    monkeypatch.setattr(job_inbox, "transcript_path", lambda cwd, sid: transcript)
+    monkeypatch.setattr(tools, "build_engagement_resume_options",
+                        lambda rec, sid: ClaudeAgentOptions(resume=sid))
+    finalized: list[dict] = []
+
+    async def finalize(rec, **kw):
+        finalized.append(kw)
+        rec.status = kw["outcome"]
+    monkeypatch.setattr(tools, "_finalize_engagement", finalize)
+
+    class Channel:
+        def __init__(self):
+            self.notices: list[str] = []
+
+        async def _post_engagement_notice(self, rec, text):
+            self.notices.append(text)
+
+    reg = EngagementRegistry(tombstone_path=str(record))
+    await reg.load()
+    channel = Channel()
+    monkeypatch.setattr(bj, "_states", {})
+    monkeypatch.setattr(bj, "_runner", None)
+    runner = bj.JobRunner(registry=reg, channel=channel)
+    driver = drv.InCasaDriver(
+        topic_stream_factory=lambda topic: None, record_lookup=reg.get,
+        begin_turn_delivery=reg.begin_turn_delivery,
+        on_turn_end=runner.turn_ended, on_session_lost=runner.session_lost,
+        on_operator_written=bj.note_operator_input)
+    runner.driver = driver
+    bj.configure(runner)
+    return reg, driver, channel, finalized, FakeCLI
+
+
+async def test_a_wiped_job_is_not_resumed_at_boot_and_ends_as_an_error(
+        tmp_path, monkeypatch):
+    """The wipe deleted the job's session transcript, so the one long session
+    cannot continue. Boot's resume of every open job tells the topic it is
+    resuming, opens no session for the job and ends it as an error: "could
+    not be resumed after a restart"."""
+    import casa_core
+    reg, driver, channel, finalized, cli = await _wiped_job(tmp_path, monkeypatch)
+    assert reg.get(JOB_ID).context_rebuild_pending is True
+
+    await casa_core._resume_background_jobs(reg, channel)
+
+    assert channel.notices == ['↻ Resuming "Garden notes" after a restart.']
+    assert cli.instances == []
+    assert [(f["outcome"], f["text"]) for f in finalized] == [
+        ("error", "could not be resumed after a restart")]
+
+
+async def test_a_wiped_job_waiting_on_the_operator_ends_at_their_next_message(
+        tmp_path, monkeypatch):
+    """A job that was waiting for the operator, with nothing journaled, is
+    left alone at boot. Their next message is accepted, but the session it
+    would be written into cannot be resumed, so the job ends as an error:
+    "its session ended unexpectedly"."""
+    import asyncio
+
+    import background_jobs as bj
+    import casa_core
+    reg, driver, channel, finalized, cli = await _wiped_job(
+        tmp_path, monkeypatch, awaiting=bj.AWAITING_ASKED)
+
+    await casa_core._resume_background_jobs(reg, channel)
+    assert channel.notices == [] and finalized == []
+
+    driver.submit_operator(reg.get(JOB_ID), "carry on")
+    for _ in range(200):
+        if finalized:
+            break
+        await asyncio.sleep(0.005)
+
+    assert cli.instances == []
+    assert [(f["outcome"], f["text"]) for f in finalized] == [
+        ("error", "its session ended unexpectedly")]
+    await driver.cancel(reg.get(JOB_ID))
 
 
 async def test_a_valid_record_file_keeps_every_record_and_field(tmp_path):

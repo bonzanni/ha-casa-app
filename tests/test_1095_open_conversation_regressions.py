@@ -244,9 +244,10 @@ async def test_boot_does_not_resume_a_job_whose_disabled_close_failed(reg, monke
     assert "travel" in reload_mod._INCOMPLETE_RETIREMENTS
     resumed: list = []
 
-    async def start(rec, channel):
-        resumed.append(rec.id)
-    monkeypatch.setattr(background_jobs, "start_next_batch", start)
+    class _Runner:
+        async def resume_at_boot(self, rec):
+            resumed.append(rec.id)
+    monkeypatch.setattr(background_jobs, "_runner", _Runner())
 
     async def notice(channel, rec, text):
         return None
@@ -255,4 +256,4 @@ async def test_boot_does_not_resume_a_job_whose_disabled_close_failed(reg, monke
     assert resumed == [fine.id]
     src = inspect.getsource(casa_core.main)
     assert src.count("await _resume_background_jobs(engagement_registry, telegram_channel, "
-                     "skip=left_open)") == 1
+                     "skip=left_open, only=boot_job_ids)") == 1

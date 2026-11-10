@@ -146,7 +146,7 @@ async def test_launch_withheld_profiled_plugin_stays_profiled_after_unassign(
         channel_manager=cm, bus=bus, specialist_registry=specialist_reg,
         mcp_registry=None, trigger_registry=MagicMock(), engagement_registry=reg,
         agent_role_map={"assistant": caller})
-    driver = MagicMock(); driver.start = AsyncMock()
+    driver = MagicMock(); driver.open = AsyncMock()
     monkeypatch.setattr(agent_mod, "active_engagement_driver", driver)
 
     real_build = tools_mod._build_specialist_options

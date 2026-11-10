@@ -77,8 +77,9 @@ expanded over the live artifact's servers minus the new list expanded over the n
 artifact's, so a server the update removes counts too.
 
 **A running session keeps what it was built with.** A resident's pool client until the
-reload reconstructs the role, an engagement client until it is next resumed or opened fresh,
-a job batch until its next batch opens a session. No flag, no teardown and no quiesce is
+reload reconstructs the role, a job's session until it is next resumed — after an idle
+suspension, a session death or a restart — when its options are rebuilt and the record's rows
+persisted before the client opens. No flag, no teardown and no quiesce is
 added for a profile; the confirmations say "from its next session".
 
 **Operator config denies are never removed.** A `tools.disallowed` entry naming a tool

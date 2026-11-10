@@ -102,7 +102,8 @@ request and restarts itself; the wipe runs as Casa starts, before anything else,
 and erases everything Casa remembers: saved conversations, its notes, the
 search index, the memory exports kept under `/data/memory/exports/`,
 conversation transcripts and conversation pointers, so every conversation
-starts fresh. **Your reminders,
+starts fresh. A background job that was open cannot pick up where it was — its
+conversation is gone — so it ends and you are told. **Your reminders,
 triggers, settings and prompts, pending tasks, plugin data and logs stay, and
 so do your files** — though a kept item can
 still mention something that was forgotten. Anything said between the request and the
@@ -160,7 +161,7 @@ just its name inside `/data/memory/exports/`.
 6. **Reminders**: Ellen can set her own reminders, which are ordinary triggers written to her `triggers.yaml` — so they survive restarts and updates. One-off reminders remove themselves after firing, and any reminder whose time fell while Casa was down is delivered on the next sweep rather than lost.
 7. **Weekday morning briefing**: Ellen's 08:00 weekday briefing is meant to be silent on most days. It sends a message only for something you must act on today and have not already been told, checked against a live source that morning or marked as unverified. Memory and Casa's own schedule are not treated as confirmation of today's state, and an empty or failed check is not a reason to message you. These are instructions to the model, so an occasional stray line is still possible.
 8. **Dated, marked memories**: When Ellen searches or browses memory, each saved message comes with the day, weekday and time it was said, who said it, and whether one of Casa's scheduled tasks (a trigger or a reminder) started that turn. Memory is still history, not confirmation of how things are now: Ellen is told to check changeable state live, or say it is unchecked, before stating it as current.
-9. **Step limit**: Each turn has a step limit — one step is one model call, and parallel tool calls in one message count as one. Ellen's is 80; a turn started by an untrusted webhook always gets 20, and the voice agents keep 10 (butler) and 6 (concierge). When a turn reaches its limit, whatever it already said stays, Casa never retries or continues on its own, and Casa adds one line: in a chat, "say 'continue'" picks up where it stopped; a scheduled task, reminder or follow-up to a scheduled question runs on its own, so its line names the task and offers to redo it on request; a trusted `/invoke` gets the line at the end of its response; a voice agent that has already spoken says so aloud; an untrusted webhook turn is only logged. Every stop logs a WARNING with the agent, the channel and the step count. A specialist conversation or the configurator that reaches its limit stays open — its first turn included — and gets the same "say 'continue'" line in its topic, even when nothing was posted there, with one WARNING; a background job's batch that runs out of steps only ends that batch, and the next one starts.
+9. **Step limit**: Each turn has a step limit — one step is one model call, and parallel tool calls in one message count as one. Ellen's is 80; a turn started by an untrusted webhook always gets 20, and the voice agents keep 10 (butler) and 6 (concierge). When a turn reaches its limit, whatever it already said stays, Casa never retries or continues on its own, and Casa adds one line: in a chat, "say 'continue'" picks up where it stopped; a scheduled task, reminder or follow-up to a scheduled question runs on its own, so its line names the task and offers to redo it on request; a trusted `/invoke` gets the line at the end of its response; a voice agent that has already spoken says so aloud; an untrusted webhook turn is only logged. Every stop logs a WARNING with the agent, the channel and the step count. A background job is different: reaching the step limit (a high one, 1000 steps) is never a stop — Casa continues the job when it has reported progress since the last time, and parks it for you otherwise.
 
 ### Writing a scheduled trigger prompt by hand
 
@@ -405,20 +406,37 @@ bundled plugins (manage those through the specialist's own upgrade/uninstall).
 Some plugins declare long work — classifying a year of transactions, say — as a
 background job. Ask the assistant for it as usual: she starts the job and replies
 straight away. The job runs in the specialist's topic in the Engagements
-supergroup (so `telegram_engagement_supergroup_id` must be set), in batches, with
-one progress line per batch. A job you asked for also puts one silent line in your
-DM — "📊 Finance started «…»." — with a **Cancel** button. When a specialist's job
+supergroup (so `telegram_engagement_supergroup_id` must be set) as one long
+session: it keeps working until it is finished, posting a progress line in the
+topic when it has something worth telling. A job you asked for also puts one
+silent line in your DM — "📊 Finance started «…»." — with a **Cancel** button; the
+line shows how long the job has been running and, once its first stretch of work
+has ended, what it has cost so far ("· 40 min · $2.40"). When a specialist's job
 needs a decision from you it asks in your DM, with a button per choice: tap one,
 or reply to the question in words. To steer a running job, reply in your DM to any
-of its messages there (its start line, a question, something its plugin posted);
-your words go into the job. You can also write in the topic between batches, send
-`/cancel` there, or ask the assistant to cancel it. If the job ended before it read
-your reply, Casa answers your message once: "The job had just ended — not delivered,
-please resend." When the job ends its DM buttons go away and the start line shows
-how it ended. A specialist runs one engagement at a time, but quick questions to it
-still work while a job is open. When the job ends the topic closes and the assistant
-tells you the outcome. After a restart an open job posts a short "resuming" line and
-continues.
+of its messages there (its start line, a question, something its plugin posted), or
+write in its topic; your words reach the job while it works, at its next step. A
+household member with less access than the job was started with cannot steer it:
+they are told so in its topic, and their message does not reach the job. You can also send `/cancel` in
+the topic, or ask the assistant to cancel it. If the job ended before it read your
+message, Casa answers it once: "The job had just ended — not delivered, please
+resend."
+
+If a job stops without finishing, Casa nudges it once to carry on. If it stops
+again, or hits trouble (repeated errors from Claude, or a very long run with no
+progress reported), Casa parks it: it waits for you, and you get one line in your
+DM — "«…» stopped without finishing. Reply to continue it, or Cancel." — with a
+**Cancel** button. Reply to that line to continue the job. Casa never ends a job
+on its own because it is slow or expensive; the cost is shown, never capped.
+
+When the job ends its DM buttons go away and the start line shows how it ended,
+how long it ran and what it cost; the assistant tells you the outcome, with the same
+time and cost. A specialist runs one engagement at a time, but quick questions to it
+still work while a job is open. When the job ends the topic closes. After a restart
+an open job posts a short "resuming" line and continues where it was; a message you
+sent that it had not read yet reaches it after the restart, marked as sent before
+the restart. If the job's own process stops unexpectedly, Casa restarts it once the
+same way; if that fails, or it stops again, the job ends and you are told.
 
 Jobs come from two places (v0.323.0). A specialist's plugins run their jobs in the
 specialist's own topic, as above. Plugins you installed on a resident directly run
@@ -426,9 +444,7 @@ theirs as a worker of their own, in a topic named after the resident, with nothi
 but that plugin's own tools — so the resident stays free for you meanwhile. Such a
 worker does not ask questions: it sets aside what needs an answer and reports it, and
 you answer by replying to its messages in your DM. One job
-runs per installed plugin. Casa checks open jobs once a minute and restarts one that
-has stalled; a job it cannot get moving again is ended and reported rather than left
-sitting there.
+runs per installed plugin.
 
 A plugin can mark a job quiet when scheduled (v0.344.36). A run of it that a
 schedule started opens no topic, posts no start or progress line, and tells you

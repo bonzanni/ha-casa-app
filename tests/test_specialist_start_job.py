@@ -21,7 +21,7 @@ import specialist_desk
 import tools
 from plugin_fixtures import entry
 from test_specialist_job_host import (  # noqa: F401  (fixtures and helpers)
-    _artifact, _counts, _jobs, _load, _real_discovery, call, home, runtime,
+    _artifact, _counts, _jobs, _load, _real_discovery, call, drain_launch_turns, home, runtime,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -88,7 +88,7 @@ async def test_a_specialist_turn_starts_its_own_job_hosted_on_itself(
     result = await start_as(origin_of())
     assert result["status"] == "pending", result
     assert result["agent"] == "finance" and result["job"] == "ledger:classify"
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     rec = _the_live_record(runtime)
     assert (rec.kind, rec.role_or_type) == ("specialist", "finance")
     assert rec.origin["plugin_job"] == {"plugin": "ledger"}
@@ -111,7 +111,7 @@ async def test_a_member_turn_starts_the_job_at_the_members_clearance(
     _own_ledger(tmp_path)
     result = await start_as(_delegated_turn_origin(clearance="household"))
     assert result["status"] == "pending", result
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     rec = _the_live_record(runtime)
     assert rec.origin["_origin_clearance"] == "household"
     assert _counts(runtime) == (1, 1, 1, 0)
@@ -176,7 +176,7 @@ async def test_the_resident_start_of_a_specialist_job_is_unchanged(
     _own_ledger(tmp_path)
     result = await call()
     assert result["status"] == "pending", result
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     rec = runtime.registry.get(result["engagement_id"])
     assert rec.origin["execution_role"] == "assistant"
     assert rec.origin["delegation_depth"] == 1

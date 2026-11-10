@@ -9,18 +9,18 @@ last_reviewed: 2026-11-08
 ## Scope
 
 A plugin job declaring `"quietWhenScheduled": true`, and what changes for a run of it that
-a schedule started: no topic, no acknowledgement, no progress line, and nobody told when it
-completes — until it interacts with the operator, which ends its quietness. What a job is and
-how it runs in batches is
-[`background-jobs.md`](background-jobs.md). How a schedule starts a job is
+a schedule started: no topic, no progress line, and nobody told when it completes — until it
+interacts with the operator, which ends its quietness. What a job is is
+[`background-jobs.md`](background-jobs.md); how its session runs is
+[`background-job-session.md`](background-job-session.md). How a schedule starts a job is
 [`job-triggers.md`](job-triggers.md). How a plugin's delivered slots reach the operator is
 [`plugin-delivered-slots.md`](plugin-delivered-slots.md).
 
 ## Mental model
 
 **A scheduled run that usually finds nothing should say nothing.** A job such as a weekly
-accounting check posts, for every run, a launch acknowledgement, a topic and a progress
-line per batch. When the job declares `quietWhenScheduled`, a run its schedule started (the
+accounting check opens, for every run, a topic that its words stream into, with progress
+lines. When the job declares `quietWhenScheduled`, a run its schedule started (the
 record's starter is `scheduled`, `Started by: scheduled` in its prompts) does none of that.
 The plugin speaks for itself instead: its `operator_message`, `operator_proposal`,
 `operator_file` and `operator_link` slots still reach the operator's DM. A run that finds
@@ -35,7 +35,8 @@ schedule started them.
 
 **Interaction ends quietness.** A quiet run that asks the operator something
 (`ask_operator`), or that receives their reply to one of its posts, a tapped answer or an
-approval's continuation, stops being quiet before the question is posted or the turn delivered:
+approval's continuation, stops being quiet before the question is posted or the message is
+accepted for the job:
 `EngagementRegistry.promote_from_quiet` clears the stamp under the registry lock with the strict
 writer, rolling it back when the write fails, and the interaction is then refused — the tool
 returns an error, the reply or tap gets its one notice. The lock also waits out a pending
@@ -46,18 +47,17 @@ still goes through the promotion: it waits for that write and promotes again if 
 back, so a question or reply never reaches a run that then goes quiet again. Whether the end is
 told is decided inside the terminal transition, from the stamp as
 the transition commits it, so a promotion that commits first is always seen. Promoted, the run
-is told at its end like any job, and a cut-off reply turn is no longer skipped as quiet. Its
-turns' words are still withheld: it has no topic.
+is told at its end like any job. Its turns' words are still withheld: it has no topic. A quiet
+run that Casa parks (it stopped twice without finishing) needs the operator too, so it is
+promoted the same way before its parking line is posted
+([`background-job-session.md`](background-job-session.md), INV-BGJOB-017).
 
 **A quiet run has no topic.** The launcher creates its record with `topic_id` unset. The
 driver gives its turns a stream that withholds the words (`_WithheldStream`) and reports
-them as delivered: they were not shown by design, not lost, so no launch-death or
-not-delivered reading fires. Every engagement notice is skipped for a record with no topic.
-That covers the progress line, the restart's resume line, the step-limit line and the
-turn-failure lines. The topic send primitives refuse a missing topic outright, because the
-Bot API would otherwise post the message into the group's General topic. The per-engagement
-handler lock is keyed by the record's id when it has no topic, so two quiet runs never share
-one. The plugin's posts target the origin's chat, the live operator stamped by the schedule's
+them as delivered: they were not shown by design, not lost. Every engagement notice is
+skipped for a record with no topic. That covers the progress line and the restart's resume
+line. The topic send primitives refuse a missing topic outright, because the Bot API would
+otherwise post the message into the group's General topic. The plugin's posts target the origin's chat, the live operator stamped by the schedule's
 fire, so the grant identity admits a quiet run without a topic. A record with no topic that
 is not a quiet run is still refused.
 
@@ -70,9 +70,9 @@ notification, with its durable obligation and boot replay unchanged. A launch th
 named fault before the run started is the exception, here as for every scheduled job: it is told
 by the schedule's own "did not start" line, which is not retried
 ([`job-triggers.md`](job-triggers.md)). A completed one is not, since its
-plugin has already posted whatever the operator needed to see. A resume that fails while the
-launch is still registered takes the job's own arms (the sweep, or the finalize funnel), never
-the direct error arms that tell only in a topic. A second start while a quiet run is live is
+plugin has already posted whatever the operator needed to see. A job that cannot be resumed
+ends through the finalize funnel, which tells a cancelled or failed end through the resident
+even without a topic. A second start while a quiet run is live is
 refused with `job_busy`, saying the run is in progress and to wait. There is no topic to
 `/cancel` it in.
 
@@ -81,7 +81,7 @@ happen in a topic, and it has no start line to cancel it from (it was scheduled)
 the resident to cancel it. A reply to one of its plugin's posts, or a tap on its question, goes
 into it and ends its quietness (INV-BGJOB-015).
 
-**INV-BGJOB-015**: A quiet run that asks the operator something, or receives their reply to one of its posts, a tapped answer or an approval's continuation, stops being quiet before the question is posted or the turn is delivered — through a strict write under the registry lock that waits out a pending terminal write and is rolled back, with the interaction refused, when it fails or the record has gone terminal; whether a run's end is told is decided inside its terminal transition from the record's stamp, so an interacting run is told at its end and a run nobody interacted with has its completed end told to no one.
+**INV-BGJOB-015**: A quiet run that asks the operator something, or receives their reply to one of its posts, a tapped answer or an approval's continuation, stops being quiet before the question is posted or the message is accepted for the job — through a strict write under the registry lock that waits out a pending terminal write and is rolled back, with the interaction refused, when it fails or the record has gone terminal; whether a run's end is told is decided inside its terminal transition from the record's stamp, so an interacting run is told at its end and a run nobody interacted with has its completed end told to no one.
 
 ## Failure behavior
 
@@ -89,10 +89,8 @@ A topic send attempted for a record without a topic raises `ValueError` instead 
 so nothing reaches the General topic. The topic paths of the launch aborts, the launch-death
 report, the finalize funnel and the topic-state paint already skip a record without a topic.
 
-The turn that completes a quiet run ends without a result and without a telling, which is
-how an interrupted turn looks. The incomplete-turn check in `channels/telegram.py` logs that
-end at INFO as deliberately not told, and posts nothing. A cancelled or failed quiet run's
-end still logs the WARNINGs that it is telling the operator.
+A cancelled or failed quiet run's end still logs the WARNINGs that it is telling the
+operator.
 
 ## Extension points
 
@@ -108,7 +106,6 @@ reader keys on that flag or on the missing topic, never on how the run was start
 - `casa/rootfs/opt/casa/background_jobs.py::is_quiet_run`
 - `casa/rootfs/opt/casa/background_jobs.py::is_quiet_origin`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::_WithheldStream`
-- `casa/rootfs/opt/casa/channels/telegram.py::_handler_lock_key`
 - `casa/rootfs/opt/casa/channels/telegram.py::_require_topic`
 - `casa/rootfs/opt/casa/tools.py::_told_nowhere`
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.promote_from_quiet`

@@ -20,8 +20,8 @@ own grants.** `create_casa_tools` builds the server for one session from the too
 keeping only the tools that session's grants name, so the tools an agent sees are the tools
 its session can call. No route outside the process reaches the tool table: the internal Unix
 socket serves the administrative and broker routes, not tool calls.
-A delegated client also has a second in-process server, `casa-pad`, built for that client alone
-([`scratchpad.md`](scratchpad.md)).
+A delegated client, and a background job's session, also has a second in-process server,
+`casa-pad`, built for that client alone ([`scratchpad.md`](scratchpad.md)).
 
 **The agent-level allowlist is a constraint on the agent, not a boundary at the tool.** The
 declared tool list is enforced *upstream*, by the SDK's own permission machinery and by

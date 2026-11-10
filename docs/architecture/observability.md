@@ -17,16 +17,16 @@ metrics, of which there are none to speak of.
 **A correlation id threads a request across components**, bound into context so that log
 lines from the same work can be tied together.
 
-**An engagement turn has a cid of its own.** Every in_casa engagement turn — the launch,
-each job batch, a reply to a message in the topic, a continuation — mints one as it starts.
-Its own lines carry it as a plain value for the whole turn. Its tool-callback lines run in
-the SDK's read task, whose context was captured once, when the client opened; that context
-holds a per-client holder each turn rewrites in place when it takes the engagement's turn
-lock, so they carry the cid of the turn that holds it. When the turn takes that lock, one
-line under the new cid — `Engagement <id> turn cid=<cid> batch=<n|-> engaged_by=<cid|->` —
-ties it to the engagement, any job batch and the turn that engaged it. Whatever started the
-engagement — a resident's turn, a scheduled trigger, the job sweep — no longer lends a turn's
-own lines a cid that drifts with the resident's later turns, or `-`; the lines it logs itself
+**An engagement turn has a cid of its own.** A job runs one long session, and every turn in
+it — the brief's, the one a reply or a continuation opens, the one after a nudge or a restart
+line — mints one as it opens: at the write that wakes an idle session, or at the first frame
+after a result. The session's reader binds it for that turn's frames. Its tool-callback lines
+run in the SDK's read task, whose context was captured once, when the client opened; that
+context holds a per-client holder each turn rewrites in place as it opens, so they carry the
+cid of the running turn. As the turn opens, one line under the new cid —
+`Engagement <id> turn cid=<cid> engaged_by=<cid|->` — ties it to the engagement and the turn
+that engaged it. Whatever started the job — a resident's turn, a scheduled trigger, Casa's own
+nudge or restart line — never lends a turn's lines its cid, or `-`; the lines it logs itself
 keep its context. Resident turns keep their own cid.
 
 **The emitted records are structured, and JSON is the default.** Output is one-line JSON
@@ -99,13 +99,12 @@ redaction guarantee, and subprocess output never passes through it at all. Withi
 pipeline, redaction recognises patterns, registered exact values and credential-named
 keys — an unregistered, pattern-less secret under a benign key still passes.
 
-**INV-OBS-005**: Every in_casa engagement turn logs under a cid minted for that turn — its turn-task lines throughout the turn, and its SDK read-task (tool-callback) lines while it holds the engagement's turn lock — and, when it takes that lock, one INFO line under that cid ties it to the engagement id, the job batch (if any) and the engaging cid.
+**INV-OBS-005**: Every in_casa engagement turn logs under a cid minted as the turn opens — the session reader's lines for that turn's frames, and its SDK read-task (tool-callback) lines while it is the session's running turn — and, as it opens, one INFO line under that cid ties it to the engagement id and the engaging cid.
 
 What it does not cover: a line from work that outlives its turn — a tool call the CLI
 abandoned, still finishing after the next turn started — carries whichever turn is running
-then; lines a delivery owner logs after the driver returns (a failed batch's finalize, the
-next batch's start) carry the owner's own context; specialist desk turns bind no cid of their
-own.
+then; lines the job's delivery worker, its turn-end handler or its session-loss path log carry
+their own context; specialist desk turns bind no cid of their own.
 
 **INV-OBS-003**: The health endpoint returns a fixed success response without consulting any subsystem.
 

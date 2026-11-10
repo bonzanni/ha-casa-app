@@ -41,27 +41,30 @@ content draws a reply or, for a file addressed to a specialist, one specialist d
 ([`inbound-files.md`](inbound-files.md), INV-FILE-001). The two filters
 are disjoint, so each update reaches exactly one handler. Both take new messages only: an
 edited message, a channel post and a business message reach neither, so editing a message
-already sent never starts a second turn. For an in-casa engagement,
-the topic handler and the system-continuation seam (`deliver_system_turn`) both admit the
-turn synchronously, before any await a completion could race, as an admission ticket the
-completion gate reads; recognized commands are consumed by the handler itself and are never
-ticketed, and a ticket its delivery task failed to consume is discharged only after one
-bounded failure notice (the engagements document owns the ticket lifecycle, and
-[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) owns what the
-gate does with a ticket it finds).
+already sent never starts a second turn. For a job,
+the topic handler, the reply seam (`deliver_operator_reply`) and the system-continuation seam
+(`deliver_system_turn`) each hand the message over in one synchronous step — journaled,
+admitted as a ticket the completion gate reads, queued for the job's delivery worker — and
+return without waiting on the session; recognized commands are consumed by the handler itself
+and are never ticketed, and a message the job does not accept, or never reads, draws one
+bounded notice ([`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md)
+owns that notice, and
+[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) what the gate
+does with a ticket it finds).
 
 A continuation dispatched from an operator's tap is admitted the same way, but its ticket
 cannot be the first thing that exists for it: the tap commits before the seam runs. That
 interval is covered by an ingress reservation taken at the tap and handed over to the ticket
-in the seam's own synchronous entry. The seam returns whether it handed the turn off — false
-when the resume gate refused or shutdown had begun — which is what the tap's operator-facing
-message is selected from. It is a hand-off report and not an admission receipt; the driver's
-admission is taken later, under the engagement's per-turn lock.
+in the seam's own synchronous entry. The seam returns whether the job accepted the message —
+false when the record was terminal, the journal could not be written or shutdown had begun —
+which is what the tap's operator-facing message is selected from. It is an acceptance and not
+a delivery receipt; the delivery worker asks the registry again immediately before it writes
+the message ([`architecture/engagement-turn-admission.md`](engagement-turn-admission.md)).
 
 **Update dispatch is concurrent; ordering is re-imposed per scope, not globally.** Handlers
 run non-blocking, so nothing about arrival order survives dispatch on its own. Engagement
-topics re-serialize under a per-topic handler lock (a quiet scheduled job run, which has no
-topic, under one keyed by its record), and direct messages re-serialize per
+topics re-serialize under a per-topic handler lock, held only while the handler routes the
+message, never while the job works on it, and direct messages re-serialize per
 chat: `/new` holds its chat's lock across the whole reset (the pool close, then the pointer
 removal, INV-MEM-013),
 so once the reset holds the lock, no same-chat follow-up can be enqueued — let alone resume

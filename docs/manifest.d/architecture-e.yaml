@@ -24,21 +24,21 @@
     INV-ENG-003: [tests/test_emit_completion_tool.py::test_unread_queued_message_refuses_completion, tests/test_emit_completion_tool.py::test_pending_ingress_reservation_refuses_completion, tests/test_emit_completion_tool.py::test_inbound_racing_past_precheck_is_vetoed_by_terminal_hook, tests/test_answer_reservation.py::TestInCasaCompletionInboundGate::test_queued_in_casa_turn_vetoes_completion_before_client_handoff, tests/test_answer_reservation.py::TestInCasaCompletionInboundGate::test_in_casa_turn_admitted_during_finalize_is_vetoed_by_terminal_hook, tests/test_emit_completion_tool.py::TestReservationGate::test_command_reservations_still_veto_completion, tests/test_emit_completion_tool.py::TestReservationGate::test_a_raising_accessor_cannot_disable_the_gate, tests/test_c1_continuation_admission.py::TestACompletionRacingTheContinuationIsRefused::test_the_handler_pre_check_refuses_over_a_held_reservation, tests/test_c1_continuation_admission.py::TestACompletionRacingTheContinuationIsRefused::test_a_reservation_born_during_finalize_is_vetoed_by_the_hook, tests/test_c1_continuation_admission.py::TestTheHandOffOutcomeAndTheTransfer::test_the_seam_admits_the_ticket_then_releases_the_reservation, tests/test_c1_continuation_admission.py::TestTheHandOffOutcomeAndTheTransfer::test_a_finish_hook_that_never_reaches_the_seam_still_releases, tests/test_authz_grants.py::TestC1EngagementContinuationReservation::test_the_tap_reserves_before_the_finish_hook_can_run, tests/test_emit_completion_tool.py::TestOneFailingAccessorCostsOnlyItsOwnInput::test_a_missing_or_raising_unread_text_read_never_erases_a_readable_veto, tests/test_emit_completion_tool.py::TestOneFailingAccessorCostsOnlyItsOwnInput::test_no_single_accessor_failure_lets_a_gated_completion_through, tests/test_emit_completion_tool.py::TestOneFailingAccessorCostsOnlyItsOwnInput::test_the_unread_text_warning_no_longer_claims_the_gate_was_skipped]
 
 - doc: architecture/engagement-inbound-disclosure.md
-  summary: What the operator is told about an inbound message an engagement admitted and never took up — one notice, from whichever of the admitting seam or its delivery task holds the message's ticket, in reply to the message in the direct chat or in the topic; no terminal outcome lists such messages.
-  when_changing: what the operator is told about a message an engagement never took up, who sends that notice, or what a terminal outcome says about inbound messages
+  summary: What the operator is told about a message to a job that the job never read — one notice, from the seam when the job did not accept it or from the job's message journal once the job ended without reading it, in reply to the message in the direct chat or in the topic; no terminal outcome lists such messages.
+  when_changing: what the operator is told about a message a job never read, who sends that notice, or what a terminal outcome says about inbound messages
   covers:
-    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._settle_lost_inbound
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._tell_not_delivered
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._post_lost_inbound_notice
-    - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_token_held
   tests:
     - tests/test_job_dm_attention.py
+    - tests/test_job_message_seams.py
     - tests/test_emit_completion_tool.py
     - tests/test_launch_death_reporter.py
     - tests/test_in_casa_inbound_admission.py
-  related: [architecture/engagement-completion-gate.md, architecture/engagement-finalization.md, architecture/engagement-turn-outcomes.md, architecture/background-job-direct-chat.md, architecture/telegram.md]
+  related: [architecture/engagement-completion-gate.md, architecture/engagement-finalization.md, architecture/background-job-message-journal.md, architecture/background-job-session.md, architecture/background-job-direct-chat.md, architecture/telegram.md]
   defines_invariants: [INV-ENG-029]
   invariant_tests:
-    INV-ENG-029: [tests/test_job_dm_attention.py::TestOneNoticePerLostMessage::test_a_reply_refused_because_the_job_ended_is_told_once_in_reply, tests/test_job_dm_attention.py::TestOneNoticePerLostMessage::test_cancel_racing_a_queued_reply_tells_it_exactly_once, tests/test_job_dm_attention.py::TestOneNoticePerLostMessage::test_a_tapped_answer_refused_is_told_once_on_the_question, tests/test_job_dm_attention.py::TestOneNoticePerLostMessage::test_a_batch_turn_refused_tells_no_one, tests/test_job_dm_attention.py::TestQuietRunsEndOnInteraction::test_a_reply_racing_a_pending_quiet_completion_is_told_once, tests/test_emit_completion_tool.py::TestCompletionInboundGate::test_error_status_not_gated_and_lists_no_inbound, tests/test_launch_death_reporter.py::TestTheBoundaries::test_inbound_admitted_during_a_dying_launch_is_not_listed, tests/test_in_casa_inbound_admission.py::TestUngatedTerminalKeepsTheTicket::test_cancel_finalize_lists_nothing_and_leaves_the_ticket_held]
+    INV-ENG-029: [tests/test_job_dm_attention.py::TestOneNoticePerLostMessage::test_a_reply_refused_because_the_job_ended_is_told_once_in_reply, tests/test_job_dm_attention.py::TestOneNoticePerLostMessage::test_cancel_racing_a_queued_reply_tells_it_exactly_once, tests/test_job_dm_attention.py::TestOneNoticePerLostMessage::test_a_tapped_answer_refused_is_told_once_on_the_question, tests/test_job_dm_attention.py::TestQuietRunsEndOnInteraction::test_a_reply_racing_a_pending_quiet_completion_is_told_once, tests/test_job_dm_attention.py::TestApprovalLostToTermination::test_an_approval_continuation_refused_by_an_ended_job_is_told_once, tests/test_job_message_seams.py::test_a_message_the_journal_cannot_take_is_told_once, tests/test_job_message_seams.py::test_a_lost_journal_entry_is_told_in_reply_to_its_message, tests/test_job_message_seams.py::test_the_finalize_funnel_tells_each_unread_message_once, tests/test_emit_completion_tool.py::TestCompletionInboundGate::test_error_status_not_gated_and_lists_no_inbound, tests/test_launch_death_reporter.py::TestTheBoundaries::test_inbound_admitted_during_a_dying_launch_is_not_listed, tests/test_launch_death_reporter.py::TestTheBoundaries::test_a_message_accepted_during_a_dying_launch_is_told_lost_once, tests/test_in_casa_inbound_admission.py::TestUngatedTerminalKeepsTheTicket::test_cancel_finalize_lists_nothing_and_tells_the_message_lost_once]
 - doc: architecture/engagement-finalization.md
   summary: How a durable engagement ends — the single-winner terminal transition, strict creation and terminal persistence, and the finalization side effects behind the flip.
   when_changing: who may mark a job or an engagement terminal, terminal transitions, engagement creation strictness, or finalization side effects
@@ -75,21 +75,21 @@
     - tests/test_engagement_registry.py
     - tests/test_idle_sweep.py
     - tests/test_in_casa_inbound_admission.py
-  related: [architecture/overview.md, architecture/turn-loop.md, architecture/sdk-client-pool.md, architecture/delegation.md, architecture/engagement-finalization.md, architecture/engagement-completion-gate.md, architecture/engagement-turn-admission.md, architecture/engagement-turn-outcomes.md]
+  related: [architecture/overview.md, architecture/turn-loop.md, architecture/sdk-client-pool.md, architecture/delegation.md, architecture/engagement-finalization.md, architecture/engagement-completion-gate.md, architecture/engagement-turn-admission.md, architecture/engagement-launch-detach.md, architecture/background-job-session.md]
   defines_invariants: []
 - doc: architecture/engagement-turn-admission.md
-  summary: How a turn is admitted to a live engagement — the registry decision taken immediately before the hand-off, where the driver places it, and what it does not fence.
-  when_changing: turn admission — how a turn is handed to a live engagement, or what a terminal record is never handed
+  summary: How a write is admitted into a live job's session — the registry decision taken immediately before the client call, the brief included, where the driver places it, and what it does not fence.
+  when_changing: turn admission — how a write is handed to a live job's session, or what a terminal record is never handed
   covers:
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.begin_turn_delivery
     - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver
   tests:
     - tests/test_engagement_registry.py
     - tests/test_c1_continuation_admission.py
-  related: [architecture/engagements.md, architecture/engagement-completion-gate.md, architecture/engagement-finalization.md]
+  related: [architecture/engagements.md, architecture/background-job-session.md, architecture/engagement-completion-gate.md, architecture/engagement-inbound-disclosure.md, architecture/engagement-finalization.md]
   defines_invariants: [INV-ENG-009]
   invariant_tests:
-    INV-ENG-009: [tests/test_engagement_registry.py::TestBeginTurnDelivery::test_seam_is_not_a_coroutine_function, tests/test_engagement_registry.py::TestBeginTurnDelivery::test_terminal_record_is_refused_and_never_resurrected, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_a_follow_up_to_a_terminal_record_never_reaches_the_client, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_an_idle_record_is_active_at_the_client_hand_off, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_a_direct_caller_with_no_seam_ticket_is_fenced_too, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_the_launch_prompt_is_not_fenced]
+    INV-ENG-009: [tests/test_engagement_registry.py::TestBeginTurnDelivery::test_seam_is_not_a_coroutine_function, tests/test_engagement_registry.py::TestBeginTurnDelivery::test_terminal_record_is_refused_and_never_resurrected, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_a_follow_up_to_a_terminal_record_never_reaches_the_client, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_an_idle_record_is_active_at_the_client_hand_off, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_a_direct_caller_with_no_seam_ticket_is_fenced_too, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_the_brief_is_fenced_like_every_write, tests/test_c1_continuation_admission.py::TestFollowUpAdmissionFence::test_an_operator_message_to_a_terminal_record_is_refused_at_the_seam]
 - doc: architecture/eval-framework.md
   summary: The evaluation scaffolding — and the fact that its registry ships empty.
   when_changing: adding an evaluator, or before assuming behaviour is evaluated somewhere

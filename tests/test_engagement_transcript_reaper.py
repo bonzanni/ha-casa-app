@@ -88,9 +88,10 @@ async def _terminal(registry, rec_id: str, outcome: str) -> None:
 @pytest.mark.parametrize("specialist_cwd", ["", "/config/custom-home/researcher"])
 async def test_terminal_sdk_transcripts_are_reaped(
         home, tmp_path, monkeypatch, outcome, specialist_cwd):
-    """Red case (#1162). A terminal plugin job's whole project dir, and every
+    """Red case (#1162). A terminal plugin job's whole project dir, and the
     session a terminal specialist-hosted job names, are gone after the
-    periodic passes — at the base all five targets survive."""
+    periodic passes; another session in the specialist's shared project dir
+    is never selected."""
     tombstone = tmp_path / "engagements.json"
     registry = EngagementRegistry(tombstone_path=str(tombstone))
     _specialists(monkeypatch, researcher=SimpleNamespace(
@@ -102,7 +103,7 @@ async def test_terminal_sdk_transcripts_are_reaped(
         task="t", origin={}, topic_id=None)
     job = await registry.create(
         kind="specialist", role_or_type="researcher", driver="in_casa",
-        task="t", origin={"job": {"sids": [s1, s2]}}, topic_id=None)
+        task="t", origin={"job": {}}, topic_id=None)
     await registry.persist_session_id(plugin.id, p)
     await registry.persist_session_id(job.id, s1)
     await _terminal(registry, plugin.id, outcome)
@@ -111,7 +112,6 @@ async def test_terminal_sdk_transcripts_are_reaped(
     rows = {r["id"]: r for r in json.loads(tombstone.read_text())}
     assert {rows[plugin.id]["status"], rows[job.id]["status"]} == {outcome}
     assert (rows[plugin.id]["sdk_session_id"], rows[job.id]["sdk_session_id"]) == (p, s1)
-    assert rows[job.id]["origin"]["job"]["sids"] == [s1, s2]
     for rid in (plugin.id, job.id):
         assert time.time() - rows[rid]["completed_at"] < 30 * 86400
 
@@ -136,8 +136,9 @@ async def test_terminal_sdk_transcripts_are_reaped(
             plugin_project,
             specialist_project / f"{s1}.jsonl",
             specialist_project / s1,
-            specialist_project / f"{s2}.jsonl",
-            specialist_project / s2,
         ) if path.exists()
     ]
     assert len(survivors) == 0, survivors
+    unnamed = [path for path in (specialist_project / f"{s2}.jsonl",
+                                 specialist_project / s2) if path.exists()]
+    assert len(unnamed) == 2, unnamed

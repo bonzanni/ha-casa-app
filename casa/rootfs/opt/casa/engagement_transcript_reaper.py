@@ -13,13 +13,12 @@ For each terminal ``driver == "in_casa"`` record this pass deletes, and selects
 nothing else:
 
 - ``kind == "plugin"``: the job's whole per-engagement project dir (its cwd is
-  unique to the engagement), so every batch's session goes with it, and its
+  unique to the engagement), so every session it ran goes with it, and its
   working dir ``/data/engagements/<id>`` (``tools.plugin_job_cwd(id).parent``) —
   the latter needs no SDK lookup and does not depend on the project dir;
-- specialist / executor: each session the record names —
-  ``sdk_session_id``, every sid in ``origin["job"][JOB_SIDS_KEY]`` and every sid
-  a clearance downgrade retired (``origin[RETIRED_SIDS_KEY]``, #1167) — as
-  ``<sid>.jsonl`` (any size) and ``<sid>/``, in that record's own project dir.
+- specialist / executor: the session the record names (``sdk_session_id``;
+  a job is one session, kept across resumes) as ``<sid>.jsonl`` (any size)
+  and ``<sid>/``, in that record's own project dir.
   Those dirs are shared with other sessions, which are never selected.
 
 Nothing is selected by the absence of a record or by listing a dir.
@@ -59,7 +58,7 @@ import sys
 import time
 from dataclasses import dataclass
 
-from engagement_registry import JOB_SIDS_KEY, LAUNCH_CWD_KEY, RETIRED_SIDS_KEY
+from engagement_registry import LAUNCH_CWD_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -107,16 +106,8 @@ class _Counts:
 
 
 def _named_sids(rec) -> tuple[str, ...]:
-    origin = rec.origin or {}
-    job = origin.get("job")
-    listed = job.get(JOB_SIDS_KEY) if isinstance(job, dict) else None
-    retired = origin.get(RETIRED_SIDS_KEY)
-    candidates = [rec.sdk_session_id,
-                  *(listed if isinstance(listed, list) else ()),
-                  *(retired if isinstance(retired, list) else ())]
-    # Filtered before the set: a malformed element must not hide the rest.
-    return tuple(sorted({s for s in candidates
-                         if isinstance(s, str) and _SID_RE.match(s)}))
+    sid = rec.sdk_session_id
+    return (sid,) if isinstance(sid, str) and _SID_RE.match(sid) else ()
 
 
 def transcript_cwd(rec) -> str | None:

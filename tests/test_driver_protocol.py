@@ -14,8 +14,15 @@ class TestDriverProtocolIsABC:
         from drivers.driver_protocol import DriverProtocol
 
         class Partial(DriverProtocol):
-            async def start(self, engagement, prompt, options): ...
-            # missing send_user_turn, cancel, resume, is_alive
+            async def open(self, engagement, options): ...
+            # missing cancel, resume, is_alive
 
         with pytest.raises(TypeError):
             Partial()  # type: ignore[abstract]
+
+        class Complete(Partial):
+            async def cancel(self, engagement): ...
+            async def resume(self, engagement, session_id): ...
+            def is_alive(self, engagement): return False
+
+        Complete()   # the four are the whole abstract surface

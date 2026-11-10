@@ -86,8 +86,7 @@ def test_the_start_job_description_names_the_delegation_route():
 _OWN_JOB_SENTENCES = (
     "A job listed as a delegate's own job belongs to that delegate: ask that delegate "
     "for it with `delegate_to_agent` in `sync` mode, and it starts the job itself.",
-    "A delegation does run that job, its batches included, so never tell the person "
-    "it cannot.",
+    "A delegation does run that whole job, so never tell the person it cannot.",
     "Use `start_job` for such a job only when the delegation reports that it could "
     "not start it.",
     "Never do the work of a job that is not a delegate's own through "

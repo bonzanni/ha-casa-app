@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-08
+last_reviewed: 2026-11-09
 ---
 
 # Memory capture: what is kept as it happens, and what is kept out
@@ -36,10 +36,10 @@ awaits the append, so every capture a turn made has returned by the time the tur
   assembled and before its client starts; and **its answer**, the whole live fold, when the
   run completes.
 - **An engagement turn of a memory-writing specialist**: the operator's message in the
-  topic, as it was admitted (never the preamble Casa prepends after a context rebuild), and
-  each message the specialist writes, before it is streamed and whatever the stream's
-  output bound clips. The operator's message is captured before the delivery fence, whose
-  window must not await. Plugin jobs are not memory-writing specialists.
+  topic, as it was admitted (never the line Casa prefixes when it redelivers the message
+  after a restart), once it is written into the job's session, and each message the
+  specialist writes, before it is streamed and whatever the stream's output bound clips.
+  Plugin jobs are not memory-writing specialists.
 - **Casa's line that a specialist which keeps no memory posted to the operator's chat**, in
   the Telegram channel's `_record_post`, where every message Casa sends on a specialist's
   behalf lands: a plugin's link, message, page, proposal or file, a desk reply, a stored-call

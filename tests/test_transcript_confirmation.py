@@ -354,21 +354,26 @@ async def _engagement_turn(kind="specialist", sid=None, script=None):
     script = script or [_init(sid), _said("engagement answer", sid),
                         _mk_result(sid)]
 
-    class _Client:
-        async def query(self, prompt):
-            return None
+    from turn_scripted_session import TurnScriptedSession, attach_session
 
+    class _Client(TurnScriptedSession):
         async def receive_response(self):
             for m in script:
                 yield m
 
-    drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream())
+    ended: list = []
+    drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream(),
+                       on_turn_end=lambda r, result, api_error: ended.append(r))
     rec = _engagement_record(kind=kind)
-    drv._clients[rec.id] = _Client()
-    drv._locks[rec.id] = asyncio.Lock()
-    ticket = drv.admit_inbound(rec.id, "topic message")
-    await drv.send_user_turn(rec, "topic message", tg_message_id=55,
-                             inbound_token=ticket)
+    attach_session(drv, rec, _Client())
+    try:
+        drv.submit_operator(rec, "topic message", tg_message_id=55)
+        async with asyncio.timeout(5):
+            while not ended:
+                await asyncio.sleep(0.001)
+    finally:
+        await drv.cancel(rec)
+    assert len(ended) == 1
     await transcript_runs.settle()
     return rec, sid
 
@@ -545,21 +550,27 @@ async def test_a_run_cancelled_during_its_registration_confirms_its_row(
         coro = agent._process(_operator_msg("hello", "901"))
     elif path == "engagement":
         from drivers.in_casa_driver import InCasaDriver
+        from turn_scripted_session import TurnScriptedSession, attach_session
 
-        class _Client:
-            async def query(self, prompt):
-                return None
-
+        class _Client(TurnScriptedSession):
             async def receive_response(self):
-                if False:
-                    yield None
+                await asyncio.Event().wait()   # the turn runs on
+                yield None
         drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream())
         rec = _engagement_record()
-        drv._clients[rec.id] = _Client()
-        drv._locks[rec.id] = asyncio.Lock()
-        ticket = drv.admit_inbound(rec.id, "m")
-        coro = drv.send_user_turn(rec, "m", tg_message_id=55,
-                                  inbound_token=ticket)
+        session = attach_session(drv, rec, _Client())
+        drv.submit_operator(rec, "m", tg_message_id=55)
+
+        async def _registration():
+            # The engagement turn's run registers on its own task as the
+            # turn opens; that task is what is cancelled here.
+            while session.segment is None:
+                await asyncio.sleep(0.001)
+            try:
+                await session.segment.capture_ready
+            finally:
+                await drv.cancel(rec)
+        coro = _registration()
         cm = None
     else:
         cfg = _delegated_cfg(home)

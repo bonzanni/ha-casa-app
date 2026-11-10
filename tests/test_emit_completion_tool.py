@@ -317,20 +317,17 @@ class _FakeInboundDriver:
     """Minimal stand-in for the in_casa driver's inbound surface, read by the
     G4 completion gate and the terminal disclosure.
 
-    `_texts`/`_depth` are the UNREAD population (admitted, not yet handed to
-    the client); `_in_flight` is the disclosure-only population the client
-    accepted with no model-evidence frame processed yet. Reservation texts are
+    `_texts`/`_depth` are the UNREAD population (admitted, not yet taken up
+    by the session). Reservation texts are
     always empty on the in_casa driver, but the renderers still read the
     accessor, so it stays settable here to pin that rendering.
     """
     def __init__(self, depth=0, reservations=0, texts=(),
-                 in_flight=(), command_reservations=0,
-                 reservation_texts=()):
+                 command_reservations=0, reservation_texts=()):
         self._depth = depth
         self._resv = reservations
         self._cmd_resv = command_reservations
         self._texts = list(texts)
-        self._in_flight = list(in_flight)
         self._reservation_texts = list(reservation_texts)
 
     def inbound_unread_depth(self, eng_id):
@@ -343,8 +340,6 @@ class _FakeInboundDriver:
         return max(0, self._resv - self._cmd_resv)
     def inbound_unread_texts(self, eng_id):
         return list(self._texts)
-    def inbound_in_flight_texts(self, eng_id):
-        return list(self._in_flight)
     def inbound_reservation_texts(self, eng_id):
         return list(self._reservation_texts)
 
@@ -780,10 +775,11 @@ class TestFinalizeTailObservability:
 
     async def test_payloads_carry_the_values_frozen_at_the_flip(
             self, tmp_path, monkeypatch):
-        """A post-terminal ``lower_origin_clearance`` (real mutator — no
-        terminal refusal) lands during the funnel's post-flip driver-teardown
-        await; the DelegationComplete must still carry the flip-time
-        origin."""
+        """A post-terminal origin write (the session reader stamping the
+        job's cost lands the same way: in place, then ``persist_origin``,
+        with no terminal refusal) lands during the funnel's post-flip
+        driver-teardown await; the DelegationComplete must still carry the
+        flip-time origin."""
         seen: dict = {}
 
         async def _notify(msg):
@@ -794,9 +790,9 @@ class TestFinalizeTailObservability:
 
         class _Driver:
             async def cancel(self, engagement):
-                # The clamp arrives while the funnel is suspended post-flip.
-                await reg_box["reg"].lower_origin_clearance(
-                    rec_box["rec"].id, "public")
+                # The write arrives while the funnel is suspended post-flip.
+                rec_box["rec"].origin["_origin_clearance"] = "public"
+                await reg_box["reg"].persist_origin(rec_box["rec"].id)
 
         tools_mod_, reg, rec, bus, host = await self._launch(
             tmp_path, monkeypatch, driver=_Driver(), notify=_notify)
@@ -805,14 +801,13 @@ class TestFinalizeTailObservability:
         rec_box["rec"] = rec
         payload = json.loads((await host)["content"][0]["text"])
         assert payload["status"] == "acknowledged"
-        # The real mutator DID fire post-flip:
+        # The write DID land post-flip:
         assert rec.origin["_origin_clearance"] == "public"
-        assert rec.task != "pay rent"
         # ...and the completion payload carries the flip-time origin:
         assert seen["origin"]["_origin_clearance"] == "private"
 
 class _AccessorProbe:
-    """A duck driver exposing exactly the six inbound accessors the in_casa
+    """A duck driver exposing exactly the five inbound accessors the in_casa
     driver offers, recording every call, with any subset made to RAISE or to
     be ABSENT.
 
@@ -825,7 +820,6 @@ class _AccessorProbe:
     _ACCESSORS = (
         "inbound_unread_texts", "inbound_unread_depth", "inbound_reservations",
         "inbound_message_reservations", "inbound_reservation_texts",
-        "inbound_in_flight_texts",
     )
     # Class-level defaults so `__getattr__` can consult them before `__init__`
     # has bound the instance ones (otherwise the lookup recurses).
@@ -834,8 +828,7 @@ class _AccessorProbe:
     _values: dict = {}
 
     def __init__(self, *, broken=(), absent=(), texts=(), depth=0,
-                 reservations=0, message_reservations=0, reservation_texts=(),
-                 in_flight=()):
+                 reservations=0, message_reservations=0, reservation_texts=()):
         self._broken = frozenset(
             [broken] if isinstance(broken, str) else broken)
         self._absent = frozenset(
@@ -846,7 +839,6 @@ class _AccessorProbe:
             "inbound_reservations": reservations,
             "inbound_message_reservations": message_reservations,
             "inbound_reservation_texts": list(reservation_texts),
-            "inbound_in_flight_texts": list(in_flight),
         }
         unknown = (self._broken | self._absent) - set(self._ACCESSORS)
         assert not unknown, f"not an inbound accessor: {sorted(unknown)}"
@@ -991,7 +983,7 @@ class TestOneFailingAccessorCostsOnlyItsOwnInput:
 
     _FULL = dict(depth=1, reservations=1,
                  message_reservations=1, texts=["q-text"],
-                 in_flight=["f-text"], reservation_texts=["r-text"])
+                 reservation_texts=["r-text"])
 
     _MATRIX = (None,) + _AccessorProbe._ACCESSORS
 
@@ -1011,7 +1003,6 @@ class TestOneFailingAccessorCostsOnlyItsOwnInput:
     @pytest.mark.parametrize("condition", [
         ("raises", "inbound_unread_texts"),
         ("absent", "inbound_unread_texts"),
-        ("raises", "inbound_in_flight_texts"),
         ("raises", "inbound_message_reservations"),
     ])
     async def test_an_unreadable_accessor_with_no_other_evidence_fails_open(

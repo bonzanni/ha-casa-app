@@ -182,7 +182,10 @@ from drivers.in_casa_driver import InCasaDriver
 from engagement_registry import EngagementRegistry
 from test_agent_process import _mk_result
 from transcript_runs_support import write_transcript
+import job_inbox
+from pathlib import Path
 sid, tombstone, cwd = sys.argv[5:8]
+job_inbox.INBOX_ROOT = Path(os.path.dirname(tombstone)) / "job-inbox"
 
 class Reg:
     def get(self, role):
@@ -205,8 +208,9 @@ class Stream:
     async def emit(self, text): return None
     async def finalize(self, text): return None
 
-class Client:
-    async def query(self, prompt): return None
+from turn_scripted_session import TurnScriptedSession, attach_session
+
+class Client(TurnScriptedSession):
     async def receive_response(self):
         yield SystemMessage(subtype="init", data={"session_id": sid})
         write_transcript(cwd, sid)
@@ -222,11 +226,9 @@ async def main():
     open(os.path.join(os.path.dirname(marker), "engagement-id"), "w").write(rec.id)
     drv = InCasaDriver(topic_stream_factory=lambda tid: Stream(),
                        persist_session_id=reg.persist_session_id)
-    drv._clients[rec.id] = Client()
-    drv._locks[rec.id] = asyncio.Lock()
-    ticket = drv.admit_inbound(rec.id, "topic message")
-    await drv.send_user_turn(rec, "topic message", tg_message_id=55,
-                             inbound_token=ticket)
+    attach_session(drv, rec, Client())
+    drv.submit_operator(rec, "topic message", tg_message_id=55)
+    await asyncio.Event().wait()    # the turn runs on the driver's tasks
 import json
 asyncio.run(main())
 """
@@ -437,16 +439,16 @@ async def test_a_held_session_keeps_its_pointer_and_goes_on_a_later_sweep(home):
 
 async def test_a_rebuilt_or_resumed_engagement_stays_in_its_launch_folder(
         home, monkeypatch):
-    """An engagement opened in A is resumed and rebuilt (a clearance clamp's
-    fresh session) after a reload pointed its specialist at B: every client
-    still launches in A, so at day 31 the reaper deletes both of its
-    sessions there. Red case: resume and rebuild taking the configured
-    cwd, leaving the rebuilt session in B where nothing reaps it."""
+    """An engagement opened in A is resumed, twice, after a reload pointed
+    its specialist at B: every client still launches in A, so at day 31 the
+    reaper deletes its session there. Red case: a resume taking the
+    configured cwd, leaving the session it continues in B where nothing
+    reaps it."""
     from claude_agent_sdk import ClaudeAgentOptions
 
     import drivers.in_casa_driver as drv_mod
     from drivers.in_casa_driver import InCasaDriver
-    from engagement_registry import RETIRED_SIDS_KEY, EngagementRegistry
+    from engagement_registry import EngagementRegistry
     from engagement_transcript_reaper import reap_engagement_transcripts
     from test_engagement_transcript_reaper import _specialists
 
@@ -457,12 +459,18 @@ async def test_a_rebuilt_or_resumed_engagement_stays_in_its_launch_folder(
     class _Client:
         def __init__(self, options):
             launched.append(options.cwd)
+            self._closed = asyncio.Event()
 
         async def __aenter__(self):
             return self
 
-        async def __aexit__(self, *exc):
-            return False
+        async def receive_messages(self):
+            await self._closed.wait()
+            return
+            yield
+
+        async def disconnect(self):
+            self._closed.set()
 
     monkeypatch.setattr(drv_mod, "ClaudeSDKClient", _Client)
     monkeypatch.setattr(tools, "build_engagement_resume_options",
@@ -472,23 +480,22 @@ async def test_a_rebuilt_or_resumed_engagement_stays_in_its_launch_folder(
     rec = await reg.create(kind="specialist", role_or_type="finance",
                            driver="in_casa", task="t", origin=dict(ORIGIN),
                            topic_id=None)
-    drv = InCasaDriver(topic_stream_factory=lambda tid: None)
+    drv = InCasaDriver(topic_stream_factory=lambda tid: None,
+                       record_lookup=reg.get)
     drv._persist_applied_profiles = lambda engagement: asyncio.sleep(0)
     await drv.open(rec, ClaudeAgentOptions(cwd=a))
-    first, second = str(uuid.uuid4()), str(uuid.uuid4())
-    await reg.persist_session_id(rec.id, first)
+    sid = str(uuid.uuid4())
+    await reg.persist_session_id(rec.id, sid)
     _specialists(monkeypatch, finance=SimpleNamespace(role="finance", cwd=b))
-    drv._clients.clear()
-    await drv.resume(rec, first)
-    drv._clients.clear()
-    await drv.open_fresh(rec)                    # the clearance rebuild
+    for _ in range(2):
+        await drv.cancel(rec)                    # suspended, then resumed
+        await drv.resume(rec, sid)
     assert launched == [a, a, a]
-    rec.origin[RETIRED_SIDS_KEY] = [first]
-    await reg.persist_session_id(rec.id, second)
     await reg.mark_completed(rec.id, time.time())
-    paths = [write_transcript(a, first), write_transcript(a, second)]
+    await drv.cancel(rec)
+    path = write_transcript(a, sid)
     await reap_engagement_transcripts(reg, now=time.time() + 31 * 86400)
-    assert not any(p.exists() for p in paths)
+    assert not path.exists()
 
 
 async def test_no_run_of_the_session_starts_between_the_sweeps_check_and_delete(

@@ -24,8 +24,7 @@ from engagement_registry import EngagementRegistry
 from plugin_fixtures import entry, mk_artifact, mk_registry, owned_entry
 from plugin_store import METADATA_FILENAME, StoreError, manifest_jobs
 from test_background_jobs_declaration import _job
-from test_start_job import Client, call, runtime  # noqa: F401  (fixture)
-from test_job_fresh_conversation import home  # noqa: F401  (fixture)
+from test_start_job import Client, call, drain_launch_turns, runtime  # noqa: F401  (fixture)
 
 # The real functions, captured before the `runtime` fixture replaces them.
 FIND = jobs.find_job_host
@@ -33,6 +32,16 @@ LIST = jobs.startable_jobs
 
 
 _ABSENT = object()
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    """A private HOME, so a session's transcripts land under the test's tree."""
+    h = tmp_path / "home"
+    h.mkdir()
+    monkeypatch.setenv("HOME", str(h))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    return h
 
 
 def _jobs(host=_ABSENT, names=("classify",)):
@@ -115,13 +124,13 @@ async def _reload(runtime, monkeypatch, rec, *, resume):
     monkeypatch.setattr(tools, "_engagement_registry", restored)
     if resume:
         await runtime.driver.cancel(rec)
-        assert len(runtime.driver._clients) == 0
+        assert len(runtime.driver._sessions) == 0
         Client.instances.clear()
         runtime.driver._record_lookup = restored.get
         again = restored.get(rec.id)
         await runtime.driver.resume(again, again.sdk_session_id or "resumed-session")
         assert runtime.driver.is_alive(again)
-        assert len(runtime.driver._clients) == len(Client.instances) == 1
+        assert len(runtime.driver._sessions) == len(Client.instances) == 1
     return restored
 
 
@@ -189,7 +198,7 @@ async def test_specialist_job_record_blocks_a_second_start(runtime, tmp_path, mo
     first = await start("ledger:classify")
     assert first["status"] == "pending", first
     assert first["agent"] == "finance"
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     rec = runtime.registry.get(first["engagement_id"])
     if reload_record:
         await _reload(runtime, monkeypatch, rec, resume=False)
@@ -219,7 +228,7 @@ async def test_specialist_job_records_its_selected_plugin_without_a_model(runtim
     first = await start("ledger:classify")
     assert first["status"] == "pending", first
     assert first["agent"] == "finance"
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     rec = runtime.registry.get(first["engagement_id"])
     assert (rec.kind, rec.role_or_type) == ("specialist", "finance")
     assert rec.origin["plugin_job"] == {"plugin": "ledger"}
@@ -268,7 +277,7 @@ async def _race_unassign(runtime, tmp_path, monkeypatch):
         release.set()
         first = await first_task  # never leave the held launch behind
     assert first["status"] == "pending", first
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     rec = runtime.registry.get(first["engagement_id"])
     assert [a["name"] for a in rec.plugin_artifacts] == ["helper"]
     assert FIND("ledger:classify", "assistant", ["finance", "backup"]).role == "backup"
@@ -316,7 +325,7 @@ async def test_the_marker_names_the_plugin_selected_at_start_not_a_later_resolut
         release.set()
         first = await first_task  # never leave the held launch behind
     assert first["status"] == "pending", first
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     rec = runtime.registry.get(first["engagement_id"])
     assert rec.origin["plugin_job"] == {"plugin": "ledger"}
     second = await start("ledger:classify")
@@ -350,7 +359,7 @@ async def test_legacy_record_without_manifest_name_blocks(runtime, tmp_path, mon
     _artifact(tmp_path, e, _jobs(names=("classify", "scan")))
     _load(tmp_path, [e])
     first = await start("ledger:classify")
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     rec = runtime.registry.get(first["engagement_id"])
     rec.origin.pop("plugin_job")
     for artifact in rec.plugin_artifacts:
@@ -411,7 +420,7 @@ async def test_concurrent_starts_of_one_manifest_claim_once(runtime, tmp_path, m
         release.set()
         first = await first_task  # never leave the held launch behind
     assert first["status"] == "pending", first
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     assert _counts(runtime) == (1, 1, 1, 0)
     assert getattr(jobs, "_pending_manifest_job_starts", {}) == {}
 
@@ -431,7 +440,7 @@ async def test_an_incidental_artifact_does_not_block_its_own_plugin(runtime, tmp
     _load(tmp_path, [e, helper])
     first = await start("ledger:classify")
     assert first["status"] == "pending", first
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     rec = runtime.registry.get(first["engagement_id"])
     assert {a["name"] for a in rec.plugin_artifacts} == {"ledger", "helper"}
     if legacy:
@@ -442,7 +451,7 @@ async def test_an_incidental_artifact_does_not_block_its_own_plugin(runtime, tmp
         await _reload(runtime, monkeypatch, rec, resume=False)
     second = await start("helper:classify")
     assert second["status"] == "pending", second
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     assert _counts(runtime) == (2, 2, 2, 0)
     assert {r.origin["job"]["name"] for r in tools._engagement_registry.active_and_idle()} == {
         "ledger:classify", "helper:classify"}
@@ -457,7 +466,7 @@ async def test_installations_sharing_a_manifest_name_serialise(runtime, tmp_path
     _load(tmp_path, [a])
     first = await start("ledger:classify")
     assert first["status"] == "pending", first
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     rec = runtime.registry.get(first["engagement_id"])
     assert rec.origin["plugin_job"] == {"plugin": "finance.ledger"}
     if reload_record:
@@ -472,133 +481,6 @@ async def test_installations_sharing_a_manifest_name_serialise(runtime, tmp_path
 
 
 # ---------------------------------------------------------------------------
-# host + session together, end to end (S1b x S1)
-# ---------------------------------------------------------------------------
-
-REAL_JOB_AFTER_TURN = jobs.job_after_turn
-
-
-async def test_a_fresh_specialist_hosted_job_runs_end_to_end_and_is_reaped(
-        runtime, tmp_path, monkeypatch, home):
-    """A declaration with BOTH `"host": "specialist"` and `"session": "fresh"`,
-    from a resident that also holds the plugin: it routes to finance, the launch
-    names its job id once, each of its two batches is preceded by exactly one
-    reset and starts with the brief, the sid ledger names all three sessions,
-    the job ends, and the #1162 reaper deletes exactly those transcripts. A
-    path that dropped `session` for specialist-host declarations would run
-    resume-mode batches and fail here."""
-    from drivers.in_casa_driver import InCasaDriver
-    from test_job_fresh_conversation import (
-        RESET, FreshClient, _project, _seed, _snapshot, _uuids, ledger)
-    from test_background_jobs_loop import result, text_frame
-    import agent
-    import engagement_transcript_reaper
-
-    _real_discovery(monkeypatch, tmp_path)
-    e = entry("ledger", ["resident:assistant", "specialist:finance"])
-    _artifact(tmp_path, e, [dict(_job(), host="specialist", session="fresh")])
-    _load(tmp_path, [e])
-    host = FIND("ledger:classify", "assistant", ["finance"])
-    assert (host.kind, host.role, host.decl.session, host.decl.host) == (
-        "specialist", "finance", "fresh", "specialist")
-
-    launch_sid, b1, b2, unrelated = _uuids(4)
-    clients = []
-
-    async def report():
-        reply = await tools.report_job_progress.handler(
-            {"summary": "Handled rows", "progressed": True})
-        assert json.loads(reply["content"][0]["text"]) == {"ok": True}
-
-    async def complete():
-        reply = await tools.emit_completion.handler({"text": "All rows handled"})
-        assert json.loads(reply["content"][0]["text"]).get("kind") != "unread_inbound"
-
-    class SdkClient(FreshClient):
-        def __init__(self, options):
-            super().__init__()
-            self.options = options
-            self.sid = launch_sid
-            self.next_sid = {1: b1, 2: b2}.__getitem__
-            self.scripts = [[text_frame("Starting the job"), result()],
-                            [text_frame("Batch work"), report, result()],
-                            [complete, result()]]
-            clients.append(self)
-
-    # The production wiring casa_core gives the channel and driver, so the
-    # batch loop runs for real after the launch turn.
-    channel, reg = runtime.channel, runtime.registry
-    driver = InCasaDriver(topic_stream_factory=channel.create_topic_stream,
-                          persist_session_id=reg.persist_session_id,
-                          record_lookup=reg.get,
-                          begin_turn_delivery=reg.begin_turn_delivery)
-    channel._engagement_driver = driver
-    channel._driver_admit_inbound = lambda r, t: driver.admit_inbound(r.id, t)
-    channel._driver_discharge_inbound = lambda r, t: driver.discharge_inbound(r.id, t)
-    channel._driver_inbound_held = lambda r, t: driver.inbound_token_held(r.id, t)
-    channel._driver_turn_incomplete = lambda r, t: driver.followup_turn_incomplete(r.id, t)
-
-    async def send(r, text, *, tg_message_id=None, inbound_token=None, batch=None):
-        await driver.send_user_turn(r, text, inbound_token=inbound_token, batch=batch)
-    channel._driver_send_user_turn = send
-    monkeypatch.setattr(agent, "active_engagement_driver", driver)
-    monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient", SdkClient)
-    monkeypatch.setattr(tools, "ClaudeSDKClient", SdkClient)
-    monkeypatch.setattr(jobs, "job_after_turn", REAL_JOB_AFTER_TURN)
-
-    started = await start("ledger:classify")
-    assert started["status"] == "pending", started
-    assert started["agent"] == "finance"
-    await tools.drain_launch_turns()
-
-    async def settle():
-        for _ in range(200):
-            tasks = list(channel._turn_tasks | channel._inbound_cleanup_tasks
-                         | tools._finalize_tail_tasks | reg._deferred_persists)
-            if not tasks:
-                return
-            await asyncio.gather(*tasks)
-            await asyncio.sleep(0)
-        pytest.fail("tasks did not settle")
-    await asyncio.wait_for(settle(), 10)
-
-    rec = reg.get(started["engagement_id"])
-    assert (rec.kind, rec.role_or_type) == ("specialist", "finance")
-    assert rec.origin["plugin_job"] == {"plugin": "ledger"}
-    assert rec.origin["job"]["session"] == "fresh"
-    assert len(clients) == 1
-    prompts = clients[0].prompts
-    launch = prompts[0]
-    assert [line for line in launch.splitlines() if line.startswith("Job id:")] == [
-        f"Job id: {rec.id}"]
-    brief = jobs.job_brief(rec)
-    title = host.decl.title
-    assert prompts[1:] == [RESET, f"{brief}\n\n{jobs.batch_prompt(1, title)}",
-                           RESET, f"{brief}\n\n{jobs.batch_prompt(2, title)}"]
-    assert clients[0].clears == 2
-    assert ledger(rec.origin) == [launch_sid, b1, b2]
-    assert rec.status == "completed"
-    assert reg.active_and_idle() == []
-    # No resident-hosted worker was ever created.
-    assert [r.kind for r in reg._records.values()] == ["specialist"]
-
-    project = _project(home, tools.specialist_cwd(runtime.cfg))
-    for sid in (launch_sid, b1, b2, unrelated):
-        _seed(project, sid)
-    keep = {k: v for k, v in _snapshot(project).items()
-            if k.parts[0] in (f"{unrelated}.jsonl", unrelated)}
-    assert len(keep) == 2
-    from test_engagement_transcript_reaper import after_retention
-    counts = await engagement_transcript_reaper.reap_engagement_transcripts(
-        reg, now=after_retention())
-    for sid in (launch_sid, b1, b2):
-        assert not (project / f"{sid}.jsonl").exists(), sid
-        assert not (project / sid).exists(), sid
-    assert _snapshot(project) == keep
-    assert counts["deleted"] == 6 and counts["errors"] == 0
-
-
-# ---------------------------------------------------------------------------
 # #1173: a job whose strict terminal write is pending still occupies its
 # plugin and manifest name (INV-BGJOB-006)
 # ---------------------------------------------------------------------------
@@ -608,8 +490,7 @@ _LEDGER_JOB = {"name": "ledger:classify", "title": "Classify"}
 
 def _ledger_host(kind, role, installed, name="scan"):
     decl = jobs.JobDecl(qualified_name=f"ledger:{name}", plugin="ledger", name=name,
-                        skill=f"ledger:{name}", title=name.title(), summary=None,
-                        batches=None, turns_per_batch=None)
+                        skill=f"ledger:{name}", title=name.title(), summary=None)
     return jobs.JobHost(kind=kind, role=role, decl=decl,
                         plugin=SimpleNamespace(name=installed))
 

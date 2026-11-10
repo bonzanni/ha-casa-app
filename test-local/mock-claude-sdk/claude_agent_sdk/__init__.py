@@ -159,17 +159,6 @@ class SystemMessage:
 
 
 @dataclass
-class ConversationResetMessage:
-    """INV-BGJOB-005 — the in_casa driver imports this at module scope to
-    confirm a fresh job's /clear. Field shape mirrors the real SDK's
-    message_parser; the mock client never emits it."""
-
-    new_conversation_id: str = ""
-    uuid: str = ""
-    session_id: str = ""
-
-
-@dataclass
 class StreamEvent:
     """v0.67.0 voice partial streaming — agent.py imports this at module
     scope, so the mock must export it even though the mock client never
@@ -459,7 +448,6 @@ __all__ = [
     "CLIConnectionError",
     "ClaudeAgentOptions",
     "ClaudeSDKClient",
-    "ConversationResetMessage",
     "HookMatcher",
     "PermissionResultDeny",
     "ProcessError",

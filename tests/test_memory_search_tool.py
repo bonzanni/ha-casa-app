@@ -239,7 +239,7 @@ async def test_query_engager_unknown_carries_guidance(mem, monkeypatch):
 ])
 async def test_an_engagement_reads_at_its_own_records_clearance(
         mem, stamped, seen):
-    """INV-MEM-008: an engagement's tool calls arrive with no ambient origin,
+    """INV-MEM-045: an engagement's tool calls arrive with no ambient origin,
     so the clearance comes from the engagement's own record. Red case:
     dropping the record fallback in ``_origin_clearance_markers`` yields the
     telegram channel default (private) for the non-operator's engagement."""

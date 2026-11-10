@@ -45,16 +45,6 @@ _IDLE_SWEEP_CRON = "0 8 * * *"            # daily 08:00 user TZ
 # the snapshot on the next write — bounds the file while keeping post-mortems
 # working across restarts.
 _TERMINAL_RETENTION_DAYS = 30
-# #1162: the key, inside ``origin["job"]``, of the list of every SDK session a
-# background job's client served. Its writer rotates a job's sessions; the
-# transcript reaper reads it to delete each one once the job is terminal. Both
-# sides name it through this constant, never as a literal.
-JOB_SIDS_KEY = "sids"
-# #1167: the key, on the record's ``origin``, of the list of every SDK session a
-# clearance downgrade abandoned. The clamp records the session it evicts in its
-# own write; the transcript reaper reads the list to delete each one once the
-# engagement is terminal. Both sides name it through this constant.
-RETIRED_SIDS_KEY = "retired_sids"
 # The key, on the record's ``origin``, of the working directory the
 # engagement's CLI was first opened in (its sessions' transcript folder). Set
 # once, at the first open, persisted with the record, and read — never the
@@ -85,6 +75,7 @@ def _usable_time(value: object) -> bool:
 # The keyboard posts a job leaves in the operator's direct chat.
 JOB_POST_START = "start"
 JOB_POST_QUESTION = "question"
+JOB_POST_PARKED = "parked"
 
 
 def _message_ids(value: object) -> list[int]:
@@ -101,7 +92,7 @@ def _keyboard_posts(value: object) -> list[list]:
     return [[item[0], item[1]] for item in value
             if isinstance(item, list) and len(item) == 2
             and type(item[0]) is int
-            and item[1] in (JOB_POST_START, JOB_POST_QUESTION)]
+            and item[1] in (JOB_POST_START, JOB_POST_QUESTION, JOB_POST_PARKED)]
 
 
 def _question_map(value: object) -> dict:
@@ -305,7 +296,7 @@ class EngagementRecord:
     # its questions and its plugin's delivered posts — oldest first. A reply
     # quoting one of them goes into the job while the record counts as live
     # (``EngagementRegistry.counts_as_live``). Unbounded while the job lives:
-    # a job may run any number of batches and every post it made stays
+    # a job may run for days and every post it made stays
     # steerable. Emptied, and dropped from the registry's index, by the write
     # that settles the terminal transition.
     dm_posts: list = field(default_factory=list)
@@ -330,6 +321,19 @@ class TerminalPreconditionFailed(Exception):
     caller-supplied ``terminal_hook`` vetoes the terminal flip (e.g. unread
     operator inbound at completion time). The record is left LIVE and
     unmodified."""
+
+
+def _session_working(driver: Any, engagement_id: str) -> bool:
+    """A turn is running in the job's session, or Casa is recovering it."""
+    for probe in ("turn_open", "recovering"):
+        fn = getattr(driver, probe, None)
+        try:
+            if callable(fn) and fn(engagement_id) is True:
+                return True
+        except Exception:  # noqa: BLE001 — no reading, not working
+            logger.debug("%s probe failed for %s", probe, engagement_id[:8],
+                         exc_info=True)
+    return False
 
 
 class EngagementRegistry:
@@ -1094,17 +1098,6 @@ class EngagementRegistry:
                                engagement_id[:8], exc_info=True)
         return handle
 
-    def launch_in_flight(self, engagement_id: str) -> bool:
-        """Whether a launch for *engagement_id* is still enrolled.
-
-        The job sweep reads it: continuation eligibility begins only when launch
-        ownership has ended (INV-BGJOB-003), and a record whose acknowledgement
-        turn has not finished has no turn owner yet, so nothing else
-        distinguishes it from a stalled one.
-        """
-        return any(h.engagement_id == engagement_id
-                   for h in self._launch_handles.values())
-
     def unregister_launch(self, handle: LaunchCancellation | None) -> None:
         """Drop a handle by IDENTITY. Does NOT clear the cause.
 
@@ -1116,6 +1109,13 @@ class EngagementRegistry:
         """
         if handle is not None:
             self._launch_handles.pop(id(handle), None)
+
+    def launch_in_flight(self, engagement_id: str) -> bool:
+        """SYNCHRONOUS: is this engagement's launch still enrolled — from the
+        committed create until the launcher's ``finally``? A job's delivery
+        worker writes nothing for it meanwhile: the launch owns the job."""
+        return any(h.engagement_id == engagement_id
+                   for h in self._launch_handles.values())
 
     def launch_cause(self, engagement_id: str) -> str:
         """The carried cause for this launch, or ``""`` when it carries none."""
@@ -1611,8 +1611,8 @@ class EngagementRegistry:
     def _schedule_tombstone_persist(self) -> None:
         """Best-effort durable catch-up for a mutation committed in memory.
 
-        Fire-and-forget by design: the only caller is ``begin_turn_delivery``,
-        which may not await. Failures are logged and dropped — the in-memory
+        Fire-and-forget by design: the callers (``begin_turn_delivery``,
+        ``note_activity``) may not await. Failures are logged and dropped — the in-memory
         record is what every authority check reads, and the next mutation's own
         write carries this one along (the snapshot is rebuilt from memory).
         """
@@ -1632,6 +1632,18 @@ class EngagementRegistry:
         task = loop.create_task(_persist())
         self._deferred_persists.add(task)
         task.add_done_callback(self._deferred_persists.discard)
+
+    def note_activity(self, engagement_id: str, ts: float) -> None:
+        """SYNCHRONOUS: stamp ``last_user_turn_ts`` in memory and schedule its
+        persist. A job's driver calls it when operator input is accepted, at
+        every turn end and while it recovers a session, so the stale reap
+        and the idle sweep see a working job as active. Never flips status:
+        admission (``begin_turn_delivery``) does that."""
+        rec = self._records.get(engagement_id)
+        if rec is None or rec.status in _TERMINAL_STATUSES:
+            return
+        rec.last_user_turn_ts = max(rec.last_user_turn_ts, ts)
+        self._schedule_tombstone_persist()
 
     async def update_user_turn(self, engagement_id: str, ts: float) -> None:
         async with self._lock:
@@ -1669,117 +1681,11 @@ class EngagementRegistry:
                 for row in rec.plugin_artifacts)
             await self._write_tombstone_locked(strict=True)
 
-    async def lower_origin_clearance(
-        self, engagement_id: str, clearance: str,
-    ) -> bool:
-        """#336: clamp an engagement's read-clearance DOWN to *clearance*.
-
-        An engagement reads at the clearance of the turn that created it. But
-        anyone in the engagement supergroup can send into its topic, and that
-        message steers the engagement — so an engagement answering a steering
-        turn must not read above the person steering it. This lowers the
-        record's stamped clearance to the floor of everyone who has steered
-        it; it NEVER raises one (a monotonic clamp is race-free: two
-        concurrent steerers can only drive it further down, and re-applying
-        is a no-op).
-
-        Returns True when the record actually moved. A record carrying no
-        stamped clearance is left alone — it resolves channel-keyed, which is
-        the pre-existing behaviour for engagements created before the markers
-        existed, and inventing a marker here would silently change it.
-        """
-        if clearance not in TIERS:
-            return False
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                return False
-            current = rec.origin.get("_origin_clearance")
-            if current not in TIERS:
-                return False
-            if TIERS.index(clearance) >= TIERS.index(current):
-                return False          # already at or below this floor
-            rec.origin["_origin_clearance"] = clearance
-            # #369: the clamp gates future READS, but the session's transcript
-            # and launch materials were built at the old tier — mark the
-            # context for rebuild in the SAME step, so the two facts ("reads
-            # lowered" and "old context must not be resumed") can never be
-            # persisted apart.
-            rec.context_rebuild_pending = True
-            rec.context_generation += 1
-            # #1167: the evicted session is never resumed (the rebuild opens a
-            # fresh one) and the pointer to it is about to be dropped or
-            # overwritten — record it in this same write, so the transcript
-            # reaper still deletes it once the engagement is terminal. Before
-            # the job block: a malformed job field must not cost the record.
-            sid = rec.sdk_session_id
-            if isinstance(sid, str) and sid:
-                retired = rec.origin.get(RETIRED_SIDS_KEY)
-                if not isinstance(retired, list):
-                    retired = rec.origin[RETIRED_SIDS_KEY] = []
-                if sid not in retired:
-                    retired.append(sid)
-            # And withhold the LAUNCH MATERIALS on the record itself: task,
-            # brief, context and world-state were authored at the creating
-            # turn's clearance, and every later render — boot-replay CLAUDE.md
-            # refresh, the session rebuild, resume options — re-derives from
-            # the record. Evicting the session while the record still carries
-            # them would just re-import them into the fresh floor session
-            # (Sol, #369 design review r2).
-            rec.task = (
-                "[The original task description is withheld: this "
-                "engagement's clearance was lowered after it started. "
-                "Continue from the conversation in the topic.]"
-            )
-            for key in ("brief", "context", "world_state_summary"):
-                rec.origin.pop(key, None)
-            # A fresh job re-states its launch context on every turn
-            # (INV-BGJOB-005); it was authored at the old tier too.
-            job = rec.origin.get("job")
-            if isinstance(job, dict):
-                job.pop("brief_context", None)
-                (job.get("completion_pending") or {}).pop("text", None)  # #1180
-            logger.info(
-                "engagement %s read-clearance lowered %s→%s (steered by a "
-                "lower-clearance sender); session context marked for rebuild",
-                engagement_id[:8], current, clearance,
-            )
-            # The IN-MEMORY clamp is what gates every read from here on, and it
-            # is applied above regardless of what disk does — a persistence
-            # failure must never leave this process reading at the higher tier.
-            # The write is what makes it survive a restart, so a failure is
-            # security-relevant and says so; it is deliberately NOT rolled back
-            # (rolling back would RAISE the clearance, the one direction this
-            # clamp must never move).
-            try:
-                await self._write_tombstone_locked(strict=True)
-            except Exception as exc:  # noqa: BLE001 — in-memory clamp stands
-                logger.warning(
-                    "engagement %s read-clearance lowered to %s in memory but "
-                    "the write failed (%s) — a restart would restore %s",
-                    engagement_id[:8], clearance, exc, current,
-                )
-            return True
-
     async def persist_origin(self, engagement_id: str) -> None:
         """Persist updates made to a live record's origin."""
         async with self._lock:
             if engagement_id in self._records:
                 await self._write_tombstone_locked()
-
-    async def set_resume_fail_count(self, engagement_id: str, count: int) -> None:
-        """#326 (low): persist the two-strike resume-failure counter into the
-        record's origin. Before this, the counter lived only on the in-memory
-        origin dict, so a restart reset it and an unrecoverable engagement
-        could dodge the error transition indefinitely. Best-effort (non-strict)
-        persistence: a write failure degrades to in-memory-only counting for
-        this process lifetime — exactly the pre-fix behavior."""
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                return
-            rec.origin["_resume_fail_count"] = count
-            await self._write_tombstone_locked()
 
     async def persist_session_id(self, engagement_id: str, session_id: str) -> None:
         """#302: STRICT persistence with rollback. The driver's retry guard
@@ -1819,62 +1725,6 @@ class EngagementRegistry:
                 raise cancelled
             if task.exception() is not None:
                 raise task.exception()
-
-    async def clear_session_id(self, engagement_id: str) -> None:
-        """#369: durably drop the resume pointer after a clearance downgrade
-        invalidated the session — a restart must start fresh, never resume the
-        pre-clamp transcript. In-memory first: like the clamp itself, a
-        persistence failure must never leave THIS process able to resume, so
-        the field stays cleared even when the write fails (logged; the
-        still-set ``context_rebuild_pending`` refuses resume durably).
-
-        #1166: the pointer it drops is recorded in the #1167 retired list in
-        the same write, so the transcript reaper still deletes a session first
-        reported by a turn that was running at clamp time."""
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                return
-            sid = rec.sdk_session_id
-            if isinstance(sid, str) and sid:
-                retired = rec.origin.get(RETIRED_SIDS_KEY)
-                if not isinstance(retired, list):
-                    retired = rec.origin[RETIRED_SIDS_KEY] = []
-                if sid not in retired:
-                    retired.append(sid)
-            rec.sdk_session_id = None
-            try:
-                await self._write_tombstone_locked(strict=True)
-            except Exception as exc:  # noqa: BLE001 — in-memory clear stands
-                logger.warning(
-                    "engagement %s session pointer cleared in memory but the "
-                    "write failed (%s) — context_rebuild_pending still blocks "
-                    "a restart resume", engagement_id[:8], exc,
-                )
-
-    async def clear_context_rebuild_pending(self, engagement_id: str) -> None:
-        """#369: mark the context rebuild COMPLETE — called only once a fresh
-        session at the clamped floor is established. STRICT: if this cannot be
-        persisted the caller must know, because an un-persisted clear would
-        make a restart demand a rebuild that already happened (safe but
-        surprising), while the in-memory flag governs this process either way."""
-        async with self._lock:
-            rec = self._records.get(engagement_id)
-            if rec is None:
-                return
-            rec.context_rebuild_pending = False
-            try:
-                await self._write_tombstone_locked(strict=True)
-            except BaseException:
-                # Follow the SETTLED write, not the exception: the write
-                # settles even under cancellation and then re-raises it, so
-                # catching Exception alone missed a genuinely failed write
-                # (r5) while restoring unconditionally contradicted a write
-                # that had succeeded (r6). Memory agrees with the durable row
-                # either way.
-                if not self._last_tombstone_ok:
-                    rec.context_rebuild_pending = True
-                raise
 
     async def set_channel_state(
         self,
@@ -1953,10 +1803,13 @@ class EngagementRegistry:
         for rec in list(self.active_and_idle()):
             idle_s = now - rec.last_user_turn_ts
 
-            # Session suspension (in_casa only)
+            # Session suspension (in_casa only). A job whose session has a
+            # turn running (one turn can run for hours) or that is being
+            # recovered is working, not idle, and is skipped.
             if (rec.driver == "in_casa" and rec.status == "active"
                     and idle_s > _SESSION_SUSPEND_IDLE_S
-                    and driver.is_alive(rec)):
+                    and driver.is_alive(rec)
+                    and not _session_working(driver, rec.id)):
                 session_id = driver.get_session_id(rec)
                 try:
                     await driver.cancel(rec)

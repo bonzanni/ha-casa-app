@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-02
+last_reviewed: 2026-11-09
 ---
 
 # Memory scoping
@@ -12,7 +12,7 @@ Which stored facts a given reader gets back: the read-clearance model — per ch
 Telegram sender via the stamped origin, failing closed — the ledgers Casa maintains, one per
 clearance it serves, each written only from what that clearance can read, the check every
 read path makes on each object it returns, the clearance an engagement
-inherits from its creating turn and the monotonic clamp steering applies to it. How a
+inherits from its creating turn, and who may steer a job at that clearance. How a
 ledger is served, what a
 caller is told when the store cannot answer, and what a caller may claim from what comes
 back are [`architecture/memory-serving.md`](memory-serving.md) and
@@ -94,46 +94,27 @@ carries that turn's markers. An engagement
 whose record predates this (or came from an origin that stamps no
 route) keeps the channel-keyed behaviour.
 
-Inheritance at creation is only half the rule, because an engagement is *steerable*: anyone
-in the engagement supergroup can direct it by messaging its topic. So the recorded clearance
-is also a **monotonic floor** — a steering turn clamps it down to that sender's clearance and
-never raises it back, which makes the property "an engagement never reads above the
-least-privileged person who has taken part in it". The clamp is deliberately one-way: two
-people steering concurrently can only drive it further down, and the operator returning to
-their own engagement does not restore what a lower-clearance participant has already seen.
+Inheritance at creation is only half the rule, because a job is *steerable*: anyone in the
+engagement supergroup can write in its topic. So a message there from a sender whose
+clearance is below the record's stamped clearance — a household member in a job the
+operator started — never reaches the job. Casa answers in the topic with one line, "Only
+the person who started this job can steer it.", and leaves the record and the job's session
+as they were (`casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._steer_refused`).
+The job keeps reading at the clearance of the turn that started it, and its session, which
+holds what it read there, never takes direction from someone who could ask it to restate
+that. A sender at or above the stamped clearance is delivered like any operator message
+([`background-jobs.md`](background-jobs.md)). The check compares clearances, not people.
+On Telegram only the configured operator is stamped `private` and every other sender
+`public`, so what it refuses is a non-operator writing in a job started at `private` (by the
+operator's turn, a scheduled fire or a specialist desk); two non-operators share a clearance
+and are not told apart. `/cancel` and `/complete` are checked separately, against the user
+id that started the job.
 
-A clamp that moves the record does not stop at future reads — it evicts what the session
-already holds. The transcript was built at the old tier, and
-a lower-clearance steerer could simply ask the engagement to restate them, so the same locked
-ingress pass that lowers the record also: durably marks the context for rebuild (the flag and
-the clamp persist in one write, so a crash between them cannot happen), withholds the
-record's own launch materials (task, brief, context, world-state, a fresh job's recorded
-launch context and the text of its pending completion, INV-BGJOB-007 — every later render re-derives from the record, and evicting the session
-while the record still carried them would re-import them), tears the live session down, and drops the resume pointer — recording the evicted session on the record in that same write, so the terminal transcript pass (INV-ENG-027) deletes it once the engagement ends. Every
-resume path — the steering turn itself, a system continuation — refuses to resume while the
-rebuild is pending and establishes a fresh session at the clamped floor instead; while it is
-pending, the old session's tool calls are refused at the in-process tool fence, so it cannot
-read or launch children carrying its pre-clamp task. A read already in flight when the clamp lands is
-re-filtered at the new clearance after it returns, and a launch caught mid-start aborts
-rather than deliver a prompt rendered from pre-clamp materials.
-
-The teardown never cuts an `in_casa` turn that is already running: it waits for that turn to
-end. The wait does not run under the per-topic handler lock, so a `/cancel` still interrupts
-the turn. When a turn is running, the ingress skips the eager teardown and the steering
-message's delivery task waits for the turn, then runs the rebuild itself. That rebuild drops
-the session pointer again, since the finished turn can have written it back. A turn that was
-waiting for the turn lock when the clamp landed is refused before it is accepted and is sent
-into the fresh session instead. A batch of a background job is therefore never ended by a
-downgrade ([`background-jobs.md`](background-jobs.md)).
-
-What the eviction deliberately does not do: content already posted to the topic stays
-posted, and a turn already running at clamp time completes into the topic, its tool calls
-refused while the rebuild is pending —
-engagement topics are readable by every supergroup member regardless, so both are
-disclosures the topic already carried. And it only moves a
-record that carries a stamped clearance: an engagement running before per-sender markers
-existed has none, so it keeps channel-keyed clearance — on Telegram, private — until it
-finishes.
+What this deliberately does not do: an engagement topic is readable by every supergroup
+member, so what the job posts there is a disclosure the topic carries regardless. And it
+only refuses against a record that carries a stamped clearance: an engagement created
+before per-sender markers existed has none, so it keeps channel-keyed clearance — on
+Telegram, private — and refuses nobody.
 
 ## Contracts & invariants
 
@@ -195,38 +176,21 @@ every reader clearance over one store holding a canary at every tier.
 What it does not cover: the meter, which reports counts per ledger to the operator, and the
 whole-store export, which is the operator's own copy.
 
-**INV-MEM-008**: An engagement's reads resolve clearance from the origin markers its own record carries, and a steering turn from a lower-clearance sender clamps those markers down permanently.
+**INV-MEM-045**: An engagement's reads resolve clearance from the origin markers its own record carries; a message in its topic from a sender whose clearance is below the record's stamped clearance draws one line, never reaches the job, and leaves the record unchanged.
 
 Enforced in two places that have to agree: where the markers are resolved for an
 access-control decision — the ambient origin wins when it has a route of its own (an
 in-process delegated turn), otherwise the bound engagement record supplies them — and at the
-engagement-topic ingress, which lowers the record's stamped clearance to each steering
-sender's before their turn is delivered. Every read an engagement can perform resolves
-through the first: its own recall and the engager-side context.
+engagement-topic ingress, which refuses a lower-clearance sender's message before it is
+journaled or admitted. Every read an engagement can perform resolves through the first: its
+own recall and the engager-side context.
 
 What it does not cover: a record carrying no markers falls back to channel-keyed clearance,
-which on Telegram is private — so this tightens what a *newly* stamped origin can reach, and
-does not retroactively downgrade engagements created before the markers existed. The clamp
-also cannot un-share what was already disclosed before a lower-clearance sender arrived.
-
-**INV-MEM-011**: A clearance downgrade durably invalidates the engagement's session context in the same write that lowers the record — until a fresh session is established at the clamped floor, no path resumes the old session and the record's tool calls are refused at the in-process tool fence.
-
-Enforced by the clamp setting the rebuild flag and withholding the record's launch materials
-under one strict persist; by the resume core routing a flagged record to a fresh-session
-rebuild instead of a resume; by the in-process tool fence refusing a flagged record; by the
-`in_casa` turn lock, under which a waiting turn re-checks the flag and the live session
-before it is accepted; and by the post-await re-filter and the driver's last-instant launch
-gate, which close the calls already in flight when the clamp lands.
-
-What it does not cover: output of a turn already running at clamp time, content already
-posted to the (group-readable) topic — the deliberate residuals listed above. The completion tool stays reachable while the rebuild is
-pending, its output being in-flight-turn residual.
+which on Telegram is private, and the topic check then refuses nobody — so this tightens
+what a *newly* stamped origin can reach, and does not reach engagements created before the
+markers existed. It cannot un-share what the job already posted to the group-readable topic.
 
 ## Failure behavior
-
-**A clamp fails to persist.** The clamp is applied in memory first, so a failed persist
-leaves this process correctly clamped while a restart would restore the higher tier
-(logged as security-relevant).
 
 A store that cannot be read is reported unavailable by every read path
 ([`architecture/memory-tools.md`](memory-tools.md),
@@ -256,12 +220,8 @@ by default. Write access is a separate, deliberate addition
 - `casa/rootfs/opt/casa/sensitivity.py::clearance_for_origin`
 - `casa/rootfs/opt/casa/channel_trust.py`
 - `casa/rootfs/opt/casa/tools.py::_origin_clearance_markers`
-- `casa/rootfs/opt/casa/tools.py::_engagement_rebuild_fence`
-- `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.lower_origin_clearance`
-- `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.clear_context_rebuild_pending`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.handle_update`
-- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._resume_and_ready`
-- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.start`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._steer_refused`
 
 **Tests**
 - `tests/test_sensitivity.py::test_readable_tiers_is_clearance_and_below`

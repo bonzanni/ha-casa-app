@@ -25,28 +25,37 @@ from test_in_casa_launch_terminal_artifact import ScriptedCompleteClient
 
 pytestmark = pytest.mark.asyncio
 DECL = jobs.JobDecl('ledger:classify', 'ledger', 'classify', 'ledger:classify',
-                    'Classify entries', None, None, 30)
+                    'Classify entries', None)
 
 
 class Client(ScriptedCompleteClient):
     instances = []
-    gate = None
 
     def __init__(self, options):
         super().__init__(options)
         self.prompts = []
-        self.owner_counts = []
         type(self).instances.append(self)
 
-    async def query(self, prompt):
+    async def record_query(self, prompt):
         self.prompts.append(prompt)
-        self.owner_counts.append(sum(jobs._turn_owners.values()))
 
-    async def receive_response(self):
-        if self.gate is not None:
-            await self.gate.wait()
-        async for frame in super().receive_response():
-            yield frame
+
+async def drain_launch_turns(timeout: float = 5.0) -> None:
+    """Wait until every job's queued writes are written and the turns they
+    opened have ended: the launch returns once the brief is queued, and the
+    job's delivery worker writes it afterwards."""
+    driver = agent.active_engagement_driver
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        busy = (any(lane.queue for lane in driver._lanes.values())
+                or any(s.turn_open for s in driver._sessions.values()))
+        if not busy:
+            break
+        assert loop.time() < deadline, 'a job write or turn never finished'
+        await asyncio.sleep(.005)
+    for _ in range(10):
+        await asyncio.sleep(0)
 
 
 @pytest.fixture
@@ -98,11 +107,6 @@ async def runtime(tmp_path, monkeypatch):
     monkeypatch.setattr('drivers.in_casa_driver.ClaudeSDKClient', Client)
     monkeypatch.setattr(tools, 'ClaudeSDKClient', Client)
     monkeypatch.setattr(Client, 'instances', [])
-    monkeypatch.setattr(Client, 'gate', None)
-    calls = []
-    async def after(rec, ch):
-        calls.append((rec.id, jobs.turn_owners(rec.id), ch))
-    monkeypatch.setattr(jobs, 'job_after_turn', after)
     # U1 owns discovery; these seams enforce its delegate-filtered interface.
     host = jobs.JobHost('specialist', 'finance', DECL, SimpleNamespace(name='ledger'))
     monkeypatch.setattr(jobs, 'find_job_host', lambda name, caller, roles:
@@ -110,8 +114,8 @@ async def runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs, 'startable_jobs', lambda caller, roles:
                         [host] if 'finance' in roles else [])
     yield SimpleNamespace(registry=registry, driver=driver, channel=channel, bot=bot,
-                          cfg=cfg, caller=caller, limiter=limiter, calls=calls)
-    await tools.drain_launch_turns()
+                          cfg=cfg, caller=caller, limiter=limiter)
+    await drain_launch_turns()
     await tools.drain_launch_death_reports()
     for rec in registry.active_and_idle():
         await driver.cancel(rec)
@@ -142,26 +146,23 @@ async def test_launch_limit_prompt_envelope_and_persistence(runtime):
     assert result['status'] == 'pending'
     assert (result['job'], result['title'], result['agent']) == (DECL.qualified_name, DECL.title, 'finance')
     assert result['message'] == "Started Classify entries. Progress appears in Alex's topic."
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     client = Client.instances[0]
-    assert cli_limit(client.options) == '30'
+    assert cli_limit(client.options) == str(jobs.JOB_MAX_TURNS)
     rec = runtime.registry.get(result['engagement_id'])
-    # The launch prompt names the job by its engagement id (INV-BGJOB-005).
+    # The launch prompt names the job by its engagement id (INV-BGJOB-016).
     # #1277: the harness origin is the operator's own turn.
-    assert client.prompts == [jobs.launch_prompt(DECL, 'Classify the ledger', 'all rows', 30,
+    assert client.prompts == [jobs.launch_prompt(DECL, 'Classify the ledger', 'all rows',
                                                  job_id=rec.id, started_by='operator')]
     assert DECL.title in runtime.bot.create_forum_topic.call_args.kwargs['name']
-    assert rec.origin['job'] == jobs.initial_job_state(DECL, started_by='operator')
+    expected = {**jobs.initial_job_state(DECL, started_by='operator', context='all rows'),
+                'brief_uuid': rec.origin['job']['brief_uuid']}
+    # The cost a turn end adds is pinned in test_job_cost.py.
+    assert {k: v for k, v in rec.origin['job'].items() if k != 'cost_usd'} == expected
     rows = json.loads(Path(runtime.registry._tombstone_path).read_text())
-    assert rows[0]['origin']['job'] == jobs.initial_job_state(DECL, started_by='operator')
+    assert {k: v for k, v in rows[0]['origin']['job'].items() if k != 'cost_usd'} == expected
     assert jobs.JOB_CASA_GRANTS[0] in client.options.allowed_tools
 
-
-async def test_launch_hook_runs_once_after_owner_finishes(runtime):
-    result = await call()
-    await tools.drain_launch_turns()
-    assert Client.instances[0].owner_counts == [1]
-    assert runtime.calls == [(result['engagement_id'], 0, runtime.channel)]
 
 
 @pytest.mark.parametrize('outside', [False, True])
@@ -189,14 +190,14 @@ async def test_voice_needs_text_channel(runtime):
 @pytest.mark.parametrize('second_job', [False, True])
 async def test_second_engagement_from_another_chat_names_open_job(runtime, second_job):
     first = await call()
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     if second_job:
         result = await call(chat='2')
     else:
         # another plugin's job on the same specialist: past its own plugin's
         # claim, the per-specialist rule refuses it (one open engagement)
         other = jobs.JobDecl('budget:review', 'budget', 'review', 'budget:review',
-                             'Review budget', None, None, 30)
+                             'Review budget', None)
         origin = dict(role='assistant', execution_role='assistant', channel='telegram',
                       chat_id='2', cid='test', user_text='review', _operator_turn=True,
                       plugin_job={'plugin': 'budget'})
@@ -217,7 +218,7 @@ async def test_second_engagement_from_another_chat_names_open_job(runtime, secon
 
 async def test_sync_delegation_while_job_open(runtime):
     first = await call()
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     result = await call(tools.delegate_to_agent, agent='finance', mode='sync')
     assert result['status'] == 'ok', result
     assert runtime.registry.get(first['engagement_id']).status == 'active'
@@ -226,26 +227,15 @@ async def test_sync_delegation_while_job_open(runtime):
     assert jobs.JOB_CASA_GRANTS[0] not in Client.instances[1].options.allowed_tools
 
 
-@pytest.mark.parametrize('limit', [30, None])
-async def test_resume_keeps_limit_and_job_grant(runtime, limit):
+async def test_resume_keeps_limit_and_job_grant(runtime):
     result = await call()
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     rec = runtime.registry.get(result['engagement_id'])
-    rec.origin['job']['turns_per_batch'] = limit
     opts = tools.build_engagement_resume_options(rec, 'resumed-session')
-    assert cli_limit(opts) == str(limit or 20)
+    assert cli_limit(opts) == str(jobs.JOB_MAX_TURNS)
     assert opts.resume == 'resumed-session'
     assert jobs.JOB_CASA_GRANTS[0] in opts.allowed_tools
 
-
-async def test_launch_cancel_drops_owner_without_scheduling(runtime, monkeypatch):
-    monkeypatch.setattr(Client, 'gate', asyncio.Event())
-    result = await call()
-    await asyncio.sleep(.02)
-    assert jobs.turn_owners(result['engagement_id']) == 1
-    await tools.stop_engagement_launches(runtime.registry)
-    assert jobs.turn_owners(result['engagement_id']) == 0
-    assert runtime.calls == []
 
 
 async def test_host_resolution_preserves_execution_callers_delegate_order(runtime, monkeypatch):

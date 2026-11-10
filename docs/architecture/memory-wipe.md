@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-08
+last_reviewed: 2026-11-09
 ---
 
 # Memory wipe: consent, the restart, and the container-start step that erases the registry
@@ -116,14 +116,25 @@ plugin environment, memory construction, the writer, the scheduler, the channels
 so a real directory stays where it is for the next step to delete. No other oneshot, nor
 any program one runs, touches a registry path's content.
 
-**After the restart.** Session pointers are empty, so every conversation starts fresh.
-An open engagement keeps its record and continues in a fresh session. Its session could no
-longer be resumed by the CLI, so the step itself sets `context_rebuild_pending` on every
-active or idle record, with or without a session id yet: its next turn opens a
-fresh session with the context-reset note instead of failing to resume. The step reads
-`/data/engagements.json` strictly and never repairs it — a file it cannot read or parse, or
-one holding a malformed row, is left byte for byte as it is and nothing is marked — and it
-writes the marks back as the same parsed rows with only that field added, atomically, so no
+**After the restart.** Session pointers are empty, so every resident conversation starts
+fresh. A background job does not continue. It is one long session, the CLI resumes that
+session from its transcript, and the wipe deleted the transcript, so the step itself sets
+`context_rebuild_pending` on every active or idle engagement record, with or without a
+session id yet. The driver refuses to resume a record so marked
+(`casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.resume`), and the in-process
+tool fence refuses its tool calls (`casa/rootfs/opt/casa/tools.py::_engagement_rebuild_fence`).
+What the operator sees depends on what the job was doing:
+
+- **Working**: at boot its topic gets the usual `↻ Resuming "<title>" after a restart.`, the
+  resume is refused, and the job ends as an error, "could not be resumed after a restart",
+  with its last reported progress, if any (`background_jobs.py::JobRunner.resume_at_boot`).
+- **Waiting for the operator with nothing journaled**: boot leaves it alone, as it leaves
+  any such job. Their next message is accepted, the resume it needs is refused, and the job
+  ends as an error, "its session ended unexpectedly" (`JobRunner.session_lost`).
+
+The step reads `/data/engagements.json` strictly and never repairs it — a file it cannot
+read or parse, or one holding a malformed row, is left byte for byte as it is and nothing is
+marked — and it writes the marks back as the same parsed rows with only that field added, atomically, so no
 record or field is lost.
 
 ## Contracts & invariants
@@ -157,6 +168,12 @@ byte-identical. What it does not cover: a kept item may still mention something 
 copies outside Casa (a Home Assistant backup, a downloaded export) are untouched. A
 transcript root an engagement replaced with a symlink is not followed.
 
+**INV-MEM-046**: The wipe marks every open engagement record `context_rebuild_pending`, and the driver never resumes a marked record — a job open at the wipe ends as an error, at boot, or at the operator's next message when it was waiting for them with nothing journaled.
+
+Pinned through the real step over a record file, then the real registry, driver and job
+runner wired as boot wires them, with no session opened for the job on either path. What
+it does not cover: a record file the step cannot read strictly is left unmarked (above).
+
 ## Failure behavior
 
 **The step is cut off.** A kill anywhere leaves the intent with this container's attempt
@@ -189,6 +206,8 @@ content does so inside the `maintenance.json` guard, or the scan fails.
 
 **Source**
 - `casa/rootfs/opt/casa/memory/maintenance.py`
+- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.resume`
+- `casa/rootfs/opt/casa/tools.py::_engagement_rebuild_fence`
 - `casa/rootfs/opt/casa/supervisor_restart.py`
 - `casa/rootfs/opt/casa/tools.py::wipe_memory`
 - `casa/rootfs/opt/casa/internal_handlers.py::build_admin_memory_wipe_handler`

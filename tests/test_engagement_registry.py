@@ -735,26 +735,7 @@ class TestTerminalGuards:
         assert registry.get(rec.id).status == "cancelled"
 
 
-class TestResumeFailCountPersistence:
-    async def test_set_resume_fail_count_persists_across_reload(self, tmp_path):
-        """#326 (low): the two-strike resume counter must survive a restart —
-        an unrecoverable engagement must not dodge the error transition by
-        resetting its counter on every boot."""
-        from engagement_registry import EngagementRegistry
-
-        path = str(tmp_path / "e.json")
-        reg = EngagementRegistry(tombstone_path=path)
-        rec = await reg.create(
-            kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t", origin={}, topic_id=3,
-        )
-        await reg.set_resume_fail_count(rec.id, 1)
-        assert reg.get(rec.id).origin["_resume_fail_count"] == 1
-
-        reg2 = EngagementRegistry(tombstone_path=path)
-        await reg2.load()
-        assert reg2.get(rec.id).origin.get("_resume_fail_count") == 1
-
+class TestCreateCancellationSafety:
     async def test_create_cancelled_mid_persist_leaves_no_ghost(
         self, registry, monkeypatch,
     ):

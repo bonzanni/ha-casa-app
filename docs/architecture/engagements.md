@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-19
+last_reviewed: 2026-11-09
 ---
 
 # Engagements
@@ -21,10 +21,12 @@ output ordering — is
 that refuses a success over input nobody read is
 [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md). How agents
 address and launch one another — the delegation ACL, the depth cap, the agent-spawn cap —
-lives in [`architecture/delegation.md`](delegation.md). What an `in_casa` launch or
-follow-up turn must leave behind, and who reports one that did not, is
-[`architecture/engagement-turn-outcomes.md`](engagement-turn-outcomes.md). It does not cover
-the turn loop itself, nor what a driver's underlying runtime does once started.
+lives in [`architecture/delegation.md`](delegation.md). How a launch answers `pending` before
+the job's first turn, and who reports a launch that ends before that answer, is
+[`architecture/engagement-launch-detach.md`](engagement-launch-detach.md); what a running job's
+session does at each turn end and when it ends unexpectedly is
+[`architecture/background-job-session.md`](background-job-session.md). It does not cover the
+turn loop itself, nor what a driver's underlying runtime does once started.
 
 ## Mental model
 
@@ -70,7 +72,8 @@ concurrency permits, live drivers, inbound reservations and various
 in-flight maps do not. A record found `active` at startup is rewritten to `idle`, because no
 live driver survived to make `active` true.
 
-**Durable is not indefinite.** A daily sweep suspends a live session after a day idle;
+**Durable is not indefinite.** A daily sweep suspends a live session after a day idle (a job
+waiting on the operator is resumed by their next input);
 terminal tombstones age out after thirty days, bounding the post-mortem record (one whose
 completion time is not a finite number has no known age and is kept, and an `in_casa` one
 only once its transcripts are reaped, per `architecture/engagement-transcript-reaping.md`).
@@ -81,32 +84,30 @@ The record's own contracts are defined where the behaviour is: the terminal tran
 creation strictness in [`architecture/engagement-finalization.md`](engagement-finalization.md),
 turn admission in [`architecture/engagement-turn-admission.md`](engagement-turn-admission.md),
 the completion gate in
-[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md), and what a
-launch or turn must leave behind in
-[`architecture/engagement-turn-outcomes.md`](engagement-turn-outcomes.md).
+[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md), and the launch
+and its death report in
+[`architecture/engagement-launch-detach.md`](engagement-launch-detach.md).
 
 ## Failure behavior
 
 What a launch abort rolls back and how far it gets, which launch-failure arms answer the
 calling turn rather than the operator's topic, and what a restart replays or refuses, are in
-[`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md). The
-invariant that behaviour is measured against is INV-ENG-011 in
-[`architecture/engagement-turn-outcomes.md`](engagement-turn-outcomes.md).
+[`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md). A launch
+cancelled before it answered is reported by the launch-death reporter (INV-ENG-030, in
+[`architecture/engagement-launch-detach.md`](engagement-launch-detach.md)); a job's session that
+ends after it is resumed once (INV-BGJOB-018).
 
 ## Extension points
 
-**A new driver** implements the driver protocol: start, send, cancel, resume, liveness —
-plus the downgrade-recovery seams (invalidate the live session with confirmed teardown;
-rebuild fresh at the record's current clearance). `start()` — or `open()`, for a driver
-that declares the split launch of INV-ENG-021 — may raise `StaleLaunchError` at its last
-suspension point; the launcher then aborts rather than deliver a prompt rendered from
-pre-downgrade materials. A driver without the split keeps its whole first turn inside the
-launching tool call. The protocol says nothing about OS identity or filesystem reach: a
-driver that runs its agent as a separate OS process owes its own containment.
+**A new driver** implements the driver protocol: `open`, `cancel`, `resume` and `is_alive`.
+`open` only opens the session; the launch queues the session's first input after it, so a
+failure in `open` is a launch abort and nothing it runs belongs to the launching tool call
+(INV-ENG-021). The protocol says nothing about OS identity or filesystem reach: a driver that
+runs its agent as a separate OS process owes its own containment.
 
-**`start()`'s `prompt` is the first turn.** For the in-process driver that is the opening
-user message; what its turns may read from memory is clearance-gated (see
-[`architecture/memory-scoping.md`](memory-scoping.md)).
+**The brief is the job's first input.** For the in-process driver it is the opening user
+message, written by the job's delivery worker like every later input; what the job may read
+from memory is clearance-gated (see [`architecture/memory-scoping.md`](memory-scoping.md)).
 
 **A new durable field** must be added to the record, its load path and its write path
 together — otherwise it exists at runtime and silently vanishes across a restart. A field that
@@ -155,5 +156,6 @@ persisting ledger checks it — is answered in the same document.
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
 - [`architecture/engagement-completion-gate.md`](../architecture/engagement-completion-gate.md)
 - [`architecture/engagement-turn-admission.md`](../architecture/engagement-turn-admission.md)
-- [`architecture/engagement-turn-outcomes.md`](../architecture/engagement-turn-outcomes.md)
+- [`architecture/engagement-launch-detach.md`](../architecture/engagement-launch-detach.md)
+- [`architecture/background-job-session.md`](../architecture/background-job-session.md)
 <!-- END SOURCEMAP -->

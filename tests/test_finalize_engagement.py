@@ -201,6 +201,45 @@ class TestFinalizeU3Transition:
 # --- G4 D5 (v0.96.0): typed finalize result --------------------------------
 
 
+@pytest.mark.parametrize("outcome", ["cancelled", "error"])
+async def test_a_job_s_cancelled_or_failed_end_carries_its_last_progress_once(
+        tmp_path, outcome):
+    """INV-BGJOB-022: a job's ``cancelled`` or ``error`` end tells what it had
+    done — the funnel appends ``Last progress: <summary>`` to the text the
+    topic and the resident receive, once; a completed end does not."""
+    from engagement_registry import EngagementRegistry
+    from tools import _finalize_engagement, init_tools
+
+    texts = []
+    for out in (outcome, "completed"):
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / f"{out}.json"))
+        rec = await reg.create(
+            kind="specialist", role_or_type="finance", driver="in_casa",
+            task="t", topic_id=42,
+            origin={"role": "assistant", "channel": "telegram",
+                    "job": {"title": "Rows", "last_summary": "12 of 40 rows"}})
+        telegram = MagicMock()
+        telegram.send_to_topic = AsyncMock(return_value=1)
+        telegram.send_response_to_topic = AsyncMock(return_value=1)
+        telegram.close_topic = AsyncMock()
+        cm = MagicMock()
+        cm.get.return_value = telegram
+        bus = MagicMock()
+        bus.notify = AsyncMock()
+        init_tools(channel_manager=cm, bus=bus, specialist_registry=MagicMock(),
+                   mcp_registry=MagicMock(), trigger_registry=MagicMock(),
+                   engagement_registry=reg)
+        await _finalize_engagement(rec, outcome=out, text="Stopped.",
+                                   next_steps=[], driver=_driver_double())
+        posted = telegram.send_response_to_topic.await_args.args[1]
+        told = bus.notify.await_args.args[0].content.text
+        texts.append((posted, told))
+    (posted, told), (done_posted, done_told) = texts
+    for text in (posted, told):
+        assert text.count("Last progress: 12 of 40 rows") == 1
+    assert "Last progress" not in done_posted and "Last progress" not in done_told
+
+
 def test_finalize_result_enum_exists():
     from tools import FinalizeResult
     assert {r.name for r in FinalizeResult} >= {
@@ -777,53 +816,19 @@ def _comment_block_above(rel, name):
     return "\n".join(reversed(block))
 
 
-def _comment_block_above_assert(rel, cls, meth, assertion):
-    src, tree = _module_tree(rel)
-    classes = [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls]
-    assert len(classes) == 1, f"{cls}: {len(classes)} classes"
-    fns = [
-        n for n in classes[0].body
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == meth
-    ]
-    assert len(fns) == 1, f"{cls}.{meth}: {len(fns)} definitions"
-    lines = src.splitlines()[fns[0].lineno - 1:fns[0].end_lineno]
-    at = [i for i, ln in enumerate(lines) if ln.strip() == assertion]
-    assert len(at) == 1, f"{cls}.{meth}: {len(at)} lines {assertion!r}"
-    block = []
-    j = at[0] - 1
-    while j >= 0 and lines[j].lstrip().startswith("#"):
-        block.append(lines[j])
-        j -= 1
-    assert block, f"no comment block above {assertion!r}"
-    return "\n".join(reversed(block))
-
-
 def _rule_pointer_sites():
     return {
         "tools.py _DISCLOSURE_UNCONFIRMED": _attribute_docstring(
             "casa/rootfs/opt/casa/tools.py", "_DISCLOSURE_UNCONFIRMED"),
-        "channels/telegram.py _TURN_ENDED_UNCONFIRMED_NOTICE": _attribute_docstring(
-            "casa/rootfs/opt/casa/channels/telegram.py",
-            "_TURN_ENDED_UNCONFIRMED_NOTICE"),
         "test_finalize_engagement.py _EXPECTED_DISCLOSURE": _comment_block_above(
             "tests/test_finalize_engagement.py", "_EXPECTED_DISCLOSURE"),
-        "test_launch_death_reporter.py _EXPECTED_TERMINAL_UNCONFIRMED_NOTICE":
-            _attribute_docstring(
-                "tests/test_launch_death_reporter.py",
-                "_EXPECTED_TERMINAL_UNCONFIRMED_NOTICE"),
-        "test_launch_death_reporter.py TestTerminalStatusIsNotProofOfATelling":
-            _comment_block_above_assert(
-                "tests/test_launch_death_reporter.py",
-                "TestTerminalStatusIsNotProofOfATelling",
-                "test_a_terminal_record_that_told_nobody_still_gets_its_notice",
-                "assert _notice == _EXPECTED_TERMINAL_UNCONFIRMED_NOTICE"),
     }
 
 
 def test_every_terminal_notice_rule_pointer_names_a_document_carrying_the_rule():
     docs = _repo_root() / "docs"
     sites = _rule_pointer_sites()
-    assert len(sites) == 5
+    assert len(sites) == 2
     problems = []
     for site, text in sites.items():
         pointers = [t.rstrip(".") for t in _RULE_POINTER_TOKEN.findall(text)]

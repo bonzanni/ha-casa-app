@@ -42,3 +42,25 @@ class TestSweep:
         await reg.sweep_idle_and_suspend(driver=driver, now_override=now)
         driver.cancel.assert_not_awaited()
         assert rec.status == "completed"
+
+
+@pytest.mark.parametrize("probe", ["turn_open", "recovering"])
+async def test_a_working_job_session_is_not_suspended(tmp_path, probe):
+    """One turn can run for hours: a session with a turn running, or one
+    Casa is recovering, is working, not idle."""
+    from engagement_registry import EngagementRegistry
+
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
+    rec = await reg.create("specialist", "finance", "in_casa", "t",
+                           {"role": "assistant"}, topic_id=1)
+    rec.last_user_turn_ts = rec.started_at
+    driver = MagicMock()
+    driver.is_alive = MagicMock(return_value=True)
+    driver.turn_open = MagicMock(return_value=False)
+    driver.recovering = MagicMock(return_value=False)
+    getattr(driver, probe).return_value = True
+    driver.cancel = AsyncMock()
+    await reg.sweep_idle_and_suspend(driver=driver,
+                                     now_override=rec.started_at + 30 * 3600)
+    driver.cancel.assert_not_awaited()
+    assert rec.status == "active"

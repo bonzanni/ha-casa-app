@@ -225,33 +225,6 @@ async def healthz(_request: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
 
 
-def read_followup_incomplete(engagement_driver, rec, token) -> str:
-    """#692: the ``_driver_turn_incomplete`` seam's whole body, at module
-    level so it can be tested as production code rather than reimplemented in
-    a test double.
-
-    SYNCHRONOUS. Returns ``""`` for any driver that does not expose the
-    accessor.
-
-    ``getattr``-guarded on purpose: ``followup_turn_incomplete`` is
-    deliberately NOT on ``DriverProtocol``, so a driver without it must read
-    as "nothing to report" rather than raise ``AttributeError`` into a
-    delivery task that would then surface a failure for a healthy turn.
-
-    There is deliberately NO ``token is None`` guard. The accessor is already
-    total over a ticket it does not hold — the observation map is keyed by the
-    admission ticket and the writing branch requires a non-None one, so
-    ``None`` is never a key and a lookup with no ticket returns "" on its own.
-    A guard whose removal changes no observable behaviour cannot be pinned by
-    any test, and an unpinnable guard is the thing this change was told to cut
-    rather than sharpen: the mutation sweep surfaced it exactly that way, as an
-    arm that survived because it was redundant and not because its test was
-    weak.
-    """
-    fn = getattr(engagement_driver, "followup_turn_incomplete", None)
-    return fn(rec.id, token) if callable(fn) else ""
-
-
 def _repair_private_state() -> None:
     """Private-state mode repair — GHSA-569r-7crq-xr43, INV-STATE-005.
 
@@ -1911,34 +1884,91 @@ async def _close_disabled_specialist_engagements(engagement_registry: Any,
     return left_open
 
 
-async def _resume_background_jobs(registry, channel, skip=frozenset()) -> None:
-    """Continue open in-casa jobs once channels and residents are running.
-    *skip*: engagements the boot close of a disabled specialist could not close
-    (#1095) — a disabled specialist's job is never resumed; the next ``agents``
-    sweep retries closing it."""
-    from background_jobs import start_next_batch
-    from tools import _post_engagement_notice
+async def _resume_background_jobs(registry, channel, skip=frozenset(),
+                                  only=None) -> None:
+    """Resume open in-casa jobs once channels and residents are running: each
+    through the job runner's boot path (the topic line, the resume, the
+    message journal reconciled against the session transcript, then the
+    brief or the restart line and every message the session never read).
+    *skip*: engagements the boot close of a disabled specialist could not
+    close (#1095) — a disabled specialist's job is never resumed; the next
+    ``agents`` sweep retries closing it. *only*: the jobs that were open when
+    Casa stopped, taken right after the registry loaded — a job launched
+    after the channels started is its launch's, never resumed here.
 
-    if channel is None:
+    It first settles what jobs that ended left behind
+    (:func:`_settle_ended_job_state`), even when there is no channel or job
+    runner to resume with."""
+    import background_jobs
+
+    runner = background_jobs._runner
+    await _settle_ended_job_state(registry, getattr(runner, "driver", None))
+    if channel is None or runner is None:
         return
     for rec in registry.active_and_idle():
+        if only is not None and rec.id not in only:
+            continue
         if rec.id in skip:
             logger.warning("not resuming job %s: its specialist is disabled and "
                            "closing it failed", rec.id[:8])
             continue
         if rec.driver == "in_casa" and rec.origin.get("job"):
             try:
-                title = rec.origin["job"]["title"]
-                await _post_engagement_notice(
-                    channel, rec, f'↻ Resuming "{title}" after a restart.')
-            except Exception:
-                logger.warning("background job resume notice failed for %s", rec.id[:8],
-                               exc_info=True)
-            try:
-                await start_next_batch(rec, channel)
+                await runner.resume_at_boot(rec)
             except Exception:  # noqa: BLE001 — one job must not stop the boot
                 logger.warning("resuming background job %s failed", rec.id[:8],
                                exc_info=True)
+
+
+# How long the boot waits for one record's terminal write to settle.
+_SETTLED_STATE_TIMEOUT_S = 10.0
+
+
+async def _settle_ended_job_state(registry, driver) -> None:
+    """What a job that ended while Casa died leaves behind, settled at boot.
+
+    Its message journal: settled now, so each message its transcript lacks
+    is told as lost once; without a driver the file waits for a later boot.
+    Its scratchpad file: removed. A journal or a pad whose record is gone
+    altogether is removed too; a live job's is kept.
+
+    "Ended" is the durable status (``settled_terminal_state``), which waits
+    out a pending terminal write: one that rolls back leaves the job live,
+    its journal unsettled and its pad in place."""
+    import background_jobs
+    import job_inbox
+    import scratchpad
+    import tools
+
+    async def ended(eid: str) -> bool:
+        try:
+            status, _told = await asyncio.wait_for(
+                registry.settled_terminal_state(eid), _SETTLED_STATE_TIMEOUT_S)
+        except asyncio.TimeoutError:  # undecided: kept for a later boot
+            logger.warning("boot: the state of job %s did not settle in %.0fs",
+                           eid[:8], _SETTLED_STATE_TIMEOUT_S)
+            return False
+        return status in ("completed", "cancelled", "error")
+
+    for eid in job_inbox.journaled_ids():
+        rec = registry.get(eid)
+        if rec is None:
+            logger.warning("job inbox for unknown engagement %s removed",
+                           eid[:8])
+            job_inbox.discard(eid)
+        elif await ended(eid):
+            await tools._settle_job_journal(rec, driver)
+    try:
+        pads = sorted(p.stem for p in background_jobs.JOB_PAD_ROOT.glob("*.pad"))
+    except OSError as exc:
+        logger.warning("job pads %s not listable: %s", background_jobs.JOB_PAD_ROOT, exc)
+        pads = []
+    for eid in pads:
+        if registry.get(eid) is None:
+            logger.warning("job pad for unknown engagement %s removed", eid[:8])
+        elif not await ended(eid):
+            continue
+        scratchpad.PADS.discard(eid, path=background_jobs.job_pad_path(eid))
 
 
 async def _notify_recovered_engagement_outcomes(
@@ -2610,6 +2640,12 @@ async def main() -> None:
         agent_spawn_limiter=agent_spawn_limiter,
     )
     await engagement_registry.load()
+    # The jobs that were open when Casa stopped, taken before anything can
+    # launch a new one: only these are resumed at boot. A job launched once
+    # the channels and agents are up belongs to its launch, not to boot.
+    boot_job_ids = frozenset(
+        r.id for r in engagement_registry.active_and_idle()
+        if r.driver == "in_casa" and (r.origin or {}).get("job"))
 
     # Scheduler + trigger registry constructed here so the get_schedule
     # tool can see the registry via init_tools. The per-role
@@ -3011,21 +3047,42 @@ async def main() -> None:
             usage=extract_usage(result_msg),
         )
 
+    # The job runner: what Casa does around a job's session — the turn-end
+    # guard (continue, nudge once, park), the one automatic resume after a
+    # session death, and the boot resume.
+    import background_jobs
+    job_runner = background_jobs.JobRunner(
+        registry=engagement_registry, channel=telegram_channel)
+
     engagement_driver = InCasaDriver(
         topic_stream_factory=_topic_stream_factory,
         persist_session_id=engagement_registry.persist_session_id,
         # S8: the profile a rebuilt session enforces is persisted before it opens.
         persist_plugin_profiles=engagement_registry.update_plugin_profiles,
         result_observer=_specialist_result_observer,
-        # #369: last-instant launch gate — start() re-reads the live record
-        # before delivering the initial prompt.
+        # The live record: the driver re-reads it before registering a
+        # client and before every write.
         record_lookup=engagement_registry.get,
         # #690: the in_casa half of INV-ENG-009. The registry's SYNCHRONOUS
-        # admission decision, called inside the driver's per-turn lock
-        # immediately before the client hand-off. Injected so the driver stays
-        # importable without a registry.
+        # admission decision, called immediately before every write into a
+        # job's session. Injected so the driver stays importable without a
+        # registry.
         begin_turn_delivery=engagement_registry.begin_turn_delivery,
+        # A working job is active to the stale reap and the idle sweep.
+        stamp_activity=engagement_registry.note_activity,
+        # The per-engagement lifecycle lock every resume owner takes (the
+        # delivery worker, recovery, boot resume): one owner per job.
+        lifecycle_lock=(telegram_channel.engagement_lifecycle_lock
+                        if telegram_channel is not None else None),
+        on_turn_end=job_runner.turn_ended,
+        on_session_lost=job_runner.session_lost,
+        on_operator_written=background_jobs.note_operator_input,
+        # A job whose launch is still in flight is the launch's: its
+        # delivery worker writes nothing until the launcher's finally.
+        launch_in_flight=engagement_registry.launch_in_flight,
     )
+    job_runner.driver = engagement_driver
+    background_jobs.configure(job_runner)
 
     # Expose on the agent module so tools.emit_completion / cancel_engagement
     # can find it without circular imports.
@@ -3077,78 +3134,6 @@ async def main() -> None:
         telegram_channel._engagement_registry = engagement_registry
         telegram_channel._engagement_driver = engagement_driver
         telegram_channel._session_registry = session_registry
-
-        async def _driver_send_user_turn(rec, text, *, tg_message_id=None,
-                                         inbound_token=None, batch=None):
-            # §A3 (Sol r10-2): PROPAGATE the enqueue disposition so
-            # _deliver_turn_bg can promote (accepted) vs roll back (rejected)
-            # the answered reservation.
-            # The in_casa driver has no durable spool / reply-threading (§7
-            # follow-up) — the id only keys the message's memory capture; no
-            # reservation disposition. #649: thread the seam-admitted ticket
-            # so the driver adopts it. #1033: and the job batch number a batch
-            # turn carries.
-            await engagement_driver.send_user_turn(
-                rec, text, tg_message_id=tg_message_id,
-                inbound_token=inbound_token, batch=batch)
-            return None
-        telegram_channel._driver_send_user_turn = _driver_send_user_turn
-
-        # #649: in_casa admission-ticket seam trio. SYNCHRONOUS, taken by the
-        # Telegram entry points before their first await.
-        def _driver_admit_inbound(rec, text):
-            return engagement_driver.admit_inbound(rec.id, text)
-        telegram_channel._driver_admit_inbound = _driver_admit_inbound
-
-        def _driver_discharge_inbound(rec, token):
-            if token is not None:
-                engagement_driver.discharge_inbound(rec.id, token)
-        telegram_channel._driver_discharge_inbound = _driver_discharge_inbound
-
-        def _driver_inbound_held(rec, token):
-            if token is not None:
-                return engagement_driver.inbound_token_held(rec.id, token)
-            return False
-        telegram_channel._driver_inbound_held = _driver_inbound_held
-
-        # #692: SYNCHRONOUS read of the in_casa follow-up-turn observation for
-        # one exact admission ticket. ``getattr``-guarded on purpose — the
-        # accessor is deliberately NOT on DriverProtocol, so a driver without
-        # it reads as "nothing to report" rather than raising AttributeError
-        # into a delivery task that would surface a failure for a healthy
-        # turn.
-        telegram_channel._driver_turn_incomplete = (
-            lambda rec, token: read_followup_incomplete(
-                engagement_driver, rec, token))
-
-        # #369: clearance-downgrade context revocation. ``invalidate`` tears
-        # the pre-clamp session down (the durable context_rebuild_pending flag,
-        # set by the clamp itself, is what refuses resume if any step fails);
-        # ``rebuild`` establishes a fresh session at the clamped floor and
-        # returns the preamble prepended to the next delivered turn. The
-        # rebuilt session deliberately re-imports NOTHING from the launch —
-        # the record's task/brief/context were withheld by the clamp, and
-        # memory stays reachable through the clearance-gated memory tools.
-        _REBUILD_NOTE = (
-            "[Context reset: this engagement's earlier working context is no "
-            "longer available. Continue from the messages in this topic; use "
-            "search_memory if you need prior facts.]"
-        )
-
-        async def _driver_invalidate_session(rec):
-            await engagement_driver.invalidate_session(rec)
-
-        async def _engagement_context_rebuilder(rec) -> str:
-            # Sol diff-gate r1: RE-VERIFY teardown before opening anything
-            # fresh (invalidate is idempotent) — the flag is cleared by the
-            # caller only after this returns, so a rebuild can never bless a
-            # session whose predecessor was not confirmed gone.
-            await engagement_driver.invalidate_session(rec)
-            await engagement_driver.open_fresh(rec)
-            return _REBUILD_NOTE
-        telegram_channel._driver_invalidate_session = _driver_invalidate_session
-        telegram_channel._engagement_context_rebuilder = (
-            _engagement_context_rebuilder)
 
         async def _finalize_cancel(rec, reason="user"):
             # F2 (whole-branch r2): PROPAGATE _finalize_engagement's bool so the
@@ -3691,7 +3676,7 @@ async def main() -> None:
             telegram_channel.retire_ended_job_keyboards()
         except Exception:  # noqa: BLE001 — never fatal at boot
             logger.warning("retiring ended jobs' keyboards failed", exc_info=True)
-    await _resume_background_jobs(engagement_registry, telegram_channel, skip=left_open)
+    await _resume_background_jobs(engagement_registry, telegram_channel, skip=left_open, only=boot_job_ids)  # noqa: E501
 
     # 13c. Surface any default-sync overwrites to the operator (direct
     # telegram outbound — see notify_config_sync).
@@ -3759,14 +3744,25 @@ async def main() -> None:
         max_instances=1,
         misfire_grace_time=3600,
     )
-    from background_jobs import sweep_jobs
+    # A live job's start line shows how long it has run: refreshed every few
+    # minutes (and at each turn end, with its cost).
+    async def _refresh_job_start_lines() -> None:
+        if telegram_channel is None:
+            return
+        for rec in engagement_registry.active_and_idle():
+            if not rec.origin.get("job"):
+                continue
+            try:
+                await telegram_channel.refresh_job_start_line(rec)
+            except Exception:  # noqa: BLE001 — cosmetic
+                logger.debug("job %s start line not refreshed", rec.id[:8],
+                             exc_info=True)
 
     scheduler.add_job(
-        sweep_jobs,
-        args=(engagement_registry, telegram_channel),
+        _refresh_job_start_lines,
         trigger="interval",
-        minutes=1,
-        id="background_job_sweep",
+        minutes=5,
+        id="job_start_line_refresh",
         replace_existing=True,
         coalesce=True,
         max_instances=1,

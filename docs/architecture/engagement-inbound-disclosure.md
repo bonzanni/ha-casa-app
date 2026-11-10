@@ -1,31 +1,36 @@
 ---
-last_reviewed: 2026-11-08
+last_reviewed: 2026-11-09
 ---
 
-# Inbound messages an engagement never took up
+# Messages a job never read
 
 > Code is the source of truth. This file is a map; when it and the code disagree, the code wins.
 
 ## Scope
 
-What the operator is told about a message an engagement admitted and never took up — their reply
-into a job, a tapped answer, an approval's continuation, a message written in a topic — and who
-tells it. What a *successful* completion is refused over, and what the driver counts, is in
-[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md). The notice a turn
-draws when it *was* taken up and then cut off is INV-ENG-012 in
-[`architecture/engagement-turn-outcomes.md`](engagement-turn-outcomes.md). How replies and taps
-reach a job is [`architecture/background-job-direct-chat.md`](background-job-direct-chat.md).
+What the operator is told about a message to a job that the job never read — their reply into
+it, a tapped answer, an approval's continuation, a message written in its topic — and who tells
+it. What a *successful* completion is refused over, and what the driver counts, is in
+[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md). How each message
+is journaled, matched against the session transcript and redelivered after a restart is
+[`architecture/background-job-message-journal.md`](background-job-message-journal.md)
+(INV-BGJOB-021). How replies and taps reach a job is
+[`architecture/background-job-direct-chat.md`](background-job-direct-chat.md).
 
 ## Mental model
 
-**Each message is told once, by the holder of its ticket.** Every inbound message an engagement
-admits gets an admission ticket, taken synchronously at the seam that admits it
-(`deliver_operator_reply`, `deliver_system_turn`, the topic handler). Until the seam hands the
-ticket to a delivery task, the seam holds it; after that, the task does. Whichever holds it when
-the message is not taken up — the record went terminal, resume failed, the stop began, the
-driver's terminal fence refused the turn, the turn raised — makes one bounded notice attempt and
-discharges the ticket (`TelegramChannel._settle_lost_inbound`). The callers of the seams never
-post one: they get a bare hand-off boolean for their own bookkeeping, a toast or a card edit.
+**Each message is told once, by the one place that knows it was lost.** A seam that hands a
+message to a job (`deliver_operator_reply`, `deliver_system_turn`, the topic handler) journals
+it, admits it and queues it for the job's delivery worker in one synchronous step, and returns.
+If the job does not accept it — the record went terminal, the journal could not be written,
+Casa is stopping, no driver is wired, a quiet run's quietness could not be ended — the seam
+makes one bounded notice attempt (`TelegramChannel._tell_not_delivered`) and returns `False`.
+Once accepted, the message is the journal's: a job that ends without reading it — its session
+transcript lacks the message's uuid — has it told as lost once by the journal's terminal branch,
+which every terminal path runs after the job's client is closed
+(`TelegramChannel.tell_journal_lost`). A session that ended and was resumed redelivers the
+message instead of telling it lost (INV-BGJOB-018). The callers of the seams never post a
+notice: they get a bare acceptance boolean for their own bookkeeping, a toast or a card edit.
 
 **The notice goes where the message came from.** A message from the operator's direct chat — a
 reply into a job, or the card a tap answered — is told there, as a reply to it: "The job had
@@ -33,42 +38,42 @@ just ended — not delivered, please resend." (or "Your message could not be del
 resend it." while the job is live) for their words, and "The job had already ended; your answer
 wasn't used." (or "Your answer could not be passed to the job — please answer again.") for a
 tap. The ended form is chosen from the record's settled status. A message written in a topic is
-told in that topic — including one whose delivery task waited for a running turn before it
-could ready a rebuilt session — and when the readiness step's refusal has itself just told the
-topic why (a failed context rebuild, a legacy record that could not be resumed), that line is
-the message's notice. Nothing is forwarded anywhere else.
+told in that topic. While a memory wipe's restart is pending, a reply or a topic message is
+answered with the wipe's courtesy line instead, which is that message's one notice. Nothing is
+forwarded anywhere else.
 
 **No end-of-job list.** A terminal outcome — the finalize funnel's completion post, the
-launch-death notice — lists no inbound messages. The messages that died with the engagement are
-each told by their own ticket's holder, so a list would tell them twice. The driver's teardown
-does not clear the ticket ledger, so the holder still finds its ticket when it settles.
+launch-death notice — lists no inbound messages. The messages that died with the job are each
+told by the journal's terminal branch, so a list would tell them twice. The driver's teardown
+leaves the journal in place, so the terminal branch still finds each entry when it runs.
 
-**A batch turn is Casa's, not a message.** A batch prompt that cannot be delivered because the
-record went terminal or could not be resumed is discharged silently; the job's own loop and
-sweep own a batch that could not start. A batch turn the delivery task cannot complete still
-draws its notice in the topic, as before.
+**Casa's own writes are not messages.** The brief, a nudge, the continue line and the restart
+line are Casa's; none is journaled, and none draws a notice when it is never written.
 
 ## Contracts & invariants
 
-**INV-ENG-029**: An admitted inbound message the engagement never takes up — other than a batch prompt refused before its hand-off, which is discharged silently — draws exactly one bounded notice attempt, made by whichever of the admitting seam or its delivery task holds the message's ticket at that moment — never by a caller of the seam — before the ticket is discharged; a message from the operator's direct chat is told there in reply to their message or the tapped card, worded from the record's settled status, and no terminal outcome lists such messages.
+**INV-ENG-029**: A message to a job — a reply into it, a tapped answer, an approval's continuation, a message in its topic — that the job never reads draws exactly one bounded notice attempt, made by the seam when the job did not accept it and otherwise by the job's message journal once the job ended without reading it, never by a caller of the seam; a message from the operator's direct chat is told there in reply to their message or the tapped card, worded from the record's settled status, and no terminal outcome lists such messages.
 
 What it does not cover: the notice is one attempt — a Telegram failure or a crash at that point
-loses it, and the ticket is discharged regardless, because retrying would hold an unclearable
-completion veto. And a message that *was* taken up and then cut off is INV-ENG-012's, not this one's: the two are
-exclusive by construction, success path against failure path.
+loses it, and the message is discharged regardless, because retrying would hold an unclearable
+completion veto. A message the job did read is in its transcript and draws no notice: a turn
+that ends without answering it is the job's turn end, nudged or parked like any other
+([`background-job-session.md`](background-job-session.md), INV-BGJOB-017).
 
 ## Failure behavior
 
 **The settled-status read does not return.** It is bounded; the notice is then worded as if the
 job were live, which is still true of a message that was not delivered.
 
-**The notice send fails.** It is logged at debug and the ticket is discharged.
+**The notice send fails.** It is logged at debug and the message is discharged; nothing retries
+it.
 
 ## Extension points
 
-**A new seam that admits inbound text** takes its ticket synchronously at entry, settles every
-ticket it does not hand off through `_settle_lost_inbound` with the message's notice target, and
-returns a bare hand-off boolean that no caller posts on.
+**A new seam that hands operator text to a job** goes through `_deliver_to_job`, which journals,
+admits and queues the message synchronously and tells the one not-delivered notice when the job
+does not accept it; it passes the message's notice target and returns a bare acceptance boolean
+that no caller posts on.
 
 ## Source & test map
 
@@ -76,12 +81,12 @@ returns a bare hand-off boolean that no caller posts on.
 <!-- generated by scripts/verify_docs.py --write-nav; do not hand-edit -->
 
 **Source**
-- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._settle_lost_inbound`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._tell_not_delivered`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._post_lost_inbound_notice`
-- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.inbound_token_held`
 
 **Tests**
 - `tests/test_job_dm_attention.py`
+- `tests/test_job_message_seams.py`
 - `tests/test_emit_completion_tool.py`
 - `tests/test_launch_death_reporter.py`
 - `tests/test_in_casa_inbound_admission.py`
@@ -89,7 +94,8 @@ returns a bare hand-off boolean that no caller posts on.
 **Related**
 - [`architecture/engagement-completion-gate.md`](../architecture/engagement-completion-gate.md)
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
-- [`architecture/engagement-turn-outcomes.md`](../architecture/engagement-turn-outcomes.md)
+- [`architecture/background-job-message-journal.md`](../architecture/background-job-message-journal.md)
+- [`architecture/background-job-session.md`](../architecture/background-job-session.md)
 - [`architecture/background-job-direct-chat.md`](../architecture/background-job-direct-chat.md)
 - [`architecture/telegram.md`](../architecture/telegram.md)
 <!-- END SOURCEMAP -->

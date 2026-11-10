@@ -103,7 +103,7 @@ class TestEngageExecutorReal:
         channel.setup_engagement_features = AsyncMock(side_effect=_flip_flag)
         _wire(channel, _registry(tmp_path))
         monkeypatch.setattr(agent_mod, "active_engagement_driver",
-                            MagicMock(start=AsyncMock()), raising=False)
+                            MagicMock(open=AsyncMock()), raising=False)
 
         payload = _payload(await launch_job("t", origin=dict(_ORIGIN)))
         # In-line retry was attempted — exactly once.
@@ -134,7 +134,7 @@ class TestEngageExecutorReal:
         from tools import engagement_var
         _wire(_channel(), _registry(tmp_path))
         monkeypatch.setattr(agent_mod, "active_engagement_driver",
-                            MagicMock(start=AsyncMock()), raising=False)
+                            MagicMock(open=AsyncMock()), raising=False)
 
         assert engagement_var.get(None) is None  # pre-state
         r = await launch_job("t", origin=dict(_ORIGIN))
@@ -162,17 +162,15 @@ class TestCancelledLaunchAfterRecordCompensates:
 
         started = asyncio.Event()
 
-        async def _hanging_start(rec, *, prompt, options,
-                                 expected_generation=None):
+        async def _hanging_open(rec, *, options):
             started.set()
             await asyncio.Event().wait()
 
-        # A driver without the split launch: the launcher awaits start()
-        # inline, so the cancellation lands inside it.
+        # The launcher awaits the session's open inline, so the cancellation
+        # lands inside it.
         fake_driver = MagicMock(
-            start=AsyncMock(side_effect=_hanging_start),
+            open=AsyncMock(side_effect=_hanging_open),
             cancel=AsyncMock(),
-            supports_split_launch=False,
         )
         monkeypatch.setattr(
             agent_mod, "active_engagement_driver", fake_driver,
@@ -200,3 +198,5 @@ class TestCancelledLaunchAfterRecordCompensates:
         # — the compensation runs its idempotent terminal teardown.
         fake_driver.cancel.assert_awaited_once()
         assert fake_driver.cancel.await_args.args[0].id == recs[0].id
+        # the brief was never queued
+        assert fake_driver.enqueue_brief.call_count == 0

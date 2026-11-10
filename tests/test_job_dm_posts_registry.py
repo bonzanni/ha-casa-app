@@ -27,8 +27,7 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 def _job(quiet: bool = False) -> dict:
     import background_jobs as jobs
     decl = jobs.JobDecl("sample:work", "sample", "work", "sample:work",
-                        "Process rows", None, None, 10,
-                        quiet_when_scheduled=quiet)
+                        "Process rows", None, quiet_when_scheduled=quiet)
     return jobs.initial_job_state(
         decl, started_by="scheduled" if quiet else "operator")
 

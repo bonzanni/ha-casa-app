@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-17
+last_reviewed: 2026-11-09
 ---
 
 # Engagement launch detach
@@ -8,166 +8,171 @@ last_reviewed: 2026-09-17
 
 ## Scope
 
-How an `in_casa` engagement's launch turn is separated from the tool call that launched it:
-the two-call launch (open the client, then hand the turn to an anchored owner), what that
-owner does with every outcome of the turn, how the graceful stop drains it, and the one
-envelope every engagement outcome travels in. What a launch turn must leave behind and how
-its death is reported are in [`engagement-turn-outcomes.md`](engagement-turn-outcomes.md) (INV-ENG-011); which
-launch-failure arms answer the caller rather than the topic is in
-[`engagement-failure-and-restart.md`](engagement-failure-and-restart.md); the durable
-obligation to tell the engager is in
+How a background job's launch is separated from the tool call that launched it: the launch
+opens the job's session, queues its brief and answers `pending`; what a launch that ends
+before that answer draws — the launch-death reporter (INV-ENG-030) and the telling owed to the
+engager; how the graceful stop drains the launch owners; and the one envelope every
+engagement outcome travels in. Once the launch has answered, the job's session owns the job:
+its turn ends, the nudge and the parking, the step ceiling and a session that ends
+unexpectedly are in [`background-job-session.md`](background-job-session.md)
+(INV-BGJOB-016..020). Which launch-failure arms answer the caller rather than the topic is in
+[`engagement-failure-and-restart.md`](engagement-failure-and-restart.md) (INV-ENG-019); the
+durable obligation to tell the engager is in
 [`engagement-terminal-telling.md`](engagement-terminal-telling.md) (INV-ENG-018).
 
 ## Mental model
 
-**The engager is not held.** A launch once awaited the driver's `start()` inline, so the
-whole first turn of the engagement ran inside the engaging resident's own tool call. On the
-2026-09-15 install the assistant's tool call was held for three minutes while the
-configurator, then an engagement, worked; the reload it ran replaced the assistant, and the pool's
-drain fuse then cut the launch turn from under it. The operator saw the assistant silent, then
-the configurator's output relayed by the assistant, and no result. Now the tool call opens the
-client, hands the launch turn to an owner Casa anchors, and answers `pending` at once; the
-engager's turn ends, and the engagement's result reaches it the way every result does, as a
-notification. Whatever tears the engager's client down no longer reaches the engagement.
+**The engager is not held.** The launch owner (`tools.py::_launch_interactive_engagement`)
+awaits the driver's `open` — the client entered and registered, its reader and the job's
+delivery worker started — then queues the brief (`InCasaDriver.enqueue_brief`) and returns
+`pending`. The job's first turn runs in its session's reader, on the job's own client, after
+the launching tool call has already answered `pending`. The engager's turn ends, and the job's
+result reaches it the way every result does, as a notification when the job ends. A launch
+once ran the whole first turn inside the engaging resident's own tool call; a reload that
+replaced the resident then held the assistant for minutes and cut the turn from under it. No
+edge of that kind reaches a job now: no reload scope holds a reference to the engagement
+driver, the job's client belongs to no pool, and the driver's own closers are the only ones.
 
-**Every outcome of the turn has an owner, and the owner tells the engager.** The tool call
-used to be the one answering for the turn: a death or a fault came back in its envelope. With
-the tool call gone before the turn runs, nobody is waiting for an envelope, so the owner tells
-the engager over the bus instead, on the same envelope the finalization funnel and the boot
-replay use, with the terminal write armed so a telling lost with the process is replayed at
-boot.
+**Two owners, split at the answer.** Until the launch answers, a failure is the launch's. A
+named fault — options that would not build, a profile that would not persist, no driver, a
+client that would not open — answers the calling turn with its kind (INV-ENG-019). A
+cancellation of the tool call after its record exists, or Casa's stop latching while the
+session opened, carries no fault of its own, so the launch-death reporter reports it into the
+topic (INV-ENG-030); a latched launch still returns `launch_cancelled` to its caller, while a
+cancelled one returns nothing and the engager is told over the bus. From the answer on, the session owns the job, and
+a failure of the session itself — its stream ending, a write failing — is session loss,
+resumed once (INV-BGJOB-018), never a launch death. The brief is admitted at its write like
+every write (INV-ENG-009), so a job that ended between `open` and the brief's write receives
+nothing.
+
+**What can end a job's session, and the healthy end that looks like one.** The graceful stop
+cancels a launch still enrolled, with a recorded cause
+([`engagement-failure-and-restart.md`](engagement-failure-and-restart.md)); once a job runs,
+its session ends by Casa's own teardown or by its transport ending — an agent-process exit or
+an EOF. Before attributing an ended session to a reload at all, eliminate the benign case
+first: the finalize tail closes the job's own client, so a healthy completion ends its
+session, and that close is Casa's teardown and is quiet.
+
+**Every outcome of a launch that ends before its answer has an owner, and the owner tells the
+engager.** A named fault's envelope is its telling. A launcher that was cancelled returns no
+envelope, so its cancellation owner tells the engager over the bus, on the same envelope the
+finalization funnel and the boot replay use, with the terminal write armed so a telling lost
+with the process is replayed at boot.
 
 ## Contracts & invariants
 
-**INV-ENG-021**: An `in_casa` launch answers `pending` to the tool call that launched it as soon as the driver's client is open and the launch turn has been handed to an anchored owner, in one synchronous step that also enrols that owner with the launch ledger; the launch turn never runs inside the engager's turn, and cancelling the tool call after it returned does not touch the turn. Every outcome of the turn is told to the engager exactly once, live over the one engagement-outcome envelope with the obligation armed in the terminal write: a turn that died, an owner cancelled before or after its first step, and a stop that latched while the client was opening. Telling ownership is never inferred from the record: a compensating owner that loses the terminal race tells nobody, however armed the record is; an inline arm acknowledges on return only a transition it won, and hands its telling to its own abort only when the launcher was cancelled before returning the envelope. A turn whose terminal write did not persist — the owner's or the cancellation owner's — leaves the record live and its topic open, posts one bounded notice saying so, and tells the engager under its own non-terminal kind, which the consumer never narrates as a failure. The graceful stop drains the owners, the reporters and the pre-record topic aborts — a launcher's that was cancelled, failed or refused between its topic and its record — together to joint quiescence, and once it has marked those drains complete none of a never-started owner's cancellation, a cancelled launcher's compensation or a pre-record topic abort mints anything; each is logged.
+**INV-ENG-021**: A job launch answers `pending` to the call that launched it once the job's session is open and its brief is queued; the job's first turn never runs inside the engager's turn, and cancelling the tool call after it returned does not touch the session. A launch that ends before that answer is told to the engager exactly once — by its returned envelope (a named fault, or `launch_cancelled` when a stop latched while its session opened), acknowledged on return, or, when the launcher itself was cancelled, live over the one engagement-outcome envelope with the obligation armed in the terminal write. Telling ownership is never inferred from the record: a compensating owner that loses the terminal race tells nobody, however armed the record is; an inline arm acknowledges on return only a transition it won, and hands its telling to its own abort only when the launcher was cancelled before returning the envelope. A cancellation whose terminal write did not persist leaves the record live and its topic open, posts one bounded notice saying so, and tells the engager under its own non-terminal kind, which the consumer never narrates as a failure. The graceful stop drains the launch ledger, then the reporters and the pre-record topic aborts — a launcher's that was cancelled, failed or refused between its topic and its record — together to joint quiescence, and once it has marked those drains complete none of a cancelled launcher's compensation, a named-fault abort or a pre-record topic abort mints anything; each is logged.
 
-**The launch is two calls, and the handoff is one synchronous block.** The driver splits
-`start()` into `open()` — build the client, bind the engagement, run the stale-launch gate,
-register the running engagement — and `run_launch_turn()`, the first turn. The tool call
-awaits `open()` inline, so the gate that refuses a prompt rendered from pre-downgrade
-materials still answers the caller with `clearance_changed_during_launch`, and a client that
-would not open still answers with `driver_start_failed`. Then, with no `await` between its
-first statement and its last, it creates the owner task, enrols it with the launch ledger
-under the engagement's id, drops its own ledger handle, attaches the owner's done callback and
-returns `pending`. The block is synchronous so that the graceful stop's ledger walk sees
-either the tool call or the owner, never a gap between them, and so that a stop which began
-during `open()` finds the ledger latched: an owner enrolled after the stop began is cancelled
-before it runs, and a tool call that resumes from `open()` to find the latch set mints no owner
-at all — it reports the cancellation inline, armed, and acknowledges on return like every
-other inline abort. A driver without the split — a fake, or a protocol consumer that has not
-adopted it — keeps the pre-detach shape, the whole first turn inside the tool call.
+**The launch enrols itself with the ledger the moment its record exists.** The tool call
+enrols its own task under the engagement's id right after `create()` and drops the handle on
+every exit, so the graceful stop's ledger walk sees the launch for its whole stretch between
+record and answer. A stop that began during `open()` finds the ledger latched: a tool call
+that resumes from `open()` to find the latch set queues no brief — it reports the cancellation
+inline, armed, and acknowledges on return like every other inline abort. The same enrolment is
+what the job's delivery worker reads (`EngagementRegistry.launch_in_flight`): while the launch
+is enrolled the worker writes, resumes and recovers nothing, so an operator message that reaches
+the job during its launch waits behind the brief, and the launcher's `finally` wakes the worker
+(`InCasaDriver.wake_worker`). A launch that failed and left its record live is thereby resumed
+once by the worker, finds no session, and ends as a job that could not be resumed.
 
-**What the owner does is what the tool call did, after `start()` returned.** The API-fault
-arm, the generic arm and the INV-ENG-011 observation arm are the same three, and they reach
-the same launch-death reporter with the same strict terminal transition; what changed is who
-they answer. Each reports through the reporter with the obligation ARMED and then tells the
-engager the fact of the outcome — status `error`, the fault's kind and detail, no result —
-with the delivery acknowledgement that clears the obligation. The API-level fault, which the
-inline launch returned to its caller as a named fault with the topic aborted silently, now
-takes the death path with the others: the turn ran after the tool call returned, so there is
-no caller to hand the kind to, and an operator's topic that says nothing is what the bounded
-notice exists to explain. A compensating second reporter that finds the record already
-terminal tells nobody: the winner owns the telling, and the record's armed bit is not
+**A launch that answered has nothing left to report.** Once the brief is queued and `pending`
+returned, the launch owner holds nothing: the session's reader owns every turn, the job's
+turn-end handler continues, nudges or parks it, and the driver's session-loss path resumes a
+session that ended. A first turn that ends with nothing visible is a turn end like any other
+(INV-BGJOB-017), not a death.
+
+**Cancellation has an owner at every point.** A launcher cancelled after its record exists
+takes the cancellation arm: the compensation (`tools.py::_abort_launch_on_cancel`) is anchored
+in the reporter set the stop drains, reports `launch_cancelled` with the stop's recorded cause
+through the launch-death reporter, armed, and tells the engager what the report's outcome
+allows — the fact of the outcome on a win, the uncommitted notice on a rolled-back persist,
+nothing on a lost race. Its telling runs inside that anchored task, which the launcher's own
+cancellation never reaches, so nothing cuts it and nothing spawns a second one. A compensating second reporter that finds the record
+already terminal tells nobody: the winner owns the telling, and the record's armed bit is not
 permission to send, because a surviving finalization funnel leaves it armed while its own
-delivery is pending (measured in review: reading the bit as permission told the engager
-twice). The one case where a winner cannot tell — an inline abort whose launcher was
-cancelled before it returned the envelope — is handed over explicitly by that launcher: its
-cancellation arm attaches the telling to the abort's own completion, and the abort tells
-live only if it won. The owner's own telling runs shielded and anchored, so a cancellation
-landing inside it neither cuts it nor spawns a second one. When the launch turn of a
-background job ends with nothing to report, the owner hands the engagement to the job's
-batch loop ([`background-jobs.md`](background-jobs.md)).
+delivery is pending (reading the bit as permission told the engager twice). The one case where
+a winner cannot tell — an inline abort whose launcher was cancelled before it returned the
+envelope — is handed over explicitly by that launcher: its cancellation arm attaches the
+telling to the abort's own completion, and the abort tells live only if it won.
 
-**A launch turn that stopped at its turn limit is not a death** (INV-ENG-020). The owner reads
-the limit fact alongside the turn's other observation and, when it is present, takes none of
-the arms above — no reporter, no transition, no engager telling — whatever else the turn left
-(no visible output, text the topic refused). It tells the topic itself, still inside the
-turn's ownership: it raises the flag that keeps its cancellation arm from aborting before its
-first `await`, reads the settled record (bounded), posts Casa's step-limit line once unless
-that record is terminal (bounded), and logs one WARNING carrying the outcome in a `finally`
-around both. A cancellation there propagates and leaves the record live for boot; a failed
-post is logged and never becomes a death. Because the turn ownership and the ledger enrolment
-are held across the telling, a job's stall sweep cannot start batch 1 under it (measured in
-review: a telling placed after the owner's `finally` let the sweep admit a batch); once it
-ends, a job's launch turn hands the engagement to the batch loop like any other.
+After the stop has marked its drains complete nothing is minted — not by a launcher cancelled
+after the mark, not by a named-fault arm a launcher reaches before its cancellation is
+delivered, and not by a launcher cancelled while still creating its topic, which the ledger
+walk could not see — because the interpreter's final sweep is next and would destroy the
+report pending; the residual is logged and boot re-idles the live record. A launcher that
+fails between its topic and its record — a `create()` that could not persist — is in no ledger
+either, so it does not close its topic inline: it hands the abort to the same anchored owner as
+the cancelled launcher and returns its own error envelope at once. After the mark that owner
+mints nothing and the topic, which has no record behind it, is logged as left open.
 
-**Cancellation has an owner at every point.** An owner cancelled mid-turn takes the
-cancellation arm the tool call had: the cancellation owner reports `launch_cancelled` with
-the stop's recorded cause, armed, and tells the engager what the report's outcome allows —
-the fact of the outcome on a win, the uncommitted notice on a rolled-back persist, nothing on
-a lost race. An owner cancelled after its one transactional question was answered spawns no
-cancellation owner at all, whatever the answer: its telling is already in flight, and a
-compensator on a rolled-back persist would re-ask the question, get the same rollback and tell
-the uncommitted case twice (measured in review). An owner cancelled before its first
-step — enrolled after the stop's ledger walk began — runs no statement, no handler and no
-`finally` (measured), so its done callback is the only place it can be reported: the callback
-drops the ledger handle and spawns the same cancellation owner. After the stop has marked its
-drains complete nothing is minted there — nor by a launcher cancelled while still creating
-its topic, which the ledger walk could not see — because the interpreter's final sweep is
-next and would destroy the report pending; the residual is logged and boot re-idles the live
-record.
-A launcher that fails between its topic and its record — a `create()` that could not
-persist — is in
-no ledger either, so it does not close its topic inline: it hands the abort to the same anchored
-owner as the cancelled launcher and returns its own error envelope at once. After the mark that
-owner mints nothing and the topic, which has no record behind it, is logged as left open.
-The stop's order is the ledger drain, then the three anchors — the owners, the reporters with
-their acks and aborts, and the pre-record topic aborts — drained TOGETHER to joint quiescence,
-then the mark. Joint, because a task in one anchor can mint into another (a finished topic
-abort releases a launcher whose named abort then mints a telling into the reporter set), so
-three drains in sequence let work into an already-drained set; and quiescence is confirmed
-only after one yield to the loop, because a task that has just completed reads as done while
-the done callback that mints its successor is still queued (both measured in review: a stop
-that marked on the first empty snapshot, or after sequential drains, left one telling to be
-minted after it).
+The stop's order is the ledger drain, then the anchors — the reporters with their acks and
+tellings, and the pre-record topic aborts — drained TOGETHER to joint quiescence, then the
+mark. Joint, because a task in one anchor can mint into another (a finished topic abort
+releases a launcher whose named abort then mints a telling into the reporter set), so drains in
+sequence let work into an already-drained set; and quiescence is confirmed only after one yield
+to the loop, because a task that has just completed reads as done while the done callback that
+mints its successor is still queued (a stop that marked on the first empty snapshot, or after
+sequential drains, left one telling to be minted after it).
 
-**A persist failure is not a failure.** A launch turn that ended, whose strict terminal write
-rolled back, leaves a live record and an open topic — an open topic over a live record is
-recoverable and a closed one is not, exactly as INV-ENG-019 reasons for the inline aborts. The
-inline launch answered its caller with the death's kind anyway, since the launch really had
-died for that reason. The owner cannot: telling the engager "error" over the bus would have
-the consumer narrate a failure for an engagement that is still open and resumable. So it posts
-one bounded notice into the topic saying the outcome could not be recorded, retires the dead
-client, and sends the engager an UNARMED notice of kind `launch_outcome_uncommitted` — there is
-no terminal write to carry an obligation. The consumer has a branch for that kind that says the
-engagement is still open and did not fail, and never routes it through the failure narration.
+**A persist failure is not a failure.** A cancellation whose strict terminal write rolled back
+leaves a live record and an open topic — an open topic over a live record is recoverable and a
+closed one is not, exactly as INV-ENG-019 reasons for the inline aborts. Telling the engager
+"error" over the bus would have the consumer narrate a failure for an engagement that is still
+open and resumable. So the owner posts one bounded notice into the topic saying the outcome
+could not be recorded, the reporter has already retired the client, and the engager gets an
+UNARMED notice of kind `launch_outcome_uncommitted` — there is no terminal write to carry an
+obligation. The consumer has a branch for that kind that says the engagement is still open and
+did not fail, and never routes it through the failure narration.
 
-**One envelope.** The finalization funnel, the boot replay and the launch owner each build
-their own `DelegationComplete` — they differ in text, result availability, elapsed time and
-message, measured in review — and hand it to one sender that carries only the routing: the
-target role from the origin with the caller's fallback (the boot replay passes the configured
-assistant role, as it always did; a hard-coded fallback sent a role-less record to a queue
-that need not exist, and the bus drops an unknown target silently), the channel, the
+**INV-ENG-030**: A launch that ends after its record exists and before it answered — its launcher cancelled, or Casa's stop latched while its session opened — is reported by one owner, the launch-death reporter, which asks the registry one strict terminal question and lets its three outcomes decide: a durable win posts one bounded notice into the still-open topic, tears the driver down under a bound, settles the job's message journal and aborts the topic; a lost race performs no side effect; a rolled-back persist leaves the record live and its topic open with the client retired. The path writes only `error`, never `completed`.
+
+The reporter (`tools.py::_report_launch_death`) is the finalization funnel's order applied to
+a launch — mark strictly, tell, then tear down under a bound — and deliberately not the funnel
+itself: the funnel tells the engager the outcome as the engagement reported it, so a launch
+death recorded as a completion with empty text would tell it of a success that never happened,
+and the funnel hard-codes a completion error kind that would erase `launch_cancelled`. One
+transactional question, because a lock-free status read can catch the uncommitted window of a
+strict transition that a persist failure then rolls back, and the best-effort marker returns
+true over a swallowed tombstone-write failure, which would authorize an irreversible close over
+a record disk still calls `active`. The reporter runs as an anchored task the launcher awaits
+shielded: a terminal transition whose write committed keeps its durable state and re-raises on
+cancellation, so an inline owner could commit the flip and then never post, while a
+compensating second owner would correctly lose the transition and do nothing. Each topic
+operation and the teardown carry their own bound, so one wedged counterparty never strands the
+rest. The notice names the launch's fault only and lists no inbound message: a message the
+operator sent meanwhile is the journal's to tell, once (INV-ENG-029).
+
+**One envelope.** The finalization funnel, the boot replay and the cancellation owner each
+build their own `DelegationComplete` — they differ in text, result availability, elapsed time
+and message — and hand it to one sender (`tools.py::send_engagement_outcome`) that carries only
+the routing: the target role from the origin with the caller's fallback (the boot replay passes
+the configured assistant role; a hard-coded fallback sent a role-less record to a queue that
+need not exist, and the bus drops an unknown target silently), the channel, the
 cid/chat-id/engagement-id context merged with whatever the caller adds (the funnel's next
-steps), and the delivery acknowledgement. Three copies of that routing had drifted once
-already; a fourth was not written.
+steps), and the delivery acknowledgement.
 
 ## Failure behavior
 
 | Failure | Behaviour |
 |---|---|
-| `open()` raises, or the stale-launch gate refuses | The tool call answers its named fault as before, the abort armed and acknowledged on return when it won its transition; a lost transition leaves the winner's obligation untouched; no owner exists. |
+| `open()` raises, or another named fault before it | The tool call answers its named fault, the abort armed and acknowledged on return when it won its transition; a lost transition leaves the winner's obligation untouched; no brief is queued. |
 | The tool call is cancelled inside an inline abort | The abort finishes anchored; if it won, its completion tells the engager live with the acknowledgement; the cancellation owner finds the record terminal and tells nobody. |
-| The stop latches while `open()` is suspended | The ledger cancels the tool call; if the client's connect consumed that cancellation, the latch check reports `launch_cancelled` inline, armed, acknowledged on return, and mints no owner. |
-| The turn dies after `pending` | The owner reports through the reporter (strict transition, bounded notice, driver teardown, topic aborted) and tells the engager live with the acknowledgement that clears the obligation. |
+| The stop latches while `open()` is suspended | The ledger cancels the tool call; if the client's connect consumed that cancellation, the latch check reports `launch_cancelled` inline, armed, acknowledged on return, and queues no brief. |
+| The tool call is cancelled after its record exists | The cancellation owner reports through the launch-death reporter (strict transition, bounded notice, bounded teardown, journal settled, topic aborted) and tells the engager live with the acknowledgement that clears the obligation. |
 | The bus drops the engager's role | The message is dropped silently by the bus; the obligation stays armed; boot replays it (INV-ENG-018). |
-| The terminal write of the death rolls back | Record live, topic open, one bounded notice, client retired, unarmed `launch_outcome_uncommitted` to the engager; the consumer says "still open". |
-| The owner is cancelled mid-turn | The cancellation owner reports and tells, as the tool call's cancellation arm did; a rolled-back persist gives the uncommitted notice, a lost race nothing. |
-| The owner is cancelled inside its telling | The telling completes, shielded and anchored; no cancellation owner is spawned. |
-| The owner is cancelled before its first step | Its done callback drops the handle and spawns the cancellation owner; after the drains are marked complete it logs and leaves the record live for boot. |
+| The terminal write of the cancellation rolls back | Record live, topic open, one bounded notice, client retired, unarmed `launch_outcome_uncommitted` to the engager; the consumer says "still open". |
 | A launcher is cancelled after the drains are marked complete | Its compensation is not minted; logged; boot re-idles the live record. A named-fault arm it reaches before the cancellation lands spawns no abort either: it is refused as the cancellation it is. |
-| A launcher is cancelled between creating its topic and its record | Its topic abort is anchored and the stop drains it (it is in no ledger, having no record); after the drains are marked complete it is not minted and the topic left open without a record is logged. |
-| The tool call's task is cancelled after it returned | Nothing: the turn belongs to the owner. |
+| A launcher is cancelled or fails between creating its topic and its record | Its topic abort is anchored and the stop drains it (it is in no ledger, having no record); after the drains are marked complete it is not minted and the topic left open without a record is logged. |
+| The tool call's task is cancelled after it returned | Nothing: the session belongs to the job. |
+| The session ends after the launch answered | Session loss, not a launch death: resumed once, then the job ends `error` (INV-BGJOB-018). |
 
 ## Extension points
 
-**A new driver that wants its launch detached** declares `supports_split_launch` and splits
-`start()` into `open()` and `run_launch_turn()` with `start()` kept as their composition;
-everything the tool call must still answer for belongs in `open()`. A driver without the
-marker keeps the inline shape, and a marker inferred from method presence was tried and cut —
-a mock answers `hasattr` for anything.
+**A new step in the launch** goes before the brief is queued, and decides what its failure is:
+a named fault the calling turn can act on takes an inline abort (INV-ENG-019); anything that
+can only be cancelled is already covered by the cancellation arm.
 
-**A new outcome the owner must tell** decides first whether the record is terminal. If it is,
+**A new outcome the launch must tell** decides first whether the record is terminal. If it is,
 the telling is armed in the transition and cleared by delivery; if it is not, the notice is
 unarmed and carries a kind the consumer narrates as non-terminal, with its own branch.
 
@@ -177,26 +182,28 @@ unarmed and carries a kind the consumer narrates as non-terminal, with its own b
 <!-- generated by scripts/verify_docs.py --write-nav; do not hand-edit -->
 
 **Source**
-- `casa/rootfs/opt/casa/tools.py::_hand_off_launch_turn`
-- `casa/rootfs/opt/casa/tools.py::_own_in_casa_launch`
-- `casa/rootfs/opt/casa/tools.py::_launch_turn_done`
+- `casa/rootfs/opt/casa/tools.py::_abort_launch_on_cancel`
+- `casa/rootfs/opt/casa/tools.py::_report_launch_death`
 - `casa/rootfs/opt/casa/tools.py::_tell_engager_launch_outcome`
 - `casa/rootfs/opt/casa/tools.py::send_engagement_outcome`
 - `casa/rootfs/opt/casa/tools.py::_schedule_terminal_ack`
-- `casa/rootfs/opt/casa/tools.py::drain_launch_turns`
+- `casa/rootfs/opt/casa/tools.py::drain_launch_death_reports`
 - `casa/rootfs/opt/casa/tools.py::stop_engagement_launches`
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.open`
-- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.run_launch_turn`
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.launch_shutdown_active`
+- `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.launch_in_flight`
+- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.wake_worker`
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.mark_launch_drains_complete`
 
 **Tests**
 - `tests/test_in_casa_launch_detach.py`
 - `tests/test_launch_death_reporter.py`
+- `tests/test_in_casa_launch_retention_guard.py`
 - `tests/test_in_casa_launch_terminal_artifact.py`
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)
+- [`architecture/background-job-session.md`](../architecture/background-job-session.md)
 - [`architecture/engagement-failure-and-restart.md`](../architecture/engagement-failure-and-restart.md)
 - [`architecture/engagement-terminal-telling.md`](../architecture/engagement-terminal-telling.md)
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)

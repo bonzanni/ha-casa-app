@@ -1,4 +1,4 @@
-"""#1277: a job's launch prompt and every fresh-turn brief say who started it.
+"""#1277: a job's brief and its post-compaction header say who started it.
 
 The line is exactly ``Started by: operator|scheduled|agent``, immediately after
 the FIRST ``Job id:`` line and before ``Request:``. The token is evaluated once,
@@ -26,14 +26,15 @@ import pytest
 
 import agent
 import background_jobs as jobs
+import scratchpad
 import tools
 from engagement_registry import EngagementRegistry
 
 try:
-    from tests.test_start_job import DECL, runtime  # noqa: F401
+    from tests.test_start_job import DECL, drain_launch_turns, runtime  # noqa: F401
     from tests.test_start_job import Client as LaunchClient
 except ImportError:
-    from test_start_job import DECL, runtime  # noqa: F401
+    from test_start_job import DECL, drain_launch_turns, runtime  # noqa: F401
     from test_start_job import Client as LaunchClient
 
 
@@ -77,11 +78,10 @@ def _serve(monkeypatch, decl):
     return host
 
 
-async def start(runtime, monkeypatch, origin, *, session="fresh", task=TASK,
-                context=CONTEXT):
+async def start(runtime, monkeypatch, origin, *, task=TASK, context=CONTEXT):
     """``start_job`` from *origin*; returns (record, launch prompt). Asserts one
-    record, one client, one launch query."""
-    decl = dataclasses.replace(DECL, session=session)
+    record, one client, one launch write."""
+    decl = dataclasses.replace(DECL)
     _serve(monkeypatch, decl)
     before = len(LaunchClient.instances)
     token = agent.origin_var.set(dict(origin))
@@ -92,7 +92,7 @@ async def start(runtime, monkeypatch, origin, *, session="fresh", task=TASK,
         agent.origin_var.reset(token)
     reply = json.loads(envelope["content"][0]["text"])
     assert reply["status"] == "pending", reply
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     rec = runtime.registry.get(reply["engagement_id"])
     assert rec is not None
     assert len(LaunchClient.instances) == before + 1
@@ -140,7 +140,7 @@ class TestStarterFromTheLaunchingTurn:
 class TestScheduledFire:
     async def test_a_job_trigger_fire_starts_a_scheduled_job(self, runtime, monkeypatch):
         import authz_grants
-        decl = dataclasses.replace(DECL, session="fresh")
+        decl = dataclasses.replace(DECL)
         _serve(monkeypatch, decl)
         monkeypatch.setattr(authz_grants, "_live_operator_identity", lambda: (1, 1))
         trig = SimpleNamespace(name="weekly", type="cron", job=decl.qualified_name,
@@ -148,7 +148,7 @@ class TestScheduledFire:
                                channel="telegram")
         before = len(LaunchClient.instances)
         await tools.start_scheduled_job("assistant", trig)
-        await tools.drain_launch_turns()
+        await drain_launch_turns()
         live = runtime.registry.active_and_idle()
         assert len(live) == 1, live
         rec = live[0]
@@ -215,26 +215,13 @@ class TestRecordedOnceAtLaunch:
             assert_starter(jobs.job_brief(rec), rec.id, expected)
         assert rec.origin["job"]["started_by"] == expected
 
-    async def test_a_clearance_downgrade_keeps_the_starter(self, runtime, monkeypatch):
-        origin = _origin(_operator_turn=True, _origin_clearance="private",
-                         _origin_route="telegram")
-        rec, _ = await assert_job_says(runtime, monkeypatch, origin, "operator",
-                                       task="SECRET-TASK rows", context="SECRET-CONTEXT")
-        assert await runtime.registry.lower_origin_clearance(rec.id, "public")
-        brief = jobs.job_brief(rec)
-        # the downgrade happened: task and context are withheld ...
-        assert "SECRET-TASK" not in brief and "SECRET-CONTEXT" not in brief
-        # ... and the starter, like the job id, stays
-        assert_starter(brief, rec.id, "operator")
-        assert rec.origin["job"]["started_by"] == "operator"
-
 
 # -- L-7: a record written before the release says nothing ----------------------
 
 class TestLegacyRecord:
     def test_a_record_without_a_recorded_token_renders_no_line(self):
-        job = jobs.initial_job_state(dataclasses.replace(DECL, session="fresh"))
-        job["brief_context"] = "rows"
+        job = jobs.initial_job_state(dataclasses.replace(DECL))
+        job["context"] = "rows"
         assert "started_by" not in job
         # every fact a re-derivation could read is present; none may be used
         rec = SimpleNamespace(id="eng-legacy", task="T", origin={
@@ -246,42 +233,34 @@ class TestLegacyRecord:
         assert lines[2] == "Request: T"
 
 
-# -- L-9: resume-mode jobs and non-job engagements ------------------------------
+# -- after a compaction the session re-reads the recorded line ---------------
 
-class TestModes:
-    async def test_a_resume_mode_launch_prompt_carries_the_line(self, runtime, monkeypatch):
-        rec, launch = await start(runtime, monkeypatch, _origin(_operator_turn=True),
-                                  session="resume")
-        assert jobs.is_fresh_job(rec) is False
-        assert rec.origin["job"].get("started_by") == "operator"
-        assert_starter(launch, rec.id, "operator")
+class TestCompactionHeader:
+    async def test_the_compaction_header_carries_the_recorded_line_once(
+            self, runtime, monkeypatch):
+        """The launched session's own ``SessionStart`` hook, fired as the CLI
+        fires it after a compaction, re-states the job with the recorded
+        starter right after ``Job id:``; any other source adds nothing."""
+        rec, _ = await assert_job_says(runtime, monkeypatch, _origin(_operator_turn=True),
+                                       "operator")
+        hooks = LaunchClient.instances[-1].options.hooks["SessionStart"]
+        assert len(hooks) == 1 and len(hooks[0].hooks) == 1
+        fire = hooks[0].hooks[0]
+        out = await fire({"hook_event_name": "SessionStart", "source": "compact"}, None, None)
+        header = out["hookSpecificOutput"]["additionalContext"]
+        # the job's pad follows the header (INV-PAD-011)
+        assert header == f"{jobs.job_header(rec)}\n\n{scratchpad.reinject_text(rec.id)}"
+        assert_starter(header, rec.id, "operator")
+        assert await fire({"hook_event_name": "SessionStart", "source": "resume"},
+                          None, None) == {}
 
-
-# -- every fresh turn through the real driver carries the recorded line ---------
-
-try:
-    from tests.test_background_jobs_loop import harness, result, text_frame  # noqa: F401
-    from tests.test_job_fresh_conversation import RESET, fresh, queries  # noqa: F401
-except ImportError:
-    from test_background_jobs_loop import harness, result, text_frame  # noqa: F401
-    from test_job_fresh_conversation import RESET, fresh, queries  # noqa: F401
-
-
-class TestFreshTurns:
-    async def test_every_fresh_turn_carries_the_recorded_line_once(self, fresh):
-        h = fresh
-        # a record as the launcher now writes it
-        h.rec.origin["job"]["started_by"] = "operator"
-        h.client.scripts = [[text_frame("Batch work"), h.report, result()],
-                            [h.complete, result()]]
-        await h.start()
-        await h.drain()
-        q = queries(h)
-        assert q.count(RESET) == 2
-        turns = [p for p in q if p != RESET]
-        assert len(turns) == 2
-        for prompt in turns:
-            assert_starter(prompt, h.rec.id, "operator")
+    def test_a_record_without_a_recorded_token_has_no_line_in_the_header(self):
+        job = jobs.initial_job_state(dataclasses.replace(DECL))
+        rec = SimpleNamespace(id="eng-legacy", task="T", origin={
+            "job": job, "_operator_turn": True, "_scheduled_job": True, ANSWER_KEY: True})
+        header = jobs.job_header(rec)
+        assert starter_lines(header) == []
+        assert header.splitlines()[1:3] == ["Job id: eng-legacy", "Request: T"]
 
 
 # -- L-8: a specialist's own start ---------------------------------------------
@@ -326,7 +305,7 @@ class DelegateClient(LaunchClient):
     started: list = []
 
     async def query(self, prompt):
-        if "<delegation_context>" in prompt:
+        if isinstance(prompt, str) and "<delegation_context>" in prompt:
             envelope = await tools.start_job.handler(
                 {"job": "ledger:classify", "task": TASK, "context": CONTEXT})
             type(self).started.append(json.loads(envelope["content"][0]["text"]))
@@ -339,7 +318,7 @@ class TestSpecialistSelfStart:
     async def test_a_desk_turn_starts_an_operator_job(self, specialist_runtime):
         result = await start_as(_desk_turn_origin())
         assert result["status"] == "pending", result
-        await tools.drain_launch_turns()
+        await drain_launch_turns()
         _assert_self_start(specialist_runtime, "operator")
 
     @pytest.mark.parametrize("parent_fact", ["_operator_turn", ANSWER_KEY])
@@ -365,7 +344,7 @@ class TestSpecialistSelfStart:
             assert agent.origin_var.get(None) is None
             await run
         assert [r.get("status") for r in DelegateClient.started] == ["pending"]
-        await tools.drain_launch_turns()
+        await drain_launch_turns()
         _assert_self_start(specialist_runtime, "operator")
 
     async def test_a_delegated_turn_from_a_machine_turn_reads_agent(
@@ -382,7 +361,7 @@ class TestSpecialistSelfStart:
             agent.origin_var.reset(token)
         await run
         assert [r.get("status") for r in DelegateClient.started] == ["pending"]
-        await tools.drain_launch_turns()
+        await drain_launch_turns()
         _assert_self_start(specialist_runtime, "agent")
 
 
@@ -457,7 +436,7 @@ def turns(runtime, tmp_path, monkeypatch):
     from mcp_registry import McpServerRegistry
     from session_registry import SessionRegistry
 
-    _serve(monkeypatch, dataclasses.replace(DECL, session="fresh"))
+    _serve(monkeypatch, dataclasses.replace(DECL))
     broker = verdict_broker.VerdictBroker()
     monkeypatch.setattr(verdict_broker, "BROKER", broker)
     monkeypatch.setattr(scheduled_asks, "_ROLE_EPOCHS", {})
@@ -491,7 +470,7 @@ async def run_turn(t, msg):
     assert len(TurnClient.replies) == before + 1
     reply = TurnClient.replies[-1]
     assert reply["status"] == "pending", reply
-    await tools.drain_launch_turns()
+    await drain_launch_turns()
     rec = t.runtime.registry.get(reply["engagement_id"])
     return TurnClient.origins[-1], rec
 
@@ -844,5 +823,5 @@ class TestApprovalAndSetup:
                 break
             await asyncio.sleep(0.01)
         assert [r.get("status") for r in DelegateClient.started] == ["pending"]
-        await tools.drain_launch_turns()
+        await drain_launch_turns()
         _assert_self_start(specialist_runtime, "operator")

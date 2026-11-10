@@ -529,6 +529,24 @@ def _isolate_resident_bindings(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_job_inbox(tmp_path, monkeypatch):
+    """Point a background job's operator-message journal (``job_inbox``) and
+    its scratchpad files (``background_jobs.JOB_PAD_ROOT``) at a per-test tmp
+    dir, and give every test a fresh job guard state and pad store: without
+    this a test that hands a message to a job or builds a job's session would
+    write under the real ``/data`` (unwritable outside the container), and one
+    test's in-memory state would leak into the next."""
+    import background_jobs
+    import job_inbox
+    import scratchpad
+    monkeypatch.setattr(job_inbox, "INBOX_ROOT", tmp_path / "job-inbox")
+    monkeypatch.setattr(background_jobs, "JOB_PAD_ROOT", tmp_path / "job-pads")
+    monkeypatch.setattr(scratchpad, "PADS", scratchpad.PadStore())
+    monkeypatch.setattr(background_jobs, "_states", {})
+    monkeypatch.setattr(background_jobs, "_runner", None)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_operator_notice_lock():
     """Rebind ``casa_core._OPERATOR_NOTICE_LOCK`` per test.
 

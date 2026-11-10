@@ -16,6 +16,7 @@ The sends are the channel's real ones over a fake bot, against a real store.
 """
 from __future__ import annotations
 
+import asyncio
 import secrets
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -406,6 +407,12 @@ def _topic_update(text: str, *, user_id: int = OPERATOR_CHAT, message_id=900,
     return u
 
 
+def _done():
+    from claude_agent_sdk import ResultMessage
+    return ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1,
+                         is_error=False, num_turns=1, session_id="sid")
+
+
 class _TopicStream:
     def __init__(self):
         self.finals: list[str] = []
@@ -421,13 +428,16 @@ class _TopicStream:
 @pytest.fixture
 async def topic(tmp_path, roles, mem):
     """A topic of Fido's engagement (and one of finance's, and one of an
-    executor's) on a real channel and a real in_casa driver."""
-    import asyncio
-
+    executor's) on a real channel and a real in_casa driver, each with a live
+    scripted session."""
     from channels.telegram import TelegramChannel
     from drivers.in_casa_driver import InCasaDriver
     from engagement_registry import EngagementRegistry
     from test_in_casa_inbound_admission import _mk_assistant, _ScriptedClient
+    try:
+        from tests.turn_scripted_session import attach_session
+    except ImportError:  # pragma: no cover — direct-path collection
+        from turn_scripted_session import attach_session
 
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     origin = {"role": "assistant", "channel": "telegram",
@@ -441,15 +451,16 @@ async def topic(tmp_path, roles, mem):
                                      "t", dict(origin), topic_id=TOPIC + 2),
     }
     stream = _TopicStream()
-    drv = InCasaDriver(topic_stream_factory=lambda tid: stream)
+    drv = InCasaDriver(topic_stream_factory=lambda tid: stream,
+                       record_lookup=reg.get,
+                       begin_turn_delivery=reg.begin_turn_delivery)
     clients = {}
     for name, rec in recs.items():
         client = _ScriptedClient(scripts=[
-            [_mk_assistant(f"Saturday 9-17 {CANARY}")] for _ in range(4)])
+            [_mk_assistant(f"Saturday 9-17 {CANARY}"), _done()]
+            for _ in range(4)])
         clients[name] = client
-        drv._clients[rec.id] = client
-        drv._ctx_stack[rec.id] = client
-        drv._locks[rec.id] = asyncio.Lock()
+        attach_session(drv, rec, client)
 
     def channel(chat_id=str(OPERATOR_CHAT)):
         ch = TelegramChannel(bot=MagicMock(), chat_id=chat_id,
@@ -459,27 +470,28 @@ async def topic(tmp_path, roles, mem):
         ch._engagement_driver = drv
         ch._driver_advance_high_water = AsyncMock()
         ch._post_engagement_notice = AsyncMock()
-        ch._driver_admit_inbound = lambda r, t: drv.admit_inbound(r.id, t)
-        ch._driver_discharge_inbound = (
-            lambda r, tok: drv.discharge_inbound(r.id, tok))
-        ch._driver_inbound_held = (
-            lambda r, tok: drv.inbound_token_held(r.id, tok))
-
-        async def _send_user_turn(r, t, *, tg_message_id=None,
-                                  inbound_token=None, batch=None):
-            await drv.send_user_turn(r, t, tg_message_id=tg_message_id,
-                                     inbound_token=inbound_token)
-        ch._driver_send_user_turn = _send_user_turn
         return ch
 
-    return SimpleNamespace(recs=recs, clients=clients, stream=stream,
-                           channel=channel)
+    yield SimpleNamespace(recs=recs, clients=clients, stream=stream,
+                          channel=channel, drv=drv)
+    for rec in recs.values():
+        await drv.cancel(rec)
+
+
+async def _settled(drv, recs) -> None:
+    """Every accepted message was written, taken up and its turn ended."""
+    try:
+        from tests.test_job_session_driver import until
+    except ImportError:  # pragma: no cover — direct-path collection
+        from test_job_session_driver import until
+    await until(lambda: all(drv.inbound_unread_depth(r.id) == 0
+                            and not drv.turn_open(r.id) for r in recs))
 
 
 async def _say(ch, update):
-    from test_in_casa_inbound_admission import _drain
     await ch.handle_update(update)
-    await _drain(ch)
+    await _settled(ch._engagement_driver,
+                   list(ch._engagement_registry._records.values()))
 
 
 async def test_the_operator_s_message_in_a_no_memory_specialist_s_topic_is_his_message(
@@ -519,8 +531,15 @@ async def test_one_topic_message_is_one_event_whichever_seam_captures_it(
     await _say(ch, _topic_update("book it", message_id=901,
                                  thread_id=TOPIC + 1))
     assert topic.clients["browser"].query_prompts == ["Saturday please"] * 2
-    rows = await captured_events(mem)
-    ops = [e for e in rows if e["speaker_kind"] == "operator"]
+    # The finance specialist keeps its operator's words from the delivery
+    # worker, after the write, so the capture can still be landing once the
+    # turn has ended: wait for the second row, then assert the exact set.
+    for _ in range(400):
+        rows = await captured_events(mem)
+        ops = [e for e in rows if e["speaker_kind"] == "operator"]
+        if len(ops) >= 2:
+            break
+        await asyncio.sleep(0.005)
     assert [(e["eligibility"], e["role"], e["text"]) for e in ops] == [
         ("topic_message", "assistant", "Saturday please"),
         ("engagement_turn", "finance", "book it")]
@@ -571,11 +590,9 @@ async def test_the_operator_s_reply_to_a_no_memory_specialist_s_job_post_is_thei
     engagement, and never the specialist's reply."""
     import background_jobs as jobs
     from memory import occurrence
-    monkeypatch.setattr(jobs, "job_after_turn", AsyncMock())
     rec = topic.recs["browser"]
     rec.origin["job"] = jobs.initial_job_state(jobs.JobDecl(
-        "sample:work", "sample", "work", "sample:work", "Book slots", None,
-        None, 10), started_by="operator")
+        "sample:work", "sample", "work", "sample:work", "Book slots", None), started_by="operator")
     rec.origin["chat_id"] = str(OPERATOR_CHAT)
     ch = topic.channel()
     ch._engagement_registry.record_job_post(rec.id, 600)
@@ -585,9 +602,8 @@ async def test_the_operator_s_reply_to_a_no_memory_specialist_s_job_post_is_thei
         message=SimpleNamespace(text="Saturday please", message_id=910,
                                 reply_to_message=quoted),
         effective_user=SimpleNamespace(id=OPERATOR_CHAT, first_name="Nicola"))
-    from test_in_casa_inbound_admission import _drain
     await ch._handle_serialized(update, str(OPERATOR_CHAT))
-    await _drain(ch)
+    await _settled(topic.drv, topic.recs.values())
     assert topic.clients["browser"].query_prompts == [
         "[replying to «📊 Fido: which day?»]\nSaturday please"]
     rows = await captured_events(mem)

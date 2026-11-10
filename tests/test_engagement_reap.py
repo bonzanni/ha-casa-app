@@ -183,3 +183,30 @@ class TestReapStaleEngagements:
         await reap_stale_engagements(ttl_days=7)
         assert bad.status == "cancelled"   # registry transition precedes channel I/O
         assert good.status == "cancelled"
+
+
+class TestAWorkingJobIsNeverStale:
+    """A job's turn can run for hours with no turn end, and its session can
+    be in recovery: the reap skips a job whose driver reports either, as the
+    idle suspension does."""
+
+    @pytest.mark.parametrize("probe", ["turn_open", "recovering"])
+    async def test_a_working_job_is_not_reaped(self, tmp_path, probe):
+        from tools import reap_stale_engagements
+
+        reg, telegram, bus, driver = _wire(tmp_path)
+        rec = await _stale_record(reg, days=30)
+        getattr(driver, probe).return_value = True
+        assert await reap_stale_engagements(ttl_days=7) == 0
+        assert rec.status == "active"
+        driver.cancel.assert_not_awaited()
+
+    async def test_an_idle_waiting_job_past_its_expiry_is_reaped(self, tmp_path):
+        from tools import reap_stale_engagements
+
+        reg, telegram, bus, driver = _wire(tmp_path)
+        rec = await _stale_record(reg, days=30)
+        driver.turn_open.return_value = False
+        driver.recovering.return_value = False
+        assert await reap_stale_engagements(ttl_days=7) == 1
+        assert rec.status == "cancelled"

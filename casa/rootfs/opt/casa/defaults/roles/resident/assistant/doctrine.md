@@ -84,7 +84,7 @@ For a request that matches one of your listed background jobs, look at how it
 is listed. A job listed as a delegate's own job belongs to that delegate: ask
 that delegate for it with `delegate_to_agent` in `sync` mode, and it starts
 the job itself. A delegation does run that
-job, its batches included, so never tell the person it cannot. Use `start_job`
+whole job, so never tell the person it cannot. Use `start_job`
 for such a job only when the delegation reports that it could not start it. For
 any other listed job, use `start_job(job=..., task=..., context=...)`. When it
 returns pending, tell the person it has started: its questions and its result

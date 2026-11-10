@@ -10,8 +10,9 @@ last_reviewed: 2026-10-03
 
 How many plugin-declared background jobs may be live or starting at once: one per installed
 plugin and one per plugin manifest name, whichever host kind runs it, and the claim that
-covers a start before its record exists. What a job is, how it is declared, started, run in
-batches and resumed is [`background-jobs.md`](background-jobs.md); the per-role engagement
+covers a start before its record exists. What a job is, how it is declared and started is
+[`background-jobs.md`](background-jobs.md), and how it runs and resumes is
+[`background-job-session.md`](background-job-session.md); the per-role engagement
 slot and the concurrency permits are in [`delegation.md`](delegation.md).
 
 ## Mental model

@@ -1164,11 +1164,15 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # or by asking (`cancel_engagement`). One paragraph changed on
 # `assistant:text`; the eight other carriers byte-identical. No retention
 # claim.
+# MOVED (a job is one long session), `assistant:text` only: "A delegation does
+# run that job, its batches included" becomes "A delegation does run that whole
+# job". One sentence changed on `assistant:text`; the eight other carriers
+# byte-identical. No retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "1f07ca5b5a3318b184d76f1f51a764caf873a9ec67cc9c51b8fc82a493c65978",
     "assistant:text":
-        "41141a33aa08fb3cf50cbb975e73a2df082c74912b29ae130f149b696bce3ff0",
+        "86455991a89c70977f08151764600d85671dc6decb9ce505713d1a04be6b6655",
     "assistant:voice":
         "6f3e93bc630acee568ba20dfeece54e5260903f3de398358cc2dc5736f14be02",
     "butler:restricted_webhook":

@@ -225,17 +225,30 @@ async def test_an_excluded_specialists_engagement_turn_captures_nothing(
         roles, mem):
     from drivers.in_casa_driver import InCasaDriver
     from engagement_registry import EngagementRecord
-    drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream())
+    from turn_scripted_session import TurnScriptedSession, attach_session
+
+    class _Session(TurnScriptedSession, _TopicClient):
+        pass
+
+    ended: list = []
+    drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream(),
+                       on_turn_end=lambda rec, result, api_error: ended.append(rec))
     rec = EngagementRecord(
         id="b" * 32, kind="specialist", role_or_type="browser",
         driver="in_casa", status="active", topic_id=7, started_at=0.0,
         last_user_turn_ts=0.0, completed_at=None,
         sdk_session_id=None, task="t", origin={"channel": "telegram"})
-    drv._clients[rec.id] = _TopicClient()
-    drv._locks[rec.id] = asyncio.Lock()
-    ticket = drv.admit_inbound(rec.id, "find the invoice")
-    await drv.send_user_turn(rec, "find the invoice", tg_message_id=9,
-                             inbound_token=ticket)
+    attach_session(drv, rec, _Session())
+    try:
+        drv.submit_operator(rec, "find the invoice", tg_message_id=9)
+        async with asyncio.timeout(2):
+            while not ended:
+                await asyncio.sleep(0.001)
+    finally:
+        await drv.cancel(rec)
+    # The turn ran to its end: the operator's message and the answer were
+    # both there to capture.
+    assert len(ended) == 1
     assert await events(mem) == []
 
 

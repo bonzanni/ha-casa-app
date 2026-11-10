@@ -11,8 +11,8 @@ last_reviewed: 2026-11-08
 A resident's scheduled trigger (`interval`, `cron` or `date`) whose target is a plugin job
 instead of a prompt: what the entry may carry, how it is checked when it is written, loaded and
 registered, and what happens when it fires. How scheduled triggers in general are registered,
-fired and owned is [`triggers.md`](triggers.md). What a job is, how it runs in batches in its
-own topic and how its end is told is [`background-jobs.md`](background-jobs.md).
+fired and owned is [`triggers.md`](triggers.md). What a job is, how it runs as one long session in
+its own topic and how its end is told is [`background-jobs.md`](background-jobs.md).
 
 ## Mental model
 
@@ -46,10 +46,10 @@ nobody to tell, and the fire only logs.
 
 ## Contracts & invariants
 
-**INV-TRIG-022**: A scheduled trigger carrying `job` registers whenever its resident declares the channel, which for a job entry is `telegram` (schema and upsert refuse any other; never fatal to boot for an unstartable job); the typed upsert refuses a job the resident cannot start; at fire the job is launched through the one launcher `start_job` uses, with an origin carrying the live operator's identity and clearance, and no resident turn runs; a fire that cannot start the job tells the operator once — the admission decision as a past event at the occurrence — and runs nothing; the job then runs, posts and ends exactly as one the resident started, except that its launch prompt and briefs say a schedule started it, and that a job declaring `quietWhenScheduled` runs quietly (INV-BGJOB-010).
+**INV-TRIG-022**: A scheduled trigger carrying `job` registers whenever its resident declares the channel, which for a job entry is `telegram` (schema and upsert refuse any other; never fatal to boot for an unstartable job); the typed upsert refuses a job the resident cannot start; at fire the job is launched through the one launcher `start_job` uses, with an origin carrying the live operator's identity and clearance, and no resident turn runs; a fire that cannot start the job tells the operator once — the admission decision as a past event at the occurrence — and runs nothing; the job then runs, posts and ends exactly as one the resident started, except that its brief and the header re-stated after a compaction say a schedule started it, and that a job declaring `quietWhenScheduled` runs quietly (INV-BGJOB-010).
 
 That one difference is the starter line, `Started by: scheduled`, which the fire's
-`_scheduled_job` stamp decides at launch ([`background-job-fresh-sessions.md`](background-job-fresh-sessions.md)); a job a
+`_scheduled_job` stamp decides at launch ([`background-job-session.md`](background-job-session.md)); a job a
 resident's own scheduled turn starts reads `agent` instead, because an agent turn decided it
 (unless the operator answered a question in that turn).
 

@@ -41,7 +41,7 @@ For a request that matches a job listed in `<jobs>`, look at how it is
 listed. A job listed as a delegate's own job belongs to that delegate:
 ask that delegate for it with `delegate_to_agent` in `sync` mode, and it
 starts the job itself. A delegation does
-run that job, its batches included, so never tell the user it cannot.
+run that whole job, so never tell the user it cannot.
 Use `start_job` for such a job only when the delegation reports that it
 could not start it. For any other listed job, use
 `start_job(job=<job name>, task=..., context=...)`. When it returns

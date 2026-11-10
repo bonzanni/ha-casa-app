@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-08
+last_reviewed: 2026-11-09
 ---
 
 # Background jobs
@@ -9,124 +9,71 @@ last_reviewed: 2026-11-08
 ## Scope
 
 Plugin-declared background jobs: the `casa.jobs` declaration, the `<jobs>` block a resident
-sees, `start_job`, specialist and resident-plugin worker launches, the batch loop, the
-`report_job_progress` tool, and resuming a job after a restart. How many jobs of one plugin may
-run at once is [`background-job-occupancy.md`](background-job-occupancy.md). The engagement a job runs
-in — its topic, turn admission, completion gate and finalization — is described by
+sees, `start_job`, specialist and resident-plugin worker launches, the `report_job_progress`
+tool, and what Casa ends a job for. How a running job's session works — the brief, writes as
+they arrive, turn ends, parking, resuming after a restart or a CLI death, compaction and cost
+— is [`background-job-session.md`](background-job-session.md); how an operator message
+survives a restart is [`background-job-message-journal.md`](background-job-message-journal.md).
+How many jobs of one plugin may run at once is
+[`background-job-occupancy.md`](background-job-occupancy.md). The engagement a job runs in —
+its topic, admission, completion gate and finalization — is described by
 [`engagements.md`](engagements.md) and the documents it routes to; the per-role engagement
-slot is in [`delegation.md`](delegation.md).
-A job's `session` mode and what a fresh job's turns see are
-[`background-job-fresh-sessions.md`](background-job-fresh-sessions.md). What a job puts in the
-operator's direct chat — its start line and Cancel, its questions, replies into it — is
+slot is in [`delegation.md`](delegation.md). What a job puts in the operator's direct chat is
 [`background-job-direct-chat.md`](background-job-direct-chat.md).
 
 ## Mental model
 
 A job belongs to the plugin that declares it, not to a specialist. A plugin's manifest lists
-jobs under `casa.jobs`, each naming one of its skills, a title, a batch cap (`unlimited` or
-a positive integer), an optional per-batch turn limit and an optional `host`. Any specialist
-whose resolved plugin set includes that plugin can host the job, and so can a resident the
-plugin is installed on unless the job declares `"host": "specialist"`; the qualified job
-name is `<plugin manifest name>:<job name>`.
+jobs under `casa.jobs`, each naming one of its skills, a title, an optional summary, an
+optional `host` and an optional `quietWhenScheduled`. Any specialist whose resolved plugin
+set includes that plugin can host the job, and so can a resident the plugin is installed on
+unless the job declares `"host": "specialist"`; the qualified job name is
+`<plugin manifest name>:<job name>`.
 
 The assistant sees the jobs its delegates can host in a `<jobs>` block and starts one with
 `start_job(job, task, context)` — except a job a delegate can start itself, which she asks
 that delegate for with a sync delegation
 ([`specialist-job-start.md`](specialist-job-start.md)). The job runs as an engagement of the
-host specialist, with three differences: the engagement record carries the job's counters
-under `origin["job"]`, the specialist's client is opened with the job's per-batch turn limit
-and the `report_job_progress` and `ask_operator` grants, and the launch prompt asks only for a
-one-line acknowledgement.
+host specialist, with three differences: the record carries the job's state under
+`origin["job"]` (`background_jobs.initial_job_state`: name, title, skill, the brief's uuid,
+the launch context, the last progress, the starter, and the quiet stamp), the specialist's
+session is built as a job session (`background_jobs.job_session_options`) with the
+`report_job_progress` and `ask_operator` grants, and the first thing written into it is the
+job's brief.
 
 A resident-hosted launch uses a dedicated `kind="plugin"` engagement. Its
 `role_or_type` names the resident, while `origin["plugin_job"]` pins the plugin registry
-name and launch model. The record keeps one declaring artifact and the numeric batch
-turn limit (the declaration's override, otherwise the resident's configured limit).
-The worker loads that artifact's skills and MCP servers, plus only `report_job_progress`
-and `emit_completion` from Casa. Its native grants are `Skill` and `ToolSearch`;
-`Agent`, `Task`, `AskUserQuestion` and `Bash` are denied, as are the CLI's cross-session tools
-(INV-MCP-013 in [`mcp-and-tools.md`](mcp-and-tools.md)). `Bash` has to be denied outright: the
-pinned CLI runs a read-only command without asking the fail-closed callback, and when a
-backgrounded command finishes, the live CLI runs a turn Casa never sent, which the next batch
-would read as its own reply. Empty settings sources, default
-permission mode and the fail-closed callback keep the resident's settings and tools out.
-The Casa-owned prompt asks the worker to park items needing answers and report progress —
-it has no question tool, and the operator answers by replying to its posts in their direct chat;
-it supplies no resident persona or memory. Plugin authorization and result-contract hooks
-still apply. Its working directory is `/data/engagements/<id>/plugin-job`.
+name and launch model, and the record keeps one declaring artifact. The worker loads that
+artifact's skills and MCP servers, plus only `report_job_progress` and `emit_completion`
+from Casa. Its native grants are `Skill` and `ToolSearch`; `Agent`, `Task`,
+`AskUserQuestion` and `Bash` are denied, as are the CLI's cross-session tools (INV-MCP-013
+in [`mcp-and-tools.md`](mcp-and-tools.md)). `Bash` has to be denied outright: the pinned
+CLI runs a read-only command without asking the fail-closed callback, and when a
+backgrounded command finishes, the live CLI runs a turn Casa never sent. Empty settings
+sources, default permission mode and the fail-closed callback keep the resident's settings
+and tools out. The Casa-owned prompt tells the worker the job is one long session, to set
+aside items needing answers — it has no question tool, and the operator answers by replying
+to its posts in their direct chat — and that their messages reach it between its steps; it
+supplies no resident persona or memory. Plugin authorization and result-contract hooks still
+apply. Its working directory is `/data/engagements/<id>/plugin-job`.
 
-Casa then drives the job itself. Every batch is a system turn (`Batch <n> of "<title>":
-continue the job.`) delivered through the same path as an operator message. A batch ends
-when the specialist ends its turn or runs out of turns — running out is not a failure. A
-job's launch turn that runs out of turns does not fail the job either: its topic gets Casa's
-step-limit line and batch 1 starts as usual (INV-ENG-020). The
-specialist reports each batch with `report_job_progress`, which posts one line in the topic
-and says whether the batch moved the job toward completion.
+Casa then writes the brief and lets the job work: one long session that keeps going until
+the job calls `emit_completion`. It posts progress with `report_job_progress` when it has
+something worth telling, and a specialist's job asks the operator through `ask_operator`.
 Messages the operator writes in the topic, and their replies in their direct chat to the job's
-posts, are delivered as their own turns, between batches; a specialist's job asks them through
-`ask_operator` ([`background-job-direct-chat.md`](background-job-direct-chat.md)). The job ends
-when the specialist calls `emit_completion`, when the operator cancels it (`/cancel` in the
-topic, the Cancel button in their direct chat, or through the resident's `cancel_engagement`), or
-when Casa fails it (a batch that raised or was cut off, no progress, or the batch cap).
-
-A job also declares `session` (`resume`, the default, or `fresh`); what a fresh job's turns
-see is [`background-job-fresh-sessions.md`](background-job-fresh-sessions.md). A job declaring
-`quietWhenScheduled` runs without a topic, acknowledgement or progress lines when its schedule
-started it, until it interacts with the operator
+posts, are written into the running session as they arrive. When a turn ends without the job
+finishing, Casa continues it, nudges it once, or parks it to wait for the operator
+([`background-job-session.md`](background-job-session.md)). The job ends when it calls
+`emit_completion`, when the operator cancels it (`/cancel` in the topic, the Cancel button in
+their direct chat, or through the resident's `cancel_engagement`), when the stale-job reap
+ends it, or when its session cannot be resumed (INV-BGJOB-022). A job declaring
+`quietWhenScheduled` runs without a topic or progress lines when its schedule started it,
+until it interacts with the operator
 ([`background-job-quiet-runs.md`](background-job-quiet-runs.md)).
 
 ## Contracts & invariants
-**INV-BGJOB-001**: A job engagement's next batch is started only while the record is live, the ended turn was not cut off, no turn is queued and no turn delivery is in progress; the previous batch is judged, the batch number chosen and the batch cap checked in the same synchronous step that admits it, and that batch is counted only once the hand-off has been accepted — a refused hand-off leaves every counter untouched.
 
-`background_jobs.job_after_turn` runs after every turn of a job engagement — the launch
-turn (from the launch owner), a batch or an operator message (from the channel's turn
-delivery). It does not care which kind of turn ended; `start_next_batch` is the only place
-a batch is counted or started. "In progress" is a per-engagement count of live turn-delivery
-owners (`turn_owner_started` / `turn_owner_finished`), not the driver's per-turn lock,
-which is released before the turn's final stream delivery. Because the batch's system turn
-is admitted as unread input synchronously at entry, a later quiet check sees it, so at most
-one batch is queued or running. A restart resume and the periodic job sweep call
-`start_next_batch` directly. The judgment and next batch number are staged synchronously;
-they are committed and persisted only after the channel accepts the hand-off. A refused
-hand-off changes no batch or progress counters. Each job turn mints a cid for its own lines,
-tied to the engagement and any batch ([`observability.md`](observability.md) scopes it).
-
-A member's post that lowers the job's clearance mid-batch leaves the running batch to
-finish. The batch is judged by the usual rule, and it cannot report progress after the
-downgrade because its tool calls are refused while the rebuild is pending. The member's
-message is then delivered into the fresh session; it is not a batch's turn, so it cannot
-report for that batch either. Being queued, it holds the next batch back,
-so that batch runs after the message, in the fresh session (INV-MEM-011,
-[`memory-scoping.md`](memory-scoping.md)).
-
-What it does not cover: an operator message that arrives after a batch's quiet check and
-before that batch is admitted queues behind the batch and is read one batch later.
-
-**INV-BGJOB-003**: A job that is not progressing is continued by the periodic job sweep — no turn queued, no delivery owner live, no launch enrolled, and no advance for the stall window — and the sweep's own decision to end a job rests only on three of its continuations having been refused, never on a reading of the record's state; a continuation it attempts may still end the job through the paths that own that outcome (an engagement with no session to resume, the batch cap, the no-progress guard), and a hand-off refused because Casa is stopping is not a failed continuation and leaves the record live for boot.
-
-The sweep does not try to decide whether a job is still launching. Seven review rounds established that no
-reading of a live record answers that reliably — a record is published before its creation persists, a
-launch is enrolled a moment later still, a clearance clamp clears a started job's session pointer, and a
-terminal write that rolls back passes through `error` on its way back to `active`. Each reading that looked
-sufficient left some live job permanently ignored.
-
-So the sweep reads only enough to stay out of the way — a queued turn, a live delivery owner, an enrolled
-launch, a record younger than the stall window — and its one power over a job it cannot prove is running is
-to CONTINUE it. Continuing a job that was still launching costs an admitted turn that the driver serialises
-behind the launch anyway; nothing is ended on a state read. A job ends here only when three continuations
-the sweep itself attempted were refused, and then through the finalize funnel with its last progress. What
-this does not cover: a job whose session cannot be resumed at all is ended by that path on the first
-attempt, which is the same telling an operator would get from any unresumable engagement.
-
-The sweep is the single owner of a job's liveness, for both host kinds. It exists because
-continuation otherwise rides one-shot events — a hook after a turn, one boot pass — so any
-failure between them (a resume that raises, a context rebuild that cannot be established, a
-restart whose progress notice could not be posted, a refused hand-off) stopped the work
-permanently. What it does not cover: a job still inside its launch turn belongs to the launch
-owner, and a restart there ends it with the launch failure's own notice rather than resuming
-it.
-
-**INV-BGJOB-004**: A resident-hosted job's session is offered exactly its declaring plugin's tools, `Skill`, `ToolSearch` and the two job tools — never a delegation, messaging, memory or question tool, and never the resident's own settings, prompt or plugins.
+**INV-BGJOB-004**: A resident-hosted job's session is offered exactly its declaring plugin's tools, `Skill`, `ToolSearch`, the two job tools and its scratchpad — never a delegation, messaging, memory or question tool, and never the resident's own settings, prompt or plugins.
 
 Its authorization identity is bound to the host resident and the pinned artifact, so the
 plugin's protected tools reach Casa's ordinary approval challenge rather than being refused
@@ -139,33 +86,21 @@ How many jobs of one plugin may be live or starting at once — one per installe
 and one per plugin manifest name — is
 [`architecture/background-job-occupancy.md`](background-job-occupancy.md) (INV-BGJOB-006).
 
-**INV-BGJOB-002**: A job fails through the engagement finalize funnel, with the reason and its last reported progress, when three consecutive batches report no progress or end without reporting, when a batch would exceed its declared batch cap, when a batch's delivery raises, or when a batch is cut off before finishing — and a clearance downgrade never cuts a running batch.
+**INV-BGJOB-022**: Casa never ends a live job on its own judgement of the work — stopping without finishing, the step ceiling, API faults and cost continue or park it; the job runner ends a job only when its session cannot be resumed after a restart or after its first unexpected end, or ends unexpectedly a second time, and then `error` through the engagement finalize funnel with its reason; every `cancelled` or `error` end of a job appends `Last progress: <summary>` to the text its topic and resident receive, once.
 
-A fresh job with a recorded pending completion is spared one batch beyond either limit,
-once (INV-BGJOB-007).
-
-A batch makes progress when its LAST `report_job_progress` of that batch said so: a batch
-that reports twice has changed its mind, and the later word is the one it stands by, which
-is why the posted lines carry only the worker's summary and counts. A report counts for
-the batch whose turn runs as its handler runs: `start_next_batch` hands the batch
-number to the driver with its turn (#1166's re-send keeps it), so a report from any
-other turn of the job — the launch acknowledgement, a reply in the topic, a continuation —
-is refused, posts nothing and changes nothing (#1033), unless the CLI cancelled the call
-and its handler first runs in the next batch's turn. A batch that reported
-`progressed=False`, or that ended without reporting at all, did not: the counts are the
-worker's own unit — work can be uncountable, or its total unknown — so they are shown to
-the operator and decide nothing (#1031). A job launched before that rule carries the older
-`reported`/`remaining` counters instead, and its one in-flight batch is judged once under
-the count rule it ran under, so an upgrade mid-job neither invents a stuck batch nor
-discards one the old rule had credited. Every
-`cancelled` or `error` ending of a job engagement appends `Last progress: <summary>` to the
-text the topic and the resident receive, so `/cancel` also reports what the job had done.
+The reasons are "could not be resumed after a restart" and "its session ended unexpectedly"
+(INV-BGJOB-018 in [`background-job-session.md`](background-job-session.md)). The summary is
+the first line of the job's latest `report_job_progress`, so `/cancel` also reports what the
+job had done. What it does not cover: the job itself may finish `failed` or `cancelled`
+through `emit_completion`, the operator may cancel it, the stale-job reap cancels a job idle
+and waiting past its expiry, and a launch that fails before its session is registered takes
+the launch-abort paths ([`engagement-launch-detach.md`](engagement-launch-detach.md)).
 
 The declaration is strict: `plugin_store.manifest_jobs` refuses a non-list, an unknown
-entry field, a bad or duplicate name, an empty skill, an over-long or multi-line title or
-summary, a `batches` or `turnsPerBatch` that is not a positive integer (a boolean is not
-one), a `session` other than `resume` or `fresh`, a `host` other than the string
-`"specialist"`, and a `quietWhenScheduled` that is not a boolean, with `jobs_invalid`; install validation also refuses a job whose
+entry field (the only fields are `name`, `skill`, `title`, `summary`, `host` and
+`quietWhenScheduled`), a bad or duplicate name, an empty skill, an over-long or multi-line
+title or summary, a `host` other than the string `"specialist"`, and a `quietWhenScheduled`
+that is not a boolean, with `jobs_invalid`; install validation also refuses a job whose
 `skills/<skill>/SKILL.md` is missing. An already stored artifact failing the same checks is
 excluded from resolution with that reason.
 
@@ -194,63 +129,37 @@ plus the job, title, host role and a one-line message. Resident-plugin topics pe
 `<resident display name> · <job title>` label, shortened with the existing topic helper,
 so later state paints retain the name; they use the default topic bubble.
 
-`report_job_progress(summary, progressed, done=None, remaining=None)` is granted only to a
-job engagement's session. Outside a live job it returns `not_a_job`; a `progressed` that is
-absent or not a boolean, and a negative or boolean count, return `invalid_arguments`; handled
-outside the turn of the batch awaiting judgment, `not_a_batch`. It records the claim as the
-batch's — a later one replaces it — and updates its epoch `last_advance` in the same step as
-that check, before any await, so a report still posting when its batch has
-ended cannot land in the next batch's verdict. It then posts
-`📊 Batch <n>: <summary> · <done> done · <remaining> left` (the summary's first line, at
-most 300 characters; counts only when given — the line carries the worker's summary and
-makes no claim about the judgment, which a later report of the same batch could contradict
-in a line already posted) and persists `origin["job"]`.
+`report_job_progress(summary, done=None, remaining=None)` is granted only to a job
+engagement's session and may be called at any time in a live job. Outside one it returns
+`not_a_job`; a summary that is not a string, or a negative or boolean count, returns
+`invalid_arguments`. It records the summary's first line (at most 300 characters) as the
+job's `last_summary`, marks progress for the step-ceiling rule, posts
+`📊 <summary> · <done> done · <remaining> left` in the topic (counts only when given — they
+are the worker's own unit and decide nothing) and persists `origin["job"]`.
 
-Resume options rebuild the job's per-batch turn limit and its progress grant from
-`origin["job"]`, so a resumed job session keeps both. Plugin workers additionally rebuild
-from the recorded artifact and launch model, independent of later host configuration or
-plugin assignment changes — except the access profile the host holds for the plugin, which
-every build reads live and the record stores as built
+Resume options rebuild the job session and its grants from `origin["job"]`, so a resumed
+session runs exactly as the launched one did. Plugin workers additionally rebuild from the
+recorded artifact and launch model, independent of later host configuration or plugin
+assignment changes — except the access profile the host holds for the plugin, which every
+build reads live and the record stores as built
 ([`plugin-access-profiles.md`](plugin-access-profiles.md)), and a launch model recorded
 before Casa's move to the 5.5 models, which resumes on its family's successor
-(`current_resident_model`). A recorded resolution that
-loses the declaring plugin, including environment withholding, refuses resume rather than
-building an empty worker.
+(`current_resident_model`). A recorded resolution that loses the declaring plugin, including
+environment withholding, refuses resume rather than building an empty worker.
 
 ## Failure behavior
 
 **A plugin worker cannot launch.** Environment withholding is checked before topic
 creation; the same admitted resolution supplies the record and options. Options-building
-failures after record creation use the shared named launch-abort path. A cancellation or
-restart during the opening acknowledgement remains owned by the launch lifecycle and
-ends the engagement with its existing notice.
+failures after record creation use the shared named launch-abort path. Once the session is
+registered, a failure — the CLI dying before or during the brief's write included — is a
+session loss, recovered once ([`background-job-session.md`](background-job-session.md)).
 
 **A restart during a job.** Boot re-idles live engagements as for any engagement. Once
-channels and residents are up, `casa_core._resume_background_jobs` posts `↻ Resuming
-"<title>" after a restart.` in each live job's topic and calls `start_next_batch`; the batch
-cut by the restart is judged like any other. This selects in-casa records carrying a job,
-regardless of host kind. A failed resume notice is logged and cannot veto the batch attempt.
-A failure resuming one job does not stop the others. Engagement permits are not restored
-at boot. A launch interrupted during its opening acknowledgement retains the ordinary
-launch cancellation and telling; it does not enter continuation recovery.
-
-**A batch handoff is refused.** `deliver_system_turn` returns false when the engagement is
-terminal, cannot be resumed, or Casa is stopping. It consumes no batch number and adds no
-no-progress judgment. The loop logs the refusal.
-
-**A job stalls.** The shared scheduler runs `sweep_jobs` every minute. A queued turn or live
-delivery owner excludes the job, even when a batch takes longer than the stall threshold.
-Otherwise a job with no advance for 180 seconds (or no recorded advance yet) is retried
-through `start_next_batch`. Admission and progress reporting update `last_advance`;
-admission also clears `stalls`. Three consecutive failed sweep attempts finalize the job
-through the ordinary funnel, with its last progress and the durable resident notification.
-The sweep does not run while the channel is stopping, and a shutdown-refused hand-off
-does not count as a failed attempt.
-
-Job resume failures stay live for that sweep instead of taking a non-job engagement's
-two-strike terminal path. A job with no session to resume ends through the finalize funnel.
-These rules concern continuation, including an acknowledged job whose first hand-off was
-refused and whose `started` counter is still zero; the launch owners remain unchanged.
+channels and residents are up, `casa_core._resume_background_jobs` resumes each live job
+through the job runner's boot path; a failure resuming one job does not stop the others.
+Engagement permits are not restored at boot. A job whose specialist is disabled and whose
+boot close failed is not resumed.
 
 **A plugin's jobs cannot be listed.** An error resolving one specialist's plugins omits that
 specialist's jobs; the other delegates' jobs are still listed.
@@ -258,7 +167,8 @@ specialist's jobs; the other delegates' jobs are still listed.
 ## Extension points
 
 A new job field belongs in `manifest_jobs` and `JobDecl`. Host-specific session options
-belong in the launch and resume builders; both kinds share the batch loop and launch owner.
+belong in the launch and resume builders, and every job session goes through
+`job_session_options`; both host kinds share the launch owner and the job runner.
 
 ## Source & test map
 
@@ -274,21 +184,21 @@ belong in the launch and resume builders; both kinds share the batch loop and la
 - `casa/rootfs/opt/casa/tools.py::_launch_interactive_engagement`
 - `casa/rootfs/opt/casa/tools.py::build_engagement_resume_options`
 - `casa/rootfs/opt/casa/tools.py::report_job_progress`
-- `casa/rootfs/opt/casa/casa_core.py::_resume_background_jobs`
 
 **Tests**
 - `tests/test_background_jobs_declaration.py`
+- `tests/test_job_session_declaration.py`
 - `tests/test_start_job.py`
 - `tests/test_plugin_job_launch.py`
 - `tests/test_background_jobs_loop.py`
+- `tests/test_job_tools.py`
 - `tests/test_specialist_job_host.py`
-- `tests/test_job_turn_identity.py`
 
 **Related**
+- [`architecture/background-job-session.md`](../architecture/background-job-session.md)
+- [`architecture/background-job-message-journal.md`](../architecture/background-job-message-journal.md)
 - [`architecture/engagements.md`](../architecture/engagements.md)
 - [`architecture/delegation.md`](../architecture/delegation.md)
 - [`architecture/plugins.md`](../architecture/plugins.md)
-- [`architecture/engagement-turn-admission.md`](../architecture/engagement-turn-admission.md)
 - [`architecture/background-job-occupancy.md`](../architecture/background-job-occupancy.md)
-- [`architecture/background-job-fresh-sessions.md`](../architecture/background-job-fresh-sessions.md)
 <!-- END SOURCEMAP -->

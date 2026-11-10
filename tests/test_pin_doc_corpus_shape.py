@@ -383,15 +383,15 @@ def test_trigger_consent_ownership_agrees_with_plugin_triggers():
     assert routed == [TRIGGER_CONSENT_OWNER]
 
 
-# #687. The reload/launch explanation added to `architecture/engagements.md` (moved
-# with INV-ENG-011 to `architecture/engagement-turn-outcomes.md` by #1151) and
-# `architecture/turn-loop.md` answers an investigation: why an `in_casa`
+# #687. The reload/launch explanation in `architecture/engagement-launch-detach.md`
+# and `architecture/sdk-client-pool.md` answers an investigation: why an `in_casa`
 # engagement turn appeared to end seconds after a mid-task reload. Three of its
 # claims are the ones a future edit could drop or reverse while the paragraph
-# still reads well, and each is the load-bearing half of the answer — that the
-# launch turn is HOSTED inside the launching resident's own tool call; that the
-# pool drain timeout is a caller-overridable DEFAULT rather than a fixed number;
-# and that the benign completion is eliminated FIRST before an ended turn is
+# still reads well, and each is the load-bearing half of the answer — that a
+# job's first turn runs in its own session AFTER the launching tool call has
+# answered, never inside the launching resident's turn; that the pool drain
+# timeout is a caller-overridable DEFAULT rather than a fixed number; and that
+# the benign completion is eliminated FIRST before an ended session is
 # attributed to a reload at all.
 #
 # WHY EXACT CLAUSES rather than a wording-tolerant matcher. The tolerant shape
@@ -420,14 +420,13 @@ def test_trigger_consent_ownership_agrees_with_plugin_triggers():
 # reviewer — and it is the opposite failure from the silent one above.
 RELOAD_LAUNCH_CLAIMS = [
     (
-        # v0.314.0 (INV-ENG-021): the clause this marker pinned — that the
-        # whole first turn ran inside the launching resident's own tool call
-        # — described the defect the detach removed; the reviewed claim is
-        # now the opposite, and it is owned by the same document.
-        "launch-turn-runs-in-an-anchored-owner-after-pending",
-        "architecture/engagement-turn-outcomes.md",
-        "The launch turn runs in an owner Casa anchors, on the engagement's "
-        "own client, after the launching tool call has already answered "
+        # INV-ENG-021: the job's first turn runs after the launching call has
+        # answered, in the session the launch opened — never inside the
+        # launching resident's own tool call, where a reload could cut it.
+        "first-turn-runs-in-the-session-reader-after-pending",
+        "architecture/engagement-launch-detach.md",
+        "The job's first turn runs in its session's reader, on the job's own "
+        "client, after the launching tool call has already answered "
         "`pending`",
     ),
     (
@@ -438,8 +437,8 @@ RELOAD_LAUNCH_CLAIMS = [
     ),
     (
         "benign-case-eliminated-before-blaming-a-reload",
-        "architecture/engagement-turn-outcomes.md",
-        "Before attributing an ended turn to a reload at all, eliminate the "
+        "architecture/engagement-launch-detach.md",
+        "Before attributing an ended session to a reload at all, eliminate the "
         "benign case first",
     ),
 ]
@@ -819,61 +818,6 @@ def test_output_scope_properties_and_admission_are_separate():
         assert (total, owned) == (1, 1), (lead, total, owned)
 
 
-def test_turn_outcomes_row_moves_to_launch_shard():
-    """#1288: the split separates the launch-and-telling turn-outcomes row
-    from the E manifest shard.
-
-    The seam is the one the corpus names itself at 814ce23c:
-    ``docs/manifest.yaml:15-17`` declares ``architecture-e-launch.yaml`` the
-    shard of "the engagement launch and telling documents (split from E at
-    the 40 KB index ceiling)", and the turn-outcomes row
-    (``docs/manifest.d/architecture-e.yaml:183-185``) is about the launch
-    turn's death report and the follow-up turn's notice. The E shard is past
-    its index ceiling at that base, and INV-DOC-007
-    (``docs/contributing/doc-contract.md:75``) owes the split.
-
-    Red case at 814ce23c: the row's only shard is
-    ``manifest.d/architecture-e.yaml``, so the ``sources`` assertion fails.
-    The row moves unchanged: its parsed content is pinned by digest to its
-    base value, and no later change of the split edits it. The eval-framework
-    row stays in the E shard (membership only, no count over the shard).
-    v0.347.11 binds the executor closing-text tests to INV-ENG-011 in this row,
-    and the claude_code driver's removal then drops its boot-replay and
-    claude_code anchors and bindings from it, and v0.351.0
-    drops the executor closing-text tests again, and the job-in-the-direct-
-    chat change binds a reply turn's and a batch turn's tests to INV-ENG-012
-    and INV-ENG-020, so the digest is the row as it stands after those
-    changes.
-
-    Specified by **astra** in the drive red-case round.
-    """
-    import hashlib
-    import json
-
-    target = "architecture/engagement-turn-outcomes.md"
-    rows = [entry for entry in _entries() if entry["doc"] == target]
-    assert len(rows) == 1, len(rows)
-    sources = [
-        source.relative_to(DOCS).as_posix()
-        for source in sorted((DOCS / "manifest.d").glob("*.yaml"))
-        if any(entry["doc"] == target
-               for entry in yaml.safe_load(source.read_text()))
-    ]
-    assert sources == ["manifest.d/architecture-e-launch.yaml"], sources
-    digest = hashlib.sha256(
-        json.dumps(rows[0], sort_keys=True).encode("utf-8")
-    ).hexdigest()
-    assert digest == (
-        "2a3169e242e4b04ee87bca3dd8e9ff0d8e"
-        "e6b53902c87b1dfe223a3c99889ae5"
-    ), digest
-    retained = yaml.safe_load(
-        (DOCS / "manifest.d/architecture-e.yaml").read_text()
-    )
-    assert any(entry["doc"] == "architecture/eval-framework.md"
-               for entry in retained)
-
-
 def test_transcript_reaping_and_durable_finalization_are_separate():
     """#1195: the split separates the transcript reaper from how a durable
     engagement ends.
@@ -942,6 +886,9 @@ PLUGIN_SHARD_RANGES = {
 # The plugin-health row was re-pinned when v0.351.0 moved the
 # install hold from the engagement to the configurator lease (the plugin
 # invariant that held it was retired for INV-CFG-018).
+# The plugin-access-profiles row was re-pinned when the job session stopped
+# opening fresh sessions: its binding to the fresh-open profile test went with
+# that path, and the resume test pins the same persist-before-open rule.
 PLUGIN_SHARD_ROW_DIGESTS = {
     "architecture/plugin-authorization.md":
         "3d428f89a763a6365d072808fb7564576b964ba30cc6b1e77871eec9a45ff4e6",
@@ -952,7 +899,7 @@ PLUGIN_SHARD_ROW_DIGESTS = {
     "architecture/plugin-events.md":
         "30ee8209c4833435cbb1d8f2243963f3cbe21716465c6ebd3689a975a93006e2",
     "architecture/plugin-access-profiles.md":
-        "ca1c473801e423b91cffc4744b02bd49ce7a0d78332e13a9b6670e703e85133e",
+        "e32d74f560205f114ef3849e84ce5c7f6ee7575a6ccb622d78657e3375a1007f",
     "architecture/plugin-handoff.md":
         "83914c68bf237085ef09f7ff8937b9bbf9dac214c3a769b40e7308850975a4f2",
     "architecture/plugin-health.md":

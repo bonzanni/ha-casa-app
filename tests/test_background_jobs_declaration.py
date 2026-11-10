@@ -32,8 +32,6 @@ def _job(**overrides):
         "skill": "classify",
         "title": "Classify transactions",
         "summary": "Classify unreviewed transactions in batches",
-        "batches": "unlimited",
-        "turnsPerBatch": 30,
     }
     job.update(overrides)
     return job
@@ -52,7 +50,10 @@ def _manifest_tree(tmp_path: Path, job: dict) -> Path:
 
 
 @pytest.mark.parametrize("job", [
-    _job(batches=True),
+    # Fields an older Casa read: strict, so a stale manifest is excluded.
+    _job(batches="unlimited"),
+    _job(turnsPerBatch=30),
+    _job(session="resume"),
     _job(extra="nope"),
     _job(skill=None),
 ])

@@ -10,8 +10,10 @@ last_reviewed: 2026-11-08
 
 What a background job puts in the operator's direct chat and what they can do there: the start
 line and its Cancel button, a specialist job's questions (`ask_operator`) and their buttons,
-replies into a live job, and how those keyboards are retired when the job ends. What a job is
-and how its batches run is [`background-jobs.md`](background-jobs.md); the notice a message
+replies into a live job, the line a parked job posts, and how those keyboards are retired when
+the job ends. What a job is is [`background-jobs.md`](background-jobs.md), and how its session
+runs, parks and shows its cost is [`background-job-session.md`](background-job-session.md); the
+notice a message
 the job never took up draws is
 [`engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md); what a quiet scheduled
 run changes, and how interacting with one ends its quietness, is
@@ -23,8 +25,11 @@ not a live job's reaches a desk is [`specialist-desk.md`](specialist-desk.md).
 **The direct chat is where a job needs the operator; its topic is where it works.** A running
 job says nothing in the DM unless it needs a decision or has its result. A job the operator
 started (directly, or through an agent acting on their message — the record's starter is
-`operator`) gets one silent line, `📊 <Agent> started «<title>».`, with a **Cancel** button; a
-scheduled job, or one an agent started on its own, gets none. A specialist's job asks with
+`operator`) gets one silent line, `📊 <Agent> started «<title>».`, with a **Cancel** button,
+edited while the job runs to show its running time and cost (INV-BGJOB-020); a scheduled job,
+or one an agent started on its own, gets none. A job Casa parks posts one line with a
+**Cancel** button — in reply to the start line when there is one — and a reply to it continues
+the job (INV-BGJOB-017). A specialist's job asks with
 `ask_operator(question, options?)`: a plain post under its label, one button per option and a
 **Cancel job** button. A resident's plugin worker has no question tool; it parks what needs an
 answer and reports it, and its plugin's delivered posts reach the DM as before.
@@ -32,7 +37,8 @@ answer and reports it, and its plugin's delivered posts reach the DM as before.
 **Ownership lives on the engagement record.** The post map is memory-only and bounded, so it
 cannot say which live job owns a DM message. The record does: `dm_posts` lists the job's start
 line, questions and plugin posts (newest last, unbounded while the job lives), `ui_posts` the
-ones carrying a keyboard, and `questions` the asked questions by a random id. The channel files
+ones carrying a keyboard (start line, questions, parking lines), and `questions` the asked
+questions by a random id. The channel files
 each post as it lands (`EngagementRegistry.record_job_post`, called from the post-landing seam
 for plugin posts and from the start-line and question posters), and the registry keeps an index
 from message id to record, rebuilt at load.
@@ -44,20 +50,26 @@ waits for the write to settle in the shared readiness step, and is delivered aft
 refused (and told) after a commit.
 
 **A reply or a tap goes into the job, or is told — never elsewhere.** A reply quoting a post the
-record holds goes into that job as an operator turn
-(`TelegramChannel.deliver_operator_reply`), named with the first line of the post it answers.
+record holds goes into that job as an operator message
+(`TelegramChannel.deliver_operator_reply`), named with the first line of the post it answers,
+and is written into the running session as it arrives.
 A tap on a question's option is resolved against the record — never a memory-only broker — so
 it works after a restart, and delivers `[operator answered «<question>»: <option>]` through
 `deliver_system_turn`. Neither is ever rerouted: whatever the job does not take up draws one
 notice, from the holder of its admission ticket, in reply to the operator's message or to the
-tapped card (INV-ENG-029). A question may appear twice (asked again, or a send that timed out
+tapped card (INV-ENG-029), and a message journaled for a job that ends unread draws one
+notice the same way
+([`background-job-message-journal.md`](background-job-message-journal.md)). A question may appear twice (asked again, or a send that timed out
 but landed); either copy answers while the job lives.
 
 **Whoever sees the record terminal last retires the keyboard.** The registry's terminal
 observer — told by every in-process terminal winner: the finalize funnel, the launch-death
 report, the reap, the legacy direct mutators — has the channel take the record's keyboard posts
-in one synchronous step and edit them away: the start line to `✅`/`🛑`/`❌ <Agent> «<title>»`,
-a question to no buttons. A keyboard post that lands after the terminal write settled is
+in one synchronous step and edit them away: the start line to `✅`/`🛑`/`❌ <Agent> «<title>»`
+with the job's running time and cost, a question or parking line to no buttons. A job that
+completes from inside a running turn is the one exception to the timing: the observer leaves its
+keyboards to the completion's finalize tail, which retires them once that turn has ended (or a
+bounded wait passed), so the end paint carries the completing turn's cost. A keyboard post that lands after the terminal write settled is
 retired by the code that filed it. At boot, terminal records still carrying keyboard posts are
 retired once. A keyboard an edit could not remove keeps its buttons; a tap on it reads the
 terminal record and gets "already finished".
@@ -66,14 +78,14 @@ terminal record and gets "already finished".
 
 **INV-BGJOB-011**: A job's direct-chat posts — its start line, its questions and its plugin's delivered posts — are filed on its engagement record as they land, without a cap while the record counts as live, persisted, and indexed by message id again at load; a record counts as live while active or idle and while its strict terminal write is pending, and the write that settles the terminal transition stores the record's posts and questions empty, after which they leave the index.
 
-**INV-BGJOB-012**: An authenticated operator's reply quoting a post the job record holds, while that record counts as live and is their job in that chat, is delivered into that job as an operator turn — ahead of the desk route — with its admission ticket taken synchronously at the seam's entry; it is never sent to another route, and if the job does not take it up its one notice comes from the ticket's holder (INV-ENG-029).
+**INV-BGJOB-012**: An authenticated operator's reply quoting a post the job record holds, while that record counts as live and is their job in that chat, is delivered into that job as an operator message — ahead of the desk route — journaled and admitted synchronously at the seam's entry; it is never sent to another route, and if the job does not take it up its one notice comes from the ticket's holder (INV-ENG-029).
 
 A reply to a post of a job that has ended, or to a post no record holds, takes the routes it
 took before: the desk ([`specialist-desk.md`](specialist-desk.md), INV-DESK-005), or the
 resident with its reply note (INV-DESK-004). The reply's words are admitted as they typed them —
 what the completion gate counts and what memory keeps (INV-MEM-044) — and the turn the job
-receives carries Casa's `[replying to «…»]` line before them. A reply holds the next batch back
-like any queued turn (INV-BGJOB-001).
+receives carries Casa's `[replying to «…»]` line before them. It is written into the running
+session as it arrives, never held for a turn to end (INV-BGJOB-016).
 
 **INV-BGJOB-013**: A specialist job's question is a filed post whose option buttons carry the engagement id, a random question id redrawn until the record holds no question with it, and the option's index, and whose Cancel button carries the engagement id; job buttons are matched before the generic callback parser; a tap is resolved against the record only — the operator whose job it is, a record that counts as live, a question id it holds and an option it has — and takes the inbound reservation before its first await, so a successful completion is refused from that instant; a question id the record does not hold delivers nothing and answers "This question is no longer active — reply in words".
 
@@ -89,7 +101,7 @@ a completion's, say — is a cancellation like any other: its transition waits f
 cancels the job if it rolled back, and ends with nothing more if it committed. When the funnel's write rolls back, the record stays live, the
 button stays, and one line in reply to the tapped message asks to tap again.
 
-**INV-BGJOB-014**: Every in-process terminal winner retires the job's direct-chat keyboards through the registry's terminal observer, which takes them off the record in one synchronous step before the record leaves the pending-terminal set; a keyboard post that lands after the terminal write settled is retired by its filer; and at boot every terminal record still carrying keyboard posts has them retired once.
+**INV-BGJOB-014**: Every in-process terminal winner retires the job's direct-chat keyboards — through the registry's terminal observer, which takes them off the record in one synchronous step before the record leaves the pending-terminal set, or, for a completion from inside a running turn, through that completion's finalize tail once the turn has ended or its bounded wait passed; a keyboard post that lands after the terminal write settled is retired by its filer; and at boot every terminal record still carrying keyboard posts has them retired once.
 
 ## Failure behavior
 
@@ -141,6 +153,7 @@ parser.
 
 **Related**
 - [`architecture/background-jobs.md`](../architecture/background-jobs.md)
+- [`architecture/background-job-session.md`](../architecture/background-job-session.md)
 - [`architecture/engagement-inbound-disclosure.md`](../architecture/engagement-inbound-disclosure.md)
 - [`architecture/background-job-quiet-runs.md`](../architecture/background-job-quiet-runs.md)
 - [`architecture/specialist-desk.md`](../architecture/specialist-desk.md)

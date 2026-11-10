@@ -2563,8 +2563,8 @@ def _origin_clearance_markers(origin: dict) -> tuple[str | None, str | None]:
 
 def _engagement_rebuild_fence() -> dict | None:
     """#369: refuse an engagement-bound tool call while the record's
-    ``context_rebuild_pending`` is set (a clearance downgrade invalidated the
-    session the caller is still running in). Engagements dispatch tools
+    ``context_rebuild_pending`` is set (a memory wipe removed the session
+    transcripts the caller's session was resumed from). Engagements dispatch tools
     IN-PROCESS, so the engagement-sensitive tools call this fence.
     Returns the refusal payload, or None when the call may proceed."""
     eng = engagement_var.get(None)
@@ -3263,20 +3263,26 @@ def specialist_cwd(cfg) -> str:
 
 
 _PLUGIN_JOB_PROMPT = (
-    "You are a plugin job worker, not the hosting resident. Casa runs this job "
-    "in bounded batches. Do not ask questions: park items needing an answer "
-    "and report them instead. Report each batch through report_job_progress; "
-    "finish through emit_completion. You have no delegation, messaging, or "
-    "resident memory. The operator answers by replying to this job's messages "
-    "in their direct chat; read those messages between batches and continue "
-    "the work using only the declaring plugin and the job tools."
+    "You are a plugin job worker, not the hosting resident. The job is one "
+    "long session: work until it is finished. Do not ask questions: set aside "
+    "items needing an answer and say so instead. Post progress through "
+    "report_job_progress when there is something worth telling; finish "
+    "through emit_completion. You have no delegation, messaging, or resident "
+    "memory. The operator answers by replying to this job's messages in their "
+    "direct chat; their messages reach you between your steps — read them, "
+    "act on them, and carry on, using only the declaring plugin and the job "
+    "tools."
 )
 
 
 def _build_plugin_job_options(rec, resolution,
-                              plan_out: "list | None" = None) -> ClaudeAgentOptions:
+                              plan_out: "list | None" = None,
+                              brief: "tuple[str, str | None] | None" = None,
+                              ) -> ClaudeAgentOptions:
     """Build a worker from its pinned plugin and launch settings. ``plan_out``
-    (S8): the applied ``ProfilePlan`` is appended when a list is given."""
+    (S8): the applied ``ProfilePlan`` is appended when a list is given.
+    ``brief``: the launch's ``(task, operator words)`` that open the job's
+    scratchpad; a resume passes none (``background_jobs.job_session_options``)."""
     import result_broker
     from authz_grants import AuthzDeps, CHALLENGES, GRANTS, make_resident_authz_hook
     from plugin_grants import protected_map
@@ -3322,7 +3328,7 @@ def _build_plugin_job_options(rec, resolution,
     cwd = plugin_job_cwd(rec.id)
     cwd.mkdir(parents=True, exist_ok=True)
     _job_model = current_resident_model(identity["model"])
-    return ClaudeAgentOptions(
+    return background_jobs.job_session_options(ClaudeAgentOptions(
         model=_job_model, effort=effort_for(_job_model),
         cli_path=CLAUDE_CLI_PATH,
         max_buffer_size=SDK_MAX_BUFFER_SIZE,
@@ -3330,19 +3336,18 @@ def _build_plugin_job_options(rec, resolution,
         allowed_tools=allowed,
         # #1294: never Bash — a read-only command skips can_use_tool, and a
         # backgrounded one's completion makes the live CLI run an unprompted
-        # turn the next batch would read as its own.
+        # turn of its own.
         disallowed_tools=with_cross_session_tools_denied(
             ["Agent", "Task", "AskUserQuestion", *_profile_denies, "Bash"]),
         settings=cli_session_settings(),
         permission_mode="default",
-        max_turns=rec.origin["job"]["turns_per_batch"],
         mcp_servers=servers, hooks=hooks, cwd=str(cwd), resume=None,
         setting_sources=[], skills="all",
         plugins=[{"type": "local", "path": resolution.plugins[0].path}],
         env={**sanitized_env_for_resolution(resolution),
              **result_broker.broker_env(client_id)},
         can_use_tool=make_fail_closed_can_use_tool(role),
-    )
+    ), rec, brief=brief)
 
 
 def build_engagement_resume_options(
@@ -3392,23 +3397,22 @@ def build_engagement_resume_options(
             # (field absent → None) falls back to a fresh resolve.
             job = (getattr(engagement, "origin", None) or {}).get("job")
             grants = SPECIALIST_CASA_GRANTS + (background_jobs.JOB_CASA_GRANTS if job else ())
-            max_turns = (job.get("turns_per_batch") if job else None) or cfg.tools.max_turns
             recorded = getattr(engagement, "plugin_artifacts", None)
             if recorded is not None:
                 opts = _build_specialist_options(
                     cfg,
                     resolution=_resolution_from_recorded(recorded),
                     extra_casa_tools=grants,
-                    max_turns=max_turns,
                     plan_out=_applied_plans,
                 )
             else:
                 opts = _build_specialist_options(
                     cfg,
                     extra_casa_tools=grants,
-                    max_turns=max_turns,
                     plan_out=_applied_plans,
                 )
+            if job:
+                opts = background_jobs.job_session_options(opts, engagement)
     if opts is None:
         raise RuntimeError(
             f"cannot rebuild options to resume {kind or 'specialist'} engagement "
@@ -7080,17 +7084,11 @@ async def _launch_interactive_engagement(
     # #1277: who started the job, evaluated once, here, from the launching
     # origin; both renderers read it from the record, never from markers.
     origin["job"] = background_jobs.initial_job_state(
-        job, started_by=background_jobs.job_started_by(origin))
-    if job.session == "fresh":
-        # INV-BGJOB-005: every later turn of a fresh job re-states the
-        # launch context verbatim (already bounded by _MAX_CONTEXT_CHARS).
-        # Clearance-governed: lower_origin_clearance drops it.
-        origin["job"]["brief_context"] = context_text
+        job, started_by=background_jobs.job_started_by(origin),
+        context=context_text if isinstance(context_text, str) else "")
     casa_grants += background_jobs.JOB_CASA_GRANTS
-    turns_per_batch = job.turns_per_batch or cfg.tools.max_turns
     if plugin_host is not None:
         casa_grants = background_jobs.PLUGIN_JOB_CASA_GRANTS
-        origin["job"]["turns_per_batch"] = turns_per_batch
         origin["plugin_job"] = {"plugin": plugin_host.plugin.name, "model": cfg.model}
     try:
         # #283: agent-spawn cap — BEFORE the channel setup/topic Telegram
@@ -7292,12 +7290,6 @@ async def _launch_interactive_engagement(
         # interval's first await.
         _launch_handle = _register_launch_safe(rec.id)
         try:
-            # #369 (Sol diff-gate r3): capture the context generation at
-            # prompt-source time — this
-            # interactive prompt is built from the pre-clamp task/context
-            # locals, so a clamp→rebuild cycle completing during the option/
-            # client startup awaits must abort this launch at the driver gate.
-            _ctx_gen0 = rec.context_generation
             # Persist initial state emoji so update_topic_state knows
             # whether it needs to edit the title (no-op when state didn't
             # change). #529: conditional — a delayed launch path must not
@@ -7310,19 +7302,26 @@ async def _launch_interactive_engagement(
             except Exception as exc:  # noqa: BLE001
                 logger.warning("set_initial_state_emoji(active) failed: %s", exc)
 
-            # Build options + start driver (off-loop: registry resolve is file IO).
+            # Build options + start driver (off-loop: registry resolve is file IO,
+            # and so is opening the job's scratchpad with its brief).
             _applied_plans: list = []
+            _ctx = origin["job"].get("context")
+            _pad_brief = (f"{task_text}\nContext: {_ctx}" if _ctx else task_text,
+                          operator_words(origin))
+
+            def _specialist_job_options():
+                return background_jobs.job_session_options(
+                    _build_specialist_options(
+                        cfg, resolution=_spec_res, extra_casa_tools=casa_grants,
+                        plan_out=_applied_plans),
+                    rec, brief=_pad_brief)
             try:
                 if plugin_host is not None:
                     options = await asyncio.to_thread(
                         _build_plugin_job_options, rec, _spec_res,
-                        plan_out=_applied_plans)
+                        plan_out=_applied_plans, brief=_pad_brief)
                 else:
-                    options = await asyncio.to_thread(
-                        _build_specialist_options, cfg, resolution=_spec_res,
-                        extra_casa_tools=casa_grants, plan_out=_applied_plans,
-                        max_turns=turns_per_batch,
-                    )
+                    options = await asyncio.to_thread(_specialist_job_options)
             except Exception as exc:
                 _abort = await _abort_launch_inline(
                     channel, rec, topic_id,
@@ -7352,7 +7351,7 @@ async def _launch_interactive_engagement(
                                 "message": str(exc)})
 
             prompt = background_jobs.launch_prompt(
-                job, task_text, context_text, turns_per_batch,
+                job, task_text, context_text,
                 job_id=rec.id, started_by=rec.origin["job"].get("started_by"),
                 can_ask=plugin_host is None)
 
@@ -7378,157 +7377,32 @@ async def _launch_interactive_engagement(
                     owned = None
                 return _result({"status": "error", "kind": "no_driver",
                                 "message": "engagement driver not initialized"})
-            from drivers.driver_protocol import StaleLaunchError
-            if getattr(driver, "supports_split_launch", False) is not True:
-                try:
-                    await driver.start(
-                        rec, prompt=prompt, options=options,
-                        expected_generation=_ctx_gen0)
-                except StaleLaunchError as exc:
-                    # #369: a clearance clamp landed during launch — abort rather
-                    # than deliver the pre-clamp task/context. Terra r5: with
-                    # record_live a rebuild COMPLETED meanwhile — the engagement
-                    # is alive on its floor session, so transfer the permit
-                    # exactly as the success path does and report it pending.
-                    if exc.record_live:
-                        owned = None  # permit transferred to the live record
-                        _record_launch_safe(agent_name)
-                        return _result({
-                            "status": "pending", "engagement_id": rec.id,
-                            "agent": agent_name, "mode": "interactive",
-                            "topic_id": topic_id,
-                        })
-                    _abort = await _abort_launch_inline(
-                        channel, rec, topic_id,
-                        kind="clearance_changed_during_launch",
-                        message=str(exc))
-                    if _abort is LaunchAbortResult.PERSIST_FAILED:
-                        # #757: the transition rolled back, so the record is
-                        # still LIVE — and a live record keeps its permit. The
-                        # outer `finally` would otherwise free this engagement's
-                        # scope slot while its record is still resumable, the
-                        # hazard engagement_registry warns about at the strict
-                        # release. Transfer it exactly as the record_live arm
-                        # above does; whatever takes the record terminal later
-                        # (reap or cancel, both through _finalize_engagement)
-                        # releases it.
-                        owned = None
-                    return _result({
-                        "status": "error", "kind": "clearance_changed_during_launch",
-                        "message": str(exc)})
-                except ApiErrorTurn as exc:
-                    # #595: the launch turn ended in an API-level fault — a safety
-                    # refusal, a rate limit, an overload. The driver carries the
-                    # resolved kind, so the terminal record names it instead of
-                    # flattening every one of them into `driver_start_failed`,
-                    # where a refusal and a crash read identically. The teardown is
-                    # the generic branch's: `InCasaDriver.start`'s M14 rollback has
-                    # already closed the client, and the strict terminal
-                    # transition releases the permit on a durable win.
-                    _kind = exc.kind.value
-                    _abort = await _abort_launch_inline(
-                        channel, rec, topic_id,
-                        kind=_kind, message=str(exc))
-                    if _abort is LaunchAbortResult.PERSIST_FAILED:
-                        # #757: the transition rolled back, so the record is
-                        # still LIVE — and a live record keeps its permit. The
-                        # outer `finally` would otherwise free this engagement's
-                        # scope slot while its record is still resumable, the
-                        # hazard engagement_registry warns about at the strict
-                        # release. Transfer it exactly as the record_live arm
-                        # above does; whatever takes the record terminal later
-                        # (reap or cancel, both through _finalize_engagement)
-                        # releases it.
-                        owned = None
-                    return _result({"status": "error", "kind": _kind,
-                                    "message": _USER_MESSAGES.get(
-                                        exc.kind, str(exc))})
-                except Exception as exc:  # noqa: BLE001
-                    _abort = await _abort_launch_inline(
-                        channel, rec, topic_id,
-                        kind="driver_start_failed", message=str(exc))
-                    if _abort is LaunchAbortResult.PERSIST_FAILED:
-                        # #757: the transition rolled back, so the record is
-                        # still LIVE — and a live record keeps its permit. The
-                        # outer `finally` would otherwise free this engagement's
-                        # scope slot while its record is still resumable, the
-                        # hazard engagement_registry warns about at the strict
-                        # release. Transfer it exactly as the record_live arm
-                        # above does; whatever takes the record terminal later
-                        # (reap or cancel, both through _finalize_engagement)
-                        # releases it.
-                        owned = None
-                    return _result({"status": "error", "kind": "driver_start_failed",
-                                    "message": str(exc)})
-
-                # #678: start() returning means the
-                # first turn ran to its end, never that anything was reported.
-                # An interactive specialist that ENDS its launch turn having
-                # posted text is legitimately awaiting the operator and is left
-                # alone; one whose turn was cut off, or which posted nothing at
-                # all, has left an operator-visible surface that says nothing.
-                _incomplete = _launch_incomplete_reason(driver, rec.id)
-                if _incomplete:
-                    _detail = _LAUNCH_INCOMPLETE_DETAIL.get(
-                        _incomplete, _incomplete)
-                    _outcome = await asyncio.shield(_spawn_launch_death_report(
-                        channel, rec, topic_id, kind=LAUNCH_INCOMPLETE_KIND,
-                        detail=_detail, driver=driver))
-                    if _outcome is not LaunchDeathResult.ALREADY_TERMINAL:
-                        # The permit is released by the terminal transition and
-                        # again by the outer finally (both idempotent), so
-                        # `owned` stays set here on purpose.
-                        return _result({
-                            "status": "error", "kind": LAUNCH_INCOMPLETE_KIND,
-                            "message": _detail,
-                        })
-
-                # Task 6 (spec §4.6): driver is live — transfer permit ownership to
-                # the engagement record (released by an EngagementRegistry terminal
-                # transition or _finalize_engagement) by clearing `owned` FIRST, so
-                # the following non-raising launch count can never reach the outer
-                # finally to release the now-live engagement's permit.
-
-            else:
-                # §2.A: the two-call launch.
-                try:
-                    await driver.open(
-                        rec, options=options, expected_generation=_ctx_gen0)
-                except StaleLaunchError as exc:
-                    if exc.record_live:
-                        owned = None
-                        _record_launch_safe(agent_name)
-                        return _result({
-                            "status": "pending", "engagement_id": rec.id,
-                            "agent": agent_name, "mode": "interactive",
-                            "topic_id": topic_id,
-                        })
-                    await _abort_launch_inline(
-                        channel, rec, topic_id,
-                        kind="clearance_changed_during_launch", message=str(exc))
-                    return _result({
-                        "status": "error", "kind": "clearance_changed_during_launch",
-                        "message": str(exc),
-                    })
-                except Exception as exc:  # noqa: BLE001
-                    await _abort_launch_inline(
-                        channel, rec, topic_id,
-                        kind="driver_start_failed", message=str(exc))
-                    return _result({"status": "error", "kind": "driver_start_failed",
-                                    "message": str(exc)})
-                if (_engagement_registry is not None
-                        and _engagement_registry.launch_shutdown_active()):
-                    _detail = "Casa was stopping when this launch was cancelled"
-                    await _report_launch_death_inline(
-                        channel, rec, topic_id, kind="launch_cancelled",
-                        detail=_detail, driver=driver)
-                    return _result({
-                        "status": "error", "kind": "launch_cancelled",
-                        "message": _detail,
-                    })
-                _hand_off_launch_turn(driver, rec, prompt, channel, topic_id,
-                                      _launch_handle)
-                _launch_handle = None
+            # Open the job's session: its reader and its delivery worker
+            # start. A failure before the session is registered is a launch
+            # abort; once registered, session loss owns every failure.
+            try:
+                await driver.open(rec, options=options)
+            except Exception as exc:  # noqa: BLE001
+                await _abort_launch_inline(
+                    channel, rec, topic_id,
+                    kind="driver_start_failed", message=str(exc))
+                return _result({"status": "error", "kind": "driver_start_failed",
+                                "message": str(exc)})
+            if (_engagement_registry is not None
+                    and _engagement_registry.launch_shutdown_active()):
+                _detail = "Casa was stopping when this launch was cancelled"
+                await _report_launch_death_inline(
+                    channel, rec, topic_id, kind="launch_cancelled",
+                    detail=_detail, driver=driver)
+                return _result({
+                    "status": "error", "kind": "launch_cancelled",
+                    "message": _detail,
+                })
+            # The brief: the job's first and only launch write. The delivery
+            # worker writes it, admitted at write time — a /cancel landing
+            # first means it is never written. From here the session's reader
+            # owns the job.
+            driver.enqueue_brief(rec, prompt)
 
             owned = None  # __TRANSFER_INTERACTIVE__
             _record_launch_safe(agent_name)
@@ -7544,6 +7418,12 @@ async def _launch_interactive_engagement(
             raise
         finally:
             _unregister_launch_safe(_launch_handle)
+            # The launch lets go of the job: its delivery worker, which wrote
+            # nothing while the launch was in flight, re-reads the job.
+            _wake = getattr(getattr(agent_mod, "active_engagement_driver", None),
+                            "wake_worker", None)
+            if callable(_wake):
+                _wake(rec.id)
 
     finally:
         if owned is not None:
@@ -7663,8 +7543,8 @@ async def start_scheduled_job(role: str, trig: Any) -> None:
     "start_job",
     "Start a background job: one listed in <jobs>, or, for a specialist, one its own "
     "plugins declare. A job <jobs> lists as a delegate's own is started by delegating the "
-    "request to that delegate. It runs in batches in its own topic, and the chat's "
-    "resident is notified when it ends.",
+    "request to that delegate. It runs as one long session in its own topic, and the "
+    "chat's resident is notified when it ends.",
     {"job": str, "task": str, "context": str},
 )
 async def start_job(args: dict) -> dict:
@@ -10036,12 +9916,11 @@ async def stop_engagement_launches(registry: Any) -> None:
     except Exception:  # noqa: BLE001 — shutdown must complete
         logger.warning("graceful stop: draining engagement launches failed",
                        exc_info=True)
-    # §2.A: the detached launch owners (their reporters are spawned from
-    # inside them), every anchored reporter, ack and abort, and (diff r4) the
-    # pre-record topic aborts — a launch cancelled between its topic and its
-    # record is in no ledger — drained together to joint quiescence (diff r5:
-    # one anchor's completion can mint into another).
-    await _drain_anchored(_LAUNCH_TURN_TASKS, _LAUNCH_DEATH_TASKS, _ABORT_BG_TASKS)
+    # Every anchored reporter, ack and abort, and the pre-record topic aborts
+    # — a launch cancelled between its topic and its record is in no ledger —
+    # drained together to joint quiescence (one anchor's completion can mint
+    # into another).
+    await _drain_anchored(_LAUNCH_DEATH_TASKS, _ABORT_BG_TASKS)
     try:
         registry.mark_launch_drains_complete()
     except Exception:  # noqa: BLE001 — a fake registry without the mark
@@ -10332,8 +10211,8 @@ async def _report_launch_death(
             f"({detail}). Its task may be incomplete \u2014 inspect any "
             "partial changes before retrying."
         )
-        # Inbound messages that die with the launch are not listed here: each
-        # one's ticket holder tells it once, in reply to the message.
+        # Inbound messages that die with the launch are not listed here: the
+        # journal's terminal branch below tells each one once.
         try:
             await asyncio.wait_for(
                 _post_engagement_notice(channel, rec, text),
@@ -10350,6 +10229,7 @@ async def _report_launch_death(
                 rec.id[:8], exc)
 
     await _cancel_driver_bounded(driver, rec)
+    await _settle_job_journal(rec, driver)
     await _abort_engagement_topic(channel, rec.id, topic_id)
     logger.warning(
         "Engagement %s launch reported dead: kind=%s detail=%s",
@@ -10372,6 +10252,35 @@ async def _post_engagement_notice(channel: Any, rec: Any, text: str) -> None:
         await channel.send_to_topic(rec.topic_id, text)
 
 
+async def _settle_job_journal(engagement: Any, driver: Any) -> None:
+    """The job's message journal, terminal branch, run by every terminal
+    path after the job's client is closed: each operator message the session
+    transcript lacks is told as lost once (in reply to it, or in the topic);
+    one it holds goes silently, and the journal goes with the record. Each
+    notice is bounded by the channel. Then the job's scratchpad goes, in
+    memory and on disk, whatever the journal's settle did. Never raises."""
+    try:
+        settle = getattr(driver, "settle_journal_terminal", None)
+        if not callable(settle):
+            return
+        tch = (_channel_manager.get("telegram")
+               if _channel_manager is not None else None)
+        teller = getattr(tch, "tell_journal_lost", None)
+
+        async def _untold(_rec: Any, _entry: dict) -> None:
+            raise RuntimeError("no channel to tell a lost message")
+
+        try:
+            await settle(engagement, teller if callable(teller) else _untold)
+        except Exception as exc:  # noqa: BLE001 — never stops a terminal path
+            logger.warning("engagement %s: settling the message journal failed: %s",
+                           getattr(engagement, "id", "?")[:8], exc)
+    finally:
+        eid = getattr(engagement, "id", None)
+        if isinstance(eid, str):
+            scratchpad.PADS.discard(eid, path=background_jobs.job_pad_path(eid))
+
+
 async def _cancel_driver_bounded(driver: Any, rec: Any) -> None:
     """#678: tear the driver client down under the funnel's own bound.
 
@@ -10392,12 +10301,6 @@ async def _cancel_driver_bounded(driver: Any, rec: Any) -> None:
             "launch-death report %s: driver.cancel failed: %s",
             rec.id[:8], exc)
 
-
-_LAUNCH_TURN_TASKS: set = set()
-"""§2.A: anchored launch-turn owners (strong refs, so the loop cannot collect
-one mid-flight). The registry's launch ledger — not this set — is the
-shutdown authority: each owner is enrolled there in the same synchronous
-block that creates it."""
 
 LAUNCH_UNCOMMITTED_KIND = "launch_outcome_uncommitted"
 """§2.A: the engager's notice when the launch turn ended and the strict
@@ -10616,143 +10519,6 @@ async def _tell_engager_launch_outcome(
                        rec.id[:8], exc)
 
 
-async def _own_in_casa_launch(
-    driver: Any, rec: "EngagementRecord", prompt: str, channel: Any,
-    topic_id: int | None, *, started: list, handle_box: list,
-) -> None:
-    """§2.A: the anchored owner of an in-casa LAUNCH TURN.
-
-    Holds, verbatim, what the launching tool call did after ``start()``
-    returned before the detach: the API-fault arm, the generic arm, the
-    INV-ENG-011 observation arm and the cancellation arm — but every fault
-    after ``open()`` now posts the bounded topic notice through
-    ``_report_launch_death`` (the caller no longer returns an envelope) and
-    tells the engager live. ``started`` is the flag the done callback reads
-    to tell a never-started owner from one cancelled mid-turn.
-    """
-    started.append(True)
-    background_jobs.turn_owner_started(rec.id)
-    kind: str | None = None
-    detail = ""
-    outcome: "LaunchDeathResult | None" = None
-    limit_stop: Any = None
-    limit_telling = False
-    try:
-        try:
-            await driver.run_launch_turn(rec, prompt)
-        except asyncio.CancelledError:
-            raise
-        except ApiErrorTurn as exc:
-            kind = exc.kind.value
-            detail = _USER_MESSAGES.get(exc.kind, str(exc))
-        except Exception as exc:  # noqa: BLE001
-            kind, detail = "driver_start_failed", str(exc)
-        else:
-            _incomplete, limit_stop = _launch_turn_observation(driver, rec.id)
-            # #1141: a launch turn that stopped at its turn limit is NOT a
-            # launch death, whatever else it left (no visible output, text the
-            # topic refused): the limit fact wins, and the engagement stays
-            # open (ruling-1141).
-            if _incomplete and limit_stop is None:
-                kind = LAUNCH_INCOMPLETE_KIND
-                detail = _LAUNCH_INCOMPLETE_DETAIL.get(_incomplete, _incomplete)
-        if kind is None and limit_stop is not None:
-            # #1141: the telling runs HERE, inside the outer ``try``, so this
-            # launch still holds its turn ownership and its launch enrolment
-            # while it awaits — a job's stall sweep cannot start batch 1
-            # under it (seam review r1) — and the flag is raised with no
-            # await since ``run_launch_turn`` returned, so a cancellation
-            # landing anywhere in the telling finds the abort predicate below
-            # false: the record stays live and boot resumes it.
-            limit_telling = True
-            await _tell_launch_limit_stop(channel, rec, limit_stop)
-        if kind is not None:
-            outcome = await asyncio.shield(_spawn_launch_death_report(
-                channel, rec, topic_id, kind=kind, detail=detail, driver=driver,
-                owes_terminal_notification=True))
-            # Diff r1 (Terra S1): the telling is the owner's and runs to its
-            # end whatever happens to the owner — anchored in the set the stop
-            # drains, awaited shielded. A cancellation landing inside it used
-            # to reach the arm below, whose cancellation owner found the
-            # record terminal and still armed and told the engager AGAIN.
-            tell = asyncio.ensure_future(_tell_engager_launch_outcome(
-                rec, outcome, kind=kind, detail=detail, channel=channel))
-            _LAUNCH_DEATH_TASKS.add(tell)
-            tell.add_done_callback(_LAUNCH_DEATH_TASKS.discard)
-            await asyncio.shield(tell)
-    except asyncio.CancelledError:
-        # Once the one transactional question has been answered the
-        # cancellation owner has nothing to add, whatever the answer: REPORTED
-        # and PERSIST_FAILED mean the anchored telling above is in flight (diff
-        # r2, Terra: a compensator on PERSIST_FAILED re-asked the question, got
-        # the same rollback and told the uncommitted case AGAIN); ALREADY_TERMINAL
-        # means the winner owns it. Only a turn cancelled BEFORE the question
-        # was asked is the cancellation owner's. #1141: and never a turn that
-        # stopped at its turn limit — it is live, and its telling is not a
-        # death (INV-ENG-020).
-        if outcome is None and not limit_telling:
-            _abort_launch_on_cancel(channel, rec, topic_id)
-        raise
-    finally:
-        background_jobs.turn_owner_finished(rec.id)
-        _unregister_launch_safe(handle_box[0] if handle_box else None)
-    if kind is None and rec.origin.get("job"):
-        await background_jobs.job_after_turn(rec, channel)
-
-
-def _launch_turn_done(task: Any, *, rec: "EngagementRecord", channel: Any,
-                      topic_id: int | None, started: list, handle_box: list) -> None:
-    """§2.A: the owner's done callback. A task cancelled before its first step
-    runs no statement, no handler and no ``finally`` (measured), so THIS is
-    the only place a never-started owner can be reported and its handle
-    dropped. After the stop has marked its drains complete nothing is minted:
-    the interpreter's final sweep is next and would destroy it pending, so
-    the residual is logged loudly and boot re-idles the live record."""
-    _LAUNCH_TURN_TASKS.discard(task)
-    if task.cancelled():
-        if not started:
-            _unregister_launch_safe(handle_box[0] if handle_box else None)
-            if _engagement_registry is not None and _engagement_registry.launch_drains_complete() is True:
-                logger.error(
-                    "launch owner for %s was cancelled before it started, after "
-                    "the stop's drains completed — record left live for boot",
-                    rec.id[:8])
-                return
-            _abort_launch_on_cancel(channel, rec, topic_id)
-        return
-    exc = task.exception()
-    if exc is not None:
-        logger.error("launch owner for %s raised: %r", rec.id[:8], exc)
-
-
-def _hand_off_launch_turn(
-    driver: Any, rec: "EngagementRecord", prompt: str, channel: Any,
-    topic_id: int | None, tool_handle: Any,
-) -> None:
-    """§2.A: the synchronous handoff — no ``await`` from the first statement
-    to the last. Create the owner, enrol it with the ledger (latch-aware:
-    enrolled after the stop began means cancelled before it runs), drop the
-    tool call's own handle, attach the done callback."""
-    started: list = []
-    handle_box: list = []
-    owner = asyncio.create_task(_own_in_casa_launch(
-        driver, rec, prompt, channel, topic_id,
-        started=started, handle_box=handle_box))
-    handle_box.append(_register_launch_task_safe(rec.id, owner))
-    _unregister_launch_safe(tool_handle)
-    _LAUNCH_TURN_TASKS.add(owner)
-    owner.add_done_callback(
-        lambda t, _rec=rec, _ch=channel, _tid=topic_id, _s=started, _h=handle_box:
-        _launch_turn_done(t, rec=_rec, channel=_ch, topic_id=_tid, started=_s, handle_box=_h))
-
-
-async def drain_launch_turns() -> None:
-    """§2.A: wait for every anchored launch-turn owner (the ledger drain
-    already awaits the enrolled ones; this covers an owner between its
-    ledger drop and its task end)."""
-    await _drain_anchored(_LAUNCH_TURN_TASKS)
-
-
 def _spawn_launch_death_report(
     channel: Any, rec: "EngagementRecord", topic_id: int | None,
     *, kind: str, detail: str, driver: Any | None,
@@ -10777,120 +10543,6 @@ def _spawn_launch_death_report(
     task.add_done_callback(
         lambda t, _eid=rec.id: _launch_death_done(_eid, t))
     return task
-
-
-LAUNCH_INCOMPLETE_KIND = "launch_turn_incomplete"
-"""#678: the error kind a launch that left no terminal artifact records.
-
-Named rather than flattened into ``driver_start_failed``: that kind means the
-driver never got going, and a reader who cannot tell it from "the turn ran and
-then died mid-flight" cannot act on either."""
-
-_LAUNCH_INCOMPLETE_DETAIL = {
-    "missing_result_message":
-        "the initial turn ended without ResultMessage",
-    "no_visible_output":
-        "the initial turn ended without ResultMessage output or a completion",
-    "text_not_delivered":
-        "the initial turn produced text but none of it reached the topic",
-}
-
-
-def _launch_incomplete_reason(driver: Any, engagement_id: str) -> str:
-    """#678: POP the in_casa driver's launch-turn observation, or "".
-
-    ``getattr``-guarded because ``launch_turn_incomplete`` is NOT part of
-    ``DriverProtocol``: a bare attribute access would raise ``AttributeError``
-    on a driver without it (a fake), and the launcher's generic
-    ``except Exception`` would then mark that engagement errored and abort its
-    topic. Call sites are the two in_casa launch branches only.
-    """
-    reader = getattr(driver, "launch_turn_incomplete", None)
-    if reader is None:
-        return ""
-    try:
-        reason = reader(engagement_id)
-    except Exception:  # noqa: BLE001 — an observation must never break a launch
-        logger.warning(
-            "launch_turn_incomplete read failed for %s", engagement_id[:8],
-            exc_info=True)
-        return ""
-    return reason if isinstance(reason, str) else ""
-
-
-def _launch_turn_observation(driver: Any, engagement_id: str) -> tuple[str, Any]:
-    """#1141: POP the launch-turn observation as ``(reason, limit_stop)``.
-
-    The anchored owner's reader. ``_launch_incomplete_reason`` above stays the
-    two inline-``start()`` launchers' reader and still answers ``""`` for
-    anything that is not a plain reason — those launchers serve only a driver
-    without ``supports_split_launch``, and ``InCasaDriver`` declares it.
-    A turn that stopped at its turn limit arrives as a ``TurnLimitStop``
-    carrying the reason the slot would otherwise hold; it is returned as the
-    second element (duck-typed, ``getattr``-guarded like its sibling), and the
-    reason as the first. A read that raises is "nothing observed".
-    """
-    reader = getattr(driver, "launch_turn_incomplete", None)
-    if reader is None:
-        return "", None
-    try:
-        value = reader(engagement_id)
-    except Exception:  # noqa: BLE001 — an observation must never break a launch
-        logger.warning(
-            "launch_turn_incomplete read failed for %s", engagement_id[:8],
-            exc_info=True)
-        return "", None
-    if isinstance(value, str):
-        return value, None
-    reason = getattr(value, "reason", "")
-    return (reason if isinstance(reason, str) else ""), value
-
-
-async def _tell_launch_limit_stop(channel: Any, rec: Any, limit_stop: Any) -> None:
-    """#1141 (ruling-1141, INV-ENG-020): a LAUNCH turn — a job's launch turn
-    included — that stopped at its turn limit. No death, no engager telling:
-    whatever the turn posted stands, and Casa makes ONE bounded attempt to add
-    C11's line, even when the turn posted nothing — unless the settled read
-    finds the record terminal.
-
-    Exactly ONE WARNING, logged in the ``finally`` so a cancellation landing in
-    the read OR the post still logs it before propagating; it carries the
-    outcome (``line=posted|failed|cancelled|terminal``, and ``state=unread``
-    when the settled read failed and the line was attempted anyway). A failed
-    read or post adds no WARNING of its own and is never retried, and never a
-    fallback death: the engagement stays live.
-
-    A ``CancelledError`` propagates — the caller raised its flag before the
-    first await here, so the cancellation never reaches the abort arm.
-    """
-    from agent import _LIMIT_CONTINUE  # C11's ruled line (#1121)
-    status, state, line = "", "", "cancelled"
-    try:
-        if _engagement_registry is not None:
-            try:
-                status, _told = await asyncio.wait_for(
-                    _engagement_registry.settled_terminal_state(rec.id),
-                    _TOPIC_OP_TIMEOUT_S)
-            except Exception:  # noqa: BLE001 — fail TOWARD telling
-                status, state = "", "unread"
-        if status in ("completed", "cancelled", "error"):
-            line = "terminal"
-            return
-        try:
-            await asyncio.wait_for(
-                _post_engagement_notice(channel, rec, _LIMIT_CONTINUE),
-                _TOPIC_OP_TIMEOUT_S)
-        except Exception:  # noqa: BLE001 — one bounded best-effort attempt
-            line = "failed"
-        else:
-            line = "posted"
-    finally:
-        logger.warning(
-            "engagement %s launch turn limit reached: role=%s turns=%s "
-            "line=%s%s",
-            rec.id[:8], getattr(rec, "role_or_type", "-"),
-            getattr(limit_stop, "turns", None), line,
-            f" state={state}" if state else "")
 
 
 class LaunchAbortResult(enum.Enum):
@@ -10968,6 +10620,7 @@ async def _abort_launch_with_fault(
             "launch abort %s (%s): record already terminal — another writer "
             "owns the topic; painting and closing nothing", rec.id[:8], kind)
         return LaunchAbortResult.ALREADY_TERMINAL
+    await _settle_job_journal(rec, _resolve_engagement_driver(rec))
     await _abort_engagement_topic(channel, rec.id, topic_id)
     return LaunchAbortResult.ABORTED
 
@@ -11159,6 +10812,70 @@ and it is on you. See `architecture/engagement-terminal-telling.md`.
 # silent-finalization mode, which is the very defect this exists to fix.
 _finalize_tail_tasks: set[asyncio.Task] = set()
 
+# A job that completes from inside a running turn: its teardown waits, at most
+# this long, for that turn to end, so the end paint and the end notice carry
+# the completing turn's cost. Past the bound it finalizes with the last cost
+# known.
+_COMPLETION_TURN_END_WAIT_S = 30.0
+
+# Jobs whose end paint (start line and question keyboards) waits for their
+# completing turn to end: the terminal observer leaves their keyboards to the
+# finalize tail, which retires them once the turn's cost is recorded.
+_end_paint_deferred: set[str] = set()
+
+
+def _completing_turn_running(driver: Any, engagement_id: str) -> bool:
+    """A turn is running in the job's session and the driver can wait for
+    its end: the completion came from inside that turn."""
+    probe = getattr(driver, "turn_open", None)
+    if not callable(probe) or not callable(getattr(driver, "wait_turn_end", None)):
+        return False
+    try:
+        return probe(engagement_id) is True
+    except Exception:  # noqa: BLE001 — no reading, nothing to wait for
+        return False
+
+
+async def _await_completing_turn(driver: Any, engagement: Any) -> None:
+    """Wait, bounded, for the turn that completed the job to end, then
+    store the cost its end recorded. Never raises."""
+    try:
+        ended = await driver.wait_turn_end(engagement.id,
+                                           _COMPLETION_TURN_END_WAIT_S)
+    except Exception:  # noqa: BLE001 — the teardown goes on regardless
+        logger.warning("finalize engagement %s: waiting for the completing "
+                       "turn failed", engagement.id[:8], exc_info=True)
+        ended = False
+    if not ended:
+        logger.info("finalize engagement %s: the completing turn did not end "
+                    "within %.0fs; finalizing with the last cost known",
+                    engagement.id[:8], _COMPLETION_TURN_END_WAIT_S)
+    if _engagement_registry is not None:
+        try:
+            await _engagement_registry.persist_origin(engagement.id)
+        except Exception:  # noqa: BLE001 — the in-memory cost still shows
+            logger.warning("finalize engagement %s: storing the final cost "
+                           "failed", engagement.id[:8], exc_info=True)
+
+
+def _paint_job_end(engagement: Any) -> None:
+    """Retire an ended job's keyboards (the start line painted with its
+    outcome, time and cost) — the step the terminal observer left to the
+    finalize tail. Never raises."""
+    _end_paint_deferred.discard(engagement.id)
+    channel = (_channel_manager.get("telegram")
+               if _channel_manager is not None else None)
+    retire = getattr(channel, "retire_job_keyboards", None)
+    if not callable(retire):
+        return
+    rec = (_engagement_registry.get(engagement.id)
+           if _engagement_registry is not None else None) or engagement
+    try:
+        retire(rec)
+    except Exception:  # noqa: BLE001 — cosmetic
+        logger.warning("retiring job keyboards failed for %s",
+                       engagement.id[:8], exc_info=True)
+
 
 def _finalize_tail_done(engagement_id: str, task: asyncio.Task) -> None:
     _finalize_tail_tasks.discard(task)
@@ -11281,6 +10998,14 @@ async def _finalize_engagement(
         _owes["notify"] = not _told_nowhere(rec.origin, outcome)
         return _owes["notify"]
 
+    # A completion from inside a running turn: the teardown waits for that
+    # turn to end (bounded), and the terminal observer leaves the end paint
+    # to it, so both carry the completing turn's cost.
+    await_turn_end = (detach_teardown_tail
+                      and _completing_turn_running(driver, engagement.id))
+    if await_turn_end:
+        _end_paint_deferred.add(engagement.id)
+
     if _engagement_registry is not None:
         try:
             won = await _engagement_registry.try_transition_terminal(
@@ -11299,11 +11024,15 @@ async def _finalize_engagement(
                 owes_terminal_notification=_owes_notification,
             )
         except TerminalPreconditionFailed as exc:
+            _end_paint_deferred.discard(engagement.id)
             logger.info(
                 "Engagement %s completion vetoed by inbound gate: %s",
                 engagement.id[:8], exc)
             return FinalizeResult.PRECONDITION_FAILED
-        except Exception as exc:  # noqa: BLE001 — strict persist failed + rolled back
+        except BaseException as exc:
+            _end_paint_deferred.discard(engagement.id)
+            if not isinstance(exc, Exception):
+                raise
             logger.warning(
                 "Engagement %s terminal transition failed to persist "
                 "(rolled back, left live): %s",
@@ -11311,6 +11040,7 @@ async def _finalize_engagement(
             )
             return FinalizeResult.PERSIST_FAILED
         if not won:
+            _end_paint_deferred.discard(engagement.id)
             logger.info(
                 "Engagement %s not finalized — already terminal or revived "
                 "since snapshot (outcome=%s)",
@@ -11329,11 +11059,10 @@ async def _finalize_engagement(
         engagement.permit.release()
 
     # #632: freeze the tail's payload inputs NOW — before the first await
-    # after the flip. ``lower_origin_clearance`` has no terminal-state refusal
-    # and rewrites the live record's ``origin``; this funnel suspends (broker
-    # drain, topic round-trips) between the flip and the notification's reads,
-    # so without this snapshot a post-terminal clamp lands in the
-    # DelegationComplete payload. The completion notice carries the values
+    # after the flip. This funnel suspends (broker drain, topic round-trips)
+    # between the flip and the notification's reads, and the live record's
+    # ``origin`` can still be written meanwhile; without this snapshot such a
+    # post-terminal write lands in the DelegationComplete payload. The completion notice carries the values
     # that won the flip.
     frozen: dict[str, Any] = {
         "id": engagement.id,
@@ -11566,21 +11295,47 @@ async def _finalize_engagement(
     # result is documented-lost on this path) while the tail completes every
     # side effect. Every other caller awaits the same helper inline:
     # identical task, ordering and cancellation semantics as before.
+    #
+    # A completion from inside a running turn does not await its tail: the
+    # tail waits for that turn to end, and the turn cannot end until this
+    # tool call has returned. The transition is committed, so the result is
+    # already FINALIZED; the Casa-owned tail finishes the side effects.
     if detach_teardown_tail:
         tail = asyncio.create_task(_finalize_engagement_tail(
             engagement, outcome=outcome, text=text,
             next_steps=next_steps, driver=driver, now=now,
             output_truncated=output_truncated, frozen=frozen,
+            await_turn_end=await_turn_end,
         ))
         _finalize_tail_tasks.add(tail)
         tail.add_done_callback(
             lambda t, _eid=engagement.id: _finalize_tail_done(_eid, t))
+        if await_turn_end:
+            return FinalizeResult.FINALIZED
         return await asyncio.shield(tail)
     return await _finalize_engagement_tail(
         engagement, outcome=outcome, text=text,
         next_steps=next_steps, driver=driver, now=now,
         output_truncated=output_truncated, frozen=frozen,
     )
+
+
+def _with_job_cost(text: str, frozen: dict, now: float,
+                   cost_job: dict | None = None) -> str:
+    """A job's end notice to its resident carries how long it ran and its
+    cost as of its last turn end, so a job with no start line (scheduled or
+    agent-started) still shows it when the outcome is reported. ``cost_job``
+    is the live job state to read the cost from when the completing turn's
+    end recorded it after the terminal flip."""
+    job = (frozen.get("origin") or {}).get("job")
+    if not isinstance(job, dict):
+        return text
+    line = "Job ran " + background_jobs.format_elapsed(
+        max(0.0, now - float(frozen.get("started_at") or now)))
+    cost = (cost_job if isinstance(cost_job, dict) else job).get("cost_usd")
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        line += f" · ${cost:.2f}"
+    return f"{text}\n\n{line}" if text else line
 
 
 def _told_nowhere(origin: Any, outcome: str) -> bool:
@@ -11600,17 +11355,24 @@ async def _finalize_engagement_tail(
     now: float,
     output_truncated: bool,
     frozen: dict[str, Any],
+    await_turn_end: bool = False,
 ) -> "FinalizeResult":
     """#632: the finalize funnel's post-topic tail — driver teardown, the
     completion notification and the finalized log, in that order.
 
+    ``await_turn_end`` (a completion from inside a running turn): first wait,
+    bounded, for that turn to end so its cost is recorded; after the teardown,
+    paint the job's end (which the terminal observer left to this tail).
+
     Payload reads come from ``frozen`` (snapshotted at the terminal flip,
     before the funnel's first post-flip await) — never from the live record,
-    which ``lower_origin_clearance`` may rewrite post-terminal. The live
+    whose ``origin`` may still be written post-terminal. The live
     ``engagement`` is passed for ``driver.cancel`` (drivers key off the
     record) and for log lines reading immutable identity only.
     """
     eng_id: str = frozen["id"]
+    if await_turn_end:
+        await _await_completing_turn(driver, engagement)
     # 3. Tear down driver client
     if driver is not None:
         try:
@@ -11630,6 +11392,9 @@ async def _finalize_engagement_tail(
                 "finalize engagement %s: driver.cancel failed: %s",
                 engagement.id[:8], exc,
             )
+    await _settle_job_journal(engagement, driver)
+    if await_turn_end:
+        _paint_job_end(engagement)
 
     # 4. NOTIFY the assistant (via existing DelegationComplete-shaped pathway).
     # #1301: not for a quiet run's completed end — its plugin already posted
@@ -11641,6 +11406,11 @@ async def _finalize_engagement_tail(
         # lines after the terminal text — the one announcement the creator
         # is owed (INV-JOB-010) carries them.
         text = _with_post_echo(text, eng_id)
+        live = (_engagement_registry.get(eng_id)
+                if await_turn_end and _engagement_registry is not None else None)
+        text = _with_job_cost(
+            text, frozen, now,
+            cost_job=((live.origin or {}).get("job") if live is not None else None))
         complete = DelegationComplete(
             delegation_id=eng_id,
             agent=frozen["role_or_type"],
@@ -11737,6 +11507,20 @@ def _resolve_engagement_driver(rec: Any) -> Any | None:
     return getattr(agent_mod, "active_engagement_driver", None)
 
 
+def _session_is_working(driver: Any, engagement_id: str) -> bool:
+    """A job whose session has a turn running, or that Casa is recovering —
+    what the stale reap and the idle suspension both skip."""
+    for probe in ("turn_open", "recovering"):
+        fn = getattr(driver, probe, None)
+        try:
+            if callable(fn) and fn(engagement_id) is True:
+                return True
+        except Exception:  # noqa: BLE001 — no reading, not working
+            logger.debug("%s probe failed for %s", probe, engagement_id[:8],
+                         exc_info=True)
+    return False
+
+
 async def reap_stale_engagements(*, ttl_days: float | None = None) -> int:
     """Cancel engagements with no user turn for ``ttl_days`` (D-4, v0.69.0).
 
@@ -11763,6 +11547,11 @@ async def reap_stale_engagements(*, ttl_days: float | None = None) -> int:
     reaped = 0
     for rec in list(_engagement_registry.active_and_idle()):
         if rec.last_user_turn_ts >= cutoff:
+            continue
+        if _session_is_working(_resolve_engagement_driver(rec), rec.id):
+            # A turn is running (one can run for hours with no turn end), or
+            # Casa is recovering the job's session: a working job is never
+            # stale.
             continue
         idle_days = int((now - rec.last_user_turn_ts) // 86400)
         logger.info(
@@ -11805,22 +11594,24 @@ _COMPLETION_STATUS_TO_OUTCOME = {
 }
 _COMPLETION_TEXT_MAX = 8000
 
+# The completion gate's refusal. In a job's continuous session the refusal is
+# itself the delivery: it is a tool result, so the message waiting for the job
+# is taken up right after it.
+_UNREAD_REFUSAL = ("An operator message reaches you at your next step. Read "
+                   "it, then call emit_completion again.")
+
 @tool(
     "report_job_progress",
-    "Report this background job's batch progress in its topic. `progressed` is "
-    "whether this batch moved the job toward completion — say false when it did "
-    "not, and three such batches in a row end the job. `done`/`remaining` are "
-    "optional, shown to the operator, and decide nothing: pass them only when "
-    "this work has a real unit and a known total. Call it from a batch's own "
-    "turn: a call is judged by the turn running when it is handled, and one "
-    "handled outside a batch's turn (the launch acknowledgement, a reply to a "
-    "message in the topic) is refused with not_a_batch.",
+    "Post a one-line progress note for this background job in its topic, any "
+    "time something is worth telling. Optional: the job runs and finishes "
+    "whether or not you call it. `done`/`remaining` are optional and only "
+    "shown to the operator: pass them when this work has a real unit and a "
+    "known total.",
     {"type": "object", "properties": {
         "summary": {"type": "string"},
-        "progressed": {"type": "boolean"},
         "done": {"type": "integer", "minimum": 0},
         "remaining": {"type": "integer", "minimum": 0}},
-     "required": ["summary", "progressed"]},
+     "required": ["summary"]},
 )
 async def report_job_progress(args: dict) -> dict:
     rec = engagement_var.get(None)
@@ -11828,50 +11619,23 @@ async def report_job_progress(args: dict) -> dict:
     if rec is None or rec.status not in ("active", "idle") or not rec.origin.get("job"):
         return _result({"ok": False, "kind": "not_a_job"})
     summary = args.get("summary")
-    progressed = args.get("progressed")
     done, remaining = args.get("done"), args.get("remaining")
-    # `progressed` is the whole stuck judgment (#1031), so it is required and
-    # must be an actual boolean: a missing or fuzzy value is never read as
-    # progress. `type(...) is not int` keeps booleans out of the counts.
-    if not isinstance(summary, str) or type(progressed) is not bool or any(
+    # `type(...) is not int` keeps booleans out of the counts.
+    if not isinstance(summary, str) or any(
         value is not None and (type(value) is not int or value < 0)
         for value in (done, remaining)
     ):
         return _result({"ok": False, "kind": "invalid_arguments"})
     summary = (summary.splitlines() or [""])[0][:300]
-    job = rec.origin["job"]
-    # #1033: a report counts for the batch whose turn is running when this
-    # handler runs. The batch number comes from the driver's running turn (set
-    # from start_next_batch's argument), read by engagement id — the handler
-    # runs in the SDK reader's context, which no per-turn contextvar reaches.
-    # The handler receives only ``args``, so nothing ties it to the turn that
-    # made the call: a call the CLI cancelled whose handler first runs in the
-    # next batch's turn counts for that batch (the stated residual, pinned by
-    # tests/test_job_report_late_handler.py).
-    import agent as agent_mod
-    driver = getattr(agent_mod, "active_engagement_driver", None)
-    running = getattr(driver, "running_batch", None)
-    batch = running(rec.id) if running is not None else None
-    if batch is None or batch != job["started"]:
-        return _result({"ok": False, "kind": "not_a_batch"})
-    # The last report credited to a batch decides it. Recorded in the SAME
-    # synchronous step as the check above, before any await: a call the CLI
-    # abandons and whose turn then ends can still be suspended on the post
-    # below while the next batch is admitted, and a write after it would land
-    # in that batch's verdict (seam review r1, reproduced).
-    job["advanced"] = progressed
-    job["last_summary"] = summary
-    job["last_advance"] = time.time()
-    text = f"📊 Batch {batch}: {summary}"
+    # Recorded before any await: the record's "Last progress" (the parking
+    # line, a failed end) and the turn-end guard's step-ceiling rule read it.
+    rec.origin["job"]["last_summary"] = summary
+    background_jobs.note_progress(rec.id)
+    text = f"📊 {summary}"
     if done is not None:
         text += f" · {done} done"
     if remaining is not None:
         text += f" · {remaining} left"
-    # The posted line carries the worker's own summary and counts and makes no
-    # claim about the judgment: two reports of one batch would otherwise leave
-    # two verdicts standing in the topic, and a topic line cannot be taken back
-    # (review r1 S2, r2 S2 — the same shape twice, so the claim is cut rather
-    # than sharpened).
     await _post_engagement_notice(_channel_manager.get("telegram"), rec, text)
     await _engagement_registry.persist_origin(rec.id)
     return _result({"ok": True})
@@ -11882,10 +11646,10 @@ async def report_job_progress(args: dict) -> dict:
     "Ask the operator something this job cannot settle on its own: a decision, a "
     "choice, missing information. Casa posts the question in the operator's direct "
     "chat, under your name, with one button per option and a Cancel job button; their "
-    "answer — a tap, or a reply in words — arrives later as its own turn. Park the item "
-    "that needs it, carry on with other work if there is any, and end the batch as "
-    "usual. Asking again posts the question again; either copy answers it. Only a "
-    "specialist's background job can ask.",
+    "answer — a tap, or a reply in words — reaches you as a message. Carry on with "
+    "other work if there is any; if there is none, end your turn and wait. Casa does "
+    "not prompt you while the question is open. Asking again posts the question "
+    "again; either copy answers it. Only a specialist's background job can ask.",
     {"type": "object", "properties": {
         "question": {"type": "string"},
         "options": {"type": "array", "items": {"type": "string"}}},
@@ -11941,28 +11705,10 @@ async def ask_operator(args: dict) -> dict:
     if message_id is None:
         return _result({"status": "error", "kind": "delivery_failed",
                         "message": "the question was not posted; you may ask again"})
+    # The job now waits for the operator: a turn that ends from here is not
+    # nudged, and a restart resumes it only when the operator answers.
+    background_jobs.mark_awaiting(rec.id, background_jobs.AWAITING_ASKED)
     return _result({"status": "asked", "message_id": message_id})
-
-
-async def _record_pending_completion(engagement: Any, status: str, text: str) -> None:
-    """#1180: a fresh job's next turn starts with no memory of this refusal, so
-    the refused completion is recorded on the job, where ``job_brief`` names it
-    until the record is terminal (INV-BGJOB-005). A resume-mode job's
-    conversation remembers the refusal itself, and records nothing."""
-    rec = _engagement_registry.get(engagement.id) if _engagement_registry else None
-    if rec is None or not background_jobs.is_fresh_job(rec):
-        return
-    job = rec.origin["job"]
-    # A clearance downgrade drops `brief_context`; a turn that began at the old
-    # tier can still be refused after it, so its text is withheld here too.
-    job["completion_pending"] = (
-        {"status": status, "text": text} if "brief_context" in job
-        else {"status": status})
-    try:
-        await _engagement_registry.persist_origin(rec.id)
-    except Exception:  # noqa: BLE001 — the refusal itself must still be returned
-        logger.warning("could not persist the pending completion of %s",
-                       rec.id[:8], exc_info=True)
 
 
 @tool(
@@ -12069,9 +11815,10 @@ async def emit_completion(args: dict) -> dict:
     except Exception:
         pass
 
-    # G4 D1 (v0.96.0): completion inbound gate — the ask gate's contract
-    # (`unread_inbound` ⇒ end your turn) extended to completion. Gates ONLY
-    # successful outcomes; failed/error exits stay ungated (a broken
+    # G4 D1 (v0.96.0): completion inbound gate (INV-ENG-003) — an operator
+    # message admitted, or written and not yet taken up, refuses a successful
+    # completion; the refusal's tool result is where the job reads it. Gates
+    # ONLY successful outcomes; failed/error exits stay ungated (a broken
     # engagement must be able to die) and rely on the D4 annotation.
     if (outcome == "completed" and driver is not None
             and hasattr(driver, "inbound_unread_depth")):
@@ -12087,17 +11834,13 @@ async def emit_completion(args: dict) -> dict:
         _depth = _d if type(_d) is int else 0
         _resv = _r if type(_r) is int else 0
         if _depth > 0 or _resv > 0:
-            await _record_pending_completion(engagement, status_in, text)
             return _result({
                 "status": "error", "kind": "unread_inbound",
                 "retryable": True,
-                "message": (
-                    "an operator message is waiting unread — END YOUR TURN "
-                    "NOW; the message is delivered at your next turn start; "
-                    "read it, then call emit_completion again"),
+                "message": _UNREAD_REFUSAL,
             })
 
-    fin = await _finalize_engagement(
+    finalization = _finalize_engagement(
         engagement,
         outcome=outcome,
         text=text,
@@ -12112,17 +11855,23 @@ async def emit_completion(args: dict) -> dict:
         # other caller (cancel/reap) keeps the default fully-synchronous path.
         detach_teardown_tail=(driver is not None),
     )
+    # The WHOLE finalization — the terminal transition and every side effect
+    # after it — runs in a Casa-owned task created before the transition; this
+    # callback only awaits it shielded. Retiring the job's session disconnects
+    # its client, which cancels the client's outstanding tool callbacks, this
+    # one included: a committed completion must still reach its notification.
+    from drivers.in_casa_driver import InCasaDriver
+    if isinstance(driver, InCasaDriver):
+        fin = await asyncio.shield(driver.spawn_owned(finalization))
+    else:
+        fin = await finalization
     # G4 D2 (v0.96.0): the registry-internal gate vetoed the flip (a message
     # landed between the handler gate above and the terminal critical
     # section). Refuse with the same retryable contract.
     if fin is FinalizeResult.PRECONDITION_FAILED:
-        await _record_pending_completion(engagement, status_in, text)
         return _result({
             "status": "error", "kind": "unread_inbound", "retryable": True,
-            "message": (
-                "an operator message arrived while completing — END YOUR "
-                "TURN NOW; read it at your next turn start, then call "
-                "emit_completion again"),
+            "message": _UNREAD_REFUSAL,
         })
     # G4 D5 (v0.96.0): a persist rollback leaves the record LIVE — surface a
     # retryable error instead of acking a completion that did not happen.
@@ -13509,8 +13258,12 @@ def _on_engagement_terminal(rec) -> None:
     An ended job's keyboards in the direct chat (its start line, its
     questions) are retired on every terminal winner too: the channel takes
     them off the record in this step and edits them away on a task of its
-    own."""
+    own — except for a job that completed from inside a running turn, whose
+    finalize tail retires them once that turn has ended and its cost is
+    recorded."""
     CHALLENGES.cancel_matching(engagement=rec.id, reason="engagement_ended")
+    if rec.id in _end_paint_deferred:
+        return                  # the finalize tail paints it after the turn ends
     channel = _channel_manager.get("telegram") if _channel_manager is not None else None
     retire = getattr(channel, "retire_job_keyboards", None)
     if callable(retire):

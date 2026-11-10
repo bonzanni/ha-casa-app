@@ -20,7 +20,7 @@ engagement's topic and its engager are told — the outcome mark, the unconfirme
 disclosure and the durable obligation to notify — is in
 [`architecture/engagement-terminal-telling.md`](engagement-terminal-telling.md). The record
 itself, how one is launched and the driver protocol are in
-[`architecture/engagements.md`](engagements.md); how a turn is admitted to it is in
+[`architecture/engagements.md`](engagements.md); how a write is admitted to it is in
 [`architecture/engagement-turn-admission.md`](engagement-turn-admission.md); what a restart rewrites is in
 [`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md).
 
@@ -48,8 +48,9 @@ completion requested through the completion tool is refused while inbound messag
 unread or reserved; failure, cancellation and the operator's own complete command
 deliberately bypass it. What the driver counts is in
 [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) (INV-ENG-003). No
-terminal outcome lists the messages it committed past: each is told once by its own ticket's
-holder ([`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md),
+terminal outcome lists the messages it committed past: each one the job never read is told
+once by the job's message journal, whose terminal branch this funnel runs after the driver
+teardown ([`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md),
 INV-ENG-029).
 
 **Whether the engager is owed a telling is decided inside the transition.** The funnel passes
@@ -97,10 +98,9 @@ the topic left open and empty — recoverable, since nothing was closed and noth
 marked, and the engager is still told from the surviving tail, but the topic carries no
 account of what happened. This is a known open exposure, not an oversight: closing it means
 moving operator-visible effects across a cancellation boundary in the one funnel that four
-other terminal writers race. `in_casa` turn admission now exists, so half of what that
-sentence used to name as the blocker is gone — but only half, and the exposure is not closed
-by it. Admission decides whether a turn is *delivered*; it orders nothing against a
-finalization's own topic operations, which is what would have to be ordered.
+other terminal writers race. `in_casa` write admission does not close it: admission decides
+whether a write is *delivered*; it orders nothing against a finalization's own topic
+operations, which is what would have to be ordered.
 
 **INV-ENG-002**: A strict terminal transition never leaves the persisted and in-memory records disagreeing; on a write failure it restores the prior state and raises.
 
@@ -132,17 +132,16 @@ input when the driver exposes its inbound state; the operator's own
 complete command is not gated and finalizes past it — see
 [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md).
 
-**One terminal path deliberately stays outside this funnel.** A launch turn that ends
-without leaving any artifact (INV-ENG-011, [`architecture/engagements.md`](engagements.md))
-is reported by the launch's owner, not finalized here, and the exclusion is what makes it
-safe. This funnel tells the engager the outcome as the engagement reported it; a launch
+**One terminal path deliberately stays outside this funnel.** A launch cancelled after its
+record exists and before it answered `pending` (INV-ENG-030,
+[`architecture/engagement-launch-detach.md`](engagement-launch-detach.md)) is reported by the
+launch-death reporter, not finalized here, and the exclusion is what makes it safe. This funnel tells the engager the outcome as the engagement reported it; a launch
 death recorded as a completion with empty text would tell it of a success that never
 happened. It also hard-codes a single completion error kind, which would erase the
 specific kind the report exists to name. So that path uses the strict terminal primitive
-directly, writes only `error`, and tells the engager itself, over the same
-engagement-outcome envelope this funnel's notify step uses, with the fault's own kind and
-no result (INV-ENG-021,
-[`architecture/engagement-launch-detach.md`](engagement-launch-detach.md)). Nothing outside a completion or the operator's complete
+directly, writes only `error`, and its cancellation owner tells the engager itself, over the
+same engagement-outcome envelope this funnel's notify step uses, with the fault's own kind and
+no result (INV-ENG-021). Nothing outside a completion or the operator's complete
 command ever writes `completed`.
 
 Two properties of the primitive make that direct use correct rather than a shortcut, and
@@ -193,8 +192,8 @@ remedy on the two ledgers. The job ledger can leave a stop-caused settling exact
 because its boot recovery terminalizes the row and makes the loss deliverable. This ledger
 cannot: its boot reconcile rewrites `active` to `idle`, announces nothing, and is not a terminal
 transition at all — a row left behind here is a live-looking engagement nobody is ever told
-about, or, for a background job, one the periodic job sweep or boot continues
-([`background-jobs.md`](background-jobs.md)), not a loss the next boot reports. The carried
+about, or, for a background job, one boot resumes
+([`background-job-session.md`](background-job-session.md)), not a loss the next boot reports. The carried
 cause that means *leave it for boot* on one ledger cannot mean that here, and a contract written
 once for both would have been wrong on one of them.
 

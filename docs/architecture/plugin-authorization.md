@@ -46,9 +46,9 @@ dispatch. That ordering matters here specifically: this arm awaits a message edi
 dispatches, so without the reservation a successful completion committing during that round
 trip would take the engagement terminal while the continuation still had no existence anywhere.
 The edit still precedes the dispatch — the reservation makes that order harmless rather than
-moving it. The card is the continuation's notice target: if the job never takes the
-continuation up, the seam or its delivery task — whichever holds its ticket — posts one line in
-reply to the card ([`engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md),
+moving it. The card is the continuation's notice target: if the job does not accept the
+continuation, or ends without reading it, the seam or the job's message journal posts one line
+in reply to the card ([`engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md),
 INV-ENG-029), and the card itself adds no failure line, so the operator is told once. Only when
 the channel does not know the engagement, and so no seam tells it, is the card corrected to say
 that the engagement could not be resumed to use the approval and to ask for it again, because
@@ -177,9 +177,10 @@ background job's topic, the hook runs in the engagement client's SDK reader, so 
 engagement it records on that client's running turn — the holder bound before the client was
 entered (`in_casa_driver._EngagementTurn`), live only while its turn runs — and the driver
 stops the topic stream at that call's result and finalizes only the words before it, under
-the same cap. A launch turn whose every word was withheld this way is not reported dead: the
-keyboard is what it showed (INV-ENG-011,
-[`engagement-turn-outcomes.md`](engagement-turn-outcomes.md)).
+the same cap. A job turn whose every word was withheld this way is waiting on the operator:
+the keyboard is what it showed, and the job's turn-end handler neither nudges nor parks it
+while the approval is outstanding
+([`background-job-session.md`](background-job-session.md), INV-BGJOB-017).
 
 What it does not cover: a synchronous wait that degraded to pending and an async delegation
 (the child's later decision reaches the resident by #1049's note path). The deny strings are

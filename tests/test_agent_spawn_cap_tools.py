@@ -252,7 +252,7 @@ class TestJobEngagementSpawn:
             agent_spawn_limiter=lim,
         )
         driver = MagicMock()
-        driver.start = AsyncMock()
+        driver.open = AsyncMock()
         agent_mod.active_engagement_driver = driver
 
         res = await launch_job("Plan Q2", origin=dict(_AGENT_ORIGIN))  # agent context
@@ -296,7 +296,7 @@ class TestJobEngagementSpawn:
             agent_spawn_limiter=lim,
         )
         driver = MagicMock()
-        driver.start = AsyncMock()
+        driver.open = AsyncMock()
         agent_mod.active_engagement_driver = driver
 
         res = await launch_job("Plan Q2", origin={**_AGENT_ORIGIN, "_operator_turn": True})
