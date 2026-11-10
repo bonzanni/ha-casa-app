@@ -49,7 +49,7 @@ from claude_runtime import (
     with_cross_session_tools_denied,
 )
 from config import AgentConfig, effort_for
-from specialist_registry import DelegationComplete
+from specialist_registry import CLOSING_MARKER, DelegationComplete
 from hooks import read_evidence_matchers, resolve_hooks
 from output_boundary import (
     Admitted, ApprovalCut, IntentKind, TurnScope, casa_text,
@@ -1892,13 +1892,10 @@ class Agent:
                 # folded into that one statement, never a separate line.
                 body += _replay_statement(_REPLAY_REANNOUNCEMENT, complete)
             body += f"Result text from {complete.agent}:\n{complete.text}\n"
-            if complete.relayable:
-                # Slice 5l: the full id (the header above shows 8 characters).
-                body += (
-                    "\nTo pass this answer on to the person, call relay_answer "
-                    f"with delegation_id {complete.delegation_id}; Casa posts "
-                    "it under the delegate's name.\n"
-                )
+            if complete.closing_message:
+                # the cap cut the result's end away: the delegate's closing
+                # message follows whole, under Casa's marker line
+                body += f"\n{CLOSING_MARKER}\n{complete.closing_message}\n"
             if msg.context.get("engagement_id"):
                 # #1411: an engagement's summary is the specialist's own
                 # words, and it may say the work "will stay open" — written in

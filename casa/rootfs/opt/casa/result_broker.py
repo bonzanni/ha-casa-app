@@ -529,7 +529,6 @@ POSTS = PostLedger()
 
 # The kinds of the posts Casa sends on a specialist's behalf outside a
 # delivered slot (whose posts carry the slot's OPERATOR_* kind).
-RELAYED_ANSWER = "relayed_answer"   # ``tools.relay_answer``: a delegate's closing message
 DESK_REPLY = "desk_reply"           # a desk turn's reply (``specialist_desk``)
 #: the words a desk turn wrote before a call that waits on the operator's
 #: approval (#1252): posted as its reply, but the work is not done
@@ -539,7 +538,7 @@ RECEIPT = "receipt"                 # a stored call's receipt after a tap
 #: with, his answer. A delivered slot and a receipt are sent the same way
 #: mid-run and at the end, so neither is, nor a desk reply cut at a pending
 #: approval: the send path decides, never the text.
-ANSWER_KINDS = frozenset({RELAYED_ANSWER, DESK_REPLY})
+ANSWER_KINDS = frozenset({DESK_REPLY})
 
 
 @dataclasses.dataclass(frozen=True)
@@ -555,7 +554,7 @@ class PostRecord:
     tool_use_id: str
     owner: str
     posted_at: float
-    # the delivery kind (an OPERATOR_* slot kind, RELAYED_ANSWER, DESK_REPLY,
+    # the delivery kind (an OPERATOR_* slot kind, DESK_REPLY,
     # DESK_REPLY_BEFORE_APPROVAL or RECEIPT): the desk's outcome echo names a landed post by it, never by its
     # body, and memory's line says from it whether the post is his answer
     kind: str = ""

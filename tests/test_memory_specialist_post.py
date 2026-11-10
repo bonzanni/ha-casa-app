@@ -8,7 +8,7 @@ handed to him and then nothing, and kept the errand open. So when a message
 Casa sends on such a specialist's behalf lands in the operator's chat, one
 event is captured: "<name> posted to your chat.", Casa's words, with the time;
 "<name> posted his answer to your chat." when the path that sent it is the one
-that carries his answer (a relayed answer, a desk reply), never by its text.
+that carries his answer (a desk reply), never by its text.
 Never the post's body, caption, file name or buttons. Every page of one post,
 and a re-landing of it, is one event.
 
@@ -104,60 +104,20 @@ async def test_every_page_of_one_post_and_a_re_landing_are_one_event(
     assert [e["text"] for e in rows] == ["Fido posted to your chat."] * 2
 
 
-async def test_a_desk_reply_and_a_relayed_answer_leave_a_line_too(
-        mem, roles):
-    """Both are the message the specialist's turn closed with, his answer
-    (v0.347.6): the line says so. Which path sent the post decides, never its
-    text."""
+async def test_a_desk_reply_leaves_a_line_too(mem, roles):
+    """A desk reply is the message the specialist's turn closed with, his
+    answer (v0.347.6): the line says so. Which path sent the post decides,
+    never its text."""
     ch = _channel()
-    for post in (_post(plugin="", slot="desk", tool_use_id="t-1",
-                       owner="t-1", kind=rb.DESK_REPLY),
-                 _post(plugin="", slot="relay", tool_use_id="d-9",
-                       owner="relay:d-9", kind=rb.RELAYED_ANSWER)):
-        from output_boundary import casa_text
-        out = await ch.send_response(casa_text(_message(f"hi {CANARY}")),
-                                     {"chat_id": OPERATOR_CHAT, "_post": post})
-        assert out is DeliveryOutcome.DELIVERED
-    rows = await captured_events(mem)
-    assert [e["text"] for e in rows] == ["Fido posted his answer to your chat."] * 2
-    assert not any(CANARY in e["text"] for e in rows)
-
-
-async def test_a_relayed_answer_through_relay_answer_is_his_answer_once(
-        mem, roles, monkeypatch):
-    """The real ``relay_answer`` over the real channel: an answer of two pages
-    is one event, worded as his answer, keyed by the post's identity alone."""
-    from collections import OrderedDict
-
-    import agent as agent_mod
-    from memory import occurrence
-    from output_boundary_testing import with_scope
-    monkeypatch.setattr(tools, "_RELAYABLE", OrderedDict())
-    monkeypatch.setattr(rb, "POST_MAP", rb.PostMap())
-    ch = _channel()
-
-    class _Manager:
-        def get(self, name):
-            return ch if name == "telegram" else None
-    monkeypatch.setattr(tools, "_channel_manager", _Manager(), raising=False)
-    origin = {"role": "assistant", "channel": "telegram", "chat_id": OPERATOR_CHAT,
-              "user_id": OPERATOR_CHAT, "cid": "c1"}
-    did = "d-relay-1"
-    answer = f"The pool opens at 7 {CANARY}. " + "More detail follows. " * 400
-    assert tools._hold_answer(did, "browser", origin, answer)
-    tok = agent_mod.origin_var.set(with_scope(origin))
-    try:
-        out = await tools.relay_answer.handler({"delegation_id": did})
-    finally:
-        agent_mod.origin_var.reset(tok)
-    assert not out.get("is_error")
-    assert ch._app.bot.send_message.await_count >= 2          # two pages landed
+    post = _post(plugin="", slot="desk", tool_use_id="t-1", owner="t-1",
+                 kind=rb.DESK_REPLY)
+    from output_boundary import casa_text
+    out = await ch.send_response(casa_text(_message(f"hi {CANARY}")),
+                                 {"chat_id": OPERATOR_CHAT, "_post": post})
+    assert out is DeliveryOutcome.DELIVERED
     rows = await captured_events(mem)
     assert [e["text"] for e in rows] == ["Fido posted his answer to your chat."]
-    [rec] = rb.POST_MAP.owned(f"relay:{did}")[:1]
-    assert rows[0]["source_key"] == occurrence.post_key(
-        "telegram", OPERATOR_CHAT, rec.owner, rec.tool_use_id, rec.slot)
-    assert not any(CANARY in str(v) for v in rows[0].values())
+    assert not any(CANARY in e["text"] for e in rows)
 
 
 @pytest.mark.parametrize("over", [

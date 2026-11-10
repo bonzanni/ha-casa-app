@@ -155,6 +155,12 @@ class VoiceJob:
     # silently gone. Empty when nothing was owed; a row written before the
     # field decodes as empty.
     output_note: str = ""
+    # The delegate's closing message when the length cap cut it from
+    # ``result``: retained beside ``result``, in the same write and under the
+    # same rule, so a boot replay renders it as the live notice did. Empty
+    # when nothing was cut away; a row written before the field decodes as
+    # empty.
+    closing_message: str = ""
 
 
 @dataclass(frozen=True)
@@ -610,7 +616,7 @@ class JobRegistry:
 
     def schedule_completion_reconciliation(
         self, job_id: str, result: str = "",
-        *, announce_creator: bool = False,
+        *, announce_creator: bool = False, closing_message: str = "",
     ) -> None:
         """#321: registry-owned retry completing a job whose result was
         already returned to the caller but whose terminal snapshot write
@@ -632,11 +638,14 @@ class JobRegistry:
         #701: the ASYNC arm reaches here too, and passes
         ``announce_creator=True`` — its caller was promised a notification, so
         a retry that lands the terminal must land the obligation with it. The
-        sync arm keeps the default: its answer went back in-band."""
+        sync arm keeps the default: its answer went back in-band.
+        ``closing_message`` rides with ``result`` for the same reason, passed
+        only when there is one."""
+        closing = {"closing_message": closing_message} if closing_message else {}
         self._schedule_terminal_reconciliation(
             job_id,
             lambda: self.finish_compat(
-                job_id, result, announce_creator=announce_creator),
+                job_id, result, announce_creator=announce_creator, **closing),
         )
 
     def schedule_cancel_reconciliation(self, job_id: str) -> None:
@@ -875,7 +884,7 @@ class JobRegistry:
 
     async def finish_compat(
         self, job_id: str, result: str = "",
-        *, announce_creator: bool = False,
+        *, announce_creator: bool = False, closing_message: str = "",
     ) -> VoiceJob | None:
         """Idempotently finish a live job for legacy delegation callbacks.
 
@@ -900,12 +909,14 @@ class JobRegistry:
             # construction rather than by caller discipline: a delegation that
             # owes nobody a notice (the synchronous arm, any non-Telegram
             # creator) cannot leave an answer on disk even if a caller passes
-            # one, and nothing then has to remember to clear it.
+            # one, and nothing then has to remember to clear it. The
+            # closing message beside the answer follows the same rule.
             owed = self._owes_announcement(current, announce_creator)
             return await self._finish_current_locked(
                 current, result if owed else "",
                 announce_creator=announce_creator,
                 result_available=owed,
+                closing_message=closing_message if owed else "",
             )
 
     async def fail_compat(
@@ -1454,6 +1465,7 @@ class JobRegistry:
                 terminal_notification_pending=False,
                 result="",
                 result_available=False,
+                closing_message="",
             ))
 
     async def close(self) -> None:
@@ -1563,6 +1575,8 @@ class JobRegistry:
                 scheduled_delivery=row.get("scheduled_delivery") is True,
                 # #1038: a string or nothing; a legacy row has no key.
                 output_note=str(row.get("output_note") or ""),
+                # a string or nothing; a row written before it has no key
+                closing_message=str(row.get("closing_message") or ""),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise JobRegistryError(f"invalid job snapshot row: {exc}") from exc
@@ -1626,6 +1640,7 @@ class JobRegistry:
             "delivery_modality": job.delivery_modality,
             "scheduled_delivery": job.scheduled_delivery,
             "output_note": job.output_note,
+            "closing_message": job.closing_message,
         }
 
     async def _write_snapshot_locked(
@@ -1714,6 +1729,7 @@ class JobRegistry:
     async def _finish_current_locked(
         self, current: VoiceJob, result: str,
         *, announce_creator: bool = False, result_available: bool = False,
+        closing_message: str = "",
     ) -> VoiceJob:
         now = self._now()
         if current.cancel_pending:
@@ -1745,6 +1761,7 @@ class JobRegistry:
                 # finds the marker without the answer would announce an answer
                 # it cannot produce (INV-JOB-001, INV-JOB-015).
                 result_available=result_available,
+                closing_message=str(closing_message),
                 failure=None,
                 delivery_state=delivery,
                 delivery_sequence=sequence,

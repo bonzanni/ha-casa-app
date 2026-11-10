@@ -306,10 +306,11 @@ class TestInteractiveModeRetired:
         payload = json.loads(res["content"][0]["text"])
         assert payload["status"] == "error"
         assert payload["kind"] == "interactive_retired"
-        # names the alternative: a sync delegation, and the person replying
-        # to the specialist's own message in their chat (the desk)
+        # names the alternative: a sync delegation whose answer the resident
+        # tells in her own words, the person carrying on by writing to her
         assert "mode='sync'" in payload["message"]
-        assert "reply" in payload["message"]
+        assert "in your own words" in payload["message"]
+        assert "writing to you" in payload["message"]
         # nothing launched, nothing silently coerced into another mode
         driver.open.assert_not_awaited()
         assert driver.enqueue_brief.call_count == 0
