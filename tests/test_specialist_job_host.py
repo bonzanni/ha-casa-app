@@ -4,7 +4,8 @@ Every launch-level case runs ``start_job`` on the real launch, engagement
 registry, in-casa driver and Telegram channel (``test_start_job.runtime``), with
 the real plugin registry and the real ``find_job_host`` / ``startable_jobs``
 restored over that fixture's seams. Each one asserts counts — live records,
-SDK clients, topics opened, pending start claims — never only a status.
+SDK clients, pending start claims — never only a status; no launch opens a
+forum topic.
 """
 from __future__ import annotations
 
@@ -95,24 +96,28 @@ async def start(name):
 
 def _counts(runtime, registry=None):
     reg = registry or tools._engagement_registry
+    assert runtime.bot.create_forum_topic.await_count == 0
     return (len(reg.active_and_idle()), len(Client.instances),
-            runtime.bot.create_forum_topic.await_count,
             len(jobs._pending_plugin_job_starts))
 
 
-def _hold_first_topic(runtime):
+def _hold_first_launch(monkeypatch):
+    """Hold the first launch at its requires gate — an await inside its
+    pre-record window, before its plugins are resolved for the record —
+    until released."""
     entered, release = asyncio.Event(), asyncio.Event()
     calls = 0
+    gate = tools._requires_gate
 
-    async def open_topic(**kwargs):
+    async def held_gate(*args, **kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
             entered.set()
             await release.wait()
-        return SimpleNamespace(message_thread_id=40 + calls)
+        return await gate(*args, **kwargs)
 
-    runtime.bot.create_forum_topic.side_effect = open_topic
+    monkeypatch.setattr(tools, "_requires_gate", held_gate)
     return entered, release
 
 
@@ -179,7 +184,7 @@ async def test_specialist_job_without_a_declaring_delegate_is_not_startable(runt
     result = await start("ledger:classify")
     assert result["kind"] == "job_not_declared"
     assert result["message"] == "Startable jobs: none"
-    assert _counts(runtime) == (0, 0, 0, 0)
+    assert _counts(runtime) == (0, 0, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +216,7 @@ async def test_specialist_job_record_blocks_a_second_start(runtime, tmp_path, mo
     second = await start("ledger:classify")
     assert second.get("kind") == "job_busy", second
     assert second["engagement_id"] == rec.id
-    assert _counts(runtime) == (1, 1, 1, 0)
+    assert _counts(runtime) == (1, 1, 0)
 
 
 @pytest.mark.parametrize("host", ["specialist", None])
@@ -232,7 +237,7 @@ async def test_specialist_job_records_its_selected_plugin_without_a_model(runtim
     rec = runtime.registry.get(first["engagement_id"])
     assert (rec.kind, rec.role_or_type) == ("specialist", "finance")
     assert rec.origin["plugin_job"] == {"plugin": "ledger"}
-    assert _counts(runtime) == (1, 1, 1, 0)
+    assert _counts(runtime) == (1, 1, 0)
     restored = await _reload(runtime, monkeypatch, rec, resume=False)
     assert restored.get(rec.id).origin["plugin_job"] == {"plugin": "ledger"}
     opts = tools.build_engagement_resume_options(restored.get(rec.id), "resume-id")
@@ -241,13 +246,13 @@ async def test_specialist_job_records_its_selected_plugin_without_a_model(runtim
 
 
 # ---------------------------------------------------------------------------
-# Unassigned during the held topic creation (red case 6), and the legacy
+# Unassigned inside the held pre-record window (red case 6), and the legacy
 # records that race left behind before the marker existed (6b, 6d)
 # ---------------------------------------------------------------------------
 
 async def _race_unassign(runtime, tmp_path, monkeypatch):
     """Start ledger:classify on finance, unassign ledger from finance while the
-    topic is being created, and return the settled record. finance also loads
+    launch is held in its pre-record window, and return the settled record. finance also loads
     an incidental `helper`, so the record pins only helper."""
     _real_discovery(monkeypatch, tmp_path)
     _add_backup(runtime)
@@ -256,10 +261,10 @@ async def _race_unassign(runtime, tmp_path, monkeypatch):
     helper = entry("helper", ["specialist:finance"])
     _artifact(tmp_path, helper)
     _load(tmp_path, [e, helper])
-    entered, release = _hold_first_topic(runtime)
+    entered, release = _hold_first_launch(monkeypatch)
     first_task = asyncio.create_task(start("ledger:classify"))
     await asyncio.wait_for(entered.wait(), 3)
-    assert _counts(runtime) == (0, 0, 1, 1)
+    assert _counts(runtime) == (0, 0, 1)
     load, save = plugin_registry.load_registry, plugin_registry.save_registry
     monkeypatch.setattr(plugin_registry, "load_registry",
                         lambda path=tmp_path / "registry.json": load(path))
@@ -295,13 +300,13 @@ async def test_unassign_during_topic_creation_still_blocks(runtime, tmp_path, mo
     second = await start(second_name)
     assert second.get("kind") == "job_busy", second
     assert second["engagement_id"] == rec.id
-    assert _counts(runtime) == (1, 1, 1, 0)
+    assert _counts(runtime) == (1, 1, 0)
 
 
 async def test_the_marker_names_the_plugin_selected_at_start_not_a_later_resolution(
         runtime, tmp_path, monkeypatch):
     """Behaviour 2: the marker is the SELECTED host's plugin, taken before the
-    launch awaits. While topic creation is held, `ledger` is unassigned from
+    launch awaits. While the launch is held, `ledger` is unassigned from
     finance; a later resolution of the same job would now pick backup's own
     installation of that manifest, `backup.ledger`. The record still names
     `ledger`, the plugin that was actually started."""
@@ -314,7 +319,7 @@ async def test_the_marker_names_the_plugin_selected_at_start_not_a_later_resolut
     other["source"]["ref"] = "v1"
     _artifact(tmp_path, other, _jobs("specialist"), manifest_name="ledger")
     _load(tmp_path, [e, other])
-    entered, release = _hold_first_topic(runtime)
+    entered, release = _hold_first_launch(monkeypatch)
     first_task = asyncio.create_task(start("ledger:classify"))
     await asyncio.wait_for(entered.wait(), 3)
     try:
@@ -330,7 +335,7 @@ async def test_the_marker_names_the_plugin_selected_at_start_not_a_later_resolut
     assert rec.origin["plugin_job"] == {"plugin": "ledger"}
     second = await start("ledger:classify")
     assert second.get("kind") == "job_busy", second
-    assert _counts(runtime) == (1, 1, 1, 0)
+    assert _counts(runtime) == (1, 1, 0)
 
 
 @pytest.mark.parametrize("second_name", ["ledger:classify", "ledger:scan"])
@@ -347,7 +352,7 @@ async def test_legacy_markerless_record_without_its_declaring_row_blocks(
     second = await start(second_name)
     assert second.get("kind") == "job_busy", second
     assert second["engagement_id"] == rec.id
-    assert _counts(runtime) == (1, 1, 1, 0)
+    assert _counts(runtime) == (1, 1, 0)
 
 
 @pytest.mark.parametrize("second_name", ["ledger:classify", "ledger:scan"])
@@ -371,7 +376,7 @@ async def test_legacy_record_without_manifest_name_blocks(runtime, tmp_path, mon
     _load(tmp_path, [e])
     second = await start(second_name)
     assert second.get("kind") == "job_busy", second
-    assert _counts(runtime) == (1, 1, 1, 0)
+    assert _counts(runtime) == (1, 1, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +410,7 @@ async def test_concurrent_starts_of_one_manifest_claim_once(runtime, tmp_path, m
     else:
         a, b = _two_installations(tmp_path)
         _load(tmp_path, [a])  # only finance's installation, for the first start
-    entered, release = _hold_first_topic(runtime)
+    entered, release = _hold_first_launch(monkeypatch)
     first_task = asyncio.create_task(start("ledger:classify"))
     await asyncio.wait_for(entered.wait(), 3)
     if installations == "two":
@@ -415,13 +420,13 @@ async def test_concurrent_starts_of_one_manifest_claim_once(runtime, tmp_path, m
         second = await start(second_name)
         assert second.get("kind") == "job_busy", second
         assert "engagement_id" not in second
-        assert _counts(runtime) == (0, 0, 1, 1)
+        assert _counts(runtime) == (0, 0, 1)
     finally:
         release.set()
         first = await first_task  # never leave the held launch behind
     assert first["status"] == "pending", first
     await drain_launch_turns()
-    assert _counts(runtime) == (1, 1, 1, 0)
+    assert _counts(runtime) == (1, 1, 0)
     assert getattr(jobs, "_pending_manifest_job_starts", {}) == {}
 
 
@@ -452,7 +457,7 @@ async def test_an_incidental_artifact_does_not_block_its_own_plugin(runtime, tmp
     second = await start("helper:classify")
     assert second["status"] == "pending", second
     await drain_launch_turns()
-    assert _counts(runtime) == (2, 2, 2, 0)
+    assert _counts(runtime) == (2, 2, 0)
     assert {r.origin["job"]["name"] for r in tools._engagement_registry.active_and_idle()} == {
         "ledger:classify", "helper:classify"}
 
@@ -477,7 +482,7 @@ async def test_installations_sharing_a_manifest_name_serialise(runtime, tmp_path
     second = await start(second_name)
     assert second.get("kind") == "job_busy", second
     assert second["engagement_id"] == rec.id
-    assert _counts(runtime) == (1, 1, 1, 0)
+    assert _counts(runtime) == (1, 1, 0)
 
 
 # ---------------------------------------------------------------------------

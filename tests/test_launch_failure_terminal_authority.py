@@ -332,15 +332,13 @@ class TestOnlyADurableWinMayCloseTheTopic:
 
     @pytest.mark.parametrize(
         "case,family,arm,kind", ARMS, ids=[a[0] for a in ARMS])
-    async def test_a_durable_win_still_paints_closes_and_appends_once(
+    async def test_a_durable_win_ends_the_record_and_opens_no_topic(
         self, case, family, arm, kind, tmp_path, monkeypatch,
     ):
-        """The regression control for every arm.
-
-        Without this, "never abort" passes the two cases above. Exactly one
-        paint, one close and one ledger append, and still no notice — the
-        launch-failure notice exemption is a committed ruling.
-        """
+        """The regression control for every arm: the arm's own transition
+        wins and persists, the record is ``error`` on disk, and since a job
+        opens no topic at launch there is nothing to paint, close or record
+        for retention — and still no notice."""
         effects = _Effects()
         payload, registry, tombstone = await _run(
             family, tmp_path, monkeypatch, effects, arm=arm)
@@ -348,53 +346,47 @@ class TestOnlyADurableWinMayCloseTheTopic:
         assert payload["status"] == "error", payload
         assert payload["kind"] == kind, payload
 
-        assert effects.counts == (1, 1, 1, 0), effects.counts
-        assert effects.painted[0][1] == "failed", effects.painted
+        assert effects.counts == (0, 0, 0, 0), effects.counts
 
         rows = _disk_rows(tombstone)
         assert [r["status"] for r in rows] == ["error"], rows
         assert rows[0]["origin"]["error_kind"] == kind, rows[0]["origin"]
-        assert effects.closed == [rows[0]["topic_id"]], effects.closed
-        assert effects.ledger[0][0] == rows[0]["id"], effects.ledger
+        assert rows[0].get("topic_id") is None, rows[0]
 
 
 class TestTheAuthorityOutlivesItsLauncher:
-    """A cancellation after the durable commit must not strand an open topic
-    over a terminal record: the abort is anchored and shielded."""
+    """A cancellation after the durable commit must not cut the abort's
+    teardown short: the abort is anchored and shielded."""
 
     async def test_cancelling_the_awaiter_does_not_cancel_the_abort(
         self, tmp_path, monkeypatch,
     ):
-        """The launcher is cancelled after the durable commit and after the
-        ledger append, while the paint is still in flight.
+        """The launcher is cancelled after the durable commit, while the
+        abort is settling the job's message journal.
 
-        Deterministic, not timed: the ledger spy SETS an event, and the paint
-        blocks on a second event, so the cancellation is delivered at a known
-        point rather than after a fixed number of scheduler yields.
+        Deterministic, not timed: the settle SETS an event and blocks on a
+        second one, so the cancellation is delivered at a known point rather
+        than after a fixed number of scheduler yields.
         """
         import tools as tools_mod
 
         effects = _Effects()
         reached_ledger = asyncio.Event()
         release_paint = asyncio.Event()
+        settled: list = []
 
         handler, registry, tombstone, channel = _build_job(
             tmp_path, monkeypatch, effects, arm="start_failed")
 
-        import topic_ledger
+        real_settle = tools_mod._settle_job_journal
 
-        async def _append(*, engagement_id, chat_id, topic_id, outcome,
-                          closed_at=None, path=None):
-            effects.ledger.append((engagement_id, topic_id, outcome))
+        async def _slow_settle(rec, drv):
             reached_ledger.set()
-
-        monkeypatch.setattr(topic_ledger, "append", _append)
-
-        async def _slow_paint(*, engagement_id, new_state):
             await release_paint.wait()
-            effects.painted.append((engagement_id, new_state))
+            await real_settle(rec, drv)
+            settled.append(rec.id)
 
-        channel.update_topic_state = AsyncMock(side_effect=_slow_paint)
+        monkeypatch.setattr(tools_mod, "_settle_job_journal", _slow_settle)
 
         import agent as agent_mod
         token = agent_mod.origin_var.set({
@@ -407,9 +399,8 @@ class TestTheAuthorityOutlivesItsLauncher:
             }))
             await asyncio.wait_for(reached_ledger.wait(), 10)
 
-            # Past the durable terminal commit and the ledger append, blocked
-            # in the paint. The topic is NOT yet closed.
-            assert effects.closed == []
+            # Past the durable terminal commit, blocked in the settle.
+            assert settled == []
             caller.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await caller
@@ -421,8 +412,7 @@ class TestTheAuthorityOutlivesItsLauncher:
             release_paint.set()
             agent_mod.origin_var.reset(token)
 
-        # The abort outlived its launcher: the topic is painted and CLOSED.
-        assert len(effects.painted) == 1, effects.painted
-        assert len(effects.closed) == 1, effects.closed
-        assert effects.notices == 0
+        # The abort outlived its launcher: the journal was settled.
+        assert len(settled) == 1, settled
+        assert effects.counts == (0, 0, 0, 0)
         assert [r["status"] for r in _disk_rows(tombstone)] == ["error"]

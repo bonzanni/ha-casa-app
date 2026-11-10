@@ -64,7 +64,7 @@ async def _until(predicate, timeout: float = 5.0) -> None:
 
 def _hang_open(driver, monkeypatch):
     """Make the job session's open never return; the returned event is set
-    once the launcher is inside it (its record and topic exist)."""
+    once the launcher is inside it (its record exists)."""
     entered = asyncio.Event()
 
     async def _hang(engagement, options=None):
@@ -109,8 +109,7 @@ async def test_the_engager_gets_pending_before_the_launch_turn_starts(tmp_path, 
     assert GatedClient.frames_yielded == 4
     # the session's reader ran the turn; the launch reported nothing
     assert registry.get(created_id).status == "active"
-    assert channel._post_engagement_notice.await_count == 0
-    assert channel.close_topic.await_count == 0
+    assert probe.notice_texts == []
     await driver.cancel(registry.get(created_id))
 
 
@@ -162,7 +161,7 @@ async def test_the_stop_drains_a_running_owner_and_reports_the_cancellation(tmp_
     entered = _hang_open(driver, monkeypatch)
 
     task = asyncio.ensure_future(_launch(launcher))
-    await asyncio.wait_for(entered.wait(), 5)     # record and topic exist; the session opens
+    await asyncio.wait_for(entered.wait(), 5)     # the record exists; the session opens
 
     # bounded: a stop that cannot find the launch (not enrolled) would wait on
     # the hung open for ever, and a hang is not a pin
@@ -175,8 +174,8 @@ async def test_the_stop_drains_a_running_owner_and_reports_the_cancellation(tmp_
     assert rec.status == "error"
     assert rec.origin["error_kind"] == "launch_cancelled"
     assert rec.origin.get("shutdown_reason")
-    assert channel._post_engagement_notice.await_count == 1
-    assert channel.close_topic.await_count == 1
+    assert probe.notice_texts == ["⚠️ stopped before reporting a result"]       # one line in the job's log
+    assert channel.close_topic.await_count == 0   # no topic: none was opened
     assert [m.content.kind for m in bus.messages] == ["launch_cancelled"]
     assert registry.launch_drains_complete() is True
 
@@ -213,8 +212,8 @@ async def test_a_stop_latched_during_open_mints_no_owner(tmp_path, monkeypatch):
     await tools_mod.drain_launch_death_reports()
     created_id = next(iter(registry._records))
     assert registry.get(created_id).status == "error"
-    assert channel._post_engagement_notice.await_count == 1
-    assert channel.close_topic.await_count == 1
+    assert probe.notice_texts == ["⚠️ stopped before reporting a result"]
+    assert channel.close_topic.await_count == 0
     assert registry.get(created_id).terminal_notification_pending is False  # acked on return
     assert bus.messages == []                          # the envelope was the telling
     assert all(t.done() or t is asyncio.current_task() for t in asyncio.all_tasks())
@@ -315,8 +314,7 @@ async def test_a_job_engagement_launch_returns_pending_before_its_turn(tmp_path,
     assert GatedClient.frames_yielded == 4
     created_id = next(iter(registry._records))
     assert registry.get(created_id).status == "active"     # the job runs on
-    assert channel._post_engagement_notice.await_count == 0
-    assert channel.close_topic.await_count == 0
+    assert probe.notice_texts == []
     await driver.cancel(registry.get(created_id))
 
 
@@ -330,16 +328,19 @@ async def test_an_inline_abort_cancelled_before_its_return_is_told_live(tmp_path
     import agent as agent_mod
     monkeypatch.setattr(agent_mod, "active_engagement_driver", None, raising=False)
     entered = asyncio.Event(); release = asyncio.Event()
+    settled: list = []
+    real_settle = tools_mod._settle_job_journal
 
-    async def _blocked_close(*, thread_id):
+    async def _blocked_settle(rec, driver):
         entered.set()
         await release.wait()
-        probe.events.append("topic_close")
+        await real_settle(rec, driver)
+        settled.append(rec.id)
 
-    channel.close_topic = AsyncMock(side_effect=_blocked_close)
+    monkeypatch.setattr(tools_mod, "_settle_job_journal", _blocked_settle)
 
     task = asyncio.ensure_future(_launch(launcher))
-    await asyncio.wait_for(entered.wait(), 5)       # the strict flip committed; the close is wedged
+    await asyncio.wait_for(entered.wait(), 5)       # the strict flip committed; the abort is wedged
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -349,7 +350,7 @@ async def test_an_inline_abort_cancelled_before_its_return_is_told_live(tmp_path
     created_id = next(iter(registry._records))
     rec = registry.get(created_id)
     assert rec.status == "error" and rec.origin["error_kind"] == "no_driver"
-    assert channel.close_topic.await_count == 1             # the anchored abort finished
+    assert settled == [created_id]                          # the anchored abort finished
     # no envelope was returned, so the cancellation owner told the engager live
     assert [m.content.kind for m in bus.messages] == ["no_driver"]
     assert rec.terminal_notification_pending is True
@@ -383,8 +384,7 @@ async def test_a_stop_whose_cancellation_report_cannot_persist_still_tells(tmp_p
     created_id = next(iter(registry._records))
     rec = registry.get(created_id)
     assert rec.status == "active"                                  # rolled back, live
-    assert channel._post_engagement_notice.await_count == 1
-    assert "could not be recorded" in probe.notice_texts[0]
+    assert probe.notice_texts == ["⚠️ could not be recorded"]
     assert channel.close_topic.await_count == 0
     assert [m.content.kind for m in bus.messages] == ["launch_outcome_uncommitted"]
     assert rec.terminal_notification_pending is False
@@ -415,7 +415,7 @@ async def test_a_cancellation_owner_that_loses_to_a_telling_writer_sends_nothing
     rec = registry.get(created_id)
     assert rec.status == "cancelled"
     assert rec.terminal_notification_pending is True                # still the funnel's
-    assert channel._post_engagement_notice.await_count == 0
+    assert probe.notice_texts == []
     assert channel.close_topic.await_count == 0
 
 
@@ -459,15 +459,16 @@ async def test_a_launcher_cancelled_after_the_drains_mints_no_compensation(tmp_p
     launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     tools_mod = _with_bus(monkeypatch, _RecordingBus())
     entered = asyncio.Event(); release = asyncio.Event()
+    real_create = registry.create
 
-    async def _slow_topic(*a, **kw):
+    async def _slow_create(*a, **kw):
         entered.set()
         await release.wait()
-        return 42
+        return await real_create(*a, **kw)
 
-    channel.open_engagement_topic = AsyncMock(side_effect=_slow_topic)
+    monkeypatch.setattr(registry, "create", _slow_create)
     task = asyncio.ensure_future(_launch(launcher))
-    await asyncio.wait_for(entered.wait(), 5)           # the topic is being created; no record yet
+    await asyncio.wait_for(entered.wait(), 5)           # no record yet
     # The whole stop ran meanwhile: its ledger walk could not see this launch,
     # so it latched, drained and marked. The handler then creates its record
     # and enrols it — enrolment after the latch cancels it at once.
@@ -593,10 +594,15 @@ async def test_the_drain_awaits_the_telling_a_just_completed_abort_is_about_to_m
     assert not [x for x in tools_mod._LAUNCH_DEATH_TASKS if not x.done()]
 
 
-# --- diff round 4 (Astra): the pre-record topic abort is drained, and fenced after the mark --
+# --- a launch that ends before its record exists leaves nothing behind -----------------
 
-async def _cancel_between_topic_and_record(tmp_path, monkeypatch, probe):
+async def test_a_cancellation_before_the_record_leaves_nothing_to_drain(tmp_path, monkeypatch):
+    """No topic is opened at launch, so a launch cancelled before its record
+    exists has nothing to undo: no abort task, no record, and the stop does
+    not wait on anything of it."""
+    probe = _Probe()
     launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
+    import tools as tools_mod
     entered = asyncio.Event(); release = asyncio.Event()
     real_create = registry.create
 
@@ -607,164 +613,34 @@ async def _cancel_between_topic_and_record(tmp_path, monkeypatch, probe):
 
     monkeypatch.setattr(registry, "create", _slow_create)
     task = asyncio.ensure_future(_launch(launcher))
-    await asyncio.wait_for(entered.wait(), 5)         # the topic exists (42); the record does not
-    return task, registry, channel
-
-
-async def test_the_stop_drains_a_pre_record_topic_abort(tmp_path, monkeypatch):
-    probe = _Probe()
-    task, registry, channel = await _cancel_between_topic_and_record(tmp_path, monkeypatch, probe)
-    import tools as tools_mod
-    closing = asyncio.Event(); release_close = asyncio.Event()
-
-    async def _slow_close(*, thread_id):
-        closing.set()
-        await release_close.wait()
-        probe.events.append("topic_close")
-
-    channel.close_topic = AsyncMock(side_effect=_slow_close)
+    await asyncio.wait_for(entered.wait(), 5)         # the record does not exist yet
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    await asyncio.wait_for(closing.wait(), 5)         # the topic abort is in flight, in no ledger
-    stop = asyncio.ensure_future(tools_mod.stop_engagement_launches(registry))
-    await asyncio.sleep(0.05)
-    assert not stop.done()                            # the stop waits for it
-    release_close.set()
-    await asyncio.wait_for(stop, 5)
-    assert channel.close_topic.await_count == 1
     assert not [x for x in tools_mod._ABORT_BG_TASKS if not x.done()]
-    assert registry._records == {}                    # never had a record
+    await asyncio.wait_for(tools_mod.stop_engagement_launches(registry), 5)
+    assert registry._records == {}
+    assert channel.open_engagement_topic.await_count == 0
+    assert probe.log_lines == []
 
 
-async def test_a_pre_record_cancellation_after_the_drains_mints_nothing(tmp_path, monkeypatch, caplog):
+async def test_a_failure_before_the_record_leaves_nothing_to_drain(tmp_path, monkeypatch):
+    """The record's strict create fails: the launch returns its named fault
+    and leaves no abort task and no record."""
     probe = _Probe()
-    task, registry, channel = await _cancel_between_topic_and_record(tmp_path, monkeypatch, probe)
+    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     import tools as tools_mod
-    registry.begin_launch_shutdown()
-    registry.mark_launch_drains_complete()
-    with caplog.at_level(logging.ERROR):
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        await asyncio.sleep(0)
-    assert not tools_mod._ABORT_BG_TASKS
-    assert channel.close_topic.await_count == 0
-    assert any("before its record existed, after the stop's drains completed" in r.getMessage()
-               for r in caplog.records)
-
-
-# --- #998: the pre-record FAILURE arms' topic aborts are drained, and fenced after the mark --
-
-_PRE_RECORD_ARMS = ("job_persist",)
-_PRE_RECORD_ORIGIN = {"role": "assistant", "channel": "telegram",
-                      "chat_id": "c1", "cid": "x", "user_text": "hi"}
-
-
-def _arm_pre_record_failure(arm, tmp_path, monkeypatch, launcher, registry):
-    """Drive the exception arm between topic creation and record creation
-    (the record's strict create() fails). Returns (launch coroutine factory,
-    the arm's base envelope, a check of the seam counts that proves the named
-    arm was the one taken)."""
-    import plugin_registry as plugin_registry_mod
-    import tools as tools_mod
-    import topic_ledger
-    monkeypatch.setattr(topic_ledger, "LEDGER_PATH", str(tmp_path / "topic-ledger.json"))
-    persist = tools_mod._result({"status": "error", "kind": "record_persist_failed",
-                                 "message": "persist sentinel"})
-    creates: list = []
 
     async def _failing_create(*a, **kw):
-        creates.append(1)
         raise OSError("persist sentinel")
 
-    assert arm == "job_persist"
-    from test_delegate_to_agent_interactive import _job, _make_alex_cfg
-    valid = plugin_registry_mod.ResolutionResult(registry_valid=True)
-
-    async def _prelaunch(*a, **kw):
-        return "finance", _make_alex_cfg(), valid, None, None
-
-    monkeypatch.setattr(tools_mod, "_prelaunch", _prelaunch)
     monkeypatch.setattr(registry, "create", _failing_create)
-
-    def launch():
-        return tools_mod._launch_interactive_engagement(
-            "finance", "Plan Q2", "", dict(_PRE_RECORD_ORIGIN), job=_job())
-    return launch, persist, lambda: creates == [1]
-
-
-@pytest.mark.parametrize("arm", _PRE_RECORD_ARMS)
-async def test_the_stop_drains_a_pre_record_failure_abort(tmp_path, monkeypatch, arm):
-    probe = _Probe()
-    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
-    import tools as tools_mod
-    launch, expected, took_arm = _arm_pre_record_failure(arm, tmp_path, monkeypatch, launcher, registry)
-    closing = asyncio.Event(); release_close = asyncio.Event(); close_marks: list = []
-
-    async def _slow_close(*, thread_id):
-        closing.set()
-        await release_close.wait()
-        close_marks.append(registry.launch_drains_complete())
-
-    channel.close_topic = AsyncMock(side_effect=_slow_close)
-    launcher = asyncio.ensure_future(launch())
-    stop = None
-    try:
-        await asyncio.wait_for(closing.wait(), 5)     # the topic abort is in flight; no record
-        assert channel.close_topic.await_count == 1
-        assert len(registry._records) == 0
-        stop = asyncio.ensure_future(tools_mod.stop_engagement_launches(registry))
-        await asyncio.sleep(0.05)
-        assert not stop.done()                        # the stop waits for the close
-    finally:
-        release_close.set()
-        envelope = await asyncio.wait_for(launcher, 5)
-        if stop is not None:
-            await asyncio.wait_for(stop, 5)
-    assert channel.close_topic.await_count == 1
-    assert close_marks == [False]                     # it closed BEFORE the mark
-    assert registry.launch_drains_complete() is True
-    assert sum(not t.done() for t in tools_mod._ABORT_BG_TASKS) == 0
-    assert len(registry._records) == 0
-    assert envelope == expected
-    assert took_arm()
-
-
-@pytest.mark.parametrize("arm", _PRE_RECORD_ARMS)
-async def test_a_pre_record_failure_after_the_drains_mints_nothing(
-        tmp_path, monkeypatch, caplog, arm):
-    probe = _Probe()
-    launcher, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
-    import tools as tools_mod
-    launch, expected, took_arm = _arm_pre_record_failure(arm, tmp_path, monkeypatch, launcher, registry)
-    opening = asyncio.Event(); release_open = asyncio.Event()
-
-    async def _gated_open(**kw):
-        opening.set()
-        await release_open.wait()
-        return 42
-
-    channel.open_engagement_topic = AsyncMock(side_effect=_gated_open)
-    launcher = asyncio.ensure_future(launch())
-    try:
-        await asyncio.wait_for(opening.wait(), 5)     # no topic yet, no record
-        await asyncio.wait_for(tools_mod.stop_engagement_launches(registry), 5)
-        assert registry.launch_drains_complete() is True
-    finally:
-        with caplog.at_level(logging.ERROR):
-            release_open.set()                        # the topic exists only now, after the mark
-            envelope = await asyncio.wait_for(launcher, 5)
-            await asyncio.sleep(0)
-    assert channel.close_topic.await_count == 0
-    assert len(tools_mod._ABORT_BG_TASKS) == 0
-    residual = [r for r in caplog.records if r.levelno >= logging.ERROR
-                and "failed before its record existed, after the stop's drains completed"
-                in r.getMessage()]
-    assert len(residual) == 1
-    assert len(registry._records) == 0
-    assert envelope == expected
-    assert took_arm()
+    envelope = await asyncio.wait_for(_launch(launcher), 5)
+    payload = json.loads(envelope["content"][0]["text"])
+    assert payload["kind"] == "record_persist_failed", payload
+    assert not [x for x in tools_mod._ABORT_BG_TASKS if not x.done()]
+    assert registry._records == {}
+    assert channel.open_engagement_topic.await_count == 0
 
 
 # --- diff round 5 (Astra J2): the anchors drain to JOINT quiescence --------------------

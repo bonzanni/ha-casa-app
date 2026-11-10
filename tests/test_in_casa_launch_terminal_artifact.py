@@ -30,8 +30,8 @@ class ScriptedCutoffClient(TurnScriptedSession):
     Yields one AssistantMessage carrying a ToolUseBlock and one UserMessage
     carrying its ToolResultBlock, then ends the iteration — exactly what the
     pinned SDK produces when the read task's ``finally`` sends ``end`` before
-    any ``ResultMessage`` arrives. No text blocks, so nothing is streamed to
-    the topic either.
+    any ``ResultMessage`` arrives. No text blocks, so no words are logged
+    either.
     """
 
     frames_yielded = 0
@@ -112,18 +112,36 @@ class ScriptedCompleteClient(ScriptedCutoffClient):
 # --- the harness ------------------------------------------------------------
 
 class _Probe:
-    """Ordered, counted observation of every operator-visible effect."""
+    """Ordered, counted observation of every operator-visible effect. The
+    job's log is one of them: a ``⚠️`` line is a notice, and each logged word
+    entry counts as one ``finalize`` (the turn's words were put out)."""
 
     def __init__(self):
         self.events: list[str] = []
         self.notice_texts: list[str] = []
+        self.log_lines: list[str] = []
         self.transition_calls: list[tuple] = []
         self.mark_error_calls: list[tuple] = []
         self.driver_cancel_calls = 0
-        self.emit_count = 0
         self.finalize_count = 0
-        self.topic_open_at_notice: list[bool] = []
         self.topic_closed = False
+
+
+class _ProbeLogs:
+    """The agent log sink, observed by a probe."""
+
+    enabled = True
+
+    def __init__(self, probe: _Probe) -> None:
+        self.probe = probe
+
+    def log(self, key, run, text):
+        self.probe.log_lines.append(text)
+        if text.startswith("⚠️"):
+            self.probe.events.append("notice")
+            self.probe.notice_texts.append(text)
+        elif not text.startswith(("🔧", "▶", "✅", "🛑", "❌", "📊", "↻")):
+            self.probe.finalize_count += 1
 
 
 def _build(tmp_path, monkeypatch, probe, client_cls):
@@ -166,15 +184,9 @@ def _build(tmp_path, monkeypatch, probe, client_cls):
     monkeypatch.setattr(registry, "try_transition_terminal", spy_transition)
     monkeypatch.setattr(registry, "mark_error", spy_mark_error)
 
-    class _Handle:
-        async def emit(self, text):
-            probe.emit_count += 1
-
-        async def finalize(self, text):
-            probe.finalize_count += 1
-
+    logs = _ProbeLogs(probe)
     driver = InCasaDriver(
-        topic_stream_factory=lambda topic_id: _Handle(),
+        agent_logs=logs,
         persist_session_id=registry.persist_session_id,
         record_lookup=registry.get,
     )
@@ -189,17 +201,16 @@ def _build(tmp_path, monkeypatch, probe, client_cls):
         agent_mod, "active_engagement_driver", driver, raising=False,
     )
 
+    # No forum group is configured: a job never needs one.
     channel = MagicMock()
-    channel.engagement_supergroup_id = -100123
-    channel.engagement_permission_ok = True
+    channel.engagement_supergroup_id = 0
+    channel.engagement_permission_ok = False
     channel.open_engagement_topic = AsyncMock(return_value=42)
     channel.bot = MagicMock()
     channel.bot.edit_forum_topic = AsyncMock()
 
     async def _notice(rec, text):
-        probe.events.append("notice")
-        probe.notice_texts.append(text)
-        probe.topic_open_at_notice.append(not probe.topic_closed)
+        probe.events.append("topic_notice")
 
     async def _paint(*, engagement_id, new_state):
         probe.events.append(f"paint:{new_state}")
@@ -221,6 +232,7 @@ def _build(tmp_path, monkeypatch, probe, client_cls):
         specialist_registry=specialist_reg, mcp_registry=MagicMock(),
         trigger_registry=MagicMock(), engagement_registry=registry,
         agent_role_map={"assistant": _make_assistant_cfg()},
+        agent_logs=logs,
     )
     return launch_job, registry, channel, driver
 
@@ -266,5 +278,9 @@ class TestInCasaLaunchTerminalArtifact:
         assert channel.close_topic.await_count == 0
         assert probe.driver_cancel_calls == 0
         assert probe.finalize_count == 1
+        # The job's log: its start, the step and the words; no notice.
+        assert probe.log_lines == ["▶ started", "🔧 Reading files",
+                                   "I read the file; what next?"]
+        assert probe.notice_texts == []
         assert driver.is_alive(registry.get(created_id)) is True
         await driver.cancel(registry.get(created_id))

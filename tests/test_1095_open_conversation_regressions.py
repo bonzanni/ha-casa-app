@@ -249,9 +249,6 @@ async def test_boot_does_not_resume_a_job_whose_disabled_close_failed(reg, monke
             resumed.append(rec.id)
     monkeypatch.setattr(background_jobs, "_runner", _Runner())
 
-    async def notice(channel, rec, text):
-        return None
-    monkeypatch.setattr(tools_mod, "_post_engagement_notice", notice)
     await casa_core._resume_background_jobs(reg, object(), skip=left)
     assert resumed == [fine.id]
     src = inspect.getsource(casa_core.main)

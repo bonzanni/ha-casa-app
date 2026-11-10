@@ -76,14 +76,12 @@ async def runtime(tmp_path, monkeypatch):
         close_forum_topic=AsyncMock(return_value=True),
         send_chat_action=AsyncMock(return_value=True),
     )
-    channel = TelegramChannel(chat_id='1', bot=bot, bus=bus,
-                              engagement_supergroup_id=-1001)
+    # No forum group: a job needs none.
+    channel = TelegramChannel(chat_id='1', bot=bot, bus=bus)
     channel._app = SimpleNamespace(bot=bot)
-    channel.engagement_permission_ok = True
     registry = EngagementRegistry(tombstone_path=str(tmp_path / 'eng.json'))
     channel._engagement_registry = registry
-    driver = InCasaDriver(topic_stream_factory=channel.create_topic_stream,
-                          persist_session_id=registry.persist_session_id,
+    driver = InCasaDriver(persist_session_id=registry.persist_session_id,
                           record_lookup=registry.get)
     cm = ChannelManager()
     cm.register(channel)
@@ -145,7 +143,7 @@ async def test_launch_limit_prompt_envelope_and_persistence(runtime):
     result = await call()
     assert result['status'] == 'pending'
     assert (result['job'], result['title'], result['agent']) == (DECL.qualified_name, DECL.title, 'finance')
-    assert result['message'] == "Started Classify entries. Progress appears in Alex's topic."
+    assert result['message'] == "Started Classify entries."      # no log group: no log named
     await drain_launch_turns()
     client = Client.instances[0]
     assert cli_limit(client.options) == str(jobs.JOB_MAX_TURNS)
@@ -154,7 +152,8 @@ async def test_launch_limit_prompt_envelope_and_persistence(runtime):
     # #1277: the harness origin is the operator's own turn.
     assert client.prompts == [jobs.launch_prompt(DECL, 'Classify the ledger', 'all rows',
                                                  job_id=rec.id, started_by='operator')]
-    assert DECL.title in runtime.bot.create_forum_topic.call_args.kwargs['name']
+    assert runtime.bot.create_forum_topic.await_count == 0
+    assert rec.topic_id is None
     expected = {**jobs.initial_job_state(DECL, started_by='operator', context='all rows'),
                 'brief_uuid': rec.origin['job']['brief_uuid']}
     # The cost a turn end adds is pinned in test_job_cost.py.
@@ -204,16 +203,34 @@ async def test_second_engagement_from_another_chat_names_open_job(runtime, secon
         result = json.loads((await tools._launch_interactive_engagement(
             'finance', 'Review it', '', origin, job=other))['content'][0]['text'])
     assert result['engagement_id'] == first['engagement_id']
-    assert result['topic_id'] == 42
+    assert 'topic_id' not in result
     if second_job:
         assert result['kind'] == 'job_busy'
         assert result['plugin'] == 'ledger'
-        assert DECL.title in result['message'] and 'already has a running job' in result['message']
+        assert result['message'] == (
+            f"ledger already has a running job: {DECL.title}. Wait for it to "
+            "finish, or cancel it with the Cancel button on its start line or "
+            "by asking me.")
     else:
         assert result['kind'] == 'engagement_busy'
         assert result['agent'] == 'finance'
         assert DECL.title in result['message'] and 'Alex' in result['message']
-    assert runtime.bot.create_forum_topic.await_count == 1
+        assert 'Cancel button' in result['message'] and 'topic' not in result['message']
+    assert runtime.bot.create_forum_topic.await_count == 0
+
+
+async def test_with_a_log_group_the_start_names_the_log_and_logs_it(runtime, monkeypatch):
+    """With the agent log on, the launch logs the job's start in its
+    specialist's log and the result says where its progress appears."""
+    from agent_log_double import RecordingLogs
+    from agent_logs import LogKey
+    logs = RecordingLogs()
+    monkeypatch.setattr(tools, '_agent_logs', logs)
+    result = await call()
+    assert result['message'] == "Started Classify entries. Progress appears in Alex's log."
+    await drain_launch_turns()
+    assert logs.lines[0] == (LogKey('agent', 'finance'), DECL.title, '▶ started')
+    assert runtime.bot.create_forum_topic.await_count == 0
 
 
 async def test_sync_delegation_while_job_open(runtime):
@@ -265,3 +282,44 @@ async def test_start_job_is_registered_and_granted_only_to_assistant():
             allowed = cfg['tools']['allowed']
             assert (grant in allowed) == (role == 'assistant')
             assert ('start_job' in {t.name for t in tools.select_casa_tools(frozenset(allowed))}) == (role == 'assistant')
+
+
+async def test_a_job_starts_acts_and_is_busy_refused_with_no_group(runtime):
+    """No forum group is configured: the job starts, a protected call made
+    inside it binds to the operator, and a second start of the same plugin's
+    job is refused with the Cancel-button text — no topic anywhere."""
+    from authz_grants import GrantIdentity, resolve_grant_identity
+    assert not runtime.channel.engagement_supergroup_id
+    token = agent.origin_var.set(dict(role='assistant', execution_role='assistant',
+                                      channel='telegram', chat_id='1', user_id='7',
+                                      cid='test', user_text='classify',
+                                      _operator_turn=True))
+    try:
+        first = json.loads((await tools.start_job.handler(dict(
+            job=DECL.qualified_name, task='Classify the ledger', context='')))['content'][0]['text'])
+    finally:
+        agent.origin_var.reset(token)
+    assert first['status'] == 'pending', first
+    await drain_launch_turns()
+    rec = runtime.registry.get(first['engagement_id'])
+    assert rec.topic_id is None
+
+    token_o = agent.origin_var.set({'role': 'finance', 'execution_role': 'finance',
+                                    'channel': 'telegram', 'source': 'telegram',
+                                    'message_type': 'channel_in', 'chat_id': 1,
+                                    'user_id': 7})
+    token_e = tools.engagement_var.set(rec)
+    try:
+        identity, why = resolve_grant_identity('finance')
+    finally:
+        tools.engagement_var.reset(token_e)
+        agent.origin_var.reset(token_o)
+    assert why is None
+    assert identity == GrantIdentity(7, 1, 'finance', '', rec.id, target_role='finance')
+
+    again = await call()
+    assert again['kind'] == 'job_busy'
+    assert again['message'].endswith(
+        "Wait for it to finish, or cancel it with the Cancel button on its "
+        "start line or by asking me.")
+    assert runtime.bot.create_forum_topic.await_count == 0

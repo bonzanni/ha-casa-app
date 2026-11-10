@@ -1290,8 +1290,8 @@ def manifest_jobs(manifest: dict) -> list[dict]:
         if "host" in job and not (isinstance(job["host"], str)
                                   and job["host"] in _JOB_HOSTS):
             raise _jobs_invalid(index, "host")
-        # #1301: a run the scheduler started opens no topic and posts no
-        # acknowledgement or progress line. Strictly a boolean.
+        # #1301: a run the scheduler started gets no start line and its
+        # completed end is told nowhere. Strictly a boolean.
         if ("quietWhenScheduled" in job
                 and not isinstance(job["quietWhenScheduled"], bool)):
             raise _jobs_invalid(index, "quietWhenScheduled")

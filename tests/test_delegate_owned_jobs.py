@@ -34,7 +34,7 @@ except ImportError:
 
 OWN_LINE = ("- finance:classify — Classify transactions: Classify unreviewed "
             "transactions in batches (Alex's own job: in text, ask Alex with a sync "
-            "delegation; Alex starts it itself and it runs in Alex's topic)")
+            "delegation; Alex starts it itself and runs it)")
 
 
 def _ws(text: str) -> str:
@@ -70,7 +70,7 @@ def test_a_delegates_job_withheld_for_an_unresolved_secret_is_not_listed_as_its_
     assert block == (
         "<jobs>\n"
         "- finance:classify — Classify transactions: Classify unreviewed "
-        "transactions in batches (runs in Alex's topic)\n"
+        "transactions in batches (runs on Alex)\n"
         "</jobs>")
     assert "own job" not in block
 
@@ -127,27 +127,26 @@ def test_the_voice_projection_says_no_job_starts_on_a_call():
     assert carriers["restricted_webhook"].count(_ws(_VOICE_LINE)) == 0
 
 
-def test_the_topic_rule_admits_a_delegates_reported_job_start():
-    """Astra, design round 1: 'a delegation opens no topic' would deny the
-    topic of a job the delegate reports it started."""
+def test_a_job_is_said_to_live_in_this_chat_and_no_topic_is_named():
+    """A job's questions, result and Cancel button come to the direct chat;
+    nothing tells her to point anyone to a topic."""
     text = _assistant_carriers()["text"]
-    assert _ws("or when a delegate's result says it started one of its own jobs, "
-               "whose topic then exists; a delegation otherwise opens no topic."
-               ) in text
+    assert _ws("A job lives in this chat: its questions, its result and its Cancel "
+               "button come here.") in text
+    assert "Engagements supergroup" not in text
 
 
-def test_the_legacy_carriers_completion_rule_keeps_a_started_jobs_topic_open():
+def test_the_legacy_carriers_completion_rule_keeps_a_started_job_running():
     """Astra, diff round 1: the composed-prompt carrier said EVERY completion
-    notification closes its topic, which a delegation that started a still-running
+    notification ends its job, which a delegation that started a still-running
     job contradicts."""
     legacy = _ws(dict(_legacy_prompt_carriers())["assistant"])
     assert legacy.count(_ws("A completion NOTIFICATION for an engagement means that "
-                            "engagement's topic is **closed**.")) == 1
+                            "job has **ended**.")) == 1
     assert legacy.count(_ws("A delegation result or completion saying the delegate started "
-                            "one of its own jobs is not one: that job's topic stays open "
-                            "until the job's own end notice arrives.")) == 1
-    assert legacy.count(_ws("A completion NOTIFICATION means that engagement's topic is "
-                            "**closed**.")) == 0
+                            "one of its own jobs is not one: that job runs until its own "
+                            "end notice arrives.")) == 1
+    assert "topic is **closed**" not in legacy
 
 
 # --- #1229: what a specialist's own start returns --------------------------------------
@@ -159,7 +158,7 @@ async def test_a_specialists_own_start_returns_no_engagement_id_pending_or_busy(
     started = await start_as(_desk_turn_origin())
     assert started["status"] == "pending", started
     assert "engagement_id" not in started and "topic_id" not in started
-    assert started["message"].startswith("Started ") and "Progress appears in" in started["message"]
+    assert started["message"] == "Started Classify transactions."    # no log group
     again = await start_as(_desk_turn_origin())
     assert again["kind"] == "job_busy", again
     assert "engagement_id" not in again and "topic_id" not in again

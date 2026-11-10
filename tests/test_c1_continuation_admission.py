@@ -93,8 +93,7 @@ async def _mk_driver_rec(tmp_path, client):
         "specialist", "configurator", "in_casa", "t",
         {"role": "assistant", "channel": "telegram", "user_id": 77},
         topic_id=555)
-    drv = InCasaDriver(topic_stream_factory=lambda tid: _Stream(),
-                       record_lookup=reg.get,
+    drv = InCasaDriver(record_lookup=reg.get,
                        begin_turn_delivery=reg.begin_turn_delivery)
     attach_session(drv, rec, client)
     return reg, rec, drv

@@ -668,6 +668,11 @@ def _notice_target_from(value: Any) -> "_NoticeTarget | None":
                          answer=value.get("answer") is True)
 
 
+_LOG_GROUP_REDIRECT = ("This group is a read-only log. Talk to me in our "
+                       "direct chat.")
+"""The one line a person who writes in the log group gets, once per boot."""
+
+
 _MEMBER_STEER_LINE = "This job can't take instructions from you, so your message didn't reach it."
 """What a household member's message in a job's topic draws: it does not
 reach the job."""
@@ -1021,14 +1026,11 @@ class TelegramChannel(Channel):
         self._finalize_cancel = None
         self._finalize_complete_user = None
         self._session_registry = None   # wired in main() (Task 9); /new reset
-        self._main_feed_redirect_seen: set[int] = set()
-        # Per-topic handler lock (Bug 10, v0.14.7). aiohttp dispatches
-        # handle_update concurrently per Bot-API update; this serialises the
-        # updates of one topic (a /cancel and a message), never a job's
-        # session: no handler awaits one. Keyed by message_thread_id (1:1
-        # with engagement via _topic_index). Entries are not pruned —
-        # bounded growth, cleared on add-on restart.
-        self._engagement_handler_locks: dict[Any, asyncio.Lock] = {}
+        # The agent log sink (agent_logs.AgentLogs), wired in main(); its
+        # check runs at every successful rebuild.
+        self._agent_logs = None
+        # The people already told, this boot, that the log group is read-only.
+        self._log_group_redirect_seen: set[int] = set()
         # The per-engagement lifecycle locks every resume owner of a job's
         # session takes (``engagement_lifecycle_lock``). Keyed by engagement
         # id; never held by a Telegram handler.
@@ -1041,7 +1043,7 @@ class TelegramChannel(Channel):
         # same-chat message ENQUEUE restores the ordering M29 assumed from
         # PTB's default serialized dispatch; other chats keep flowing. Keyed
         # by chat_id; entries are not pruned — bounded growth (DM chats),
-        # cleared on add-on restart, mirroring _engagement_handler_locks.
+        # cleared on add-on restart.
         self._chat_serial_locks: dict[str, asyncio.Lock] = {}
         # #1379: the files of the operator's chat being acknowledged together,
         # and the lock that keeps their one message's sends and edits in order.
@@ -1260,9 +1262,8 @@ class TelegramChannel(Channel):
         # Application.create_task rather than awaiting it inline, so one
         # long engagement turn cannot stall PTB's sequential update fetcher
         # (default max_concurrent_updates=1) — which in polling mode would
-        # otherwise freeze assistant DMs too. Same-topic ordering stays
-        # serialized by _engagement_handler_locks; PTB routes task
-        # exceptions to the registered error handler.
+        # otherwise freeze assistant DMs too. PTB routes task exceptions to
+        # the registered error handler.
         app.add_handler(
             MessageHandler(_text_filter(), self.handle_update, block=False)
         )
@@ -1370,23 +1371,26 @@ class TelegramChannel(Channel):
         self._typing_suspended = False
         self._typing_consecutive_failures = 0
 
-        # E-F (v0.30.0): engagement-feature setup MUST run after
-        # `self._app = app`. Pre-fix, casa_core.py invoked this once at
-        # boot — but if that first `_rebuild` raised on `set_webhook`
-        # (transient network blip), `self._app` was never set, the boot
-        # call to `setup_engagement_features()` saw `self.bot is None`,
-        # raised AttributeError on `None.get_me()`, and left
-        # `engagement_permission_ok=False` permanently. Every subsequent
-        # supervisor-driven `_rebuild` succeeded, but no path re-ran the
-        # engagement setup. Tying it to `_rebuild` makes it self-healing
-        # on every successful rebuild. Idempotent — line 647 resets the
-        # flag at the start of each call.
+        # E-F (v0.30.0): the agent log's check MUST run after
+        # `self._app = app` (it needs the bot). Tied to every successful
+        # rebuild, so a first rebuild that failed on a transient network
+        # blip cannot leave the log off for the life of the process.
+        await self.check_agent_logs()
+
+    async def check_agent_logs(self) -> bool:
+        """Turn the agent log on when the forum group is configured and the
+        bot may manage its topics, and start its writer; otherwise it stays
+        off. Never raises."""
+        logs = self._agent_logs
+        if logs is None or self._app is None:
+            return False
         try:
-            await self.setup_engagement_features()
-        except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "setup_engagement_features failed during _rebuild: %s", exc,
-            )
+            if await logs.check_enabled(self.bot, self.engagement_supergroup_id):
+                logs.start()
+                return True
+        except Exception as exc:  # noqa: BLE001 — the log is optional
+            logger.warning("agent log check failed: %s", exc)
+        return False
 
     # ------------------------------------------------------------------
     # Health probe + PTB error handler (spec 5.2 §4.2)
@@ -2681,7 +2685,8 @@ class TelegramChannel(Channel):
     async def handle_update(
         self, update, _context: ContextTypes.DEFAULT_TYPE | None = None
     ) -> None:
-        """PTB MessageHandler entry-point. Routes by chat_id to engagement or the assistant.
+        """PTB MessageHandler entry-point. Routes by chat_id: the operator's
+        direct chat to the assistant; the log group to its read-only pointer.
 
         The optional ``_context`` parameter exists so PTB's
         ``Application.process_update`` can call this callback with its
@@ -2694,8 +2699,6 @@ class TelegramChannel(Channel):
         if msg is None:
             return
         chat_id = msg.chat.id
-        text = (msg.text or "").strip()
-        thread_id = getattr(msg, "message_thread_id", None)
         user_id = msg.from_user.id if msg.from_user else None
 
         # 1) 1:1 chat with the assistant — existing behaviour
@@ -2703,160 +2706,19 @@ class TelegramChannel(Channel):
         if str(chat_id) == str(self.chat_id):
             return await self._route_to_assistant(update)
 
-        # 2) Engagement supergroup
+        # 2) The log group is read-only: a person's message there, in any
+        #    topic, gets one pointer to the direct chat and reaches nothing
+        #    else.
         if self.engagement_supergroup_id and chat_id == self.engagement_supergroup_id:
-            if not thread_id:
-                await self._maybe_redirect_main_feed(user_id)
-                return
-            if self._engagement_registry is None:
-                return  # not wired yet; ignore silently
-            # Bug 10 (v0.14.7): per-topic lock serialises updates landing
-            # in the same engagement so a /cancel can't finish tearing
-            # down the driver while a concurrent regular turn is still
-            # mid-routing. Different topics still run in parallel.
-            lock = self._engagement_handler_locks.setdefault(
-                thread_id, asyncio.Lock(),
-            )
-            async with lock:
-                rec = self._engagement_registry.by_topic_id(thread_id)
-                if rec is None or rec.status in ("completed", "cancelled", "error"):
-                    await self.send_to_topic(thread_id, "No active engagement in this topic.")
-                    return
-
-                # #324: engagement-topic turns consult the same inbound rate
-                # limit as the DM route (previously they spooled unthrottled).
-                # Keyed per TOPIC — one topic is one conversation; a
-                # supergroup-wide key would let one busy topic starve the
-                # others. Commands are EXEMPT (mirroring /new-before-limiter
-                # in the DM route): a /cancel must never be refused by
-                # throttling, or a runaway engagement could not be stopped.
-                # Checked before ANY side effect (clearance clamp, admission
-                # ticket) so a dropped message leaves no state behind.
-                if (self._rate_limiter is not None
-                        and self._rate_limiter.enabled
-                        and not text.startswith("/")):
-                    decision = self._rate_limiter.check(
-                        f"{chat_id}:{thread_id}")
-                    if not decision.allowed:
-                        if decision.should_notify:
-                            logger.info(
-                                "Telegram rate limit hit for engagement "
-                                "topic %s (chat_id=%s); replying with "
-                                "one-shot notice", thread_id, chat_id,
-                            )
-                            try:
-                                await self._post_engagement_notice(
-                                    rec, _RATE_LIMIT_REPLY)
-                            except Exception:  # noqa: BLE001 — advisory
-                                logger.warning(
-                                    "rate-limit notice to topic %s failed",
-                                    thread_id, exc_info=True,
-                                )
-                        return
-
-                # R5 (v0.89.0): record this operator message as the react
-                # target — SYNCHRONOUSLY, from the TRUSTED msg.message_id and
-                # the authoritative topic/chat identity, BEFORE the first await
-                # below. Monotonic (see _record_inbound_target): a delayed older
-                # update cannot clobber a newer target. Only ACTIVE records
-                # reach here (the status check above returned otherwise).
-                self._record_inbound_target(
-                    rec.id, chat_id, thread_id,
-                    getattr(msg, "message_id", None),
-                )
-
-                # #649: ONE mention-aware recognized-command classification,
-                # reused by the dispatch below — a recognized command is
-                # consumed by this handler itself and never reaches the job.
-                recognized = self._classify_engagement_command(text)
-                if recognized is not None:
-                    # M10 (v0.52.0): group command menus send "/cancel@botname"
-                    # — the mention-strip lives in the ONE classification
-                    # above (#649); a command addressed to a DIFFERENT bot
-                    # classified as None and falls through to delivery,
-                    # matching PTB's CommandHandler semantics.
-                    command = recognized
-                    # Bug 8 (v0.14.6): /cancel and /complete are originator-only.
-                    # /help stays open. A command NEVER reaches the job.
-                    if command in ("/cancel", "/complete"):
-                        owner_id = rec.origin.get("user_id")
-                        if (
-                            owner_id is not None
-                            and user_id is not None
-                            and int(owner_id) != int(user_id)
-                        ):
-                            await self._post_engagement_notice(
-                                rec,
-                                f"Only the engagement originator can {command}. "
-                                "Ask them, or start your own engagement.",
-                            )
-                            return
-                        if command == "/cancel":
-                            finalized = await self._finalize_cancel(
-                                rec, reason="user")
-                        else:
-                            finalized = await self._finalize_complete_user(rec)
-                        # #649: a falsy finalize whose record is STILL LIVE
-                        # means the strict terminal persist rolled back (or
-                        # the stale-guard lost) — the operator's command would
-                        # otherwise be silently ignored. (Already-terminal
-                        # records re-read as terminal and stay silent.)
-                        if not finalized:
-                            latest = (
-                                self._engagement_registry.get(rec.id)
-                                if self._engagement_registry is not None
-                                else None)
-                            if latest is not None and latest.status in (
-                                    "active", "idle"):
-                                try:
-                                    await self._post_engagement_notice(
-                                        rec,
-                                        f"{command} could not be "
-                                        "finalized — please retry.")
-                                except Exception:  # noqa: BLE001
-                                    logger.debug(
-                                        "command retry notice failed",
-                                        exc_info=True)
-                        return
-                    if command == "/help":
-                        # #1412: answered by Casa — the engaged CLI has no
-                        # /help of its own here.
-                        await self._post_engagement_notice(
-                            rec, self._engagement_help_text())
-                        return
-
-                # A message from someone who reads below the job's
-                # clearance (a household member in a job started at a higher
-                # one) gets one line and never reaches the job.
-                if self._steer_refused(rec, user_id):
-                    await self._post_engagement_notice(rec, _MEMBER_STEER_LINE)
-                    return
-
-                # Journal, admit, queue and return: the job's delivery worker
-                # writes the message into the running session. Nothing here
-                # waits on the session.
-                if await self._deliver_to_job(
-                        rec, text,
-                        tg_message_id=getattr(msg, "message_id", None)):
-                    # INV-MEM-044: what the operator typed here is their
-                    # message; memory keeps it when this specialist keeps
-                    # none (never the specialist's turn). Detached.
-                    from delegated_memory import capture_topic_message
-                    capture_topic_message(
-                        channel=self, engagement=rec, user_id=user_id,
-                        user_name=getattr(msg.from_user, "first_name", None)
-                        or "unknown",
-                        message_id=getattr(msg, "message_id", None),
-                        resident=self.default_agent, text=text)
-                return
+            await self._redirect_from_log_group(msg)
+            return
 
         # 3) Other chats. When telegram_chat_id is configured it is an
         #    allowlist (DOCS.md: "Telegram chat ID to restrict messages
         #    to. Leave empty to accept all chats.") — drop updates from
         #    any other chat. Empty chat_id = accept all (documented opt-in).
-        #    Route 1 (the configured DM) and route 2 (the engagement
-        #    supergroup + its topics) already returned above, so reaching
-        #    here means this chat is neither.
+        #    Route 1 (the configured DM) and route 2 (the log group) already
+        #    returned above, so reaching here means this chat is neither.
         if str(self.chat_id or "").strip():
             logger.info(
                 "Dropping Telegram update from unauthorized chat_id=%s "
@@ -3582,13 +3444,10 @@ class TelegramChannel(Channel):
                     return
 
         if self.engagement_supergroup_id and chat_id == self.engagement_supergroup_id:
-            # Only a person's content draws the refusal. Topic lifecycle notices
-            # — many caused by Casa's own topic actions — and bot messages are
-            # not something anyone sent Casa, and a reply to each would be noise.
-            if not getattr(user, "is_bot", False) and _carries_content(msg):
-                await reply("I can't take files in an engagement — send it in "
-                            "our direct chat.",
-                            thread=getattr(msg, "message_thread_id", None))
+            # Only a person's content draws the pointer. Chat notices (a topic
+            # Casa created, a member joining) are not something anyone sent.
+            if _carries_content(msg):
+                await self._redirect_from_log_group(msg)
             return
         configured = str(self.chat_id or "").strip()
         if configured and str(chat_id) != configured:
@@ -3909,22 +3768,27 @@ class TelegramChannel(Channel):
             record=record, desk_role=role, continuation=False, reservation=reservation,
             file_name=name, file_path=stored_path)
 
-    async def _maybe_redirect_main_feed(self, user_id: int | None) -> None:
-        if user_id is None:
+    async def _redirect_from_log_group(self, msg: Any) -> None:
+        """The log group is read-only. A person who writes there (text, a
+        command or a file, in any topic or in General) is pointed to the
+        direct chat once per boot, in the thread they wrote in; nothing they
+        wrote reaches a job, memory or a model. Bots are ignored."""
+        user = getattr(msg, "from_user", None)
+        user_id = getattr(user, "id", None)
+        if user_id is None or getattr(user, "is_bot", False):
             return
-        if user_id in self._main_feed_redirect_seen:
+        if user_id in self._log_group_redirect_seen:
             return
-        self._main_feed_redirect_seen.add(user_id)
+        self._log_group_redirect_seen.add(user_id)
+        kwargs: dict[str, Any] = {"chat_id": self.engagement_supergroup_id,
+                                  "text": _LOG_GROUP_REDIRECT}
+        thread_id = getattr(msg, "message_thread_id", None)
+        if isinstance(thread_id, int) and not isinstance(thread_id, bool):
+            kwargs["message_thread_id"] = thread_id
         try:
-            await self.bot.send_message(
-                chat_id=self.engagement_supergroup_id,
-                text=(
-                    "This supergroup is for engagement topics. Start one by "
-                    "talking to me in our DM."
-                ),
-            )
+            await self.bot.send_message(**kwargs)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("main-feed redirect send failed: %s", exc)
+            logger.warning("log group redirect send failed: %s", exc)
 
     # ------------------------------------------------------------------
     # E-12 (v0.37.0) Task 20 / v0.75.0 (W5/Sol B3,B4): inline-keyboard

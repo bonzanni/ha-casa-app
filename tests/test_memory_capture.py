@@ -846,7 +846,7 @@ async def test_a_turn_a_delegation_and_an_engagement_turn_each_capture(
 
     # An in-casa engagement turn of a memory-writing specialist: the
     # operator's topic message and each message the specialist wrote.
-    drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream())
+    drv = InCasaDriver()
     rec = EngagementRecord(
         id="e" * 32, kind="specialist", role_or_type="finance",
         driver="in_casa", status="active", topic_id=99, started_at=0.0,

@@ -2,9 +2,9 @@
 
 A launch that ends after its record exists without a running job — cancelled
 while its session opens, or caught by Casa's stop — is reported by ONE owner,
-``tools._report_launch_death``: one strict terminal transition, then one
-bounded notice while the topic is still open, the bounded driver teardown, and
-the topic close. Everything here exists to make one specific mutation of that
+``tools._report_launch_death``: one strict terminal transition, then one line
+in the job's log (synchronous: it never waits on Telegram), and the bounded
+driver teardown. Everything here exists to make one specific mutation of that
 owner fail; the mapping is named on each test. (A launch turn that is cut off
 once the session runs is a session loss, owned by session recovery, and is
 pinned with the job session.)
@@ -39,7 +39,7 @@ _COUNTERPARTY_LATENCY_S = 0.1
 reporter posts through.
 
 NOT a wait and not an allowance: no test waits for this to elapse. It is part of
-the ARRANGEMENT — a real ``_post_engagement_notice`` is tens of milliseconds, and
+the ARRANGEMENT — a real driver teardown is tens of milliseconds, and
 pinning it at zero is what let ``TestCancellationHasAnOwner`` observe complete
 effects from an incomplete reporter on an idle box. With the counterparty this
 slow, the reporter provably has NOT finished when each readiness wait below
@@ -72,7 +72,7 @@ async def _drain_reporters():
 
 async def _cancel_while_opening(launcher, driver, monkeypatch, *, during=None):
     """Run one launch whose session open never returns, and cancel the
-    launcher there — after its record and topic exist. ``during(rec)`` runs
+    launcher there — after its record exists. ``during(rec)`` runs
     while the open hangs. Returns once the cancelled launcher re-raised."""
     entered = asyncio.Event()
     wedged = asyncio.Event()
@@ -95,79 +95,28 @@ async def _cancel_while_opening(launcher, driver, monkeypatch, *, during=None):
 
 
 class TestEveryBoundIsRealAndEveryCountIsOne:
-    """MUTATIONS: remove the notice timeout / the paint bound / the close bound
-    / the driver.cancel bound → the matching case below fails. Each wedged
-    counterparty is an Event that is never set; no asyncio.sleep is patched."""
+    """MUTATIONS: drop the death line / remove the driver.cancel bound → the
+    matching case below fails. A wedged counterparty is an Event that is never
+    set; no asyncio.sleep is patched."""
 
-    async def test_a_notice_that_never_returns_still_reaches_the_close(
+    async def test_the_death_line_is_logged_once_and_the_teardown_runs(
         self, tmp_path, monkeypatch,
     ):
         import tools as tools_mod
-        monkeypatch.setattr(tools_mod, "_TOPIC_OP_TIMEOUT_S", 0.05)
         probe = _Probe()
         launcher, registry, channel, driver = _build(
             tmp_path, monkeypatch, probe, ScriptedCutoffClient,
         )
-        wedged = asyncio.Event()
-
-        async def _hang(rec, text):
-            probe.events.append("notice")
-            await wedged.wait()
-
-        channel._post_engagement_notice = AsyncMock(side_effect=_hang)
 
         await _cancel_while_opening(launcher, driver, monkeypatch)
         await asyncio.wait_for(_drain_owner(), 15)
 
-        assert channel._post_engagement_notice.await_count == 1
+        assert probe.notice_texts == ["⚠️ stopped before reporting a result"]
         assert probe.driver_cancel_calls == 1
-        assert channel.close_topic.await_count == 1
+        assert channel.close_topic.await_count == 0
+        assert not tools_mod._LAUNCH_DEATH_TASKS
         created_id = next(iter(registry._records))
         assert registry.get(created_id).status == "error"
-
-    async def test_a_paint_that_never_returns_still_reaches_the_close(
-        self, tmp_path, monkeypatch,
-    ):
-        import tools as tools_mod
-        monkeypatch.setattr(tools_mod, "_TOPIC_OP_TIMEOUT_S", 0.05)
-        probe = _Probe()
-        launcher, _registry, channel, driver = _build(
-            tmp_path, monkeypatch, probe, ScriptedCutoffClient,
-        )
-        wedged = asyncio.Event()
-
-        async def _hang(*, engagement_id, new_state):
-            await wedged.wait()
-
-        channel.update_topic_state = AsyncMock(side_effect=_hang)
-
-        await _cancel_while_opening(launcher, driver, monkeypatch)
-        await asyncio.wait_for(_drain_owner(), 15)
-
-        assert channel.update_topic_state.await_count == 1
-        assert channel.close_topic.await_count == 1
-
-    async def test_a_close_that_never_returns_still_retires_the_reporter(
-        self, tmp_path, monkeypatch,
-    ):
-        import tools as tools_mod
-        monkeypatch.setattr(tools_mod, "_TOPIC_OP_TIMEOUT_S", 0.05)
-        probe = _Probe()
-        launcher, _registry, channel, driver = _build(
-            tmp_path, monkeypatch, probe, ScriptedCutoffClient,
-        )
-        wedged = asyncio.Event()
-
-        async def _hang(*, thread_id):
-            await wedged.wait()
-
-        channel.close_topic = AsyncMock(side_effect=_hang)
-
-        await _cancel_while_opening(launcher, driver, monkeypatch)
-        await asyncio.wait_for(_drain_owner(), 15)
-
-        assert channel.close_topic.await_count == 1
-        assert not tools_mod._LAUNCH_DEATH_TASKS
 
     async def test_a_driver_cancel_that_never_returns_still_tells_the_operator(
         self, tmp_path, monkeypatch,
@@ -191,9 +140,8 @@ class TestEveryBoundIsRealAndEveryCountIsOne:
 
         created_id = next(iter(registry._records))
         assert registry.get(created_id).status == "error"
-        assert channel._post_engagement_notice.await_count == 1
+        assert probe.notice_texts == ["⚠️ stopped before reporting a result"]
         assert probe.driver_cancel_calls == 1
-        assert channel.close_topic.await_count == 1
 
 
 class TestTheStrictTransitionIsTheAuthority:
@@ -207,8 +155,7 @@ class TestTheStrictTransitionIsTheAuthority:
         failure and still returns True, which would authorize an irreversible
         topic close over a record disk still calls `active`. The strict
         primitive rolls the record back and re-raises, and the reporter then
-        paints nothing and closes nothing — an open topic over a live record
-        is recoverable, a closed one is not. It DOES retire the driver's
+        logs no death over a live record. It DOES retire the driver's
         session, so `is_alive` never hands the next message to a client the
         launch abandoned.
         """
@@ -235,13 +182,10 @@ class TestTheStrictTransitionIsTheAuthority:
         rec = registry.get(created_id)
         assert rec.status == "active", rec.status      # rolled fully back
         assert rec.completed_at is None
-        # The reporter paints and closes nothing over a live record; its owner
-        # posts one bounded notice saying the outcome could not be recorded —
-        # that is the one notice.
-        assert channel._post_engagement_notice.await_count == 1
-        assert "could not be recorded" in probe.notice_texts[0]
+        # The reporter logs no death over a live record; its owner logs one
+        # line saying the outcome could not be recorded — that is the one.
+        assert probe.notice_texts == ["⚠️ could not be recorded"]
         assert channel.update_topic_state.await_count == 0
-        assert channel.close_topic.await_count == 0
         assert probe.driver_cancel_calls == 1
         assert driver.is_alive(rec) is False
 
@@ -276,9 +220,8 @@ class TestTheStrictTransitionIsTheAuthority:
         created_id = next(iter(registry._records))
         assert registry.get(created_id).status == "completed"
         assert len(probe.transition_calls) == 2     # the winner's, then the loser's
-        assert channel._post_engagement_notice.await_count == 0
+        assert probe.notice_texts == []
         assert channel.update_topic_state.await_count == 0
-        assert channel.close_topic.await_count == 0
 
 
 class TestCancellationHasAnOwner:
@@ -291,8 +234,8 @@ class TestCancellationHasAnOwner:
         the death inline and then returns its envelope. The registry
         deliberately KEEPS a durable terminal state and re-raises when a
         cancellation lands after its write committed, so a launcher cancelled
-        inside that report could commit the flip and then never post, paint
-        or close — and a second, compensating reporter would correctly LOSE
+        inside that report could commit the flip and then never finish its
+        teardown — and a second, compensating reporter would correctly LOSE
         the transition and do nothing, leaving the durable error with no
         side-effect owner at all.
         """
@@ -302,15 +245,17 @@ class TestCancellationHasAnOwner:
             tmp_path, monkeypatch, probe, ScriptedCompleteClient,
         )
         entered = asyncio.Event()
-        real_notice = channel._post_engagement_notice
+        settled: list = []
+        real_settle = tools_mod._settle_job_journal
 
-        async def _slow_notice(rec, text):
+        async def _slow_settle(rec, drv):
             entered.set()
             await asyncio.sleep(0)
             await asyncio.sleep(_COUNTERPARTY_LATENCY_S)
-            await real_notice(rec, text)
+            await real_settle(rec, drv)
+            settled.append(rec.id)
 
-        channel._post_engagement_notice = AsyncMock(side_effect=_slow_notice)
+        monkeypatch.setattr(tools_mod, "_settle_job_journal", _slow_settle)
         real_open = driver.open
 
         async def _open_then_the_stop_latches(engagement, options=None):
@@ -331,8 +276,8 @@ class TestCancellationHasAnOwner:
         created_id = next(iter(registry._records))
         assert registry.get(created_id).status == "error"
         assert registry.get(created_id).origin["error_kind"] == "launch_cancelled"
-        assert channel._post_engagement_notice.await_count == 1
-        assert channel.close_topic.await_count == 1
+        assert probe.notice_texts == ["⚠️ stopped before reporting a result"]
+        assert settled == [created_id]
 
     async def test_a_cancelled_launch_now_posts_before_it_closes(
         self, tmp_path, monkeypatch,
@@ -340,22 +285,23 @@ class TestCancellationHasAnOwner:
         """MUTATION: drop the reporter from the cancellation compensator →
         this fails.
 
-        Before #678 a cancelled launch flipped the topic to failed and closed
-        it having posted NOTHING: the operator saw a ❌ title over an empty
-        topic and could not tell whether the task had mutated anything.
+        Before #678 a cancelled launch ended having said NOTHING: the operator
+        could not tell whether the task had mutated anything. Its log says so
+        before the session is torn down.
         """
         import tools as tools_mod
         probe = _Probe()
         launcher, registry, channel, driver = _build(
             tmp_path, monkeypatch, probe, ScriptedCutoffClient,
         )
-        real_notice = channel._post_engagement_notice
+        real_cancel = driver.cancel
 
-        async def _slow_notice(rec, text):
+        async def _slow_cancel(engagement):
+            probe.events.append("teardown")
             await asyncio.sleep(_COUNTERPARTY_LATENCY_S)
-            await real_notice(rec, text)
+            await real_cancel(engagement)
 
-        channel._post_engagement_notice = AsyncMock(side_effect=_slow_notice)
+        monkeypatch.setattr(driver, "cancel", _slow_cancel)
 
         # The launcher awaits `open()` inline; a launch cancelled while its
         # session is opening is cancelled there.
@@ -368,9 +314,8 @@ class TestCancellationHasAnOwner:
         rec = registry.get(created_id)
         assert rec.status == "error", rec.status
         assert rec.origin["error_kind"] == "launch_cancelled"
-        assert channel._post_engagement_notice.await_count == 1
-        assert channel.close_topic.await_count == 1
-        assert probe.events.index("notice") < probe.events.index("topic_close")
+        assert probe.notice_texts == ["⚠️ stopped before reporting a result"]
+        assert probe.events.index("notice") < probe.events.index("teardown")
 
 
 class TestTheBoundaries:

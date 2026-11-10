@@ -84,7 +84,6 @@ def test_resume_rebuild_reapplies_the_live_plan_onto_the_record(tmp_path, monkey
 async def _driver_persists_before_open(monkeypatch, tmp_path, method):
     from claude_agent_sdk import ClaudeAgentOptions
     from drivers.in_casa_driver import InCasaDriver
-    from test_in_casa_driver import _mk_noop_factory
     import tools as tools_mod
     order = []
 
@@ -108,8 +107,7 @@ async def _driver_persists_before_open(monkeypatch, tmp_path, method):
 
     async def persist(engagement_id, profiles):
         order.append(("persist", engagement_id, dict(profiles)))
-    drv = InCasaDriver(topic_stream_factory=_mk_noop_factory(),
-                       persist_plugin_profiles=persist)
+    drv = InCasaDriver(persist_plugin_profiles=persist)
     eng = SimpleNamespace(
         id="eng-1", kind="specialist", role_or_type="finance", origin={},
         sdk_session_id="sess-1", context_generation=0,
@@ -194,7 +192,6 @@ def test_resume_with_a_withheld_plugin_keeps_its_recorded_profile(tmp_path, monk
 async def _driver_refuses_open_when_persist_fails(monkeypatch, method):
     from claude_agent_sdk import ClaudeAgentOptions
     from drivers.in_casa_driver import InCasaDriver
-    from test_in_casa_driver import _mk_noop_factory
     import tools as tools_mod
     import pytest
     order = []
@@ -219,8 +216,7 @@ async def _driver_refuses_open_when_persist_fails(monkeypatch, method):
 
     async def persist(engagement_id, profiles):
         raise OSError(28, "No space left on device")
-    drv = InCasaDriver(topic_stream_factory=_mk_noop_factory(),
-                       persist_plugin_profiles=persist)
+    drv = InCasaDriver(persist_plugin_profiles=persist)
     eng = SimpleNamespace(
         id="eng-1", kind="specialist", role_or_type="finance", origin={},
         sdk_session_id="sess-1", context_generation=0,
@@ -244,7 +240,6 @@ async def _real_writer_failure_refuses_open(monkeypatch, tmp_path, method):
     import pytest
     from claude_agent_sdk import ClaudeAgentOptions
     from drivers.in_casa_driver import InCasaDriver
-    from test_in_casa_driver import _mk_noop_factory
     import tools as tools_mod
     import engagement_registry as er
     reg = await _registry(tmp_path)
@@ -277,8 +272,7 @@ async def _real_writer_failure_refuses_open(monkeypatch, tmp_path, method):
     def _enospc(*a, **k):
         raise OSError(28, "No space left on device")
     monkeypatch.setattr(er.EngagementRegistry, "_write_tombstone", _enospc)
-    drv = InCasaDriver(topic_stream_factory=_mk_noop_factory(),
-                       persist_plugin_profiles=reg.update_plugin_profiles)
+    drv = InCasaDriver(persist_plugin_profiles=reg.update_plugin_profiles)
     with pytest.raises(OSError):
         await getattr(drv, method)(rec, *(["sess-1"] if method == "resume" else []))
     assert order == [] and not drv.is_alive(rec)

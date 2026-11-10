@@ -107,6 +107,12 @@ def activity_for_tool(tool_name: str) -> str:
     return "working"
 
 
+def step_log_line(tool_name: str) -> str:
+    """One tool step as an agent log line: ``🔧 Reading files``."""
+    phrase = activity_for_tool(tool_name)
+    return f"🔧 {phrase[:1].upper()}{phrase[1:]}"
+
+
 def format_elapsed(seconds: float) -> str:
     """Human-readable elapsed string (``45s`` / ``2m 30s`` / ``1h 05m``)."""
     total = int(seconds) if seconds and seconds > 0 else 0

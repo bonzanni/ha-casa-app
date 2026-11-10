@@ -59,7 +59,7 @@ async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
     result = await call()
     assert result['status'] == 'pending', result
     assert (result['agent'], result['job'], result['title']) == ('assistant', DECL.qualified_name, DECL.title)
-    assert result['message'] == "Started Classify entries. Progress appears in Ellen's topic."
+    assert result['message'] == "Started Classify entries."      # no log group: no log named
     await drain_launch_turns()
     rec = worker.registry.get(result['engagement_id'])
     opts = Client.instances[0].options
@@ -94,10 +94,14 @@ async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
                                      'path': str(worker.root), 'artifact_id': worker.host.plugin.artifact_id,
                                      # S8: the record stores the EFFECTIVE profile the build applied
                                      'profile': None},)
-    assert rec.topic_title == 'Ellen · Classify entries'
-    assert worker.bot.create_forum_topic.call_args.kwargs['name'] == '🟢 Ellen · Classify entries'
-    await worker.channel.update_topic_state(engagement_id=rec.id, new_state='awaiting')
-    assert 'Ellen · Classify entries' in worker.bot.edit_forum_topic.call_args.kwargs['name']
+    # No topic: a plugin job's lines go to its resident's plugin log.
+    assert rec.topic_id is None and rec.topic_title == ''
+    worker.bot.create_forum_topic.assert_not_awaited()
+    from agent_logs import LogKey
+    assert jobs.job_log_key(rec) == LogKey('plugins', 'assistant')
+    assert jobs.job_run_name(rec) == DECL.title
+    # the turn end's state write runs on its own task; let it land
+    await worker.registry.persist_origin(rec.id)
     loaded = EngagementRegistry(tombstone_path=worker.registry._tombstone_path)
     await loaded.load()
     restored = loaded.get(rec.id)
@@ -164,7 +168,7 @@ async def test_options_failure_aborts_and_releases(worker):
     assert result['kind'] == 'options_build_failed'
     assert not worker.registry.active_and_idle()
     assert worker.limiter.in_flight == 0
-    worker.bot.close_forum_topic.assert_awaited()
+    worker.bot.create_forum_topic.assert_not_awaited()
     assert not Client.instances
 
 

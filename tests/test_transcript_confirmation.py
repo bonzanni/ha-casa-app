@@ -362,8 +362,7 @@ async def _engagement_turn(kind="specialist", sid=None, script=None):
                 yield m
 
     ended: list = []
-    drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream(),
-                       on_turn_end=lambda r, result, api_error: ended.append(r))
+    drv = InCasaDriver(on_turn_end=lambda r, result, api_error: ended.append(r))
     rec = _engagement_record(kind=kind)
     attach_session(drv, rec, _Client())
     try:
@@ -561,7 +560,7 @@ async def test_a_run_cancelled_during_its_registration_confirms_its_row(
             async def receive_response(self):
                 await asyncio.Event().wait()   # the turn runs on
                 yield None
-        drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream())
+        drv = InCasaDriver()
         rec = _engagement_record()
         session = attach_session(drv, rec, _Client())
         drv.submit_operator(rec, "m", tg_message_id=55)

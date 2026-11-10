@@ -1071,7 +1071,6 @@ class TestEngagementBackedAuthz:
         dict(status="idle"),
         dict(status="completed"),
         dict(kind="executor"),
-        dict(topic_id=None),
         dict(origin={"chat_id": "42"}),       # no user_id
         dict(origin={"user_id": 100}),        # no chat_id
         dict(origin={}),                      # no operator ids at all

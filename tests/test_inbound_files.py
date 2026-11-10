@@ -222,13 +222,13 @@ async def test_a_pin_is_answered_not_silent(fake_telegram_bot, wired):
         "I can't do anything with that — I only take PDFs, images, and text or CSV files."]
 
 
-async def test_an_engagement_topic_file_is_refused_in_the_topic(fake_telegram_bot, wired):
+async def test_a_file_in_the_log_group_draws_the_pointer_in_its_thread(fake_telegram_bot, wired):
     ch = _channel(fake_telegram_bot)
     await ch._on_non_text_message(_update(_msg(
         chat_id=SUPERGROUP, thread=555, document=_doc())))
     sg = fake_telegram_bot._supergroups[SUPERGROUP]
     assert sg.messages_by_thread[555] == [
-        "I can't take files in an engagement — send it in our direct chat."]
+        "This group is a read-only log. Talk to me in our direct chat."]
     assert wired.list_files() == []
 
 

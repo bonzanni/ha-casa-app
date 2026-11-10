@@ -1,7 +1,7 @@
 """#1301 — a job declaring ``quietWhenScheduled`` that the scheduler started runs quietly:
-no topic, no acknowledgement, no progress line, and a completed end told nowhere. Its
-plugin's delivered slots still reach the operator, a cancelled or failed end is still
-told, and every other run is unchanged (INV-BGJOB-010)."""
+nothing in the direct chat, and a completed end told nowhere. Its plugin's delivered
+slots still reach the operator, a cancelled or failed end is still told, its agent log
+is written like any job's, and every other run is unchanged (INV-BGJOB-010)."""
 from __future__ import annotations
 
 from dataclasses import replace
@@ -11,6 +11,8 @@ import pytest
 
 import agent
 import background_jobs as jobs
+from agent_log_double import RecordingLogs
+from agent_logs import LogKey
 import tools
 from authz_grants import GrantIdentity, resolve_grant_identity
 from plugin_store import StoreError
@@ -72,42 +74,59 @@ async def test_only_a_scheduled_start_of_a_quiet_job_is_quiet(started_by):
 
 # --- the run ----------------------------------------------------------------------------
 
-async def test_a_quiet_scheduled_run_opens_no_topic_and_posts_nothing(runtime):
+def _logs(runtime, monkeypatch) -> RecordingLogs:
+    logs = RecordingLogs()
+    monkeypatch.setattr(tools, "_agent_logs", logs)
+    monkeypatch.setattr(runtime.driver, "_agent_logs", logs)
+    return logs
+
+
+async def test_a_quiet_scheduled_run_posts_nothing_and_logs_like_any_job(
+        runtime, monkeypatch):
+    logs = _logs(runtime, monkeypatch)
     rec = await _launch(runtime, QUIET, scheduled=True)
     assert rec.topic_id is None and jobs.is_quiet_run(rec)
     assert rec.status == "active"
     runtime.bot.create_forum_topic.assert_not_awaited()
-    # the brief's turn ran (its words were produced) and nothing was posted
+    # the brief's turn ran and nothing was posted in the direct chat
     assert Client.instances and Client.instances[0].prompts
     runtime.bot.send_message.assert_not_awaited()
     runtime.bot.edit_message_text.assert_not_awaited()
+    # its log: the start, then the turn's words
+    assert logs.lines[0] == (LogKey("agent", "finance"), DECL.title, "▶ started")
+    assert len(logs.words()) >= 1
 
 
-async def test_a_quiet_runs_later_turn_and_progress_post_nothing(runtime):
+async def test_a_quiet_runs_later_turn_and_progress_are_logged_not_posted(
+        runtime, monkeypatch):
     """A later turn of a quiet run (here a continuation written into its
-    session) and its progress line post nothing; the job goes on."""
+    session) and its progress line go to its log, never the direct chat; the
+    job goes on."""
+    logs = _logs(runtime, monkeypatch)
     rec = await _launch(runtime, QUIET, scheduled=True)
     runtime.channel._engagement_driver = runtime.driver
     assert await runtime.channel.deliver_system_turn(rec, "Continue the job.")
     await drain_launch_turns()
     assert len(Client.instances) == 1 and len(Client.instances[0].prompts) == 2
     assert Client.instances[0].prompts[1].endswith("Continue the job.")
-    # the withheld words are not a lost or undelivered turn: the job goes on
     assert runtime.registry.get(rec.id).status == "active"
-    await tools._post_engagement_notice(runtime.channel, rec, "📊 matched 3")
-    await runtime.channel._post_engagement_notice(rec, '↻ Resuming "x" after a restart.')
+    token = tools.engagement_var.set(rec)
+    try:
+        result = await tools.report_job_progress.handler(
+            {"summary": "matched 3", "done": 3, "remaining": 1})
+    finally:
+        tools.engagement_var.reset(token)
+    assert '"ok": true' in result["content"][0]["text"]
+    assert logs.texts()[-1] == "📊 matched 3 · 3 done · 1 left"
     runtime.bot.send_message.assert_not_awaited()
     runtime.bot.edit_message_text.assert_not_awaited()
 
 
 @pytest.mark.parametrize("decl,scheduled", [(QUIET, False), (DECL, True), (DECL, False)])
-async def test_every_other_run_opens_its_topic_as_today(runtime, decl, scheduled):
+async def test_every_other_run_is_not_quiet_and_opens_no_topic(runtime, decl, scheduled):
     rec = await _launch(runtime, decl, scheduled=scheduled)
-    assert rec.topic_id == 42 and not jobs.is_quiet_run(rec)
-    runtime.bot.create_forum_topic.assert_awaited_once()
-    # the brief's turn streams its words into the topic
-    assert any(c.kwargs.get("message_thread_id") == 42
-               for c in runtime.bot.send_message.await_args_list)
+    assert rec.topic_id is None and not jobs.is_quiet_run(rec)
+    runtime.bot.create_forum_topic.assert_not_awaited()
 
 
 async def test_a_topic_send_without_a_topic_refuses_rather_than_post_to_general(runtime):
@@ -136,16 +155,18 @@ def _identity(rec):
         agent.origin_var.reset(token_o)
 
 
-async def test_a_quiet_run_keeps_the_operators_grant_identity():
+@pytest.mark.parametrize("job", [{"quiet": True}, {}])
+async def test_a_job_keeps_the_operators_grant_identity_without_a_topic(job):
+    """No job has a topic any more: an active job whose origin names the
+    operator and their chat binds its protected calls to them, quiet or not."""
     rec = SimpleNamespace(id="job-q", kind="specialist", status="active", topic_id=None,
                           role_or_type="finance",
-                          origin={"chat_id": 1, "user_id": 7,
-                                  "job": {"quiet": True}})
+                          origin={"chat_id": 1, "user_id": 7, "job": job})
     identity, why = _identity(rec)
     assert why is None
     assert identity == GrantIdentity(7, 1, "finance", "", "job-q", target_role="finance")
-    # a topic-less record that is not a quiet run gets none, as before
-    rec.origin["job"] = {}
+    # without an operator in its origin it gets none
+    rec.origin.pop("user_id")
     assert _identity(rec) == (None, "engagement_unavailable")
 
 
@@ -186,6 +207,15 @@ async def test_a_completed_run_that_is_not_quiet_is_still_told(runtime, monkeypa
 
 
 async def test_a_busy_refusal_for_a_quiet_run_does_not_point_at_a_topic():
-    rec = SimpleNamespace(id="job-q", topic_id=None)
-    refusal = jobs._job_busy_refusal("ledger", "ledger:classify", "Classify entries", rec)
+    quiet = SimpleNamespace(id="job-q", topic_id=None, origin={"job": {"quiet": True}})
+    refusal = jobs._job_busy_refusal("ledger", "ledger:classify", "Classify entries", quiet)
+    assert refusal["message"] == ("ledger is already running Classify entries on its "
+                                  "schedule. Wait for it to finish.")
+    assert "topic_id" not in refusal
+    # quietness is the record's stamp, not a missing topic: every job lacks one now
+    loud = SimpleNamespace(id="job-l", topic_id=None, origin={"job": {}})
+    refusal = jobs._job_busy_refusal("ledger", "ledger:classify", "Classify entries", loud)
+    assert refusal["message"] == (
+        "ledger already has a running job: Classify entries. Wait for it to finish, "
+        "or cancel it with the Cancel button on its start line or by asking me.")
     assert "topic" not in refusal["message"] and "topic_id" not in refusal

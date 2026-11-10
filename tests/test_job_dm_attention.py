@@ -161,7 +161,7 @@ async def _rig(tmp_path, monkeypatch, *, quiet=False, started_by="operator",
     ch = TelegramChannel(bot=r.bot, chat_id=str(CHAT))
     r.client = _Session()
     r.drv = InCasaDriver(
-        topic_stream_factory=lambda tid: None, record_lookup=r.reg.get,
+        record_lookup=r.reg.get,
         begin_turn_delivery=r.reg.begin_turn_delivery,
         lifecycle_lock=ch.engagement_lifecycle_lock)
     attach_session(r.drv, r.rec, r.client)

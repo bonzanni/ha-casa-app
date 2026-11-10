@@ -112,8 +112,8 @@ async def wired(tmp_path):
 async def test_react_targets_latest_operator_message(wired):
     """Two operator messages arrive; react targets the SECOND (latest) id,
     never eng.origin (which carries no message_id at all)."""
-    await wired.ch.handle_update(_mk_update(message_id=100))
-    await wired.ch.handle_update(_mk_update(message_id=101))
+    wired.ch._record_inbound_target(wired.rec.id, SUPERGROUP, TOPIC, 100)
+    wired.ch._record_inbound_target(wired.rec.id, SUPERGROUP, TOPIC, 101)
     await _drain(wired.ch)
 
     payload = await wired.react(wired.rec.id, "👍")
@@ -129,8 +129,8 @@ async def test_react_targets_latest_operator_message(wired):
 async def test_react_monotonic_out_of_order(wired):
     """M+1 recorded first, then a delayed older M arrives — the stored target
     stays M+1 (concurrent handle_update; delivery order is not send order)."""
-    await wired.ch.handle_update(_mk_update(message_id=101))   # newer first
-    await wired.ch.handle_update(_mk_update(message_id=100))   # delayed older
+    wired.ch._record_inbound_target(wired.rec.id, SUPERGROUP, TOPIC, 101)   # newer first
+    wired.ch._record_inbound_target(wired.rec.id, SUPERGROUP, TOPIC, 100)   # delayed older
     await _drain(wired.ch)
 
     payload = await wired.react(wired.rec.id, "👀")
@@ -153,7 +153,7 @@ async def test_react_terminated_engagement_no_reaction(wired):
     """A STALE target present in the map, but the engagement is terminated:
     the tool reacts only for an ACTIVE bound record, so NO reaction can ever
     fire on a finished engagement."""
-    await wired.ch.handle_update(_mk_update(message_id=101))
+    wired.ch._record_inbound_target(wired.rec.id, SUPERGROUP, TOPIC, 101)
     await _drain(wired.ch)
     # stale target is present
     assert wired.ch.get_current_inbound(wired.rec.id) is not None
@@ -171,7 +171,7 @@ async def test_react_invalid_emoji_fails_soft(wired):
     never a raised exception / turn abort."""
     from telegram.error import BadRequest
 
-    await wired.ch.handle_update(_mk_update(message_id=101))
+    wired.ch._record_inbound_target(wired.rec.id, SUPERGROUP, TOPIC, 101)
     await _drain(wired.ch)
     wired.bot.raise_exc = BadRequest("Reaction is not supported")
 

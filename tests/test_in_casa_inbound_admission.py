@@ -88,8 +88,7 @@ async def _mk_driver_rec(tmp_path, client):
         "executor", "configurator", "in_casa", "t",
         {"role": "assistant", "channel": "telegram", "user_id": 77},
         topic_id=555)
-    drv = InCasaDriver(topic_stream_factory=lambda tid: _Stream(),
-                       record_lookup=reg.get,
+    drv = InCasaDriver(record_lookup=reg.get,
                        begin_turn_delivery=reg.begin_turn_delivery)
     attach_session(drv, rec, client)
     return reg, rec, drv
@@ -194,11 +193,11 @@ class _HeldClient(_ScriptedClient):
 
 
 class TestManualSeamAdmission:
-    async def test_recognized_commands_are_never_ticketed(
+    async def test_a_command_in_the_log_group_is_never_ticketed(
             self, tmp_path, fake_telegram_bot):
-        """The command cut: /cancel is consumed by the handler, not
-        delivered — no ticket at any point (its own ungated finalize must
-        not disclose it as unread)."""
+        """The log group is read-only: a /cancel written there — even in the
+        thread an older version used as this job's topic — is neither
+        delivered nor acted on, and takes no ticket."""
         client = _ScriptedClient()
         ch, reg, rec, drv = await _mk_channel(
             tmp_path, fake_telegram_bot, client)
@@ -214,41 +213,25 @@ class TestManualSeamAdmission:
         await _drain(ch)
         assert seen == []
         assert drv.inbound_unread_depth(rec.id) == 0
-        ch._finalize_cancel.assert_awaited_once()
+        ch._finalize_cancel.assert_not_awaited()
+        assert reg.get(rec.id).status == "active"
 
-    async def test_unknown_and_other_bot_slash_texts_are_admitted(
+    async def test_slash_texts_in_a_reply_are_admitted(
             self, tmp_path, fake_telegram_bot):
-        """/foo and /cancel@otherbot are DELIVERABLE and
-        are admitted like plain text, before the handler returns."""
+        """/foo and /cancel@otherbot replied to a job's post are DELIVERABLE
+        and are admitted like plain text, before the seam returns."""
         for text in ("/foo now", "/cancel@otherbot"):
             client = _HeldClient(scripts=[[_mk_assistant("ok")]])
             ch, reg, rec, drv = await _mk_channel(
                 tmp_path, fake_telegram_bot, client)
-            ch._bot_username = "casabot"
 
-            u = _mk_update(chat_id=-1001, text=text, thread_id=555,
-                           user_id=77)
-            await asyncio.wait_for(ch.handle_update(u), 5)
+            assert await asyncio.wait_for(ch.deliver_operator_reply(
+                rec, text, chat_id=100, message_id=31), 5)
             assert drv.inbound_unread_depth(rec.id) == 1, text
             client.release.set()
             await _drain(ch)
             assert client.query_prompts == [text]
             assert drv.inbound_unread_depth(rec.id) == 0
-
-    async def test_command_persist_failure_posts_retry_notice(
-            self, tmp_path, fake_telegram_bot):
-        """Sol seam r2 pin: a falsy finalize with the record STILL LIVE
-        posts the retry notice; an already-terminal record stays silent."""
-        client = _ScriptedClient()
-        ch, reg, rec, drv = await _mk_channel(
-            tmp_path, fake_telegram_bot, client)
-        ch._finalize_cancel = AsyncMock(return_value=False)   # falsy, live
-        u = _mk_update(chat_id=-1001, text="/cancel", thread_id=555,
-                       user_id=77)
-        await ch.handle_update(u)
-        notices = [c.args[1] for c in
-                   ch._post_engagement_notice.await_args_list]
-        assert sum("could not be finalized" in n for n in notices) == 1
 
 
 class TestSystemSeamAdmission:

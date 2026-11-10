@@ -876,7 +876,7 @@ class ChallengeCoordinator:
         display = _resolve_display_name(display_name, enforcement_role)
 
         # #400: an engagement-origin challenge resumes the SPECIALIST ENGAGEMENT
-        # (the finish hook re-delivers a system turn into rec.id/topic via the
+        # (the finish hook re-delivers a system turn into rec.id via the
         # channel's engagement-resume seam) instead of dispatching a synthetic
         # button turn to a resident bus role. The engagement id is bound into the
         # GrantKey too, so the retried call consumes only THIS engagement's grant.
@@ -1240,7 +1240,7 @@ class AuthzDeps:
 # operator-gated plugin tool on an interactive specialist engagement now routes
 # through the DM authorization challenge (engagement-bound grant). This deny
 # remains for engagement turns that CANNOT be authorized: a non-specialist /
-# non-active / topic-less / operator-less engagement record. Same
+# non-active / operator-less engagement record. Same
 # instruction-not-description rule as _DENY_POSTED — control flow only.
 _DENY_ENGAGEMENT_UNAVAILABLE = (
     "not executed: this engagement cannot authorize a protected action "
@@ -1325,11 +1325,6 @@ class GrantIdentity:
     desk_role: str = field(default="", compare=False)
 
 
-def _is_quiet_run(rec: Any) -> bool:
-    import background_jobs
-    return background_jobs.is_quiet_run(rec)
-
-
 def resolve_grant_identity(role: str, artifact_id: str = ""):
     """The authz hook's identity derivation, factored (#792).
 
@@ -1337,7 +1332,7 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
     (with ``artifact_id`` filled from the argument) and ``reason`` is
     ``None``; or ``identity`` is ``None`` and ``reason`` is one of
     ``"engagement_unavailable"`` (engagement path: no active specialist
-    record with a topic and an operator origin), ``"unsupported_origin"``
+    or plugin record with an operator origin), ``"unsupported_origin"``
     (not a DM/button/setup turn executed directly or by delegation, or no
     operator/chat id), ``"role_mismatch"`` (the closure's role is not the
     turn's execution role); or, for an origin carrying Casa's
@@ -1391,11 +1386,7 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
         if (rec is None
                 or not getattr(rec, "id", "")
                 or getattr(rec, "kind", None) not in ("specialist", "plugin")
-                or getattr(rec, "status", None) != "active"
-                or (strict_positive_id(getattr(rec, "topic_id", None)) is None
-                    # #1301: a quiet scheduled run has no topic; its posts
-                    # target the origin's chat like any engagement's.
-                    and not _is_quiet_run(rec))):
+                or getattr(rec, "status", None) != "active"):
             return None, "engagement_unavailable"
         eng_origin = getattr(rec, "origin", None) or {}
         operator_id = strict_positive_id(eng_origin.get("user_id"))
@@ -1635,7 +1626,7 @@ def make_resident_authz_hook(
             # 1./2./3. Identity — the ONE derivation shared with the result
             # broker (#792): engagement path first (an interactive specialist
             # engagement's protected call binds to THIS engagement; fail-closed
-            # unless the record is an ACTIVE SPECIALIST with a topic and a
+            # unless the record is an ACTIVE SPECIALIST or plugin job with a
             # reachable operator origin), else the transport/execution gate
             # (provenance is consulted BEFORE any grant lookup — a copied
             # chat_id/user_id on a webhook turn can never consume a grant),

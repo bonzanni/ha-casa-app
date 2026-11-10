@@ -1,96 +1,132 @@
-"""Tests for Telegram routing to engagement topics."""
+"""Tests for Telegram routing: the operator's direct chat reaches the
+assistant; the optional log group is read-only."""
 
 from __future__ import annotations
 
-import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 pytestmark = pytest.mark.unit
 
+REDIRECT = "This group is a read-only log. Talk to me in our direct chat."
+
 
 class _SubmitDriver:
-    """The job driver's synchronous seam entry, recorded. A topic message is
-    handed to the job through ``submit_operator`` and the handler returns;
-    nothing in the handler waits on the job's session."""
+    """The job driver's synchronous seam entry, recorded: anything handed to
+    a job goes through ``submit_operator``."""
 
-    def __init__(self, on_submit=None):
+    def __init__(self):
         self.submitted: list[tuple] = []
-        self.on_submit = on_submit
 
     def submit_operator(self, rec, text, *, tg_message_id=None, notice=None):
         self.submitted.append((rec, text, tg_message_id))
-        if self.on_submit is not None:
-            self.on_submit(rec, text)
         return object()
 
-    @property
-    def texts(self) -> list[str]:
-        return [t for _r, t, _m in self.submitted]
 
-
-def _wire_driver(ch, **kw) -> _SubmitDriver:
-    drv = _SubmitDriver(**kw)
+def _wire_driver(ch) -> _SubmitDriver:
+    drv = _SubmitDriver()
     ch._engagement_driver = drv
     return drv
 
 
-def _mk_update(*, chat_id, text, thread_id=None, user_id=77):
+def _mk_update(*, chat_id, text, thread_id=None, user_id=77, is_bot=False):
     u = MagicMock()
     u.message = MagicMock()
     u.message.chat = MagicMock()
     u.message.chat.id = chat_id
     u.message.text = text
     u.message.message_thread_id = thread_id
-    u.message.from_user = MagicMock(id=user_id)
+    u.message.from_user = MagicMock(id=user_id, is_bot=is_bot)
     u.message.message_id = 999
     return u
 
 
-class TestSupergroupRouting:
-    async def test_main_feed_ignored_after_redirect_once(self, fake_telegram_bot):
-        from channels.telegram import TelegramChannel
+def _log_group_channel(bot, engagement_fixture=None):
+    from channels.telegram import TelegramChannel
 
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        drv = _wire_driver(ch)
+    ch = TelegramChannel(bot=bot, chat_id=100, engagement_supergroup_id=-1001)
+    drv = _wire_driver(ch)
+    ch._route_to_assistant = AsyncMock()
+    if engagement_fixture is not None:
+        ch._engagement_registry = engagement_fixture.registry
+    return ch, drv
 
+
+def _redirects(bot) -> list:
+    """Every redirect line sent, as (thread or None, text)."""
+    sg = bot._supergroups.get(-1001)
+    out = [(None, t) for c, t in bot.messages if c == -1001]
+    if sg is not None:
+        out += [(tid, t) for tid, texts in sg.messages_by_thread.items()
+                for t in texts]
+    return out
+
+
+class TestTheLogGroupIsReadOnly:
+    """Anything a person writes in the log group — in General or in any
+    topic, a message or a command, the operator or another member — draws one
+    pointer to the direct chat per person per boot, in the thread they wrote
+    in, and reaches nothing else: no job, no assistant turn."""
+
+    async def test_general_draws_one_pointer_per_person(self, fake_telegram_bot):
+        ch, drv = _log_group_channel(fake_telegram_bot)
         u = _mk_update(chat_id=-1001, text="hi", thread_id=None, user_id=7)
         await ch.handle_update(u)
-        # First time: redirect posted
-        assert -1001 in fake_telegram_bot._supergroups
+        await ch.handle_update(u)
+        assert _redirects(fake_telegram_bot) == [(None, REDIRECT)]
+        assert drv.submitted == []
+        ch._route_to_assistant.assert_not_awaited()
+
+    async def test_a_topic_message_or_command_reaches_no_job(
+            self, fake_telegram_bot, engagement_fixture):
+        """Even in the thread an older job's topic used: the message, a
+        /cancel and the operator's own words reach nothing."""
+        ch, drv = _log_group_channel(fake_telegram_bot, engagement_fixture)
+        rec = engagement_fixture.active_record          # its old topic: 555
+        for text in ("Alex please continue", "/cancel", "/help"):
+            await ch.handle_update(_mk_update(
+                chat_id=-1001, text=text, thread_id=rec.topic_id, user_id=100))
+        assert drv.submitted == []
+        ch._route_to_assistant.assert_not_awaited()
+        assert engagement_fixture.registry.get(rec.id).status == "active"
+        assert _redirects(fake_telegram_bot) == [(555, REDIRECT)]
+
+    async def test_each_person_is_told_once_in_their_thread(self, fake_telegram_bot):
+        ch, _drv = _log_group_channel(fake_telegram_bot)
+        await ch.handle_update(_mk_update(chat_id=-1001, text="a", thread_id=12,
+                                          user_id=7))
+        await ch.handle_update(_mk_update(chat_id=-1001, text="b", thread_id=13,
+                                          user_id=7))
+        await ch.handle_update(_mk_update(chat_id=-1001, text="c", thread_id=13,
+                                          user_id=8))
+        assert sorted(_redirects(fake_telegram_bot)) == [(12, REDIRECT),
+                                                         (13, REDIRECT)]
+
+    async def test_a_bot_is_ignored(self, fake_telegram_bot):
+        ch, drv = _log_group_channel(fake_telegram_bot)
+        await ch.handle_update(_mk_update(chat_id=-1001, text="beep",
+                                          thread_id=12, is_bot=True))
+        assert _redirects(fake_telegram_bot) == []
         assert drv.submitted == []
 
-        # Second time: no additional redirect (rate-limited per user per boot)
-        await ch.handle_update(u)
-        assert drv.submitted == []
-
-    async def test_topic_message_routed_to_driver(self, fake_telegram_bot, engagement_fixture):
-        from channels.telegram import TelegramChannel
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        drv = _wire_driver(ch)
-        ch._engagement_registry = engagement_fixture.registry
-        rec = engagement_fixture.active_record  # topic_id=555, status=active
-
-        u = _mk_update(chat_id=-1001, text="Alex please continue", thread_id=555)
-        await ch.handle_update(u)
-        assert [(r.id, t) for r, t, _m in drv.submitted] == [
-            (rec.id, "Alex please continue")]
-
-    async def test_ellen_main_chat_unchanged(self, fake_telegram_bot):
-        from channels.telegram import TelegramChannel
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        drv = _wire_driver(ch)
-        ch._route_to_assistant = AsyncMock()
-
-        u = _mk_update(chat_id=100, text="hi Ellen")
-        await ch.handle_update(u)
-        ch._route_to_assistant.assert_awaited_once()
+    async def test_a_file_in_the_group_draws_the_same_pointer(self, fake_telegram_bot):
+        """The text path and the file path share one seen-set: a person who
+        wrote and then sent a file is told once."""
+        ch, drv = _log_group_channel(fake_telegram_bot)
+        await ch.handle_update(_mk_update(chat_id=-1001, text="hi",
+                                          thread_id=12, user_id=7))
+        doc = SimpleNamespace(file_name="a.pdf", file_size=10,
+                              mime_type="application/pdf", file_id="f")
+        for user_id in (7, 8):
+            msg = SimpleNamespace(
+                chat=SimpleNamespace(id=-1001), message_thread_id=14,
+                from_user=SimpleNamespace(id=user_id, is_bot=False),
+                document=doc, photo=None, caption=None, message_id=5)
+            await ch._on_non_text_message(SimpleNamespace(message=msg))
+        assert sorted(_redirects(fake_telegram_bot)) == [(12, REDIRECT),
+                                                         (14, REDIRECT)]
         assert drv.submitted == []
 
 
@@ -131,86 +167,6 @@ class TestOnlyANewMessageStartsATurn:
         assert fake_telegram_bot.messages == []
 
 
-class TestEngagementTopicRateLimit:
-    """#324: engagement-topic messages must consult TELEGRAM_RATE_PER_MIN —
-    the limiter was only wired into the DM route, so every topic message
-    spooled unthrottled."""
-
-    def _channel(self, fake_telegram_bot, registry, *, capacity=1):
-        from channels.telegram import TelegramChannel
-        from rate_limit import RateLimiter
-
-        ch = TelegramChannel(
-            bot=fake_telegram_bot, chat_id=100,
-            engagement_supergroup_id=-1001,
-            rate_limiter=RateLimiter(capacity=capacity, window_s=60.0),
-        )
-        _wire_driver(ch)
-        ch._engagement_registry = registry
-        ch.send_to_topic_rich = AsyncMock()
-        ch.send_to_topic = AsyncMock()
-        return ch
-
-    async def test_second_topic_message_is_rate_limited_with_one_notice(
-        self, fake_telegram_bot, engagement_fixture,
-    ):
-        ch = self._channel(fake_telegram_bot, engagement_fixture.registry)
-        rec = engagement_fixture.active_record
-
-        await ch.handle_update(_mk_update(
-            chat_id=-1001, text="first", thread_id=rec.topic_id))
-        await ch.handle_update(_mk_update(
-            chat_id=-1001, text="second", thread_id=rec.topic_id))
-        await ch.handle_update(_mk_update(
-            chat_id=-1001, text="third", thread_id=rec.topic_id))
-
-        assert ch._engagement_driver.texts == ["first"]
-        # One-shot notice per reject streak.
-        notices = [c.args[1] for c in ch.send_to_topic_rich.await_args_list]
-        assert sum("slow down" in n.lower() for n in notices) == 1
-
-    async def test_commands_are_exempt_from_the_rate_limit(
-        self, fake_telegram_bot, engagement_fixture,
-    ):
-        """A /cancel must never be refused by throttling (it may be the only
-        way to stop a runaway engagement). Probe with a NON-originator
-        /cancel: its refusal reply proves the command was processed."""
-        reg = engagement_fixture.registry
-        await reg.create(
-            kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t", origin={"role": "assistant", "user_id": 123},
-            topic_id=556,
-        )
-        ch = self._channel(fake_telegram_bot, reg)
-
-        # Exhaust this topic's bucket.
-        await ch.handle_update(_mk_update(
-            chat_id=-1001, text="first", thread_id=556, user_id=77))
-        await ch.handle_update(_mk_update(
-            chat_id=-1001, text="/cancel", thread_id=556, user_id=77))
-
-        notices = [c.args[1] for c in ch.send_to_topic_rich.await_args_list]
-        assert any("originator" in n for n in notices), notices
-
-    async def test_distinct_topics_have_distinct_buckets(
-        self, fake_telegram_bot, engagement_fixture,
-    ):
-        reg = engagement_fixture.registry
-        rec1 = engagement_fixture.active_record
-        rec2 = await reg.create(
-            kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t", origin={"role": "assistant"}, topic_id=556,
-        )
-        ch = self._channel(fake_telegram_bot, reg)
-
-        await ch.handle_update(_mk_update(
-            chat_id=-1001, text="to-one", thread_id=rec1.topic_id))
-        await ch.handle_update(_mk_update(
-            chat_id=-1001, text="to-two", thread_id=rec2.topic_id))
-
-        assert ch._engagement_driver.texts == ["to-one", "to-two"]
-
-
 class TestPTBDispatchContract:
     """E-A regression (v0.22.0..v0.28.0): PTB ``MessageHandler`` invokes
     its callback as ``await callback(update, context)``. Pre-fix
@@ -241,439 +197,28 @@ class TestPTBDispatchContract:
         await ch.handle_update(u, ptb_context)
         ch._route_to_assistant.assert_awaited_once()
 
-    async def test_handle_update_supergroup_topic_with_ptb_context(
-        self, fake_telegram_bot, engagement_fixture,
+    async def test_handle_update_log_group_with_ptb_context(
+        self, fake_telegram_bot,
     ):
-        """Same regression coverage on the engagement-routing branch (the
-        job's driver) so a future signature change that only breaks one leg
-        fails the test."""
-        from channels.telegram import TelegramChannel
+        """Same regression coverage on the log-group branch, so a future
+        signature change that only breaks one leg fails the test."""
+        ch, drv = _log_group_channel(fake_telegram_bot)
 
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        drv = _wire_driver(ch)
-        ch._engagement_registry = engagement_fixture.registry
-        rec = engagement_fixture.active_record
-
-        u = _mk_update(chat_id=-1001, text="continue please", thread_id=rec.topic_id)
+        u = _mk_update(chat_id=-1001, text="continue please", thread_id=12)
         await ch.handle_update(u, MagicMock(name="CallbackContext"))
-        assert drv.texts == ["continue please"]
-
-
-class TestSlashCommands:
-    async def test_slash_cancel_triggers_cancel(self, fake_telegram_bot, engagement_fixture):
-        from channels.telegram import TelegramChannel
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        ch._engagement_registry = engagement_fixture.registry
-        ch._finalize_cancel = AsyncMock()
-        rec = engagement_fixture.active_record
-
-        u = _mk_update(chat_id=-1001, text="/cancel", thread_id=rec.topic_id)
-        await ch.handle_update(u)
-        ch._finalize_cancel.assert_awaited_once()
-        assert ch._finalize_cancel.await_args.args[0].id == rec.id
-
-    async def test_slash_complete_triggers_complete(self, fake_telegram_bot, engagement_fixture):
-        from channels.telegram import TelegramChannel
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        ch._engagement_registry = engagement_fixture.registry
-        ch._finalize_complete_user = AsyncMock()
-        rec = engagement_fixture.active_record
-
-        u = _mk_update(chat_id=-1001, text="/complete", thread_id=rec.topic_id)
-        await ch.handle_update(u)
-        ch._finalize_complete_user.assert_awaited_once()
-
-    async def test_slash_help_answered_by_casa_not_the_agent(
-        self, fake_telegram_bot, engagement_fixture,
-    ):
-        """#1412: /help in a topic lists the topic's commands; it never
-        reaches the engaged agent (whose CLI has no /help there)."""
-        from channels.telegram import TelegramChannel
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        ch._engagement_registry = engagement_fixture.registry
-        drv = _wire_driver(ch)
-        ch._post_engagement_notice = AsyncMock()
-        rec = engagement_fixture.active_record
-
-        u = _mk_update(chat_id=-1001, text="/help@CasaBot",
-                       thread_id=rec.topic_id)
-        await ch.handle_update(u)
-
+        assert _redirects(fake_telegram_bot) == [(12, REDIRECT)]
         assert drv.submitted == []
-        ch._post_engagement_notice.assert_awaited_once()
-        reply = ch._post_engagement_notice.await_args.args[1]
-        for c in ("/cancel", "/complete"):
-            assert c in reply
-        assert "/silent" not in reply
-
-    async def test_slash_cancel_with_bot_mention_suffix(
-        self, fake_telegram_bot, engagement_fixture,
-    ):
-        """M10 (v0.52.0): group menus send '/cancel@BotName'; the @mention
-        suffix must be stripped so the command is handled, not forwarded to
-        the driver as a user turn."""
-        from channels.telegram import TelegramChannel
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        ch._engagement_registry = engagement_fixture.registry
-        ch._finalize_cancel = AsyncMock()
-        drv = _wire_driver(ch)
-        rec = engagement_fixture.active_record
-
-        u = _mk_update(chat_id=-1001, text="/cancel@CasaBot",
-                       thread_id=rec.topic_id)
-        await ch.handle_update(u)
-
-        ch._finalize_cancel.assert_awaited_once()
-        assert drv.submitted == []
-
-    async def test_user_turn_threads_message_id(
-        self, fake_telegram_bot, engagement_fixture,
-    ):
-        """v0.79.0 (§3): an engagement user turn passes the operator's Telegram
-        message id to the driver (it keys the message's memory capture)."""
-        from channels.telegram import TelegramChannel
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        ch._engagement_registry = engagement_fixture.registry
-        drv = _wire_driver(ch)
-        rec = engagement_fixture.active_record
-
-        u = _mk_update(chat_id=-1001, text="operator says hi",
-                       thread_id=rec.topic_id)
-        await ch.handle_update(u)
-
-        # message id threaded through as a kwarg.
-        assert [(r.id, t, m) for r, t, m in drv.submitted] == [
-            (rec.id, "operator says hi", 999)]
-
-    async def test_slash_command_for_other_bot_falls_through(
-        self, fake_telegram_bot, engagement_fixture,
-    ):
-        """A command explicitly addressed to a DIFFERENT bot must fall
-        through to the user-turn path (matching PTB CommandHandler)."""
-        from channels.telegram import TelegramChannel
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        ch._engagement_registry = engagement_fixture.registry
-        ch._bot_username = "casabot"
-        ch._finalize_cancel = AsyncMock()
-        drv = _wire_driver(ch)
-        rec = engagement_fixture.active_record
-
-        u = _mk_update(chat_id=-1001, text="/cancel@otherbot",
-                       thread_id=rec.topic_id)
-        await ch.handle_update(u)
-
-        ch._finalize_cancel.assert_not_awaited()
-        assert drv.texts == ["/cancel@otherbot"]
-
-
-class TestSlashCommandOriginatorOnly:
-    """Bug 8 (v0.14.6): /cancel and /complete are originator-only.
-
-    Pre-fix any user in the engagement supergroup could fire either
-    command and terminate someone else's engagement.
-    """
-
-    async def _record_with_owner(self, tmp_path, owner_user_id: int):
-        from engagement_registry import EngagementRegistry
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
-        rec = await reg.create(
-            kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t",
-            origin={"role": "assistant", "user_id": owner_user_id},
-            topic_id=555,
-        )
-        return reg, rec
-
-    async def test_foreign_user_cancel_refused(
-        self, fake_telegram_bot, tmp_path,
-    ):
-        from channels.telegram import TelegramChannel
-        reg, rec = await self._record_with_owner(tmp_path, owner_user_id=42)
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        ch._engagement_registry = reg
-        ch._finalize_cancel = AsyncMock()
-
-        # User 999 is NOT the engagement originator (42).
-        u = _mk_update(chat_id=-1001, text="/cancel",
-                       thread_id=rec.topic_id, user_id=999)
-        await ch.handle_update(u)
-        ch._finalize_cancel.assert_not_awaited()
-
-        # The topic gets a refusal message instead.
-        sg = fake_telegram_bot._supergroups[-1001]
-        msgs = sg.messages_by_thread.get(rec.topic_id, [])
-        assert any("originator" in m for m in msgs), (
-            f"expected originator-refusal message in topic; got: {msgs}"
-        )
-
-    async def test_foreign_user_complete_refused(
-        self, fake_telegram_bot, tmp_path,
-    ):
-        from channels.telegram import TelegramChannel
-        reg, rec = await self._record_with_owner(tmp_path, owner_user_id=42)
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        ch._engagement_registry = reg
-        ch._finalize_complete_user = AsyncMock()
-
-        u = _mk_update(chat_id=-1001, text="/complete",
-                       thread_id=rec.topic_id, user_id=999)
-        await ch.handle_update(u)
-        ch._finalize_complete_user.assert_not_awaited()
-
-    async def test_originator_cancel_allowed(
-        self, fake_telegram_bot, tmp_path,
-    ):
-        from channels.telegram import TelegramChannel
-        reg, rec = await self._record_with_owner(tmp_path, owner_user_id=42)
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        ch._engagement_registry = reg
-        ch._finalize_cancel = AsyncMock()
-
-        # Same user_id as engagement origin: allowed.
-        u = _mk_update(chat_id=-1001, text="/cancel",
-                       thread_id=rec.topic_id, user_id=42)
-        await ch.handle_update(u)
-        ch._finalize_cancel.assert_awaited_once()
-
-    async def test_originator_complete_allowed(
-        self, fake_telegram_bot, tmp_path,
-    ):
-        from channels.telegram import TelegramChannel
-        reg, rec = await self._record_with_owner(tmp_path, owner_user_id=42)
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        ch._engagement_registry = reg
-        ch._finalize_complete_user = AsyncMock()
-
-        u = _mk_update(chat_id=-1001, text="/complete",
-                       thread_id=rec.topic_id, user_id=42)
-        await ch.handle_update(u)
-        ch._finalize_complete_user.assert_awaited_once()
-
-    async def test_legacy_engagement_without_user_id_still_works(
-        self, fake_telegram_bot, engagement_fixture,
-    ):
-        """Pre-v0.14.6 engagements have no user_id in origin — fall through
-        to the open behaviour (anyone can /cancel) for back-compat."""
-        from channels.telegram import TelegramChannel
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        ch._engagement_registry = engagement_fixture.registry
-        ch._finalize_cancel = AsyncMock()
-        rec = engagement_fixture.active_record
-        assert rec.origin.get("user_id") is None  # legacy shape
-
-        u = _mk_update(chat_id=-1001, text="/cancel",
-                       thread_id=rec.topic_id, user_id=999)
-        await ch.handle_update(u)
-        ch._finalize_cancel.assert_awaited_once()
-
-
-class TestHandleUpdateConcurrencyRace:
-    """Bug 10 (v0.14.7): per-topic lock around handle_update.
-
-    Pre-fix, aiohttp dispatched each Telegram update as its own task and
-    a /cancel arriving alongside a regular turn could race: the regular
-    turn passed the rec.status check while the cancel was mid-finalize,
-    then routed to a driver that _finalize_engagement had just torn
-    down. The fix is a per-topic asyncio.Lock wrapping the engagement-
-    supergroup branch in handle_update.
-    """
-
-    async def test_concurrent_cancel_and_turn_serialised_per_topic(
-        self, fake_telegram_bot, engagement_fixture,
-    ):
-        """Concurrent /cancel + regular update on the same topic.
-
-        With the lock, the cancel-task wins (asyncio.gather schedules it
-        first; uncontended setdefault returns the same Lock for both
-        tasks; the cancel-task acquires first). cancel_impl yields BEFORE
-        mutating registry status — without the lock the regular turn
-        would slip past the status check during that yield and hand the
-        message to a soon-to-be-dead engagement.
-
-        Acceptance criterion 1: with the lock the regular turn either
-        runs before the cancel (saw "active") or is dropped after the
-        cancel finalises (sees "cancelled" → "no active" reply). It
-        NEVER reaches the driver after the cancel-task entered its lock.
-        """
-        from channels.telegram import TelegramChannel
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        registry = engagement_fixture.registry
-        ch._engagement_registry = registry
-        rec = engagement_fixture.active_record  # driver=in_casa, status=active
-        # No user_id in origin → originator-only check at line 494 falls
-        # through (legacy back-compat shape; see Bug 8 test class).
-
-        async def cancel_impl(rec_arg, *, reason):
-            # Yield the event loop FIRST. Without the per-topic lock
-            # this gives the turn-task a window to reach the driver
-            # before mark_cancelled fires
-            # — exactly the race window Bug 10 documents.
-            await asyncio.sleep(0)
-            await registry.mark_cancelled(rec_arg.id)
-
-        ch._finalize_cancel = AsyncMock(side_effect=cancel_impl)
-        drv = _wire_driver(ch)
-
-        u_cancel = _mk_update(chat_id=-1001, text="/cancel",
-                              thread_id=rec.topic_id, user_id=99)
-        u_turn = _mk_update(chat_id=-1001, text="hello",
-                            thread_id=rec.topic_id, user_id=99)
-
-        # gather schedules u_cancel first; with the lock it wins.
-        await asyncio.gather(
-            ch.handle_update(u_cancel),
-            ch.handle_update(u_turn),
-        )
-
-        # The lock guarantees cancel completes before the turn is
-        # routed. With cancel completing first, the turn sees terminal
-        # status at re-check and is dropped (case a in acceptance).
-        assert drv.submitted == [], (
-            "regular turn was routed despite a concurrent /cancel; "
-            "the per-topic lock is missing or broken"
-        )
-        ch._finalize_cancel.assert_awaited_once()
-        assert registry.get(rec.id).status == "cancelled"
-
-    async def test_concurrent_regular_turns_both_routed(
-        self, fake_telegram_bot, engagement_fixture,
-    ):
-        """Two regular updates on the same active engagement → both
-        reach the driver.
-
-        Acceptance criterion 2: the lock must serialise but not drop —
-        per-topic ordering is fine, lost messages are not.
-        """
-        from channels.telegram import TelegramChannel
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        ch._engagement_registry = engagement_fixture.registry
-        rec = engagement_fixture.active_record
-        drv = _wire_driver(ch)
-
-        u1 = _mk_update(chat_id=-1001, text="hello1", thread_id=rec.topic_id)
-        u2 = _mk_update(chat_id=-1001, text="hello2", thread_id=rec.topic_id)
-
-        await asyncio.gather(ch.handle_update(u1), ch.handle_update(u2))
-
-        assert drv.texts == ["hello1", "hello2"]
-
-    async def test_concurrent_turns_on_different_topics_run_in_parallel(
-        self, fake_telegram_bot, tmp_path,
-    ):
-        """The lock is keyed by thread_id — two updates on different
-        engagements must not block each other: with topic A's handler lock
-        held, a message in topic B is still handed to its job."""
-        from channels.telegram import TelegramChannel
-        from engagement_registry import EngagementRegistry
-
-        reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"),
-        )
-        rec_a = await reg.create(
-            kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t", origin={"role": "assistant"}, topic_id=111,
-        )
-        rec_b = await reg.create(
-            kind="specialist", role_or_type="logistics", driver="in_casa",
-            task="t", origin={"role": "assistant"}, topic_id=222,
-        )
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        ch._engagement_registry = reg
-        drv = _wire_driver(ch)
-
-        lock_a = ch._engagement_handler_locks.setdefault(
-            rec_a.topic_id, asyncio.Lock())
-        async with lock_a:
-            await asyncio.wait_for(ch.handle_update(_mk_update(
-                chat_id=-1001, text="for-B", thread_id=rec_b.topic_id)), 2.0)
-            assert [(r.id, t) for r, t, _m in drv.submitted] == [
-                (rec_b.id, "for-B")]
-        await ch.handle_update(_mk_update(
-            chat_id=-1001, text="for-A", thread_id=rec_a.topic_id))
-        assert drv.texts == ["for-B", "for-A"]
-
-    async def test_cancel_interrupts_inflight_turn(
-        self, fake_telegram_bot, engagement_fixture,
-    ):
-        """M9 (v0.52.0): /cancel must complete while a turn is STILL in
-        flight — not queue behind it. The topic's handler hands the message
-        to the job and returns; the job's turn runs in its own session, so a
-        /cancel right after is handled at once while that turn still runs."""
-        from channels.telegram import TelegramChannel
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        registry = engagement_fixture.registry
-        ch._engagement_registry = registry
-        rec = engagement_fixture.active_record  # driver=in_casa, status=active
-
-        release_turn = asyncio.Event()       # the job's turn: never released here
-        drv = _wire_driver(ch)
-
-        cancel_ran = asyncio.Event()
-
-        async def cancel_impl(rec_arg, *, reason):
-            await registry.mark_cancelled(rec_arg.id)
-            cancel_ran.set()
-
-        ch._finalize_cancel = AsyncMock(side_effect=cancel_impl)
-
-        await asyncio.wait_for(ch.handle_update(
-            _mk_update(chat_id=-1001, text="work on it",
-                       thread_id=rec.topic_id, user_id=99)), timeout=1.0)
-        assert drv.texts == ["work on it"]
-
-        # Core assertion: /cancel returns while the turn is STILL in flight.
-        await asyncio.wait_for(
-            ch.handle_update(_mk_update(
-                chat_id=-1001, text="/cancel",
-                thread_id=rec.topic_id, user_id=99)),
-            timeout=1.0,
-        )
-        assert cancel_ran.is_set()
-        assert not release_turn.is_set()  # turn had not drained when cancel ran
 
 
 class TestMessageHandlerWiring:
     """E-13: the PTB MessageHandler must dispatch to handle_update so that
-    /cancel and other engagement commands posted to topics are intercepted
-    by the engagement-aware router. Pre-fix, MessageHandler routed to
+    every chat is routed by it (the log group's read-only path included). Pre-fix, MessageHandler routed to
     _handle, which is engagement-unaware and forwarded /cancel to Ellen
     (bug-review-2026-04-29-exploration.md § E-13).
 
     The full _rebuild() bring-up path is hard to mock cleanly without a
     real PTB Application; we assert the wiring at the source level.
-    Behavioral coverage of handle_update lives in TestSupergroupRouting
-    and TestSlashCommands above (514 lines of existing tests)."""
+    Behavioral coverage of handle_update lives in the classes above."""
 
     async def test_rebuild_registers_message_handler_with_handle_update(self):
         import inspect
@@ -737,44 +282,3 @@ class TestForeignChatGate:
         ch._route_to_assistant.assert_awaited_once()
 
 
-def test_inbound_message_without_message_id_is_tolerated():
-    """v0.79.1: the e2e harness (and defensively, any malformed update) can
-    deliver a message object lacking ``message_id``; the engagement inbound
-    path must not AttributeError — message-id threading is
-    best-effort and degrade to None (QA tier2 E-block regression,
-    telegram.py handle_update engagement-topic branch)."""
-    import inspect
-    import channels.telegram as tg
-    src = inspect.getsource(tg.TelegramChannel.handle_update)
-    assert 'getattr(msg, "message_id", None)' in src, (
-        "engagement inbound reads of msg.message_id must be getattr-guarded "
-        "(harness/e2e messages may omit it)")
-    assert "msg.message_id))" not in src
-
-
-class TestSteeringClampsEngagementClearance:
-    """#336: an engagement reads at its creator's clearance. The operator
-    steering it from its topic leaves that clearance as it is and reaches the
-    job; a household member's message never reaches the job at all (pinned in
-    test_job_message_seams)."""
-
-    async def test_operator_topic_message_leaves_it_private(
-        self, fake_telegram_bot, engagement_fixture,
-    ):
-        from channels.telegram import TelegramChannel
-
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                             engagement_supergroup_id=-1001)
-        drv = _wire_driver(ch)
-        ch._engagement_registry = engagement_fixture.registry
-        rec = engagement_fixture.active_record
-        rec.origin["_origin_route"] = "telegram"
-        rec.origin["_origin_clearance"] = "private"
-
-        # user_id 100 == configured chat_id ⇒ the operator.
-        await ch.handle_update(
-            _mk_update(chat_id=-1001, text="carry on", thread_id=555,
-                       user_id=100))
-
-        assert rec.origin["_origin_clearance"] == "private"
-        assert drv.texts == ["carry on"]

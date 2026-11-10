@@ -102,18 +102,19 @@ class TestEngageExecutorSpawnCap:
         lim = AgentSpawnLimiter(max_spawns=1)
         held = lim.try_acquire()  # cap saturated — operator must not care
         assert held is not None
-        _wire(tmp_path, limiter=lim, channel_ok=False)
-        payload = await _engage({**_AGENT_ORIGIN, "_operator_turn": True})
+        _wire(tmp_path, limiter=lim)
+        payload = await _engage({**_AGENT_ORIGIN, "channel": "webhook",
+                                 "_operator_turn": True})
         # Sailed past the cap gate (else agent_spawn_cap_exceeded) and
-        # failed later on the unconfigured channel.
-        assert payload["kind"] == "engagement_not_configured"
+        # failed later on its non-Telegram origin.
+        assert payload["kind"] == "engagement_wrong_origin"
         assert lim.occupancy == 1
 
     async def test_post_acquire_failure_releases_reservation(self, tmp_path):
         lim = AgentSpawnLimiter(max_spawns=3)
-        _wire(tmp_path, limiter=lim, channel_ok=False)
-        payload = await _engage(_AGENT_ORIGIN)
-        assert payload["kind"] == "engagement_not_configured"
+        _wire(tmp_path, limiter=lim)
+        payload = await _engage({**_AGENT_ORIGIN, "channel": "webhook"})
+        assert payload["kind"] == "engagement_wrong_origin"
         assert lim.occupancy == 0  # leak-free: wrapper finally released it
 
     async def test_engagement_bound_turn_is_agent_context_despite_marker(
@@ -161,9 +162,9 @@ class TestEngageExecutorSpawnCap:
         assert lim.occupancy == 1
 
     async def test_no_limiter_wired_means_cap_off(self, tmp_path):
-        _wire(tmp_path, limiter=None, channel_ok=False)
-        payload = await _engage(_AGENT_ORIGIN)
-        assert payload["kind"] == "engagement_not_configured"
+        _wire(tmp_path, limiter=None)
+        payload = await _engage({**_AGENT_ORIGIN, "channel": "webhook"})
+        assert payload["kind"] == "engagement_wrong_origin"
 
 
 class TestDepthRecordFallback:
@@ -258,7 +259,7 @@ class TestJobEngagementSpawn:
         res = await launch_job("Plan Q2", origin=dict(_AGENT_ORIGIN))  # agent context
         payload = json.loads(res["content"][0]["text"])
         assert payload["status"] == "pending"
-        rec = reg.by_topic_id(555)
+        rec = reg.get(payload["engagement_id"])
         assert rec is not None
         assert rec.origin["delegation_depth"] == 1
         assert rec.origin["_agent_spawned"] is True
@@ -302,7 +303,7 @@ class TestJobEngagementSpawn:
         res = await launch_job("Plan Q2", origin={**_AGENT_ORIGIN, "_operator_turn": True})
         payload = json.loads(res["content"][0]["text"])
         assert payload["status"] == "pending"
-        rec = reg.by_topic_id(556)
+        rec = reg.get(payload["engagement_id"])
         # Depth stamps for EVERY job child (operator included) so the
         # child cannot delegate onward; the spawn marker/occupancy is
         # agent-context-only.

@@ -1135,8 +1135,6 @@ class TestDeliverSystemTurn:
         ch._engagement_registry = reg
         ch._post_engagement_notice = AsyncMock()
         drv = InCasaDriver(
-            topic_stream_factory=lambda _t: MagicMock(
-                emit=AsyncMock(), finalize=AsyncMock()),
             record_lookup=reg.get, begin_turn_delivery=reg.begin_turn_delivery,
             lifecycle_lock=ch.engagement_lifecycle_lock)
         ch._engagement_driver = drv
@@ -1203,17 +1201,17 @@ class TestDeliverSystemTurn:
     async def test_system_and_manual_turn_serialize_to_a_single_resume(
         self, fake_telegram_bot, engagement_fixture,
     ):
-        """A concurrent operator nudge (handle_update) and a system turn
-        (deliver_system_turn) on the SAME suspended engagement resume it
+        """A concurrent operator reply (deliver_operator_reply) and a system
+        turn (deliver_system_turn) on the SAME suspended engagement resume it
         EXACTLY ONCE — the job's delivery worker is its one resume owner — and
         both messages are written into that one session."""
         rec = engagement_fixture.active_record
         rec.sdk_session_id = "sess-1"
         ch, drv, written, resumes = self._mk(fake_telegram_bot, engagement_fixture)
 
-        u = _mk_topic_update(thread_id=rec.topic_id, text="operator nudge")
         await asyncio.gather(
-            ch.handle_update(u),
+            ch.deliver_operator_reply(rec, "operator nudge", chat_id=100,
+                                      message_id=31),
             ch.deliver_system_turn(rec, "system resume"),
         )
         await self._settled(drv, rec)

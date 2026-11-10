@@ -257,8 +257,7 @@ async def _resume(path, eid, monkeypatch):
     built: list = []
     monkeypatch.setattr(tools, "build_engagement_resume_options",
                         lambda rec, sid: built.append(sid))
-    driver = InCasaDriver(topic_stream_factory=lambda tid: None,
-                          record_lookup=reg.get)
+    driver = InCasaDriver(record_lookup=reg.get)
     rec = reg.get(eid)
     try:
         await driver.resume(rec, rec.sdk_session_id or "")
@@ -368,9 +367,11 @@ async def _wiped_job(tmp_path, monkeypatch, *, awaiting=None):
     channel = Channel()
     monkeypatch.setattr(bj, "_states", {})
     monkeypatch.setattr(bj, "_runner", None)
-    runner = bj.JobRunner(registry=reg, channel=channel)
+    from agent_log_double import RecordingLogs
+    runner = bj.JobRunner(registry=reg, channel=channel,
+                          agent_logs=RecordingLogs())
     driver = drv.InCasaDriver(
-        topic_stream_factory=lambda topic: None, record_lookup=reg.get,
+        record_lookup=reg.get,
         begin_turn_delivery=reg.begin_turn_delivery,
         on_turn_end=runner.turn_ended, on_session_lost=runner.session_lost,
         on_operator_written=bj.note_operator_input)
@@ -382,7 +383,7 @@ async def _wiped_job(tmp_path, monkeypatch, *, awaiting=None):
 async def test_a_wiped_job_is_not_resumed_at_boot_and_ends_as_an_error(
         tmp_path, monkeypatch):
     """The wipe deleted the job's session transcript, so the one long session
-    cannot continue. Boot's resume of every open job tells the topic it is
+    cannot continue. Boot's resume of every open job logs that it is
     resuming, opens no session for the job and ends it as an error: "could
     not be resumed after a restart"."""
     import casa_core
@@ -391,7 +392,9 @@ async def test_a_wiped_job_is_not_resumed_at_boot_and_ends_as_an_error(
 
     await casa_core._resume_background_jobs(reg, channel)
 
-    assert channel.notices == ['↻ Resuming "Garden notes" after a restart.']
+    import background_jobs
+    assert background_jobs._runner.agent_logs.texts() == ["↻ Resuming after a restart"]
+    assert channel.notices == []
     assert cli.instances == []
     assert [(f["outcome"], f["text"]) for f in finalized] == [
         ("error", "could not be resumed after a restart")]

@@ -96,7 +96,8 @@ class Channel:
 
 def _rec(kind="specialist", **job):
     return SimpleNamespace(
-        id="j" * 32, kind=kind, status="active", task="Check the accounts",
+        id="j" * 32, kind=kind, role_or_type="finance", status="active",
+        task="Check the accounts",
         started_at=1000.0, completed_at=None, topic_id=7,
         origin={"job": {"title": "Accounting check", "skill": "q:job",
                         "brief_uuid": "b-1", "context": "", **job}})
@@ -106,7 +107,9 @@ def _rec(kind="specialist", **job):
 def rig(monkeypatch):
     rec = _rec()
     reg, drv, ch = Registry(rec), Driver(), Channel()
-    runner = bj.JobRunner(registry=reg, channel=ch, driver=drv)
+    from agent_log_double import RecordingLogs
+    logs = RecordingLogs()
+    runner = bj.JobRunner(registry=reg, channel=ch, driver=drv, agent_logs=logs)
     bj.configure(runner)
     finalized: list[dict] = []
 
@@ -118,7 +121,7 @@ def rig(monkeypatch):
     monkeypatch.setattr(tools, "_finalize_engagement", finalize)
     monkeypatch.setattr(bj, "FAULT_RETRY_S", 0.0)
     return SimpleNamespace(rec=rec, reg=reg, drv=drv, ch=ch, runner=runner,
-                           finalized=finalized)
+                           finalized=finalized, logs=logs)
 
 
 async def settle(n: int = 20) -> None:
@@ -333,7 +336,11 @@ async def test_a_failed_resume_ends_the_job(rig):
 
 async def test_boot_resumes_a_working_job_with_the_restart_line(rig):
     await rig.runner.resume_at_boot(rig.rec)
-    assert rig.ch.notices == ['↻ Resuming "Accounting check" after a restart.']
+    # One line in the job's log; nothing is posted to Telegram.
+    from agent_logs import LogKey
+    assert rig.logs.lines == [(LogKey("agent", "finance"), "Accounting check",
+                               "↻ Resuming after a restart")]
+    assert rig.ch.notices == []
     assert rig.drv.recovered == [{
         "restart_line": bj.CASA_RESTART_LINE, "brief": bj.job_brief(rig.rec),
         "redelivery_prefix": bj.CASA_RESTART_PREFIX}]
@@ -346,13 +353,13 @@ async def test_boot_skips_a_job_that_ended_before_its_turn_in_the_walk(rig):
     stale = copy.copy(rig.rec)
     rig.rec.status = "cancelled"
     await rig.runner.resume_at_boot(stale)
-    assert rig.ch.notices == [] and rig.drv.recovered == []
+    assert rig.logs.lines == [] and rig.drv.recovered == []
 
 
 async def test_boot_leaves_a_waiting_job_with_an_empty_journal_alone(rig):
     rig.rec.origin["job"][bj.AWAITING_KEY] = bj.AWAITING_ASKED
     await rig.runner.resume_at_boot(rig.rec)
-    assert rig.drv.recovered == [] and rig.ch.notices == []
+    assert rig.drv.recovered == [] and rig.logs.lines == []
 
 
 async def test_boot_resumes_a_waiting_job_whose_journal_has_entries(rig):

@@ -231,8 +231,7 @@ async def test_an_excluded_specialists_engagement_turn_captures_nothing(
         pass
 
     ended: list = []
-    drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream(),
-                       on_turn_end=lambda rec, result, api_error: ended.append(rec))
+    drv = InCasaDriver(on_turn_end=lambda rec, result, api_error: ended.append(rec))
     rec = EngagementRecord(
         id="b" * 32, kind="specialist", role_or_type="browser",
         driver="in_casa", status="active", topic_id=7, started_at=0.0,

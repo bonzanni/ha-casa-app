@@ -1,6 +1,6 @@
-"""#1411: ``emit_completion`` says it closes the engagement's topic, and an
-engagement's completion notice says the engagement has ended, so the resident
-never relays a summary that calls a closed topic open.
+"""#1411: ``emit_completion`` says the job ends, and an engagement's completion
+notice says the engagement has ended, so the resident never relays a summary
+that calls an ended job open.
 
 Live (casa-test, v0.344.79) a specialist's summary said the topic "will stay
 open" — which the resident relayed. These tests pin that the production paths
@@ -16,12 +16,13 @@ import tools
 from bus import BusMessage, MessageType
 from specialist_registry import DelegationComplete
 
-CLOSED = ("This was an engagement, and it has ended: the person can no longer "
-          "talk with the specialist in its topic.")
+CLOSED = ("This was a background job, and it has ended: the person's replies "
+          "no longer reach it.")
 
 
-def test_emit_completion_says_it_closes_the_topic():
-    assert "Casa closes its topic" in tools.emit_completion.description
+def test_emit_completion_says_the_job_ends():
+    assert "the job ends" in tools.emit_completion.description
+    assert "topic" not in tools.emit_completion.description
 
 
 def _body(context: dict) -> str:

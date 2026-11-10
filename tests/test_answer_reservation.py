@@ -104,8 +104,7 @@ async def _handler_ctx(tmp_path, fake_telegram_bot):
     client = _OneShotClient()
     ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
                          engagement_supergroup_id=-1001)
-    drv = InCasaDriver(topic_stream_factory=lambda tid: _FakeStreamHandle(),
-                       record_lookup=reg.get,
+    drv = InCasaDriver(record_lookup=reg.get,
                        begin_turn_delivery=reg.begin_turn_delivery,
                        lifecycle_lock=ch.engagement_lifecycle_lock)
     attach_session(drv, rec, client)
@@ -130,9 +129,8 @@ class TestInboundIngressReservation:
             tmp_path, fake_telegram_bot)
         client.gate = asyncio.Event()           # the write hangs in transport
 
-        u = _mk_update(chat_id=-1001, text="please reconsider the design",
-                       thread_id=555, user_id=77)
-        await asyncio.wait_for(ch.handle_update(u), 5)
+        await asyncio.wait_for(ch.deliver_operator_reply(
+            rec, "please reconsider the design", chat_id=100, message_id=31), 5)
         # A completion racing this already sees the message.
         assert drv.inbound_unread_depth(rec.id) == 1
         assert drv.inbound_unread_texts(rec.id) == [
@@ -147,30 +145,22 @@ class TestInboundIngressReservation:
         assert drv.inbound_unread_texts(rec.id) == []
         await drv.cancel(rec)
 
-    async def test_a_recognized_command_takes_nothing(
+    async def test_a_message_in_the_log_group_takes_nothing(
         self, tmp_path, fake_telegram_bot,
     ):
-        """A recognized command is consumed by the handler itself: no ticket
-        and no reservation while its reply is posted, nothing left after, and
-        it never reaches the client."""
+        """A message or a command written in the log group — even in the
+        thread an older version used as this job's topic — takes no ticket
+        and no reservation and never reaches the client."""
         ch, reg, rec, drv, client = await _handler_ctx(
             tmp_path, fake_telegram_bot)
-        seen: list = []
-
-        async def _notice(r, text):
-            seen.append((drv.inbound_unread_depth(rec.id),
-                         drv.inbound_reservations(rec.id)))
-        ch._post_engagement_notice = AsyncMock(side_effect=_notice)
-
-        u = _mk_update(chat_id=-1001, text="/help", thread_id=555,
-                       user_id=77)
-        await ch.handle_update(u)
+        for text in ("/help", "please reconsider"):
+            await ch.handle_update(_mk_update(chat_id=-1001, text=text,
+                                              thread_id=555, user_id=77))
         await asyncio.sleep(0.01)
-        assert seen == [(0, 0)]
-        ch._post_engagement_notice.assert_awaited_once()
         assert client.query_prompts == []
         assert (drv.inbound_unread_depth(rec.id),
                 drv.inbound_reservations(rec.id)) == (0, 0)
+        ch._post_engagement_notice.assert_not_awaited()
         await drv.cancel(rec)
 
 
@@ -241,8 +231,7 @@ class TestInCasaCompletionInboundGate:
             topic_id=555)
 
         client = _InCasaRedCaseClient()
-        drv = InCasaDriver(topic_stream_factory=lambda tid: _FakeStreamHandle(),
-                           record_lookup=reg.get,
+        drv = InCasaDriver(record_lookup=reg.get,
                            begin_turn_delivery=reg.begin_turn_delivery)
         attach_session(drv, rec, client)
 
@@ -300,9 +289,8 @@ class TestInCasaCompletionInboundGate:
             drv.submit_casa(rec, "first")
             await asyncio.wait_for(client.first_streaming.wait(), 5)
 
-            u = _mk_update(chat_id=-1001, text="operator message",
-                           thread_id=555, user_id=77)
-            await ch.handle_update(u)
+            assert await ch.deliver_operator_reply(
+                rec, "operator message", chat_id=100, message_id=31)
             assert drv.inbound_unread_texts(rec.id) == ["operator message"]
 
             payload = await self._emit_ok(rec)
@@ -346,9 +334,8 @@ class TestInCasaCompletionInboundGate:
 
             async def _admitting_transition(*args, **kwargs):
                 depth_at_entry.append(drv.inbound_unread_depth(rec.id))
-                u = _mk_update(chat_id=-1001, text="operator message",
-                               thread_id=555, user_id=77)
-                await ch.handle_update(u)
+                await ch.deliver_operator_reply(
+                    rec, "operator message", chat_id=100, message_id=31)
                 return await real_transition(*args, **kwargs)
             reg.try_transition_terminal = _admitting_transition
 

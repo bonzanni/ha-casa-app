@@ -1,9 +1,9 @@
-"""The channel's seams into a background job: a message in the job's topic,
-the operator's reply in their direct chat, a tapped answer. Each seam
-journals, admits and queues the message through the driver's synchronous
-``submit_operator`` and returns — no Telegram handler waits on the job's
-session. A household member's message in a job's topic never reaches the
-job. A message the job did not accept draws one "not delivered" line.
+"""The channel's seams into a background job: the operator's reply in their
+direct chat, a tapped answer. Each seam journals, admits and queues the
+message through the driver's synchronous ``submit_operator`` and returns — no
+Telegram handler waits on the job's session. Nothing written in the log group
+reaches a job. A message the job did not accept draws one "not delivered"
+line.
 
 REAL ``TelegramChannel``, ``EngagementRegistry`` and ``InCasaDriver``; the
 CLI is the ``FakeCLI`` of ``test_job_session_driver`` (a write can be held in
@@ -47,6 +47,11 @@ class _Bot:
         return SimpleNamespace(message_id=self._next)
 
 
+async def _reply(rig, text, *, message_id=900):
+    return await rig.ch.deliver_operator_reply(
+        rig.rec, text, chat_id=OPERATOR, message_id=message_id)
+
+
 def _topic_update(text, *, user=OPERATOR, message_id=900):
     msg = SimpleNamespace(
         text=text, message_id=message_id, message_thread_id=TOPIC,
@@ -76,7 +81,6 @@ async def rig(tmp_path, monkeypatch):
     ch = TelegramChannel(bot=bot, chat_id=str(OPERATOR),
                          engagement_supergroup_id=SUPERGROUP)
     driver = drv.InCasaDriver(
-        topic_stream_factory=lambda topic: drv._WithheldStream(),
         record_lookup=reg.get, begin_turn_delivery=reg.begin_turn_delivery,
         lifecycle_lock=ch.engagement_lifecycle_lock)
     ch._engagement_registry = reg
@@ -93,12 +97,12 @@ async def rig(tmp_path, monkeypatch):
     await driver.cancel(rec)
 
 
-async def test_a_topic_message_is_accepted_without_waiting_on_the_session(rig):
-    """The CLI's transport holds every write: the handler still returns, with
+async def test_a_reply_is_accepted_without_waiting_on_the_session(rig):
+    """The CLI's transport holds every write: the seam still returns, with
     the message journaled and admitted, and the job's delivery worker writes
     it once the transport moves."""
     rig.cli.gate = asyncio.Event()
-    await asyncio.wait_for(rig.ch.handle_update(_topic_update("use Q3 only")), 2)
+    assert await asyncio.wait_for(_reply(rig, "use Q3 only"), 2)
     assert [e["text"] for e in job_inbox.load(rig.rec.id)] == ["use Q3 only"]
     assert rig.drv.inbound_unread_depth(rig.rec.id) == 1
     assert rig.cli.written == []
@@ -109,10 +113,9 @@ async def test_a_topic_message_is_accepted_without_waiting_on_the_session(rig):
 
 async def test_a_second_message_is_accepted_while_the_first_write_hangs(rig):
     rig.cli.gate = asyncio.Event()
-    await rig.ch.handle_update(_topic_update("first", message_id=1))
+    assert await _reply(rig, "first", message_id=1)
     await until(lambda: rig.cli.writing == 1)
-    await asyncio.wait_for(
-        rig.ch.handle_update(_topic_update("second", message_id=2)), 2)
+    assert await asyncio.wait_for(_reply(rig, "second", message_id=2), 2)
     assert [e["text"] for e in job_inbox.load(rig.rec.id)] == ["first", "second"]
     rig.cli.gate.set()
     await until(lambda: rig.cli.texts() == ["first", "second"])
@@ -120,24 +123,27 @@ async def test_a_second_message_is_accepted_while_the_first_write_hangs(rig):
 
 async def test_a_resume_in_progress_does_not_block_a_message(rig):
     """A resume owner holds the job's lifecycle lock (a slow resume): the
-    topic's handler does not take it, so the message is still accepted."""
+    reply seam does not take it, so the message is still accepted."""
     lock = rig.ch.engagement_lifecycle_lock(rig.rec)
     async with lock:
-        await asyncio.wait_for(rig.ch.handle_update(_topic_update("hello")), 2)
+        assert await asyncio.wait_for(_reply(rig, "hello"), 2)
         assert [e["text"] for e in job_inbox.load(rig.rec.id)] == ["hello"]
-    assert lock is not rig.ch._engagement_handler_locks.get(TOPIC)
 
 
-async def test_a_members_message_gets_one_line_and_never_reaches_the_job(rig):
-    await rig.ch.handle_update(_topic_update("restate the task", user=MEMBER))
-    assert rig.topic == ["This job can't take instructions from you, so your message didn't reach it."]
+@pytest.mark.parametrize("user", [OPERATOR, MEMBER])
+async def test_a_message_in_the_log_group_never_reaches_the_job(rig, user):
+    """Even in the thread an older version used as this job's topic: one
+    pointer to the direct chat, and nothing journaled, admitted or written."""
+    await rig.ch.handle_update(_topic_update("restate the task", user=user))
+    assert [(m["chat_id"], m["thread"], m["text"]) for m in rig.bot.sent] == [
+        (SUPERGROUP, TOPIC,
+         "This group is a read-only log. Talk to me in our direct chat.")]
+    assert rig.topic == []
     assert job_inbox.load(rig.rec.id) == []
     assert rig.drv.inbound_unread_depth(rig.rec.id) == 0
     await asyncio.sleep(0.01)
     assert rig.cli.written == []
-    # The record's clearance is untouched: nothing is rebuilt.
     assert rig.reg.get(rig.rec.id).origin["_origin_clearance"] == "private"
-    assert rig.reg.get(rig.rec.id).context_rebuild_pending is False
 
 
 async def test_a_message_the_journal_cannot_take_is_told_once(rig, tmp_path,
@@ -145,8 +151,10 @@ async def test_a_message_the_journal_cannot_take_is_told_once(rig, tmp_path,
     blocker = tmp_path / "not-a-dir"
     blocker.write_text("x")
     monkeypatch.setattr(job_inbox, "INBOX_ROOT", blocker)
-    await rig.ch.handle_update(_topic_update("lost?"))
-    assert rig.topic == ["Your message could not be delivered — please resend it."]
+    assert await _reply(rig, "lost?", message_id=41) is False
+    assert [(m["reply_to"], m["text"]) for m in rig.bot.sent] == [
+        (41, "Your message could not be delivered — please resend it.")]
+    assert rig.topic == []
     assert rig.drv.inbound_unread_depth(rig.rec.id) == 0
 
 

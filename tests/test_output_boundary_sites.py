@@ -117,7 +117,7 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "edit_dm_message"): "derived",
     # notice — Casa-composed
     ("channels/telegram.py", "_handle_serialized"): "notice",       # routing / session notices
-    ("channels/telegram.py", "_maybe_redirect_main_feed"): "notice",
+    ("channels/telegram.py", "_redirect_from_log_group"): "notice",  # the log group's one pointer
     ("channels/telegram.py", "_send_rate_limit_reply"): "notice",
     ("channels/telegram.py", "reply"): "notice",                    # #1036 arrival replies
     ("channels/telegram.py", "deliver_operator_link"): "notice",  # v0.347.3: a delivered link as one message with its URL button, Casa-composed

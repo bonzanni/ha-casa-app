@@ -177,7 +177,6 @@ def env(tmp_path, monkeypatch):
 
     def make(**kw):
         return drv.InCasaDriver(
-            topic_stream_factory=lambda topic: None,
             record_lookup=reg.get, begin_turn_delivery=reg.begin_turn_delivery,
             stamp_activity=reg.stamp,
             on_turn_end=lambda r, res, err=None: turn_ends.append(res), **kw)
@@ -619,7 +618,7 @@ async def _with_runner(env, monkeypatch):
     monkeypatch.setattr(tools, "_finalize_engagement", finalize)
     runner = bj.JobRunner(registry=reg)
     driver = drv.InCasaDriver(
-        topic_stream_factory=lambda topic: None, record_lookup=reg.get,
+        record_lookup=reg.get,
         begin_turn_delivery=reg.begin_turn_delivery, stamp_activity=reg.stamp,
         on_turn_end=runner.turn_ended, on_session_lost=runner.session_lost,
         on_operator_written=bj.note_operator_input)
@@ -716,7 +715,7 @@ async def _completing_job(env, tmp_path, monkeypatch):
         specialist_registry=MagicMock(), mcp_registry=MagicMock(),
         trigger_registry=MagicMock(), engagement_registry=reg)
     driver = drv.InCasaDriver(
-        topic_stream_factory=lambda topic: None, record_lookup=reg.get,
+        record_lookup=reg.get,
         begin_turn_delivery=reg.begin_turn_delivery,
         stamp_activity=lambda eid, ts: None)
     monkeypatch.setattr(agent, "active_engagement_driver", driver, raising=False)

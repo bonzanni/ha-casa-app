@@ -1,9 +1,9 @@
 """#1179 regression guards around the add-only late-assignment merge.
 
-The red case (`test_pin_1179_late_assignment.py`) pins that a plugin assigned while a
-requires target's launch awaits its topic is recorded and launched. These pin what the
-merge must NOT do: drop or re-check a plugin the requires gate admitted, add a plugin
-that would share an admitted one's runtime name, or fail after the topic exists.
+The red case (`test_pin_1179_late_assignment.py`) pins that a plugin assigned after a
+requires target's gate resolved is recorded and launched. These pin what the merge must
+NOT do: drop or re-check a plugin the requires gate admitted, add a plugin that would
+share an admitted one's runtime name, or fail before the record exists.
 """
 
 from __future__ import annotations

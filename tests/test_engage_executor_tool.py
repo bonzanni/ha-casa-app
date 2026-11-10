@@ -68,61 +68,28 @@ def _payload(result):
 
 
 class TestEngageExecutorReal:
-    async def test_engagement_not_configured(self, tmp_path):
-        _wire(_channel(supergroup=0, permission_ok=False), _registry(tmp_path))
+    async def test_no_log_group_still_launches(self, tmp_path, monkeypatch):
+        """No forum group: the launch neither refuses nor sets anything up
+        in the group; the job starts."""
+        import agent as agent_mod
+        channel = _channel(supergroup=0, permission_ok=False)
+        _wire(channel, _registry(tmp_path))
+        monkeypatch.setattr(agent_mod, "active_engagement_driver",
+                            MagicMock(open=AsyncMock()), raising=False)
         payload = _payload(await launch_job("t", origin=dict(_ORIGIN)))
-        assert payload["kind"] == "engagement_not_configured"
+        assert payload["status"] == "pending", payload
+        assert channel.setup_engagement_features.await_count == 0
+        assert channel.open_engagement_topic.await_count == 0
 
     async def test_non_telegram_origin_gets_accurate_error(self, tmp_path):
-        """R-2 (v0.69.7): when the engagement machinery is unavailable for a
-        non-Telegram origin, the error must accurately say engagements
-        originate from Telegram — NOT the misleading 'set
-        telegram_engagement_supergroup_id' message (which telegram-origin
-        callers still get, see test_engagement_not_configured)."""
+        """R-2 (v0.69.7): a non-Telegram origin is told jobs originate from
+        Telegram."""
         _wire(_channel(supergroup=0, permission_ok=False), _registry(tmp_path))
         payload = _payload(await launch_job(
             "t", origin={**_ORIGIN, "channel": "webhook"}))
         assert payload["kind"] == "engagement_wrong_origin"
         assert "Telegram" in payload["message"]
         assert "supergroup" not in payload["message"].lower()
-
-    async def test_ef_inline_retry_recovers_from_first_boot_race(
-        self, tmp_path, monkeypatch,
-    ):
-        """E-F (v0.30.0) defensive: when the supergroup IS configured but
-        engagement_permission_ok is still False (first-boot race lost before
-        _rebuild's tail setup ran), the launch calls setup_engagement_features()
-        once in-line. If that retry flips the flag, the engagement proceeds
-        normally — no manual restart required."""
-        import agent as agent_mod
-        channel = _channel(permission_ok=False)
-
-        async def _flip_flag():
-            channel.engagement_permission_ok = True
-
-        channel.setup_engagement_features = AsyncMock(side_effect=_flip_flag)
-        _wire(channel, _registry(tmp_path))
-        monkeypatch.setattr(agent_mod, "active_engagement_driver",
-                            MagicMock(open=AsyncMock()), raising=False)
-
-        payload = _payload(await launch_job("t", origin=dict(_ORIGIN)))
-        # In-line retry was attempted — exactly once.
-        assert channel.setup_engagement_features.await_count == 1
-        # Retry succeeded (flag flipped) → engagement opened normally.
-        assert payload["status"] == "pending", payload
-        assert payload["topic_id"] == 42
-
-    async def test_ef_inline_retry_does_not_fire_when_supergroup_unset(
-        self, tmp_path,
-    ):
-        """E-F retry is gated on supergroup-configured-but-flag-False. When the
-        supergroup is unset, no retry fires — the operator has not opted into
-        engagements at all."""
-        channel = _channel(supergroup=0, permission_ok=False)
-        _wire(channel, _registry(tmp_path))
-        payload = _payload(await launch_job("t", origin=dict(_ORIGIN)))
-        assert payload["kind"] == "engagement_not_configured"
-        assert channel.setup_engagement_features.await_count == 0
 
     async def test_does_not_leak_engagement_var_to_caller(
         self, tmp_path, monkeypatch,
@@ -144,21 +111,17 @@ class TestEngageExecutorReal:
 
 class TestCancelledLaunchAfterRecordCompensates:
     """Sol r1 (#363 family): a cancellation AFTER create() but BEFORE the
-    driver started used to leave a durably-active record and an open topic
-    with nothing driving them — the record must be marked errored and the
-    topic aborted, in the background."""
+    driver started used to leave a durably-active record with nothing
+    driving it — the record must be marked errored, in the background."""
 
-    async def test_cancel_during_driver_start_marks_error_and_aborts_topic(
+    async def test_cancel_during_driver_start_marks_error(
             self, tmp_path, monkeypatch):
         import agent as agent_mod
         import tools as tools_mod
 
         registry = _registry(tmp_path)
         channel = _channel()
-        channel.open_engagement_topic = AsyncMock(return_value=88)
         _wire(channel, registry)
-        abort = AsyncMock()
-        monkeypatch.setattr(tools_mod, "_abort_engagement_topic", abort)
 
         started = asyncio.Event()
 
@@ -192,8 +155,8 @@ class TestCancelledLaunchAfterRecordCompensates:
         recs = list(registry._records.values())
         assert len(recs) == 1
         assert recs[0].status == "error"
-        abort.assert_awaited_once()
-        assert abort.await_args.args[2] == 88
+        assert recs[0].topic_id is None
+        channel.open_engagement_topic.assert_not_awaited()
         # Terra/Sol r2: the driver may have gone LIVE before the cancellation
         # — the compensation runs its idempotent terminal teardown.
         fake_driver.cancel.assert_awaited_once()

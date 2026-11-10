@@ -224,8 +224,7 @@ async def main():
                            driver="in_casa", task="t",
                            origin=json.loads(sys.argv[8]), topic_id=99)
     open(os.path.join(os.path.dirname(marker), "engagement-id"), "w").write(rec.id)
-    drv = InCasaDriver(topic_stream_factory=lambda tid: Stream(),
-                       persist_session_id=reg.persist_session_id)
+    drv = InCasaDriver(persist_session_id=reg.persist_session_id)
     attach_session(drv, rec, Client())
     drv.submit_operator(rec, "topic message", tg_message_id=55)
     await asyncio.Event().wait()    # the turn runs on the driver's tasks
@@ -390,7 +389,7 @@ async def test_a_cwd_reload_never_moves_where_an_engagement_is_held(
     rec = await reg.create(kind="specialist", role_or_type="finance",
                            driver="in_casa", task="t", origin=dict(ORIGIN),
                            topic_id=None)
-    await InCasaDriver(topic_stream_factory=lambda tid: None).open(
+    await InCasaDriver().open(
         rec, ClaudeAgentOptions(cwd=a))
     sid = str(uuid.uuid4())
     await reg.persist_session_id(rec.id, sid)          # persists the origin
@@ -480,8 +479,7 @@ async def test_a_rebuilt_or_resumed_engagement_stays_in_its_launch_folder(
     rec = await reg.create(kind="specialist", role_or_type="finance",
                            driver="in_casa", task="t", origin=dict(ORIGIN),
                            topic_id=None)
-    drv = InCasaDriver(topic_stream_factory=lambda tid: None,
-                       record_lookup=reg.get)
+    drv = InCasaDriver(record_lookup=reg.get)
     drv._persist_applied_profiles = lambda engagement: asyncio.sleep(0)
     await drv.open(rec, ClaudeAgentOptions(cwd=a))
     sid = str(uuid.uuid4())

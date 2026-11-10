@@ -203,7 +203,6 @@ class _JobRig:
         self.rec = rec
         self.ended: list = []
         self.drv = InCasaDriver(
-            topic_stream_factory=lambda tid: _TopicStream(),
             on_turn_end=lambda r, result, api_error: self.ended.append(r))
         _EngagementClient.prompts = []
         attach_session(self.drv, rec, _Session())

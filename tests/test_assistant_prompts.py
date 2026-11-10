@@ -77,9 +77,9 @@ def test_system_prompt_teaches_talking_with_a_specialist(system_md_text):
     assert "talk with a specialist" in text and "replying to its message" in text, (
         "system prompt must say how the person talks with a specialist."
     )
-    assert "engagements supergroup" in text, (
-        "system prompt must reference the Engagements supergroup as "
-        "the destination for jobs and executor engagements."
+    assert "engagements supergroup" not in text and "a job lives in this chat" in text, (
+        "system prompt must say a job lives in the direct chat, and name no "
+        "supergroup as its destination."
     )
 
 
@@ -1168,11 +1168,21 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # run that job, its batches included" becomes "A delegation does run that whole
 # job". One sentence changed on `assistant:text`; the eight other carriers
 # byte-identical. No retention claim.
+# MOVED (agent logs; jobs without the forum group), `assistant:text` only: the
+# Text projection's first line drops "topic" from "never invent Telegram topic
+# links"; the job paragraph says progress appears in the agent's log when the
+# result's message says so, not in the specialist's topic; the unopened-topic
+# paragraph becomes "A job lives in this chat: its questions, its result and
+# its Cancel button come here." followed by the unchanged talk-with-a-specialist
+# sentences, its topic sentences gone. Measured with `difflib` over
+# base-vs-new compiled text, word by word: eight non-equal opcodes on
+# `assistant:text`, all inside those three paragraphs; the eight other carriers
+# byte-identical. No retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "1f07ca5b5a3318b184d76f1f51a764caf873a9ec67cc9c51b8fc82a493c65978",
     "assistant:text":
-        "86455991a89c70977f08151764600d85671dc6decb9ce505713d1a04be6b6655",
+        "2b99cebab4e1e60d77126f4544cb68dff8be1e2e3b3dcfd5e1fa503b722e1197",
     "assistant:voice":
         "6f3e93bc630acee568ba20dfeece54e5260903f3de398358cc2dc5736f14be02",
     "butler:restricted_webhook":
@@ -1486,16 +1496,12 @@ _KERNEL_DROP_OFF_CLAUSE = (
 )
 
 _UNOPENED_TOPIC_DOCTRINE = (
-    "Point someone to a topic in the Engagements supergroup only when a call "
-    "you made returned an engagement for it and no completion has closed it "
-    "since, or when a delegate's result says it started one of its own jobs, "
-    "whose topic then exists; a delegation otherwise opens no topic. When the "
-    "person wants to talk with a specialist themselves, or a step needs them "
-    "to, delegate their words to it in `sync` mode and pass its answer on with "
-    "relay_answer; in Telegram they carry on with it directly by replying to "
-    "its message, and if they ask how to go on with it, tell them that. There "
-    "is no separate topic for such a conversation; never refer to a topic you "
-    "have not opened."
+    "A job lives in this chat: its questions, its result and its Cancel button "
+    "come here. When the person wants to talk with a specialist themselves, or "
+    "a step needs them to, delegate their words to it in `sync` mode and pass "
+    "its answer on with relay_answer; in Telegram they carry on with it "
+    "directly by replying to its message, and if they ask how to go on with "
+    "it, tell them that."
 )
 
 

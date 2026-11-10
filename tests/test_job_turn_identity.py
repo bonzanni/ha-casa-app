@@ -133,8 +133,7 @@ async def rig(tmp_path, monkeypatch):
         "specialist", "worker", "in_casa", "Process rows",
         {"role": "assistant", "channel": "telegram", "chat_id": "100",
          "cid": ENGAGING, "job": jobs.initial_job_state(decl)}, topic_id=555)
-    driver = InCasaDriver(topic_stream_factory=lambda topic_id: _Stream(),
-                          record_lookup=reg.get,
+    driver = InCasaDriver(record_lookup=reg.get,
                           begin_turn_delivery=reg.begin_turn_delivery)
     holder = {}
 
