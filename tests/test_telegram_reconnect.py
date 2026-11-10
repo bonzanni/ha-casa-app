@@ -86,6 +86,8 @@ def _make_fake_application() -> MagicMock:
     app.process_update = AsyncMock()
 
     app.bot = MagicMock()
+    # initialize() runs getMe: a started bot knows its own id.
+    app.bot.id = 4242
     app.bot.set_webhook = AsyncMock()
     app.bot.delete_webhook = AsyncMock()
     app.bot.get_me = AsyncMock(return_value=MagicMock(username="casabot"))

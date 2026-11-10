@@ -1,4 +1,17 @@
-"""Telegram channel implementation using python-telegram-bot v20+.
+"""One Telegram bot as a Casa endpoint, using python-telegram-bot v20+.
+
+A ``TelegramChannel`` is one bot: its own Application, its own update stream
+(its own webhook route and secret, or its own poller) and all the state that
+belongs to that bot — typing, the webhook update ids, file intake, armings,
+settled proposals. The ``TelegramTransport`` (``channels/telegram_transport``)
+holds every endpoint by bot id and is what Casa registers as the ``"telegram"``
+channel.
+
+Telegram numbers messages per bot, and a private chat's id equals the user's
+id, so a chat and a message id do not name a message once there is more than
+one bot. Every turn this endpoint builds carries its route (``_tg_bot``, the
+bot it arrived on), and every message it stores or looks up is a
+:class:`~channels.tg_address.TgAddress` carrying this endpoint's bot id.
 
 Supports two transport modes and two delivery modes:
 
@@ -60,6 +73,18 @@ from ingress_identity import (
     ingress_identity,
 )
 from channels import Channel, DeliveryOutcome, UnconfirmedDelivery
+from channels.tg_address import (
+    AddressError,
+    DuplicateEndpoint,
+    EndpointNotReady,
+    EndpointUnavailable,
+    TgAddress,
+    is_route,
+    scope as tg_scope,
+)
+# A job keyboard post as ``(address, kind)``: the one reading of the in-memory
+# pair and the stored row, shared with the transport that hands them out.
+from channels.telegram_transport import _post_parts as _job_post_parts
 from output_boundary import Admitted, UnadmittedText
 from media_policies import MEDIA_POLICIES
 from text_util import replace_lone_surrogates, utf16_len, utf16_prefix_end
@@ -635,32 +660,35 @@ OnTokenCallback = Callable[[str], Awaitable[None]]
 @dataclass(frozen=True)
 class _NoticeTarget:
     """Where an operator-triggered engagement turn's notices go: a reply to
-    *message_id* in the operator's direct chat — their own message for a typed
-    reply, the question or approval card for a tap (``answer``)."""
+    the message at *address* in the operator's direct chat — their own
+    message for a typed reply, the question or approval card for a tap
+    (``answer``). The address names the bot that received or posted that
+    message, which is the only bot that can reply to it."""
 
-    chat_id: int
-    message_id: int
+    address: TgAddress
     answer: bool = False
 
 
 def _notice_dict(target: "_NoticeTarget | None") -> "dict | None":
-    """A notice target as the job's message journal stores it."""
+    """A notice target as the job's message journal stores it:
+    ``{"address": [bot, chat, message], "answer": bool}``."""
     if target is None:
         return None
-    return {"chat_id": target.chat_id, "message_id": target.message_id,
-            "answer": target.answer}
+    return {"address": target.address.to_json(), "answer": target.answer}
 
 
 def _notice_target_from(value: Any) -> "_NoticeTarget | None":
     """A journaled notice target back as one; ``None`` for anything that is
-    not one."""
+    not one, a notice stored without its bot included."""
     if not isinstance(value, dict):
         return None
-    chat, mid = value.get("chat_id"), value.get("message_id")
-    if type(chat) is not int or type(mid) is not int:
+    try:
+        address = TgAddress.from_json(value.get("address"))
+    except AddressError:
         return None
-    return _NoticeTarget(chat_id=chat, message_id=mid,
-                         answer=value.get("answer") is True)
+    if address.message_id is None:
+        return None
+    return _NoticeTarget(address=address, answer=value.get("answer") is True)
 
 
 _LOG_GROUP_REDIRECT = ("This group is a read-only log. Talk to me in our "
@@ -912,7 +940,22 @@ def _ack_text(burst: _AckBurst) -> str:
 
 
 class TelegramChannel(Channel):
-    """Bidirectional Telegram channel backed by python-telegram-bot."""
+    """One Telegram bot, backed by python-telegram-bot: a Casa endpoint.
+
+    Every attribute below belongs to this bot alone; two endpoints never share
+    one. ``default_agent`` is the agent this bot's private chat belongs to.
+    ``chat_id`` is the operator: one person per deployment, the same on every
+    bot (a private chat's id is its user's id), so the allowlist and the
+    operator checks read it unchanged.
+
+    ``name`` is the channel kind (``"telegram"``) the conversation and memory
+    keys use. The transport, not an endpoint, is registered under it.
+
+    ``is_casa`` marks Casa's own endpoint, the only one that serves the
+    agent log's forum group. ``known_bot_id`` is the bot id known before this
+    token's first ``getMe`` (persisted for Casa's bot, configured for the
+    others); ``webhook_secret_for`` derives this bot's webhook secret from its
+    id."""
 
     name: str = "telegram"
 
@@ -923,14 +966,30 @@ class TelegramChannel(Channel):
         default_agent: str = "",
         bus: MessageBus | None = None,
         webhook_url: str = "",
-        webhook_path: str = "/telegram/update",
-        webhook_secret: str = "",
         rate_limiter: RateLimiter | None = None,
         bot: Any = None,
         engagement_supergroup_id: int | None = None,
+        *,
+        is_casa: bool = True,
+        known_bot_id: int | None = None,
+        webhook_secret_for: Callable[[int], str] | None = None,
     ) -> None:
+        if known_bot_id is not None and (
+                not is_route(known_bot_id) or isinstance(known_bot_id, str)):
+            raise AddressError(f"not a Telegram bot id: {known_bot_id!r}")
         self.bot_token = bot_token
         self.chat_id = chat_id
+        self.is_casa = bool(is_casa)
+        # The bot id: the one getMe verified for this token in this process,
+        # else the one known in advance. Never a guess (see ``bot_id``).
+        self._known_bot_id: int | None = known_bot_id
+        self._verified_bot_id: int | None = None
+        # Installed by the transport (``add_endpoint``): reports each id a
+        # getMe verifies, before this endpoint becomes ready.
+        self.on_identity: Callable[[int], None] | None = None
+        # Set when the transport refused the verified id (another endpoint
+        # serves that bot): this endpoint stays stopped and unready.
+        self._identity_refused = False
         if not str(chat_id or "").strip():
             # #368: empty telegram_chat_id is a SECURITY posture, not just a
             # convenience default — say so once, loudly, at construction.
@@ -943,9 +1002,11 @@ class TelegramChannel(Channel):
             )
         self.default_agent = default_agent
         self._bus = bus
+        # Webhook mode: this bot's updates arrive on its own route,
+        # ``<webhook_url>/telegram/update/<bot_id>``, signed with its own
+        # secret — registered at every rebuild once the id is verified.
         self._webhook_url = webhook_url
-        self._webhook_path = webhook_path
-        self._webhook_secret = webhook_secret
+        self._webhook_secret_for = webhook_secret_for
         # Rate limiter (spec 5.2 §8). None = unlimited; a limiter with
         # capacity=0 also admits every message.
         self._rate_limiter = rate_limiter
@@ -974,9 +1035,10 @@ class TelegramChannel(Channel):
         self._supervisor: ReconnectSupervisor | None = None
         self._probe_task: asyncio.Task | None = None
         # Test-injection bot and the optional forum group the agent log
-        # writes to.
+        # writes to (Casa's endpoint only: the log group is Casa's bot's).
         self._bot = bot
-        self.engagement_supergroup_id = engagement_supergroup_id
+        self.engagement_supergroup_id = (
+            engagement_supergroup_id if self.is_casa else None)
         # H5 (v0.52.0): bounded LRU of recently-seen webhook update_ids so a
         # Telegram redelivery (retry after a slow ACK) is processed at most
         # once. OrderedDict used as an insertion-ordered ring buffer.
@@ -1152,8 +1214,18 @@ class TelegramChannel(Channel):
         down first. Raises on bring-up failure so the supervisor can
         catch and schedule a retry; callers on the happy path do not
         expect this to raise.
+
+        After each successful ``initialize`` (which performs ``getMe``) and
+        before the endpoint is published as ready, the verified bot id is
+        recorded and reported through ``on_identity``, so a turn born for this
+        bot from then on gets its integer route; the webhook is registered on
+        this bot's own route. A bot id the transport refuses (another endpoint
+        already serves it) rolls the bring-up back and leaves this endpoint
+        stopped and unready for good.
         """
         await self._teardown_app()
+        if self._identity_refused:
+            return
 
         _bot_api_base = os.environ.get("TELEGRAM_BOT_API_BASE", "").strip()
         builder = Application.builder().token(self.bot_token)
@@ -1202,13 +1274,17 @@ class TelegramChannel(Channel):
         # still schedules a retry.
         try:
             await app.initialize()
+            bot_id = self._observe_identity(app)
             await app.start()
 
             if self._webhook_url:
-                full_url = self._webhook_url.rstrip("/") + self._webhook_path
+                full_url = (self._webhook_url.rstrip("/")
+                            + f"/telegram/update/{bot_id}")
+                secret = (self._webhook_secret_for(bot_id)
+                          if self._webhook_secret_for is not None else "")
                 kwargs: dict[str, Any] = {"url": full_url}
-                if self._webhook_secret:
-                    kwargs["secret_token"] = self._webhook_secret
+                if secret:
+                    kwargs["secret_token"] = secret
                     # #214: PTB logs Bot API call parameters (incl.
                     # secret_token) as a dict at DEBUG. RedactingFilter masks
                     # the secret_token value by key name; registering the exact
@@ -1216,14 +1292,14 @@ class TelegramChannel(Channel):
                     # belt-and-suspenders on the leak path.
                     try:
                         import log_redact
-                        log_redact.register_secret(self._webhook_secret)
+                        log_redact.register_secret(secret)
                     except Exception:  # noqa: BLE001 — redaction is best-effort
                         pass
                 await app.bot.set_webhook(**kwargs)
                 logger.info(
                     "Telegram started (webhook, url=%s, secret=%s)",
                     full_url,
-                    "yes" if self._webhook_secret else "no",
+                    "yes" if secret else "no",
                 )
             else:
                 await app.updater.start_polling()  # type: ignore[union-attr]
@@ -1231,7 +1307,7 @@ class TelegramChannel(Channel):
                     "Telegram started (polling, chat_id=%s)",
                     self.chat_id,
                 )
-        except BaseException:
+        except BaseException as exc:
             # PTB 22.7 ordering: stop() raises if not running (guard with
             # app.running); shutdown() raises while running (only after
             # stop()).
@@ -1253,18 +1329,30 @@ class TelegramChannel(Channel):
                 if app.updater is not None and getattr(
                         app.updater, "running", False):
                     await app.updater.stop()
-            except Exception as exc:  # noqa: BLE001 — best-effort rollback
+            except Exception as rollback_exc:  # noqa: BLE001 — best-effort rollback
                 logger.debug(
-                    "Telegram rebuild rollback: updater.stop failed: %s", exc)
+                    "Telegram rebuild rollback: updater.stop failed: %s",
+                    rollback_exc)
             try:
                 if getattr(app, "running", False):
                     await app.stop()
-            except Exception as exc:  # noqa: BLE001 — best-effort rollback
-                logger.debug("Telegram rebuild rollback: app.stop failed: %s", exc)
+            except Exception as rollback_exc:  # noqa: BLE001 — best-effort rollback
+                logger.debug("Telegram rebuild rollback: app.stop failed: %s",
+                             rollback_exc)
             try:
                 await app.shutdown()
-            except Exception as exc:  # noqa: BLE001 — best-effort rollback
-                logger.debug("Telegram rebuild rollback: app.shutdown failed: %s", exc)
+            except Exception as rollback_exc:  # noqa: BLE001 — best-effort rollback
+                logger.debug("Telegram rebuild rollback: app.shutdown failed: %s",
+                             rollback_exc)
+            if isinstance(exc, DuplicateEndpoint):
+                # One bot configured twice: a configuration error, not an
+                # outage. This endpoint stays down; no rebuild revives it.
+                self._identity_refused = True
+                self._verified_bot_id = None
+                logger.error(
+                    "Telegram endpoint for role %r stopped: bot %s is already "
+                    "served by another endpoint", self.default_agent, exc.bot_id)
+                return
             raise
 
         # Publish the rebuilt app atomically.
@@ -1290,12 +1378,75 @@ class TelegramChannel(Channel):
         # blip cannot leave the log off for the life of the process.
         await self.check_agent_logs()
 
+    def _observe_identity(self, app: Any) -> int:
+        """The bot id ``initialize``'s ``getMe`` verified, reported to the
+        transport (``on_identity``) and then recorded, in one synchronous step
+        before this endpoint is published as ready. Raises when ``getMe``
+        yielded no usable id (the bring-up fails and is retried), and passes
+        on the transport's ``DuplicateEndpoint`` with nothing recorded."""
+        bot_id = getattr(app.bot, "id", None)
+        if not is_route(bot_id) or isinstance(bot_id, str):
+            raise RuntimeError("Telegram getMe yielded no bot id")
+        if self.on_identity is not None:
+            self.on_identity(bot_id)
+        self._verified_bot_id = bot_id
+        return bot_id
+
+    # ------------------------------------------------------------------
+    # Identity: which bot this endpoint is
+    # ------------------------------------------------------------------
+
+    @property
+    def bot_id(self) -> int:
+        """This bot's id: the one ``getMe`` verified, else the one known in
+        advance. Raises ``EndpointNotReady`` while neither exists (this
+        token has never completed ``getMe`` and no id was known for it);
+        never ``None``. Every turn and every stored message of this endpoint
+        carries it."""
+        if self._verified_bot_id is not None:
+            return self._verified_bot_id
+        if self._known_bot_id is not None:
+            return self._known_bot_id
+        raise EndpointNotReady(
+            f"the Telegram endpoint for role {self.default_agent!r} has no "
+            "bot id yet")
+
+    @property
+    def has_bot_id(self) -> bool:
+        """Whether :attr:`bot_id` is known (it then never raises)."""
+        return self._verified_bot_id is not None or self._known_bot_id is not None
+
+    def address(self, chat_id: Any, message_id: "int | None" = None) -> TgAddress:
+        """The address of a message this endpoint received or that it just
+        posted (or, with no *message_id*, of a chat as this bot sees it).
+        Only built where this endpoint's id is known: at receipt, or after a
+        post returned."""
+        if isinstance(chat_id, str):
+            try:
+                chat_id = int(chat_id.strip())
+            except ValueError:
+                raise AddressError(f"not a Telegram chat id: {chat_id!r}") from None
+        return TgAddress(self.bot_id, chat_id, message_id)
+
+    def _quoted_address(self, chat: "int | None", quoted: Any) -> "TgAddress | None":
+        """The address of the message *quoted* in *chat* on this bot, or
+        ``None`` when there is no quoted message id to look up."""
+        mid = getattr(quoted, "message_id", None) if quoted is not None else None
+        if chat is None or type(mid) is not int:
+            return None
+        return self.address(chat, mid)
+
+    def _own_address(self, addr: TgAddress) -> bool:
+        """Whether *addr* is a message of this bot — the only one that can
+        edit it or reply to it."""
+        return self.has_bot_id and addr.bot_id == self.bot_id
+
     async def check_agent_logs(self) -> bool:
         """Turn the agent log on when the forum group is configured and the
         bot may manage its topics, and start its writer; otherwise it stays
-        off. Never raises."""
+        off. Only Casa's own endpoint serves the log. Never raises."""
         logs = self._agent_logs
-        if logs is None or self._app is None:
+        if logs is None or self._app is None or not self.is_casa:
             return False
         try:
             if await logs.check_enabled(self.bot, self.engagement_supergroup_id):
@@ -1600,7 +1751,8 @@ class TelegramChannel(Channel):
         The single home of this rule: both the message ingress and the
         button-tap continuation resolve identity through it, so the two
         entry points into a turn can never disagree about who the operator
-        is.
+        is. The operator is one person per deployment, so every bot's
+        endpoint is given the same ``chat_id`` and answers alike.
         """
         configured = str(self.chat_id or "").strip()
         return bool(configured) and user_id is not None and str(user_id) == configured
@@ -1692,20 +1844,25 @@ class TelegramChannel(Channel):
             # SYNCHRONOUSLY, before the first await below — a /new reset
             # must not race a still-pending question or a live grant. The
             # channel's chat_id is a STRING; the broker/grant store are
-            # int-keyed, so convert via strict_positive_id first.
+            # int-keyed, so convert via strict_positive_id first. Only THIS
+            # bot's lanes and grants: another bot's chat with the operator
+            # shares the chat id and is a conversation of its own.
             _chat_int = strict_positive_id(chat_id)
             if _chat_int is not None:
                 from authz_grants import GRANTS
                 from verdict_broker import BROKER
+                _bot = self.bot_id
                 BROKER.cancel_scope(
-                    namespace="resident_ask", scope=f"dm:{_chat_int}",
+                    namespace="resident_ask",
+                    scope=tg_scope("dm", _bot, _chat_int),
                     reason="new_session",
                 )
                 BROKER.cancel_scope(
-                    namespace="resident_ask", scope=f"authz:{_chat_int}",
+                    namespace="resident_ask",
+                    scope=tg_scope("authz", _bot, _chat_int),
                     reason="new_session",
                 )
-                GRANTS.purge_chat(_chat_int)
+                GRANTS.purge_chat(_bot, _chat_int)
             # M29: ack BEFORE the reset so the user gets instant feedback.
             # reset_channel is awaited; it only drops the pointer (live
             # capture already holds what the conversation said). Handlers
@@ -1785,7 +1942,7 @@ class TelegramChannel(Channel):
         if _chat_int is not None:
             import scheduled_asks
             scheduled_asks.cancel_non_scheduled_for_chat(
-                _chat_int, "typed_answer")
+                self.bot_id, _chat_int, "typed_answer")
 
         user_name = user.first_name if user else "unknown"
 
@@ -1812,6 +1969,11 @@ class TelegramChannel(Channel):
             sender_display_name=user_name if user is not None else None,
             sender_is_operator=self._sender_is_operator(user),
         )
+        # The turn's route: the bot it arrived on, decided here once and
+        # carried by everything derived from this turn, so its replies, posts
+        # and questions leave through this bot. Read before the typing lease,
+        # like the identity above.
+        route = self.bot_id
 
         # r1-1: start this organic turn's typing lease keyed by its cid — the
         # SAME cid placed in the delivery context below, so send()/streaming
@@ -1839,6 +2001,8 @@ class TelegramChannel(Channel):
         # clearance off these instead of the channel-wide private constant.
         context["_origin_route"] = "telegram"
         context["_origin_clearance"] = trusted_origin.server_origin.clearance
+        # The route is reserved, so it is stamped after sanitization too.
+        context["_tg_bot"] = route
         # #283: live-operator marker — reserved (sanitize strips it from
         # every external context), stamped ONLY for the authenticated
         # operator sender. The agent-spawn cap exempts exactly these turns;
@@ -1891,15 +2055,12 @@ class TelegramChannel(Channel):
         if quoted is None:
             return None
         chat = strict_positive_id(chat_id)
-        record = (result_broker.POST_MAP.get(chat, getattr(quoted, "message_id", None))
-                  if chat is not None else None)
+        quoted_at = self._quoted_address(chat, quoted)
+        record = (result_broker.POST_MAP.get(quoted_at)
+                  if quoted_at is not None else None)
         quoted_from = getattr(quoted, "from_user", None)
         sender = getattr(message, "from_user", None) or update.effective_user
-        bot = getattr(self._app, "bot", None) if self._app is not None else None
-        try:
-            bot_id = getattr(bot, "id", None)
-        except Exception:  # noqa: BLE001 — an uninitialised bot has no id yet
-            bot_id = None
+        bot_id = self.bot_id if self.has_bot_id else None
         ended_job = self._ended_job_quoted(chat_id, sender, quoted)
         if ended_job is not None:
             # #1522: ahead of the post map, which names a specialist-hosted
@@ -1951,8 +2112,9 @@ class TelegramChannel(Channel):
         if (owner_of is None or chat is None or user is None
                 or not self._sender_is_operator(user)):
             return False
+        quoted_at = self._quoted_address(chat, update.message.reply_to_message)
         quoted = update.message.reply_to_message
-        rec = owner_of(getattr(quoted, "message_id", None))
+        rec = owner_of(quoted_at) if quoted_at is not None else None
         if not self._job_is_theirs(rec, user, chat):
             return False
         if self._rate_limiter is not None and self._rate_limiter.enabled:
@@ -1996,7 +2158,10 @@ class TelegramChannel(Channel):
         if (owner_of is None or quoted is None or chat is None
                 or not self._sender_is_operator(user)):
             return None
-        rec = owner_of(chat, getattr(quoted, "message_id", None))
+        quoted_at = self._quoted_address(chat, quoted)
+        if quoted_at is None:
+            return None
+        rec = owner_of(quoted_at)
         return rec if self._job_is_theirs(rec, user, chat) else None
 
     def _ended_job_phrase(self, rec) -> str:
@@ -2039,7 +2204,8 @@ class TelegramChannel(Channel):
         chat = strict_positive_id(chat_id)
         if chat is None or user is None or not self._sender_is_operator(user):
             return False
-        record = result_broker.POST_MAP.get(chat, getattr(quoted, "message_id", None))
+        quoted_at = self._quoted_address(chat, quoted)
+        record = result_broker.POST_MAP.get(quoted_at) if quoted_at is not None else None
         if (record is None or record.operator_id != user.id
                 or record.role == self.default_agent
                 or not specialist_desk.desk_target_ok(self.default_agent, record.role)):
@@ -2070,12 +2236,12 @@ class TelegramChannel(Channel):
         """§4: the queue place is taken BEFORE any task exists; a full queue is
         the busy notice, inline, and no task."""
         import specialist_desk
-        desk = specialist_desk.DESKS.get_or_create(chat_id, desk_role)
+        desk = specialist_desk.DESKS.get_or_create(self.bot_id, chat_id, desk_role)
         if desk.faulted:
             # S5 §14.8: no queueing on a faulted desk
             line = specialist_desk.faulted_line(specialist_desk.label_for(desk_role))
             await self.deliver_desk_notice(chat_id, line)
-            specialist_desk.record_echo(chat_id, line)
+            specialist_desk.record_echo(self.bot_id, chat_id, line)
             return None
         reservation = desk.reserve()
         if reservation is None:
@@ -2083,7 +2249,7 @@ class TelegramChannel(Channel):
             line = specialist_desk.bounded_line("{label}'s desk was full when the place was requested.",
                                                 label=specialist_desk.label_for(desk_role))
             await self.deliver_desk_notice(chat_id, line)
-            specialist_desk.record_echo(chat_id, line)
+            specialist_desk.record_echo(self.bot_id, chat_id, line)
         return reservation
 
     def _spawn_desk_turn(self, **kwargs: Any) -> None:
@@ -2092,7 +2258,8 @@ class TelegramChannel(Channel):
         once and a stop can drain it."""
         import specialist_desk
         task = asyncio.create_task(specialist_desk.handle_reply(
-            channel=self, resident_role=self.default_agent, **kwargs))
+            channel=self, resident_role=self.default_agent, bot_id=self.bot_id,
+            **kwargs))
         self._turn_tasks.add(task)
         task.add_done_callback(self._turn_tasks.discard)
         reservation = kwargs.get("reservation")
@@ -2115,7 +2282,7 @@ class TelegramChannel(Channel):
                 or not specialist_desk.desk_target_ok(self.default_agent, desk_role)):
             line = f"{specialist_desk.label_for(desk_role)} could not continue (not delegable)."
             await self.deliver_desk_notice(chat_id, line)
-            specialist_desk.record_echo(chat_id, line)     # §9: the echo says the same
+            specialist_desk.record_echo(self.bot_id, chat_id, line)     # §9: the echo says the same
             return True
         reservation = await self._reserve_desk_or_refuse(chat_id, desk_role)
         if reservation is None:
@@ -2149,7 +2316,8 @@ class TelegramChannel(Channel):
                     or cq.from_user is None):
                 return
             chat = cq.message.chat.id
-            scope = f"proposal:{chat}"
+            bot = self.bot_id
+            scope = tg_scope("proposal", bot, chat)
             # #1201: a settled proposal's own meta first — the broker's
             # tombstone holds a copy from settle time, without the message id
             # a send that landed after a supersede wrote to the original
@@ -2158,7 +2326,9 @@ class TelegramChannel(Channel):
                     else BROKER.get_meta(namespace="proposal", scope=scope, request_id=rid))
             if meta is None:
                 return
-            if meta.get("chat_id") != chat:
+            # the card is this bot's: another bot's proposal in the same chat
+            # (equal chat ids, equal message ids) is never settled here
+            if meta.get("chat_id") != chat or meta.get("bot_id") != bot:
                 return
             tapped = getattr(cq.message, "message_id", None)
             # #1305: a card whose landing was never confirmed has no message id
@@ -2431,13 +2601,13 @@ class TelegramChannel(Channel):
         if await self._stop_tap(meta=meta, idx=idx):
             return True             # a stored call of the declared stop tool: no desk, no turn
         label = specialist_desk.label_for(desk_role)
-        desk = specialist_desk.DESKS.get_or_create(chat_id, desk_role)
+        desk = specialist_desk.DESKS.get_or_create(self.bot_id, chat_id, desk_role)
         # #1362: a keep_card tap never writes a line over its card
         keep = specialist_desk.keeps_card(meta, idx)
         if desk.faulted:
             line = specialist_desk.faulted_line(label)
             await self.deliver_desk_notice(chat_id, line)
-            specialist_desk.record_echo(chat_id, line)
+            specialist_desk.record_echo(self.bot_id, chat_id, line)
             if not keep:
                 await self.mark_proposal(meta, "✖ faulted")
             return True
@@ -2448,14 +2618,15 @@ class TelegramChannel(Channel):
             await self.deliver_desk_notice(
                 chat_id, f"{label} is busy; the specialist will propose again, or type your verdict.")
             # §10: the resident's line names the refused tap, as the desk's own refusals do
-            specialist_desk.record_echo(chat_id, f"{label} refused your tap ({button}): busy.")
+            specialist_desk.record_echo(self.bot_id, chat_id, f"{label} refused your tap ({button}): busy.")
             if not keep:
                 await self.mark_proposal(meta, "✖ busy")
             return True
         cid = new_cid()
         self._start_typing(str(chat_id), cid)
         task = asyncio.create_task(specialist_desk.handle_tap(
-            channel=self, resident_role=self.default_agent, chat_id=chat_id,
+            channel=self, resident_role=self.default_agent, bot_id=self.bot_id,
+            chat_id=chat_id,
             user_id=int(meta["operator_id"]), cid=cid, desk_role=desk_role, meta=meta,
             idx=idx, request_id=request_id, reservation=reservation))
         self._turn_tasks.add(task)
@@ -2706,8 +2877,7 @@ class TelegramChannel(Channel):
             text = _LOST_ANSWER_ENDED_NOTICE if ended else _LOST_ANSWER_NOTICE
         else:
             text = _LOST_REPLY_ENDED_NOTICE if ended else _LOST_REPLY_NOTICE
-        await self._send_dm_reply(notice_target.chat_id,
-                                  notice_target.message_id, text)
+        await self._reply_at(notice_target.address, text)
 
     async def _tell_not_delivered(
             self, rec, notice_target: "_NoticeTarget | None") -> None:
@@ -2725,9 +2895,22 @@ class TelegramChannel(Channel):
         """The lost-message notice for one journaled operator message an
         ended job never read — the journal's terminal branch calls it once
         per such entry. The entry's ``notice`` names the direct chat message
-        or tapped card to reply to; an entry without one is logged and
-        discharged."""
+        or tapped card to reply to, and the bot it is on; an entry without
+        one is logged and discharged, and one on another bot is never
+        answered through this one."""
         await self._tell_not_delivered(rec, _notice_target_from(entry.get("notice")))
+
+    async def _reply_at(self, address: TgAddress, text: str) -> None:
+        """:meth:`_send_dm_reply` to the message at *address*. Only this bot
+        can reply to its own messages, so an address on another bot raises
+        ``EndpointUnavailable`` and nothing is sent; every caller bounds and
+        logs it."""
+        if not self._own_address(address):
+            raise EndpointUnavailable(
+                address.bot_id,
+                f"bot {address.bot_id}'s message cannot be answered through "
+                f"this endpoint")
+        await self._send_dm_reply(address.chat_id, address.message_id, text)
 
     async def _send_dm_reply(self, chat_id: int, message_id: int,
                              text: str) -> None:
@@ -2748,11 +2931,10 @@ class TelegramChannel(Channel):
             logger.warning("notice for %s has no direct chat message to "
                            "reply to; not posted", rec.id[:8])
             return
-        await self._send_dm_reply(notice_target.chat_id,
-                                  notice_target.message_id, text)
+        await self._reply_at(notice_target.address, text)
 
     async def _deliver_to_job(
-        self, rec, text: str, *, tg_message_id: int | None = None,
+        self, rec, text: str, *, tg_message: "TgAddress | None" = None,
         notice_target: "_NoticeTarget | None" = None,
         inbound_reservation: "_InboundReservation | None" = None,
         courtesy: bool = True,
@@ -2795,7 +2977,7 @@ class TelegramChannel(Channel):
             await self._tell_not_delivered(rec, notice_target)
             return False
         try:
-            drv.submit_operator(rec, text, tg_message_id=tg_message_id,
+            drv.submit_operator(rec, text, tg_message=tg_message,
                                 notice=_notice_dict(notice_target))
         except Exception as exc:  # noqa: BLE001 — refused: nothing was accepted
             logger.info("message for job %s not accepted: %s", rec.id[:8], exc)
@@ -2835,7 +3017,7 @@ class TelegramChannel(Channel):
     async def _dispatch_engagement_continuation(
         self, *, engagement_id: str, text: str,
         inbound_reservation: "_InboundReservation | None" = None,
-        notice_target: "tuple[int, int] | None" = None,
+        notice_target: "TgAddress | tuple[int, int] | None" = None,
     ) -> bool:
         """#400: continue a job after the operator authorized (or denied) a
         protected plugin tool over the direct chat authorization keyboard.
@@ -2852,9 +3034,11 @@ class TelegramChannel(Channel):
         in reply to the card). ``True`` is not a delivery receipt: the job's
         delivery worker writes the message later.
 
-        ``notice_target`` — ``(chat_id, message_id)`` of the approval card —
-        is where the continuation's one notice goes if the job never reads it;
-        the seam or the journal's terminal branch posts it, never the caller."""
+        ``notice_target`` — the approval card, as its address or as
+        ``(chat_id, message_id)`` on this bot, which posted it and received
+        the tap — is where the continuation's one notice goes if the job
+        never reads it; the seam or the journal's terminal branch posts it,
+        never the caller."""
         reg = self._engagement_registry
         rec = reg.get(engagement_id) if reg is not None else None
         if rec is None:
@@ -2864,10 +3048,14 @@ class TelegramChannel(Channel):
             )
             return False
         target = None
-        if notice_target is not None:
+        if isinstance(notice_target, TgAddress):
+            if notice_target.message_id is not None:
+                target = _NoticeTarget(address=notice_target, answer=True)
+        elif notice_target is not None:
             chat, mid = notice_target
             if type(chat) is int and type(mid) is int:
-                target = _NoticeTarget(chat_id=chat, message_id=mid, answer=True)
+                target = _NoticeTarget(address=self.address(chat, mid),
+                                       answer=True)
         return await self.deliver_system_turn(
             rec, text, inbound_reservation=inbound_reservation,
             notice_target=target)
@@ -2935,15 +3123,17 @@ class TelegramChannel(Channel):
         the journal's terminal branch when the job ended without reading it —
         a reply to their message in the direct chat. Returns whether the job
         accepted it; no caller posts anything on it."""
-        notice_target = _NoticeTarget(chat_id=int(chat_id),
-                                      message_id=int(message_id))
+        # The operator's message, as the bot that received it: the job's
+        # notice replies to it there, and memory keys it by that bot.
+        received = self.address(int(chat_id), int(message_id))
+        notice_target = _NoticeTarget(address=received)
         first = ((quoted_text or "").strip().splitlines() or [""])[0].strip()
         sent = f"[replying to «{first[:200]}»]\n{text}" if first else text
         if not await self._end_quiet_run(rec):
             await self._tell_not_delivered(rec, notice_target)
             return False
         if not await self._deliver_to_job(
-                rec, sent, tg_message_id=int(message_id),
+                rec, sent, tg_message=received,
                 notice_target=notice_target):
             return False
         # INV-MEM-044: the operator's words to a specialist that keeps no
@@ -2999,14 +3189,15 @@ class TelegramChannel(Channel):
         await self._file_job_keyboard(rec, mid, JOB_POST_START)
         return mid
 
-    @staticmethod
-    def _job_start_post(rec) -> "int | None":
-        """The message id of the job's start line, while it is filed."""
+    def _job_start_post(self, rec) -> "TgAddress | None":
+        """The address of the job's start line, while it is filed and it is
+        this bot's message (only the bot that posted it can edit it or reply
+        to it)."""
         from engagement_registry import JOB_POST_START
         for post in getattr(rec, "ui_posts", None) or ():
-            if isinstance(post, (list, tuple)) and len(post) == 2 \
-                    and post[1] == JOB_POST_START and type(post[0]) is int:
-                return post[0]
+            parts = _job_post_parts(post)
+            if parts is not None and parts[1] == JOB_POST_START:
+                return parts[0] if self._own_address(parts[0]) else None
         return None
 
     async def refresh_job_start_line(self, rec) -> None:
@@ -3016,16 +3207,16 @@ class TelegramChannel(Channel):
         $2.40``. The Cancel button stays. A job with no start line (scheduled
         or agent-started) has nothing to edit."""
         import background_jobs
-        chat = self._job_chat(rec)
-        mid = self._job_start_post(rec)
-        if chat is None or mid is None or self.bot is None:
+        start = self._job_start_post(rec)
+        if start is None or self.bot is None:
             return
         if getattr(rec, "status", None) not in ("active", "idle"):
             return
         text = (f"📊 {self._job_agent_name(rec)} started «{self._job_title(rec)}»."
                 + background_jobs.cost_suffix(rec))
         await self.edit_dm_message(
-            chat, mid, text, buttons=[("Cancel", job_cancel_callback(rec.id))])
+            start.chat_id, start.message_id, text,
+            buttons=[("Cancel", job_cancel_callback(rec.id))])
 
     async def post_job_parked(self, rec, text: str) -> "int | None":
         """A parked job's one line in the operator's direct chat, with the
@@ -3043,8 +3234,10 @@ class TelegramChannel(Channel):
         kbd = InlineKeyboardMarkup([[InlineKeyboardButton(
             text="Cancel", callback_data=job_cancel_callback(rec.id))]])
         start = self._job_start_post(rec)
+        if start is not None and start.chat_id != chat:
+            start = None
         extra = ({"reply_parameters": ReplyParameters(
-            message_id=start, allow_sending_without_reply=True)}
+            message_id=start.message_id, allow_sending_without_reply=True)}
             if start is not None else {})
         try:
             msg = await self.bot.send_message(
@@ -3105,19 +3298,22 @@ class TelegramChannel(Channel):
         return mid
 
     async def _file_job_keyboard(self, rec, message_id: int, kind: str) -> None:
-        """File a landed keyboard post; one that landed after the record's
-        terminal transition settled is retired here — whoever sees the record
-        terminal last retires the post."""
+        """File a landed keyboard post, at its address on this bot; one that
+        landed after the record's terminal transition settled is retired here
+        — whoever sees the record terminal last retires the post."""
         reg = self._engagement_registry
         if reg is None:
             return
-        if not reg.record_job_post(rec.id, message_id, keyboard=kind):
-            await self._retire_job_post(reg.get(rec.id) or rec, [message_id, kind])
+        address = self.address(self._job_chat(rec), message_id)
+        if not reg.record_job_post(rec.id, address, keyboard=kind):
+            await self._retire_job_post(reg.get(rec.id) or rec, (address, kind))
 
     def retire_job_keyboards(self, rec) -> None:
         """Take a terminal job's keyboard posts off the record (synchronously,
         so each is retired once) and edit them away on a task of their own.
-        Called by the registry's terminal observer, so it never awaits."""
+        Never awaits. With more than one bot the transport's own
+        ``retire_job_keyboards`` is the observer: it hands each endpoint only
+        that bot's posts; here, a post of another bot keeps its keyboard."""
         reg = self._engagement_registry
         if reg is None:
             return
@@ -3153,14 +3349,22 @@ class TelegramChannel(Channel):
                                rec.id[:8], exc_info=True)
 
     async def _retire_job_post(self, rec, post) -> None:
-        """Edit one keyboard post of an ended job: the start line to its
-        outcome mark, a question to no buttons. A post this cannot edit keeps
-        its keyboard; a tap on it reads the terminal record."""
+        """Edit one keyboard post of an ended job at its own address: the
+        start line to its outcome mark, a question to no buttons. A post this
+        cannot edit — one without an address, or another bot's — keeps its
+        keyboard; a tap on it reads the terminal record."""
         from engagement_registry import JOB_POST_START
-        chat = self._job_chat(rec)
-        message_id, kind = post[0], post[1]
-        if chat is None:
+        parts = _job_post_parts(post)
+        if parts is None:
+            logger.warning("job %s keyboard post without an address: %r",
+                           rec.id[:8], post)
             return
+        address, kind = parts
+        if not self._own_address(address) or address.message_id is None:
+            logger.warning("job %s keyboard post on bot %s left as it is: not "
+                           "this endpoint's", rec.id[:8], address.bot_id)
+            return
+        chat, message_id = address.chat_id, address.message_id
         if kind == JOB_POST_START:
             import background_jobs
             mark = {"completed": "✅", "cancelled": "🛑"}.get(rec.status, "❌")
@@ -3232,9 +3436,9 @@ class TelegramChannel(Channel):
             await self.deliver_system_turn(
                 rec, f"[operator answered «{question['text']}»: {option}]",
                 inbound_reservation=lease,
-                notice_target=_NoticeTarget(chat_id=msg.chat.id,
-                                            message_id=msg.message_id,
-                                            answer=True))
+                notice_target=_NoticeTarget(
+                    address=self.address(msg.chat.id, msg.message_id),
+                    answer=True))
         except Exception:  # noqa: BLE001 — the seam settled its own ticket
             logger.warning("job answer for %s not handed off", engagement_id[:8],
                            exc_info=True)
@@ -3610,8 +3814,9 @@ class TelegramChannel(Channel):
             # #1522: a file sent as a reply to an ended job's post is the
             # default agent's, never the desk's, which cannot see the job
             return None
-        if quoted is not None:
-            record = result_broker.POST_MAP.get(chat, getattr(quoted, "message_id", None))
+        quoted_at = self._quoted_address(chat, quoted)
+        if quoted_at is not None:
+            record = result_broker.POST_MAP.get(quoted_at)
             if (record is not None and record.operator_id == getattr(user, "id", None)
                     and record.role != self.default_agent):
                 return ("reply", record, record.role)
@@ -3641,7 +3846,7 @@ class TelegramChannel(Channel):
                 await self.deliver_desk_notice(chat, line)
             except Exception as exc:  # noqa: BLE001 — nothing more is attempted
                 logger.warning("file route notice failed: %s", type(exc).__name__)
-            sd.record_echo(chat, line)
+            sd.record_echo(self.bot_id, chat, line)
 
         lock = self._intake_locks.setdefault((chat, role), asyncio.Lock())
         async with lock:
@@ -3675,7 +3880,7 @@ class TelegramChannel(Channel):
                     "{label} stored {name} in its inbox but was not delegable at the post-download check.",
                     label=label, fields={"name": name}))
                 return
-            desk = sd.DESKS.get_or_create(chat, role)
+            desk = sd.DESKS.get_or_create(self.bot_id, chat, role)
             if desk.faulted:
                 await tell(sd.faulted_line(label))
                 return
@@ -3813,21 +4018,27 @@ class TelegramChannel(Channel):
             if cq.message is None or cq.message.chat is None:
                 return  # toast "expired" in finally
             chat = cq.message.chat.id
+            bot = self.bot_id
             meta = (
                 BROKER.get_meta(
-                    namespace="resident_ask", scope=f"dm:{chat}", request_id=rid,
+                    namespace="resident_ask", scope=tg_scope("dm", bot, chat),
+                    request_id=rid,
                 )
                 or BROKER.get_meta(
-                    namespace="resident_ask", scope=f"authz:{chat}", request_id=rid,
+                    namespace="resident_ask", scope=tg_scope("authz", bot, chat),
+                    request_id=rid,
                 )
                 # browser executor §5.3/§5.5: a plugin's operator question
                 or BROKER.get_meta(
-                    namespace="resident_ask", scope=f"ask:{chat}", request_id=rid,
+                    namespace="resident_ask", scope=tg_scope("ask", bot, chat),
+                    request_id=rid,
                 )
             )
             if meta is None:
                 return
-            if meta.get("chat_id") != chat:
+            # the question is this bot's: Telegram routes a tap to the bot
+            # that posted the keyboard, and the index must agree
+            if meta.get("chat_id") != chat or meta.get("bot_id") != bot:
                 return
             options = meta.get("options") or []
             if not (0 <= idx < len(options)):
@@ -4097,8 +4308,13 @@ class TelegramChannel(Channel):
         reserved ``synthetic`` / ``button_answer`` markers are set directly and
         NOT passed through ``sanitize_external_context`` (which would strip
         them).
+
+        The turn's route is this bot: the one that posted the keyboard and
+        received the tap (the tap is refused on any other bot), so the
+        continuation's replies leave through the bot its question did.
         """
         delays = (0.5, 1.0)
+        route = self.bot_id
         # r1-1/W3 REQUIREMENT: the continuation lease id MUST equal the cid the
         # dispatched turn carries, so the target agent's own delivery/teardown
         # releases it. Compute the cid ONCE and reuse it across retries — a
@@ -4133,6 +4349,7 @@ class TelegramChannel(Channel):
                     "cid": cid,
                     "synthetic": "button",
                     "button_answer": request_id,
+                    "_tg_bot": route,
                     "_origin_route": "telegram",
                     "_origin_clearance": _clearance,
                     # #283: a button tap is a live operator action — same
@@ -4196,8 +4413,12 @@ class TelegramChannel(Channel):
         ``answered_by_operator`` (#1277) adds the one reserved
         ``ANSWERED_BY_OPERATOR`` marker, so a job this turn starts records
         that the operator asked. It names no speaker and grants nothing.
+
+        The turn's route is this bot, the one the question's record names:
+        its keyboard was posted, and is settled, through this endpoint.
         """
         delays = (0.5, 1.0)
+        route = self.bot_id
         cid = new_cid()
         for attempt in range(3):
             msg = BusMessage(
@@ -4210,6 +4431,7 @@ class TelegramChannel(Channel):
                     "chat_id": session_scope,
                     "cid": cid,
                     "button_answer": request_id,
+                    "_tg_bot": route,
                     **scheduled_delivery_markers("telegram", epoch),
                     **({ANSWERED_BY_OPERATOR: True} if answered_by_operator else {}),
                 },
@@ -4390,19 +4612,24 @@ class TelegramChannel(Channel):
             chat = int(chat_id)
         except (TypeError, ValueError):
             return
-        import result_broker
-        result_broker.POST_MAP.record(chat, message_id, post)
+        # The message landed, so this bot's id is known: it is filed at its
+        # address on this bot, never at a bare chat and message id another
+        # bot could also have.
+        address = self.address(chat, message_id) if type(message_id) is int else None
+        if address is not None:
+            import result_broker
+            result_broker.POST_MAP.record(address, post)
         # A job's plugin post is also filed on the job's record, so a reply
         # to it reaches the job for as long as the job lives — a restart and
         # the post map's bound included. Anything else files nothing.
         reg = self._engagement_registry
         owner = getattr(post, "owner", "")
         if (reg is not None and isinstance(owner, str) and owner
-                and type(message_id) is int):
+                and address is not None):
             filer = getattr(reg, "record_job_post", None)
             if filer is not None:
                 try:
-                    filer(owner, message_id)
+                    filer(owner, address)
                 except Exception:  # noqa: BLE001 — filing never fails a post
                     logger.warning("job post filing failed", exc_info=True)
         if message_id is not None:

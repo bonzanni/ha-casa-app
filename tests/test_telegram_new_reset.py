@@ -72,6 +72,7 @@ def _make_channel(
     bus = MessageBus()
     bus.register("assistant", _noop)
     ch = TelegramChannel(
+        known_bot_id=111,
         bot_token="T",
         chat_id="0",
         default_agent="assistant",

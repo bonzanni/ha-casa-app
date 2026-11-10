@@ -204,7 +204,7 @@ async def main():
     await updater.initialize()
     await updater.start_polling(poll_interval=0.0)
     tap = await asyncio.wait_for(queue.get(), 5)
-    channel = TelegramChannel(bot_token="T", chat_id="500",
+    channel = TelegramChannel(known_bot_id=111, bot_token="T", chat_id="500",
                               default_agent="assistant", bus=None)
     channel._app = types.SimpleNamespace(updater=updater, bot=None)
     paused = await channel.pause_updates_for_restart()
@@ -237,13 +237,13 @@ def test_pausing_updates_confirms_the_consent_tap():
 async def test_webhook_mode_and_a_stopped_updater_pause_nothing():
     from channels.telegram import TelegramChannel
 
-    channel = TelegramChannel(bot_token="T", chat_id="500",
+    channel = TelegramChannel(known_bot_id=111, bot_token="T", chat_id="500",
                               default_agent="assistant", bus=None,
                               webhook_url="https://casa.example.com")
     channel._app = types.SimpleNamespace(
         updater=types.SimpleNamespace(running=True), bot=None)
     assert await channel.pause_updates_for_restart() is False
-    polling = TelegramChannel(bot_token="T", chat_id="500",
+    polling = TelegramChannel(known_bot_id=111, bot_token="T", chat_id="500",
                               default_agent="assistant", bus=None)
     polling._app = types.SimpleNamespace(
         updater=types.SimpleNamespace(running=False), bot=None)
@@ -270,7 +270,7 @@ def _dm_channel():
 
     bus = MessageBus()
     bus.register("assistant", _noop)
-    channel = TelegramChannel(bot_token="T", chat_id="42",
+    channel = TelegramChannel(known_bot_id=111, bot_token="T", chat_id="42",
                               default_agent="assistant", bus=bus)
     channel._start_typing = lambda *a, **k: None
     channel._app = types.SimpleNamespace(bot=_Bot())
@@ -313,7 +313,7 @@ async def test_a_dm_after_a_failed_request_is_an_ordinary_turn(supervisor):
 async def test_a_reply_into_a_job_gets_the_line_and_no_turn(supervisor):
     from channels.telegram import TelegramChannel, _NoticeTarget
 
-    channel = TelegramChannel(bot_token="T", chat_id="42",
+    channel = TelegramChannel(known_bot_id=111, bot_token="T", chat_id="42",
                               default_agent="assistant", bus=None)
     notices, turns = [], []
 
@@ -327,7 +327,7 @@ async def test_a_reply_into_a_job_gets_the_line_and_no_turn(supervisor):
     channel._send_dm_reply = reply
     channel._engagement_driver = _Driver()
     rec = types.SimpleNamespace(id="e" * 32, origin={})
-    target = _NoticeTarget(chat_id=42, message_id=7)
+    target = _NoticeTarget(address=channel.address(42, 7))
 
     assert await channel._deliver_to_job(rec, "first",
                                          notice_target=target) is True

@@ -86,6 +86,7 @@ async def test_successful_rebuild_heals_breaker(monkeypatch):
     app.updater = MagicMock()
     app.updater.start_polling = AsyncMock()
     app.bot = MagicMock()
+    app.bot.id = 4242       # initialize() ran getMe
 
     def fake_builder():
         chain = MagicMock()
