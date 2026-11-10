@@ -20,7 +20,9 @@ SCRIPT = REPO / "casa" / "rootfs" / "opt" / "casa" / "scripts" / "pyrun_digest.p
 
 _spec = importlib.util.spec_from_file_location("pyrun_digest", SCRIPT)
 pyrun_digest = importlib.util.module_from_spec(_spec)
+sys.dont_write_bytecode = True
 _spec.loader.exec_module(pyrun_digest)
+sys.dont_write_bytecode = False
 
 CHILD_BODY = """  profile pyrun flags=(mediate_deleted) {
     /opt/casa/run/python3 rm,

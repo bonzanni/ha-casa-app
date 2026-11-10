@@ -96,6 +96,19 @@ RUN /opt/casa/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt
 # Copy application (frequently-changing layer, kept last).
 COPY rootfs /
 
+# The script runner's box (docs/architecture/script-runner.md). A model's script runs
+# under a dedicated copy of the system interpreter at an exact path the AppArmor profile
+# sends into its child profile; a real file, since a symlink would resolve to
+# /usr/bin/python3.X and run under Casa's own profile. The sentinel file is named by
+# the child profile text's digest, which the prelude opens before it runs anything,
+# so a profile of any other text loaded under the same label refuses the box. setpriv
+# drops the box to its uid.
+COPY apparmor.txt /etc/casa-apparmor.txt
+RUN mkdir -p /opt/casa/run \
+    && cp "$(readlink -f /usr/bin/python3)" /opt/casa/run/python3 \
+    && : > "/opt/casa/run/pyrun.$(python3 /opt/casa/scripts/pyrun_digest.py print /etc/casa-apparmor.txt)" \
+    && test -x /usr/bin/setpriv
+
 # Set permissions for s6-rc services and scripts
 RUN chmod +x /etc/s6-overlay/scripts/*.sh \
     && find /etc/s6-overlay/s6-rc.d -name 'run' -o -name 'finish' \
