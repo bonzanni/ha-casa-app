@@ -67,6 +67,7 @@ class World:
     open: dict = field(default_factory=dict)          # bot_id -> what still waits on it
     restarts: int = 0                                 # app restarts requested
     restart_ok: bool = True
+    op_delete_fails: bool = False                     # `op item delete` exits non-zero
 
     def tick(self, what: str) -> None:
         self.effects.append(what)
@@ -297,6 +298,12 @@ class FakeOp:
             self.w.op_items[item_id]["token"] = tpl["fields"][0]["value"]
             self.w.tick("op_edit")
             return ok("{}")
+        if args[:2] == ["item", "delete"]:
+            if self.w.op_delete_fails or args[2] not in self.w.op_items:
+                return subprocess.CompletedProcess(cmd, 1, "", "not deleted")
+            del self.w.op_items[args[2]]
+            self.w.tick("op_delete")
+            return ok("")
         if args[:2] == ["item", "get"]:
             item = self.w.op_items.get(args[2])
             if item is None:

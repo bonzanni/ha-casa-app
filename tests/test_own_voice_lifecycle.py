@@ -817,6 +817,131 @@ async def test_a_switching_bot_holds_what_it_receives_and_says_setup_once(world,
 
 
 # ---------------------------------------------------------------------------
+# a pending switch is applied at boot, before anything can start a bot
+# ---------------------------------------------------------------------------
+
+async def _restart_applying_switches(world, root, **kw):
+    lc, host = make_lifecycle(world, root, **kw)
+    await lc.apply_switches()
+    await lc.boot()
+    return lc, host
+
+
+async def test_a_pending_switch_retires_the_old_bot_and_binds_the_new_one_at_boot(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _bind_alex(lc, host)
+    assert await lc.intake(ALEX_BOT, update(1, "/start")) == "deliver"     # the chat opens
+    assert lc.store.agents["finance"]["chat_open_at"]
+    await lc.replace("finance", "CasaFinance4821Bot")
+    world.tokens[NEW_BOT] = NEW_TOKEN
+    await lc.on_created(created(NEW_BOT, "Alex", "CasaFinance4821Bot"), OPERATOR)
+    lc.journal.append(ALEX_BOT, update(2))          # something held for the old bot
+    lc2, host2 = make_lifecycle(world, root)
+    await lc2.apply_switches()
+    disk = _disk(root)
+    assert str(ALEX_BOT) not in disk["bots"]
+    assert disk["bots"][str(NEW_BOT)]["phase"] == ovl.BINDING
+    assert disk["agents"]["finance"]["bot_id"] == NEW_BOT
+    assert world.op_items == {}
+    await lc2.boot()
+    assert ALEX_BOT not in lc2.store.bots
+    assert not lc2.journal.path(ALEX_BOT).exists()
+    assert [i["token"] for i in world.op_items.values()] == [NEW_TOKEN]
+    agent = lc2.store.agents["finance"]
+    assert agent["bot_id"] == NEW_BOT and lc2.store.bots[NEW_BOT]["phase"] == ovl.BOUND
+    assert agent["chat_open_at"] is None and agent["change"] is None
+    assert agent["moved_from"] == "HeyAlexTestBot"
+    assert host2.endpoints[NEW_BOT].bot_token == NEW_TOKEN
+    assert host2.endpoints[NEW_BOT].default_agent == "finance"
+    assert ALEX_BOT not in host2.endpoints
+    assert lc2.state("finance") == "not_open"
+
+
+async def test_a_switch_with_a_durable_open_item_stays_pending_and_the_old_bot_boots(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _created_switch(lc, host, world)
+    world.open[ALEX_BOT] = ["a scheduled question"]
+    lc2, host2 = await _restart_applying_switches(world, root)
+    agent = lc2.store.agents["finance"]
+    assert agent["change"]["new_bot"] == NEW_BOT and agent["bot_id"] == ALEX_BOT
+    assert lc2.store.bots[ALEX_BOT]["phase"] == ovl.BOUND
+    assert host2.endpoints[ALEX_BOT].default_agent == "finance"
+    assert lc2.store.bots[NEW_BOT]["phase"] == ovl.SWITCHING
+    assert host2.endpoints[NEW_BOT].default_agent == ""
+    assert world.card_text(agent["offer_card"]) == (
+        "Alex still had something open in @HeyAlexTestBot, so the move to "
+        "@CasaFinance4821Bot waits. Ask Ellen again once it's done.")
+    del world.open[ALEX_BOT]
+    assert (await lc2.replace("finance", "CasaFinance4821Bot"))["status"] == "restarting"
+    lc3, _host3 = await _restart_applying_switches(world, root)
+    assert lc3.store.agents["finance"]["bot_id"] == NEW_BOT
+    assert lc3.store.bots[NEW_BOT]["phase"] == ovl.BOUND
+
+
+async def test_the_switch_step_touches_no_telegram(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _created_switch(lc, host, world)
+    lc2, host2 = make_lifecycle(world, root)
+
+    def refuse(name):
+        async def call(*_a, **_kw):
+            raise AssertionError(f"{name} called before the channels exist")
+        return call
+    for name in ("fetch_token", "start_endpoint", "stop_endpoint", "post_card", "edit_card",
+                 "post_ask", "notify", "manager_me", "manager_check", "probe", "release_update",
+                 "restrict_access", "set_description", "set_short_description", "set_commands",
+                 "set_photo", "remove_photo", "request_restart", "handle_taken"):
+        setattr(host2, name, refuse(name))
+    await lc2.apply_switches()
+    assert ALEX_BOT not in lc2.store.bots
+    assert lc2.store.bots[NEW_BOT]["phase"] == ovl.BINDING
+    assert lc2.store.agents["finance"]["bot_id"] == NEW_BOT
+
+
+async def test_without_onepassword_the_old_token_file_is_removed(world, root):
+    lc, host = make_lifecycle(world, root, onepassword=False)
+    await _created_switch(lc, host, world)
+    path = root / "agent-voices" / "tokens" / "finance"
+    assert path.read_text() == ALEX_TOKEN
+    lc2, _host2 = make_lifecycle(world, root, onepassword=False)
+    await lc2.apply_switches()
+    assert not path.exists()
+    await lc2.boot()
+    assert path.read_text() == NEW_TOKEN
+
+
+async def test_a_token_that_cannot_be_deleted_does_not_stop_the_switch(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _created_switch(lc, host, world)
+    (item,) = world.op_items
+    world.op_delete_fails = True
+    lc2, host2 = await _restart_applying_switches(world, root)
+    assert lc2.store.bots[NEW_BOT]["phase"] == ovl.BOUND
+    assert list(world.op_items) == [item]               # rewritten in place
+    assert world.op_items[item]["token"] == NEW_TOKEN
+    assert host2.endpoints[NEW_BOT].bot_token == NEW_TOKEN
+
+
+def test_a_token_item_already_gone_counts_as_deleted(tmp_path):
+    world = World()
+    store = ovl.TokenStore(tmp_path / "tokens", env=OP_ENV, run=FakeOp(world))
+    item = store.store("finance", ALEX_TOKEN, None)
+    store.delete("finance", item)
+    assert world.op_items == {}
+    store.delete("finance", item)                     # a re-run: nothing left, done
+    store.delete("finance", None)
+    item = store.store("finance", ALEX_TOKEN, None)
+    world.op_delete_fails = True
+    with pytest.raises(ovl.TokenStoreError):
+        store.delete("finance", item)
+    files = ovl.TokenStore(tmp_path / "files", env={})
+    files.store("finance", ALEX_TOKEN, None)
+    files.delete("finance", None)
+    files.delete("finance", None)
+    assert not (tmp_path / "files" / "finance").exists()
+
+
+# ---------------------------------------------------------------------------
 # every unbound bot has an answerable question after a restart
 # ---------------------------------------------------------------------------
 
@@ -1504,6 +1629,45 @@ def _check_uninstall(lc, host, world, held):
     assert lc.journal.pending(ALEX_BOT) == []
 
 
+async def _scenario_switch(lc, host, world):
+    await _bind_alex(lc, host)
+    await lc.replace("finance", "CasaFinance4821Bot")
+    world.tokens[NEW_BOT] = NEW_TOKEN
+    await lc.on_created(created(NEW_BOT, "Alex", "CasaFinance4821Bot"), OPERATOR)
+    await lc.apply_switches()               # the restart, in this process
+    await lc.boot()
+
+
+async def _finish_switch(lc, host, world):
+    world.tokens[NEW_BOT] = NEW_TOKEN
+    if NEW_BOT not in lc.store.bots:        # crashed before the new bot was created
+        found = lc.store.bot_of("finance")
+        if found is None or found[1]["phase"] != ovl.BOUND:
+            await _finish_match(lc, host, world)
+        if lc.store.agents["finance"]["change"] is None:
+            await lc.replace("finance", "CasaFinance4821Bot")
+        await lc.on_created(created(NEW_BOT, "Alex", "CasaFinance4821Bot"), OPERATOR)
+    if lc.store.bots[NEW_BOT]["phase"] == ovl.SWITCHING:
+        await lc.apply_switches()
+        await lc.boot()
+
+
+def _check_switch(lc, host, world, held):
+    agent = lc.store.agents["finance"]
+    if agent["change"] is not None:          # still pending: the old bot runs
+        assert lc.store.bots[ALEX_BOT]["phase"] == ovl.BOUND
+        assert lc.store.bots[NEW_BOT]["phase"] == ovl.SWITCHING
+    else:
+        assert ALEX_BOT not in lc.store.bots
+        assert agent["bot_id"] == NEW_BOT and agent["moved_from"] == "HeyAlexTestBot"
+        assert lc.store.bots[NEW_BOT]["phase"] == ovl.BOUND
+        assert lc.store.bots[NEW_BOT]["role"] == "finance"
+        assert host.endpoints[NEW_BOT].bot_token == NEW_TOKEN
+    assert len(world.op_items) <= 1
+    for item in world.op_items.values():
+        assert ovl.token_belongs_to(item["token"], agent["bot_id"])
+
+
 SCENARIOS = {
     "ask_then_bind": (_scenario_ask_then_bind, _finish_ask_then_bind, _check_ask_then_bind),
     "match": (_scenario_match, _finish_match, _check_match),
@@ -1511,6 +1675,7 @@ SCENARIOS = {
     "ask_none": (_scenario_none, _finish_none, _check_none),
     "deleted": (_scenario_delete, _finish_delete, _check_delete),
     "uninstall": (_scenario_uninstall, _finish_uninstall, _check_uninstall),
+    "switch": (_scenario_switch, _finish_switch, _check_switch),
 }
 
 
@@ -1552,6 +1717,7 @@ async def test_the_crash_sweep(tmp_path, name):
             uid for _b, uid in w.released}
         w.crash_at = None
         lc2, host2 = make_lifecycle(w, root)
+        await lc2.apply_switches()
         await lc2.boot()
         await finish(lc2, host2, w)
         check(lc2, host2, w, held)
@@ -1564,7 +1730,6 @@ def test_every_phase_has_a_boot_reconciliation():
         assert callable(getattr(ovl.Lifecycle, method)), phase
 
 
-@pytest.mark.xfail(strict=True, reason="no scenario reaches the switching phase yet")
 async def test_the_sweep_reaches_every_phase_but_released_ones_alone(tmp_path):
     """Across the sweep's scenarios, the crash points cover every phase that
     has a transition out of it."""

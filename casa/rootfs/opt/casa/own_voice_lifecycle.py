@@ -490,6 +490,30 @@ class TokenStore:
         except OSError as exc:
             raise TokenStoreError(f"op did not start ({type(exc).__name__})") from None
 
+    def delete(self, role: str, item_id: "str | None") -> None:
+        """Remove *role*'s stored token: its file, or its 1Password item
+        (by *item_id*, else found by title and tag). An item that is already
+        gone counts as deleted. Raises :class:`TokenStoreError`."""
+        if not self.onepassword():
+            try:
+                self._file(role).unlink()
+            except FileNotFoundError:
+                return
+            fsync_directory(self.dir)
+            return
+        try:
+            target = item_id or self._lookup(role)
+            if not target:
+                return
+            r = self._op(["item", "delete", target, "--vault", self._vault()])
+            if r.returncode == 0 or self._lookup(role) is None:
+                return
+            raise TokenStoreError(f"op item delete failed ({r.returncode})")
+        except subprocess.TimeoutExpired:
+            raise TokenStoreError("op timed out") from None
+        except OSError as exc:
+            raise TokenStoreError(f"op did not start ({type(exc).__name__})") from None
+
     def load(self, role: str, item_id: "str | None") -> "str | None":
         """The stored token of *role*, or ``None`` when it is missing or
         cannot be read (it is then fetched from Telegram again)."""
@@ -547,6 +571,7 @@ class Lifecycle:
         self._manager_down = False
         self._manager_told = False
         self._avatar_told: set[str] = set()
+        self._switch_held: dict[str, list[str]] = {}
 
     # -- reads ------------------------------------------------------------
 
@@ -1442,6 +1467,58 @@ class Lifecycle:
 
     # -- triggers ---------------------------------------------------------
 
+    async def apply_switches(self) -> None:
+        """Move each agent whose new bot exists to it. Runs at boot before
+        any channel, endpoint or worker exists, and reads only Casa's records
+        and the token store: no Telegram call, no card.
+
+        A switch stays pending while a durable record still waits on the old
+        bot (the card says so once the channels are up). Otherwise the old
+        bot is retired (its record, held updates and stored token) and the
+        new one is handed to the ordinary binding. Every step is persisted
+        and idempotent, so a crash anywhere re-runs from what is on disk."""
+        self._switch_held.clear()
+        for role in sorted(self.store.agents):
+            agent = self.store.agents[role]
+            change = agent.get("change")
+            if change is None or change["new_bot"] is None:
+                continue
+            old_bot, new_bot = change["old_bot"], change["new_bot"]
+            if old_bot is not None and old_bot in self.store.bots:
+                items = list(self.host.open_items(role, old_bot, True) or [])
+                if items:
+                    self._switch_held[role] = items
+                    logger.info("own chat %s: the move to a new bot waits; still open "
+                                "on the old one: %s", role, ", ".join(items))
+                    continue
+            if old_bot is not None:
+                self.store.bots.pop(old_bot, None)
+                if agent.get("bot_id") == old_bot:
+                    agent["bot_id"] = None
+                    agent["chat_open_at"] = None
+            agent["moved_from"] = change["old_username"]
+            await self.store.save()
+            if old_bot is not None:
+                await asyncio.to_thread(self.journal.drop, old_bot)
+                self._tokens.pop(old_bot, None)
+                self._reconciled.discard(old_bot)
+            try:
+                await asyncio.to_thread(self.tokens.delete, role, agent.get("token_item"))
+            except TokenStoreError as exc:
+                # The binding below writes the same item in place, and a stored
+                # token of another bot is never used.
+                logger.warning("own chat %s: the old bot's token was not deleted (%s)",
+                               role, exc)
+            agent["token_item"] = None
+            await self.store.save()
+            new_rec = self.store.bots.get(new_bot)
+            if new_rec is not None:
+                new_rec.update(phase=BINDING, role=role)
+                agent["bot_id"] = new_bot
+            agent["change"] = None
+            await self.store.save()
+            logger.info("own chat %s: moved to its new bot %s", role, new_bot)
+
     async def boot(self) -> None:
         """Boot order: the resident's bot first, then every bot's phase
         completed or rolled back — a bound or dormant bot against its role's
@@ -1453,6 +1530,16 @@ class Lifecycle:
         status = await self.host.manager_check()
         if status == "unauthorized":
             self._manager_unauthorized()
+        for role in sorted(self._switch_held):
+            agent = self.store.agents.get(role) or {}
+            change = agent.get("change") or {}
+            new = (self.store.bots.get(change.get("new_bot")) or {}).get("username") or ""
+            await self._edit(
+                agent.get("offer_card"),
+                f"{self._label(role)} still had something open in "
+                f"@{change.get('old_username', '')}, so the move to @{new} waits. "
+                f"Ask {self._resident()} again once it's done.")
+        self._switch_held.clear()
         for bot_id in sorted(self.store.bots):
             async with self._lock(bot_id):
                 try:
