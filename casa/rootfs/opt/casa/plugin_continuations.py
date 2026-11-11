@@ -585,6 +585,24 @@ async def call_plugin_tool(server: dict, tool: str, args: dict, *,
     return text
 
 
+async def list_plugin_tools(server: dict, *, timeout_s: float = 20.0) -> list[dict]:
+    """Start the server, ask it which tools it serves, and stop it: ``[{name, description,
+    inputSchema}]``. It runs ``initialize`` and ``list_tools`` and nothing else, never a tool,
+    inside one overall budget of *timeout_s* (``TimeoutError`` when it is spent)."""
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+
+    params = StdioServerParameters(command=server["command"], args=server["args"],
+                                   env=server["env"], cwd=server["cwd"])
+    async with asyncio.timeout(timeout_s):
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                listed = await session.list_tools()
+    return [{"name": t.name, "description": getattr(t, "description", None),
+             "inputSchema": getattr(t, "inputSchema", None)} for t in listed.tools]
+
+
 async def call_sweep_tool(server: dict, tool: str
                           ) -> tuple[list[dict], float | None, list[dict]]:
     """Start the server, call *tool* with no arguments, read its JSON text: the entries, the

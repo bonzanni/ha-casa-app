@@ -35,6 +35,7 @@ from system_requirements.manifest import (
 import background_jobs
 import plugin_registry
 import plugin_store
+import tool_descriptions
 from plugin_grants import (
     CASA_OWNED_ENV_OPTIONS as _CASA_OWNED_ENV,
     apply_profile_plan,
@@ -3085,6 +3086,7 @@ def _capture_build_input(cfg):
     resolution, withheld = withhold_env_unresolved(
         _delegated_resolution(cfg), context=f"delegated {_role} options")
     protected = protected_map(resolution)
+    tool_descriptions.schedule_fill(resolution)
     contract_map = result_contract_map(resolution)
     target = f"{_tier}:{_role}"
     plan = profile_plan(resolution, target=target, withheld=[rp for rp, _ in withheld])
@@ -3263,6 +3265,7 @@ def _build_specialist_options(
     else:
         from plugin_grants import protected_map
         _protected = protected_map(resolution)
+        tool_descriptions.schedule_fill(resolution)
     _authz_role = getattr(cfg, "role", "unknown")
     _authz_hook = None
     if _protected:
@@ -3521,6 +3524,7 @@ def _build_plugin_job_options(rec, resolution,
         raise RuntimeError("declaring plugin unavailable for plugin job")
     role = rec.role_or_type
     protected = protected_map(resolution)
+    tool_descriptions.schedule_fill(resolution)
 
     def deps():
         # The transport: a challenge goes through the bot of the job's route.
