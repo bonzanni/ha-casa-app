@@ -21,12 +21,15 @@ import time
 logger = logging.getLogger(__name__)
 
 # One listing starts the plugin's server, so a plugin that failed is not started
-# again by every session build: it is tried again after this many seconds.
+# again by every session build: it is tried again after this many seconds, and
+# given up on after MAX_ATTEMPTS failures in one process.
 RETRY_AFTER_S = 300.0
+MAX_ATTEMPTS = 3
 
 _loop: "asyncio.AbstractEventLoop | None" = None
 _cache: dict[tuple[str, str], dict] = {}
-_listed: set[str] = set()          # artifact ids listed, or being listed
+_listed: set[str] = set()          # artifact ids listed, being listed, or given up on
+_attempts: dict[str, int] = {}     # artifact id -> failed listings so far
 _failed_at: dict[str, float] = {}  # artifact id -> monotonic time of its last failure
 _tasks: set["asyncio.Task"] = set()  # strong references while a fill is in flight
 
@@ -81,6 +84,7 @@ def _start(resolution) -> None:
                 continue
             server = sweep_server(rp)
             if server is None:
+                _listed.add(aid)          # settled: not re-read, not logged again
                 logger.info("tool descriptions: %s (artifact_id=%s) not listed: it has no "
                             "single stdio server", rp.name, aid)
                 continue
@@ -103,11 +107,16 @@ async def _fill(rp, server: dict, names: list[str]) -> None:
             _cache[(aid, name)] = {"description": t.get("description"),
                                    "inputSchema": t.get("inputSchema")}
         _failed_at.pop(aid, None)
+        _attempts.pop(aid, None)
     except Exception as exc:  # noqa: BLE001 — a miss, logged; the card goes without
-        _listed.discard(aid)
         _failed_at[aid] = time.monotonic()
-        logger.info("tool descriptions: listing %s (artifact_id=%s) failed: %s: %s",
-                    rp.name, aid, type(exc).__name__, exc)
+        _attempts[aid] = _attempts.get(aid, 0) + 1
+        final = _attempts[aid] >= MAX_ATTEMPTS
+        if not final:
+            _listed.discard(aid)          # may be tried again after the cooldown
+        logger.info("tool descriptions: listing %s (artifact_id=%s) failed: %s: %s%s",
+                    rp.name, aid, type(exc).__name__, exc,
+                    f"; giving up after {MAX_ATTEMPTS} attempts" if final else "")
 
 
 def _reset_for_tests() -> None:
@@ -115,5 +124,6 @@ def _reset_for_tests() -> None:
     _loop = None
     _cache.clear()
     _listed.clear()
+    _attempts.clear()
     _failed_at.clear()
     _tasks.clear()

@@ -499,6 +499,15 @@ def _isolate_resident_bindings(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _tool_descriptions_state_reset():
+    """``casa_core.main()`` binds ``tool_descriptions`` to its loop; a test that runs it
+    would leave the next test on that worker a bound, closed loop and a warm cache."""
+    yield
+    import tool_descriptions
+    tool_descriptions._reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_job_inbox(tmp_path, monkeypatch):
     """Point a background job's operator-message journal (``job_inbox``) and
     its scratchpad files (``background_jobs.JOB_PAD_ROOT``) at a per-test tmp

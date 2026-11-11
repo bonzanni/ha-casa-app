@@ -15,11 +15,7 @@ import tool_descriptions as td
 from plugin_registry import ResolvedPlugin
 
 
-@pytest.fixture(autouse=True)
-def _clean():
-    td._reset_for_tests()
-    yield
-    td._reset_for_tests()
+# tests/conftest.py resets the module's state after every test.
 
 
 def _tool(name, description=None, schema=None):
@@ -28,7 +24,7 @@ def _tool(name, description=None, schema=None):
 
 def _plugin(tmp_path, name, artifact_id, protected, *, servers=1):
     root = tmp_path / name
-    root.mkdir(exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True)
     mcp = {f"s{i}": {"command": "python", "args": ["x.py"]} for i in range(servers)}
     (root / ".mcp.json").write_text(json.dumps({"mcpServers": mcp}))
     manifest = {"name": name, "casa": {"protectedTools": protected}}
@@ -61,6 +57,7 @@ async def test_list_plugin_tools_never_calls_a_tool(monkeypatch):
             return self
 
         async def __aexit__(self, *exc):
+            calls.append("session_exit")
             return False
 
         async def initialize(self):
@@ -82,6 +79,7 @@ async def test_list_plugin_tools_never_calls_a_tool(monkeypatch):
             return ("r", "w")
 
         async def __aexit__(self, *exc):
+            calls.append("stdio_exit")
             return False
 
     import mcp
@@ -91,7 +89,9 @@ async def test_list_plugin_tools_never_calls_a_tool(monkeypatch):
 
     server = {"command": "python", "args": [], "env": {}, "cwd": "."}
     listed = await pc.list_plugin_tools(server)
-    assert [c for c in calls if c != "stdio_client"] == ["initialize", "list_tools"]
+    # Exactly these two requests, then the session and the server's stdio are torn down
+    # (session first), so no server process outlives the listing.
+    assert calls == ["stdio_client", "initialize", "list_tools", "session_exit", "stdio_exit"]
     assert listed == [{"name": "send", "description": "Sends.",
                        "inputSchema": {"type": "object"}}]
 
@@ -155,23 +155,29 @@ async def test_fill_stores_only_protected_tools_under_the_artifact_id(monkeypatc
 
 @pytest.mark.asyncio
 async def test_a_late_fill_cannot_overwrite_another_artifact(monkeypatch, tmp_path):
-    a = _plugin(tmp_path, "one", "a" * 64, ["do"])
-    b = _plugin(tmp_path, "two", "b" * 64, ["do"])
-    gate = {a.path: asyncio.Event()}
+    """An update: the same plugin name, a new artifact id. The old artifact's listing
+    finishes last and must leave the new artifact's entry alone."""
+    old = _plugin(tmp_path / "old", "mail", "a" * 64, ["do"])
+    new = _plugin(tmp_path / "new", "mail", "b" * 64, ["do"])
+    assert old.name == new.name and old.path != new.path
+    gate = {old.path: asyncio.Event()}
     _fake_list(monkeypatch, {
-        a.path: [{"name": "do", "description": "A's words", "inputSchema": {}}],
-        b.path: [{"name": "do", "description": "B's words", "inputSchema": {}}]},
+        old.path: [{"name": "do", "description": "old words", "inputSchema": {"v": 1}}],
+        new.path: [{"name": "do", "description": "new words", "inputSchema": {"v": 2}}]},
         gate=gate)
     td.bind_loop(asyncio.get_running_loop())
-    td.schedule_fill(_resolution(a, b))
+    td.schedule_fill(_resolution(old))
+    await asyncio.sleep(0)
+    td.schedule_fill(_resolution(new))               # the update lands while old lists
     for _ in range(5):
         await asyncio.sleep(0)
-    assert td.get(b.artifact_id, "do")["description"] == "B's words"
-    assert td.get(a.artifact_id, "do") is None         # A is still listing
-    gate[a.path].set()                                 # A finishes after B
+    assert td.get(new.artifact_id, "do")["description"] == "new words"
+    assert td.get(old.artifact_id, "do") is None     # still listing
+    gate[old.path].set()                             # the old listing finishes last
     await _drain()
-    assert td.get(b.artifact_id, "do")["description"] == "B's words"
-    assert td.get(a.artifact_id, "do")["description"] == "A's words"
+    assert td.get(new.artifact_id, "do") == {"description": "new words",
+                                             "inputSchema": {"v": 2}}
+    assert td.get(old.artifact_id, "do")["description"] == "old words"
 
 
 @pytest.mark.asyncio
@@ -217,6 +223,25 @@ async def test_unlistable_plugin_leaves_a_logged_miss(monkeypatch, tmp_path, cap
     text = "\n".join(r.getMessage() for r in caplog.records)
     assert "two" in text and "e" * 64 in text
     assert "boom" in text and "f" * 64 in text and "server died" in text
+
+
+@pytest.mark.asyncio
+async def test_an_unlistable_plugin_is_read_and_logged_once(monkeypatch, tmp_path, caplog):
+    two = _plugin(tmp_path, "two", "7" * 64, ["send"], servers=2)
+    import plugin_store
+    reads: list = []
+    real = plugin_store.mcp_servers_map
+    monkeypatch.setattr(plugin_store, "mcp_servers_map",
+                        lambda path: reads.append(path) or real(path))
+    _fake_list(monkeypatch, {})
+    td.bind_loop(asyncio.get_running_loop())
+    with caplog.at_level(logging.INFO):
+        for _ in range(2):
+            td.schedule_fill(_resolution(two))
+            await asyncio.sleep(0)
+            await _drain()
+    assert len(reads) == 1
+    assert [r for r in caplog.records if "7" * 64 in r.getMessage()].__len__() == 1
 
 
 @pytest.mark.asyncio
@@ -267,6 +292,22 @@ async def test_a_failed_fill_may_be_tried_again_later(monkeypatch, tmp_path):
     await asyncio.sleep(0)
     await _drain()
     assert td.get("3" * 64, "send")["description"] == "up"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_plugin_is_listed_at_most_three_times(monkeypatch, tmp_path, caplog):
+    rp = _plugin(tmp_path, "mail", "8" * 64, ["send"])
+    seen = _fake_list(monkeypatch, {rp.path: RuntimeError("down")})
+    td.bind_loop(asyncio.get_running_loop())
+    with caplog.at_level(logging.INFO):
+        for _ in range(4):
+            td.schedule_fill(_resolution(rp))
+            await asyncio.sleep(0)
+            await _drain()
+            td._failed_at["8" * 64] -= td.RETRY_AFTER_S + 1   # the cooldown has passed
+    assert len(seen) == td.MAX_ATTEMPTS == 3
+    assert td.get("8" * 64, "send") is None
+    assert len([r for r in caplog.records if "giving up" in r.getMessage()]) == 1
 
 
 @pytest.mark.asyncio
