@@ -253,10 +253,44 @@ def _repair_private_state() -> None:
 def _bus_loop_targets(agents: dict) -> list[str]:
     """H4 (v0.53.0): bus targets that need a ``run_agent_loop`` consumer.
 
-    Residents (``agents`` roles) + the ``telegram`` outbound target.
+    The ``agents`` roles (residents, and every specialist that keeps a
+    conversation in its own chat) + the ``telegram`` outbound target.
     ``dict.fromkeys`` dedupes while preserving order.
     """
     return list(dict.fromkeys(list(agents.keys()) + ["telegram"]))
+
+
+def _own_conversation_agents(specialist_configs: Mapping[str, Any], *,
+                             construct: Callable[[Any], Any]) -> dict[str, Any]:
+    """An ``Agent`` for every loaded specialist that keeps a conversation in
+    its own chat (``agent_registry.own_conversation_roles``), built by
+    *construct*. The caller registers each on the bus before the channels
+    start. Boot does not release anything held for them: that waits for the
+    own chats' reconcile (:func:`_reconcile_own_chats`), which releases each
+    bound chat's held messages into the queue registered here. One agent
+    that cannot be built is logged and left out; the others are built."""
+    from agent_registry import own_conversation_roles
+    built: dict[str, Any] = {}
+    for role in own_conversation_roles(dict(specialist_configs)):
+        try:
+            built[role] = construct(specialist_configs[role])
+        except Exception:  # noqa: BLE001 — one agent never stops the boot
+            logger.exception("conversation of %s not built", role)
+    return built
+
+
+async def _reconcile_own_chats() -> None:
+    """The own chats' boot reconcile: every agent bot against the committed
+    declarations, its phase completed or rolled back, its held messages
+    released into its agent's queue. Run once Casa's endpoint has started and
+    every conversation's queue is registered and consumed. A failure is
+    logged, never fatal: an agent endpoint that was not reconciled delivers
+    nothing."""
+    import own_voice
+    try:
+        await own_voice.boot_reconcile()
+    except Exception:  # noqa: BLE001 — never fatal at boot
+        logger.exception("own chats not reconciled at boot")
 
 
 async def _drain_broker_before_channel_shutdown(channel_manager: Any) -> None:
@@ -2998,6 +3032,23 @@ async def main() -> None:
         ha_mcp_url=ha_mcp_url,
         supervisor_token=supervisor_token,
     )
+    # The specialists that keep a conversation in their own chat: an Agent
+    # each, on the bus under its role like a resident, run on the same
+    # session machinery. Any other specialist still gets its Agent only from
+    # a reload's backfill.
+    for role, agent in _own_conversation_agents(
+            specialist_configs,
+            construct=lambda cfg: Agent(
+                config=cfg,
+                session_registry=session_registry,
+                mcp_registry=mcp_registry,
+                channel_manager=channel_manager,
+                agent_registry=agent_registry,
+            )).items():
+        bus.register(role, agent.handle_message)
+        agents[role] = agent
+        logger.info("Agent '%s' registered for its own chat (name=%s)",
+                    role, agent.config.character.name)
     runtime.agents = agents  # share the dict reference; reload handlers mutate this directly.
 
     # 9. Webhook secret (auto-generated if auth enabled, see setup-configs.sh)
@@ -3710,6 +3761,13 @@ async def main() -> None:
     for name in _bus_loop_targets(agents):
         if name in bus.queues:
             loop_tasks.append(bus.start_agent_loop(name))
+
+    # 13a. The own chats' reconcile: Casa's endpoint has started (12) and every
+    # conversation's queue is registered and consumed (8, 13), so a bound
+    # chat's held messages are released into a live queue; no agent endpoint
+    # delivers before this. Before the replays and job resumes below, which
+    # may post in an agent's own chat.
+    await _reconcile_own_chats()
 
     # 13b. Restart-orphan notifications come from the recovered durable job
     # failures. Voice jobs remain READY for their delivery coordinator; the
