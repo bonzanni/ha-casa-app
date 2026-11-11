@@ -912,6 +912,28 @@ class Lifecycle:
                             if current else None,
                             "other_handles": others, "rules": USERNAME_RULES}}
 
+    def _offer_no_longer_fits(self, role: str, username: str,
+                              replace: bool) -> "dict | str | None":
+        """Under the registry lock: why an offer checked earlier no longer
+        fits, ``"claimed"`` when the new bot of *role*'s change already
+        exists, or ``None``."""
+        owner = self._owner_of(username, besides=role)
+        if owner is not None:
+            return {"status": "error", "kind": "handle_owned",
+                    "message": f"@{username} was offered to {self._label(owner)} "
+                               "already; choose another"}
+        change = (self.store.agents.get(role) or {}).get("change")
+        if replace:
+            if change is not None and change["new_bot"] is not None:
+                return "claimed"
+            if change is None and self.store.bot_of(role) is None:
+                return {"status": "error", "kind": "no_bot",
+                        "message": f"{self._label(role)} has no chat of its own to replace yet"}
+        elif self.store.bot_of(role) is not None:
+            return {"status": "error", "kind": "being_set_up",
+                    "message": f"{self._label(role)}'s chat is being set up"}
+        return None
+
     async def post_offer(self, role: str, username: str, *, replace: bool = False) -> dict:
         """Post a new offer of *username* for *role* (the previous card, if
         any, is marked replaced). ``offered_at``, the suggestion and the
@@ -931,27 +953,30 @@ class Lifecycle:
             return {"status": "error", "kind": "delivery_failed",
                     "message": "the resident's bot is not reachable right now"}
         async with self._registry_lock:
-            # Checked again here: another offer may have taken the handle
-            # while this one waited on the probe.
-            owner = self._owner_of(username, besides=role)
-            if owner is not None:
-                return {"status": "error", "kind": "handle_owned",
-                        "message": f"@{username} was offered to {self._label(owner)} "
-                                   "already; choose another"}
-            agent = self.store.agent(role, create=True)
-            previous = agent.get("offer_card")
-            if username.lower() not in {h.lower() for h in agent["handles"]}:
-                agent["handles"].append(username)
-            if replace and agent.get("change") is None:
-                found = self.store.bot_of(role)
-                agent["change"] = {"new_bot": None, "old_bot": agent.get("bot_id"),
-                                   "old_username": found[1].get("username") or ""
-                                   if found else ""}
-            agent.update(offered_at=_now_iso(), label=label,
-                         suggestion={"name": label, "username": username})
-            agent["offer_card"] = None
-            await self.store.save()
-            change = agent.get("change")
+            # The callers checked the agent's state before awaiting the probe;
+            # it may have moved since, so it is checked again here, where it
+            # cannot move: another agent may own the handle now, a bot may have
+            # been created, or the new bot of a change may already exist.
+            refusal = self._offer_no_longer_fits(role, username, replace)
+            if refusal is None:
+                agent = self.store.agent(role, create=True)
+                previous = agent.get("offer_card")
+                if username.lower() not in {h.lower() for h in agent["handles"]}:
+                    agent["handles"].append(username)
+                if replace and agent.get("change") is None:
+                    found = self.store.bot_of(role)
+                    agent["change"] = {"new_bot": None, "old_bot": agent.get("bot_id"),
+                                       "old_username": found[1].get("username") or ""
+                                       if found else ""}
+                agent.update(offered_at=_now_iso(), label=label,
+                             suggestion={"name": label, "username": username})
+                agent["offer_card"] = None
+                await self.store.save()
+                change = agent.get("change")
+        if refusal == "claimed":
+            return await self._restart_for_switch(role)
+        if refusal is not None:
+            return refusal
         if previous is not None:
             await self._edit(previous, "Replaced by the offer below.")
         url = create_link(me.get("username") or "", label, username)

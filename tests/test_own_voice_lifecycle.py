@@ -746,6 +746,33 @@ async def test_only_the_current_suggestion_completes_a_change(world, root):
     assert lc.store.agents["finance"]["change"]["new_bot"] == NEW_BOT
 
 
+async def test_a_new_offer_racing_the_creation_of_the_last_one_changes_nothing(world, root):
+    # A new handle is asked for while the operator creates the bot of the
+    # previous offer: the created bot has claimed the change, so the new offer
+    # leaves the suggestion and the change as they are and asks for the restart.
+    lc, host = make_lifecycle(world, root)
+    await _change_alex(lc, host, world, "CasaFinanceAaaaBot")
+    probing, created_done = asyncio.Event(), asyncio.Event()
+
+    async def slow_probe(username):
+        probing.set()
+        await created_done.wait()
+        return False
+
+    host.handle_taken = slow_probe
+    second = asyncio.create_task(lc.replace("finance", "CasaFinanceBbbbBot"))
+    await probing.wait()
+    world.tokens[NEW_BOT] = NEW_TOKEN
+    await lc.on_created(created(NEW_BOT, "Alex", "CasaFinanceAaaaBot"), OPERATOR)
+    created_done.set()
+    res = await second
+    agent = lc.store.agents["finance"]
+    assert agent["change"]["new_bot"] == NEW_BOT
+    assert agent["suggestion"]["username"] == "CasaFinanceAaaaBot"
+    assert res["status"] in ("restarting", "restart_failed")
+    assert _disk(root)["agents"]["finance"]["suggestion"]["username"] == "CasaFinanceAaaaBot"
+
+
 async def test_an_older_handle_of_the_same_specialist_completes_nothing(world, root):
     lc, host = make_lifecycle(world, root)
     await _change_alex(lc, host, world)
