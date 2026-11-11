@@ -53,7 +53,6 @@ import os
 import re
 import subprocess
 import time
-import unicodedata
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -77,7 +76,9 @@ RECOVERING = "recovering"
 DORMANT = "dormant"
 RELEASING = "releasing"
 RELEASED = "released"
-PHASES = (SEEN, UNBOUND, BINDING, BOUND, RECOVERING, DORMANT, RELEASING, RELEASED)
+SWITCHING = "switching"
+PHASES = (SEEN, UNBOUND, BINDING, BOUND, RECOVERING, DORMANT, RELEASING, RELEASED,
+          SWITCHING)
 
 #: Each phase's boot reconciliation, by method name. Every phase has one; a
 #: phase added without one fails the crash sweep that iterates this table.
@@ -90,6 +91,7 @@ BOOT_STEPS: dict[str, str] = {
     DORMANT: "_step_dormant",
     RELEASING: "_step_releasing",
     RELEASED: "_step_released",
+    SWITCHING: "_step_switching",
 }
 
 #: The fetch failures that establish a bot is no longer managed by the
@@ -109,6 +111,12 @@ TOKEN_TAG = "casa-agent-bot"
 RETRY_DELAYS_S = (30.0, 60.0, 120.0, 300.0, 900.0, 1800.0, 3600.0)
 _OP_TIMEOUT_S = 30
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{5,32}$")
+USERNAME_RULES = "5–32 characters of A–Z, a–z, 0–9 and _, ending in bot"
+#: The public page of a Telegram username; an existing bot's page carries a
+#: ``tgme_page_title`` block, an unused username's does not.
+HANDLE_PAGE = "https://t.me/{}"
+_HANDLE_PROBE_TIMEOUT_S = 5
+MAX_CANDIDATES = 5
 
 
 def _now_iso() -> str:
@@ -128,6 +136,12 @@ def establishes_deletion(exc: BaseException) -> bool:
     return False
 
 
+def token_belongs_to(token: str, bot_id: int) -> bool:
+    """Whether *token* is *bot_id*'s: a bot token begins with its bot's id
+    and a colon."""
+    return isinstance(token, str) and token.split(":", 1)[0] == str(bot_id)
+
+
 def is_unauthorized(exc: BaseException) -> bool:
     """A token Telegram does not accept (401/404 on any method)."""
     from telegram.error import InvalidToken
@@ -135,48 +149,13 @@ def is_unauthorized(exc: BaseException) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# The suggestion: the agent's bot named after the resident's own
+# The handle: chosen by the resident, checked here only for its form
 # ---------------------------------------------------------------------------
-
-def _fold(text: str) -> str:
-    """ASCII folding, keeping only ``[A-Za-z0-9]``."""
-    folded = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
-    return re.sub(r"[^A-Za-z0-9]", "", folded)
-
 
 def valid_username(name: str) -> bool:
     """Telegram's rule for a bot username: 5–32 of ``[A-Za-z0-9_]``, ending
     in ``bot`` in any case."""
     return bool(_USERNAME_RE.match(name or "")) and name.lower().endswith("bot")
-
-
-def suggest(*, resident_name: str, resident_first_name: str, resident_username: str,
-            agent_name: str, role: str, taken: "set[str] | frozenset[str]" = frozenset(),
-            ) -> tuple[str, str]:
-    """The suggested ``(name, username)`` of *agent_name*'s bot, derived from
-    the resident's bot by replacing the resident's name with the agent's —
-    a string operation that compares strings and nothing else.
-
-    *taken* holds the usernames (lower-cased) suggested to other agents still
-    waiting for a bot; a clash gets ``_<role>`` before the ``bot`` suffix. An
-    empty username means the operator types one."""
-    e, a = resident_name, agent_name
-    folded = _fold(a)
-    name = resident_first_name.replace(e, a) if e and e in resident_first_name else a
-    if e and e in (resident_username or ""):
-        username = resident_username.replace(e, folded)
-    else:
-        username = folded + "Bot"
-    if not valid_username(username):
-        username = folded + "Bot"
-    if not valid_username(username):
-        return name, ""
-    if username.lower() in {t.lower() for t in taken}:
-        slug = re.sub(r"[^A-Za-z0-9_]", "", role)
-        username = f"{username[:-3]}_{slug}{username[-3:]}"
-        if not valid_username(username) or username.lower() in {t.lower() for t in taken}:
-            return name, ""
-    return name, username
 
 
 def create_link(resident_username: str, name: str, username: str) -> str:
@@ -192,7 +171,8 @@ def create_link(resident_username: str, name: str, username: str) -> str:
 # ---------------------------------------------------------------------------
 
 _AGENT_KEYS = {"offered_at", "offer_card", "bot_id", "chat_open_at", "label",
-               "suggestion", "token_item"}
+               "suggestion", "token_item", "handles", "change", "moved_from"}
+_CHANGE_KEYS = {"new_bot", "old_bot", "old_username"}
 _BOT_KEYS = {"phase", "role", "username", "name", "ask", "setup_digest",
              "created_at", "photo_set"}
 
@@ -220,6 +200,12 @@ def _valid_store(data: Any) -> bool:
             return False
         if rec["bot_id"] is not None and not (
                 isinstance(rec["bot_id"], int) and not isinstance(rec["bot_id"], bool)):
+            return False
+        handles = rec["handles"]
+        if not isinstance(handles, list) or not all(isinstance(h, str) for h in handles):
+            return False
+        change = rec["change"]
+        if change is not None and not (isinstance(change, dict) and set(change) == _CHANGE_KEYS):
             return False
     for key, rec in bots.items():
         if not (isinstance(key, str) and key.isdigit()) or not isinstance(rec, dict):
@@ -284,7 +270,8 @@ class VoiceStore:
         if rec is None and create:
             rec = {"offered_at": None, "offer_card": None, "bot_id": None,
                    "chat_open_at": None, "label": role, "suggestion": None,
-                   "token_item": None}
+                   "token_item": None, "handles": [], "change": None,
+                   "moved_from": None}
             self.agents[role] = rec
         return rec
 
@@ -503,6 +490,30 @@ class TokenStore:
         except OSError as exc:
             raise TokenStoreError(f"op did not start ({type(exc).__name__})") from None
 
+    def delete(self, role: str, item_id: "str | None") -> None:
+        """Remove *role*'s stored token: its file, or its 1Password item
+        (by *item_id*, else found by title and tag). An item that is already
+        gone counts as deleted. Raises :class:`TokenStoreError`."""
+        if not self.onepassword():
+            try:
+                self._file(role).unlink()
+            except FileNotFoundError:
+                return
+            fsync_directory(self.dir)
+            return
+        try:
+            target = item_id or self._lookup(role)
+            if not target:
+                return
+            r = self._op(["item", "delete", target, "--vault", self._vault()])
+            if r.returncode == 0 or self._lookup(role) is None:
+                return
+            raise TokenStoreError(f"op item delete failed ({r.returncode})")
+        except subprocess.TimeoutExpired:
+            raise TokenStoreError("op timed out") from None
+        except OSError as exc:
+            raise TokenStoreError(f"op did not start ({type(exc).__name__})") from None
+
     def load(self, role: str, item_id: "str | None") -> "str | None":
         """The stored token of *role*, or ``None`` when it is missing or
         cannot be read (it is then fetched from Telegram again)."""
@@ -560,6 +571,7 @@ class Lifecycle:
         self._manager_down = False
         self._manager_told = False
         self._avatar_told: set[str] = set()
+        self._switch_held: dict[str, list[str]] = {}
 
     # -- reads ------------------------------------------------------------
 
@@ -624,9 +636,10 @@ class Lifecycle:
         return lock
 
     def _waiting(self, role: str) -> bool:
-        """*role* declares its own chat and has no bot."""
+        """*role* declares its own chat, has no bot and no pending change."""
         agent = self.store.agents.get(role)
-        return self.declared(role) and (agent is None or agent.get("bot_id") is None)
+        return self.declared(role) and (agent is None or (
+            agent.get("bot_id") is None and agent.get("change") is None))
 
     def _waiting_roles(self) -> list[str]:
         return sorted(r for r in self._configs() if self._waiting(r))
@@ -723,11 +736,18 @@ class Lifecycle:
             await self.store.save()
         return True
 
-    async def _load_token(self, role: str) -> "str | None":
+    async def _load_token(self, role: str, bot_id: int) -> "str | None":
+        """*role*'s stored token, when it is *bot_id*'s. A stored token of
+        another bot is never used: the caller fetches the right one."""
         agent = self.store.agents.get(role) or {}
         token = await asyncio.to_thread(self.tokens.load, role, agent.get("token_item"))
-        if token:
-            self._register_secret(token)
+        if not token:
+            return None
+        self._register_secret(token)
+        if not token_belongs_to(token, bot_id):
+            logger.warning("own chat %s: the stored token is not bot %s's; fetching "
+                           "its own", role, bot_id)
+            return None
         return token
 
     # -- cards ------------------------------------------------------------
@@ -755,7 +775,8 @@ class Lifecycle:
             return f"{label}'s chat is open.", []
         found = self.store.bot_of(role)
         username = found[1].get("username") if found else ""
-        return (f"{label}'s chat is ready: @{username}. Open it and press Start.",
+        which = "new chat" if agent.get("moved_from") else "chat"
+        return (f"{label}'s {which} is ready: @{username}. Open it and say hi.",
                 [(f"Open {label}'s chat", f"https://t.me/{username}")])
 
     async def _card_bound(self, role: str) -> None:
@@ -773,9 +794,19 @@ class Lifecycle:
         agent = self.store.agent(role, create=True)
         if agent.get("chat_open_at"):
             return
+        old = agent.get("moved_from")
         agent["chat_open_at"] = _now_iso()
+        agent["moved_from"] = None
         await self.store.save()
-        await self._edit(agent.get("offer_card"), f"{self._label(role)}'s chat is open.")
+        label = self._label(role)
+        if not old:
+            await self._edit(agent.get("offer_card"), f"{label}'s chat is open.")
+            return
+        found = self.store.bot_of(role)
+        new = found[1].get("username") if found else ""
+        await self._edit(agent.get("offer_card"),
+                         f"{label} has moved to @{new}. You can delete @{old} now.",
+                         [(f"Delete @{old}", BOTFATHER_DELETE)])
 
     def chat_opening(self, bot_id: int) -> bool:
         """Whether a turn delivered on *bot_id* now is the one that opens its
@@ -785,6 +816,14 @@ class Lifecycle:
         role = (self.store.bots.get(bot_id) or {}).get("role")
         return bool(role) and not (self.store.agents.get(role) or {}).get("chat_open_at")
 
+    def chat_moved(self, bot_id: int) -> bool:
+        """Whether *bot_id* is an agent's new bot after a handle change whose
+        chat has not opened yet: its first turn opens a new chat, not a first
+        one."""
+        role = (self.store.bots.get(bot_id) or {}).get("role")
+        agent = self.store.agents.get(role) or {} if role else {}
+        return bool(agent.get("moved_from")) and not agent.get("chat_open_at")
+
     async def mark_open(self, bot_id: int) -> None:
         """The agent's queue took the turn that opened *bot_id*'s chat: the
         chat is open. Takes no lock: the endpoint calls it while a release
@@ -793,10 +832,96 @@ class Lifecycle:
         if role:
             await self._mark_open(role)
 
-    async def post_offer(self, role: str) -> dict:
-        """Post a new offer for *role* (the previous card, if any, is marked
-        replaced). ``offered_at`` and the suggestion are persisted before
-        the card is posted."""
+    def _owner_of(self, username: str, *, besides: str) -> "str | None":
+        """The agent other than *besides* that was ever offered *username*."""
+        wanted = username.lower()
+        for role, agent in sorted(self.store.agents.items()):
+            if role != besides and wanted in {h.lower() for h in agent.get("handles") or []}:
+                return role
+        return None
+
+    async def _handle_refusal(self, role: str, username: str) -> "dict | None":
+        """Why *username* cannot be offered to *role*, or ``None``: not a bot
+        username, once offered to another agent, or in use on Telegram. A
+        probe that cannot complete refuses nothing."""
+        if not valid_username(username):
+            return {"status": "error", "kind": "invalid_handle",
+                    "message": f"@{username} is not a bot username: {USERNAME_RULES}"}
+        owner = self._owner_of(username, besides=role)
+        if owner is not None:
+            return {"status": "error", "kind": "handle_owned",
+                    "message": f"@{username} was offered to {self._label(owner)} "
+                               "already; choose another"}
+        if await self._probe_handle(username) is True:
+            return {"status": "error", "kind": "handle_taken",
+                    "message": f"@{username} is already taken on Telegram; choose another"}
+        return None
+
+    async def _probe_handle(self, username: str) -> "bool | None":
+        try:
+            return await self.host.handle_taken(username)
+        except Exception:  # noqa: BLE001 — an unknown answer never blocks
+            logger.warning("own chats: the handle probe failed", exc_info=True)
+            return None
+
+    async def check_handles(self, role: str, candidates: list[str]) -> dict:
+        """What the resident needs to choose *role*'s handle: per candidate
+        ``invalid_format``, ``owned_by_other``, ``taken``, ``probably_free``
+        or ``unknown`` (the probe did not complete), and the context: the
+        role, its persona's name, the resident's own bot, the role's current
+        handle, the other agents' handles and Telegram's username rules."""
+        candidates = [str(c) for c in candidates or []]
+        if len(candidates) > MAX_CANDIDATES:
+            return {"status": "error", "kind": "too_many_candidates",
+                    "message": f"check at most {MAX_CANDIDATES} handles at a time"}
+
+        async def _one(name: str) -> str:
+            if not valid_username(name):
+                return "invalid_format"
+            if self._owner_of(name, besides=role) is not None:
+                return "owned_by_other"
+            taken = await self._probe_handle(name)
+            return {True: "taken", False: "probably_free"}.get(taken, "unknown")
+
+        verdicts = await asyncio.gather(*(_one(c) for c in candidates))
+        try:
+            me = await self.host.manager_me()
+            resident = {"username": me.get("username") or "", "name": me.get("first_name") or ""}
+        except Exception:  # noqa: BLE001 — the check still answers
+            resident = None
+        current = self.store.bot_of(role)
+        others: list[str] = []
+        for other, agent in sorted(self.store.agents.items()):
+            if other == role:
+                continue
+            found = self.store.bot_of(other)
+            if found and found[1].get("username"):
+                others.append(found[1]["username"])
+            pending = (agent.get("suggestion") or {}).get("username")
+            if pending and (agent.get("bot_id") is None or agent.get("change") is not None):
+                others.append(pending)
+        unique: dict[str, str] = {}
+        for handle in others:
+            unique.setdefault(handle.lower(), handle)
+        others = list(unique.values())
+        return {"status": "checked",
+                "candidates": dict(zip(candidates, verdicts)),
+                "context": {"role": role, "persona_name": self._label(role),
+                            "resident_bot": resident,
+                            "current_handle": (current[1].get("username") or None)
+                            if current else None,
+                            "other_handles": others, "rules": USERNAME_RULES}}
+
+    async def post_offer(self, role: str, username: str, *, replace: bool = False) -> dict:
+        """Post a new offer of *username* for *role* (the previous card, if
+        any, is marked replaced). ``offered_at``, the suggestion and the
+        handle's ownership are persisted before the card is posted. With
+        *replace* the offer is a new bot for an agent that has one: a pending
+        change records the bot it replaces, and a change already pending
+        keeps that and takes the new handle."""
+        if not valid_username(username):
+            return {"status": "error", "kind": "invalid_handle",
+                    "message": f"@{username} is not a bot username: {USERNAME_RULES}"}
         label = self._label(role)
         try:
             me = await self.host.manager_me()
@@ -806,33 +931,35 @@ class Lifecycle:
             return {"status": "error", "kind": "delivery_failed",
                     "message": "the resident's bot is not reachable right now"}
         async with self._registry_lock:
-            taken = {
-                (a.get("suggestion") or {}).get("username", "").lower()
-                for r, a in self.store.agents.items()
-                if r != role and a.get("bot_id") is None and a.get("suggestion")}
-            name, username = suggest(
-                resident_name=self._resident_name(),
-                resident_first_name=me.get("first_name") or "",
-                resident_username=me.get("username") or "",
-                agent_name=label, role=role, taken=taken - {""})
             agent = self.store.agent(role, create=True)
             previous = agent.get("offer_card")
+            if username.lower() not in {h.lower() for h in agent["handles"]}:
+                agent["handles"].append(username)
+            if replace and agent.get("change") is None:
+                found = self.store.bot_of(role)
+                agent["change"] = {"new_bot": None, "old_bot": agent.get("bot_id"),
+                                   "old_username": found[1].get("username") or ""
+                                   if found else ""}
             agent.update(offered_at=_now_iso(), label=label,
-                         suggestion={"name": name, "username": username})
+                         suggestion={"name": label, "username": username})
             agent["offer_card"] = None
             await self.store.save()
+            change = agent.get("change")
         if previous is not None:
             await self._edit(previous, "Replaced by the offer below.")
-        url = create_link(me.get("username") or "", name, username)
-        addr = await self._post(
-            f"{label} can get a separate chat with you. Tap below, check the name, then Create.",
-            [(f"Create {label}'s chat", url)])
+        url = create_link(me.get("username") or "", label, username)
+        if change is not None:
+            text = (f"{label} can move to a new chat with you, replacing "
+                    f"@{change['old_username']}. Tap below, then Create.")
+        else:
+            text = f"{label} can get a separate chat with you. Tap below, then Create."
+        addr = await self._post(text, [(f"Create {label}'s chat", url)])
         if addr is None:
             return {"status": "error", "kind": "delivery_failed",
                     "message": "the offer could not be posted"}
         agent["offer_card"] = addr.to_json()
         await self.store.save()
-        return {"status": "offered", "suggested_name": name, "suggested_username": username}
+        return {"status": "offered", "suggested_name": label, "suggested_username": username}
 
     # -- creation, match, ask ---------------------------------------------
 
@@ -876,13 +1003,24 @@ class Lifecycle:
             await self.store.save()
             await self._step_recovering(bot_id)
 
-    def _match(self, rec: dict) -> "str | None":
-        hits = []
-        for role in self._waiting_roles():
+    def _match(self, rec: dict) -> "tuple[str, str] | None":
+        """The one agent whose current suggested username the bot has, in any
+        case: ``(role, "first")`` for an agent still waiting for its first
+        bot, ``(role, "change")`` for an agent with a pending change whose
+        new bot does not exist yet. The display name is not compared: Casa
+        sets it at self-setup."""
+        wanted = rec["username"].lower()
+
+        def suggested(role: str) -> bool:
             sugg = (self.store.agents.get(role) or {}).get("suggestion") or {}
-            if (sugg.get("username") and sugg.get("name") == rec["name"]
-                    and sugg["username"].lower() == rec["username"].lower()):
-                hits.append(role)
+            return bool(sugg.get("username")) and sugg["username"].lower() == wanted
+
+        hits = [(role, "first") for role in self._waiting_roles() if suggested(role)]
+        for role, agent in sorted(self.store.agents.items()):
+            change = agent.get("change")
+            if (change is not None and change["new_bot"] is None and self.declared(role)
+                    and suggested(role)):
+                hits.append((role, "change"))
         return hits[0] if len(hits) == 1 else None
 
     async def _enter_binding(self, bot_id: int, role: str) -> bool:
@@ -899,9 +1037,21 @@ class Lifecycle:
 
     async def _match_or_ask(self, bot_id: int) -> None:
         rec = self.store.bots[bot_id]
+        role = None
+        switching = bound = False
         async with self._registry_lock:
-            role = self._match(rec)
-            bound = role is not None and await self._enter_binding(bot_id, role)
+            hit = self._match(rec)
+            if hit is not None and hit[1] == "change":
+                role, switching = hit[0], True
+                rec.update(phase=SWITCHING, role=role)
+                self.store.agents[role]["change"]["new_bot"] = bot_id
+                await self.store.save()
+            elif hit is not None:
+                role = hit[0]
+                bound = await self._enter_binding(bot_id, role)
+        if switching:
+            await self._restart_for_switch(role)
+            return
         if bound:
             await self._edit_ask(rec, f"@{rec['username']} is {self._label(role)}'s.")
             await self._step_binding(bot_id)
@@ -1000,18 +1150,20 @@ class Lifecycle:
         return data
 
     async def _self_setup(self, bot_id: int, role: str) -> None:
-        """Describe the bot, set its commands, restrict it to its owner and
-        give it the persona's picture — each call idempotent, each failure
-        logged and retried at the next trigger. Runs when the declared
-        values' digest differs from the one last applied."""
+        """Name the bot after the persona, describe it, set its commands,
+        restrict it to its owner and give it the persona's picture — each
+        call idempotent, each failure logged and retried at the next trigger.
+        Runs when the declared values' digest differs from the one last
+        applied."""
         cfg = self._configs().get(role)
         own = getattr(cfg, "own_chat", None)
         if own is None:
             return
         rec = self.store.bots[bot_id]
         photo = self._avatar(role, cfg)
+        label = self._label(role)
         digest = hashlib.sha256(json.dumps([
-            own.description, own.short_description, list(COMMANDS), "owner-only",
+            label, own.description, own.short_description, list(COMMANDS), "owner-only",
             hashlib.sha256(photo).hexdigest() if photo is not None else None,
         ]).encode("utf-8")).hexdigest()
         if rec.get("setup_digest") == digest:
@@ -1021,6 +1173,7 @@ class Lifecycle:
             return
         ok = True
         calls = (
+            ("name", lambda: self.host.set_name(token, label)),
             ("description", lambda: self.host.set_description(token, own.description)),
             ("short description",
              lambda: self.host.set_short_description(token, own.short_description)),
@@ -1120,7 +1273,7 @@ class Lifecycle:
                            and self.host.queue_registered(role))
             if not deliverable or self.journal.pending(bot_id):
                 await asyncio.to_thread(self.journal.append, bot_id, update)
-                if rec["phase"] in (SEEN, UNBOUND) and bot_id not in self._told_setup:
+                if rec["phase"] in (SEEN, UNBOUND, SWITCHING) and bot_id not in self._told_setup:
                     self._told_setup.add(bot_id)
                     await self._notify(bot_id, SETUP_REPLY)
                 if deliverable:
@@ -1201,7 +1354,7 @@ class Lifecycle:
         if not self.declared(role):
             await self._go_dormant(bot_id)
             return
-        token = self._tokens.get(bot_id) or await self._load_token(role)
+        token = self._tokens.get(bot_id) or await self._load_token(role, bot_id)
         if token is None:
             token, outcome = await self._fetch(bot_id)
             if token is None:
@@ -1251,7 +1404,8 @@ class Lifecycle:
             self._schedule_retry(bot_id, "the fetched token is not accepted")
             return
         role = rec["role"]
-        if await self._load_token(role) != token and not await self._store_token(role, token):
+        if (await self._load_token(role, bot_id) != token
+                and not await self._store_token(role, token)):
             self._schedule_retry(bot_id, "token not stored")
             return
         self._tokens[bot_id] = token
@@ -1277,7 +1431,7 @@ class Lifecycle:
             await self._step_binding(bot_id)
             return
         self._reconciled.discard(bot_id)
-        token = self._tokens.get(bot_id) or await self._load_token(role)
+        token = self._tokens.get(bot_id) or await self._load_token(role, bot_id)
         if token is None:
             token, outcome = await self._fetch(bot_id)
             if token is None:
@@ -1324,19 +1478,90 @@ class Lifecycle:
     async def _step_released(self, bot_id: int) -> None:
         return
 
+    async def _step_switching(self, bot_id: int) -> None:
+        """A new bot waiting for the restart that moves its agent to it: its
+        endpoint holds what it receives, and it is never bound here."""
+        token, outcome = await self._token_for(bot_id)
+        if token is not None:
+            await self._start(bot_id, token, None)
+        elif outcome != "wait":
+            self._schedule_retry(bot_id, "token not fetched")
+
     # -- triggers ---------------------------------------------------------
+
+    async def apply_switches(self) -> None:
+        """Move each agent whose new bot exists to it. Runs at boot before
+        any channel, endpoint or worker exists, and reads only Casa's records
+        and the token store: no Telegram call, no card.
+
+        A switch stays pending while a durable record still waits on the old
+        bot (the card says so once the channels are up). Otherwise the old
+        bot is retired (its record, held updates and stored token) and the
+        new one is handed to the ordinary binding. Every step is persisted
+        and idempotent, so a crash anywhere re-runs from what is on disk."""
+        self._switch_held.clear()
+        for role in sorted(self.store.agents):
+            agent = self.store.agents[role]
+            change = agent.get("change")
+            if change is None or change["new_bot"] is None:
+                continue
+            old_bot, new_bot = change["old_bot"], change["new_bot"]
+            if old_bot is not None and old_bot in self.store.bots:
+                items = list(self.host.open_items(role, old_bot, True) or [])
+                if items:
+                    self._switch_held[role] = items
+                    logger.info("own chat %s: the move to a new bot waits; still open "
+                                "on the old one: %s", role, ", ".join(items))
+                    continue
+            if old_bot is not None:
+                self.store.bots.pop(old_bot, None)
+                if agent.get("bot_id") == old_bot:
+                    agent["bot_id"] = None
+                    agent["chat_open_at"] = None
+            agent["moved_from"] = change["old_username"]
+            await self.store.save()
+            if old_bot is not None:
+                await asyncio.to_thread(self.journal.drop, old_bot)
+                self._tokens.pop(old_bot, None)
+                self._reconciled.discard(old_bot)
+            try:
+                await asyncio.to_thread(self.tokens.delete, role, agent.get("token_item"))
+            except TokenStoreError as exc:
+                # The binding below writes the same item in place, and a stored
+                # token of another bot is never used.
+                logger.warning("own chat %s: the old bot's token was not deleted (%s)",
+                               role, exc)
+            agent["token_item"] = None
+            await self.store.save()
+            new_rec = self.store.bots.get(new_bot)
+            if new_rec is not None:
+                new_rec.update(phase=BINDING, role=role)
+                agent["bot_id"] = new_bot
+            agent["change"] = None
+            await self.store.save()
+            logger.info("own chat %s: moved to its new bot %s", role, new_bot)
 
     async def boot(self) -> None:
         """Boot order: the resident's bot first, then every bot's phase
         completed or rolled back — a bound or dormant bot against its role's
         committed declaration first, and an agent endpoint is built, started
-        and delivers only once its own reconcile is done — then the one offer
-        owed to an eligible agent with no record at all."""
+        and delivers only once its own reconcile is done. Casa posts no offer
+        by itself: the resident makes it."""
         if self.host.operator_id() is None:
             return
         status = await self.host.manager_check()
         if status == "unauthorized":
             self._manager_unauthorized()
+        for role in sorted(self._switch_held):
+            agent = self.store.agents.get(role) or {}
+            change = agent.get("change") or {}
+            new = (self.store.bots.get(change.get("new_bot")) or {}).get("username") or ""
+            await self._edit(
+                agent.get("offer_card"),
+                f"{self._label(role)} still had something open in "
+                f"@{change.get('old_username', '')}, so the move to @{new} waits. "
+                f"Ask {self._resident()} again once it's done.")
+        self._switch_held.clear()
         for bot_id in sorted(self.store.bots):
             async with self._lock(bot_id):
                 try:
@@ -1344,13 +1569,17 @@ class Lifecycle:
                 except Exception:  # noqa: BLE001 — one bot never blocks the others
                     logger.exception("own chat bot %s: boot reconcile failed", bot_id)
                     self._schedule_retry(bot_id, "boot reconcile failed")
-        for role in sorted(self._configs()):
-            if self.declared(role) and role not in self.store.agents:
-                await self.post_offer(role)
 
     async def reconcile_role(self, role: str) -> None:
         """An install, upgrade, rollback or uninstall committed for *role*:
-        its bot follows the committed declaration."""
+        its bot follows the committed declaration, and a change whose new bot
+        does not exist yet is dropped once the role no longer declares a
+        chat."""
+        agent = self.store.agents.get(role)
+        change = (agent or {}).get("change")
+        if change is not None and change["new_bot"] is None and not self.declared(role):
+            agent["change"] = None
+            await self.store.save()
         found = self.store.bot_of(role)
         if found is None:
             return
@@ -1368,13 +1597,9 @@ class Lifecycle:
 
     async def on_install(self, role: str) -> None:
         await self.reconcile_role(role)
-        if self.declared(role) and self.bot_id_for(role) is None:
-            await self.post_offer(role)
 
     async def on_upgrade(self, role: str) -> None:
         await self.reconcile_role(role)
-        if self.declared(role) and role not in self.store.agents:
-            await self.post_offer(role)
 
     async def on_persona(self, role: str) -> None:
         found = self.store.bot_of(role)
@@ -1394,8 +1619,8 @@ class Lifecycle:
             if rec["phase"] == BOUND and bot_id in self._reconciled:
                 await self._release_locked(bot_id)
 
-    async def offer(self, role: str) -> dict:
-        """The resident's ``offer_own_chat``."""
+    async def offer(self, role: str, username: str) -> dict:
+        """The resident's ``offer_own_chat``, with the handle it chose."""
         if not self.declared(role):
             return {"status": "error", "kind": "not_declared",
                     "message": f"{self._label(role)} does not have a chat of its own"}
@@ -1417,7 +1642,99 @@ class Lifecycle:
         if self.bot_id_for(role) is not None:
             return {"status": "error", "kind": "being_set_up",
                     "message": f"{self._label(role)}'s chat is being set up"}
-        return await self.post_offer(role)
+        refusal = await self._handle_refusal(role, username)
+        if refusal is not None:
+            return refusal
+        return await self.post_offer(role, username)
+
+    async def replace(self, role: str, username: str) -> dict:
+        """The resident's request for a new bot for *role*, with the handle it
+        chose. Refused while something still waits on the current bot. Once
+        the new bot exists, asking again requests the restart that moves the
+        agent to it."""
+        label = self._label(role)
+        if not self.declared(role):
+            return {"status": "error", "kind": "not_declared",
+                    "message": f"{label} does not have a chat of its own"}
+        agent = self.store.agents.get(role) or {}
+        change = agent.get("change")
+        if change is not None:
+            old_bot, old_username = change["old_bot"], change["old_username"]
+        else:
+            found = self.store.bot_of(role)
+            if found is None:
+                return {"status": "error", "kind": "no_bot",
+                        "message": f"{label} has no chat of its own to replace yet"}
+            old_bot, old_username = found[0], found[1].get("username") or ""
+        busy = self._busy(role, old_bot, old_username)
+        if busy is not None:
+            return busy
+        if change is not None and change["new_bot"] is not None:
+            return await self._restart_for_switch(role)
+        refusal = await self._handle_refusal(role, username)
+        if refusal is not None:
+            return refusal
+        res = await self.post_offer(role, username, replace=True)
+        if res.get("status") != "offered":
+            return res
+        return {"status": "change_offered", "suggested_username": username,
+                "replaces": f"@{old_username}"}
+
+    def _busy(self, role: str, bot_id: "int | None", username: str) -> "dict | None":
+        """What still waits on *bot_id*, as a refusal, or ``None``."""
+        if bot_id is None:
+            return None
+        items = list(self.host.open_items(role, bot_id, False) or [])
+        if not items:
+            return None
+        return {"status": "error", "kind": "busy", "open": items,
+                "message": f"Something is still open in @{username}: {', '.join(items)}. "
+                           "The change can happen once it is done."}
+
+    async def _restart_for_switch(self, role: str) -> dict:
+        """Say on the card that *role* is moving, and ask for the restart that
+        moves it. A refused request leaves the move for the next restart."""
+        agent = self.store.agents[role]
+        label = self._label(role)
+        new = (agent.get("suggestion") or {}).get("username") or ""
+        new_rec = self.store.bots.get(agent["change"]["new_bot"]) or {}
+        new = new_rec.get("username") or new
+        await self._edit(agent.get("offer_card"),
+                         f"{label} is moving to @{new} — Casa restarts for a moment.")
+        if await self._request_restart(role):
+            return {"status": "restarting", "new": f"@{new}"}
+        await self._edit(agent.get("offer_card"),
+                         f"{label} moves to @{new} when Casa next restarts.")
+        return {"status": "restart_failed", "new": f"@{new}",
+                "message": "Casa could not restart now; the move happens at its next restart"}
+
+    async def _request_restart(self, role: str) -> bool:
+        try:
+            ok = bool(await self.host.request_restart())
+        except Exception:  # noqa: BLE001 — the move waits for the next restart
+            logger.warning("own chat %s: the restart request failed", role, exc_info=True)
+            return False
+        if not ok:
+            logger.warning("own chat %s: the restart request was not accepted", role)
+        return ok
+
+    async def drop_change(self, role: str) -> dict:
+        """The resident's request to keep *role*'s current bot after all.
+        Only before the new bot exists."""
+        label = self._label(role)
+        async with self._registry_lock:
+            agent = self.store.agents.get(role) or {}
+            change = agent.get("change")
+            if change is None:
+                return {"status": "nothing_to_drop"}
+            if change["new_bot"] is not None:
+                return {"status": "error", "kind": "already_created",
+                        "message": f"{label}'s new bot already exists; the move "
+                                   "happens at the next restart"}
+            agent["change"] = None
+            await self.store.save()
+        await self._edit(agent.get("offer_card"), f"{label} keeps @{change['old_username']}.")
+        return {"status": "dropped", "keeps": f"@{change['old_username']}"}
 
     def disclosure(self, role: str) -> "dict | None":
         found = self.store.bot_of(role)
@@ -1477,6 +1794,33 @@ class TelegramHost:
         me = await self._casa().bot.get_me()
         return {"first_name": me.first_name or "", "username": me.username or ""}
 
+    async def handle_taken(self, username: str) -> "bool | None":
+        """Whether *username*'s public page shows an existing account:
+        ``True`` when it carries the page title block, ``False`` when it
+        does not, ``None`` when the page could not be read. It proves a
+        handle taken; a reserved or recently freed one looks unused."""
+        import aiohttp
+        try:
+            async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=_HANDLE_PROBE_TIMEOUT_S)) as session:
+                async with session.get(HANDLE_PAGE.format(username)) as resp:
+                    if resp.status != 200:
+                        return None
+                    return "tgme_page_title" in await resp.text()
+        except Exception:  # noqa: BLE001 — unknown, never a refusal
+            logger.info("own chats: the handle page could not be read", exc_info=True)
+            return None
+
+    async def request_restart(self) -> bool:
+        """Ask the Supervisor to restart Casa."""
+        import supervisor_restart
+        return supervisor_restart.accepted(await supervisor_restart.request_app_restart())
+
+    def open_items(self, role: str, bot_id: int, durable_only: bool) -> list[str]:
+        """What still waits on *bot_id*, as short phrases."""
+        import own_voice
+        return own_voice.open_on_bot(role, bot_id, durable_only=durable_only)
+
     async def manager_check(self) -> str:
         try:
             await self._casa().bot.get_me()
@@ -1521,6 +1865,10 @@ class TelegramHost:
         except Exception as exc:  # noqa: BLE001
             return "unauthorized" if is_unauthorized(exc) else "error"
         return "ok"
+
+    async def set_name(self, token: str, name: str) -> None:
+        async with self._bot(token) as bot:
+            await bot.set_my_name(name)
 
     async def set_description(self, token: str, text: str) -> None:
         async with self._bot(token) as bot:

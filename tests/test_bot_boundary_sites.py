@@ -469,7 +469,9 @@ IDENTITY_SITE_HITS = {
         "post_question._post": 1,
     },
     "output_boundary.py": {"TurnScope": 1},
-    "own_voice_lifecycle.py": {"TelegramHost.post_ask._finish_factory._finish": 1},
+    "own_voice_lifecycle.py": {
+        "Lifecycle._busy": 1, "Lifecycle.apply_switches": 1, "TelegramHost.open_items": 1,
+        "TelegramHost.post_ask._finish_factory._finish": 1},
     "persona_pack.py": {"load_persona_pack": 2},
     "plugin_bindings.py": {
         "<module>": 1, "Binding": 3, "BindingStore.__init__": 1,
@@ -761,6 +763,10 @@ IDENTITY_FUNCTIONS = {
     ("job_registry.py", "JobRegistry._task_post_job"): (RULE_K, "test_task_posts.py::TestIndex::test_equal_message_ids_on_two_bots_are_two_tasks"),
     ("job_registry.py", "JobRegistry.record_task_post"): (RULE_K, "test_task_posts.py::TestIndex::test_equal_message_ids_on_two_bots_are_two_tasks"),
     ("operator_calls.py", "post_question"): (NOISE, "a signature"),
+    ("own_voice_lifecycle.py", "Lifecycle._busy"): (NOISE, "a call of the host's open_items"),
+    ("own_voice_lifecycle.py", "Lifecycle.apply_switches"): (
+        NOISE, "a call of the host's open_items"),
+    ("own_voice_lifecycle.py", "TelegramHost.open_items"): (NOISE, "a signature"),
     ("own_voice_lifecycle.py", "TelegramHost.post_ask._finish_factory._finish"): (
         NOISE, "an outcome field"),
     ("plugin_stop.py", "visible_confirmation"): (NOISE, "a signature"),

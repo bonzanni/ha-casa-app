@@ -62,6 +62,12 @@ class World:
     op_argv: list = field(default_factory=list)
     op_create_timeout_once: bool = False
     fail_post: bool = False
+    taken_handles: set = field(default_factory=set)   # usernames in use on Telegram
+    probe_down: bool = False                          # t.me cannot be reached
+    open: dict = field(default_factory=dict)          # bot_id -> what still waits on it
+    restarts: int = 0                                 # app restarts requested
+    restart_ok: bool = True
+    op_delete_fails: bool = False                     # `op item delete` exits non-zero
 
     def tick(self, what: str) -> None:
         self.effects.append(what)
@@ -135,6 +141,18 @@ class FakeHost:
             raise InvalidToken("Unauthorized")
         return {"first_name": self.w.manager_first_name, "username": self.w.manager_username}
 
+    async def handle_taken(self, username):
+        if self.w.probe_down:
+            return None
+        return username.lower() in {t.lower() for t in self.w.taken_handles}
+
+    async def request_restart(self):
+        self.w.restarts += 1
+        return self.w.restart_ok
+
+    def open_items(self, role, bot_id, durable_only):
+        return list(self.w.open.get(bot_id, []))
+
     async def manager_check(self):
         return "ok" if self.w.manager_ok else "unauthorized"
 
@@ -159,6 +177,10 @@ class FakeHost:
     async def restrict_access(self, bot_id):
         self.w.setup.append(("access", bot_id, True))
         self.w.tick("access")
+
+    async def set_name(self, token, name):
+        self.w.setup.append(("name", token, name))
+        self.w.tick("name")
 
     async def set_description(self, token, text):
         self.w.setup.append(("description", token, text))
@@ -280,6 +302,12 @@ class FakeOp:
             self.w.op_items[item_id]["token"] = tpl["fields"][0]["value"]
             self.w.tick("op_edit")
             return ok("{}")
+        if args[:2] == ["item", "delete"]:
+            if self.w.op_delete_fails or args[2] not in self.w.op_items:
+                return subprocess.CompletedProcess(cmd, 1, "", "not deleted")
+            del self.w.op_items[args[2]]
+            self.w.tick("op_delete")
+            return ok("")
         if args[:2] == ["item", "get"]:
             item = self.w.op_items.get(args[2])
             if item is None:
