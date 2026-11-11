@@ -1299,3 +1299,99 @@ async def test_the_graceful_stop_cancels_pending_retries_before_the_channels_sto
     assert seen == {"retry_done_at_channel_stop": True}
     assert retry.cancelled() and not lc._tasks
     await asyncio.sleep(0)
+
+
+
+# ---------------------------------------------------------------------------
+# a managed bot's token never reaches a log record
+# ---------------------------------------------------------------------------
+
+_TOKEN_LOG_PROBE = textwrap.dedent("""\
+    import asyncio, io, json, logging, sys
+    sys.path.insert(0, sys.argv[1])
+    mode, root = sys.argv[2], sys.argv[3]
+    import httpx
+    from telegram import Bot
+    from telegram.request import HTTPXRequest
+    import log_cid, log_redact
+    import own_voice_lifecycle as ovl
+
+    RESIDENT = "100000001:" + "R" * 35
+    MANAGED = "200000002:" + "M" * 35
+    ME = {"id": 200000002, "is_bot": True, "first_name": "Alex", "username": "AlexBot"}
+    CASA_ME = {"id": 100000001, "is_bot": True, "first_name": "Casa", "username": "CasaBot"}
+
+    def api(results):
+        # a real PTB request over an in-process httpx transport
+        def answer(request):
+            method = request.url.path.rsplit("/", 1)[-1]
+            return httpx.Response(200, json={"ok": True, "result": results[method]})
+        return HTTPXRequest(httpx_kwargs={"transport": httpx.MockTransport(answer)})
+
+    class Raw(logging.Handler):
+        # every raw record, before any redaction runs
+        lines = []
+        def emit(self, record):
+            Raw.lines.append(record.name + " " + record.getMessage())
+
+    out = io.StringIO()
+    log_cid.install_logging(stream=out, level=logging.DEBUG)
+    root_logger = logging.getLogger()
+    root_logger.handlers.insert(0, Raw(level=logging.DEBUG))
+    for name in ("telegram", "httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.DEBUG)
+
+    async def main():
+        async with Bot(RESIDENT, request=api({"getManagedBotToken": MANAGED,
+                                             "getMe": CASA_ME})) as resident:
+            host = ovl.TelegramHost()
+            host._casa = lambda: type("Casa", (), {"bot": resident})()
+            Raw.lines.clear()
+            if mode == "fetch":
+                token = await host.fetch_token(200000002)
+                return {"token": token == MANAGED,
+                        "called": sum("getManagedBotToken" in l for l in Raw.lines),
+                        "raw": sum(MANAGED in l for l in Raw.lines)}
+            ovl.TelegramHost._bot = staticmethod(lambda t: Bot(t, request=api({"getMe": ME})))
+            lc = ovl.Lifecycle(root=root, host=host, retry_delays=None)
+            token, outcome = await lc._fetch(200000002)
+            probed = await host.probe(token)
+            for h in root_logger.handlers:
+                h.flush()
+            text = out.getvalue()
+            return {"token": token == MANAGED and outcome == "ok" and probed == "ok",
+                    "called": text.count("getMe"),
+                    "rendered": text.count(MANAGED)}
+
+    print(json.dumps(asyncio.run(main())))
+""")
+
+
+def _token_log_probe(mode: str, tmp_path: Path) -> dict:
+    code = Path(ovl.__file__).parent
+    r = subprocess.run([sys.executable, "-c", _TOKEN_LOG_PROBE, str(code), mode,
+                        str(tmp_path / "data")],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr[-3000:]
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+def test_fetching_a_managed_bot_token_logs_no_record_carrying_it(tmp_path):
+    """Real python-telegram-bot over a fake HTTP transport, DEBUG on every
+    logger: fetching the token leaves no raw record (any logger, any level,
+    before any redaction) that carries it. A fresh interpreter, because the
+    unit session stubs ``telegram``."""
+    out = _token_log_probe("fetch", tmp_path)
+    assert out["token"] is True
+    assert out["called"] >= 1          # the call itself was logged, by URL
+    assert out["raw"] == 0
+
+
+def test_a_fetched_token_is_redacted_from_the_managed_bots_own_calls(tmp_path):
+    """Through the lifecycle's fetch the token is registered for redaction
+    before the managed bot's own calls log their URLs (PTB's base URL,
+    httpx's request line): Casa's log output carries it zero times."""
+    out = _token_log_probe("lifecycle", tmp_path)
+    assert out["token"] is True
+    assert out["called"] >= 1
+    assert out["rendered"] == 0

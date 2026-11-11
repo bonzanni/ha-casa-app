@@ -67,7 +67,9 @@ persisted suggestion it matches exactly (name and username); with no single matc
 asks in the resident's chat ("A new bot @… was just created. Which agent is it for?"),
 offering the waiting agents and "None — I'll delete it". An agent never holds two bots and
 a bot is never rebound to another agent. The token is fetched with `getManagedBotToken`
-through the resident's bot and stored per role — in its own 1Password item
+through the resident's bot's request layer, never the library's Bot method, whose DEBUG
+trace logs the return value; it is registered for log redaction before the bot's own first
+call logs its URL. It is stored per role — in its own 1Password item
 (`Telegram <Role>`, tag `casa-agent-bot`, created once then edited in place), or without
 1Password in `agent-voices/tokens/<role>`; before binding it is kept in memory and fetched
 again at boot. Binding then runs the bot's **self-setup** — description, short

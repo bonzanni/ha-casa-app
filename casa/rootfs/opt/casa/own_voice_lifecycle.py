@@ -1474,7 +1474,23 @@ class TelegramHost:
         return "ok"
 
     async def fetch_token(self, bot_id: int) -> str:
-        return await self._casa().bot.get_managed_bot_token(user_id=bot_id)
+        """The managed bot's token, from ``getManagedBotToken`` on the
+        resident's bot.
+
+        The call goes straight to the bot's request object rather than
+        through ``Bot.get_managed_bot_token``: the Bot method logs every
+        call's return value at DEBUG, and here that value is the token,
+        which the log redaction cannot know yet. The request layer below it
+        logs the request URL, never the response body. Failures raise the
+        same ``TelegramError`` subclasses as the Bot method; the caller
+        registers the token for redaction before anything else uses it."""
+        from telegram.request import RequestData
+        from telegram.request._requestparameter import RequestParameter
+        bot = self._casa().bot
+        return await bot.request.post(
+            url=f"{bot.base_url}/getManagedBotToken",
+            request_data=RequestData(
+                parameters=[RequestParameter.from_input("user_id", int(bot_id))]))
 
     async def restrict_access(self, bot_id: int) -> None:
         await self._casa().bot.set_managed_bot_access_settings(
