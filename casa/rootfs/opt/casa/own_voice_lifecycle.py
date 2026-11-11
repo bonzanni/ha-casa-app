@@ -644,6 +644,19 @@ class Lifecycle:
     def _waiting_roles(self) -> list[str]:
         return sorted(r for r in self._configs() if self._waiting(r))
 
+    def _changing(self, role: str) -> bool:
+        """*role* declares its own chat and has a pending change whose new
+        bot does not exist yet."""
+        change = (self.store.agents.get(role) or {}).get("change")
+        return self.declared(role) and change is not None and change["new_bot"] is None
+
+    def _ask_roles(self) -> list[str]:
+        """Who a new bot can be for: the waiting agents, then the agents with
+        a pending change (a bot created from an edited form completes the
+        change once the operator picks it)."""
+        return self._waiting_roles() + sorted(
+            r for r in self._configs() if self._changing(r))
+
     def _spawn(self, coro) -> asyncio.Task:
         task = asyncio.get_running_loop().create_task(coro)
         self._tasks.add(task)
@@ -1105,7 +1118,7 @@ class Lifecycle:
 
     async def _post_ask(self, bot_id: int, exclude: tuple[str, ...] = ()) -> None:
         rec = self.store.bots[bot_id]
-        candidates = [r for r in self._waiting_roles() if r not in exclude]
+        candidates = [r for r in self._ask_roles() if r not in exclude]
         rid = uuid.uuid4().hex
         rec["ask"] = {"state": "posting", "card": None, "rid": rid,
                       "candidates": candidates}
@@ -1152,8 +1165,19 @@ class Lifecycle:
             if not 0 <= idx < len(candidates):
                 return
             role = candidates[idx]
+            switching = ok = False
             async with self._registry_lock:
-                ok = self._waiting(role) and await self._enter_binding(bot_id, role)
+                if self._changing(role):
+                    switching = True
+                    rec.update(phase=SWITCHING, role=role)
+                    self.store.agents[role]["change"]["new_bot"] = bot_id
+                    await self.store.save()
+                else:
+                    ok = self._waiting(role) and await self._enter_binding(bot_id, role)
+            if switching:
+                await self._edit_ask(rec, f"@{rec['username']} is {self._label(role)}'s.")
+                await self._restart_for_switch(role)
+                return
             if ok:
                 await self._edit_ask(rec, f"@{rec['username']} is {self._label(role)}'s.")
                 await self._step_binding(bot_id)

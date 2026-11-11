@@ -61,9 +61,12 @@ with no bot and no pending change) whose current suggested username it has, in a
 the display name is not compared, since self-setup sets it. A bot whose username is a
 pending change's current suggestion starts that agent's switch instead (below). With no
 single match Casa asks in the resident's chat ("A new bot @… was just created. Which agent
-is it for?"), offering only the waiting agents — never an agent with a bot or a pending
-change — and "None — I'll delete it", so a bot created from an edited form or from a card
-naming an older handle is asked about. An agent has one bound bot at a time and a bot is
+is it for?"), offering the waiting agents, then the agents whose pending change has no bot
+yet — never an agent with a bot and no change — and "None — I'll delete it", so a bot
+created from an edited form or from a card naming an older handle is asked about. Picking
+an agent with a pending change starts its switch exactly as a matching username would; a
+pick whose agent no longer fits (bound meanwhile, change dropped or claimed) binds or moves
+nothing, and the question is asked again without it. An agent has one bound bot at a time and a bot is
 never rebound to another agent. The token is fetched with `getManagedBotToken`
 through the resident's bot's request layer, never the library's Bot method, whose DEBUG
 trace logs the return value; it is registered for log redaction before the bot's own first
@@ -160,7 +163,7 @@ not authorized no fetch is tried and the log says so once. An uninstall's result
 
 **INV-OWN-011**: The operator's first turn in an agent's own chat that the agent's queue accepts, whatever it says, opens the chat: that turn alone carries Casa's line that the operator just opened it — in an agent's new chat after a move to a new bot, the line that it is the new chat — and `chat_open_at` is persisted only after the acceptance, on a first send and on a retry after a hand-back alike; a delivery refused or interrupted, across a restart included, and a file sent without a caption open nothing, and the chat's next accepted operator turn carries the line.
 
-**INV-OWN-012**: A bot is registered only from the operator's own `managed_bot_created` message to Casa's bot in his chat, and bound to an agent only when its username equals that agent's current suggestion (a waiting agent's first bot, or a pending change) or the operator names a waiting agent; a bot is never rebound to another agent, and an agent has one bound bot at a time.
+**INV-OWN-012**: A bot is registered only from the operator's own `managed_bot_created` message to Casa's bot in his chat, and bound to an agent only when its username equals that agent's current suggestion (a waiting agent's first bot, or a pending change) or the operator names a waiting agent or one with a pending change; a bot is never rebound to another agent, and an agent has one bound bot at a time.
 
 **INV-OWN-013**: A pending switch is applied only by the boot step that runs before Casa's HTTP server, channels, workers and scheduler start, and only when no durable record still waits on the old bot; it removes the old bot's record, held journal and stored token before the new bot enters binding, and a stored token is used only for the bot whose id it begins with.
 
