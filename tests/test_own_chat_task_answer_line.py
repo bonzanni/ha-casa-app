@@ -16,7 +16,7 @@ from test_memory_capture import mem  # noqa: F401 — fixture
 from test_own_voice_tasks import (  # noqa: F401 — the shared fixture
     NAME, START, _alex_texts, _delegate, _long_answer, _settled, world,
 )
-from test_delegate_to_agent import _FakeSpecialistClient
+from test_own_voice_tasks import _FakeSpecialistClient  # the client the shared world runs
 
 pytestmark = pytest.mark.asyncio
 
