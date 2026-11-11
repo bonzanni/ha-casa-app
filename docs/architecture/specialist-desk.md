@@ -38,8 +38,10 @@ role's `kind` is `specialist`, or `executor` for the configurator; the same pred
 delegation gate reads) and is one the resident may delegate to now — takes the resident's
 path, its text unchanged (a reply carrying Casa's note of what it answered, below). The route
 runs on the resident's bot only; on an agent's own bot the same reply is that agent's
-conversation turn, unless it quotes a live task's post ([`own-voice.md`](own-voice.md)). The route
-runs first in the DM handler, ahead of the `/new` interception (so `/new, start over` on a Finance post is
+conversation turn, unless it quotes a live task's post ([`own-voice.md`](own-voice.md)). A desk
+turn (`handle_reply`) starts only from a post an agent made in the resident's chat — a reply
+or a file to it, a 📎 on its card, an approval inside such a turn — and none is made there any
+more. The route runs first in the DM handler, ahead of the `/new` interception (so `/new, start over` on a Finance post is
 Finance's turn, as text: it resets nothing, neither the resident nor the desk), and after the
 chat's rate decision, taken exactly as today's path takes it.
 

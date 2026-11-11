@@ -123,20 +123,25 @@ The fields ride on the records (`VoiceJob`, `EngagementRecord`, the continuation
 `DelegationRecord` and binding), persisted, `"delivery": null` included, and on the
 task's origin as the reserved `_task_delivery` key (`provenance.task_delivery_marker`),
 which no ingress can set and `carry_route` does not copy. A turn that is not a task — the
-resident's own, an agent's conversation — delivers in its own chat.
+resident's own, an agent's conversation — delivers in its own chat, and only when that
+chat's endpoint is the executing agent's own (`authz_grants.resolve_grant_identity`): a turn
+running another agent there has no delivery, so its surfaces refuse and post nothing.
 
 **The capability rule.** A call of an agent's plugin that posts (a capability with a
 delivered slot, a call that asks Casa: run card, Stop) is refused at admission, before the
 authorization decision and before the plugin runs, unless the agent's own chat is open
 (`result_broker.surface_refusal`) and the call has a delivery; the delivery checks again
 before it posts. The same rule refuses `send_media`, `ask_operator` and `start_job` for a
-host whose chat is not open; a scheduled job whose host's chat is not open is not started
+host whose chat is not open; `send_media` asks it whenever the file is bound for an agent's
+own bot (`tools._closed_own_chat`), so a task born while the chat was open refuses once it
+has closed. A scheduled job whose host's chat is not open is not started
 (logged), and nothing of it appears in the resident's chat. The typed refusals:
 `own_chat_missing` ("Finance has no chat of its own: return what you have as text."),
 `own_chat_not_open` (tap Open … in the resident's chat), `own_chat_unreachable` (the bot is
 recovering), and, for a task born with no delivery, "… was not open when this task
-started …; put what matters in your answer". In an agent's own chat its posts carry no
-`📊` label (`result_broker.label_at`): the chat is the agent.
+started …; put what matters in your answer". A refused plugin call is told the line after
+`not executed: `, naming the agent plainly, without the `📊` glyph. In an agent's own chat
+its posts carry no `📊` label (`result_broker.label_at`): the chat is the agent.
 
 **A task in an agent's chat.** A delegation to an agent whose chat is open at its birth
 opens its post index (`task_posts.open`) and its input destination
@@ -262,6 +267,7 @@ derives an origin from another task's.
 - `casa/rootfs/opt/casa/tools.py::_task_birth`
 - `casa/rootfs/opt/casa/tools.py::_settle_task`
 - `casa/rootfs/opt/casa/tools.py::_media_delivery`
+- `casa/rootfs/opt/casa/tools.py::_closed_own_chat`
 - `casa/rootfs/opt/casa/tools.py::_after_own_chat_change`
 - `casa/rootfs/opt/casa/agent_registry.py::keeps_own_conversation`
 - `casa/rootfs/opt/casa/agent.py::Agent._build_specialist_session_options`
@@ -289,6 +295,7 @@ derives an origin from another task's.
 - `tests/test_task_model.py`
 - `tests/test_chat_notes.py`
 - `tests/test_own_chat_manifest.py`
+- `tests/test_own_voice_invariants.py`
 
 **Related**
 - [`architecture/telegram-bots.md`](../architecture/telegram-bots.md)

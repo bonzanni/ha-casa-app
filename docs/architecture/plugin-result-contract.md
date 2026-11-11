@@ -61,7 +61,8 @@ rewritten input, so a parallel tool cannot present the ticket.
 call's **delivery**: a task's turn copies the delivery its task was born with (from the
 engagement record, or the origin's reserved `_task_delivery`), `None` included, and never
 recomputes it; any other turn (the resident's own, an agent's conversation) delivers in its
-own chat. Admission, before the authorization decision and before anything is recorded,
+own chat only when that chat's endpoint is the executing agent's own, and otherwise has none
+(`resolve_grant_identity`). Admission, before the authorization decision and before anything is recorded,
 refuses a call that delivers a slot or asks Casa unless its agent's own chat is open (the
 resident's always is) and the call has a delivery (`surface_refusal`); the post checks again,
 and nothing falls back to another chat (INV-OWN-001, [`own-voice.md`](own-voice.md)). Admission
