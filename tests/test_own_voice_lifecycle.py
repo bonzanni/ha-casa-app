@@ -249,9 +249,11 @@ async def test_a_dormant_bot_runs_no_agent(world, root):
     del world.configs["finance"]
     world.queues.discard("finance")
     await lc.reconcile_role("finance")
+    notices = list(world.notices)
     assert await lc.intake(ALEX_BOT, update(9)) == "dormant_reply"
-    assert world.released == []
-    assert world.notices[-1] == (ALEX_BOT, "Alex isn't installed right now.")
+    assert world.released == [] and lc.journal.pending(ALEX_BOT) == []
+    # a live update's dormant line is the endpoint's to send, once
+    assert world.notices == notices
 
 
 # ---------------------------------------------------------------------------
@@ -694,6 +696,7 @@ async def test_an_upgrade_that_drops_the_declaration_goes_dormant_and_back(world
     lc, host = make_lifecycle(world, root)
     await _bind_alex(lc, host)
     world.configs["finance"] = specialist("Alex", own=False)
+    assert await lc.intake(ALEX_BOT, update(1)) == "held"     # between commit and hook
     if crash:
         lc, host = make_lifecycle(world, root)
         await lc.boot()
@@ -701,8 +704,10 @@ async def test_an_upgrade_that_drops_the_declaration_goes_dormant_and_back(world
         await lc.on_upgrade("finance")
     assert lc.store.bots[ALEX_BOT]["phase"] == ovl.DORMANT
     assert lc.state("finance") == "dormant"
-    assert await lc.intake(ALEX_BOT, update(1)) == "dormant_reply"
     assert world.notices[-1] == (ALEX_BOT, "Alex no longer has a separate chat — talk to Ellen.")
+    notices = list(world.notices)
+    assert await lc.intake(ALEX_BOT, update(2)) == "dormant_reply"
+    assert world.notices == notices
     world.configs["finance"] = specialist("Alex")
     await lc.on_upgrade("finance")         # the rollback / upgrade that declares it again
     assert lc.store.bots[ALEX_BOT]["phase"] == ovl.BOUND
@@ -1231,3 +1236,29 @@ def test_an_agent_endpoint_is_configured_like_casas(monkeypatch):
     assert ep.is_casa is False and ep._bus is casa._bus
     assert ep._webhook_url == "https://casa.example" and ep._webhook_secret_for is secret
     assert ep._session_registry is casa._session_registry
+
+
+async def test_the_host_releases_through_the_endpoints_release_update_and_edits_by_index(
+        monkeypatch):
+    calls = []
+
+    class Ep:
+        async def release_update(self, update):
+            calls.append(("release", update["update_id"]))
+            return "no_target"
+
+        async def edit_dm_message(self, chat, mid, text, *, buttons=None, urls=None):
+            calls.append(("edit", chat, mid, text, buttons, urls))
+            return True
+
+    host = ovl.TelegramHost()
+    monkeypatch.setattr(host, "endpoint", lambda bot_id: Ep())
+    assert await host.release_update(ALEX_BOT, update(4)) == "no_target"
+    await host.edit_card(TgAddress(7000, OPERATOR, 5), "ready",
+                         [("Open Alex's chat", "https://t.me/HeyAlexTestBot")])
+    await host.edit_card(TgAddress(7000, OPERATOR, 5), "open", [])
+    assert calls == [
+        ("release", 4),
+        ("edit", OPERATOR, 5, "ready", [("Open Alex's chat", "noop")],
+         ["https://t.me/HeyAlexTestBot"]),
+        ("edit", OPERATOR, 5, "open", None, None)]

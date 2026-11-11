@@ -1091,16 +1091,16 @@ class Lifecycle:
     async def intake(self, bot_id: int, update: dict) -> str:
         """What the endpoint does with *update*: ``"deliver"`` it through
         its normal intake; ``"held"`` — it is journaled (or, for a released
-        bot, ignored) and acknowledged; ``"dormant_reply"`` — the bot's
-        dormant reply has been sent and nothing else is done."""
+        bot, ignored) and acknowledged; ``"dormant_reply"`` — the endpoint
+        answers with the dormant line and does nothing else. An agent with no
+        registered queue is never ``"deliver"``, so an endpoint whose delivery
+        found no queue may ask again and gets ``"held"``."""
         async with self._lock(bot_id):
             rec = self.store.bots.get(bot_id)
             if rec is None or rec["phase"] in (RELEASING, RELEASED):
                 return "held"
             if rec["phase"] == DORMANT:
-                if self._is_operator_message(update):
-                    await self._notify(bot_id, self._dormant_text(bot_id))
-                return "dormant_reply"
+                return "dormant_reply"   # the endpoint sends the dormant line
             role = rec.get("role")
             deliverable = (rec["phase"] == BOUND and bot_id in self._reconciled
                            and role is not None and self.declared(role)
@@ -1598,10 +1598,9 @@ class TelegramHost:
         """The endpoint's normal intake of a held update: ``"accepted"`` once
         it is on its agent's queue, ``"no_target"`` otherwise."""
         ep = self.endpoint(bot_id)
-        deliver = getattr(ep, "release_held_update", None) if ep is not None else None
-        if deliver is None:
+        if ep is None:
             return "no_target"
-        return await deliver(update)
+        return await ep.release_update(update)
 
     # -- cards in the resident's chat (Casa's own cards) ------------------
 
@@ -1621,8 +1620,10 @@ class TelegramHost:
         ep = self.endpoint(addr.bot_id)
         if ep is None:
             return False
-        return await ep.edit_dm_message(addr.chat_id, addr.message_id, text,
-                                        urls=list(buttons) or None)
+        return await ep.edit_dm_message(
+            addr.chat_id, addr.message_id, text,
+            buttons=[(label, "noop") for label, _ in buttons] or None,
+            urls=[url for _, url in buttons] or None)
 
     async def post_ask(self, rid: str, text: str, options: list[str],
                        on_answer: "Callable[[int | None], Any]") -> "TgAddress | None":
