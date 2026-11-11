@@ -1472,3 +1472,42 @@ def test_every_post_record_names_the_agent_of_the_chat_it_lands_in():
     assert found == set(POST_RECORDS), {
         "unrecorded": sorted(found - set(POST_RECORDS)),
         "gone": sorted(set(POST_RECORDS) - found)}
+
+
+async def test_a_file_sent_after_tapping_a_live_tasks_paperclip_reaches_that_task(
+        world, monkeypatch, downloads):
+    """Alex's task posts a card with a 📎 button in his chat; the operator taps
+    it and sends a file (not as a reply): the file goes to the task, which
+    may read it."""
+    import verdict_broker
+    card = json.dumps({"text": "Which statement?",
+                       "buttons": [{"label": "📎 Send it", "arm_file": True}]})
+
+    async def post_card(_client):
+        store = rb.ReferenceStore()
+        admit = rb.make_plugin_admission_hook("finance", _map(), client_id="c1", store=store)
+        result = rb.make_result_hook(_map(), client_id="c1", store=store)
+        assert await admit({"hook_event_name": "PreToolUse", "tool_name": CARD,
+                            "tool_input": {}}, "tu-c", {}) == {}
+        ref, _ = store.deposit(client_id="c1", slot="card", value=card)
+        await result({"hook_event_name": "PostToolUse", "tool_name": CARD, "tool_input": {},
+                      "tool_response": json.dumps({"card": ref})}, "tu-c", {})
+
+    Client.on_query = post_card
+    call, did = await _live_delegation(world, monkeypatch)
+    [rid] = verdict_broker.BROKER.pending(namespace="proposal",
+                                          scope=f"proposal:{ALEX_BOT}:{OPERATOR}")
+    card_mid = verdict_broker.BROKER.get_meta(
+        namespace="proposal", scope=f"proposal:{ALEX_BOT}:{OPERATOR}",
+        request_id=rid)["message_id"]
+    assert task_posts.owner(TgAddress(ALEX_BOT, OPERATOR, card_mid)).task_id == did
+    await _tap(world.alex, f"v1|proposal|{rid}|0", card_mid)
+    await _handle(world.alex, _file("statement.pdf"))
+    line = Held.built.writes[-1]
+    assert line.startswith("[casa file] statement.pdf at ") and "a file for your post" in line
+    path = line.split(" at ", 1)[1].split(" — ", 1)[0]
+    assert await _reads(Held.built.captured_options, path)
+    assert _queued(world.bus, "finance") == [] and _ellen_texts(world) == [HANDOFF_ALEX]
+    Held.release.set()
+    await call
+    await _settled()
