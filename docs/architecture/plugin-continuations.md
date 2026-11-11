@@ -16,7 +16,7 @@ nothing is driving. Stopping such work at once — the plugin's declared stop to
 directly with the sweep's own resolution and client — is [`plugin-stop.md`](plugin-stop.md).
 The binding and the `continue` route that feeds the queue are
 [`plugin-operator-calls.md`](plugin-operator-calls.md); the lane a continuation waits for
-is [`specialist-desk.md`](specialist-desk.md); the announcement its answer becomes is
+is [`agent-lane.md`](agent-lane.md); the announcement its answer becomes is
 [`delegation-announcements.md`](delegation-announcements.md).
 
 ## Mental model
@@ -54,10 +54,7 @@ tap ([`plugin-operator-calls.md`](plugin-operator-calls.md)). It also carries th
 posted, or nowhere when that work had none; a relay turn of an agent that asked on the way
 posts nothing ([`own-voice.md`](own-voice.md)). In the executor's own chat the continuation
 is a task there: its post index and input open before its turn, each of its posts is filed
-under its record (the turn's `_delegation_id`), and a reply to one goes into its session. A role that declares
-`session.long_runs: true` in its `role.yaml` is shown no earlier desk exchanges in any
-desk use — a delegation, a swipe-reply or a continuation (`specialist_desk.desk_log`) — so
-an earlier request's text never enters another request's context; the desk still keeps its log.
+under its record (the turn's `_delegation_id`), and a reply to one goes into its session.
 
 **A request is one conversation** (`_conversation_for`). The binding keeps the session of the
 turn that minted it (`_delegated_session_id` on that turn's origin), and a continuation resumes
@@ -210,7 +207,6 @@ binding with the `requester` route and stores only the reference with its work.
 
 **Source**
 - `casa/rootfs/opt/casa/plugin_continuations.py`
-- `casa/rootfs/opt/casa/specialist_desk.py::desk_log`
 - `casa/rootfs/opt/casa/plugin_store.py::manifest_driver_sweep`
 
 **Tests**
@@ -218,7 +214,7 @@ binding with the `requester` route and stores only the reference with its work.
 
 **Related**
 - [`architecture/plugin-operator-calls.md`](../architecture/plugin-operator-calls.md)
-- [`architecture/specialist-desk.md`](../architecture/specialist-desk.md)
+- [`architecture/agent-lane.md`](../architecture/agent-lane.md)
 - [`architecture/delegation-announcements.md`](../architecture/delegation-announcements.md)
 - [`architecture/specialist-handoff.md`](../architecture/specialist-handoff.md)
 <!-- END SOURCEMAP -->

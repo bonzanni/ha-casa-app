@@ -66,8 +66,8 @@ admitted. A broker-driven *system continuation* — the message dispatched after
 answers an engagement-origin tool authorization, or taps an answer to a job's question — has no
 text anywhere until the delivery seam admits it, and the interval before that is not short: a whole message-edit round trip to
 Telegram, because the DM edit is awaited before the continuation is dispatched. (An install
-consent or an erase-data answer continues no engagement: it continues the configurator on its
-desk, [`configurator.md`](configurator.md).) A successful
+consent or an erase-data answer continues no engagement: it continues the configurator,
+[`configurator.md`](configurator.md).) A successful
 completion landing inside it used to read an empty inbox, commit, and take the engagement
 terminal, and the approved continuation was then dropped with only a log line to show for it.
 

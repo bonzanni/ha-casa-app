@@ -23,7 +23,7 @@ Telegram only.
 JSON object with a non-blank string `receipt` may also carry `next`: an object of exactly the
 `operator_proposal` deposit shape (`text`, one to six `buttons`, optional `revision`). The
 capture keeps it, encoded, beside the receipt; nothing is judged in the hook. Once the receipt
-has landed, in the same desk use and under the same lock, `_post_next_card` judges it as a
+has landed, in the same lane use and under the same lock, `_post_next_card` judges it as a
 deposit — `proposal_ok` against the stored tool's own contract entry (its plugin and its one
 server) and the SAME captured maps the tap was re-checked against — and posts it through
 `_post_proposal`: the live bound, the revision supersede, registered before the send. Its
@@ -32,9 +32,9 @@ are keyed like any card's and commit only from a tap, through the whole admissio
 the re-checks. A walk is therefore one tap per card: the keyboard settles, the receipt lands,
 then the next card. `next` absent or `null`, or not an object, is today's tap; `next` beside
 no usable `receipt` is ignored and the text is the receipt verbatim; the `More` exception's
-no-post shape never carries one. A receipt whose send is not proven, or a desk faulted by the
+no-post shape never carries one. A receipt whose send is not proven, or an agent faulted by the
 run, gets no card: the card follows a receipt the operator has, and a tap on it could only be
-refused on a faulted desk. A plugin re-posting a card with the same `revision` replaces its
+refused by a faulted agent. A plugin re-posting a card with the same `revision` replaces its
 live predecessor (`↻ replaced`).
 
 **A tap whose answer replaces its own card edits that card in place (#1339).** A tap that
@@ -42,22 +42,22 @@ only changes the card's own view — a page turn, a switch — would otherwise s
 the settled card, the receipt and the next card. Beside a usable `receipt` and a `next`
 object, the response may carry `"in_place": true` (JSON `true` only; anything else, or no
 `next` object, is ignored). The capture keeps the flag beside the encoded `next`. In the
-same desk use, under the same lock, before any receipt is sent, `_post_next_card` judges the
+same lane use, under the same lock, before any receipt is sent, `_post_next_card` judges the
 card exactly as above and `_post_proposal` registers it as above, but with the tapped
 message as its target: the synchronous block binds the new record to the tapped message's address
-and files that message in the post map under the new card's post record — before the edit,
-whatever its outcome, so a supersede or the deadline marks the right message and a
-swipe-reply on it reaches the specialist. The channel then edits the tapped message to the
+and files that message under the new card's post record — before the edit, whatever its
+outcome, so a supersede or the deadline marks the right message and a reply on it goes where a
+reply on the card goes. The channel then edits the tapped message to the
 new text and keyboard (`replace_operator_proposal`, rendered like a posted card). A landed
-edit is the whole visible answer: no receipt is sent; the desk exchange keeps the receipt's
-first line and the resident's echo says the tap was applied, as for any tap. A call an
+edit is the whole visible answer: no receipt is sent; the chat's note says the tap was
+applied, as for any tap. A call an
 installed hook rewrote carries its tell inside the edited card, or as one notice right after
 it when the card would no longer fit one page. Taps that act do not set the flag and are
 unchanged.
 
 **A tapped card says it is working until its call answers (#1341).** Which way a tap ends
 is known only from the call's response, so the commit edits a stored-call tap's keyboard away
-to `⏳ <label>`, not to a settled line. Once the call has answered, the desk use writes the
+to `⏳ <label>`, not to a settled line. Once the call has answered, the lane use writes the
 card's last line: `☑ <label>` for a receipt or a landed post, before the receipt is sent; the
 new card itself when it replaced the tapped one; `✖ <reason>` for a refusal or a failure, as
 before. An in-place edit whose landing is unconfirmed leaves the message alone, since it may
@@ -69,12 +69,12 @@ sibling (a `capability` whose one slot delivers `operator_file`) may carry
 the deposit is `bad_proposal`; its kind is `keep_card`. Its tap runs the whole admission
 chain, but where a settling tap claims and commits, a `keep_card` tap only requires the
 record to be live and unclaimed (else "expired"), answers `✔`, touches no keyboard, and
-hands the tap to the desk itself (`_spawn_keep_tap`, one tracked task): the card keeps its
-text and every button. The desk use is any tap's — re-checks, the pinned one-call turn, the
-landed file as the receipt, the exchange and the echo — except that it writes no line over
-the card on any path (`keeps_card`): refusals, busy, a faulted desk and failures are their
-notice and echo line only. A tap admitted while the card was live sends its file even if the
-card's hour ran out while it waited for the desk. The button can be tapped again (each tap
+hands the tap to the agent's lane itself (`_spawn_keep_tap`, one tracked task): the card keeps
+its text and every button. The lane use is any tap's — re-checks, the pinned one-call turn, the
+landed file as the receipt, the chat's note — except that it writes no line over the card on
+any path (`keeps_card`): refusals, busy, a faulted agent and failures are their notice and
+note only. A tap admitted while the card was live sends its file even if the card's hour ran
+out while it waited for the lane. The button can be tapped again (each tap
 one file), and another button still settles the card as before; a tap on a settled card is
 "already answered".
 
@@ -89,7 +89,7 @@ and commit of any settling tap, so the card is settled: every later tap on it an
 ("already answered" while the settlement is remembered, "expired" after) and runs nothing. The
 finish hook then removes the keyboard by one markup-only edit (`clear_dm_keyboard`, an explicit
 empty keyboard), so the text stays exactly as posted, with no line added; nothing else follows —
-no desk use, no plugin call, no model turn, no exchange, no echo line, no notice. A removal
+no lane use, no plugin call, no model turn, no note, no notice. A removal
 Telegram refuses is a log line; the card's buttons then only answer the toast. An older Casa
 refuses a deposit with a Close button as `bad_proposal`.
 
@@ -102,10 +102,9 @@ anything else is `bad_proposal`, and absent or `null` is today's card. `_post_pr
 its synchronous block first (the live count, the revision supersede, the card's record), then
 sends each page in order as one labelled message — `deliver_operator_page`, rendered like the
 card and, when Telegram refuses its formatting, resent whole as one plain message (never split),
-filed in the post map under the card's own post record as it lands, so a swipe-reply on any page reaches the specialist's desk with that page's
-text — all pages under one delivery bound, and then the card as before. The delivery is proven
-only when every page and the card landed; its receipt adds `pages` (the count), and the echo
-line says "posted N pages and a proposal". A page that does not land sends no card: the record
+filed under the card's own post record as it lands, so a reply on any page goes where a reply
+on the card goes — all pages under one delivery bound, and then the card as before. The delivery is proven
+only when every page and the card landed; its receipt adds `pages` (the count). A page that does not land sends no card: the record
 is unregistered and the call is told how many pages landed. A keyed repeat (#1312) of a live
 card sends neither the pages nor the card. A card with pages is never placed in place:
 `_post_next_card` refuses the edit before anything is registered or sent, and the tap's
@@ -119,17 +118,17 @@ both the same way, and the fallback posts the receipt and the card.
 
 ## Contracts & invariants
 
-**INV-PROP-006**: A `safe` stored call's `next` card that is not shown in place (INV-PROP-008) is posted only beside its receipt, after that receipt's send is proven, within the tap's own desk use, and only if it passes the proposal deposit predicate against the stored tool's own plugin and server on the maps the tap was re-checked against; it is registered before it is sent and carries the tapped proposal's own chat, operator, role and artifact, so its buttons execute only from a tap; a card that does not land is one notice and the receipt stands; a response without `next` is today's tap.
+**INV-PROP-006**: A `safe` stored call's `next` card that is not shown in place (INV-PROP-008) is posted only beside its receipt, after that receipt's send is proven, within the tap's own lane use, and only if it passes the proposal deposit predicate against the stored tool's own plugin and server on the maps the tap was re-checked against; it is registered before it is sent and carries the tapped proposal's own chat, operator, role and artifact, so its buttons execute only from a tap; a card that does not land is one notice and the receipt stands; a response without `next` is today's tap.
 
-**INV-PROP-008**: A `next` card returned with `"in_place": true` replaces the tapped card only by an edit of the tapped message, within the tap's own desk use, after it passed the same deposit predicate and the same registration as a next card, with its record bound to the tapped message id and that message filed under the card's post record before the edit is sent; a landed edit sends no receipt; any other outcome is today's sequence — the receipt, then the card as a new message.
+**INV-PROP-008**: A `next` card returned with `"in_place": true` replaces the tapped card only by an edit of the tapped message, within the tap's own lane use, after it passed the same deposit predicate and the same registration as a next card, with its record bound to the tapped message id and that message filed under the card's post record before the edit is sent; a landed edit sends no receipt; any other outcome is today's sequence — the receipt, then the card as a new message.
 
-**INV-PROP-009**: A stored-call tap's card never reads as settled before its call answered: the commit edits it to `⏳ <label>` (a stored call of the declared stop tool gets no `⏳`: its direct stop call starts first and its outcome is the card's one edit), and only the tap's desk use, after the call's outcome is known, replaces that line — with `☑ <label>` before the receipt is sent, with the new card in place, or with `✖ <reason>`; it is never marked over a message an unconfirmed in-place edit may have changed.
+**INV-PROP-009**: A stored-call tap's card never reads as settled before its call answered: the commit edits it to `⏳ <label>` (a stored call of the declared stop tool gets no `⏳`: its direct stop call starts first and its outcome is the card's one edit), and only the tap's lane use, after the call's outcome is known, replaces that line — with `☑ <label>` before the receipt is sent, with the new card in place, or with `✖ <reason>`; it is never marked over a message an unconfirmed in-place edit may have changed.
 
-**INV-PROP-010**: A `keep_card` button stores only a call whose one provided slot delivers `operator_file`; its tap, admitted by the same chain while the proposal is live and unclaimed, claims and commits nothing, leaves the card's text and keyboard as they were, runs one desk use of the stored call per admitted tap, and never writes a line over the card; every other button of the card still settles it as before.
+**INV-PROP-010**: A `keep_card` button stores only a call whose one provided slot delivers `operator_file`; its tap, admitted by the same chain while the proposal is live and unclaimed, claims and commits nothing, leaves the card's text and keyboard as they were, runs one lane use of the stored call per admitted tap, and never writes a line over the card; every other button of the card still settles it as before.
 
-**INV-PROP-011**: A `close` button stores no call and is accepted only as JSON `true` beside no `call`, `arm_file` or `keep_card`, at most one per card; its tap, admitted by the same chain and the same one claim and commit as any settling tap, removes the card's keyboard by a markup-only edit that leaves the text as posted, and runs no desk use, no plugin call and no model turn; every later tap on that card runs nothing; a card without a `close` button behaves as before.
+**INV-PROP-011**: A `close` button stores no call and is accepted only as JSON `true` beside no `call`, `arm_file` or `keep_card`, at most one per card; its tap, admitted by the same chain and the same one claim and commit as any settling tap, removes the card's keyboard by a markup-only edit that leaves the text as posted, and runs no lane use, no plugin call and no model turn; every later tap on that card runs nothing; a card without a `close` button behaves as before.
 
-**INV-PROP-012**: An `operator_proposal` deposit's optional `pages` — one to six texts, each obeying the card text's rule, else `bad_proposal` — are posted in order after the card's record is registered and before the card, each as one labelled message filed in the post map under the card's post record as it lands; the card is sent only after every page landed, and the delivery is proven only when the card landed too; a page that does not land sends no card and unregisters the record; a card with pages is never shown in place; a deposit without `pages` behaves as before.
+**INV-PROP-012**: An `operator_proposal` deposit's optional `pages` — one to six texts, each obeying the card text's rule, else `bad_proposal` — are posted in order after the card's record is registered and before the card, each as one labelled message filed under the card's post record as it lands; the card is sent only after every page landed, and the delivery is proven only when the card landed too; a page that does not land sends no card and unregisters the record; a card with pages is never shown in place; a deposit without `pages` behaves as before.
 
 What it does not cover: an edit whose landing is unconfirmed. Its record stays live until the
 deadline, since the edited card may be on screen, and the fallback still posts the receipt and
@@ -157,7 +156,7 @@ live proposals, or its send is not proven. The receipt stands; one labelled noti
 `📊 Finance could not show the next card (invalid | too many open | not delivered).`; no retry.
 
 **A card cannot replace the tapped one** — the deposit predicate refuses it, the chat already
-holds 32 live proposals, the tapped message's id is unknown, the desk was faulted by the run,
+holds 32 live proposals, the tapped message's id is unknown, the agent was faulted by the run,
 or Telegram refuses the edit (its record is then unregistered). Today's sequence follows,
 visibly: the receipt, then the card as a new message, with the notice above if that fails too.
 An edit whose landing is unconfirmed keeps its record and the same sequence follows.
@@ -198,5 +197,5 @@ of the same card; a tap that confirms, files or sends leaves it out, and its rec
 **Related**
 - [`architecture/stored-call-buttons.md`](../architecture/stored-call-buttons.md)
 - [`architecture/plugin-delivered-slots.md`](../architecture/plugin-delivered-slots.md)
-- [`architecture/specialist-desk.md`](../architecture/specialist-desk.md)
+- [`architecture/agent-lane.md`](../architecture/agent-lane.md)
 <!-- END SOURCEMAP -->

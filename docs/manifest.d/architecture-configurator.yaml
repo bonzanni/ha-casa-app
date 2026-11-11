@@ -1,8 +1,8 @@
-# Manifest shard: the configurator document (born in its own shard: the A-D shard
+# Manifest shard: the configurator documents (born in its own shard: the A-D shard
 # stands just under the index ceiling).
 - doc: architecture/configurator.md
   summary: The configurator as an image-owned delegate run in the operator's DM — its origins, the one lease and the busy refusal, the interrupted-run notice, the Restart now button, approval and erasure continuations, install time off the ceiling, the plugin-health hold and the step line.
-  when_changing: the configurator's definition or how it is loaded, a delegation to it or a reply on its post, its lease or busy refusal, the interrupted-run notice, the Restart now button, an approval's or erasure's continuation of it, the install tools' ceiling pause, the install hold on plugin-health DMs, or its step line
+  when_changing: the configurator's definition or how it is loaded, a delegation to it, its lease or busy refusal, the interrupted-run notice, the Restart now button, an approval's or erasure's continuation of it, the install tools' ceiling pause, the install hold on plugin-health DMs, or its step line
   covers:
     - casa/rootfs/opt/casa/configurator_run.py::acquire
     - casa/rootfs/opt/casa/configurator_run.py::release_when_done
@@ -20,24 +20,43 @@
     - casa/rootfs/opt/casa/tools.py::_effective_caller_role
     - casa/rootfs/opt/casa/tools.py::_off_the_ceiling
     - casa/rootfs/opt/casa/tools.py::_configurator_step_line
-    - casa/rootfs/opt/casa/tools.py::_continue_configurator
     - casa/rootfs/opt/casa/tools.py::_configurator_deliverer
     - casa/rootfs/opt/casa/tools.py::_record_plugin_installer
     - casa/rootfs/opt/casa/tools.py::plugins_under_live_install
-    - casa/rootfs/opt/casa/specialist_desk.py::has_desk
     - casa/rootfs/opt/casa/agent.py::_offers_configurator_restart
     - casa/rootfs/opt/casa/drivers/turn_progress.py::TurnProgressLine
   tests:
     - tests/test_configurator_run.py
     - tests/test_install_phase_health_dm.py
     - tests/test_turn_progress.py
-    - tests/test_tools_specialist_install.py::test_approve_continues_the_configurator_through_its_desk
     - tests/test_casa_restart_supervised.py::TestCasaRestartSupervised
-  related: [architecture/delegation.md, architecture/delegate-closing-message.md, architecture/specialist-desk.md, architecture/plugin-health.md, architecture/hook-resolution.md, architecture/tools-interface.md, architecture/configuration.md]
+  related: [architecture/delegation.md, architecture/delegate-closing-message.md, architecture/configurator-approvals.md, architecture/agent-lane.md, architecture/plugin-health.md, architecture/hook-resolution.md, architecture/tools-interface.md, architecture/configuration.md]
   defines_invariants: [INV-CFG-014, INV-CFG-015, INV-CFG-016, INV-CFG-017, INV-CFG-018]
   invariant_tests:
-    INV-CFG-014: [tests/test_configurator_run.py::test_a_second_same_chat_delegation_is_refused_at_the_bound, tests/test_desk_turn.py::test_a_reply_to_a_configurator_busy_in_this_chat_gets_the_busy_line_at_the_bound, tests/test_configurator_run.py::test_a_second_run_from_another_origin_waits_for_the_lease, tests/test_configurator_run.py::test_a_run_still_unwinding_past_the_teardown_bound_keeps_the_lease, tests/test_configurator_run.py::test_past_the_bound_a_second_run_is_refused_with_the_busy_text, tests/test_configurator_run.py::test_a_new_run_waits_for_running_plugin_erasures, tests/test_configurator_run.py::test_a_new_run_waits_for_surviving_bundle_transactions, tests/test_configurator_run.py::test_an_exception_before_the_run_releases_the_lease, tests/test_configurator_run.py::test_a_cancel_outside_shutdown_releases_the_file, tests/test_configurator_run.py::test_a_specialist_run_takes_no_lease]
+    INV-CFG-014: [tests/test_configurator_run.py::test_a_second_delegation_is_refused_at_the_bound, tests/test_configurator_run.py::test_a_delegation_to_the_configurator_is_a_use_of_its_lane, tests/test_agent_lane.py::test_the_configurator_lane_wait_and_the_lease_wait_share_one_deadline, tests/test_configurator_run.py::test_a_second_run_from_another_origin_waits_for_the_lease, tests/test_configurator_run.py::test_a_run_still_unwinding_past_the_teardown_bound_keeps_the_lease, tests/test_configurator_run.py::test_past_the_bound_a_second_run_is_refused_with_the_busy_text, tests/test_configurator_run.py::test_a_new_run_waits_for_running_plugin_erasures, tests/test_configurator_run.py::test_a_new_run_waits_for_surviving_bundle_transactions, tests/test_configurator_run.py::test_an_exception_before_the_run_releases_the_lease, tests/test_configurator_run.py::test_a_cancel_outside_shutdown_releases_the_file, tests/test_configurator_run.py::test_a_specialist_run_takes_no_lease]
     INV-CFG-015: [tests/test_configurator_run.py::test_an_interrupted_runs_step_line_is_deleted_at_boot, tests/test_configurator_run.py::test_a_shutdown_cancel_keeps_the_lease_file_and_boot_announces_it_once, tests/test_configurator_run.py::test_a_shutdown_cancel_the_runner_swallows_still_keeps_the_lease_file, tests/test_configurator_run.py::test_the_boot_notice_is_skipped_when_the_job_registry_announces_the_run, tests/test_configurator_run.py::test_an_unreadable_lease_file_counts_as_held]
     INV-CFG-016: [tests/test_configurator_run.py::test_the_restart_tap_returns_before_the_restart_is_asked_for, tests/test_configurator_run.py::test_restart_needed_in_a_run_offers_a_button_spent_on_its_first_tap, tests/test_configurator_run.py::test_an_expired_restart_button_says_so, tests/test_casa_restart_supervised.py::TestCasaRestartSupervised::test_a_delegated_run_defers_to_the_restart_button]
     INV-CFG-017: [tests/test_configurator_run.py::test_caller_role_is_the_executing_configurator_in_a_delegated_run, tests/test_configurator_run.py::test_privileged_tool_refuses_another_executing_role, tests/test_configurator_run.py::test_privileged_tool_admits_the_configurator_executing_role]
     INV-CFG-018: [tests/test_configurator_run.py::test_plugins_being_installed_are_held_until_the_lease_ends, tests/test_configurator_run.py::test_no_lease_means_nothing_is_held, tests/test_install_phase_health_dm.py::test_live_install_defers_its_install_rows_and_sends_its_faults, tests/test_install_phase_health_dm.py::test_the_install_ending_names_what_still_stands, tests/test_install_phase_health_dm.py::test_without_an_installing_run_nothing_is_deferred, tests/test_install_phase_health_dm.py::test_a_run_that_installed_nothing_runs_no_pass, tests/test_install_phase_health_dm.py::test_row_reason_prefers_a_fault_behind_an_install_code, tests/test_install_phase_health_dm.py::test_row_reason_sees_a_fault_a_stale_binding_replaced, tests/test_install_phase_health_dm.py::test_a_plugin_mutation_records_its_run, tests/test_install_phase_health_dm.py::test_an_env_wiring_records_its_run, tests/test_install_phase_health_dm.py::test_an_unbound_mutation_records_nothing, tests/test_install_phase_health_dm.py::test_a_bundle_install_records_its_scoped_entries, tests/test_install_phase_health_dm.py::test_a_notify_while_the_channel_is_down_keeps_the_pass_owed, tests/test_install_phase_health_dm.py::test_row_reason_sees_a_missing_program, tests/test_install_phase_health_dm.py::test_a_targetless_plugin_gets_a_row_for_a_codeless_fault]
+
+- doc: architecture/configurator-approvals.md
+  summary: How an install, an upgrade or a persona install is approved and carried out — the approval record that freezes the effective settings, the card that shows them, the run Casa starts for the configurator after Approve, one tap as one attempt, the request that changes nothing, and the erasure continuations.
+  when_changing: the approval record, the approval card's settings, the request tool, the run Casa carries on after Approve, what uses an approval up, or the no-change check
+  covers:
+    - casa/rootfs/opt/casa/approval_records.py
+    - casa/rootfs/opt/casa/configurator_continue.py
+    - casa/rootfs/opt/casa/tools.py::specialist_install_request_approval
+  tests:
+    - tests/test_approval_records.py
+    - tests/test_approval_claim_under_lease.py
+    - tests/test_approval_required.py
+    - tests/test_approval_restart.py
+    - tests/test_configurator_approval.py
+    - tests/test_configurator_continue.py
+    - tests/test_consent_identity.py
+    - tests/test_no_change_requests.py
+  related: [architecture/configurator.md, architecture/specialist-lifecycle.md, architecture/persona-lifecycle.md, architecture/agent-lane.md, architecture/plugin-removal.md]
+  defines_invariants: [INV-CFG-019, INV-CFG-020]
+  invariant_tests:
+    INV-CFG-019: [tests/test_configurator_approval.py::test_approve_commits_exactly_the_frozen_values, tests/test_configurator_approval.py::test_a_tap_on_a_replaced_card_starts_nothing, tests/test_configurator_approval.py::test_a_newer_request_before_the_approved_run_starts_stops_it, tests/test_configurator_approval.py::test_a_newer_request_inside_the_approved_run_before_its_attempt_writes_nothing, tests/test_consent_identity.py::test_an_approval_for_the_effective_values_installs_exactly_those_values, tests/test_consent_identity.py::test_saved_settings_that_change_the_effective_values_refuse_before_anything_is_staged, tests/test_no_change_requests.py::test_settings_changed_after_the_approval_refuse_at_the_library, tests/test_approval_claim_under_lease.py::test_a_request_with_other_values_before_the_attempt_stops_the_old_approval]
+    INV-CFG-020: [tests/test_approval_claim_under_lease.py::test_a_run_whose_approval_was_replaced_while_it_waited_runs_nothing, tests/test_approval_claim_under_lease.py::test_the_attempt_uses_the_approval_whatever_follows, tests/test_approval_claim_under_lease.py::test_a_run_that_makes_no_governed_call_leaves_the_approval_for_the_next, tests/test_approval_claim_under_lease.py::test_a_second_identical_call_after_a_compensated_upgrade_is_refused, tests/test_approval_claim_under_lease.py::test_two_identical_calls_at_once_make_one_library_call, tests/test_approval_claim_under_lease.py::test_a_request_waits_for_the_write_its_run_already_started, tests/test_approval_claim_under_lease.py::test_an_install_approval_does_not_authorise_an_upgrade, tests/test_approval_claim_under_lease.py::test_a_run_busy_past_the_deadline_keeps_the_approval, tests/test_approval_restart.py::test_killed_after_the_attempt_the_approval_is_used_and_never_replayed]

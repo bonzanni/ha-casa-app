@@ -13,7 +13,7 @@ gets the answer back: the `hand_off` tool, the chain of requesters every delegat
 carries, the operator's own words that travel down it, the mechanical bounds, the permit a
 hand-off holds, and the requester's ceiling a hand-off pauses. How a
 resident delegates — the ACL, the depth cap on `delegate_to_agent`, the spawn cap, the
-desk — is [`delegation.md`](delegation.md); what a delegated run banks in memory is
+lane — is [`delegation.md`](delegation.md); what a delegated run banks in memory is
 [`memory-capture.md`](memory-capture.md); how a plugin running under a hand-off learns
 whom it serves is [`plugin-operator-calls.md`](plugin-operator-calls.md), and how its
 later turns carry the answer back up the chain is
@@ -23,26 +23,25 @@ later turns carry the answer back up the chain is
 
 **A delegated run knows whom it serves.** Every run `_run_delegated_agent` starts stamps
 `_handoff_chain` on its origin: the requesters root first, ending with the run's own role
-(`handoff.child_chain`). A resident's direct turn is a chain of one; a desk turn is the
-resident and the specialist the operator replied to; a resident's delegation adds its
+(`handoff.child_chain`). A resident's direct turn is a chain of one; a pinned stored-call
+turn is the agent whose chat the card is in and the agent that runs the call; a resident's delegation adds its
 target; a hand-off adds the next specialist. The run's `<delegation_context>` names the
 chain's element before it as the caller (`handoff.requester_of`) — the resident on every
 path except a hand-off, where it is the specialist that handed the work on — and, when the
 chain is longer than two, lists the earlier requesters as `requested_through`.
 
 **The operator's words travel with the request.** The Telegram channel stamps the text
-the configured operator typed (or a file's caption) on the reserved `_operator_words` key,
-and the specialist desk stamps it for a reply he typed (not for a file it routes, whose
-task is Casa's composition); nothing else does — not a button
+the configured operator typed (or a file's caption) on the reserved `_operator_words` key;
+nothing else does — not a button
 or approval continuation, a stored-call tap, a setup turn, a narration, a continuation, a
 scheduled, webhook, voice or engagement turn (a tapped suggested reply's dispatch will be
-the third stamper). A child origin copies its parent's, so the words of the turn that
+the second stamper). A child origin copies its parent's, so the words of the turn that
 started the chain reach every run in it. `handoff.operator_words` reads that key only, on
 an `_operator_turn` Telegram origin, and run admission reads nothing else
 ([`plugin-operator-calls.md`](plugin-operator-calls.md)).
 
 **A hand-off is a tool call that waits.** `hand_off` is offered to every specialist's
-delegated or desk build in code (`tools._handoff_grants`), never declared by a bundle —
+delegated or pinned build in code (`tools._handoff_grants`), never declared by a bundle —
 the bundle allowlist keeps spawn tools out — and that build mounts Casa's framework server
 exposing it even when the role declares no servers. The call runs the target ephemerally through
 the same bounded runner as any delegation and returns its answer to the caller as the
@@ -63,7 +62,7 @@ wait, so the requester's ceiling counts only its own running time.
 
 ## Contracts & invariants
 
-**INV-ENG-025**: `hand_off` runs only inside a specialist's own delegated or desk run, to a loaded specialist that is not already in the request's chain, and never past three hand-offs after the resident the chain started from; every refusal happens before any run, permit or record exists.
+**INV-ENG-025**: `hand_off` runs only inside a specialist's own delegated or pinned run, to a loaded specialist that is not already in the request's chain, and never past three hand-offs after the resident the chain started from; every refusal happens before any run, permit or record exists.
 
 Enforced in `tools.hand_off` with the pure bounds in `handoff.handoff_refusal`: the caller
 must be a specialist at delegation depth one or more, not in an engagement, a job or a
@@ -124,5 +123,5 @@ for the hand-off's answer, which today is the waiting tool call.
 - [`architecture/delegation.md`](../architecture/delegation.md)
 - [`architecture/memory-lifecycle.md`](../architecture/memory-lifecycle.md)
 - [`architecture/plugin-operator-calls.md`](../architecture/plugin-operator-calls.md)
-- [`architecture/specialist-desk.md`](../architecture/specialist-desk.md)
+- [`architecture/agent-lane.md`](../architecture/agent-lane.md)
 <!-- END SOURCEMAP -->

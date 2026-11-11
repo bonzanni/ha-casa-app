@@ -90,9 +90,8 @@ posts no acknowledgement and instead runs one ordinary turn of the default agent
 file's facts — its name, kind and size, its path in the inbox, and that the path is for the
 agent's tools and not for its reply — are Casa's note on the reserved `_received_file` context
 key, which rides in the Casa notes block a reply's note uses
-([`specialist-desk.md`](specialist-desk.md)) and is stripped with it on readback. The same key
-arms the turn over that file as its own, as a file desk turn's is
-([`output-boundary.md`](output-boundary.md)). Casa decides only whether there is a caption;
+([`telegram.md`](telegram.md)) and is stripped with it on readback. The same key
+arms the turn over that file as its own ([`output-boundary.md`](output-boundary.md)). Casa decides only whether there is a caption;
 what it asks — read the file, hand it to a specialist, share it with a plugin, ask back — is
 the model's to judge, and nothing in code inspects the caption's words (operator ruling,
 2026-10-09).
@@ -130,31 +129,20 @@ message whose every file a turn later took over is deleted. A file whose turn wa
 dispatched stays in the message as an uncaptioned one. An edit that fails sends the whole
 text as a new message, and a send that fails is retried by the next file's update.
 
-## A file for a specialist (S6)
+## A file for a task
 
-A file follows the same rule as a reply. The non-text handler resolves WHO the file is
-addressed to before it classifies it, task first: a file replying to a live task's post, or
-after a `📎` tap on a live task's card, goes into that task, on any bot — stored in the
-executor's inbox and readable by that task alone (`agent_inbox.grant_task_file`,
-INV-OWN-005, [`own-voice.md`](own-voice.md)). On the resident's bot only: a swipe-reply on a retained specialist post for this
-operator, or a live `📎 Add a document` arming in this chat ([`stored-call-buttons.md`](stored-call-buttons.md))
-— and otherwise the file is the default agent's, exactly as before. An addressed file is
-judged under one per-(chat, specialist) intake lock, from the eligibility check through the
-desk place, so two files to one specialist are filed in the order they were sent and a reload
-that removes the specialist during a download cannot store a second file for it: delegable now
-(`desk_target_ok`), an inbox for that specialist (provisioned at boot for every specialist the
-default agent declares as a delegate, and on a reload that adds one — a failure leaves that role
-without an inbox and redirects nothing), an accepted kind, the download into that specialist's
-own `/data/agent-inbox/<role>/ready/`, the post-download re-check, the specialist's desk place
-([`specialist-desk.md`](specialist-desk.md)). Then one desk turn of that specialist runs with a
-Casa-composed task — the file's name, kind, size and path, a line saying the inbox path is for
-the specialist's tools and not for its reply, and the operator's caption last, as the operator's
-words — and the specialist lists its inbox, shares the file into the handoff folder
-and calls its plugin's ingest tool, as the default agent does today. That file is the turn's
-own: the "hasn't opened" line can name it alone, and sharing it counts as acting on
-it ([`output-boundary.md`](output-boundary.md)). Every refusal is one
-labelled notice, a completed event composed within the resident-echo cap, echoed to the
-resident in the same words; a routed file draws no channel reply of its own.
+A file follows the same rule as a reply. The non-text handler resolves where the file goes
+before it classifies it (`TelegramChannel._file_address`), task first: a file replying to a
+live task's post, or arriving after a `📎` tap on a live task's card, goes into that task, on
+any bot — stored in the executor's inbox and readable by that task alone
+(`agent_inbox.grant_task_file`, INV-OWN-005, [`own-voice.md`](own-voice.md)). Everything else
+is the chat's default agent's, exactly as an unaddressed file is: a file replying to a
+specialist's post that belongs to no live task, a file replying to an ended task's post
+(INV-BGJOB-024), and a file arriving under an arming whose card belongs to no live task or that
+has expired. The arming arms the next file, whichever way that file goes: it is spent before
+the reply check, so no later file follows it
+([`stored-call-buttons.md`](stored-call-buttons.md)). The files of one album go where its first
+file went.
 
 ## Contracts & invariants
 
@@ -168,7 +156,7 @@ What it does not cover: a process running as root in the same container can writ
 `ready/` directly, and in the window before the next sweep a planted link is admitted by the
 lexical prefix check. This is not a sandbox against such a process.
 
-**INV-FILE-002**: A role's hooks carry the inbound-file read grant exactly for its own `ready/` directory when that role has an inbox — the Telegram default agent and the specialists it declares as delegates — appended to every `path_scope` readable list it resolves, from the one constructor `agent_inbox.grants_for`; a specialist's desk or delegated build takes the two inbound-file tools from the same constructor, with the framework server that exposes them, and its job or engagement build gets neither the grant nor the tools; a resident's two tools stay what its own configuration lists; no role's grant reaches another role's folder, the grant never adds a writable prefix, and a role without an inbox resolves with no path appended — a specialist then has neither tool selected, and a resident whose configuration lists the tools is answered that it has no inbound files.
+**INV-FILE-002**: A role's hooks carry the inbound-file read grant exactly for its own `ready/` directory when that role has an inbox — the Telegram default agent and the specialists it declares as delegates — appended to every `path_scope` readable list it resolves, from the one constructor `agent_inbox.grants_for`; a specialist's delegated build takes the two inbound-file tools from the same constructor, with the framework server that exposes them, and its job or engagement build gets neither the grant nor the tools; a resident's two tools stay what its own configuration lists; no role's grant reaches another role's folder, the grant never adds a writable prefix, and a role without an inbox resolves with no path appended — a specialist then has neither tool selected, and a resident whose configuration lists the tools is answered that it has no inbound files.
 
 `staging/`, `meta/`, the role directory itself and paths that climb out of `ready/` stay
 denied, as does every other path the agent could not read before — the one separate
@@ -205,26 +193,16 @@ outcome is unknown rather than that nothing was kept. Display metadata is writte
 publication and is best-effort: a missing display name falls back to Casa's name and is never
 a failure.
 
-**INV-FILE-001**: A non-text message in the operator's chat is ADDRESSED to a specialist when it is a swipe-reply on a retained post of that specialist for this operator — unless that post is one of an ended job this operator started in this chat (INV-BGJOB-024) — or when it arrives while this operator's `📎` arming for that specialist is live; an addressed file is judged under the per-(chat, specialist) intake lock — delegable now, an inbox, an accepted kind, the download into THAT specialist's inbox, delegable still, a desk place — and starts exactly one desk turn of that specialist, never a resident turn; when any step refuses, the file is stored in no other inbox and the operator is told once, labelled, as a completed event; files addressed to one specialist from one chat take their desk places in the order they were sent; every non-text message addressed to nobody takes the default agent's path, which starts a resident turn only for a stored file's caption (INV-FILE-004).
+**INV-FILE-001**: A non-text message in the operator's chat goes into a live task when it replies to one of that task's posts or arrives while this operator's `📎` arming of that task's card is live (INV-OWN-005); every other non-text message — a reply to a specialist's post that belongs to no live task, a reply to an ended task's post (INV-BGJOB-024), one arriving under an arming that names no live task or has expired — takes the chat's default agent's path, byte for byte the path an unaddressed file takes, which starts a turn only for a stored file's caption (INV-FILE-004).
 
 The address is resolved before the classification refusal, synchronously, and an arming is
 consumed there whatever follows; for a file without a caption the default agent's path is
-byte for byte what it was, including its reply (an acknowledgement, a refusal that says why, or the uncertainty reply).
-A routed file draws no channel reply of its own: the desk turn's labelled reply, or the one
-labelled notice when no turn runs, is what the operator sees — the specialist is not
-delegable (nothing downloaded), it has no inbox (nothing downloaded), the kind is not one the
-inbox reads, the upload was refused (Casa's own past-event line per outcome — an uncertain save
-claims neither kept nor lost, INV-INBOX-005 — never the default agent's first-person reply),
-delegability was lost at the post-download check (stored), the desk was full when the place
-was requested (stored), or the desk is faulted (stored). The desk turn's task is Casa-composed
-— the file's name, kind, size and path in the specialist's inbox, a line saying that path is
-for the specialist's tools and not for its reply, and the operator's caption last, as the
-operator's words — and the specialist files it with its own tools, as the default agent
-does today. The resident learns of each outcome by the same body-free line.
+byte for byte what it is for any file, including its reply (an acknowledgement, a refusal that
+says why, or the uncertainty reply). A file that goes into a task is never stored in the
+default agent's inbox; what the task is told and every refusal on that path are
+[`own-voice.md`](own-voice.md)'s.
 
-What it does not cover: a file sent in the agent-log group (never fetched, INV-TG-016); a
-file sent as a reply to a post of a job that has ended, which is the default agent's
-(INV-BGJOB-024); files
+What it does not cover: a file sent in the agent-log group (never fetched, INV-TG-016); files
 for residents other than the Telegram default agent; a `📎` arming across a restart (memory-only,
 like the proposal keyboards — the next file is the default agent's).
 
@@ -234,8 +212,8 @@ like the proposal keyboards — the next file is the default agent's).
 **INV-FILE-005**: Every non-text message on the default agent's path ends as a line of its chat's one acknowledgement or in a dispatched caption turn: the files of one album, or lone files arriving within `ACK_WINDOW_S` of the chat's previous file event, share one message, sent once and edited as each lands, which lists every kept file no dispatched turn covers and every refusal, and is deleted only when a turn covers everything it showed.
 
 What it does not cover: the order between a caption turn and a text sent while its file was
-downloading (the lock is taken after the download); a caption on a file addressed to a
-specialist, which rides in that specialist's desk task (INV-FILE-001); and what the agent then
+downloading (the lock is taken after the download); a caption on a file that goes into a
+live task, which is [`own-voice.md`](own-voice.md)'s (INV-FILE-001); and what the agent then
 does with the file, which is the model's to judge.
 
 ## Failure behavior
@@ -294,10 +272,8 @@ app documentation spells the period out and changes with them.
 - `casa/rootfs/opt/casa/tools.py::list_inbound_files`
 - `casa/rootfs/opt/casa/hooks.py::resolve_hooks`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._file_address`
-- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._route_addressed_file`
 - `casa/rootfs/opt/casa/agent_inbox.py::grants_for`
 - `casa/rootfs/opt/casa/agent_inbox.py::provision_delegate_inboxes`
-- `casa/rootfs/opt/casa/specialist_desk.py::file_outcome`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._caption_turn`
 - `casa/rootfs/opt/casa/channels/telegram.py::caption_file_note`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._dispatch_dm_turn`
@@ -315,12 +291,13 @@ app documentation spells the period out and changes with them.
 - `tests/test_file_handoff_grants.py`
 - `tests/test_file_handoff_inboxes.py`
 - `tests/test_file_handoff_lines.py`
+- `tests/test_ellen_chat_replies.py`
 
 **Related**
 - [`architecture/telegram.md`](../architecture/telegram.md)
 - [`architecture/hook-resolution.md`](../architecture/hook-resolution.md)
 - [`architecture/tools-interface.md`](../architecture/tools-interface.md)
 - [`architecture/persistent-state.md`](../architecture/persistent-state.md)
-- [`architecture/specialist-desk.md`](../architecture/specialist-desk.md)
+- [`architecture/own-voice.md`](../architecture/own-voice.md)
 - [`architecture/stored-call-buttons.md`](../architecture/stored-call-buttons.md)
 <!-- END SOURCEMAP -->

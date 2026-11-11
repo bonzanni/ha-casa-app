@@ -49,7 +49,7 @@ Q3 accounting · ✅ completed — Tagged 41 rows; 2 need your decision.
 | A job resumed after a restart | `↻ Resuming after a restart` |
 | The finalize funnel | `✅`/`🛑`/`❌ <outcome> — <first summary line, 300 characters>` |
 | The launch-death reporter; a cancellation whose terminal write rolled back | `⚠️ stopped before reporting a result`; `⚠️ could not be recorded` |
-| A delegated run of a specialist or the configurator (`_DelegatedRunLog`): a delegation, a desk turn, a plugin continuation | `▶ started`, its words and steps, `✓ answered` or `⚠️ aborted` |
+| A delegated run of a specialist or the configurator (`_DelegatedRunLog`): a delegation, a run Casa carries on after an approval, a plugin continuation | `▶ started`, its words and steps, `✓ answered` or `⚠️ aborted` |
 
 A step (`drivers/turn_progress.py::step_log_line`) of a built-in tool or one of Casa's own
 reads as its activity, `🔧 Reading files`; any other MCP tool names itself, underscores read as

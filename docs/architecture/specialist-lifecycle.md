@@ -152,49 +152,37 @@ the staged tree before it. The pinning test runs the gate over the same staged t
 declaration that changes afterwards arrives through an upgrade, which re-inspects and
 re-consents.
 
-**INV-SPEC-010**: An install approval that was recorded at tap-commit, but whose continuation of the configurator the desk route does not report as taken, does not leave the DM claiming an install: the recorded approval is not revoked by the failed continuation, and the single approval edit is selected from the continuation's report rather than written before it.
+**INV-SPEC-010**: An install or upgrade approval recorded at the tap, whose configurator run Casa could not start, does not leave the card claiming the configurator is carrying on: the approval stays recorded and approved, the card says the run could not be started and that the approval is kept, and the one edit is chosen from the launch's report rather than written before it.
 
 The invariant is conditioned on a recorded approval because an approval can legitimately
 fail to record — the persona store refuses a tap whose consent was revoked underneath it —
-and that case takes its own earlier branch, which reconciliation never reaches. When the
-acknowledgement IS written (synchronously, at tap-commit) a failed continuation never
-revokes it, so the recovery the corrective DM names — re-run the install (the update, on an
-upgrade's keyboard) — short-circuits as `pre_authorized` whenever an ack for that exact
-artifact identity is still on file.
+and that case takes its own earlier branch: the card says the approval was not recorded and
+the install has to be asked for again. When the acknowledgement IS written (synchronously,
+in the tap's commit step), the finish hook moves the approval record to `approved` and starts
+the configurator's run (`configurator_continue.start`,
+[`configurator-approvals.md`](configurator-approvals.md)), which tells the card once how the
+launch went. `started` selects "✅ Approved — the Configurator is carrying on with …"; `busy`
+or `failed`, and a launcher that raised, select "Approved and saved — but the configurator
+could not be started. Ask Ellen again; the approval is kept."; an approval a newer request
+replaced in the meantime selects "Replaced by a newer request; nothing was installed." No
+governed call was made, so the approval is not used up: asking again starts the run without a
+new card (`already_approved`).
 
-The finish hook awaits the continuation callback (`tools.py::_continue_configurator`, one
-desk turn of the configurator, [`configurator.md`](configurator.md)) *before* it edits, and the edit it then
-makes is one of three. A literal `True` selects the success wording. A `False`, a bare
-`None` and an absent callback select the corrective wording, which states that the install
-was not started automatically. That is the callback's report, not a proof: see the
-both-directions caveat below, under which a `False` can accompany a real hand-off. A
-contained raise selects a third, weaker wording: a raise is a contract
-violation with no production producer, and it is the one branch where the outcome is
-unknown rather than known-negative, so it says the automatic start could not be confirmed
-and that re-running is safe either way. The tap-callback never-raise contract is unchanged
-— `except Exception`, so `CancelledError` stays control flow.
+What it does not cover, deliberately: `started` is **not a delivery receipt**, nor a
+successful install. It says the run was registered and on its way; the run can still be
+refused by the configurator lease (INV-CFG-014) or fail, and its own result tells the
+resident how it ended.
 
-What it does not cover, deliberately: `True` is **not a delivery receipt**, nor a run. It is
-the desk route's report that it handled the continuation, and the route reports `True` once the
-operator was told either way — when it started the desk turn, and when it refused one with its
-own line (the configurator no longer delegable, or its desk busy) — so the success edit, which
-says a continuation was *requested*, can stand beside the desk's refusal line. A desk turn that
-starts can still be refused by the configurator lease, with its busy line (INV-CFG-014). The
-recorded approval makes a re-run safe either way.
-
-**An upgrade is worded as an update; a Deny and an expiry only edit the card.** An upgrade,
-and a settings change at the installed version, go through the same keyboard and bind the same
-approval identity as a fresh install. The keyboard and every edit but the success one name the
-operation an update rather than an install; the identity, the recorded ack and the
-`pre_authorized` short-circuit do not see the difference. A Deny records nothing and edits the
-DM; a card nobody answers within its ten minutes is edited to say it expired and nothing
-changed. Neither continues the configurator, whose run ended when it posted the card, and
-nothing is reserved for either: the operator asks again, and a new run re-inspects the same
-repository and ref for a fresh card. Each requesting run gets its own card: the coordinator
-keys a consent card by the approval identity AND the configurator run that asked
-(`tools.py::_configurator_run_key`), so a second run asking for the same artifact does not
-share the first one's card; the approval identity, the recorded ack and the `pre_authorized`
-short-circuit do not see the requester. A card that already expired is not re-issued by any
+**An upgrade is worded as an update; a Deny and an expiry close the request.** An upgrade,
+and a settings change at the installed version, go through the same card and bind an identity
+built the same way as a fresh install's, under an approval of their own kind: an install
+approval never authorises an upgrade. The card and every edit but the success one name the
+operation an update rather than an install. A Deny closes the approval record and edits the
+card; a card nobody answers within its ten minutes is edited to say it expired and nothing
+changed. Neither continues the configurator, whose run ended when it asked for the card, and
+nothing is reserved for either: the operator asks again, and a new request posts a fresh
+card. A newer request for the same component replaces the older one, whose card is edited to
+say so ([`configurator-approvals.md`](configurator-approvals.md)). A card that already expired is not re-issued by any
 tool — `consent_reprompt` says so ([`plugin-mutation-tools.md`](plugin-mutation-tools.md)) —
 it comes back only by running the install or update again.
 

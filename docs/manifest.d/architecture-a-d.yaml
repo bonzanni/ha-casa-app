@@ -2,6 +2,18 @@
 # which have their own shard (#1215). Loaded with the root docs/manifest.yaml by
 # scripts/verify_docs.py; same entry format.
 
+- doc: architecture/agent-lane.md
+  summary: Each executing agent's one lane, queue and fault — who has a lane, what is a use of it, the queue of three in reservation order, the deadline a use waits under, and the fault that refuses every use until Casa restarts.
+  when_changing: an agent's lane, its queue, the deadline a use waits under, or an agent's fault
+  covers:
+    - casa/rootfs/opt/casa/agent_lane.py
+  tests:
+    - tests/test_agent_lane.py
+  related: [architecture/delegation.md, architecture/stored-call-buttons.md, architecture/stored-call-termination.md, architecture/configurator.md]
+  defines_invariants: [INV-DESK-006]
+  invariant_tests:
+    INV-DESK-006: [tests/test_agent_lane.py::test_one_lane_per_agent_created_once, tests/test_agent_lane.py::test_one_agents_uses_wait_on_each_other_and_another_agent_runs_meanwhile, tests/test_agent_lane.py::test_the_queue_is_the_agents_and_holds_three, tests/test_agent_lane.py::test_a_fault_is_per_agent_until_restart, tests/test_agent_lane.py::test_an_unwinding_run_refuses_the_lane_only_until_it_ends, tests/test_agent_lane.py::test_a_use_past_its_deadline_holds_nothing, tests/test_own_voice_tasks.py::test_a_delegation_to_an_agent_out_of_service_is_refused_at_once]
+
 - doc: architecture/agent-taxonomy.md
   summary: How an agent is declared, validated and looked up — tiers, required artifacts, and the registry.
   when_changing: adding an agent or a tier, the required file set, or role resolution
@@ -187,7 +199,7 @@
     - casa/rootfs/opt/casa/tools.py::_with_silent_close_note
   tests:
     - tests/test_delegate_closing_words.py
-  related: [architecture/delegation.md, architecture/delegation-announcements.md, architecture/specialist-desk.md]
+  related: [architecture/delegation.md, architecture/delegation-announcements.md]
   defines_invariants: [INV-PASS-004]
   invariant_tests:
     INV-PASS-004: [tests/test_delegate_closing_words.py::test_a_sync_closing_silence_is_told_as_silence, tests/test_delegate_closing_words.py::test_a_sync_answer_carries_no_silence_note, tests/test_delegate_closing_words.py::test_a_late_closing_silence_is_told_as_silence, tests/test_delegate_closing_words.py::test_a_long_answer_whose_capped_copy_is_blank_is_judged_whole_and_carries_no_blank]

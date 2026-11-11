@@ -87,9 +87,8 @@ starting a job, through the `start_job` tool or a scheduled job's fire
 specialist engagement's casa-framework tools stay inside the consumer-safe ceiling
 (`specialist_component.SPECIALIST_CASA_TOOL_ALLOWLIST`, checked again at dispatch), and a
 resident-hosted plugin job holds only `report_job_progress` and `emit_completion`. Every
-engagement is therefore created by a resident's turn, a specialist's desk or delegated turn
-(the desk stamps the operator's route and clearance; a delegated turn's origin copies its
-caller's), or a scheduled fire (which stamps them as the DM ingress does), and its record
+engagement is therefore created by a resident's turn, a specialist's delegated turn (whose
+origin copies its caller's route and clearance), or a scheduled fire (which stamps them as the DM ingress does), and its record
 carries that turn's markers. An engagement
 whose record predates this (or came from an origin that stamps no
 route) keeps the channel-keyed behaviour.

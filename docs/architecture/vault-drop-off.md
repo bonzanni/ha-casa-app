@@ -50,8 +50,10 @@ after the attempt, on success or failure.
 **The tool is the assistant's alone.** It is on the assistant resident's tool list and on no
 other shipped agent's. The assistant's doctrine tells it when to use it: for a sign-in link or
 code the operator pasted or asked it to read from a specific email, when the consuming plugin
-declares a drop-off; with none declared, the person hands the link to the specialist directly
-by replying to one of its messages in the chat. The kernel's per-send rule still governs the mailbox
+declares a drop-off. With none declared the step cannot be finished through the assistant:
+when the specialist has its own chat, the person gives it the link there; when it works only
+behind the assistant, the link needs a drop-off, and without one the assistant says it cannot
+be done safely. The kernel's per-send rule still governs the mailbox
 read.
 
 **Write sequence.** One process-wide lock covers it, so two drops for the same item cannot

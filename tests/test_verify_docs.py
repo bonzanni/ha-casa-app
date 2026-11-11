@@ -1204,7 +1204,7 @@ AB_CD_SPLIT_LEADS = {
         "| `INV-CB-001` | The callback route serves only names present in the consented overlay",
         "| `INV-CFG-001` | Exactly seven reload scopes exist",
         "| `INV-CONC-001` | The bus dequeues per role in priority order",
-        "| `INV-DESK-002` | A desk turn's reply reaches the operator only as an admitted",
+        "| `INV-DESK-004` | A Telegram DM text message that replies to another message",
         "| `INV-DOC-001` | Every document repeats the code-wins line verbatim",
     ],
 }
@@ -1850,7 +1850,7 @@ def test_engagement_finalization_is_named_when_job_registry_changes():
 _DECLARED_OWNERSHIP = [
     ("casa/rootfs/opt/casa/delegated_memory.py", "architecture/memory-capture.md",
      ["role_writes_memory", "notice_from_excluded_role", "capture_post_line",
-      "capture_desk_reply", "capture_job_reply"]),
+      "capture_job_reply"]),
     ("casa/rootfs/opt/casa/config.py", "architecture/configuration.md",
      ["AgentConfig"]),
     ("casa/rootfs/opt/casa/config.py", "architecture/config-reconciliation.md",

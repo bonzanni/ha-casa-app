@@ -109,9 +109,8 @@ read only that field.
 - `scheduled`: a Casa job trigger started the job on its schedule. No agent turn ran.
 - `operator`: the job was started in a turn Casa attributes to an authenticated act of the
   operator: their own message; their tap on a button the assistant offered, on a question asked
-  in the DM or from a scheduled turn; their Approve tap on a protected call; an operator turn at
-  a specialist desk; a specialist's own start at a desk the operator used, or in a delegation
-  made in such a turn. It attributes the TURN, not which option was tapped or what drove the
+  in the DM or from a scheduled turn; their Approve tap on a protected call; a specialist's own start in a delegation made in such
+  a turn. It attributes the TURN, not which option was tapped or what drove the
   start inside it.
 - `agent`: an agent's turn that the operator did not author or answer started the job: the
   assistant's own scheduled turns, webhooks, an unanswered or cancelled question, setup or

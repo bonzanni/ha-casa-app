@@ -9,7 +9,7 @@ last_reviewed: 2026-11-04
 ## Scope
 
 How the operator stops work a specialist's plugin carries on by itself — a browsing request
-— with no model turn and no desk: the `casa.stopTool` declaration, Casa's direct call of it,
+— with no model turn and no place on its lane: the `casa.stopTool` declaration, Casa's direct call of it,
 the three paths that reach it (the Stop on a request's card, a proposal button whose stored
 call is the stop tool, the resident's `stop_work` tool), the one flight per request, the
 card mark and the one line, and the continuations a stop drops. The card that carries the
@@ -22,14 +22,14 @@ cancel is [`../reference/casa-browser.md`](../reference/casa-browser.md).
 ## Mental model
 
 **A stop never waits for the turn that drives the work.** A continuation turn holds its
-specialist's desk while it drives a run, so a stop that went through the desk — a model turn
+specialist's lane while it drives a run, so a stop that went through the lane — a model turn
 asked to stop — would wait for exactly the work it is meant to cut. A plugin therefore
 declares, in `casa.stopTool` (`plugin_store.manifest_stop_tool`, validated as
 `casa.driverSweep` is: a `safe` tool of the result contract that consumes nothing and calls
 nothing; an invalid declaration declares nothing), one tool Casa calls itself
 (`plugin_stop.call_stop`): Casa starts the plugin's stdio server with the sweep's own
 environment (`plugin_continuations.sweep_server`) and calls the tool through
-`plugin_continuations.call_plugin_tool` — no model, no session, no desk. The plugins asked
+`plugin_continuations.call_plugin_tool` — no model, no session, no lane. The plugins asked
 are every loaded specialist's resolved plugins that declare the tool, by the sweep's own
 resolution (`plugin_stop.stop_plugins` over `plugin_continuations.declaring_plugins`). The
 answer is handed over from inside the client session, so the caller never waits for the
@@ -54,7 +54,7 @@ and tells the operator while it still holds it (its `tell`), so two taps, or a t
 resident, tell him once. On an outcome of `KEEPS_SEAL`, the request's queued continuations
 are dropped
 (`Continuations.drop`): those of every returned ref, and the admission's own
-`admission:<cid>` continuation. A dropped continuation that is waiting for the desk runs no
+`admission:<cid>` continuation. A dropped continuation that is waiting for the lane runs no
 turn once it holds it; one already started is the running session, left to end itself
 ([`plugin-continuations.md`](plugin-continuations.md)).
 
@@ -63,9 +63,10 @@ turn once it holds it; one already started is the running session, left to end i
 mark and loses its keyboard (`settle_run_card`): `☑ Stopped` (also for `already_stopped`),
 `☑ Ended`, `☑ Stop asked` (`not_taken`). Any other outcome leaves the card with its Stop.
 The line is Casa's fixed text under the specialist's label, posted as a reply to the card
-that was tapped (`tell_line`, `TelegramChannel.send_reply_line`), filed as that card (the
-card's post record), so a reply to it reaches whatever a reply to the card reaches, and
-recorded as the resident's echo, so the resident hears it at its next turn: `Stopped.`, `It had already
+that was tapped (`tell_line`, `TelegramChannel.send_reply_line`), filed under the task the
+card belongs to, read from the durable task index — live or ended, and after a restart too — so
+a reply to it reaches whatever a reply to the card reaches; it adds no memory line, and it is
+recorded as one note for the agent of that chat, which hears it at its next turn: `Stopped.`, `It had already
 ended.`, the `not_taken` line saying the browsing stops as soon as Casa Browser answers, and
 for `unavailable` that the specialist's browser is no longer set up. `already_stopped` adds
 no line: he has been told.
@@ -98,12 +99,12 @@ may carry a Stop button whose stored call is its declared stop tool. The tap pas
 proposal's admission chain and commit as every tap does
 ([`stored-call-buttons.md`](stored-call-buttons.md)); then, when the stored arguments are
 exactly `{"ref": <string>}` and the stored tool is the stop tool the role's current
-resolution declares for the proposal's own plugin segment and artifact, it reserves no desk
-and runs no pinned turn: one tracked task stops the request, the proposal's last line becomes
+resolution declares for the proposal's own plugin segment and artifact, it reserves no lane
+place and runs no pinned turn: one tracked task stops the request, the proposal's last line becomes
 the outcome's mark (`✖ expired` for `unknown`, `✖ unavailable`, `☑ Stop` when another path
 holds the flight, `✖ failed` when the task raises), the request's start or status card is
 marked too, and the line is posted as a reply to the proposal. Any other stored call goes to
-the desk as before.
+the agent's lane as before.
 
 **The resident's `stop_work`** (`tools.stop_work`, granted to the assistant). Refused unless
 the turn is the operator's own live message — the spawn cap's `_is_agent_context` is false
@@ -130,16 +131,16 @@ or what else runs.
 
 ## Contracts & invariants
 
-**INV-PLUG-056**: A Stop of a request admitted for the configured operator runs no model turn and takes no desk; after its plugin answers that it keeps the request stopped, no queued continuation of that request starts a turn.
+**INV-PLUG-056**: A Stop of a request admitted for the configured operator runs no model turn and takes no place on its agent's lane; after its plugin answers that it keeps the request stopped, no queued continuation of that request starts a turn.
 
 Enforced by `plugin_stop.call_stop` calling the declared tool through Casa's own stdio
-client, by `_on_run_stop_callback`, `_stop_tap` and `stop_work` reaching it outside any desk
+client, by `_on_run_stop_callback`, `_stop_tap` and `stop_work` reaching it outside any lane
 (the first two in a task of their own, `_stop_tap` before `_dispatch_proposal_tap` reserves
-the desk), by `_on_run_stop_callback` checking the admitted admission, the chat, the sender
+a lane place), by `_on_run_stop_callback` checking the admitted admission, the chat, the sender
 and the configured operator, `_stop_tap` running only after the proposal's own admission
 chain (INV-PROP-001), `stop_work` checking the live operator turn and the configured operator
 and starting no turn beyond the resident's own, and by `Continuations.drop` marking a
-pending continuation dropped, which `run_continuation` checks once it holds the desk and
+pending continuation dropped, which `run_continuation` checks once it holds the lane and
 before the turn starts.
 
 What it does not cover: a continuation whose turn has already started, which runs on as the

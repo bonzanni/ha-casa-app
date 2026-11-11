@@ -104,7 +104,7 @@ keys — an unregistered, pattern-less secret under a benign key still passes.
 What it does not cover: a line from work that outlives its turn — a tool call the CLI
 abandoned, still finishing after the next turn started — carries whichever turn is running
 then; lines the job's delivery worker, its turn-end handler or its session-loss path log carry
-their own context; specialist desk turns bind no cid of their own.
+their own context.
 
 **INV-OBS-003**: The health endpoint returns a fixed success response without consulting any subsystem.
 

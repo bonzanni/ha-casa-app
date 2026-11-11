@@ -641,8 +641,8 @@ with it, so the message that fires later is prefixed *(Ellen wrote this without
 opening “invoice.pdf”.)* Opening any one of the listed files — or handing one to a plugin,
 for example to file it — clears it for the rest of the turn. With several files listed and
 none opened, the line counts them: *(Ellen hasn't opened any of the 3
-files Ellen listed.)* A file you send with a caption, or to a specialist by replying to its
-post, is that turn's own file, and the line names only it; a captioned album makes every
+files Ellen listed.)* A file you send with a caption is that turn's own file, and the line
+names only it; a captioned album makes every
 kept file of the album the turn's own, and the line counts those. The line never holds back or changes her own words — it
 is added, nothing is taken away. A reply about a file she neither listed nor tried to open carries no line;
 that case is still down to her instructions.
@@ -934,14 +934,24 @@ Ask Ellen for a configuration change in 1:1 chat. Examples:
 > **Reminders do not need the configurator.** Just ask Ellen directly — "remind me tomorrow before 9am to put the bins out", "remind me every Thursday at 7 to go to the gym" — and she sets it herself. She confirms the exact time, asks whether it should repeat when that is unclear, and can cancel it later.
 
 Ellen passes your request on. The configurator works by itself — a line in your chat
-shows its steps while it works and goes away when it is done — and its answer comes to
-your chat under its own name.
+shows its steps while it works and goes away when it is done — and Ellen tells you its
+answer.
 
-- **It asks you something?** Reply to its message (swipe to reply), or just tell Ellen.
-  Each reply starts a fresh run that sees the conversation so far.
-- **An approval card** (installing a specialist or a persona): tap Approve and the
-  configurator carries on by itself. Deny or letting it expire only updates the card;
-  ask again for a fresh one.
+- **It asks you something?** Ellen tells you; answer her in her chat — a reply there is
+  hers too — and she passes your answer on.
+- **An approval card** (installing or updating a specialist, or installing a persona): the
+  card lists the settings the install will end up with, marking the ones kept from the
+  current install, and the names (never the values) of the secrets provided. Tap Approve
+  and Casa carries the configurator on with exactly those settings. One tap is one attempt:
+  the approval is used up when the work starts, so if the work fails, or you want the same
+  update again after a rollback, you get a new card. If the configurator could not be
+  started, the card says so and the approval is kept: ask Ellen again and it carries on
+  without a new card. A newer request replaces the older card. Deny or letting it expire
+  only updates the card; ask again for a fresh one.
+- **Nothing to change?** Asking to install a specialist that is already installed, or to
+  update one to the version it already has with the same settings and no secrets involved,
+  changes nothing: you are told it is already done, and there is no card to tap.
+- **Applying a persona** to an installed specialist needs no tap.
 - **It needs a Casa restart?** Its answer is followed by a **Restart now** button. Casa
   restarts when you tap it, never in the middle of the work; the button works once and
   expires after a day.
@@ -1225,37 +1235,22 @@ When a specialist the assistant asked answers you, the assistant tells you
 that answer herself, in her own words: the specialist's "I" becomes its name
 ("Alex found €420 in October…"), and every amount, date, name and question it
 gave you reaches you as it gave it. Casa no longer posts a specialist's answer
-under its name. What a specialist posts itself — its cards, links, files
-and replies to your swipe-replies — arrives in its own chat (since v0.360.0).
+under its name. What a specialist posts itself — its cards, links and
+files — arrives in its own chat (since v0.360.0).
 A specialist that ends its turn silently has nothing for you: Casa tells the
 assistant so, and she does not say it is still working. When a specialist's
 answer is too long for what the assistant reads, Casa keeps the message the
 specialist ended its turn with and hands it to her beside the rest, so the
 answer is not lost to the cut.
 
-#### Reply to a specialist's post and the specialist answers (v0.341.0)
+#### A reply in the assistant's chat is hers (v0.361.0)
 
-Swipe-reply (quote) on any message a specialist posted — a report, a file, a
-link, or its own earlier answer — and your words go straight to that
-specialist, not to the assistant: one specialist turn, no retelling. It
-answers in the same chat under its label (`📊 Finance`), and you can reply to
-the answer to keep the thread going. The specialist keeps a short desk thread
-per chat: the last twelve exchanges of the last hour (each side clipped to
-400 characters), including the briefs the assistant sent it by delegation; an
-hour of silence starts the thread fresh. A reply that starts with `/new` on a
-specialist's post goes to the specialist too, as plain text — it resets
-nothing, and the specialist is told so; `/new` resets the assistant only when
-it is not a reply to a post. Views the specialist's plugin produces
-during the turn still arrive verbatim through the labelled-post path; if the
-specialist has nothing to show, or its turn fails, Casa posts one short
-labelled notice instead. The assistant only learns that the specialist
-answered (and how long the answer was) at your next message to it. One
-specialist turn runs per desk at a time; at most three replies wait behind
-it, and a fourth is told the desk is busy. A reply on a message posted before
-Casa last restarted, or older than the last 4,096 posted messages, is an
-ordinary message to the assistant. Since v0.360.0 a specialist's posts are in
-its own chat, where any message is already the specialist's; this route still
-serves its posts from before then in your chat with the assistant.
+In your chat with the assistant, a reply (quote) on any message is a message to her,
+whoever posted it — her own message, a Casa card, or a specialist's post from before it had
+its own chat — and Casa tells her which message you answered and what it said. A `/new`
+sent as a reply resets her conversation, as any `/new` does. The one exception is a post of
+work that is still running: a reply to it goes into that work. To talk to a specialist
+directly, write in its own chat.
 
 #### Buttons on a specialist's post (v0.342.0)
 
@@ -1270,8 +1265,8 @@ the call runs and returns a result, the plugin's own answer comes back to you,
 labelled, as the receipt (a plugin that answers with a JSON object can give
 the sentence you see as its `receipt`; otherwise you see its answer as it is). That turn is told to
 make the call even if the proposal looks out of date, because the plugin
-decides whether the tap still applies, and it is not given the specialist's
-desk thread or its memories. It is told that the tap is yours, on its own
+decides whether the tap still applies, and it is not given earlier exchanges
+or its memories. It is told that the tap is yours, on its own
 proposal, so it does not weigh the call against what its role covers
 (v0.344.38). It can still end without making the call; then
 Casa tells you it could not apply your tap (`no_call`), and the tap is not
@@ -1285,9 +1280,10 @@ specialist is put out of service ("faulted") until the
 next Casa restart, and the health report says so. If an installed hook changed
 the call's arguments on the way, the receipt still arrives with a warning line
 above it. A proposal expires after an hour; at most 32 live ones per chat. The
-assistant learns only that you tapped and whether it applied. Typing your
-answer as a reply to the proposal still works as before. Needs Casa 0.342.0 or
-later.
+agent whose chat the card is in learns only that you tapped and whether it
+applied. You can also type your answer as a reply to the card: it goes to the
+work that posted it while that work runs, otherwise it is an ordinary message
+to the chat's agent. Needs Casa 0.342.0 or later.
 
 A tap can also bring the next decision (v0.344.35). When the tapped tool's JSON
 answer carries, beside its `receipt`, a `next` object of the same shape as a
@@ -1313,8 +1309,8 @@ disappear at once while its text stays; nothing runs and nothing is sent, and a 
 the same card does nothing. Casa never adds one by itself.
 A card can also come with a list longer than one message before it (v0.344.67): with a
 `"pages"` list of one to six texts, each fitting one message, Casa posts every page in order
-as its own labelled message and then the card with its buttons, as one delivery. You can
-swipe-reply to any page and the specialist knows which page you meant. If a page cannot be
+as its own labelled message and then the card with its buttons, as one delivery. A reply to
+any page carries that page's text, so the agent knows which page you meant. If a page cannot be
 posted, the card is not posted either, and the specialist is told how many pages arrived.
 A plugin that sends pages needs Casa 0.344.67 or later: an older Casa posts the card alone.
 A card can also be one message with a picture (v0.346.0): with a `"photo"` naming a picture
@@ -1330,28 +1326,22 @@ with the warning above it) or the card's line cannot be written (then it comes a
 too).
 These need Casa 0.346.0 or later.
 
-#### A file for a specialist (v0.343.0)
+#### A file for a running piece of work (v0.343.0)
 
-A file follows the same rule as a reply. Send a PDF or photo as a swipe-reply on a
-specialist's post, and it goes into that specialist's own file inbox — not the
-assistant's — and starts one specialist turn about it, with your caption as your words.
-A plugin can also put a `📎 Add a document` button on its proposal (a button with
-`"arm_file": true` instead of a call); tap it, and the next file you send in that chat
-within ten minutes goes to that specialist the same way. The tap only ticks the button;
-no message follows it. A later 📎 tap replaces the earlier one, a text message leaves it
-waiting, the next file uses it up even when it is a reply to another post (the reply
-decides where that file goes), and a restart forgets it.
+A file follows the same rule as a reply. Send a PDF or photo as a reply on a post of work
+that is still running, and it goes into that work: it is stored in the inbox of the agent
+doing it, and that work is given that one file to read. A plugin can also put a
+`📎 Add a document` button on its card (a button with `"arm_file": true` instead of a
+call); tap it, and the next file you send in that chat within ten minutes goes into the
+work the card belongs to, the same way, while that work runs. The tap only ticks the
+button; no message follows it. A later 📎 tap replaces the earlier one, a text message
+leaves it waiting, the next file uses it up even when it is a reply to another post (the
+reply decides where that file goes), and a restart forgets it.
 
-The specialist can read and share only its own inbox, in its replies and when the assistant
-delegates to it, not in its background jobs; the assistant keeps hers. Files the
-specialist could not take — not a kind it reads, its inbox full, the specialist no longer
-assigned to the assistant — are never passed to the assistant instead: you get one
-labelled line saying what happened, and a file already saved stays in the specialist's
-inbox. The turn's lines start with what happened to the file: `📊 Finance received your
-file statement.pdf; answered (1 page).` Files sent any other way go to the assistant as
-before. In a specialist's own chat (since v0.360.0) a file is simply the
-specialist's, or the running work's when it replies to one of that work's
-posts.
+Any other file is the chat's own agent's, as any file you send there is: a file replying to
+a post of work that has ended, to a specialist's post in the assistant's chat, or sent
+after a 📎 tap on a card whose work is not running. A specialist can read and share only its
+own inbox; the assistant keeps hers.
 
 #### Links a plugin needs from you: the vault drop-off (v0.330.0)
 

@@ -14,8 +14,9 @@ that admits one run at a time, the busy refusal, the interrupted-run notice at b
 Restart now button, the continuations an approval or a plugin erasure owes it, the install
 time kept off its ceiling, the plugin-health hold while it installs, and its step line. How a
 delegation is launched and bounded is [`delegation.md`](delegation.md); what its result
-carries beside the answer is [`delegate-closing-message.md`](delegate-closing-message.md); the desk a reply reaches is
-[`specialist-desk.md`](specialist-desk.md); what its recipes do to the config tree is
+carries beside the answer is [`delegate-closing-message.md`](delegate-closing-message.md); the approval record, the card
+and the run Casa carries on after Approve are [`configurator-approvals.md`](configurator-approvals.md); its lane is
+[`agent-lane.md`](agent-lane.md); what its recipes do to the config tree is
 [`configuration.md`](configuration.md) and [`tools-interface.md`](tools-interface.md).
 
 ## Mental model
@@ -33,12 +34,12 @@ the assistant reaches it the way she reaches a specialist, through the delegate 
 its system prompt gains a world-state block (`Default vault:`, `Addon version:`, the live
 config surface) at every options build.
 
-**A run has three origins and one shape.** The assistant delegates the operator's request;
-the operator swipe-replies on one of the configurator's posts, which starts one desk turn —
-a fresh run carrying his words, the quoted post and the desk log; or Casa continues it after
-an approval or a plugin erasure, as one desk turn too. `specialist_desk.has_desk` admits the
-configurator beside the specialists, so `desk_target_ok` and `desk_for_delegation` treat it
-as one. A delegation to it always runs detached (`tools.py::_delegation_mode_for` turns
+**A run has two origins and one shape.** The assistant delegates the operator's request, or
+Casa continues it on the assistant's behalf after an approval or a plugin erasure, as one
+delegation of its own (`configurator_continue.start`,
+[`configurator-approvals.md`](configurator-approvals.md)). A reply on one of the
+configurator's posts in the resident's chat is the resident's turn, like any reply there that
+does not quote a live task's post ([`telegram.md`](telegram.md)). A delegation to it always runs detached (`tools.py::_delegation_mode_for` turns
 `sync` into `async`): a commit the run makes can reload the assistant, which would cancel a
 run her turn was awaiting. Its answer comes back to her as a delegation result and she tells the
 operator what it says, in her own words.
@@ -46,8 +47,9 @@ operator what it says, in her own words.
 **One run at a time, and a waiter is told who holds it.** Every run takes the lease in
 `configurator_run.py` before anything of it starts; the next one waits, and past the bound is
 refused with the holder's task in the operator's words. A delegation refused this way comes
-back to the assistant as a typed `busy` result carrying that text; a desk turn refused this
-way posts one Casa line in the DM, `📊 Configurator is busy with «…»; try again shortly.`
+back to the assistant as a typed `busy` result carrying that text; a run Casa carries on
+after an approval that is refused this way keeps the approval, and the operator is told it
+could not be started.
 
 **A restart it needs is the operator's tap.** Inside a run, `casa_restart_supervised`
 restarts nothing and returns `deferred`; Casa follows the run's answer with a Restart now
@@ -64,24 +66,23 @@ specialist run ([`agent-logs.md`](agent-logs.md)).
 
 ## Contracts & invariants
 
-**INV-CFG-014**: A configurator run, from any origin, takes the one process-wide configurator lease before its ceiling clock starts and before anything of the run starts, waiting up to `LEASE_WAIT_S` in all, for its desk when it comes through one and then for the holder, for running plugin erasures and for specialist-bundle transactions still running after their handler was cancelled; a run that cannot take it by then is refused with the busy text naming the holder's task and nothing of it runs; the lease is released when the run ends, and a failure before the run starts releases it at once.
+**INV-CFG-014**: A configurator run, from any origin, takes the one process-wide configurator lease before its ceiling clock starts and before anything of the run starts, waiting up to `LEASE_WAIT_S` in all, for its lane and then for the holder, for running plugin erasures and for specialist-bundle transactions still running after their handler was cancelled; a run that cannot take it by then is refused with the busy text naming the holder's task and nothing of it runs; the lease is released when the run ends, and a failure before the run starts releases it at once.
 
 The lease is taken in `tools.py::_run_delegated_agent_bounded` (`_configurator_lease`), the
-one door every origin goes through, so a desk reply, an approval continuation and a
-delegation exclude one another alike, and waiting never counts toward the run's ceiling. It
+one door every origin goes through, so an approval continuation, an erasure continuation and
+a delegation exclude one another alike, and waiting never counts toward the run's ceiling. It
 is released by `configurator_run.release_when_done`, a done callback on the run's own task.
 A run of any other agent takes no lease.
 
-A desk reply and every delegation to the configurator also wait for its lane before the
-lease — the one lane per executing agent (`agent_lane`) its desk uses in any chat, taken
-through `specialist_desk.Desk.use` or, for a delegation with no desk,
-`tools._delegation_in_lane` — and the run holding the lease usually holds that lane too. So
+Every run of the configurator also waits for its lane before the lease — the one lane per
+executing agent ([`agent-lane.md`](agent-lane.md)), taken through `tools._delegation_in_lane`
+for a delegation and by the continuation's own task for a run Casa carries on — and the run
+holding the lease usually holds that lane too. So
 the bound starts when the request reaches the lane (`configurator_run.wait_deadline`), covers
 the lane wait and the lease wait together, and a request still waiting for the lane at the
 bound is refused with the same busy text, its queue place released; the lane only orders the
-uses. That refusal is `configurator_run.ConfiguratorBusy`, a subclass of `agent_lane.LaneBusy`
-(`specialist_desk.DeskBusy` is the same class), so every caller that treats a busy lane treats
-it alike.
+uses. That refusal is `configurator_run.ConfiguratorBusy`, a subclass of `agent_lane.LaneBusy`,
+so every caller that treats a busy lane treats it alike.
 
 The erasures waited for are the plugin erasers
 `plugin_remove` and `specialist_uninstall` start (`tools._ERASE_TASKS`): an eraser runs
@@ -109,8 +110,8 @@ recovery and removes the file before any run can start, so a stale record never 
 Nothing was replayed; ask again if it is still needed.` after the recovered-delegation
 notices, and first deletes the run's step line, which the record names once the line is
 posted (`configurator_run.record_step_line`). A delegation the assistant started is a job the registry recovers and announces
-itself, which is why its id suppresses the second notice; a desk turn has no job row and is
-announced here. A cancel outside a stop removes the file; inside one the file stays
+itself, which is why its id suppresses the second notice; a run Casa carries on after an
+approval is a registered delegation too. A cancel outside a stop removes the file; inside one the file stays
 however the run ended, since a runner that returns normally from the stop's cancellation was
 interrupted all the same. An unreadable or malformed record
 counts as one, announced with the task `a configuration task`.
@@ -118,9 +119,8 @@ counts as one, announced with the task `a configuration task`.
 **INV-CFG-016**: A `casa_restart_supervised` call inside a delegated run restarts nothing: it records the need and returns `deferred`; after that run's answer Casa posts one Restart now button, spent on its first tap, which asks the Supervisor for the restart, and a button that expires is edited to say so.
 
 The need is keyed by the run's delegation id (`configurator_run.note_restart`) and consumed
-by one `offer_restart`: at the end of the desk turn's handling for a desk run
-(`specialist_desk.handle_reply`), and after the assistant's turn that narrates the
-delegation's result for a delegated one (`agent._offers_configurator_restart` around
+by one `offer_restart`, after the assistant's turn that narrates the delegation's result
+(`agent._offers_configurator_restart` around
 `Agent.handle_message`) — after her own answer, whatever she told the operator of the
 configurator's answer, and not while Casa is stopping. The button is Casa's own keyboard
 (`operator_calls.post_question`, 24 h), claimed through the broker, so a second tap is
@@ -130,12 +130,11 @@ must not wait on the handler that asked for it), and a refused request is told i
 ([`scheduled-asks.md`](scheduled-asks.md)). Outside a delegated run — an operator-driven
 call — the tool still asks the Supervisor inline.
 
-**INV-CFG-017**: `config_git_commit`, `casa_reload`, `casa_restart_supervised`, `config_trigger_upsert`, `config_trigger_delete` and `casa_reload_triggers` authorise on the executing role — the `execution_role` Casa stamps on a delegated run's or desk turn's origin, else a bound engagement's role, else the origin's role — and refuse every role but the configurator with `not_authorized`.
+**INV-CFG-017**: `config_git_commit`, `casa_reload`, `casa_restart_supervised`, `config_trigger_upsert`, `config_trigger_delete` and `casa_reload_triggers` authorise on the executing role — the `execution_role` Casa stamps on a delegated run's origin, else a bound engagement's role, else the origin's role — and refuse every role but the configurator with `not_authorized`.
 
-On a delegated run or desk turn `origin["role"]` is the caller, the assistant, so a gate
-reading it would admit any agent she delegates to and refuse the configurator; Casa stamps
-`execution_role` from the config it runs (`tools.py::_run_delegated_turn`,
-`specialist_desk._desk_origin`), never from anything a model wrote. The reader is
+On a delegated run `origin["role"]` is the caller, the assistant, so a gate reading it would
+admit any agent she delegates to and refuse the configurator; Casa stamps `execution_role`
+from the config it runs (`tools.py::_run_delegated_turn`), never from anything a model wrote. The reader is
 `tools.py::_effective_caller_role`, shared with the narrower in-tool checks of
 [`tools-interface.md`](tools-interface.md).
 
@@ -152,15 +151,15 @@ is why the filter keys on the reason as well. A mutation made with no lease held
 nothing. The record is in-process: after a restart nothing is deferred (a spare DM, never a
 lost one).
 
-**Approvals and erasures continue the configurator on its desk.** A specialist or persona
-install consent's Approve dispatches one desk turn to the configurator
-(`tools.py::_continue_configurator` →
-`TelegramChannel._dispatch_desk_continuation`, `desk_role="configurator"`) whose text
-carries every staged value and the next call to make, because that turn is a fresh session.
-Deny and expiry show on the card only: no continuation runs and nothing is reserved. The
-plugin and specialist uninstall erase-choice tap and the erasure's outcome continue it the
-same way (`tools.py::_configurator_deliverer`); when its desk cannot take one, the operator
-is told directly. Each continuation is a run like any other, under the lease.
+**Approvals and erasures continue the configurator.** A specialist or persona install
+card's Approve has Casa start one run of the configurator on the assistant's behalf
+(`configurator_continue.start`), whose task text names the next call and carries the
+approved values, because that run is a fresh session; it commits exactly those values
+([`configurator-approvals.md`](configurator-approvals.md)). Deny and expiry show on the card
+only: no continuation runs. The plugin and specialist uninstall erase-choice tap and the
+erasure's outcome continue it through the same launcher (`tools.py::_configurator_deliverer`);
+when one cannot be started, the operator is told directly. Each continuation is a run like any
+other, under the lane and the lease.
 
 **Install time is off the ceiling.** `plugin_add`, `plugin_update`,
 `specialist_install_inspect`, `specialist_install_commit`, `specialist_upgrade`,
@@ -176,8 +175,8 @@ the run, and its lease, alive forever. The ceiling stays the backstop for a run 
 nothing; the role map has no configurator, so a delegation to it is refused as one to an
 unknown agent, and nothing else stops. The next role-map sync tries the load again.
 
-**The lease cannot be taken.** Nothing of the run starts; the delegation's result or the
-desk line names what is running. The operator or the assistant asks again.
+**The lease cannot be taken.** Nothing of the run starts; the delegation's result names what
+is running. The operator or the assistant asks again.
 
 **Casa stops mid-run.** The run is cancelled with the rest; INV-CFG-015 tells the operator
 at the next boot. A half-made change stays as the run left it: nothing is rolled back or
@@ -224,11 +223,9 @@ inside the run (INV-CFG-016).
 - `casa/rootfs/opt/casa/tools.py::_effective_caller_role`
 - `casa/rootfs/opt/casa/tools.py::_off_the_ceiling`
 - `casa/rootfs/opt/casa/tools.py::_configurator_step_line`
-- `casa/rootfs/opt/casa/tools.py::_continue_configurator`
 - `casa/rootfs/opt/casa/tools.py::_configurator_deliverer`
 - `casa/rootfs/opt/casa/tools.py::_record_plugin_installer`
 - `casa/rootfs/opt/casa/tools.py::plugins_under_live_install`
-- `casa/rootfs/opt/casa/specialist_desk.py::has_desk`
 - `casa/rootfs/opt/casa/agent.py::_offers_configurator_restart`
 - `casa/rootfs/opt/casa/drivers/turn_progress.py::TurnProgressLine`
 
@@ -236,13 +233,13 @@ inside the run (INV-CFG-016).
 - `tests/test_configurator_run.py`
 - `tests/test_install_phase_health_dm.py`
 - `tests/test_turn_progress.py`
-- `tests/test_tools_specialist_install.py::test_approve_continues_the_configurator_through_its_desk`
 - `tests/test_casa_restart_supervised.py::TestCasaRestartSupervised`
 
 **Related**
 - [`architecture/delegation.md`](../architecture/delegation.md)
 - [`architecture/delegate-closing-message.md`](../architecture/delegate-closing-message.md)
-- [`architecture/specialist-desk.md`](../architecture/specialist-desk.md)
+- [`architecture/configurator-approvals.md`](../architecture/configurator-approvals.md)
+- [`architecture/agent-lane.md`](../architecture/agent-lane.md)
 - [`architecture/plugin-health.md`](../architecture/plugin-health.md)
 - [`architecture/hook-resolution.md`](../architecture/hook-resolution.md)
 - [`architecture/tools-interface.md`](../architecture/tools-interface.md)

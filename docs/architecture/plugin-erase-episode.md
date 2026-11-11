@@ -71,8 +71,8 @@ tapped artifact and stamped with the question id and the kind: `complete` only w
 eraser said so, otherwise not complete. The
 episode stops at the first plugin whose erasure did not complete, because the uninstall
 proceeds only when all of them did, and running the rest would erase data the operator
-then keeps a plugin for. The outcome then continues the configurator, as one turn on its
-desk: a complete erasure hands over the plugins' reports and tells it to call
+then keeps a plugin for. The outcome then continues the configurator, as one run Casa starts for it
+(`configurator_continue.start`, [`configurator-approvals.md`](configurator-approvals.md)): a complete erasure hands over the plugins' reports and tells it to call
 `erase_data=true` again to finish; anything else hands over the report verbatim, says
 nothing was removed, and tells it to ask the operator whether to try again later
 or to uninstall anyway keeping what is left (`erase_data=false`). While an eraser runs, a new
