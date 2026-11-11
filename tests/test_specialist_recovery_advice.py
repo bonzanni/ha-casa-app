@@ -67,6 +67,19 @@ def _recovery_journals(ops_dir: Path) -> int:
     return sum(1 for p in ops_dir.rglob("*") if p.is_file())
 
 
+def _approve(ctx, kind: str, config: dict) -> dict:
+    """Record the operator's approval of the settings a *kind* call
+    (``"specialist_install"`` or ``"specialist_upgrade"``) with *config* would
+    stage now; returns them, to be passed as the call's ``approved_values``."""
+    import specialist_install
+    from approval_values import record_specialist_ack, settings
+
+    staged = specialist_install.preview_effective_config(
+        kind, ctx.inspection, slug="mtg", config=config, secret_names_provided=(),
+        specialists_dir=ctx.specialists_dir)
+    return record_specialist_ack(ctx.acks, ctx.inspection, settings(staged))
+
+
 @pytest.mark.parametrize("path", ["install", "upgrade"])
 def test_pending_read_failure_advice_preserves_resume_state(
         tmp_path, monkeypatch, restore_installed_index, path) -> None:  # noqa: F811
@@ -79,6 +92,7 @@ def test_pending_read_failure_advice_preserves_resume_state(
                        config={"saved": _SAVED})
         assert ctx.state == "pending-configuration"
         resume = lambda **kw: specialist_install.commit_specialist_install(**kw)  # noqa: E731
+        kind = "specialist_install"
         active_before = None
     else:
         first = _install(tmp_path, monkeypatch, home=tmp_path / "a", slug="mtg",
@@ -89,11 +103,17 @@ def test_pending_read_failure_advice_preserves_resume_state(
                        config={"saved": _SAVED})
         assert ctx.state == "pending-configuration"
         resume = lambda **kw: specialist_install.upgrade_specialist(slug="mtg", **kw)  # noqa: E731
+        kind = "specialist_upgrade"
         active_before = (ctx.specialists_dir / "mtg" / "active.yaml").read_bytes()
 
     slug_dir = ctx.specialists_dir / "mtg"
     desired = slug_dir / "desired.yaml"
     ops_dir = ctx.kw["ops_dir"]
+    # The operator's approval of the resume's settings, taken while the
+    # candidate still reads.
+    kw = dict(ctx.kw)
+    kw["config"] = {"region": "EU"}
+    kw["approved_values"] = _approve(ctx, kind, kw["config"])
 
     # The state the refusal exists to protect, counted rather than asserted by
     # name: exactly one persisted copy of the value, and nothing to recover it
@@ -120,8 +140,6 @@ def test_pending_read_failure_advice_preserves_resume_state(
         return real(self)
 
     monkeypatch.setattr(personality_binding.InstanceDir, "desired", _one_bad_read)
-    kw = dict(ctx.kw)
-    kw["config"] = {"region": "EU"}
     with pytest.raises(specialist_install.SpecialistInstallError) as exc:
         resume(**kw)
 
@@ -246,10 +264,11 @@ def test_the_active_present_guards_unreadable_arm_advises_preservation(
             raise OSError(5, "Input/output error")
         return real(self)
 
-    monkeypatch.setattr(personality_binding.InstanceDir, "desired",
-                        _fail_only_the_guards_read)
     kw = dict(ctx.kw)
     kw["config"] = {"region": "EU"}
+    kw["approved_values"] = _approve(ctx, "specialist_install", kw["config"])
+    monkeypatch.setattr(personality_binding.InstanceDir, "desired",
+                        _fail_only_the_guards_read)
     with pytest.raises(specialist_install.SpecialistInstallError) as exc:
         resume(**kw)
 
@@ -297,9 +316,7 @@ def _inspect_only(tmp_path, monkeypatch, *, home, slug="mtg", version=None,
     import specialist_install
     import specialist_receipt
     from specialist_fixtures import write_minimal_component
-    from specialist_install_consent import (
-        SpecialistInstallAckStore, install_consent_identity,
-    )
+    from specialist_install_consent import SpecialistInstallAckStore
     from specialist_registry import InstalledSpecialistIndex
 
     comp, mpath = write_minimal_component(home, slug=slug,
@@ -328,14 +345,8 @@ def _inspect_only(tmp_path, monkeypatch, *, home, slug="mtg", version=None,
     receipt = specialist_receipt.load(inspection.receipt_id, receipts_dir=receipts_dir)
     assert receipt is not None
 
+    # Each commit is approved by the test, for the settings it stages then.
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug,
-        receipt_digest=inspection.receipt_digest)
-    acks.record(identity=identity, component_id=inspection.component_id,
-                version=inspection.version, component_checksum=inspection.root_digest,
-                slug=inspection.slug, receipt_digest=inspection.receipt_digest)
 
     kw = dict(inspection=inspection, receipt=receipt, config={},
               secret_names_provided=frozenset(), acks=acks,
@@ -344,7 +355,7 @@ def _inspect_only(tmp_path, monkeypatch, *, home, slug="mtg", version=None,
               registry_path=tmp_path / "registry.json",
               plugin_store_root=tmp_path / "store",
               ops_dir=tmp_path / "ops")
-    return SimpleNamespace(inspection=inspection, receipt=receipt, kw=kw,
+    return SimpleNamespace(inspection=inspection, receipt=receipt, kw=kw, acks=acks,
                            specialists_dir=specialists_dir,
                            receipts_dir=receipts_dir)
 
@@ -372,6 +383,7 @@ def test_the_active_present_guards_different_root_arm_advises_preservation(
 
     kw_a = dict(occupant.kw)
     kw_a["config"] = {"saved": _SAVED}
+    kw_a["approved_values"] = _approve(occupant, "specialist_install", kw_a["config"])
     instance, txn = specialist_install.commit_specialist_install(**kw_a)
     specialist_bundle_journal.complete(txn.journal_path)
     assert instance.state == "pending-configuration"
@@ -390,6 +402,7 @@ def test_the_active_present_guards_different_root_arm_advises_preservation(
 
     kw_b = dict(newcomer.kw)
     kw_b["config"] = {"saved": "a-second-operators-value"}
+    kw_b["approved_values"] = _approve(newcomer, "specialist_install", kw_b["config"])
     with pytest.raises(specialist_install.SpecialistInstallError) as exc:
         specialist_install.commit_specialist_install(**kw_b)
 
@@ -407,6 +420,7 @@ def test_the_active_present_guards_different_root_arm_advises_preservation(
     # intact. The old advice's route — uninstall — took that value to zero.
     kw_a2 = dict(occupant.kw)
     kw_a2["config"] = {"region": "EU"}
+    kw_a2["approved_values"] = _approve(occupant, "specialist_install", kw_a2["config"])
     instance, txn = specialist_install.commit_specialist_install(**kw_a2)
     specialist_bundle_journal.complete(txn.journal_path)
     assert instance.state == "active"
@@ -477,6 +491,7 @@ def test_pending_tombstone_advice_preserves_resume_state(
                        required_config=("saved", "region"),
                        config={"saved": _SAVED})
         resume = lambda **kw: specialist_install.commit_specialist_install(**kw)  # noqa: E731
+        kind = "specialist_install"
         active_before = None
     else:
         first = _install(tmp_path, monkeypatch, home=tmp_path / "a", slug="mtg",
@@ -486,12 +501,17 @@ def test_pending_tombstone_advice_preserves_resume_state(
                        version="0.2.0", required_config=("saved", "region"),
                        config={"saved": _SAVED})
         resume = lambda **kw: specialist_install.upgrade_specialist(slug="mtg", **kw)  # noqa: E731
+        kind = "specialist_upgrade"
         active_before = (ctx.specialists_dir / "mtg" / "active.yaml").read_bytes()
     assert ctx.state == "pending-configuration"
 
     slug_dir = ctx.specialists_dir / "mtg"
     desired = slug_dir / "desired.yaml"
     ops_dir = ctx.kw["ops_dir"]
+    # Approved before the tombstone, while the candidate still reads.
+    kw = dict(ctx.kw)
+    kw["config"] = {"region": "EU"}
+    kw["approved_values"] = _approve(ctx, kind, kw["config"])
     _tombstone_in_place(desired)
 
     assert _saved_value_copies(slug_dir) == 1
@@ -502,8 +522,6 @@ def test_pending_tombstone_advice_preserves_resume_state(
     staged_before = _inventory(Path(ctx.inspection.staged_dir))
     assert staged_before
 
-    kw = dict(ctx.kw)
-    kw["config"] = {"region": "EU"}
     if path == "upgrade-core":
         # `_upgrade_core`'s own merge read: the bundle arm refuses one frame up
         # and never reaches it.
@@ -597,6 +615,7 @@ def test_rollback_legacy_prior_tombstoned_advice_keeps_the_active(tmp_path) -> N
         SpecialistInstallError, commit_specialist_install, rollback_specialist,
         upgrade_specialist,
     )
+    from approval_values import settings
     from test_specialist_install import (
         _acked, _plain_schema_inspection, _v2_inspection, _v2_secret_schema_inspection,
     )
@@ -604,14 +623,18 @@ def test_rollback_legacy_prior_tombstoned_advice_keeps_the_active(tmp_path) -> N
     v1 = _plain_schema_inspection(tmp_path)
     specialists_dir = tmp_path / "specialists"
     agents = tmp_path / "agents-specialists"
+    v1_values = settings({"api_token": "plain-then-reclassified"})
     commit_specialist_install(
         inspection=v1, config={"api_token": "plain-then-reclassified"},
-        secret_names_provided=frozenset(), acks=_acked(v1, tmp_path),
+        secret_names_provided=frozenset(), acks=_acked(v1, tmp_path, v1_values),
+        approved_values=v1_values,
         specialists_dir=specialists_dir, agents_specialists_dir=agents)
     v2 = _v2_secret_schema_inspection(tmp_path, _v2_inspection(tmp_path))
+    v2_values = settings(secrets=["api_token"])
     upgrade_specialist(
         slug="mtg", inspection=v2, config={},
-        secret_names_provided=frozenset({"api_token"}), acks=_acked(v2, tmp_path),
+        secret_names_provided=frozenset({"api_token"}), acks=_acked(v2, tmp_path, v2_values),
+        approved_values=v2_values,
         specialists_dir=specialists_dir, agents_specialists_dir=agents)
 
     slug_dir = specialists_dir / "mtg"
@@ -637,6 +660,7 @@ def test_rollback_legacy_prior_secret_key_advice_keeps_the_active(tmp_path) -> N
         SpecialistInstallError, commit_specialist_install, rollback_specialist,
         upgrade_specialist,
     )
+    from approval_values import settings
     from test_specialist_install import (
         _acked, _secret_schema_inspection, _v2_inspection, _v2_secret_schema_inspection,
     )
@@ -644,14 +668,16 @@ def test_rollback_legacy_prior_secret_key_advice_keeps_the_active(tmp_path) -> N
     v1 = _secret_schema_inspection(tmp_path)
     specialists_dir = tmp_path / "specialists"
     agents = tmp_path / "agents-specialists"
+    values = settings(secrets=["api_token"])   # both versions: the secret, no plain settings
     commit_specialist_install(
         inspection=v1, config={}, secret_names_provided=frozenset({"api_token"}),
-        acks=_acked(v1, tmp_path), specialists_dir=specialists_dir,
-        agents_specialists_dir=agents)
+        acks=_acked(v1, tmp_path, values), approved_values=values,
+        specialists_dir=specialists_dir, agents_specialists_dir=agents)
     v2 = _v2_secret_schema_inspection(tmp_path, _v2_inspection(tmp_path))
     upgrade_specialist(
         slug="mtg", inspection=v2, config={},
-        secret_names_provided=frozenset({"api_token"}), acks=_acked(v2, tmp_path),
+        secret_names_provided=frozenset({"api_token"}), acks=_acked(v2, tmp_path, values),
+        approved_values=values,
         specialists_dir=specialists_dir, agents_specialists_dir=agents)
 
     # The pre-v0.137 shape: a secret-named key present AND a valid equation, so

@@ -32,6 +32,7 @@ import yaml
 from test_agent_loader import (
     _policies_file, _seed_remaining_residents, _seed_resident, _seed_role_artifact, _w,
 )
+from approval_values import NO_SETTINGS, record_specialist_ack
 from test_specialist_install import _staged_inspection, _write_component
 
 _HA_MODEL = {
@@ -49,15 +50,11 @@ _SLUG = "mtg"
 
 
 def _ack(inspection, tmp_path: Path):
-    from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+    """A ledger holding the operator's approval of *inspection* with no settings."""
+    from specialist_install_consent import SpecialistInstallAckStore
 
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug)
-    acks.record(identity=identity, component_id=inspection.component_id,
-                version=inspection.version, component_checksum=inspection.root_digest,
-                slug=inspection.slug)
+    record_specialist_ack(acks, inspection)
     return acks
 
 
@@ -77,7 +74,7 @@ def _install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *,
     inspection = _staged_inspection(tmp_path, model=_HA_MODEL)
     instance = commit_specialist_install(
         inspection=inspection, config={}, secret_names_provided=frozenset(),
-        acks=_ack(inspection, tmp_path),
+        acks=_ack(inspection, tmp_path), approved_values=NO_SETTINGS,
         specialists_dir=specialists_root, agents_specialists_dir=agents_root,
     )
     assert instance.state == "active"
@@ -127,7 +124,7 @@ def _upgrade(tmp_path: Path, specialists_root: Path, agents_root: Path, *, versi
     inspection = _inspection_for(staged, version=version, required=required)
     return upgrade_specialist(
         slug=_SLUG, inspection=inspection, config={}, secret_names_provided=frozenset(),
-        acks=_ack(inspection, tmp_path),
+        acks=_ack(inspection, tmp_path), approved_values=NO_SETTINGS,
         specialists_dir=specialists_root, agents_specialists_dir=agents_root,
     )
 

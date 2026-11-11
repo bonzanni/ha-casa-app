@@ -12,6 +12,9 @@ import pytest
 
 import plugin_registry
 import specialist_bundle_journal
+from approval_values import (
+    NO_SETTINGS, NO_SETTINGS_DIGEST, record_specialist_ack, settings, specialist_identity,
+)
 from plugin_registry import apply_owned_swap, compute_artifact_id, scoped_name
 
 
@@ -272,7 +275,7 @@ def _prep(tmp_path: Path, monkeypatch, *, with_plugin: bool = True,
     """Build a component (optionally with a bundled `mtg` plugin), inspect it
     (stubbed fetch), load its receipt, and record consent. Returns a context
     with everything commit_specialist_install needs."""
-    from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+    from specialist_install_consent import SpecialistInstallAckStore
     from specialist_registry import InstalledSpecialistIndex
 
     comp, mpath = write_minimal_component(tmp_path, slug=slug)
@@ -296,19 +299,13 @@ def _prep(tmp_path: Path, monkeypatch, *, with_plugin: bool = True,
 
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
     if ack:
-        identity = install_consent_identity(
-            component_id=inspection.component_id, version=inspection.version,
-            root_digest=inspection.root_digest, slug=inspection.slug,
-            receipt_digest=inspection.receipt_digest)
-        acks.record(identity=identity, component_id=inspection.component_id,
-                    version=inspection.version, component_checksum=inspection.root_digest,
-                    slug=inspection.slug, receipt_digest=inspection.receipt_digest)
+        record_specialist_ack(acks, inspection, NO_SETTINGS)
 
     return _Ctx(
         comp=comp, inspection=inspection, receipt=receipt, acks=acks, slug=slug,
         kw=dict(
             inspection=inspection, receipt=receipt, config={},
-            secret_names_provided=frozenset(), acks=acks,
+            secret_names_provided=frozenset(), acks=acks, approved_values=NO_SETTINGS,
             specialists_dir=tmp_path / "specialists",
             agents_specialists_dir=tmp_path / "agents",
             registry_path=tmp_path / "registry.json",
@@ -503,7 +500,6 @@ def _prep_v2(tmp_path: Path, monkeypatch, base_ctx, *, ref: str = "v2",
     slug + tmp paths), inspect it in upgrade mode, record consent, and return
     the kwargs for upgrade_specialist(receipt=...)."""
     import plugin_store
-    from specialist_install_consent import install_consent_identity
     from specialist_registry import InstalledSpecialistIndex
 
     comp2, mpath2 = write_minimal_component(tmp_path / marker, slug="mtg")
@@ -526,15 +522,10 @@ def _prep_v2(tmp_path: Path, monkeypatch, base_ctx, *, ref: str = "v2",
         receipts_dir=tmp_path / "receipts")
     receipt2 = specialist_receipt.load(insp2.receipt_id, receipts_dir=tmp_path / "receipts")
     acks = base_ctx.acks
-    identity = install_consent_identity(
-        component_id=insp2.component_id, version=insp2.version,
-        root_digest=insp2.root_digest, slug="mtg", receipt_digest=insp2.receipt_digest)
-    acks.record(identity=identity, component_id=insp2.component_id, version=insp2.version,
-                component_checksum=insp2.root_digest, slug="mtg",
-                receipt_digest=insp2.receipt_digest)
+    record_specialist_ack(acks, insp2, NO_SETTINGS)
     return dict(
         slug="mtg", inspection=insp2, receipt=receipt2, config={},
-        secret_names_provided=frozenset(), acks=acks,
+        secret_names_provided=frozenset(), acks=acks, approved_values=NO_SETTINGS,
         specialists_dir=tmp_path / "specialists", agents_specialists_dir=tmp_path / "agents",
         registry_path=tmp_path / "registry.json", plugin_store_root=tmp_path / "store",
         ops_dir=tmp_path / "ops")
@@ -687,16 +678,15 @@ def test_uninstall_journals_the_retired_acks_atomically(tmp_path: Path, monkeypa
     # Whole-branch J: the journal's before-state ack_records is the retire
     # RETURN (every slug ack present at retire time), not an earlier snapshot —
     # so an extra same-slug approval is journaled and restorable, never lost.
-    from specialist_install_consent import install_consent_identity
     ctx = _prep(tmp_path, monkeypatch)
     _setup_install(ctx)
     # A SECOND ack for the same slug (a different identity — e.g. a re-approval).
-    extra = install_consent_identity(
+    extra = specialist_identity(
         component_id=ctx.inspection.component_id, version="9.9.9",
         root_digest=ctx.inspection.root_digest, slug="mtg")
     ctx.acks.record(identity=extra, component_id=ctx.inspection.component_id,
                     version="9.9.9", component_checksum=ctx.inspection.root_digest,
-                    slug="mtg")
+                    slug="mtg", values_digest=NO_SETTINGS_DIGEST)
     assert len(ctx.acks.snapshot_slug("mtg")) == 2
 
     txn = specialist_install.uninstall_specialist(
@@ -827,7 +817,6 @@ def test_rollback_refuses_a_malformed_prior_sidecar(tmp_path: Path, monkeypatch)
 
 
 def test_bundle_uninstall_cascade(tmp_path: Path, monkeypatch) -> None:
-    from specialist_install_consent import install_consent_identity
 
     ctx = _prep(tmp_path, monkeypatch)
     _setup_install(ctx)
@@ -1146,7 +1135,7 @@ def _prep_multi(tmp_path: Path, monkeypatch, names: "list[str]", *,
     (install mode when `base_ctx` is None, upgrade mode otherwise) with consent
     recorded. Returns the kwargs the corresponding lifecycle call takes."""
     import plugin_store
-    from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+    from specialist_install_consent import SpecialistInstallAckStore
     from specialist_registry import InstalledSpecialistIndex
 
     comp, mpath = write_minimal_component(tmp_path / root, slug="mtg")
@@ -1178,17 +1167,11 @@ def _prep_multi(tmp_path: Path, monkeypatch, names: "list[str]", *,
 
     acks = base_ctx.acks if base_ctx is not None else SpecialistInstallAckStore(
         path=tmp_path / "acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug,
-        receipt_digest=inspection.receipt_digest)
-    acks.record(identity=identity, component_id=inspection.component_id,
-                version=inspection.version, component_checksum=inspection.root_digest,
-                slug=inspection.slug, receipt_digest=inspection.receipt_digest)
+    record_specialist_ack(acks, inspection, NO_SETTINGS)
 
     common = dict(
         inspection=inspection, receipt=receipt, config={},
-        secret_names_provided=frozenset(), acks=acks,
+        secret_names_provided=frozenset(), acks=acks, approved_values=NO_SETTINGS,
         specialists_dir=tmp_path / "specialists",
         agents_specialists_dir=tmp_path / "agents",
         registry_path=tmp_path / "registry.json",
@@ -1356,7 +1339,7 @@ def test_unapproved_bundle_upgrade_preserves_saved_tuple_pair(
     compensation, and asserts only the surviving root — it cannot observe
     this.
     """
-    from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+    from specialist_install_consent import SpecialistInstallAckStore
     from specialist_registry import InstalledSpecialistIndex
 
     # The capture-side sanitize reads the module-level directory rather than
@@ -1377,14 +1360,7 @@ def test_unapproved_bundle_upgrade_preserves_saved_tuple_pair(
         installed_index=idx, receipts_dir=tmp_path / "receipts")
     receipt1 = specialist_receipt.load(insp1.receipt_id, receipts_dir=tmp_path / "receipts")
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    acks.record(
-        identity=install_consent_identity(
-            component_id=insp1.component_id, version=insp1.version,
-            root_digest=insp1.root_digest, slug=insp1.slug,
-            receipt_digest=insp1.receipt_digest),
-        component_id=insp1.component_id, version=insp1.version,
-        component_checksum=insp1.root_digest, slug=insp1.slug,
-        receipt_digest=insp1.receipt_digest)
+    v1_values = record_specialist_ack(acks, insp1, settings({"k": "v"}))
     common = dict(
         secret_names_provided=frozenset(), acks=acks,
         specialists_dir=tmp_path / "specialists",
@@ -1392,7 +1368,8 @@ def test_unapproved_bundle_upgrade_preserves_saved_tuple_pair(
         registry_path=tmp_path / "registry.json",
         plugin_store_root=tmp_path / "store", ops_dir=tmp_path / "ops")
     instance, txn1 = specialist_install.commit_specialist_install(
-        inspection=insp1, receipt=receipt1, config={"k": "v"}, **common)
+        inspection=insp1, receipt=receipt1, config={"k": "v"},
+        approved_values=v1_values, **common)
     specialist_bundle_journal.complete(txn1.journal_path)
     assert instance.state == "active", instance.last_activation_error
 
@@ -1430,7 +1407,8 @@ def test_unapproved_bundle_upgrade_preserves_saved_tuple_pair(
     journals_before = set((tmp_path / "ops").glob("*.json"))
     with pytest.raises(specialist_install.SpecialistInstallError) as ei:
         specialist_install.upgrade_specialist(
-            slug="mtg", inspection=insp2, receipt=receipt2, config={}, **common)
+            slug="mtg", inspection=insp2, receipt=receipt2, config={},
+            approved_values=v1_values, **common)
     assert ei.value.kind == "consent_missing"
 
     after = _saved_copies(slug_dir)
@@ -1460,13 +1438,24 @@ def _declare_config_schema(component_dir: Path, manifest_path: Path, *,
     manifest_path.write_text(_json.dumps(manifest), encoding="utf-8")
 
 
+def _staged_values(kind: str, inspection, *, config=None, secret_names_provided=frozenset(),
+                   specialists_dir: Path) -> dict:
+    """The values of an approval of *inspection* for an install (*kind*
+    ``"specialist_install"``) or upgrade (``"specialist_upgrade"``) of ``mtg``
+    with this *config*: the settings that call would stage now."""
+    staged = specialist_install.preview_effective_config(
+        kind, inspection, slug="mtg", config=dict(config or {}),
+        secret_names_provided=secret_names_provided, specialists_dir=specialists_dir)
+    return settings(staged, secret_names_provided)
+
+
 class _UpgradeFixture:
     """A plugin-less `mtg` installed with one declared, saved, non-secret
     setting, plus the pieces needed to drive an upgrade to a second root."""
 
     def __init__(self, tmp_path: Path, monkeypatch, *, v2_required=("k",),
                  v2_secret_names=(), value: str = "v"):
-        from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+        from specialist_install_consent import SpecialistInstallAckStore
         from specialist_registry import InstalledSpecialistIndex
 
         comp, mpath = write_minimal_component(tmp_path, slug="mtg")
@@ -1479,14 +1468,7 @@ class _UpgradeFixture:
             installed_index=idx, receipts_dir=tmp_path / "receipts")
         receipt1 = specialist_receipt.load(insp1.receipt_id, receipts_dir=tmp_path / "receipts")
         acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-        acks.record(
-            identity=install_consent_identity(
-                component_id=insp1.component_id, version=insp1.version,
-                root_digest=insp1.root_digest, slug=insp1.slug,
-                receipt_digest=insp1.receipt_digest),
-            component_id=insp1.component_id, version=insp1.version,
-            component_checksum=insp1.root_digest, slug=insp1.slug,
-            receipt_digest=insp1.receipt_digest)
+        v1_values = record_specialist_ack(acks, insp1, settings({"k": value}))
         self.common = dict(
             secret_names_provided=frozenset(), acks=acks,
             specialists_dir=tmp_path / "specialists",
@@ -1494,7 +1476,8 @@ class _UpgradeFixture:
             registry_path=tmp_path / "registry.json",
             plugin_store_root=tmp_path / "store", ops_dir=tmp_path / "ops")
         instance, txn1 = specialist_install.commit_specialist_install(
-            inspection=insp1, receipt=receipt1, config={"k": value}, **self.common)
+            inspection=insp1, receipt=receipt1, config={"k": value},
+            approved_values=v1_values, **self.common)
         specialist_bundle_journal.complete(txn1.journal_path)
         assert instance.state == "active", instance.last_activation_error
 
@@ -1523,20 +1506,25 @@ class _UpgradeFixture:
             self.insp2.receipt_id, receipts_dir=tmp_path / "receipts")
         assert self.insp2.root_digest != insp1.root_digest
 
-    def approve_v2(self):
-        from specialist_install_consent import install_consent_identity
-        self.acks.record(
-            identity=install_consent_identity(
-                component_id=self.insp2.component_id, version=self.insp2.version,
-                root_digest=self.insp2.root_digest, slug="mtg",
-                receipt_digest=self.insp2.receipt_digest),
-            component_id=self.insp2.component_id, version=self.insp2.version,
-            component_checksum=self.insp2.root_digest, slug="mtg",
-            receipt_digest=self.insp2.receipt_digest)
+    def v2_values(self, config=None, secret_names_provided=frozenset()):
+        """The settings an upgrade to v2 with this *config* would stage now."""
+        return _staged_values("specialist_upgrade", self.insp2, config=config,
+                              secret_names_provided=secret_names_provided,
+                              specialists_dir=self.common["specialists_dir"])
+
+    def approve_v2(self, config=None, secret_names_provided=frozenset(), values=None):
+        """Record the operator's approval of v2 for the settings an upgrade
+        with this *config* and these secret names stages (or explicit
+        *values*); later ``upgrade()`` calls pass those as approved."""
+        if values is None:
+            values = self.v2_values(config, secret_names_provided)
+        self.approved_values = record_specialist_ack(self.acks, self.insp2, values)
+        return self.approved_values
 
     def upgrade(self, **over):
         kw = dict(slug="mtg", inspection=self.insp2, receipt=self.receipt2,
                   config={}, **self.common)
+        kw["approved_values"] = getattr(self, "approved_values", NO_SETTINGS)
         kw.update(over)
         return specialist_install.upgrade_specialist(**kw)
 
@@ -1589,9 +1577,11 @@ def test_upgrade_refuses_when_the_prior_component_cannot_be_read_back(
     files the failed transaction never opened. So the transaction does not
     start."""
     fx = _UpgradeFixture(tmp_path, monkeypatch)
-    fx.approve_v2()
     _shutil.rmtree(specialist_install.cas_store_dir(
         fx.insp1.root_digest, store_root=fx.store_root))
+    # Approved after the loss, so the approval is for what the upgrade would
+    # stage now and the refusal reached is the unreadable prior itself.
+    fx.approve_v2()
 
     before = fx.bytes_of("active.yaml")
     journals_before = fx.journals()
@@ -1746,9 +1736,9 @@ def test_upgrade_preflight_refusals_open_no_journal_at_all(
     # (3) the component the persisted tuple belongs to cannot be read back
     fx = _UpgradeFixture(tmp_path / "c", monkeypatch)
     calls.clear()
-    fx.approve_v2()
     _shutil.rmtree(specialist_install.cas_store_dir(
         fx.insp1.root_digest, store_root=fx.store_root))
+    fx.approve_v2()
     with pytest.raises(specialist_install.SpecialistInstallError) as ei:
         fx.upgrade()
     assert ei.value.kind == "prior_schema_unreadable"

@@ -14,7 +14,8 @@ from specialist_install import (
     parse_component_root,
     resolve_dependency_closure,
 )
-from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+from specialist_install_consent import SpecialistInstallAckStore
+from approval_values import NO_SETTINGS, record_specialist_ack, settings
 from specialist_component import compute_component_checksum, load_specialist_component
 from personality_binding import (
     EMPTY_CONFIG_DIGEST, BindingRecord, InstanceDir, InstanceTuple, compute_binding_digest,
@@ -330,14 +331,11 @@ def test_commit_active_reclaims_staging_tree(tmp_path: Path) -> None:
     inspection = dataclasses.replace(inspection, staged_dir=staged)
 
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug)
-    acks.record(identity=identity, component_id=inspection.component_id, version=inspection.version,
-                component_checksum=inspection.root_digest, slug=inspection.slug)
+    values = record_specialist_ack(acks, inspection)
 
     instance = commit_specialist_install(
         inspection=inspection, config={}, secret_names_provided=frozenset(), acks=acks,
+        approved_values=values,
         specialists_dir=tmp_path / "specialists",
         agents_specialists_dir=tmp_path / "agents-specialists",
     )
@@ -382,14 +380,11 @@ def test_commit_pending_configuration_retains_staging_tree(tmp_path: Path) -> No
         dependencies=deps, staged_dir=staged,
     )
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug)
-    acks.record(identity=identity, component_id=inspection.component_id, version=inspection.version,
-                component_checksum=inspection.root_digest, slug=inspection.slug)
+    values = record_specialist_ack(acks, inspection)
 
     instance = commit_specialist_install(
         inspection=inspection, config={}, secret_names_provided=frozenset(), acks=acks,
+        approved_values=values,
         specialists_dir=tmp_path / "specialists",
         agents_specialists_dir=tmp_path / "agents-specialists",
     )
@@ -596,6 +591,7 @@ def test_commit_refuses_without_a_recorded_consent_ack(tmp_path: Path) -> None:
     with pytest.raises(SpecialistInstallError) as raised:
         commit_specialist_install(
             inspection=inspection, config={}, secret_names_provided=frozenset(), acks=acks,
+            approved_values=NO_SETTINGS,
             specialists_dir=tmp_path / "specialists",
             agents_specialists_dir=tmp_path / "agents-specialists",
         )
@@ -608,14 +604,11 @@ def test_commit_persists_cas_writes_active_tuple_and_materializes_operational_fi
 ) -> None:
     inspection = _staged_inspection(tmp_path)
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug)
-    acks.record(identity=identity, component_id=inspection.component_id, version=inspection.version,
-                component_checksum=inspection.root_digest, slug=inspection.slug)
+    values = record_specialist_ack(acks, inspection)
 
     instance = commit_specialist_install(
         inspection=inspection, config={}, secret_names_provided=frozenset(), acks=acks,
+        approved_values=values,
         specialists_dir=tmp_path / "specialists",
         agents_specialists_dir=tmp_path / "agents-specialists",
     )
@@ -651,11 +644,7 @@ def test_commit_survives_a_materialize_failure_and_self_heals_on_next_reconcile(
 
     inspection = _staged_inspection(tmp_path)
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug)
-    acks.record(identity=identity, component_id=inspection.component_id, version=inspection.version,
-                component_checksum=inspection.root_digest, slug=inspection.slug)
+    values = record_specialist_ack(acks, inspection)
 
     original_materialize = specialist_materialize.materialize_specialist_operational_files
     call_count = {"n": 0}
@@ -677,6 +666,7 @@ def test_commit_survives_a_materialize_failure_and_self_heals_on_next_reconcile(
     agents_specialists_dir = tmp_path / "agents-specialists"
     instance = commit_specialist_install(
         inspection=inspection, config={}, secret_names_provided=frozenset(), acks=acks,
+        approved_values=values,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir,
     )
     # The tuple is committed and active DESPITE the materialize failure —
@@ -717,16 +707,11 @@ def test_commit_binds_role_checksum_with_live_ha_options(
         "default": "opus", "allowed": ["opus", "sonnet"],
     })
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug)
-    acks.record(identity=identity, component_id=inspection.component_id,
-                version=inspection.version,
-                component_checksum=inspection.root_digest, slug=inspection.slug)
+    values = record_specialist_ack(acks, inspection)
 
     instance = commit_specialist_install(
         inspection=inspection, config={}, secret_names_provided=frozenset(),
-        acks=acks,
+        acks=acks, approved_values=values,
         specialists_dir=tmp_path / "specialists",
         agents_specialists_dir=tmp_path / "agents-specialists",
     )
@@ -772,14 +757,11 @@ def test_commit_with_missing_required_config_yields_pending_configuration(tmp_pa
         staged_dir=root,
     )
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug)
-    acks.record(identity=identity, component_id=inspection.component_id, version=inspection.version,
-                component_checksum=inspection.root_digest, slug=inspection.slug)
+    values = record_specialist_ack(acks, inspection)
 
     instance = commit_specialist_install(
         inspection=inspection, config={}, secret_names_provided=frozenset(), acks=acks,
+        approved_values=values,
         specialists_dir=tmp_path / "specialists",
         agents_specialists_dir=tmp_path / "agents-specialists",
     )
@@ -852,13 +834,12 @@ def _plain_schema_inspection(tmp_path: Path) -> "specialist_install.InspectionRe
     )
 
 
-def _acked(inspection: "specialist_install.InspectionResult", tmp_path: Path) -> SpecialistInstallAckStore:
+def _acked(inspection: "specialist_install.InspectionResult", tmp_path: Path,
+           values: "dict | None" = None) -> SpecialistInstallAckStore:
+    """An ack store holding the operator's approval of *inspection* with
+    *values* (no settings when omitted)."""
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug)
-    acks.record(identity=identity, component_id=inspection.component_id, version=inspection.version,
-                component_checksum=inspection.root_digest, slug=inspection.slug)
+    record_specialist_ack(acks, inspection, values)
     return acks
 
 
@@ -869,12 +850,13 @@ def test_commit_rejects_a_secret_valued_config_key(tmp_path: Path) -> None:
     desired.yaml/active.yaml (under /config, included in snapshots/backups) —
     this test failed with state == "active" and the plaintext in the tuple."""
     inspection = _secret_schema_inspection(tmp_path)
-    acks = _acked(inspection, tmp_path)
+    values = NO_SETTINGS
+    acks = _acked(inspection, tmp_path, values)
 
     with pytest.raises(SpecialistInstallError) as exc_info:
         commit_specialist_install(
             inspection=inspection, config={"api_token": "hunter2"},
-            secret_names_provided=frozenset(), acks=acks,
+            secret_names_provided=frozenset(), acks=acks, approved_values=values,
             specialists_dir=tmp_path / "specialists",
             agents_specialists_dir=tmp_path / "agents-specialists",
         )
@@ -916,12 +898,14 @@ def test_commit_rejects_an_undeclared_secret_names_provided_entry(tmp_path: Path
         required_config_names=("timezone",), required_secret_names=("api_token",),
         dependencies=deps, staged_dir=root,
     )
-    acks = _acked(inspection, tmp_path)
+    values = NO_SETTINGS
+    acks = _acked(inspection, tmp_path, values)
 
     with pytest.raises(SpecialistInstallError) as exc_info:
         commit_specialist_install(
             inspection=inspection, config={},
             secret_names_provided=frozenset({"timezone", "api_token"}), acks=acks,
+            approved_values=values,
             specialists_dir=tmp_path / "specialists",
             agents_specialists_dir=tmp_path / "agents-specialists",
         )
@@ -939,7 +923,7 @@ def _installed_mtg(tmp_path: Path) -> tuple[Path, Path, "specialist_install.Insp
     """Shared setup: a committed, active mtg install at version 0.1.0."""
     from specialist_component import load_specialist_component
     from specialist_install import InspectionResult, commit_specialist_install, resolve_dependency_closure
-    from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+    from specialist_install_consent import SpecialistInstallAckStore
 
     staged = _write_component(tmp_path / "staged-v1", slug="mtg")
     component = load_specialist_component(staged, staged / "manifest.json")
@@ -955,14 +939,11 @@ def _installed_mtg(tmp_path: Path) -> tuple[Path, Path, "specialist_install.Insp
         required_config_names=(), required_secret_names=(), dependencies=deps, staged_dir=staged,
     )
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug)
-    acks.record(identity=identity, component_id=inspection.component_id, version=inspection.version,
-                component_checksum=inspection.root_digest, slug=inspection.slug)
+    values = record_specialist_ack(acks, inspection)
     specialists_dir, agents_specialists_dir = tmp_path / "specialists", tmp_path / "agents-specialists"
     commit_specialist_install(
         inspection=inspection, config={}, secret_names_provided=frozenset(), acks=acks,
+        approved_values=values,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir,
     )
     return specialists_dir, agents_specialists_dir, inspection
@@ -1001,18 +982,16 @@ def test_upgrade_commits_a_new_active_tuple_and_retains_the_prior_as_rollback_ta
     tmp_path: Path,
 ) -> None:
     from specialist_install import upgrade_specialist
-    from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+    from specialist_install_consent import SpecialistInstallAckStore
 
     specialists_dir, agents_specialists_dir, v1 = _installed_mtg(tmp_path)
     v2 = _v2_inspection(tmp_path)
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(component_id=v2.component_id, version=v2.version,
-                                         root_digest=v2.root_digest, slug=v2.slug)
-    acks.record(identity=identity, component_id=v2.component_id, version=v2.version,
-                component_checksum=v2.root_digest, slug=v2.slug)
+    values = record_specialist_ack(acks, v2)
 
     instance = upgrade_specialist(
         slug="mtg", inspection=v2, config={}, secret_names_provided=frozenset(), acks=acks,
+        approved_values=values,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir,
     )
     assert instance.state == "active"
@@ -1024,7 +1003,7 @@ def test_upgrade_with_missing_new_required_config_leaves_the_active_tuple_runnin
     tmp_path: Path,
 ) -> None:
     from specialist_install import upgrade_specialist
-    from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+    from specialist_install_consent import SpecialistInstallAckStore
 
     specialists_dir, agents_specialists_dir, v1 = _installed_mtg(tmp_path)
     v2 = _v2_inspection(tmp_path)
@@ -1056,13 +1035,11 @@ def test_upgrade_with_missing_new_required_config_leaves_the_active_tuple_runnin
         dependencies=v2_deps, staged_dir=v2.staged_dir,
     )
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(component_id=v2.component_id, version=v2.version,
-                                         root_digest=v2.root_digest, slug=v2.slug)
-    acks.record(identity=identity, component_id=v2.component_id, version=v2.version,
-                component_checksum=v2.root_digest, slug=v2.slug)
+    values = record_specialist_ack(acks, v2)
 
     instance = upgrade_specialist(
         slug="mtg", inspection=v2, config={}, secret_names_provided=frozenset(), acks=acks,
+        approved_values=values,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir,
     )
     assert instance.state == "pending-configuration"
@@ -1105,13 +1082,14 @@ def test_upgrade_rejects_a_secret_valued_config_key(tmp_path: Path) -> None:
 
     specialists_dir, agents_specialists_dir, v1 = _installed_mtg(tmp_path)
     v2 = _v2_secret_schema_inspection(tmp_path, _v2_inspection(tmp_path))
-    acks = _acked(v2, tmp_path)
+    values = NO_SETTINGS
+    acks = _acked(v2, tmp_path, values)
     active_before = (specialists_dir / "mtg" / "active.yaml").read_bytes()
 
     with pytest.raises(SpecialistInstallError) as exc_info:
         upgrade_specialist(
             slug="mtg", inspection=v2, config={"api_token": "hunter2"},
-            secret_names_provided=frozenset(), acks=acks,
+            secret_names_provided=frozenset(), acks=acks, approved_values=values,
             specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir,
         )
     assert exc_info.value.kind == "secret_value_in_config"
@@ -1134,12 +1112,13 @@ def test_upgrade_refuses_a_pre_guard_active_tuple(tmp_path: Path) -> None:
     before = active_path.read_bytes()
 
     v2 = _v2_secret_schema_inspection(tmp_path, _v2_inspection(tmp_path))
-    acks = _acked(v2, tmp_path)
+    values = settings(secrets=["api_token"])
+    acks = _acked(v2, tmp_path, values)
 
     with pytest.raises(SpecialistInstallError) as exc_info:
         upgrade_specialist(
             slug="mtg", inspection=v2, config={},
-            secret_names_provided=frozenset({"api_token"}), acks=acks,
+            secret_names_provided=frozenset({"api_token"}), acks=acks, approved_values=values,
             specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir,
         )
     assert exc_info.value.kind == "active_unreadable"
@@ -1162,12 +1141,13 @@ def test_upgrade_reclassifying_a_secret_as_plain_does_not_carry_its_plaintext(tm
     # v1 whose CAS schema DECLARES api_token secret; installed via the secret
     # channel (post-guard: the snapshot never holds the value).
     v1 = _secret_schema_inspection(tmp_path)
-    acks_v1 = _acked(v1, tmp_path)
+    values_v1 = settings(secrets=["api_token"])
+    acks_v1 = _acked(v1, tmp_path, values_v1)
     specialists_dir = tmp_path / "specialists"
     agents_specialists_dir = tmp_path / "agents-specialists"
     commit_specialist_install(
         inspection=v1, config={}, secret_names_provided=frozenset({"api_token"}),
-        acks=acks_v1, specialists_dir=specialists_dir,
+        acks=acks_v1, approved_values=values_v1, specialists_dir=specialists_dir,
         agents_specialists_dir=agents_specialists_dir,
     )
 
@@ -1197,11 +1177,12 @@ def test_upgrade_reclassifying_a_secret_as_plain_does_not_carry_its_plaintext(tm
         required_config_names=("api_token",), required_secret_names=(),
         dependencies=deps, staged_dir=v2.staged_dir,
     )
-    acks_v2 = _acked(v2, tmp_path)
+    values_v2 = NO_SETTINGS
+    acks_v2 = _acked(v2, tmp_path, values_v2)
 
     instance = upgrade_specialist(
         slug="mtg", inspection=v2, config={}, secret_names_provided=frozenset(),
-        acks=acks_v2, specialists_dir=specialists_dir,
+        acks=acks_v2, approved_values=values_v2, specialists_dir=specialists_dir,
         agents_specialists_dir=agents_specialists_dir,
     )
     # No fresh plain value supplied → pending-configuration, never a silent
@@ -1224,21 +1205,23 @@ def test_reclassifying_upgrade_sentinels_the_prior_and_rollback_refuses(tmp_path
     # v1 declares api_token PLAIN-required; install persists the value
     # honestly (equation holds; this is legal post-guard state).
     v1 = _plain_schema_inspection(tmp_path)
-    acks_v1 = _acked(v1, tmp_path)
+    values_v1 = settings({"api_token": "plain-then-reclassified"})
+    acks_v1 = _acked(v1, tmp_path, values_v1)
     specialists_dir = tmp_path / "specialists"
     agents_specialists_dir = tmp_path / "agents-specialists"
     commit_specialist_install(
         inspection=v1, config={"api_token": "plain-then-reclassified"},
-        secret_names_provided=frozenset(), acks=acks_v1,
+        secret_names_provided=frozenset(), acks=acks_v1, approved_values=values_v1,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir,
     )
 
     # v2 reclassifies api_token as SECRET; supply it via the secret channel.
     v2 = _v2_secret_schema_inspection(tmp_path, _v2_inspection(tmp_path))
-    acks = _acked(v2, tmp_path)
+    values = settings(secrets=["api_token"])
+    acks = _acked(v2, tmp_path, values)
     instance = upgrade_specialist(
         slug="mtg", inspection=v2, config={},
-        secret_names_provided=frozenset({"api_token"}), acks=acks,
+        secret_names_provided=frozenset({"api_token"}), acks=acks, approved_values=values,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir,
     )
     assert instance.state == "active"
@@ -1273,19 +1256,21 @@ def test_rollback_refuses_an_unsanitized_pre_guard_prior(tmp_path: Path) -> None
     # v1's OWN schema declares api_token secret — the forged prior below is
     # the pre-v0.137 shape of exactly this component.
     v1 = _secret_schema_inspection(tmp_path)
-    acks_v1 = _acked(v1, tmp_path)
+    values_v1 = settings(secrets=["api_token"])
+    acks_v1 = _acked(v1, tmp_path, values_v1)
     specialists_dir = tmp_path / "specialists"
     agents_specialists_dir = tmp_path / "agents-specialists"
     commit_specialist_install(
         inspection=v1, config={}, secret_names_provided=frozenset({"api_token"}),
-        acks=acks_v1, specialists_dir=specialists_dir,
+        acks=acks_v1, approved_values=values_v1, specialists_dir=specialists_dir,
         agents_specialists_dir=agents_specialists_dir,
     )
     v2 = _v2_secret_schema_inspection(tmp_path, _v2_inspection(tmp_path))
-    acks = _acked(v2, tmp_path)
+    values = settings(secrets=["api_token"])
+    acks = _acked(v2, tmp_path, values)
     upgrade_specialist(
         slug="mtg", inspection=v2, config={},
-        secret_names_provided=frozenset({"api_token"}), acks=acks,
+        secret_names_provided=frozenset({"api_token"}), acks=acks, approved_values=values,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir,
     )
 
@@ -1319,17 +1304,14 @@ def test_rollback_refuses_an_unsanitized_pre_guard_prior(tmp_path: Path) -> None
 def test_rollback_restores_the_prior_tuple(tmp_path: Path) -> None:
     """Pins INV-SPEC-003 (rollback half). Red case demonstrated: reading the current active instead of active.prior.yaml fails this test."""
     from specialist_install import parse_component_root, rollback_specialist, upgrade_specialist
-    from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+    from specialist_install_consent import SpecialistInstallAckStore
 
     specialists_dir, agents_specialists_dir, v1 = _installed_mtg(tmp_path)
     v2 = _v2_inspection(tmp_path)
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(component_id=v2.component_id, version=v2.version,
-                                         root_digest=v2.root_digest, slug=v2.slug)
-    acks.record(identity=identity, component_id=v2.component_id, version=v2.version,
-                component_checksum=v2.root_digest, slug=v2.slug)
+    values = record_specialist_ack(acks, v2)
     upgrade_specialist(slug="mtg", inspection=v2, config={}, secret_names_provided=frozenset(),
-                        acks=acks, specialists_dir=specialists_dir,
+                        acks=acks, approved_values=values, specialists_dir=specialists_dir,
                         agents_specialists_dir=agents_specialists_dir)
 
     rolled_back = rollback_specialist(
@@ -1372,17 +1354,14 @@ def test_uninstall_removes_the_instance_dir_and_operational_files(tmp_path: Path
 
 def test_cas_pin_roots_includes_active_desired_and_prior_checksums(tmp_path: Path) -> None:
     from specialist_install import cas_pin_roots, upgrade_specialist
-    from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+    from specialist_install_consent import SpecialistInstallAckStore
 
     specialists_dir, agents_specialists_dir, v1 = _installed_mtg(tmp_path)
     v2 = _v2_inspection(tmp_path)
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(component_id=v2.component_id, version=v2.version,
-                                         root_digest=v2.root_digest, slug=v2.slug)
-    acks.record(identity=identity, component_id=v2.component_id, version=v2.version,
-                component_checksum=v2.root_digest, slug=v2.slug)
+    values = record_specialist_ack(acks, v2)
     upgrade_specialist(slug="mtg", inspection=v2, config={}, secret_names_provided=frozenset(),
-                        acks=acks, specialists_dir=specialists_dir,
+                        acks=acks, approved_values=values, specialists_dir=specialists_dir,
                         agents_specialists_dir=agents_specialists_dir)
 
     # cas_pin_roots parses component_root, which embeds the full-closure
@@ -1573,17 +1552,14 @@ def test_commit_refuses_a_traversal_inspection_slug_and_writes_nothing_outside_r
         required_config_names=(), required_secret_names=(), dependencies=deps, staged_dir=root,
     )
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug)
-    acks.record(identity=identity, component_id=inspection.component_id, version=inspection.version,
-                component_checksum=inspection.root_digest, slug=inspection.slug)
+    values = record_specialist_ack(acks, inspection)
 
     specialists_dir = tmp_path / "specialists"
     agents_specialists_dir = tmp_path / "agents-specialists"
     with pytest.raises(SpecialistInstallError) as raised:
         commit_specialist_install(
             inspection=inspection, config={}, secret_names_provided=frozenset(), acks=acks,
+            approved_values=values,
             specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir,
         )
     assert raised.value.kind == "invalid_slug"
@@ -1615,16 +1591,13 @@ def test_commit_refuses_when_cas_component_slug_disagrees_with_inspection_slug(
         required_config_names=(), required_secret_names=(), dependencies=deps, staged_dir=root,
     )
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug)
-    acks.record(identity=identity, component_id=inspection.component_id, version=inspection.version,
-                component_checksum=inspection.root_digest, slug=inspection.slug)
+    values = record_specialist_ack(acks, inspection)
 
     specialists_dir = tmp_path / "specialists"
     with pytest.raises(SpecialistInstallError) as raised:
         commit_specialist_install(
             inspection=inspection, config={}, secret_names_provided=frozenset(), acks=acks,
+            approved_values=values,
             specialists_dir=specialists_dir, agents_specialists_dir=tmp_path / "agents-specialists",
         )
     assert raised.value.kind == "slug_mismatch"
@@ -1683,14 +1656,11 @@ def test_commit_refuses_a_component_with_no_persona_dependency_row(tmp_path: Pat
         required_config_names=(), required_secret_names=(), dependencies=deps, staged_dir=root,
     )
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug)
-    acks.record(identity=identity, component_id=inspection.component_id, version=inspection.version,
-                component_checksum=inspection.root_digest, slug=inspection.slug)
+    values = record_specialist_ack(acks, inspection)
     with pytest.raises(SpecialistInstallError) as raised:
         commit_specialist_install(
             inspection=inspection, config={}, secret_names_provided=frozenset(), acks=acks,
+            approved_values=values,
             specialists_dir=tmp_path / "specialists",
             agents_specialists_dir=tmp_path / "agents-specialists",
         )
@@ -1811,11 +1781,12 @@ def test_boot_sweep_scrubs_legacy_plaintext_from_all_tuple_snapshots(tmp_path: P
     from personality_binding import load_instance_tuple
 
     v1 = _secret_schema_inspection(tmp_path)
-    acks = _acked(v1, tmp_path)
+    values = settings(secrets=["api_token"])
+    acks = _acked(v1, tmp_path, values)
     specialists_dir = tmp_path / "specialists"
     commit_specialist_install(
         inspection=v1, config={}, secret_names_provided=frozenset({"api_token"}),
-        acks=acks, specialists_dir=specialists_dir,
+        acks=acks, approved_values=values, specialists_dir=specialists_dir,
         agents_specialists_dir=tmp_path / "agents-specialists",
     )
     slug_dir = specialists_dir / "mtg"
@@ -1860,12 +1831,13 @@ def test_upgrade_with_unloadable_prior_schema_carries_nothing(tmp_path: Path) ->
     # pre-guard hand-edit is gone — such an active no longer loads). With the
     # prior schema unloadable, the carry must fail closed and drop it anyway.
     v1 = _plain_schema_inspection(tmp_path)
-    acks_v1 = _acked(v1, tmp_path)
+    values_v1 = settings({"api_token": "honest-plain-value"})
+    acks_v1 = _acked(v1, tmp_path, values_v1)
     specialists_dir = tmp_path / "specialists"
     agents_specialists_dir = tmp_path / "agents-specialists"
     commit_specialist_install(
         inspection=v1, config={"api_token": "honest-plain-value"},
-        secret_names_provided=frozenset(), acks=acks_v1,
+        secret_names_provided=frozenset(), acks=acks_v1, approved_values=values_v1,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir,
     )
     _delete_stored_schema(specialists_dir)
@@ -1896,11 +1868,12 @@ def test_upgrade_with_unloadable_prior_schema_carries_nothing(tmp_path: Path) ->
         required_config_names=("api_token",), required_secret_names=(),
         dependencies=deps, staged_dir=v2.staged_dir,
     )
-    acks = _acked(v2, tmp_path)
+    values = NO_SETTINGS
+    acks = _acked(v2, tmp_path, values)
 
     instance = upgrade_specialist(
         slug="mtg", inspection=v2, config={}, secret_names_provided=frozenset(),
-        acks=acks, specialists_dir=specialists_dir,
+        acks=acks, approved_values=values, specialists_dir=specialists_dir,
         agents_specialists_dir=agents_specialists_dir,
     )
     assert instance.state == "pending-configuration"
@@ -1922,11 +1895,12 @@ def test_boot_sweep_with_unloadable_schema_keeps_the_mapping_and_the_digest_deci
     from specialist_install import sanitize_specialist_snapshots
 
     v1 = _secret_schema_inspection(tmp_path)
-    acks = _acked(v1, tmp_path)
+    values = settings(secrets=["api_token"])
+    acks = _acked(v1, tmp_path, values)
     specialists_dir = tmp_path / "specialists"
     commit_specialist_install(
         inspection=v1, config={}, secret_names_provided=frozenset({"api_token"}),
-        acks=acks, specialists_dir=specialists_dir,
+        acks=acks, approved_values=values, specialists_dir=specialists_dir,
         agents_specialists_dir=tmp_path / "agents-specialists",
     )
     slug_dir = specialists_dir / "mtg"
@@ -1956,11 +1930,12 @@ def test_tampered_but_parseable_schema_fails_closed(tmp_path: Path) -> None:
     from specialist_install import _declared_secret_names_for_root, sanitize_specialist_snapshots
 
     v1 = _secret_schema_inspection(tmp_path)
-    acks = _acked(v1, tmp_path)
+    values = settings(secrets=["api_token"])
+    acks = _acked(v1, tmp_path, values)
     specialists_dir = tmp_path / "specialists"
     commit_specialist_install(
         inspection=v1, config={}, secret_names_provided=frozenset({"api_token"}),
-        acks=acks, specialists_dir=specialists_dir,
+        acks=acks, approved_values=values, specialists_dir=specialists_dir,
         agents_specialists_dir=tmp_path / "agents-specialists",
     )
     slug_dir = specialists_dir / "mtg"
@@ -2011,11 +1986,12 @@ def test_consistently_rewritten_schema_and_manifest_fails_closed(tmp_path: Path)
     from specialist_install import _declared_secret_names_for_root, sanitize_specialist_snapshots
 
     v1 = _secret_schema_inspection(tmp_path)
-    acks = _acked(v1, tmp_path)
+    values = settings(secrets=["api_token"])
+    acks = _acked(v1, tmp_path, values)
     specialists_dir = tmp_path / "specialists"
     commit_specialist_install(
         inspection=v1, config={}, secret_names_provided=frozenset({"api_token"}),
-        acks=acks, specialists_dir=specialists_dir,
+        acks=acks, approved_values=values, specialists_dir=specialists_dir,
         agents_specialists_dir=tmp_path / "agents-specialists",
     )
     slug_dir = specialists_dir / "mtg"
@@ -2081,11 +2057,12 @@ def test_boot_sweep_tombstones_a_stripped_legacy_secret_whose_digest_covered_it(
     from specialist_install import _declared_secret_names_for_root, sanitize_specialist_snapshots
 
     v1 = _secret_schema_inspection(tmp_path)
-    acks = _acked(v1, tmp_path)
+    values = settings(secrets=["api_token"])
+    acks = _acked(v1, tmp_path, values)
     specialists_dir = tmp_path / "specialists"
     commit_specialist_install(
         inspection=v1, config={}, secret_names_provided=frozenset({"api_token"}),
-        acks=acks, specialists_dir=specialists_dir,
+        acks=acks, approved_values=values, specialists_dir=specialists_dir,
         agents_specialists_dir=tmp_path / "agents-specialists",
     )
     active_path = specialists_dir / "mtg" / "active.yaml"
@@ -2255,11 +2232,12 @@ def test_boot_scrub_keeps_every_saved_copy_and_the_marker_when_the_store_is_dama
     from specialist_install import _declared_secret_names_for_root, sanitize_specialist_snapshots
 
     inspection = _plain_schema_inspection(tmp_path)
-    acks = _acked(inspection, tmp_path)
+    values = settings({"api_token": "honest-plain-value"})
+    acks = _acked(inspection, tmp_path, values)
     specialists_dir = tmp_path / "specialists"
     commit_specialist_install(
         inspection=inspection, config={"api_token": "honest-plain-value"},
-        secret_names_provided=frozenset(), acks=acks,
+        secret_names_provided=frozenset(), acks=acks, approved_values=values,
         specialists_dir=specialists_dir,
         agents_specialists_dir=tmp_path / "agents-specialists",
     )
@@ -2334,11 +2312,12 @@ def test_boot_scrub_preserves_unclassified_mapping(
     )
 
     inspection = _plain_schema_inspection(tmp_path)
-    acks = _acked(inspection, tmp_path)
+    values = settings({"api_token": "plain-value"})
+    acks = _acked(inspection, tmp_path, values)
     specialists_dir = tmp_path / "specialists"
     commit_specialist_install(
         inspection=inspection, config={"api_token": "plain-value"},
-        secret_names_provided=frozenset(), acks=acks,
+        secret_names_provided=frozenset(), acks=acks, approved_values=values,
         specialists_dir=specialists_dir,
         agents_specialists_dir=tmp_path / "agents-specialists",
     )

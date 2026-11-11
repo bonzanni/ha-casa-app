@@ -126,13 +126,14 @@ def _watch_pending_reads(monkeypatch, obs):
 def _pending_fixture(tmp_path, monkeypatch):
     """An active `mtg` holding `k=v`, plus a pending candidate holding it too."""
     fx = _UpgradeFixture(tmp_path, monkeypatch, v2_required=("k", "extra"))
-    fx.approve_v2()
+    fx.approve_v2(config={"k": "v"})
     instance, txn = fx.upgrade(config={"k": "v"})
     specialist_bundle_journal.complete(txn.journal_path)
     assert instance.state == "pending-configuration", instance.last_activation_error
     assert _saved_value_copies(fx.slug_dir) == 2
     assert fx.journals() == set()
-    fx.approve_v2()
+    # The approval for the follow-up call every test here makes.
+    fx.approve_v2(config={"k": "v", "extra": "e"})
     return fx
 
 
@@ -213,7 +214,7 @@ def test_an_absent_candidate_is_an_observation_not_a_missing_one(
     """
     fx = _UpgradeFixture(tmp_path, monkeypatch, v2_required=("k",))
     assert not (fx.slug_dir / "desired.yaml").exists()
-    fx.approve_v2()
+    fx.approve_v2(config={"k": "v"})
 
     obs = {"begins": 0, "rollbacks": 0, "carried": None, "readers": [],
            "raise_in": set()}
@@ -245,6 +246,7 @@ def test_the_legacy_no_receipt_arm_keeps_its_own_read_and_refusal(
         specialist_install._upgrade_core(
             slug="mtg", inspection=fx.insp2, config={"k": "v", "extra": "e"},
             secret_names_provided=frozenset(), acks=fx.acks,
+            approved_values=fx.approved_values,
             specialists_dir=fx.common["specialists_dir"],
             agents_specialists_dir=fx.common["agents_specialists_dir"],
             receipt=fx.receipt2)

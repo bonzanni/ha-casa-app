@@ -1799,7 +1799,8 @@ class TestSpecialistBindingActivation:
             InspectionResult, activate_binding_for_config, commit_specialist_install,
             resolve_dependency_closure,
         )
-        from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+        from approval_values import record_specialist_ack
+        from specialist_install_consent import SpecialistInstallAckStore
         from role_slot import materialize_role
         from role_artifact import load_role_artifact
 
@@ -1818,16 +1819,13 @@ class TestSpecialistBindingActivation:
             required_config_names=(), required_secret_names=(), dependencies=deps, staged_dir=staged,
         )
         acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-        identity = install_consent_identity(
-            component_id=inspection.component_id, version=inspection.version,
-            root_digest=inspection.root_digest, slug=inspection.slug)
-        acks.record(identity=identity, component_id=inspection.component_id, version=inspection.version,
-                    component_checksum=inspection.root_digest, slug=inspection.slug)
+        values = record_specialist_ack(acks, inspection)
 
         specialists_dir = tmp_path / "specialists"
         agents_specialists_dir = tmp_path / "agents-specialists"
         commit_specialist_install(
             inspection=inspection, config={}, secret_names_provided=frozenset(), acks=acks,
+            approved_values=values,
             specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir,
         )
 
@@ -1866,7 +1864,8 @@ class TestSpecialistBindingActivation:
             InspectionResult, activate_binding_for_config, commit_specialist_install,
             compute_install_root_digest, resolve_dependency_closure,
         )
-        from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+        from approval_values import record_specialist_ack
+        from specialist_install_consent import SpecialistInstallAckStore
         from role_slot import materialize_role
         from role_artifact import load_role_artifact
         from persona_pack import load_persona_pack
@@ -1888,16 +1887,12 @@ class TestSpecialistBindingActivation:
             required_config_names=(), required_secret_names=(), dependencies=deps, staged_dir=staged,
         )
         acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-        identity = install_consent_identity(
-            component_id=inspection.component_id, version=inspection.version,
-            root_digest=inspection.root_digest, slug=inspection.slug)
-        acks.record(identity=identity, component_id=inspection.component_id,
-                    version=inspection.version,
-                    component_checksum=inspection.root_digest, slug=inspection.slug)
+        values = record_specialist_ack(acks, inspection)
 
         specialists_dir = tmp_path / "specialists"
         commit_specialist_install(
             inspection=inspection, config={}, secret_names_provided=frozenset(), acks=acks,
+            approved_values=values,
             specialists_dir=specialists_dir,
             agents_specialists_dir=tmp_path / "agents-specialists",
         )

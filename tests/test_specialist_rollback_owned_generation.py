@@ -29,6 +29,7 @@ import plugin_registry
 import specialist_bundle_journal
 import specialist_install
 import specialist_receipt
+from approval_values import record_specialist_ack, settings
 from test_specialist_bundle_commit import _Ctx, _owned, _subdir_stub
 from test_wholebranch_security_fixes import (
     _load_specialist_persona_role, _publish_installed_copy,
@@ -110,17 +111,19 @@ def _mixed_count(slug_dir: Path, reg_path: Path, declared: "list[tuple]") -> int
 def _prep_bundle(tmp_path: Path, monkeypatch, names: "list[str]", *,
                  root: str = "v1", ref: str = "main", sha: str = "a" * 40,
                  base_ctx=None, version: "str | None" = None,
-                 required: "tuple[str, ...]" = (), marker: "str | None" = None):
+                 required: "tuple[str, ...]" = (), marker: "str | None" = None,
+                 config: "dict | None" = None):
     """``_prep_multi`` with two knobs the spec needs: an explicit manifest
     ``version`` (``None`` keeps the fixture's, so a same-ref generation keeps the
     same install root) and a declared ``required`` config key set (the manifest
     checksum is recomputed over the rewritten schema, as the loader demands).
     ``marker`` is the plugin README text that distinguishes generations; it
     defaults to ``root`` and is set separately when a second directory must
-    carry the SAME bytes as an earlier one (a same-ref generation)."""
+    carry the SAME bytes as an earlier one (a same-ref generation). ``config`` is
+    the call's settings; the approval recorded is for what that call stages."""
     import plugin_store
     from specialist_component import compute_component_checksum
-    from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+    from specialist_install_consent import SpecialistInstallAckStore
     from specialist_registry import InstalledSpecialistIndex
 
     comp, mpath = write_minimal_component(tmp_path / root, slug=_SLUG)
@@ -158,16 +161,15 @@ def _prep_bundle(tmp_path: Path, monkeypatch, names: "list[str]", *,
     assert receipt is not None
     acks = base_ctx.acks if base_ctx is not None else SpecialistInstallAckStore(
         path=tmp_path / "acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug,
-        receipt_digest=inspection.receipt_digest)
-    acks.record(identity=identity, component_id=inspection.component_id,
-                version=inspection.version, component_checksum=inspection.root_digest,
-                slug=inspection.slug, receipt_digest=inspection.receipt_digest)
+    config = dict(config or {})
+    staged = specialist_install.preview_effective_config(
+        "specialist_install" if base_ctx is None else "specialist_upgrade", inspection,
+        slug=_SLUG, config=config, secret_names_provided=(),
+        specialists_dir=tmp_path / "specialists")
+    values = record_specialist_ack(acks, inspection, settings(staged))
     common = dict(
-        inspection=inspection, receipt=receipt, config={},
-        secret_names_provided=frozenset(), acks=acks,
+        inspection=inspection, receipt=receipt, config=config,
+        secret_names_provided=frozenset(), acks=acks, approved_values=values,
         specialists_dir=tmp_path / "specialists",
         agents_specialists_dir=tmp_path / "agents",
         registry_path=tmp_path / "registry.json",
@@ -188,11 +190,8 @@ def _install(tmp_path: Path, monkeypatch, names: "list[str]", **knobs):
 def _upgrade(tmp_path: Path, monkeypatch, ctx, names: "list[str]", *, root: str,
              ref: str, sha: str, config: "dict | None" = None, **knobs):
     up = _prep_bundle(tmp_path, monkeypatch, names, root=root, ref=ref, sha=sha,
-                      base_ctx=ctx, **knobs)
-    kw = dict(up.kw)
-    if config is not None:
-        kw["config"] = config
-    instance, txn = specialist_install.upgrade_specialist(**kw)
+                      base_ctx=ctx, config=config, **knobs)
+    instance, txn = specialist_install.upgrade_specialist(**up.kw)
     assert instance.state == "active", instance.last_activation_error
     specialist_bundle_journal.complete(txn.journal_path)
     return up
@@ -295,10 +294,9 @@ def test_r3_same_ref_config_only_upgrade_then_rollback_keeps_the_owned_set(
     retained, and the rollback republishes the empty set."""
     from personality_binding import InstanceDir, load_instance_tuple
 
-    ctx = _prep_bundle(tmp_path, monkeypatch, ["mtg"], required=("timezone",))
-    kw = dict(ctx.kw)
-    kw["config"] = {"timezone": "Europe/Rome"}
-    instance, txn = specialist_install.commit_specialist_install(**kw)
+    ctx = _prep_bundle(tmp_path, monkeypatch, ["mtg"], required=("timezone",),
+                       config={"timezone": "Europe/Rome"})
+    instance, txn = specialist_install.commit_specialist_install(**ctx.kw)
     assert instance.state == "active"
     specialist_bundle_journal.complete(txn.journal_path)
     reg = ctx.kw["registry_path"]
@@ -309,11 +307,10 @@ def test_r3_same_ref_config_only_upgrade_then_rollback_keeps_the_owned_set(
     root_before = InstanceDir(slug_dir).active().root
 
     up = _prep_bundle(tmp_path, monkeypatch, ["mtg"], root="v1-same-ref", marker="v1",
-                      ref="main", sha="a" * 40, base_ctx=ctx, required=("timezone",))
+                      ref="main", sha="a" * 40, base_ctx=ctx, required=("timezone",),
+                      config={"timezone": "Europe/Amsterdam"})
     assert up.inspection.root_digest == ctx.inspection.root_digest
-    kw2 = dict(up.kw)
-    kw2["config"] = {"timezone": "Europe/Amsterdam"}
-    instance, txn = specialist_install.upgrade_specialist(**kw2)
+    instance, txn = specialist_install.upgrade_specialist(**up.kw)
     assert instance.state == "active", instance.last_activation_error
     specialist_bundle_journal.complete(txn.journal_path)
     assert InstanceDir(slug_dir).active().root == root_before

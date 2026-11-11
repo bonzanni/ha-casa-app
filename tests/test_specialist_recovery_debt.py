@@ -28,6 +28,7 @@ import plugin_registry
 import specialist_bundle_journal as journal
 import specialist_install
 import specialist_receipt
+from approval_values import NO_SETTINGS, record_specialist_ack
 from specialist_fixtures import write_bundled_plugin, write_minimal_component
 from test_specialist_bundle_commit import _owned, _prep
 
@@ -110,7 +111,6 @@ def _prep_gen(tmp_path: Path, monkeypatch, base_ctx, *, ref: str, marker: str,
     the candidate gate executes on a read-only materialization.
     """
     import plugin_store
-    from specialist_install_consent import install_consent_identity
     from specialist_registry import InstalledSpecialistIndex
 
     comp, mpath = write_minimal_component(tmp_path / marker, slug=base_ctx.slug)
@@ -138,14 +138,10 @@ def _prep_gen(tmp_path: Path, monkeypatch, base_ctx, *, ref: str, marker: str,
         specialists_dir=tmp_path / "specialists", receipts_dir=tmp_path / "receipts")
     receipt = specialist_receipt.load(insp.receipt_id, receipts_dir=tmp_path / "receipts")
     assert receipt is not None
-    identity = install_consent_identity(
-        component_id=insp.component_id, version=insp.version, root_digest=insp.root_digest,
-        slug=base_ctx.slug, receipt_digest=insp.receipt_digest)
-    base_ctx.acks.record(
-        identity=identity, component_id=insp.component_id, version=insp.version,
-        component_checksum=insp.root_digest, slug=base_ctx.slug,
-        receipt_digest=insp.receipt_digest)
-    return dict(base_ctx.kw, inspection=insp, receipt=receipt, slug=base_ctx.slug)
+    assert insp.slug == base_ctx.slug
+    values = record_specialist_ack(base_ctx.acks, insp, NO_SETTINGS)
+    return dict(base_ctx.kw, inspection=insp, receipt=receipt, slug=base_ctx.slug,
+                approved_values=values)
 
 
 @pytest.fixture(autouse=True)

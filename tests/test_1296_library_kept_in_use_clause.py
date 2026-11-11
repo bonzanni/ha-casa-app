@@ -169,7 +169,6 @@ class _World:
         REAL_SNAPSHOT(registry_path=tmp_path / "snapshot.json", store_root=tmp_path / "store")
         fx = _UpgradeFixture(tmp_path / "disk", monkeypatch,
                              v2_required=("j",), v2_secret_names=("k",))
-        fx.approve_v2()
         self.fx = fx
         monkeypatch.setattr(plugin_registry, "REGISTRY_PATH", fx.common["registry_path"])
         self.instance_dir = InstanceDir(fx.slug_dir)
@@ -216,11 +215,31 @@ class _World:
         self.fail_cleanup, self.finish_calls = fails, 0
 
     async def call(self, insp, config, secrets) -> dict:
+        """The handler, run as the run Casa starts once the operator approved
+        this upgrade with the settings it stages: the approval record named on
+        the run's origin, and the matching consent in the fixture's ledger."""
+        import agent as agent_mod
+        import approval_records
         import tools
-        r = await tools.specialist_upgrade.handler(dict(
-            slug="mtg", component_id=insp.component_id, version=insp.version,
-            root_digest=insp.root_digest, staged_dir=str(insp.staged_dir),
-            receipt_id=insp.receipt_id, config=config, secret_names_provided=secrets))
+        from specialist_install_consent import identity_for_inspection
+        assert insp is self.fx.insp2
+        values = self.fx.approve_v2(config, frozenset(secrets))
+        async with tools._plugin_tools_guard():
+            rec, _, _ = approval_records.request(
+                "specialist_upgrade", f"{insp.component_id}:{insp.slug}",
+                identity_for_inspection(insp, values=values), values)
+        rec = approval_records.approve(rec.rid)
+        origin = {"role": "assistant", "execution_role": "configurator", "channel": "telegram",
+                  "chat_id": 42, "cid": "c", "user_text": "upgrade it",
+                  approval_records.APPROVAL_KEY: {"rid": rec.rid, "generation": rec.generation}}
+        token = agent_mod.origin_var.set(origin)
+        try:
+            r = await tools.specialist_upgrade.handler(dict(
+                slug="mtg", component_id=insp.component_id, version=insp.version,
+                root_digest=insp.root_digest, staged_dir=str(insp.staged_dir),
+                receipt_id=insp.receipt_id, config=config, secret_names_provided=secrets))
+        finally:
+            agent_mod.origin_var.reset(token)
         return json.loads(r["content"][0]["text"])
 
     async def first(self, failure: str) -> dict:
@@ -254,7 +273,6 @@ class _World:
             "org/repo", "v3", staging_root=fx.tmp_path / "staging3", installed_index=idx,
             mode="upgrade", target_slug="mtg", specialists_dir=fx.common["specialists_dir"],
             receipts_dir=fx.tmp_path / "receipts")
-        fx.approve_v2()
         return fx.insp2
 
     async def second(self, restart: bool) -> dict:
@@ -270,7 +288,11 @@ class _World:
 
 @pytest.fixture
 def world(h, tmp_path, monkeypatch):
-    return _World(h, tmp_path, monkeypatch)
+    import approval_records
+    monkeypatch.setattr(approval_records, "PATH", str(tmp_path / "approval-records.json"))
+    approval_records.reset()
+    yield _World(h, tmp_path, monkeypatch)
+    approval_records.reset()
 
 
 def _assert_states(world, out, *, b):

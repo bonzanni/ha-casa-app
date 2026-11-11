@@ -124,9 +124,9 @@ def test_an_executable_avatar_is_refused(tmp_path: Path) -> None:
 
 
 def test_an_install_carries_the_avatar_to_the_installed_pack(tmp_path: Path) -> None:
+    from approval_values import PERSONA_DIGEST, PERSONA_VALUES, persona_identity
     from persona_install import (
         PersonaInspectionResult, PersonaInstallAckStore, commit_persona_install,
-        persona_install_consent_identity,
     )
 
     staged = tmp_path / "staged"
@@ -137,15 +137,16 @@ def test_an_install_carries_the_avatar_to_the_installed_pack(tmp_path: Path) -> 
         checksum=inspected.checksum, display_name="Test", staged_dir=staged)
     acks = PersonaInstallAckStore(path=tmp_path / "acks.json")
     acks.record(
-        identity=persona_install_consent_identity(
+        identity=persona_identity(
             persona_id=inspection.persona_id, version=inspection.version,
             checksum=inspection.checksum),
         persona_id=inspection.persona_id, version=inspection.version,
-        checksum=inspection.checksum)
+        checksum=inspection.checksum, values_digest=PERSONA_DIGEST)
     personas_root = tmp_path / "personas"
 
     installed = commit_persona_install(
-        inspection=inspection, acks=acks, personas_root=personas_root)
+        inspection=inspection, acks=acks, personas_root=personas_root,
+        approved_values=PERSONA_VALUES)
 
     dest = personas_root / inspected.persona_id / inspected.version / "pack"
     assert installed.checksum == inspected.checksum

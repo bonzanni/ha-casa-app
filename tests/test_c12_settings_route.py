@@ -29,6 +29,7 @@ import specialist_bundle_journal
 import specialist_install
 import specialist_receipt
 
+from approval_values import record_specialist_ack, settings
 from test_specialist_bundle_commit import _declare_config_schema, _subdir_stub
 
 try:
@@ -53,8 +54,7 @@ def _flat(name: str) -> str:
 def installed(tmp_path, monkeypatch):
     """`mtg` installed and active with two saved, non-secret settings."""
     import plugin_registry
-    from specialist_install_consent import (SpecialistInstallAckStore,
-                                            install_consent_identity)
+    from specialist_install_consent import SpecialistInstallAckStore
     from specialist_registry import InstalledSpecialistIndex
 
     plugin_registry.reload_snapshot(registry_path=tmp_path / "snap-registry.json",
@@ -69,14 +69,7 @@ def installed(tmp_path, monkeypatch):
         installed_index=idx, receipts_dir=tmp_path / "receipts")
     receipt = specialist_receipt.load(insp.receipt_id, receipts_dir=tmp_path / "receipts")
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    acks.record(
-        identity=install_consent_identity(
-            component_id=insp.component_id, version=insp.version,
-            root_digest=insp.root_digest, slug=insp.slug,
-            receipt_digest=insp.receipt_digest),
-        component_id=insp.component_id, version=insp.version,
-        component_checksum=insp.root_digest, slug=insp.slug,
-        receipt_digest=insp.receipt_digest)
+    first = record_specialist_ack(acks, insp, settings({"k": "old", "j": "kept"}))
     common = dict(
         secret_names_provided=frozenset(), acks=acks,
         specialists_dir=tmp_path / "specialists",
@@ -84,7 +77,8 @@ def installed(tmp_path, monkeypatch):
         registry_path=tmp_path / "registry.json",
         plugin_store_root=tmp_path / "store", ops_dir=tmp_path / "ops")
     instance, txn = specialist_install.commit_specialist_install(
-        inspection=insp, receipt=receipt, config={"k": "old", "j": "kept"}, **common)
+        inspection=insp, receipt=receipt, config={"k": "old", "j": "kept"},
+        approved_values=first, **common)
     specialist_bundle_journal.complete(txn.journal_path)
     assert instance.state == "active", instance.last_activation_error
     return insp, receipt, common, tmp_path / "specialists" / "mtg"
@@ -98,8 +92,11 @@ def test_same_version_upgrade_changes_settings_and_rotates_the_previous_ones(ins
     insp, receipt, common, slug_dir = installed
     before = _tuple(slug_dir, "active.yaml")
 
+    # the approval is for what the upgrade stages: the change over the kept value
+    values = record_specialist_ack(common["acks"], insp, settings({"k": "new", "j": "kept"}))
     inst, txn = specialist_install.upgrade_specialist(
-        slug="mtg", inspection=insp, receipt=receipt, config={"k": "new"}, **common)
+        slug="mtg", inspection=insp, receipt=receipt, config={"k": "new"},
+        approved_values=values, **common)
     specialist_bundle_journal.complete(txn.journal_path)
 
     assert inst.state == "active", inst.last_activation_error
@@ -117,9 +114,11 @@ def test_same_version_upgrade_changes_settings_and_rotates_the_previous_ones(ins
 def test_the_install_commit_refuses_the_installed_slug_with_active_present(installed):
     insp, receipt, common, slug_dir = installed
     before = (slug_dir / "active.yaml").read_bytes()
+    values = record_specialist_ack(common["acks"], insp, settings({"k": "new", "j": "kept"}))
     with pytest.raises(specialist_install.SpecialistInstallError) as ei:
         specialist_install.commit_specialist_install(
-            inspection=insp, receipt=receipt, config={"k": "new", "j": "kept"}, **common)
+            inspection=insp, receipt=receipt, config={"k": "new", "j": "kept"},
+            approved_values=values, **common)
     assert ei.value.kind == "active_present"
     assert (slug_dir / "active.yaml").read_bytes() == before
 
@@ -141,7 +140,8 @@ def test_upgrade_recipe_settings_section_tells_the_costs_before_step_1():
     section = re.sub(r"\s+", " ", text[start:step1])
     assert "`specialist_upgrade`" in section
     assert "to the version it already has" in section
-    assert "may ask for their approval again" in section
+    assert "the change asks for their approval on a card" in section
+    assert "an identical request that changes nothing needs none" in section
     assert ('"rollback" restores the previous settings, not the previous version, and '
             "that previous version can no longer be rolled back to") in section
     # The two costs come before the section first mentions inspecting.
@@ -158,7 +158,8 @@ def test_upgrade_recipe_settings_section_tells_the_costs_before_step_1():
 def test_upgrade_recipe_steps_admit_the_same_version_route():
     text = _flat("upgrade.md")
     assert "a newer ref (for a settings change, the installed ref — see above)" in text
-    assert "at the version already installed the approval may already be on record" in text
+    assert ('`approval: "not_needed"` means the specialist is already at that version with '
+            "those settings") in text
 
 
 def test_recipes_name_active_present_for_the_install_commit_refusal():
@@ -194,16 +195,18 @@ def test_specialist_upgrade_description_admits_the_installed_version():
 
 
 def test_upgrade_recipe_states_the_upgrade_worded_continuation():
-    # #1150/#1163: the run an Approve starts (tools.py `_reconcile_cb`)
-    # follows the inspect's mode, so an upgrade -- a settings change included --
+    # #1150/#1163: the run Casa starts after Approve follows the approval's
+    # kind, so an upgrade -- a settings change included --
     # is told to continue with step 3's specialist_upgrade. Step 2 says so,
     # and no longer tells the configurator to ignore an install-worded task.
-    import tools
-    source = Path(tools.__file__).read_text(encoding="utf-8")
-    assert "call specialist_upgrade with {_staged}" in source
+    import configurator_continue
+    told = configurator_continue.continuation_text(
+        "specialist_upgrade", slug="mtg", component_id="c", version="1", root_digest="rd",
+        staged_dir="/s", receipt_id="r1")
+    assert "Call specialist_upgrade with" in told and "specialist_install_commit" not in told
     text = _flat("upgrade.md")
-    step2 = text[text.index(" 2. Same consent flow"):text.index(" 3. `specialist_upgrade(")]
-    assert ("The run Approve starts tells you to continue with "
-            "step 3's `specialist_upgrade` — never `specialist_install_commit`, "
-            'which refuses an installed slug with `kind: "active_present"`') in step2
+    step2 = text[text.index(" 2. Same approval flow"):text.index(" 3. `specialist_upgrade(")]
+    assert ("tells you to go on with step 3's `specialist_upgrade` — never "
+            "`specialist_install_commit`, which refuses an installed slug with "
+            '`kind: "active_present"`') in step2
     assert "worded for a fresh install" not in step2

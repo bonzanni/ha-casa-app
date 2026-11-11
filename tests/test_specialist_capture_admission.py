@@ -39,8 +39,9 @@ import personality_binding
 import specialist_bundle_journal
 import specialist_install
 
+from approval_values import record_specialist_ack, settings
 from test_specialist_bundle_commit import (
-    _UpgradeFixture, _declare_config_schema, _subdir_stub,
+    _UpgradeFixture, _declare_config_schema, _staged_values, _subdir_stub,
 )
 
 try:
@@ -118,13 +119,19 @@ def _files_holding(slug_dir: Path, needle: str) -> list[str]:
     return hits
 
 
+def _approve(acks, insp, *, kind: str, config: dict, specialists_dir: Path) -> dict:
+    """Record the operator's approval of *insp* for the settings an install
+    (*kind* ``"specialist_install"``) or upgrade (``"specialist_upgrade"``) with
+    this *config* stages now; returns those values."""
+    return record_specialist_ack(acks, insp, _staged_values(
+        kind, insp, config=config, specialists_dir=specialists_dir))
+
+
 def _pending_install(tmp_path: Path, monkeypatch):
     """A first install that lands pending-configuration holding k=v: the
     component requires `k` and `extra`, and only `k` is supplied."""
     import specialist_receipt
-    from specialist_install_consent import (
-        SpecialistInstallAckStore, install_consent_identity,
-    )
+    from specialist_install_consent import SpecialistInstallAckStore
     from specialist_registry import InstalledSpecialistIndex
 
     comp, mpath = write_minimal_component(tmp_path, slug="mtg")
@@ -137,14 +144,7 @@ def _pending_install(tmp_path: Path, monkeypatch):
         receipts_dir=tmp_path / "receipts")
     receipt = specialist_receipt.load(insp.receipt_id, receipts_dir=tmp_path / "receipts")
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    acks.record(
-        identity=install_consent_identity(
-            component_id=insp.component_id, version=insp.version,
-            root_digest=insp.root_digest, slug=insp.slug,
-            receipt_digest=insp.receipt_digest),
-        component_id=insp.component_id, version=insp.version,
-        component_checksum=insp.root_digest, slug=insp.slug,
-        receipt_digest=insp.receipt_digest)
+    values = record_specialist_ack(acks, insp, settings({"k": "v"}))
     common = dict(
         secret_names_provided=frozenset(), acks=acks,
         specialists_dir=tmp_path / "specialists",
@@ -152,7 +152,8 @@ def _pending_install(tmp_path: Path, monkeypatch):
         registry_path=tmp_path / "registry.json",
         plugin_store_root=tmp_path / "store", ops_dir=tmp_path / "ops")
     inst, txn = specialist_install.commit_specialist_install(
-        inspection=insp, receipt=receipt, config={"k": "v"}, **common)
+        inspection=insp, receipt=receipt, config={"k": "v"}, approved_values=values,
+        **common)
     specialist_bundle_journal.complete(txn.journal_path)
     assert inst.state == "pending-configuration"
     return insp, receipt, common, tmp_path / "specialists" / "mtg"
@@ -197,14 +198,16 @@ def test_install_over_active_refuses_before_capture(tmp_path, monkeypatch) -> No
     journal exists, and the incoming component's secret declaration empties the
     capture of the active tuple it never opened."""
     fx = _UpgradeFixture(tmp_path, monkeypatch, v2_required=(), v2_secret_names=("k",))
-    fx.approve_v2()
+    values = _approve(fx.acks, fx.insp2, kind="specialist_install", config={},
+                      specialists_dir=fx.common["specialists_dir"])
     active_before = (fx.slug_dir / "active.yaml").read_bytes()
     obs = _obs()
     _instrument(monkeypatch, obs)
 
     with pytest.raises(specialist_install.SpecialistInstallError):
         specialist_install.commit_specialist_install(
-            inspection=fx.insp2, receipt=fx.receipt2, config={}, **fx.common)
+            inspection=fx.insp2, receipt=fx.receipt2, config={},
+            approved_values=values, **fx.common)
 
     assert (obs["begins"], obs["rollbacks"]) == (0, 0)
     assert (fx.slug_dir / "active.yaml").read_bytes() == active_before
@@ -218,6 +221,8 @@ def test_pending_recommit_compensation_uses_carried_declarations(
     be read before the call and not while the compensation runs. The restore
     must answer from what the transaction classified, not from the store."""
     insp, receipt, common, slug_dir = _pending_install(tmp_path, monkeypatch)
+    values = _approve(common["acks"], insp, kind="specialist_install",
+                      config={"extra": "e"}, specialists_dir=common["specialists_dir"])
     desired_before = (slug_dir / "desired.yaml").read_bytes()
     obs = _obs()
     _instrument(monkeypatch, obs, unreadable_inside_rollback="all")
@@ -234,7 +239,8 @@ def test_pending_recommit_compensation_uses_carried_declarations(
 
     with pytest.raises(specialist_install.SpecialistInstallError) as ei:
         specialist_install.commit_specialist_install(
-            inspection=insp, receipt=receipt, config={"extra": "e"}, **common)
+            inspection=insp, receipt=receipt, config={"extra": "e"},
+            approved_values=values, **common)
 
     assert ei.value.kind == "concurrent_mutation"
     assert len(faults) == 1
@@ -424,7 +430,7 @@ def test_rejected_secret_config_preserves_active_and_allows_retry(
     assert dict(InstanceDir(fx.slug_dir).active().config_snapshot) == {"k": "v"}
     assert len(fx.journals()) == 0
 
-    fx.approve_v2()
+    fx.approve_v2(secret_names_provided=frozenset({"k"}))
     inst, txn = fx.upgrade(config={}, secret_names_provided=frozenset({"k"}))
     assert inst.state == "active"
     assert inst.active == InstanceDir(fx.slug_dir).active()
@@ -447,12 +453,14 @@ def test_pre_activation_boot_replay_preserves_reclassified_tuple_files(
     # A same-root re-commit of A with k=v retains A(k=prior-v) as the prior.
     receipt1 = specialist_receipt.load(
         fx.insp1.receipt_id, receipts_dir=tmp_path / "receipts")
+    a_values = _approve(fx.acks, fx.insp1, kind="specialist_upgrade", config={"k": "v"},
+                        specialists_dir=fx.common["specialists_dir"])
     inst, txn = specialist_install.upgrade_specialist(
         slug="mtg", inspection=fx.insp1, receipt=receipt1,
-        config={"k": "v"}, **fx.common)
+        config={"k": "v"}, approved_values=a_values, **fx.common)
     specialist_bundle_journal.complete(txn.journal_path)
     assert inst.state == "active", inst.last_activation_error
-    fx.approve_v2()
+    fx.approve_v2(secret_names_provided=frozenset({"k"}))
     active_path = fx.slug_dir / "active.yaml"
     prior_path = fx.slug_dir / "active.prior.yaml"
     active_before, prior_before = active_path.read_bytes(), prior_path.read_bytes()
@@ -511,7 +519,7 @@ PLAIN = "plain-k-7c1e"
 def _activated_reclassifying(tmp_path, monkeypatch, obs):
     fx = _UpgradeFixture(tmp_path, monkeypatch, v2_required=(),
                          v2_secret_names=("k",), value=PLAIN)
-    fx.approve_v2()
+    fx.approve_v2(secret_names_provided=frozenset({"k"}))
     a_root = _raw(fx.slug_dir / "active.yaml")["root"]
     _instrument(monkeypatch, obs)
     inst, txn = fx.upgrade(config={}, secret_names_provided=frozenset({"k"}))
@@ -641,6 +649,8 @@ def test_pending_recommit_unreadable_target_refuses_before_begin(
     import specialist_component
 
     insp, receipt, common, slug_dir = _pending_install(tmp_path, monkeypatch)
+    values = _approve(common["acks"], insp, kind="specialist_install",
+                      config={"extra": "e"}, specialists_dir=common["specialists_dir"])
     desired_before = (slug_dir / "desired.yaml").read_bytes()
     obs = _obs()
     _instrument(monkeypatch, obs)
@@ -651,7 +661,8 @@ def test_pending_recommit_unreadable_target_refuses_before_begin(
 
     with pytest.raises(OSError) as ei:
         specialist_install.commit_specialist_install(
-            inspection=insp, receipt=receipt, config={"extra": "e"}, **common)
+            inspection=insp, receipt=receipt, config={"extra": "e"},
+            approved_values=values, **common)
 
     assert ei.value.errno == 5
     assert (obs["begins"], obs["rollbacks"]) == (0, 0)

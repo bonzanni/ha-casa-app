@@ -48,7 +48,8 @@ def _install_specialist(tmp_path: Path, *, slug: str) -> tuple[Path, Path]:
         InspectionResult, commit_specialist_install,
         compute_install_root_digest, resolve_dependency_closure,
     )
-    from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+    from approval_values import record_specialist_ack
+    from specialist_install_consent import SpecialistInstallAckStore
     from test_specialist_install import _write_component
 
     specialists_dir = tmp_path / "specialists"
@@ -66,13 +67,10 @@ def _install_specialist(tmp_path: Path, *, slug: str) -> tuple[Path, Path]:
         required_config_names=(), required_secret_names=(), dependencies=deps, staged_dir=staged,
     )
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug)
-    acks.record(identity=identity, component_id=inspection.component_id, version=inspection.version,
-                component_checksum=inspection.root_digest, slug=inspection.slug)
+    values = record_specialist_ack(acks, inspection)
     commit_specialist_install(
         inspection=inspection, config={}, secret_names_provided=frozenset(), acks=acks,
+        approved_values=values,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir,
     )
     return specialists_dir, agents_specialists_dir

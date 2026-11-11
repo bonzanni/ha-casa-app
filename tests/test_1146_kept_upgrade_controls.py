@@ -17,6 +17,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from approval_values import call_as_approved_run, use_tmp_approval_store
+
 from test_1146_kept_upgrade_reload_failed import (  # noqa: F401 — `h` is a fixture
     ACTIVE, NEW, OLD, PREVIOUS, ROLE, _Txn, _agent, _binding, _cfg, _phrases, _run, h)
 
@@ -183,7 +185,7 @@ def test_the_documents_no_longer_say_the_sequencer_arm_always_loaded():
         "comes after the sequencer loaded the new version, and keeps saying it is active") == 0
 
 
-async def test_override_pre_swap_failure_through_the_upgrade_handler(h, monkeypatch):
+async def test_override_pre_swap_failure_through_the_upgrade_handler(h, monkeypatch, tmp_path):
     """The #1146 residual through the real `specialist_upgrade` handler: only the
     library commit (returning the kept transaction) and the resume-input check
     are doubled; the sequencer, its reload and the kept compensation are real."""
@@ -222,7 +224,8 @@ async def test_override_pre_swap_failure_through_the_upgrade_handler(h, monkeypa
     h.loaded_root = None
     h.registry.fail_load = OSError("scan refused")
     import tools as tools_mod
-    r = await tools_mod.specialist_upgrade.handler({
+    use_tmp_approval_store(monkeypatch, tmp_path)
+    r = await call_as_approved_run(tools_mod.specialist_upgrade, {
         "slug": ROLE, "component_id": "c", "version": "2.0.0", "root_digest": "rd",
         "staged_dir": "/nonexistent", "receipt_id": "r1"})
     out = json.loads(r["content"][0]["text"])

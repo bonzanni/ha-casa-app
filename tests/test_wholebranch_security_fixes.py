@@ -34,6 +34,9 @@ from specialist_install import (
     validate_specialist_slug,
 )
 from specialist_component import load_specialist_component
+from approval_values import (
+    NO_SETTINGS, PERSONA_DIGEST, PERSONA_VALUES, persona_identity, record_specialist_ack,
+)
 from test_specialist_install import _write_component
 from test_specialist_lifecycle_matrix import _approved_inspection
 
@@ -85,7 +88,7 @@ def test_upgrade_specialist_rejects_traversal_slug(tmp_path: Path) -> None:
     with pytest.raises(SpecialistInstallError) as exc:
         upgrade_specialist(
             slug="../evil", inspection=inspection, config={},
-            secret_names_provided=frozenset(), acks=acks,
+            secret_names_provided=frozenset(), acks=acks, approved_values=NO_SETTINGS,
             specialists_dir=tmp_path / "specialists",
             agents_specialists_dir=tmp_path / "agents")
     assert exc.value.kind == "invalid_slug"
@@ -104,7 +107,6 @@ def test_inspect_specialist_repo_rejects_traversal_target_slug(tmp_path: Path) -
 def test_commit_persona_install_rejects_traversal_persona_id(tmp_path: Path) -> None:
     from persona_install import (
         PersonaInspectionResult, PersonaInstallAckStore, commit_persona_install,
-        persona_install_consent_identity,
     )
 
     checksum = "sha256:" + "1" * 64
@@ -112,13 +114,14 @@ def test_commit_persona_install_rejects_traversal_persona_id(tmp_path: Path) -> 
         persona_id="../evil", version="0.1.0", checksum=checksum,
         display_name="x", staged_dir=tmp_path / "staged")
     acks = PersonaInstallAckStore(path=tmp_path / "acks.json")
-    ident = persona_install_consent_identity(
-        persona_id="../evil", version="0.1.0", checksum=checksum)
-    acks.record(identity=ident, persona_id="../evil", version="0.1.0", checksum=checksum)
+    ident = persona_identity(persona_id="../evil", version="0.1.0", checksum=checksum)
+    acks.record(identity=ident, persona_id="../evil", version="0.1.0", checksum=checksum,
+                values_digest=PERSONA_DIGEST)
 
     with pytest.raises(SpecialistInstallError) as exc:
         commit_persona_install(
-            inspection=insp, acks=acks, personas_root=tmp_path / "personas")
+            inspection=insp, acks=acks, approved_values=PERSONA_VALUES,
+            personas_root=tmp_path / "personas")
     assert exc.value.kind == "invalid_persona_ref"
 
 
@@ -321,6 +324,7 @@ def _install_active(tmp_path: Path, slug: str = "mtg"):
     agents_dir = tmp_path / "agents"
     instance = commit_specialist_install(
         inspection=inspection, config={}, secret_names_provided=frozenset(), acks=acks,
+        approved_values=NO_SETTINGS,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
     assert instance.state == "active"
     return specialists_dir, agents_dir
@@ -391,13 +395,14 @@ def test_rollback_refuses_when_prior_dependency_now_unavailable(
     specialists_dir = tmp_path / "specialists"
     agents_dir = tmp_path / "agents"
     commit_specialist_install(
-        inspection=v1, config={}, secret_names_provided=frozenset(), acks=acks1,
+        inspection=v1, config={}, secret_names_provided=frozenset(), acks=acks1, approved_values=NO_SETTINGS,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
 
     v2, acks2 = _approved_inspection(
         tmp_path, slug="mtg", version_suffix="-v2", version_override="0.2.0")
     upgrade_specialist(
         slug="mtg", inspection=v2, config={}, secret_names_provided=frozenset(), acks=acks2,
+        approved_values=NO_SETTINGS,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
 
     from personality_binding import InstanceDir
@@ -456,6 +461,7 @@ def test_commit_survives_concurrent_cas_publish_race(
 
     instance = commit_specialist_install(
         inspection=inspection, config={}, secret_names_provided=frozenset(), acks=acks,
+        approved_values=NO_SETTINGS,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
 
     # RED on pre-fix: the bare os.replace raised OSError uncaught. Post-fix the
@@ -501,6 +507,7 @@ def test_commit_stages_desired_inside_the_materialize_lock(
 
     instance = commit_specialist_install(
         inspection=inspection, config={}, secret_names_provided=frozenset(), acks=acks,
+        approved_values=NO_SETTINGS,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
 
     assert instance.state == "active"
@@ -515,7 +522,7 @@ def test_upgrade_stages_desired_inside_the_materialize_lock(
     specialists_dir = tmp_path / "specialists"
     agents_dir = tmp_path / "agents"
     commit_specialist_install(
-        inspection=v1, config={}, secret_names_provided=frozenset(), acks=acks1,
+        inspection=v1, config={}, secret_names_provided=frozenset(), acks=acks1, approved_values=NO_SETTINGS,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
 
     seen = _record_stage_lockstate(monkeypatch)
@@ -523,6 +530,7 @@ def test_upgrade_stages_desired_inside_the_materialize_lock(
         tmp_path, slug="mtg", version_suffix="-v2", version_override="0.2.0")
     instance = upgrade_specialist(
         slug="mtg", inspection=v2, config={}, secret_names_provided=frozenset(), acks=acks2,
+        approved_values=NO_SETTINGS,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
 
     assert instance.state == "active"
@@ -536,12 +544,13 @@ def test_rollback_stages_desired_inside_the_materialize_lock(
     specialists_dir = tmp_path / "specialists"
     agents_dir = tmp_path / "agents"
     commit_specialist_install(
-        inspection=v1, config={}, secret_names_provided=frozenset(), acks=acks1,
+        inspection=v1, config={}, secret_names_provided=frozenset(), acks=acks1, approved_values=NO_SETTINGS,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
     v2, acks2 = _approved_inspection(
         tmp_path, slug="mtg", version_suffix="-v2", version_override="0.2.0")
     upgrade_specialist(
         slug="mtg", inspection=v2, config={}, secret_names_provided=frozenset(), acks=acks2,
+        approved_values=NO_SETTINGS,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
 
     seen = _record_stage_lockstate(monkeypatch)
@@ -612,7 +621,7 @@ def _approved_inspection_requiring_config(
     into pending-configuration (exercising the placeholder stage path)."""
     from specialist_component import compute_component_checksum, load_specialist_component
     from specialist_install import InspectionResult, compute_install_root_digest
-    from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+    from specialist_install_consent import SpecialistInstallAckStore
 
     root = _write_component(tmp_path / f"component-cfg-{slug}{version_suffix}", slug=slug)
     (root / "config-schema.json").write_text(
@@ -640,11 +649,7 @@ def _approved_inspection_requiring_config(
         required_config_names=(), required_secret_names=("api_key",),
         dependencies=deps, staged_dir=root)
     acks = SpecialistInstallAckStore(path=tmp_path / f"acks-cfg-{slug}{version_suffix}.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug)
-    acks.record(identity=identity, component_id=inspection.component_id, version=inspection.version,
-                component_checksum=inspection.root_digest, slug=inspection.slug)
+    record_specialist_ack(acks, inspection)
     return inspection, acks
 
 
@@ -682,6 +687,7 @@ def test_commit_pending_config_stages_desired_inside_the_lock(
     inspection, acks = _approved_inspection_requiring_config(tmp_path, slug="mtg")
     instance = commit_specialist_install(
         inspection=inspection, config={}, secret_names_provided=frozenset(), acks=acks,
+        approved_values=NO_SETTINGS,
         specialists_dir=tmp_path / "specialists", agents_specialists_dir=tmp_path / "agents")
     assert instance.state == "pending-configuration"
     # RED pre-fix: the placeholder stage_desired ran OUTSIDE MATERIALIZE_LOCK.
@@ -695,7 +701,7 @@ def test_upgrade_pending_config_stages_desired_inside_the_lock(
     specialists_dir = tmp_path / "specialists"
     agents_dir = tmp_path / "agents"
     commit_specialist_install(
-        inspection=v1, config={}, secret_names_provided=frozenset(), acks=acks1,
+        inspection=v1, config={}, secret_names_provided=frozenset(), acks=acks1, approved_values=NO_SETTINGS,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
 
     seen = _record_stage_and_discard_lockstate(monkeypatch)
@@ -703,6 +709,7 @@ def test_upgrade_pending_config_stages_desired_inside_the_lock(
         tmp_path, slug="mtg", version_suffix="-v2", version_override="0.2.0")
     instance = upgrade_specialist(
         slug="mtg", inspection=v2, config={}, secret_names_provided=frozenset(), acks=acks2,
+        approved_values=NO_SETTINGS,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
     assert instance.state == "pending-configuration"
     # RED pre-fix: the upgrade placeholder stage_desired ran OUTSIDE the lock.
@@ -718,7 +725,7 @@ def test_upgrade_error_path_stages_and_discards_inside_the_lock(
     specialists_dir = tmp_path / "specialists"
     agents_dir = tmp_path / "agents"
     commit_specialist_install(
-        inspection=v1, config={}, secret_names_provided=frozenset(), acks=acks1,
+        inspection=v1, config={}, secret_names_provided=frozenset(), acks=acks1, approved_values=NO_SETTINGS,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
     v2, acks2 = _approved_inspection(
         tmp_path, slug="mtg", version_suffix="-v2", version_override="0.2.0")
@@ -735,6 +742,7 @@ def test_upgrade_error_path_stages_and_discards_inside_the_lock(
     seen = _record_stage_and_discard_lockstate(monkeypatch)
     instance = upgrade_specialist(
         slug="mtg", inspection=v2, config={}, secret_names_provided=frozenset(), acks=acks2,
+        approved_values=NO_SETTINGS,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
     assert instance.state == "error"
     # RED pre-fix: BOTH the error-path stage_desired and discard_desired ran
@@ -757,7 +765,7 @@ def test_upgrade_refuses_when_uninstall_races_before_the_lock(
     specialists_dir = tmp_path / "specialists"
     agents_dir = tmp_path / "agents"
     commit_specialist_install(
-        inspection=v1, config={}, secret_names_provided=frozenset(), acks=acks1,
+        inspection=v1, config={}, secret_names_provided=frozenset(), acks=acks1, approved_values=NO_SETTINGS,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
     v2, acks2 = _approved_inspection(
         tmp_path, slug="mtg", version_suffix="-v2", version_override="0.2.0")
@@ -788,6 +796,7 @@ def test_upgrade_refuses_when_uninstall_races_before_the_lock(
     with pytest.raises(SpecialistInstallError) as exc:
         upgrade_specialist(
             slug="mtg", inspection=v2, config={}, secret_names_provided=frozenset(), acks=acks2,
+            approved_values=NO_SETTINGS,
             specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
     assert exc.value.kind == "concurrent_mutation"
     assert fired["done"] is True
@@ -808,12 +817,13 @@ def test_rollback_refuses_when_uninstall_races_before_the_lock(
     specialists_dir = tmp_path / "specialists"
     agents_dir = tmp_path / "agents"
     commit_specialist_install(
-        inspection=v1, config={}, secret_names_provided=frozenset(), acks=acks1,
+        inspection=v1, config={}, secret_names_provided=frozenset(), acks=acks1, approved_values=NO_SETTINGS,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
     v2, acks2 = _approved_inspection(
         tmp_path, slug="mtg", version_suffix="-v2", version_override="0.2.0")
     upgrade_specialist(
         slug="mtg", inspection=v2, config={}, secret_names_provided=frozenset(), acks=acks2,
+        approved_values=NO_SETTINGS,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
 
     # rollback re-runs a compile as its verification gate (before the lock) —
@@ -882,6 +892,7 @@ def test_commit_refuses_when_a_concurrent_install_activates_first(
             # so the race is simulated through the unlocked core.
             commit_specialist_install.__wrapped__(
                 inspection=winner, config={}, secret_names_provided=frozenset(), acks=winner_acks,
+                approved_values=NO_SETTINGS,
                 specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
         return result
 
@@ -890,6 +901,7 @@ def test_commit_refuses_when_a_concurrent_install_activates_first(
     with pytest.raises(SpecialistInstallError) as exc:
         commit_specialist_install(
             inspection=loser, config={}, secret_names_provided=frozenset(), acks=loser_acks,
+            approved_values=NO_SETTINGS,
             specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
     assert exc.value.kind == "concurrent_mutation"
     assert fired["done"] is True
@@ -1014,7 +1026,7 @@ def test_upgrade_refuses_when_a_same_root_config_mutation_races_before_the_lock(
     specialists_dir = tmp_path / "specialists"
     agents_dir = tmp_path / "agents"
     commit_specialist_install(
-        inspection=v1, config={}, secret_names_provided=frozenset(), acks=acks1,
+        inspection=v1, config={}, secret_names_provided=frozenset(), acks=acks1, approved_values=NO_SETTINGS,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
     v2, acks2 = _approved_inspection(
         tmp_path, slug="mtg", version_suffix="-v2", version_override="0.2.0")
@@ -1063,6 +1075,7 @@ def test_upgrade_refuses_when_a_same_root_config_mutation_races_before_the_lock(
     with pytest.raises(SpecialistInstallError) as exc:
         upgrade_specialist(
             slug="mtg", inspection=v2, config={}, secret_names_provided=frozenset(), acks=acks2,
+            approved_values=NO_SETTINGS,
             specialists_dir=specialists_dir, agents_specialists_dir=agents_dir)
     assert exc.value.kind == "concurrent_mutation"
     assert fired["done"] is True
