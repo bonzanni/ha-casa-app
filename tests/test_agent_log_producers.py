@@ -225,6 +225,20 @@ async def test_only_a_specialist_or_the_configurator_logs_a_delegated_run(
         ]
 
 
+async def test_a_delegated_runs_silence_markers_are_not_logged(logs):
+    """#1535: the log shows a run's words the way the operator would see
+    them — a message that is only ``<silent/>`` adds no line, a leading or
+    closing run of markers is dropped, and the words are logged unchanged."""
+    run = tools_mod._DelegatedRunLog(SimpleNamespace(kind="specialist", role="finance"))
+    messages = ["<silent/>", "  <silent/>\n<silent/> ", "<silent/>\nDone.",
+                "Filed it. <silent/>", "say `<silent/>` here"]
+    run.words(messages[:2], None)
+    run.close(messages, None)
+    run.end(True)
+    assert logs.texts() == ["Done.", "Filed it.", "say `<silent/>` here",
+                            "✓ answered"]
+
+
 async def test_a_delegated_run_is_named_by_its_start_in_casas_time(
         logs, monkeypatch):
     """Casa's own clock and zone name the run, at its start."""
