@@ -1149,7 +1149,7 @@ def surface_refusal(role: str, identity: Any) -> "str | None":
     chat always is), and the call must have somewhere to post
     (``identity.delivery``). Never a fall-back to another chat."""
     import own_voice
-    refusal = own_voice.require_open_chat(role, label=post_label(role))
+    refusal = own_voice.require_open_chat(role, label=_display_name(role))
     if refusal is not None:
         return refusal.text
     if identity is not None and getattr(identity, "delivery", None) is None:

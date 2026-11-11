@@ -750,6 +750,34 @@ async def test_every_surface_of_an_agent_behind_ellen_refuses_typed_and_posts_no
     assert _ellen_texts(world) == ["📊 Passed to Fido.", "📊 Passed to Tina."]
 
 
+async def test_a_surface_of_alexs_task_refuses_once_his_chat_has_closed(world, outbox):
+    """Born while Alex's chat was open, the task's delivery is his chat; the
+    chat closes while it runs (his manifest no longer declares it). Every
+    surface then refuses with a typed line, and nothing posts anywhere — not
+    in his chat, not in Ellen's."""
+    seen: list = []
+
+    async def mid_run(_client):
+        del world.w.configs["finance"]
+        await world.lc.reconcile_role("finance")
+        assert own_voice.own_chat_state("finance") == "dormant"
+        before = len(world.alex.recorder.sends())
+        for tool in SURFACES:
+            seen.append(await call_tool("finance", tool))
+        seen.append(await _send_media())
+        seen.append(len(world.alex.recorder.sends()) - before)
+
+    Client.on_query = mid_run
+    payload = await _delegate()
+    await _settled()
+    assert payload["status"] == "ok"
+    for outcome, why in seen[:3]:
+        assert outcome == "denied" and why == "not executed: Alex's chat is closed right now."
+    assert seen[3]["status"] == "error" and seen[3]["kind_error"] == "own_chat_missing"
+    assert seen[4] == 0
+    assert _ellen_texts(world) == [HANDOFF_ALEX]
+
+
 async def test_a_turn_running_another_agent_in_ellens_chat_never_posts_there(world):
     """A turn that is no task and runs Alex in Ellen's chat — a hand-off made
     without a task's delivery — has nowhere to post: each surface refuses,

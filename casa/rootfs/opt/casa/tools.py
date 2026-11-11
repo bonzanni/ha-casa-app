@@ -1154,6 +1154,23 @@ def _media_delivery(eng, origin: dict) -> "tuple[str, bool, TgAddress | None]":
     return executor, False, None
 
 
+def _closed_own_chat(executor: str, origin: dict) -> Any:
+    """The capability rule's refusal when *origin*'s route is an agent's own
+    bot and *executor*'s own chat is not open now; ``None`` otherwise (the
+    resident's chat, Casa's bot, no Telegram)."""
+    resolve = getattr(_transport(), "endpoint_for_route", None)
+    if not callable(resolve) or origin.get("channel") != "telegram":
+        return None
+    try:
+        ep = resolve(origin, site="send_media")
+    except (RouteMissing, AddressError, EndpointUnavailable, RuntimeError):
+        return None
+    if getattr(ep, "is_casa", True):
+        return None
+    import own_voice
+    return own_voice.require_open_chat(executor, label=_display_name_for_role(executor))
+
+
 def _debit_specialist_media_send(eng, origin: dict) -> "dict | None":
     """Synchronous specialist-context debit for one send_media attempt.
 
@@ -1334,6 +1351,13 @@ async def send_media(args: dict) -> dict:
                                 "message": refusal.text})
             origin.update(channel="telegram", chat_id=delivery.chat_id,
                           _tg_bot=delivery.bot_id)
+        # The capability rule, as at every surface: a file bound for an
+        # agent's own chat posts only while that chat is open — a task born
+        # there before the chat closed refuses too.
+        closed = _closed_own_chat(executor, origin)
+        if closed is not None:
+            return _result({"status": "error", "kind_error": closed.kind,
+                            "message": closed.text})
         if origin.get("channel") != "telegram":
             return _result({"status": "error", "kind_error": "invalid_origin",
                             "message": f"origin channel {origin.get('channel')!r} "

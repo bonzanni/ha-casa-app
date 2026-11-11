@@ -189,7 +189,7 @@ def world(monkeypatch, tmp_path):
             return None
         kind = {"not_declared": "own_chat_missing", "no_bot": "own_chat_missing",
                 "not_open": "own_chat_not_open", "dormant": "own_chat_unreachable"}[s]
-        return own_voice.Refusal(kind, f"{label[2:]}'s chat is {s.replace('_', ' ')}")
+        return own_voice.Refusal(kind, f"{label}'s chat is {s.replace('_', ' ')}")
 
     monkeypatch.setattr(own_voice, "require_open_chat", require_open_chat)
     yield SimpleNamespace(casa=casa, alex=alex, state=state, tmp=tmp_path,
