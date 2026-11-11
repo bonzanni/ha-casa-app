@@ -978,6 +978,24 @@ OWN_CHAT_SILENT_CLOSE_NOTE = (
     "what it wrote before that is not for them. Do not pass it on, narrate it, or say "
     "{name} is still working.)")
 
+# The note on a delegation still running when its call returns, for a task
+# shown in the delegate's own chat: the person watches it work there and gets
+# its answer there, so the resident owes no line saying it is still running
+# (one written while the answer was already landing reached the person after it).
+OWN_CHAT_PENDING_NOTE = (
+    "(Casa: {name} is working on this in {name}'s own chat, where the person sees it "
+    "and will get its answer. Nothing is owed here: do not say {name} is still working. "
+    "If you have nothing else for them, reply with exactly <silent/>.)")
+
+
+def _own_chat_pending(birth: "TaskBirth | None", role: str) -> dict:
+    """The pending result's note when the task shows in *role*'s own chat."""
+    if birth is None or not birth.in_own_chat:
+        return {}
+    return {"own_chat_note": OWN_CHAT_PENDING_NOTE.format(
+        name=_display_name_for_role(role))}
+
+
 # The note for a task whose delegate's closing message was posted to the
 # person in the delegate's own chat: the resident closes the loop briefly
 # instead of retelling the answer.
@@ -8359,6 +8377,7 @@ async def delegate_to_agent(args: dict) -> dict:
                 "agent": agent_name,
                 "mode": "async",
                 **({"casa_note": _note} if _note else {}),
+                **_own_chat_pending(_birth, agent_name),
             })
 
         # mode == "sync"
@@ -8401,6 +8420,7 @@ async def delegate_to_agent(args: dict) -> dict:
                         "NOTIFICATION when complete."
                     ),
                     **({"casa_note": _note} if _note else {}),
+                    **_own_chat_pending(_birth, agent_name),
                 })
 
         # Task finished within budget — return ok or error synchronously.

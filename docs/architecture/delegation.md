@@ -45,7 +45,9 @@ beside it as `closing_message`: [`delegate-closing-message.md`](delegate-closing
 An `async` delegation's `pending` result carries no note, and a `sync` delegation that outlives
 its 60-second wait and goes `pending` carries only the plain one ("Delegation continues in
 background; you will receive a NOTIFICATION when complete."), so the assistant's own rule for
-pending work applies: one short holding line such as "Alex is still on it."
+pending work applies: one short holding line such as "Alex is still on it." A task shown in
+the delegate's own chat is the exception: either `pending` result carries `own_chat_note`
+(`OWN_CHAT_PENDING_NOTE`, [`own-voice.md`](own-voice.md)), and no holding line is owed.
 
 **Two different limits bound agent-created work, and they deliberately divide the
 territory.** The *depth cap* stops delegation from chaining: an agent reached through

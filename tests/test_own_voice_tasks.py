@@ -949,3 +949,37 @@ async def test_memory_keeps_a_line_for_the_start_line_and_one_for_the_answer(
     assert sorted(e["text"] for e in rows) == [
         f"{NAME} posted his answer to your chat.", f"{NAME} posted to your chat."]
     assert len({e["source_key"] for e in rows}) == 2
+
+
+# ---------------------------------------------------------------------------
+# A task still running in the delegate's own chat when the requester's call
+# returns: the person watches it there, so the requester owes no status line
+# ---------------------------------------------------------------------------
+
+async def _pending_payload(world, monkeypatch, mode):
+    """Ellen's payload of a delegation to Alex that is still running when it
+    returns: async at once, sync once its wait runs out."""
+    _FakeSpecialistClient.reset(response="€420, mostly Albert Heijn.")
+    Client.hold = asyncio.Event()
+    monkeypatch.setattr(tools, "_SYNC_WAIT_TIMEOUT_S", 0.05)
+    payload = await _delegate(mode)
+    Client.hold.set()
+    await asyncio.sleep(0.05)
+    await _settled()
+    assert payload["status"] == "pending", payload
+    return payload
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+async def test_a_task_still_running_in_alexs_chat_tells_ellen_nothing_is_owed(
+        world, monkeypatch, mode):
+    payload = await _pending_payload(world, monkeypatch, mode)
+    assert payload["own_chat_note"] == tools.OWN_CHAT_PENDING_NOTE.format(name=NAME)
+    assert _alex_texts(world)[0] == START
+
+
+async def test_a_pending_task_of_a_chat_that_is_not_open_carries_no_own_chat_note(
+        world, monkeypatch):
+    world.chats.state["finance"] = "not_open"
+    payload = await _pending_payload(world, monkeypatch, "sync")
+    assert "own_chat_note" not in payload
