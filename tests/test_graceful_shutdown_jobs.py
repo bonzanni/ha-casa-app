@@ -40,6 +40,7 @@ from job_registry import (
     VoiceJob,
 )
 from personality_types import SpeakerProvenance
+from task_model import Requester
 from specialist_registry import SpecialistRegistry
 
 
@@ -69,6 +70,10 @@ def make_live_telegram_job(**changes) -> VoiceJob:
         continuable_until=None, delivery_sequence=0,
         delivery_attempt_id=None, lease_until=None,
         cancel_pending=False,
+        # the delegation as a task: the researcher runs it for the resident,
+        # behind it, so it posts nothing of its own
+        executor="researcher",
+        requester=Requester("assistant", {"_tg_bot": 111}), delivery=None,
     )
     return replace(base, **changes)
 

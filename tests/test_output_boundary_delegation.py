@@ -23,6 +23,8 @@ from job_registry import DeliveryState, ExecutionState, JobRegistry, VoiceJob
 from output_boundary import Admitted, IntentKind as K
 from output_boundary_testing import scope as _scope
 from personality_types import SpeakerProvenance
+from task_model import Requester
+from channels.tg_address import TgAddress
 from specialist_registry import DelegationComplete, DelegationRecord, SpecialistRegistry
 from test_agent_process import _StubChannel, _make_agent
 from test_delegate_to_agent import _caller_cfg, _specialist_cfg
@@ -93,6 +95,8 @@ def _job(**changes):
         execution_state=ExecutionState.RUNNING, delivery_state=DeliveryState.NONE,
         result=None, failure=None, awaiting_input=False, continuable_until=None,
         delivery_sequence=0, delivery_attempt_id=None, lease_until=None, cancel_pending=False,
+        executor="finance", requester=Requester("assistant", {"_tg_bot": 111}),
+        delivery=TgAddress(111, 500),
     )
     return replace(base, **changes)
 
@@ -162,7 +166,7 @@ async def test_the_child_runs_under_a_view_with_the_launch_note_even_after_the_h
     tools.init_tools(channel_manager=None, bus=None, specialist_registry=reg, mcp_registry=None,
                      agent_role_map={"butler": resident_cfg,
                                      "assistant": _caller_cfg(delegates=("butler",))})
-    monkeypatch.setattr(tools, "_attach_completion_callback", lambda task, record: None)
+    monkeypatch.setattr(tools, "_attach_completion_callback", lambda task, record, **_kw: None)
 
     a_scope = _armed_scope()
     holder = {"role": "assistant", "channel": "telegram", "_tg_bot": 111, "chat_id": "1", "user_id": 1,
@@ -210,7 +214,7 @@ async def test_a_launch_owing_nothing_stores_no_note(tmp_path, monkeypatch):
     tools.init_tools(channel_manager=None, bus=None, specialist_registry=reg, mcp_registry=None,
                      agent_role_map={"butler": resident_cfg,
                                      "assistant": _caller_cfg(delegates=("butler",))})
-    monkeypatch.setattr(tools, "_attach_completion_callback", lambda task, record: None)
+    monkeypatch.setattr(tools, "_attach_completion_callback", lambda task, record, **_kw: None)
 
     async def _fake_bounded(cfg, task_text, context_text, resolution=None, output_format=None):
         return tools.DelegatedOutput(text="ok")

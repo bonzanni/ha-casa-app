@@ -760,6 +760,7 @@ class TestJobLaunchRequiresDenial:
         def _spy_builder(
             cfg, *, resolution=None, extra_casa_tools: tuple[str, ...] = (),
             plan_out=None,  # S8: the launch hands the builder a plan sink
+            task_id=None,  # the task the options are built for
         ):
             captured["resolution"] = resolution
             captured["extra_casa_tools"] = extra_casa_tools

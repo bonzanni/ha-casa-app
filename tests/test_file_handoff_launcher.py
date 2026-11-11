@@ -22,6 +22,13 @@ def test_start_job_has_no_launch_path_of_its_own():
     assert "claim_job_start(" not in src and "release_job_start(" not in src
 
 
+def _open_own_chats(monkeypatch):
+    """Every host's own chat is open: a job reports to the operator only from
+    its host's own chat (the resident's always is)."""
+    import own_voice
+    monkeypatch.setattr(own_voice, "require_open_chat", lambda role, *, label: None)
+
+
 def _host(kind, role="finance"):
     decl = SimpleNamespace(qualified_name="probe:check", title="Check", session="fresh")
     return jobs.JobHost(kind, role, decl, SimpleNamespace(name="probe"))
@@ -36,6 +43,7 @@ async def _drive(monkeypatch, host, *, raise_launch=False):
         if raise_launch:
             raise RuntimeError("launch failed")
         return tools_mod._result({"status": "pending", "engagement_id": "e-1"})
+    _open_own_chats(monkeypatch)
     monkeypatch.setattr(tools_mod, "_launch_interactive_engagement", launch)
     monkeypatch.setattr(jobs, "claim_job_start", lambda h, registry: None)
     released = []
@@ -78,6 +86,7 @@ async def test_a_refused_claim_returns_the_refusal_and_launches_nothing(monkeypa
     async def launch(*a, **k):
         launched.append(1)
     monkeypatch.setattr(tools_mod, "_launch_interactive_engagement", launch)
+    _open_own_chats(monkeypatch)
     monkeypatch.setattr(jobs, "claim_job_start", lambda h, registry: {"status": "error", "kind": "job_busy"})
     out = await tools_mod._start_job_on_host(_host("specialist"), "do it", "", {"role": "assistant"})
     assert launched == [] and "job_busy" in out["content"][0]["text"]

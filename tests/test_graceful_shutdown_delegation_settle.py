@@ -29,6 +29,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from task_model import Requester
+
 
 class _Output:
     def __init__(self, text: str):
@@ -91,7 +93,11 @@ def _stop(monkeypatch, tmp_path, *, release: bool, with_bus: bool,
         rec = DelegationRecord(
             id="d-1", agent="researcher", started_at=time.time(),
             origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111,
-                    "chat_id": "42", "cid": "x"})
+                    "chat_id": "42", "cid": "x"},
+            # the researcher runs it for the resident, behind it: it posts
+            # nothing of its own
+            executor="researcher",
+            requester=Requester("assistant", {"_tg_bot": 111}), delivery=None)
         await spec.register_delegation(rec)
         task = asyncio.create_task(_run())
         tools._attach_completion_callback(task, rec)
