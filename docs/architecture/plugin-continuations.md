@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-04
+last_reviewed: 2026-11-12
 ---
 
 # Plugin continuations and the driver sweep
@@ -14,6 +14,9 @@ specialist, all one conversation: the continuation queue, the turn's origin rebu
 its answer back up the requester chain, and the once-a-minute driver sweep that finds work
 nothing is driving. Stopping such work at once — the plugin's declared stop tool, called
 directly with the sweep's own resolution and client — is [`plugin-stop.md`](plugin-stop.md).
+The listing of protected tools' descriptions for approval cards, which starts the same server
+through `sweep_server` and asks it only for its tools (`list_plugin_tools`: `initialize` and
+`list_tools`, never a tool call), is [`approval-cards.md`](approval-cards.md).
 The binding and the `continue` route that feeds the queue are
 [`plugin-operator-calls.md`](plugin-operator-calls.md); the lane a continuation waits for
 is [`agent-lane.md`](agent-lane.md); the announcement its answer becomes is

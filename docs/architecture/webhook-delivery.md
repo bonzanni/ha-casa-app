@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-01
+last_reviewed: 2026-11-12
 ---
 
 # Webhook delivery: where a plugin webhook fire's reply goes
@@ -87,8 +87,9 @@ already ended; the webhook request was answered before the turn ran.
 **Delivering a fire to the operator** is the entry's `deliver: operator`, or
 `deliver: operator_always` when every fire must be heard. A Casa that predates a value
 rejects it as an invalid `deliver`, and rejects the whole set with it, so a plugin that
-declares one ships only after a Casa that knows it. The consent prompt names the value, and
-the value is not in the consent identity: the checksum-validated artifact id binds it
+declares one ships only after a Casa that knows it. The value is among the facts the
+consent card is written from, and the card's fallback text names an opted-in value; it is
+not in the consent identity: the checksum-validated artifact id binds it
 (INV-TRIG-004 in [`plugin-triggers.md`](plugin-triggers.md)).
 
 ## Source & test map

@@ -15,6 +15,10 @@
   doc: architecture/agent-taxonomy.md
 - item: casa/rootfs/opt/casa/approval_records.py
   doc: architecture/configurator-approvals.md
+- item: casa/rootfs/opt/casa/approval_card.py
+  doc: architecture/approval-cards.md
+- item: casa/rootfs/opt/casa/tool_descriptions.py
+  doc: architecture/approval-cards.md
 - item: casa/rootfs/opt/casa/ask_retirement.py
   doc: architecture/scheduled-asks.md
 - item: casa/rootfs/opt/casa/authz_grants.py

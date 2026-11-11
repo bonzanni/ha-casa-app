@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-30
+last_reviewed: 2026-11-12
 ---
 
 # Plugin-declared triggers
@@ -82,8 +82,10 @@ mode, header or tolerance change, does invalidate the approval.
 `deliver` and `max_body_kib` are not in the tuple either (INV-TRIG-018 in
 [`webhook-delivery.md`](webhook-delivery.md), INV-TRIG-020). The
 artifact id binds them: the artifact is checksum-validated, so adding or changing either field
-makes a new artifact, which needs a new approval. The prompt names both, so the operator
-approves the messages they will receive and the size they will accept. The secret owner is
+makes a new artifact, which needs a new approval. Both are among the facts the consent card
+is written from ([`approval-cards.md`](approval-cards.md)), and its fallback text names an
+opted-in `deliver` and a raised cap: the card is written knowing the messages the operator
+will receive and the size the route will accept. The secret owner is
 part of the auth policy, so an owner change needs fresh consent too.
 
 **INV-TRIG-005**: Reconciliation replaces the entire plugin overlay in a single rebind.
@@ -216,8 +218,8 @@ runs again.
 The cap is the route's, so the name lookup moved ahead of the body read: an unknown name is a
 404 without reading the body at all. That discloses nothing new, since names are non-secret
 and a 404 already preceded authentication. A larger cap is also a larger turn, because the
-payload becomes the turn's content. 1024 KiB is the ceiling for that reason, and the consent
-prompt names any raised cap. The key is read with the route, not after the body: read after a
+payload becomes the turn's content. 1024 KiB is the ceiling for that reason, and the cap is
+among the consent card's facts, its fallback text naming any raised one. The key is read with the route, not after the body: read after a
 slow body, it could belong to an approval that replaced the route mid-request, verifying one
 request with the new approval's key under the old route's role and clearance.
 

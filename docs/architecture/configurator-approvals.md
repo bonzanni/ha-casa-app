@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-11
+last_reviewed: 2026-11-12
 ---
 
 # Approvals the configurator carries on
@@ -31,12 +31,19 @@ and a pending snapshot beneath the call's own) and stores a record
 (`approval_records.request`) with the inspected identity and those values, frozen. Applying a
 persona override asks for no approval.
 
-**The card shows what the approval binds.** Casa posts the card in the operator's chat on its
-own bot: each effective setting with its value, the ones the request did not submit marked
-`(kept from the current settings)`, and the secret names provided, never their values
-(`specialist_install_consent.render_settings_lines`). A newer request for the same component
-replaces the record, and the older card is edited to say "Replaced by a newer request; nothing
-was installed." (or "updated"). Deny and an unanswered card close the record; nothing runs.
+**The card is written from what the approval binds.** Casa posts the card in the operator's
+chat on its own bot. A model writes it from the request's facts
+([`approval-cards.md`](approval-cards.md)): each effective setting with its value, the ones the
+request did not submit, and the secret names provided, never their values. It picks the lines
+a person would check, so the posted card need not list every setting. When it cannot (a timeout, an
+error, an unusable reply), the fallback is Casa's own consent text, which lists each effective setting with its
+value, marks the ones the request did not submit `(kept from the current settings)` and names
+the secrets provided, never their values (`specialist_install_consent.render_settings_lines`).
+Either way the approval binds the frozen values, not the card's wording. A newer request for
+the same component replaces the record, and the older card is edited to say "Replaced by a
+newer request; nothing was installed." (or "updated"); a card still being written when that
+happens is never posted, and the older request is told `approval_superseded`. Deny and an
+unanswered card close the record; nothing runs.
 
 **Approve carries the configurator on.** The tap records the consent ack, moves the record to
 `approved` and calls `configurator_continue.start`, which never awaits: it takes the
@@ -79,7 +86,7 @@ continuation while one runs waits as its single follower and starts when the fir
 
 ## Contracts & invariants
 
-**INV-CFG-019**: The configurator commits exactly the values the operator approved on the card — the effective settings, the ones kept from the current install included — and an approval that a newer request superseded, or that is no longer its component's current record, writes nothing.
+**INV-CFG-019**: The configurator commits exactly the values frozen in the approval record the card asks about — the effective settings, the ones kept from the current install included — and an approval that a newer request superseded, or that is no longer its component's current record, writes nothing.
 
 Enforced twice: the governed tool's approval must be current and of its own kind and identity
 at entry and again at its attempt, and the library compares the config it would stage with the

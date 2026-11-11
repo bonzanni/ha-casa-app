@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-04
+last_reviewed: 2026-11-12
 ---
 
 # The specialist install lifecycle
@@ -38,23 +38,33 @@ verify-then-publish from a fresh staging copy, tolerant of a same-digest concurr
 The store is append-only in practice: roots are pinned, unreferenced blobs are not
 collected.
 
-**A bundle's tool grants are ceilinged before they are disclosed, and disclosed before
-they are approved.** A specialist role may declare casa-framework tools only from a
+**A bundle's tool grants are ceilinged before an approval is asked for, and told to the
+card's model when it is.** A specialist role may declare casa-framework tools only from a
 code-owned consumer-safe allowlist — the loader refuses anything else (the bare
-server-level grant included) before a consent prompt exists to approve it — and the
-consent DM's `Casa tools:` line shows the grants that remain, so the approving operator
-sees what powers the specialist arrives with. Two further layers back this at load and at
-dispatch (INV-MCP-009), for installs that predate the ceiling.
+server-level grant included) before a consent prompt exists to approve it — and the grants
+that remain are among the facts the approval card is written from. The request tool reads
+them from the staged role (`specialist_install.role_tool_grants`) and hands them to the card's
+model as `casa_tools_granted`, with each bundled plugin's protected tools and the summaries
+its staged manifest declares; the model is told to keep every granted power on the card
+([`approval-cards.md`](approval-cards.md)). That is an instruction, not a check, and the
+card's fallback does not carry them: the consent text below lists `Casa tools:` only when
+the inspection it renders carries grants, and the inspection the request tool rebuilds from
+the checked receipt does not. When those extra facts cannot be read, the grants are left out
+of the facts rather than reported as none. Two further layers back the ceiling
+at load and at dispatch (INV-MCP-009), for installs that predate it.
 
-**The consent DM reads in the order the operator decides by**
-(`specialist_install_consent.render_install_consent_message`). Its first line asks the
-question — install which component at which version as which specialist, or update which
-specialist to which version — and the mission follows; then what the specialist comes with
-(its `Casa tools:`, its persona, its dependencies and, per bundled plugin, its manifest name,
-version, source, MCP servers, protected tools and the secrets it requires or only
-references); then the action line; and the digests last. The root digest the approval binds
-is shown whole; the component, dependency and plugin-content digests it covers are shown by
-their first sixteen hex characters (`SHORT_DIGEST_HEX`).
+**The consent text reads in the order the operator decides by**
+(`specialist_install_consent.render_install_consent_message`). It is what registration
+measures against the size limit, and the approval card's fallback, kept literally with its
+first line bold; the card the operator normally reads is written by a model from the same
+inputs, digests left out (`specialist_install_consent.install_card_request`). Its first line
+asks the question — install which component at which version as which specialist, or update
+which specialist to which version — and the mission follows; then what the specialist comes
+with (its `Casa tools:` when the inspection carries them, its persona, its dependencies and,
+per bundled plugin, its manifest name, version, source, MCP servers, protected tools and the
+secrets it requires or only references); then the action line; and the digests last. The
+root digest the approval binds is shown whole; the component, dependency and plugin-content
+digests it covers are shown by their first sixteen hex characters (`SHORT_DIGEST_HEX`).
 
 ## Contracts & invariants
 
@@ -134,8 +144,9 @@ predicate the withhold gate applies — the bare `${VAR}` references in the plug
 `.mcp.json`, minus the names its manifest declares in `casa.setupProvides` — and records
 the remainder of the referenced set (a `${VAR:-default}` the CLI satisfies from its own
 default, a name the plugin's own setup tool creates) as a separate, equally attested
-receipt-row field. The consent DM renders the two on differently labelled lines, the
-inspect and commit payloads carry them under different keys, and the install recipe tells
+receipt-row field. The consent text renders the two on differently labelled lines, the
+approval card's facts carry them under different keys (`secrets_required`,
+`env_referenced_not_required`), the inspect and commit payloads do too, and the install recipe tells
 the configurator to wire the first and never to ask for the second. The collision
 preflights — against installed plugins and between siblings of one bundle — keep reading
 the union: a name claimed in the defaulted form still collides (#431).
@@ -146,7 +157,9 @@ every optional and every setup-provisioned name while the plugin's setup episode
 two names it had never been asked for.
 
 What it does not cover: whether a required value the operator supplies is usable — that is
-the verify surface's question after reload. And the parity is by shared predicate, not by
+the verify surface's question after reload. Nor the wording of the posted card: a model writes
+it from facts that keep the two sets apart, and nothing checks that its lines do.
+And the parity is by shared predicate, not by
 shared call: the gate reads a resolved registry entry after install, the validator reads
 the staged tree before it. The pinning test runs the gate over the same staged tree; a
 declaration that changes afterwards arrives through an upgrade, which re-inspects and
@@ -176,13 +189,15 @@ resident how it ended.
 **An upgrade is worded as an update; a Deny and an expiry close the request.** An upgrade,
 and a settings change at the installed version, go through the same card and bind an identity
 built the same way as a fresh install's, under an approval of their own kind: an install
-approval never authorises an upgrade. The card and every edit but the success one name the
-operation an update rather than an install. A Deny closes the approval record and edits the
+approval never authorises an upgrade. The card's model is told it is an update, with the
+new version and, when it can be read, the installed one, and the fallback text and every edit but the success one
+name the operation an update rather than an install. A Deny closes the approval record and edits the
 card; a card nobody answers within its ten minutes is edited to say it expired and nothing
 changed. Neither continues the configurator, whose run ended when it asked for the card, and
 nothing is reserved for either: the operator asks again, and a new request posts a fresh
 card. A newer request for the same component replaces the older one, whose card is edited to
-say so ([`configurator-approvals.md`](configurator-approvals.md)). A card that already expired is not re-issued by any
+say so ([`configurator-approvals.md`](configurator-approvals.md)), or, while it is still
+being written, never posted (INV-PLUG-060). A card that already expired is not re-issued by any
 tool — `consent_reprompt` says so ([`plugin-mutation-tools.md`](plugin-mutation-tools.md)) —
 it comes back only by running the install or update again.
 

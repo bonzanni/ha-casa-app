@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-06
+last_reviewed: 2026-11-12
 ---
 
 # Telegram rendering
@@ -10,8 +10,8 @@ last_reviewed: 2026-09-06
 
 How an answer becomes Telegram messages: the markdown grammar the rich renderer recognises
 and how a table is judged, pagination to the platform's message-length and entity budgets,
-what a page whose formatting is refused or cannot be expressed still carries, and the unit
-both rendering paths measure in. How a message arrives and is dispatched, ordering in a
+what a page whose formatting is refused or cannot be expressed still carries, the unit
+both rendering paths measure in, and the approval card, which bypasses rendering. How a message arrives and is dispatched, ordering in a
 chat, callbacks, and the delivery outcome of an answer are
 [`architecture/telegram.md`](telegram.md).
 
@@ -93,6 +93,16 @@ senders falling back to the text the agent authored, address and all — and a p
 spans never enters it. Whatever a page still carries, the surrogate is replaced where the
 text leaves for the Bot API, at the channel's request boundary, which
 [`architecture/telegram.md`](telegram.md) owns (INV-TG-009).
+
+**An approval card is never rendered.** The card Casa posts to ask for an approval carries
+formatting Casa computed itself: `post_dm_keyboard` given `entities` sends the text exactly as
+given with exactly those entities, and the card's status edits pass `literal=True` to
+`edit_dm_message`, which sends the text as given with none. Neither reaches the grammar above,
+so a field value such as `[x](https://evil.example)` reads as those characters and never
+becomes a link (#1538). Lone surrogates are replaced one code point for one there too, which
+keeps the entity offsets valid. When the platform refuses the entities, the same text is sent
+once more without them. Which spans are bold, and that only Casa chooses them, is
+[`approval-cards.md`](approval-cards.md) (INV-PLUG-059).
 
 **Both rendering paths measure length in the unit Telegram counts.** The platform's limits
 are counted in UTF-16 code units — an astral character (most emoji) counts as two. The rich
