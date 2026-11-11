@@ -65,6 +65,18 @@ grants name the whole server (`mcp__casa-framework`) is given the whole table.
 What it does not cover: being offered is not being permitted to do everything — tool-local
 gates and the specialist ceiling (INV-MCP-009) still apply on top.
 
+**INV-MCP-015**: A specialist session build that grants a casa-framework tool in code — an engagement's or a job's launch grants, the inbox tools, `start_job`, `hand_off` — also mounts the casa-framework server, whatever server list the role declares.
+
+`_build_specialist_options` adds the server to its own copy of the role's server list
+whenever it grants one of those tools, so a role declaring `mcp_servers: []` still gets a
+server that lists them; the role's configuration is not changed. Without it the grants
+reached the session's allowed list with no server behind them, and a job run told the
+operator it could not work because its progress and completion tools were missing.
+
+What it does not cover: a casa-framework tool the role's own configuration lists while
+declaring no casa-framework server. That pairing is the role's configuration to keep
+consistent; the build adds the server only for what it grants itself.
+
 **INV-MCP-009**: A specialist engagement's casa-tool dispatch is bounded by the consumer-safe ceiling, whatever its record grants.
 
 Enforced in the one wrapper every casa tool passes through at registry definition — the
@@ -143,6 +155,7 @@ is "nothing may do this", the tool is the place.
 - `tests/test_specialist_tool_ceiling.py`
 - `tests/test_cross_session_tools.py`
 - `tests/test_n8n_registration.py`
+- `tests/test_specialist_casa_server_attach.py`
 
 **Related**
 - [`architecture/plugins.md`](../architecture/plugins.md)

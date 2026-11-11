@@ -3342,11 +3342,12 @@ def _build_specialist_options(
 
     if _mcp_registry is not None:
         # S6 (diff round 1, Astra): a casa-framework tool granted in code — the
-        # inbox tools, start_job, hand_off (R2 acceptance F1: a role declaring
-        # no servers had hand_off granted and invisible) — needs the server
-        # that exposes it, whatever the config's own server list says
+        # engagement and job launch grants, the inbox tools, start_job,
+        # hand_off (R2 acceptance F1: a role declaring no servers had hand_off
+        # granted and invisible) — needs the server that exposes it, whatever
+        # the config's own server list says
         _server_names = list(cfg.mcp_server_names)
-        if ((_inbox_tools or _job_tools or _handoff_tools)
+        if ((extra_casa_tools or _inbox_tools or _job_tools or _handoff_tools)
                 and "casa-framework" not in _server_names):
             _server_names.append("casa-framework")
         mcp_servers = _mcp_registry.resolve(
