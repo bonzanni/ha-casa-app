@@ -191,7 +191,7 @@ async def world(tmp_path, monkeypatch):
     lc, host = make_lifecycle(w, tmp_path / "data")
     monkeypatch.setattr(host, "operator_id", lambda: OPERATOR)
     ovl.install(lc)
-    await lc.post_offer("finance")
+    await lc.post_offer("finance", "HeyAlexTestBot")
     await lc.on_created(created(ALEX_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR)
     await lc.intake(ALEX_BOT, {"update_id": 1, "message": {
         "message_id": 1, "text": "/start", "chat": {"id": OPERATOR, "type": "private"},
@@ -881,7 +881,7 @@ async def test_casas_own_chat_cards_go_to_ellens_chat_whatever_agent_they_are_ab
     _real_cards(world, monkeypatch)
     with _Origin(_ellen_turn()):
         res = json.loads((await tools.offer_own_chat.handler(
-            {"agent": "browser"}))["content"][0]["text"])
+            {"agent": "browser", "username": "HeyFidoTestBot"}))["content"][0]["text"])
     assert res["status"] == "offered", res
     # a new bot that matches no suggestion: Casa asks which agent it is for
     FIDO_BOT = 333

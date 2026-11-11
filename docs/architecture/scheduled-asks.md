@@ -158,7 +158,9 @@ question.
 
 What it does not cover: selection from the durable record file. Live decisions read the
 broker, which is synchronous; the record file is written after an await and would miss an
-ask that had just won its lane.
+ask that had just won its lane. The one read of the file outside the boot reconcile is
+`own_voice.open_on_bot`, which asks only whether a stored question still names an agent's
+bot, beside the broker's live requests ([`own-voice.md`](own-voice.md)).
 
 **INV-JOB-014**: At boot, a durable scheduled question is restored over an occupant of its lane only when that occupant is a human-raised question whose keyboard post has not yet recorded a message id; a delivered occupant, and any machine-timed one, refuses the restore and settles the question `operator_busy`.
 

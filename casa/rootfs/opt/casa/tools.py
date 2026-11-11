@@ -4092,7 +4092,8 @@ class _DelegatedRunLog:
     #1207: words written after a call still waiting on the operator's
     approval are held; they are logged when a consume of the same grant
     clears the cut, and never when the run ends with the cut in place. Steps
-    are not held: a step names the tool, never its outcome. Every call is
+    are not held: a step names the tool, never its outcome. Silence markers
+    are not logged (``output_boundary.without_sentinels``). Every call is
     synchronous and never waits on Telegram."""
 
     def __init__(self, cfg: Any, *, started: "datetime | None" = None) -> None:
@@ -4135,8 +4136,13 @@ class _DelegatedRunLog:
             self._log("✓ answered" if answered else "⚠️ aborted")
 
     def _flush(self, messages: list, stop: int) -> None:
+        # Words as the operator would see them: a leading or closing run of
+        # silence markers is dropped, and a message of markers alone adds no line.
+        from output_boundary import without_sentinels
         for text in messages[self._logged:stop]:
-            self._log(text)
+            text = without_sentinels(text)
+            if text:
+                self._log(text)
         self._logged = max(self._logged, stop)
 
 
@@ -16511,26 +16517,59 @@ async def persona_apply(args: dict) -> dict:
 
 @tool(
     "offer_own_chat",
-    "Offer a specialist that can have its own Telegram chat with the person that "
-    "chat: Casa posts the card that creates it, or, once created, the one that opens "
-    "it. Use it when the person asks for a specialist's own chat. When the chat is "
-    "already open it returns already_open with its link; for a specialist that "
-    "cannot have its own chat, an error saying so.",
-    {"type": "object", "properties": {"agent": {"type": "string"}}, "required": ["agent"]},
+    "Give a specialist that can have its own Telegram chat with the person a chat of "
+    "its own, or a new one. You choose the bot's username (its handle). By default it "
+    "is Casa, then the specialist's role, then a few digits, then Bot (for example "
+    "CasaFinance4821Bot): name the role, not the persona, and the digits make it very "
+    "likely unused. Follow the pattern of the person's existing specialist handles "
+    "when they have one; the person's own wishes always win. Before you propose "
+    "handles to the person, check them with mode \"check\" and candidates (it also "
+    "tells you the role, the persona's name, your own bot's handle and the other "
+    "specialists' handles); propose only ones it reports probably_free. mode "
+    "\"offer\" (the default) with username posts the card that creates the chat, or, "
+    "once created, the one that opens it; when the chat is already open it returns "
+    "already_open with its link. When the person wants a specialist's handle "
+    "changed, use mode \"replace\" with the new username: it is refused while "
+    "something is still open in the specialist's current chat, so tell the person "
+    "what is open and that the change can happen once it is done. The move happens "
+    "during a short Casa restart, after the person taps Create. If the person changes "
+    "their mind before tapping Create, use mode \"drop\". Asking again with mode "
+    "\"replace\" after a move was held back finishes it. When a specialist was just "
+    "installed or upgraded and can now have its own chat, offer it, choosing the "
+    "handle yourself; the person need not discuss it. For a specialist that cannot "
+    "have its own chat, it returns an error saying so.",
+    {"type": "object",
+     "properties": {
+         "agent": {"type": "string"},
+         "mode": {"type": "string", "enum": ["check", "offer", "replace", "drop"],
+                  "default": "offer"},
+         "username": {"type": "string"},
+         "candidates": {"type": "array", "items": {"type": "string"}},
+     },
+     "required": ["agent"]},
 )
 async def offer_own_chat(args: dict) -> dict:
-    """The resident's on-demand offer: the body is the own-chat lifecycle's."""
+    """The resident's tool for a specialist's own chat: it checks handles,
+    offers the chat, replaces its bot or drops a pending change. The body and
+    the results are the own-chat lifecycle's."""
     import own_voice
     agent = args.get("agent")
     role, refusal = _handoff_target(agent if isinstance(agent, str) else "")
     if refusal is not None:
         return refusal
+    mode = args.get("mode") or "offer"
+    username = args.get("username")
+    candidates = args.get("candidates")
     try:
-        return _result(await own_voice.offer_own_chat(role))
+        return _result(await own_voice.offer_own_chat(
+            role, mode=mode if isinstance(mode, str) else "",
+            username=username if isinstance(username, str) else None,
+            candidates=[c for c in candidates if isinstance(c, str)]
+            if isinstance(candidates, list) else None))
     except Exception:  # noqa: BLE001 — a result, never a raise
         logger.exception("offer_own_chat for %s failed", role)
         return _result({"status": "error", "kind": "offer_failed",
-                        "message": "The offer could not be posted; try again shortly."})
+                        "message": "That did not go through; try again shortly."})
 
 
 # ---------------------------------------------------------------------------
@@ -16587,11 +16626,11 @@ def _own_chat_disclosure(role: str) -> "dict | None":
 async def _after_own_chat_change(out: dict, slug: str, hook: str,
                                  persona_before: "str | None") -> None:
     """After a committed install, upgrade or rollback of *slug*: the chat's
-    lifecycle *hook* (an offer for a newly declared chat, dormancy for one no
-    longer declared), the bot's self-setup again when the bound persona
-    changed, and ``own_chat: "offered"`` in the result when Casa has offered
-    the chat, so the configurator's words can match without posting
-    anything."""
+    lifecycle *hook* (dormancy for a chat no longer declared, back for one
+    declared again), the bot's self-setup again when the bound persona
+    changed, and ``own_chat: "offer_due"`` in the result when *slug* declares
+    a chat it has no bot for yet. Casa offers nothing itself: the configurator
+    says so in its answer, and the resident makes the offer."""
     import own_voice
     ran = await _own_chat_hook(hook, slug)
     if await asyncio.to_thread(_bound_persona, slug) != persona_before:
@@ -16600,7 +16639,7 @@ async def _after_own_chat_change(out: dict, slug: str, hook: str,
         return
     try:
         if own_voice.declared(slug) and own_voice.own_chat_state(slug) == "no_bot":
-            out["own_chat"] = "offered"
+            out["own_chat"] = "offer_due"
     except Exception:  # noqa: BLE001 — the result just does not say so
         logger.warning("own chat state for %s unreadable", slug, exc_info=True)
 

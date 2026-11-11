@@ -419,24 +419,46 @@ specialists. Telegram can take several minutes to report the change; Casa does
 not wait for it, and simply tries again later.
 
 **The offer.** When you install a specialist that can have its own chat (or
-upgrade to a version that adds one), the assistant's chat shows a card: "Alex
-can get a separate chat with you. Tap below, check the name, then Create."
-Tap the button: Telegram opens its "Create Bot" form, filled in with a name and
-username derived from your assistant's own bot. Change them if you like, then
-tap **Create**. You can also ask the assistant for it later ("give Alex his own
-chat"). If the name Casa suggested no longer matches the bot you created, the
-assistant's chat asks which specialist the new bot is for; answer
-"None — I'll delete it" to keep it out of Casa.
+upgrade to a version that adds one), the assistant offers it: her chat shows a
+card, "Alex can get a separate chat with you. Tap below, then Create." Tap the
+button: Telegram opens its "Create Bot" form, filled in with the specialist's
+name and a username (its handle) the assistant chose — named after the
+specialist's role with a few digits, such as `CasaFinance4821Bot`, following
+the pattern of your other specialists' handles if you have one, and checked
+on Telegram before she shows it. Tap **Create**. You need not discuss the
+handle, but you can: ask for a different one and she offers it instead. You
+can also ask for the chat later ("give Alex his own chat"). Telegram's form
+still lets you edit the username, but a bot created under a username the
+assistant did not offer is not recognised: her chat asks which specialist the
+new bot is for; answer "None — I'll delete it" to keep it out of Casa.
 
-**Open and Start.** Casa sets the bot up (its description, a `/new` command,
-the specialist's picture when its persona has one, and access limited to you)
-and the card changes to "Alex's chat is ready: @…. Open it and press Start."
-Tap **Open Alex's chat** and press **Start**: a bot cannot write first, so the
-chat opens with your first message, and whatever you write first, the
-specialist says hello as it answers. A file sent on its own, without a
-caption, is kept and acknowledged but does not open the chat yet. Until then
-the specialist cannot show you anything. Messages you send while the chat is being set up are kept and
+**Open and say hi.** Casa sets the bot up (the specialist's name, its
+description, a `/new` command, the specialist's picture when its persona has
+one, and access limited to you) and the card changes to "Alex's chat is
+ready: @…. Open it and say hi." Tap **Open Alex's chat** and say hi (any
+message works): a bot cannot write first, so the chat opens with your first
+message, and whatever you write first, the specialist says hello as it
+answers. A file sent on its own, without a caption, is kept and acknowledged
+but does not open the chat yet. Until then the specialist cannot show you
+anything. Messages you send while the chat is being set up are kept and
 answered once it is ready.
+
+**Changing a specialist's handle.** Ask the assistant ("I'd like Alex on a
+different handle"). The change waits until nothing is open in the
+specialist's current chat — a running task or job, a card or question
+awaiting your answer, a scheduled question — and she tells you what is
+still open if something is. Otherwise she settles the new handle with you
+and posts a card, "Alex can move to a new chat with you, replacing @….";
+tap it, then **Create**. Casa restarts for a moment to move the specialist
+to the new bot. Open the new chat and say hi; the specialist tells you it is
+its new chat, and the card then reads "Alex has moved to @…. You can delete
+@… now." with a button that opens BotFather's delete flow, where you pick
+the old bot. The old chat keeps its history, but its buttons stop working,
+and messages sent to either bot around the move may be lost. Changed your
+mind before tapping Create? Ask the assistant to drop the change. If
+something opened in the old chat in the seconds before the restart, the
+move waits and the card says so; ask again once it is done, and the move
+finishes with another short restart.
 
 **What lives where.**
 
@@ -478,6 +500,23 @@ the assistant for a new chat.
 
 Not backward compatible: a specialist's plugin that posts to you now needs that
 specialist's own chat to be open.
+
+**Changing the assistant's own bot.** This is a manual procedure. The
+assistant's bot is the one whose token is in `telegram_bot_token`, and it
+manages every specialist's bot. Telegram documents no way to move managed
+bots to another manager, so after a change the old specialist bots keep
+working on the tokens Casa stored, but Casa can no longer recover their
+tokens if they change. To change it:
+
+1. Create the new bot in BotFather.
+2. In BotFather's Mini App, turn on **Bot Management Mode** for it.
+3. Put its token in `telegram_bot_token`.
+4. If you use agent logs, add the new bot to the agent logs group as an admin
+   with **Manage topics** (see [Optional: agent logs](#optional-agent-logs)).
+5. Restart Casa, then open the new bot's chat and say hi, so it can write to
+   you.
+6. Ask the new assistant to give each specialist a new handle (above), then
+   delete the old bots, the assistant's old bot included, in BotFather.
 
 ### Background jobs (v0.321.0)
 

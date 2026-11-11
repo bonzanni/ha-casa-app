@@ -240,6 +240,10 @@ CHAT_NOTE_PREFIX = "(Casa) "
 #: first message there, whatever it says, so the agent says hello.
 CHAT_OPENING_NOTE = "(Casa) The operator just opened your chat."
 
+#: Casa's line on the turn that opens an agent's new chat after its bot was
+#: replaced: the agent tells the operator in its own words.
+CHAT_MOVED_NOTE = "(Casa) The operator just opened your new chat; your previous chat is closed."
+
 #: The line above those notes: they are the agent's own record of what it did
 #: in this chat for others, to recall as its own memory.
 CHAT_NOTES_FRAME = ("What you did in this chat for others since you last spoke here — "
@@ -2333,10 +2337,14 @@ class Agent:
             memory_note = await self._memory_note(
                 channel=msg.channel, channel_key=channel_key)
             if msg.channel == "telegram":
-                # The turn that opens an agent's own chat (stamped only by the
-                # channel), on a line of its own.
-                if msg.context.get("_chat_opening") is True:
+                # The turn that opens an agent's own chat, or its new one
+                # after a handle change (stamped only by the channel), on a
+                # line of its own.
+                opening = msg.context.get("_chat_opening")
+                if opening is True:
                     notes.append(CHAT_OPENING_NOTE)
+                elif opening == "moved":
+                    notes.append(CHAT_MOVED_NOTE)
                 # What Casa noted for the agent that owns this chat since its
                 # last turn (a task it ran for someone else, and how it
                 # ended), drained once, under one frame line that hands them

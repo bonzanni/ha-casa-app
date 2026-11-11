@@ -1765,10 +1765,11 @@ class TelegramChannel(Channel):
 
     async def _send_turn(self, msg: BusMessage) -> str:
         """Hand a direct-chat turn to its agent's queue (``send_checked``). A
-        turn that opens the agent's own chat marks it open once it was taken,
-        on its first send or on a retry after a hand-back alike."""
+        turn that opens the agent's own chat (a first chat or a moved one)
+        marks it open once it was taken, on its first send or on a retry after
+        a hand-back alike."""
         outcome = await self._bus.send_checked(msg)
-        if outcome == "accepted" and msg.context.get("_chat_opening") is True:
+        if outcome == "accepted" and msg.context.get("_chat_opening") in (True, "moved"):
             import own_voice
             try:
                 await own_voice.mark_open(self.bot_id)
@@ -2263,8 +2264,9 @@ class TelegramChannel(Channel):
         # The route is reserved, so it is stamped after sanitization too.
         context["_tg_bot"] = route
         # The operator's first turn in an agent's own chat, whatever it says,
-        # is the one that opens it: the agent is told so and says hello. The
-        # chat is marked open only once its queue takes the turn
+        # is the one that opens it: the agent is told so and says hello —
+        # ``"moved"`` when the chat is the agent's new one after a handle
+        # change. The chat is marked open only once its queue takes the turn
         # (:meth:`_send_turn`); a turn refused here decides again when it is
         # delivered.
         if not self.is_casa and self._sender_is_operator(user):
@@ -2275,7 +2277,13 @@ class TelegramChannel(Channel):
                 logger.warning("own chat opening not read", exc_info=True)
                 opening = False
             if opening:
-                context["_chat_opening"] = True
+                try:
+                    moved = own_voice.chat_moved(self.bot_id)
+                except Exception:  # noqa: BLE001 — it opens as a first chat
+                    logger.warning("own chat: whether the chat moved was not read; "
+                                   "it opens as a first chat", exc_info=True)
+                    moved = False
+                context["_chat_opening"] = "moved" if moved else True
         # #283: live-operator marker — reserved (sanitize strips it from
         # every external context), stamped ONLY for the authenticated
         # operator sender. The agent-spawn cap exempts exactly these turns;

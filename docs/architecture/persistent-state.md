@@ -121,7 +121,9 @@ without it as owing nothing. Their contract is [`output-boundary.md`](output-bou
 (INV-OUT-003).
 
 **Agents' own bots** keep their state under `/data`: `agent-voices.json` (one record per agent
-and per bot, set aside when corrupt or foreign, owner-only), the held journals
+and per bot, set aside when corrupt or foreign, owner-only; an agent's record also keeps
+every handle it was ever offered, a pending change to a new bot, and the handle it moved
+from until its new chat opens), the held journals
 `agent-voices/held/<bot>.jsonl`, and, without 1Password, each agent's token in
 `agent-voices/tokens/<role>` ([`own-voice-lifecycle.md`](own-voice-lifecycle.md)).
 

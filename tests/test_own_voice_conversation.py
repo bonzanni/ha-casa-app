@@ -359,6 +359,20 @@ async def test_a_turn_that_opens_the_chat_says_so_in_its_notes(world):
     assert agent_mod.CHAT_OPENING_NOTE not in second
 
 
+async def test_a_turn_that_opens_a_moved_chat_says_it_is_new(world):
+    """The first turn in Alex's new chat, after a handle change, carries Casa's
+    line that the operator opened his new chat — not the first-chat line —
+    and only that turn does."""
+    await world.alex.handle_message(_dm("hi", _chat_opening="moved"))
+    await world.alex.handle_message(_dm("and September?", mid="8"))
+
+    first, second = _Client.prompts
+    assert first.count(agent_mod.CHAT_MOVED_NOTE) == 1
+    assert agent_mod.CHAT_OPENING_NOTE not in first
+    assert agent_mod.CHAT_MOVED_NOTE not in second
+    assert agent_mod.CHAT_OPENING_NOTE not in second
+
+
 async def test_a_first_message_handed_back_and_taken_on_retry_greets_once(
         world, tmp_path, monkeypatch):
     """Alex's chat is bound but his conversation is not on the bus yet: the
@@ -373,10 +387,10 @@ async def test_a_first_message_handed_back_and_taken_on_retry_greets_once(
     from test_own_chat_routing import _endpoint, _handle, _noop, _text, _turns
 
     voices = World(configs={"finance": specialist("Alex")}, queues=set(),
-                   tokens={FINANCE_BOT: "222222:alex-token-aaaaaaaaaaaaaaaa"})
+                   tokens={FINANCE_BOT: f"{FINANCE_BOT}:alex-token-aaaaaaaaaaaaaaaa"})
     lc, host = make_lifecycle(voices, tmp_path / "voices", channel=False)
     monkeypatch.setattr(host, "operator_id", lambda: OPERATOR)
-    await lc.post_offer("finance")
+    await lc.post_offer("finance", "HeyAlexTestBot")
     await lc.on_created(created(FINANCE_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR)
     assert lc.state("finance") == "not_open"
     ovl.install(lc)

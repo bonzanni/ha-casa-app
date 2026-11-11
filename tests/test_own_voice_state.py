@@ -5,13 +5,20 @@ always open; every other agent without an open chat of its own refuses with
 a typed result — and the refusal itself posts nothing anywhere."""
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 import pytest
 
 import own_voice
 import own_voice_lifecycle as ovl
-from own_voice_world import ALEX_BOT, OPERATOR, World, created, make_lifecycle, specialist, update
+from own_voice_world import (
+    ALEX_BOT, FIDO_BOT, OPERATOR, World, created, make_lifecycle, specialist, update,
+)
 
-ALEX_TOKEN = "111111:alex-token-aaaaaaaaaaaaaaaa"
+ALEX_TOKEN = f"{ALEX_BOT}:alex-token-aaaaaaaaaaaaaaaa"
+NEW_BOT = FIDO_BOT + 10
+NEW_TOKEN = f"{NEW_BOT}:new-token-eeeeeeeeeeeeeeee"
 
 
 @pytest.fixture
@@ -36,7 +43,7 @@ async def _to(lc, world, state: str) -> None:
     """Drive Alex's chat to *state*."""
     if state == "no_bot":
         return
-    await lc.post_offer("finance")
+    await lc.post_offer("finance", "HeyAlexTestBot")
     if state == "unbound":
         await lc.on_created(created(ALEX_BOT, "Other", "OtherHomeBot"), OPERATOR)
         return
@@ -123,11 +130,13 @@ async def test_the_endpoint_is_the_bound_bots_in_any_phase(lc, world):
 
 
 async def test_offer_own_chat_by_state(lc, world):
-    assert (await own_voice.offer_own_chat("plain"))["kind"] == "not_declared"
-    first = await own_voice.offer_own_chat("finance")
+    assert (await own_voice.offer_own_chat("plain", username="HeyPatTestBot"))["kind"] \
+        == "not_declared"
+    first = await own_voice.offer_own_chat("finance", username="HeyAlexTestBot")
     assert first["status"] == "offered"
+    assert first["suggested_username"] == "HeyAlexTestBot"
     old = lc.store.agents["finance"]["offer_card"]
-    again = await own_voice.offer_own_chat("finance")
+    again = await own_voice.offer_own_chat("finance", username="HeyAlexTestBot")
     assert again["status"] == "offered"
     assert world.card_text(old) == "Replaced by the offer below."
     await lc.on_created(created(ALEX_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR)
@@ -139,6 +148,56 @@ async def test_offer_own_chat_by_state(lc, world):
     assert world.card_text(card) == "Alex's chat is open."
     assert await own_voice.offer_own_chat("finance") == {
         "status": "already_open", "link": "https://t.me/HeyAlexTestBot"}
+
+
+@pytest.fixture
+def ellens_tool(monkeypatch):
+    """Ellen's ``offer_own_chat`` tool, with the installed specialists it
+    resolves an agent's name against. Returns the tool's decoded result."""
+    import tools
+    monkeypatch.setattr(tools, "_agent_role_map", {
+        "finance": SimpleNamespace(kind="specialist"),
+        "plain": SimpleNamespace(kind="specialist")}, raising=False)
+
+    async def call(args: dict) -> dict:
+        res = await tools.offer_own_chat.handler(args)
+        return json.loads(res["content"][0]["text"])
+    return call
+
+
+async def test_offer_own_chat_passes_its_mode_through(lc, world, ellens_tool):
+    world.taken_handles = {"CasaFinance1111Bot"}
+    checked = await ellens_tool({"agent": "finance", "mode": "check",
+                                 "candidates": ["CasaFinance4821Bot", "CasaFinance1111Bot"]})
+    assert checked["status"] == "checked"
+    assert checked["candidates"] == {"CasaFinance4821Bot": "probably_free",
+                                     "CasaFinance1111Bot": "taken"}
+    assert world.cards == {}
+    offered = await ellens_tool({"agent": "finance", "username": "HeyAlexTestBot"})
+    assert offered["status"] == "offered"
+    await lc.on_created(created(ALEX_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR)
+    replaced = await ellens_tool({"agent": "finance", "mode": "replace",
+                                  "username": "CasaFinance4821Bot"})
+    assert replaced == {"status": "change_offered", "suggested_username": "CasaFinance4821Bot",
+                        "replaces": "@HeyAlexTestBot"}
+    dropped = await ellens_tool({"agent": "finance", "mode": "drop"})
+    assert dropped == {"status": "dropped", "keeps": "@HeyAlexTestBot"}
+    assert lc.store.agents["finance"]["change"] is None
+    unknown = await ellens_tool({"agent": "finance", "mode": "rename"})
+    assert unknown["status"] == "error" and unknown["kind"] == "bad_mode"
+
+
+async def test_an_install_that_declares_an_own_chat_says_an_offer_is_due(
+        lc, world, monkeypatch):
+    import tools
+    monkeypatch.setattr(tools, "_bound_persona", lambda slug: None)
+    out: dict = {"ok": True}
+    await tools._after_own_chat_change(out, "finance", "on_install_committed", None)
+    assert out["own_chat"] == "offer_due"
+    assert world.cards == {}
+    plain: dict = {"ok": True}
+    await tools._after_own_chat_change(plain, "plain", "on_install_committed", None)
+    assert "own_chat" not in plain
 
 
 async def test_the_uninstall_disclosure(lc, world):
@@ -154,7 +213,7 @@ async def test_the_uninstall_disclosure(lc, world):
 
 
 async def test_the_entry_points_reach_the_lifecycle(lc, world):
-    await own_voice.offer_own_chat("finance")
+    await own_voice.offer_own_chat("finance", username="HeyAlexTestBot")
     await own_voice.on_managed_bot_created(
         created(ALEX_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR)
     assert own_voice.own_chat_state("finance") == "not_open"
