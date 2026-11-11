@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.362.0] - 2026-11-11
+
+Not backward compatible. On an existing install, a one-off script must add the new fields to `/data/agent-voices.json`, with Casa stopped, before the update; without it Casa sets the file aside and forgets every specialist's bot. Discard any offer card, or Telegram "Create" form, for a specialist's bot left from before the update and ask the assistant for a new offer: bots created from them are not supported.
+
+### Changed
+
+- **The assistant chooses each specialist's bot handle.** It is named after the specialist's role with a few digits (for example `CasaFinance4821Bot`), follows the pattern of your other specialists' handles if you have one, and is checked on Telegram before she offers it. Ask her for a different one if you like.
+- **You can give a specialist a new handle.** Ask the assistant: once nothing is open in the specialist's chat, she posts a card; tap Create, Casa restarts for a moment, and the specialist moves to its new bot. When you open the new chat, the card offers a button to delete the old bot in BotFather. Messages sent around the move may be lost.
+- A specialist's bot now carries its persona's name.
+- Casa no longer posts the offer of a specialist's chat by itself after an install or upgrade; the assistant makes it.
+- The card for a new chat now says "Open it and say hi" instead of "press Start": any first message opens the chat.
+
+### Fixed
+
+- An agent's log no longer shows a stray `<silent/>` line in a request's entry; when an agent chooses to stay silent, nothing is logged for that message.
+
+### Documentation
+
+- Changing the assistant's own bot is a manual procedure, described in the documentation.
+
 ## [0.361.1] - 2026-11-11
 
 ### Fixed
