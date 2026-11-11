@@ -192,7 +192,8 @@ def env(monkeypatch, tmp_path):
     def admit(*, status="admitted", card=True, request_key="k1", cid=CID, plugin="browser",
               operator=OPERATOR):
         ident = GrantIdentity(operator_id=operator, chat_id=OPERATOR, enforcement_role="browser",
-                              artifact_id=ARTIFACT, engagement_id="", bot_id=BOT)
+                              artifact_id=ARTIFACT, engagement_id="", bot_id=BOT,
+                          delivery=TgAddress(BOT, OPERATOR))
         b = plugin_bindings.BINDINGS.for_turn(plugin=plugin, turn_key="d-" + cid, identity=ident,
                                               chain=("assistant", "browser"), origin=ORIGIN)
         c = run_admission.Confirmation(
@@ -528,7 +529,8 @@ async def test_stop_work_does_not_wait_for_the_running_desk_use(env, held_desk):
 
 def _binding():
     ident = GrantIdentity(operator_id=OPERATOR, chat_id=OPERATOR, enforcement_role="browser",
-                          artifact_id=ARTIFACT, engagement_id="", bot_id=BOT)
+                          artifact_id=ARTIFACT, engagement_id="", bot_id=BOT,
+                          delivery=TgAddress(BOT, OPERATOR))
     return plugin_bindings.BINDINGS.for_turn(plugin="browser", turn_key="d-x", identity=ident,
                                              chain=("assistant", "browser"), origin=ORIGIN)
 
@@ -791,7 +793,8 @@ async def _pending_card(env, monkeypatch):
     import operator_calls
     monkeypatch.setattr(operator_calls, "CALLS", operator_calls.OperatorCalls())
     ident = GrantIdentity(operator_id=OPERATOR, chat_id=OPERATOR, enforcement_role="browser",
-                          artifact_id=ARTIFACT, engagement_id="", bot_id=BOT)
+                          artifact_id=ARTIFACT, engagement_id="", bot_id=BOT,
+                          delivery=TgAddress(BOT, OPERATOR))
     origin = {**ORIGIN, "execution_role": "browser", "_delegation_id": "d-1",
               "delegation_depth": 1, "_handoff_chain": ("assistant", "browser"),
               "synthetic": "continuation", "user_text": ""}

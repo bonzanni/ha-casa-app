@@ -26,17 +26,24 @@ def _split_targets(entry: dict) -> "tuple[list[str], list[str]]":
     return residents, specialists
 
 
-def compose(entry: dict, base: str) -> "tuple[str | None, str]":
+def compose(entry: dict, base: str, *, operation: "str | None" = None
+            ) -> "tuple[str | None, str]":
     """Deterministic execution-target selection for the instruction *base*.
     Returns ``(role, instruction)`` or ``(None, reason)``.
 
-    Target order: ``resident:assistant`` when targeted; else the
+    *operation* is the agent that runs the operation this instruction belongs
+    to (the one a callback answers): when the entry still targets it, the
+    instruction goes to that agent itself, in its own session and chat.
+
+    Otherwise, target order: ``resident:assistant`` when targeted; else the
     lexicographically first resident; else the first specialist via
     assistant delegation (the specialist has no channel — the instruction
     names the EXACT specialist and forbids substitution); else no target at
     all.
     """
     residents, specialists = _split_targets(entry)
+    if operation and (operation in residents or operation in specialists):
+        return operation, base
     if "assistant" in residents:
         return "assistant", base
     if residents:

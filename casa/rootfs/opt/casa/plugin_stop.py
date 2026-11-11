@@ -229,17 +229,18 @@ async def settle_ended(seg: str, bot_id: int, operator_id: int, ref: str) -> boo
 
 async def tell_line(bot_id: int, chat_id: int, role: str, outcome: str, *,
                     reply_to: "int | None") -> None:
-    """The one line, Casa's fixed text under the specialist's label, as a reply to the card,
-    through the bot *bot_id* that holds it; the resident hears it at its next turn, as every
-    Casa line."""
+    """The one line, Casa's fixed text under the specialist's label (none in the agent's own
+    chat), as a reply to the card, through the bot *bot_id* that holds it; the resident hears
+    it at its next turn, as every Casa line."""
     import specialist_desk
-    from result_broker import compose_operator_message, post_label
+    from result_broker import compose_operator_message, label_at
     line = line_for(outcome, role)
     transport = _transport()
     if line is None or transport is None:
         return
-    await transport.endpoint(int(bot_id)).send_reply_line(
-        int(chat_id), compose_operator_message(line, post_label(role)), reply_to)
+    endpoint = transport.endpoint(int(bot_id))
+    await endpoint.send_reply_line(
+        int(chat_id), compose_operator_message(line, label_at(role, endpoint)), reply_to)
     specialist_desk.record_echo(int(bot_id), int(chat_id),
                                 f"{specialist_desk.label_for(role)}: {line}")
 

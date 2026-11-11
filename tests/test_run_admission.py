@@ -93,7 +93,8 @@ def wired(monkeypatch, tmp_path):
 
 def _call(words="download my latest RunPod invoice", chain=("assistant", "browser")):
     ident = GrantIdentity(operator_id=100, chat_id=42, enforcement_role="browser",
-                          artifact_id=ARTIFACT, engagement_id="", bot_id=CASA_BOT)
+                          artifact_id=ARTIFACT, engagement_id="", bot_id=CASA_BOT,
+                          delivery=TgAddress(CASA_BOT, 42))
     origin = {**ORIGIN, "user_text": words or "", "_handoff_chain": chain}
     if words is None:
         origin["synthetic"] = "continuation"

@@ -8,23 +8,31 @@ to the run's binding (``plugin_bindings``):
 
 * **The queue (C8).** ``CONTINUATIONS.request(binding, run_ref, reason)`` keeps
   at most one pending continuation per (plugin, bot, operator, ``run_ref``):
-  the bot is the one the binding's route resolves to, since one plugin can
-  serve agents on two bots and its run refs may be equal on both. Its
-  worker waits for the specialist's desk in the binding's chat (one desk use at
-  a time, so it runs after any turn still driving the run), then runs ONE
-  delegated turn of the specialist, resuming the binding's conversation
-  (``_conversation_for``), whose task is the fixed text ``Continue browsing run <run_ref>.`` under an origin rebuilt from the
+  the bot is the binding's (``plugin_bindings.binding_target``: its delivery's,
+  or its route's for work that posts nothing), since one plugin can serve
+  agents on two bots and its run refs may be equal on both. Its worker waits
+  for the specialist's lane (``agent_lane``: one use at a time per executing
+  agent, so it runs after any turn still driving the run, and never while the
+  agent is faulted), then runs ONE delegated turn of the specialist, resuming
+  the binding's conversation (``_conversation_for``), whose task is the fixed
+  text ``Continue browsing run <run_ref>.`` under an origin rebuilt from the
   binding: the chain of requesters, the chat and operator, the route, Casa's
   ``synthetic: "continuation"`` marker — so the turn has the operator's grant
-  identity but no operator words. Once the worker has started the turn, a new
-  request for the same run queues again. Only this turn resumes: relay turns,
-  and any turn nested in it, stay fresh.
+  identity but no operator words — and the binding's delivery, so the turn
+  posts exactly where the work it continues posted, or nowhere. Once the
+  worker has started the turn, a new request for the same run queues again.
+  Only this turn resumes: relay turns, and any turn nested in it, stay fresh.
 * **The relay (C4).** The continuation's answer goes back up the binding's
-  chain: to the resident directly, as a delegation completion it narrates (the
-  durable announcement every async delegation has); or, when a specialist
-  asked, first to a turn of that specialist with the answer as its task, whose
-  own answer goes on up the same way. A relay's task is Casa's text around
-  another role's answer and is never captured as the requester's words
+  chain to its **requester**, the chain's root (:func:`continuation_requester`):
+  the resident, when its delegation started the run, or the executing agent's
+  own conversation, when its direct turn did — as a delegation completion it
+  narrates (the durable announcement every async delegation has); when a
+  specialist asked on the way, first to a turn of that specialist with the
+  answer as its task, whose own answer goes on up the same way. A requester
+  other than the executing agent's own conversation leaves that conversation
+  one note (``chat_notes``) of what the continuation answered. A relay's task
+  is Casa's text around another role's answer and is never captured as the
+  requester's words
   (INV-MEM-032: only a resident's own task on a turn Casa did not compose is).
   A continuation answer that is exactly ``<silent/>`` (an empty one is not) is the specialist's own
   declaration of progress: it climbs no further and is announced to nobody
@@ -59,7 +67,7 @@ from pathlib import Path
 from typing import Any
 
 from output_boundary import SILENCE_SENTINEL
-from provenance import carry_route
+from provenance import carry_route, task_delivery_marker
 
 logger = logging.getLogger(__name__)
 
@@ -72,12 +80,12 @@ SWEEP_MAX_RESULTS = 50
 # minute or more is the minute pass itself. At most this many deposits name one entry's hold.
 SWEEP_AGAIN_MIN_S = 5.0
 UNLESS_DELIVERED_MAX = 4
-# A pending continuation that cannot get its desk or a concurrency slot is
+# A pending continuation that cannot get its lane or a concurrency slot is
 # retried at this pace, and dropped after the bound (the sweep re-finds it).
 RETRY_EVERY_S = 10.0
 GIVE_UP_AFTER_S = 600.0
 # How long a cancelled continuation waits for its turn's bounded teardown
-# before releasing the desk (the runner's own teardown bound plus its reap).
+# before releasing the lane (the runner's own teardown bound plus its reap).
 CANCEL_TEARDOWN_S = 45.0
 # Raised resumed turns in a row after which the next starts fresh.
 MAX_RESUME_FAILURES = 2
@@ -93,7 +101,7 @@ class Pending:
     run_ref: str
     reason: str
     queued_at: float
-    bot_id: int                 # the bot the binding's route resolved to when queued
+    bot_id: int                 # the binding's bot (plugin_bindings.binding_target) when queued
     dropped: bool = False       # its work was stopped before it started (``drop``)
 
 
@@ -126,7 +134,7 @@ class Continuations:
     def drop(self, plugin: str, bot_id: int, operator_id: int, refs) -> int:
         """The operator stopped, on bot *bot_id*, the work these references name
         (``plugin_stop``): every pending continuation of one of them on that bot that has
-        not started is dropped — its worker returns without a turn once it holds the desk.
+        not started is dropped — its worker returns without a turn once it holds the lane.
         A started one is the running session, left to end itself. Returns how many were
         dropped."""
         wanted = {r for r in refs if isinstance(r, str)}
@@ -167,9 +175,29 @@ class Continuations:
 CONTINUATIONS = Continuations()
 
 
+def continuation_requester(binding):
+    """Who receives a continuation's result (``task_model.Requester``): the
+    root of the binding's chain — the resident, when its delegation started
+    the run; the executing agent's own conversation, when its direct turn did
+    — on the route of the turn that asked."""
+    from task_model import Requester
+    return Requester(role=binding.chain[0], route=carry_route(binding.origin))
+
+
+def _delivery_for_turn(binding, executing: "str | None"):
+    """The delivery of a turn rebuilt from *binding*: the binding's own for the
+    turn of the agent that runs the work; nothing for a relay turn of an
+    agent that asked on the way, whose posts the binding does not know."""
+    from plugin_bindings import delivery_of
+    if executing is not None and executing != binding.chain[-1]:
+        return None
+    return delivery_of(binding)
+
+
 def continuation_origin(binding, *, executing: str | None = None) -> dict:
     """The parent origin a continuation (or relay) turn of the chain's role
-    at ``executing`` runs under — rebuilt from the binding alone."""
+    at ``executing`` runs under — rebuilt from the binding alone, with the
+    work's delivery (:func:`_delivery_for_turn`)."""
     chain = list(binding.chain)
     role = executing or chain[-1]
     upto = chain[:chain.index(role)] if role in chain else chain[:-1]
@@ -189,6 +217,7 @@ def continuation_origin(binding, *, executing: str | None = None) -> dict:
         "_handoff_chain": tuple(upto) or (chain[0],),
         "_binding_ref": binding.ref,
         **carry_route(stored),
+        **task_delivery_marker(_delivery_for_turn(binding, executing)),
     }
     return origin
 
@@ -209,8 +238,8 @@ async def _run_turn(cfg, task: str, origin: dict, *, quota_key: str):
 
 
 class ContinuationDropped(Exception):
-    """A continuation's turn could not get its desk or a slot in time, or the
-    desk faulted while it waited; the sweep re-finds the run."""
+    """A continuation's turn could not get its agent's lane or a slot in time,
+    or the agent faulted while it waited; the sweep re-finds the run."""
 
 
 class RelayInterrupted(RuntimeError):
@@ -227,28 +256,28 @@ class RequesterUnavailable(RuntimeError):
 
 
 @contextlib.asynccontextmanager
-async def _desk_turn(bot_id: int, chat_id: int, role: str, *, deadline: float):
-    """One use of *role*'s desk in *chat_id* on bot *bot_id* with a
-    concurrency permit for it: waits for the queue and the lock (bounded by
+async def _lane_turn(chat_id: int, role: str, *, deadline: float):
+    """One use of *role*'s lane (``agent_lane``) with a concurrency permit
+    for it in *chat_id*: waits for the queue and the lock (bounded by
     *deadline*), rechecks the fault under the lock, takes the permit after the
-    lock as a desk use does."""
-    import specialist_desk
+    lock as every use of the lane does."""
+    import agent_lane
     import tools as tools_mod
-    desk = specialist_desk.DESKS.get_or_create(int(bot_id), int(chat_id), role)
+    lane = agent_lane.LANES.get(role)
     reservation = None
     while reservation is None:
-        if desk.faulted is None:
-            reservation = desk.reserve()
+        if lane.faulted is None:
+            reservation = lane.reserve()
         if reservation is None:
             if time.monotonic() > deadline:
-                raise ContinuationDropped(f"{role}'s desk stayed unavailable")
+                raise ContinuationDropped(f"{role}'s lane stayed unavailable")
             await asyncio.sleep(RETRY_EVERY_S)
     permit = None
     runs: list = []
     try:
-        async with desk.use(reservation):
-            if desk.faulted is not None:
-                raise ContinuationDropped(f"{role}'s desk faulted while it waited")
+        async with lane.use(reservation):
+            if lane.faulted is not None:
+                raise ContinuationDropped(f"{role} faulted while it waited")
             limiter = tools_mod._specialist_limiter
             while limiter is not None and permit is None:
                 permit = limiter.try_acquire(f"{chat_id}:{role}")
@@ -256,14 +285,14 @@ async def _desk_turn(bot_id: int, chat_id: int, role: str, *, deadline: float):
                     if time.monotonic() > deadline:
                         raise ContinuationDropped(f"no slot for {role}")
                     await asyncio.sleep(RETRY_EVERY_S)
-            # #1197's guard, as every desk use has it: a run the bounded
-            # runner gave up waiting for keeps the desk refused until it ends
+            # #1197's guard, as every use of the lane has it: a run the bounded
+            # runner gave up waiting for keeps the lane refused until it ends
             sink_tok = tools_mod._desk_run_sink.set(runs)
             try:
-                yield desk
+                yield lane
             finally:
                 tools_mod._desk_run_sink.reset(sink_tok)
-                desk.hold_unwinding(runs)
+                lane.hold_unwinding(runs)
     finally:
         if permit is not None:
             permit.release()
@@ -271,7 +300,7 @@ async def _desk_turn(bot_id: int, chat_id: int, role: str, *, deadline: float):
 
 async def _run_turn_cancellable(cfg, task: str, origin: dict, *, quota_key: str):
     """``_run_turn``, cancelled with its caller: the bounded runner's own
-    teardown runs before the caller's desk and permit are released."""
+    teardown runs before the caller's lane and permit are released."""
     inner = asyncio.ensure_future(_run_turn(cfg, task, origin, quota_key=quota_key))
     try:
         return await asyncio.shield(inner)
@@ -281,9 +310,9 @@ async def _run_turn_cancellable(cfg, task: str, origin: dict, *, quota_key: str)
         raise
 
 
-async def _relay_up(binding, run_ref: str, output, *, bot_id: int, deadline: float):
-    """One turn per specialist requester, nearest first, each its own desk
-    use on bot *bot_id*; returns the output the resident is told."""
+async def _relay_up(binding, run_ref: str, output, *, deadline: float):
+    """One turn per specialist requester, nearest first, each its own use of
+    that requester's lane; returns the output the requester is told."""
     import tools as tools_mod
     chain = list(binding.chain)
     for i in range(len(chain) - 2, 0, -1):
@@ -295,7 +324,7 @@ async def _relay_up(binding, run_ref: str, output, *, bot_id: int, deadline: flo
                 f"(run {run_ref}) could not be passed back to it")
         answer = (output.text if not output.run_aborted
                   else f"(its turn did not complete: {output.run_subtype or 'aborted'})")
-        async with _desk_turn(bot_id, binding.chat_id, requester, deadline=deadline):
+        async with _lane_turn(binding.chat_id, requester, deadline=deadline):
             output = await _run_turn_cancellable(
                 req_cfg, RELAY_TASK.format(name=tools_mod._display_name_for_role(below),
                                            run_ref=run_ref, answer=answer),
@@ -318,15 +347,41 @@ async def _conversation_for(binding, cfg) -> "str | None":
     return sid if found is not None else None
 
 
+def _knowledge_line(requester: str, task: str, out=None, *, failed: "str | None" = None
+                    ) -> str:
+    """The body-free note an agent's conversation gets of a continuation it
+    did not start: who asked, what, and how it ended."""
+    import tools as tools_mod
+    brief = task if len(task) <= 80 else task[:79] + "…"
+    who = tools_mod._display_name_for_role(requester)
+    if failed is not None:
+        return f"{who} asked you «{brief}»; it failed: {failed}"
+    if getattr(out, "run_aborted", False):
+        return f"{who} asked you «{brief}»; it failed: {out.run_subtype or 'aborted'}"
+    return f"{who} asked you «{brief}»; you answered ({len(out.text or '')} chars)"
+
+
+def _note_knowledge(binding, requester, role: str, line: str) -> None:
+    """*line* for *role*'s own conversation, when someone else asked: in the
+    chat the work posts in. Work that posts nothing has no chat to note in."""
+    if requester.role == role:
+        return
+    import chat_notes
+    from plugin_bindings import delivery_of
+    delivery = delivery_of(binding)
+    if delivery is not None:
+        chat_notes.record(delivery.bot_id, delivery.chat_id, line)
+
+
 async def run_continuation(pending: Pending, *, on_start) -> None:
-    """The continuation turn under its role's desk, registered as one async
-    delegation of the chain's first specialist whose announced answer is the
-    end of the relay — durable, replayed after a restart like any
-    delegation's. Started only for a binding of the operator as configured
-    now."""
+    """The continuation turn under its role's lane, registered as one async
+    delegation of the chain's first specialist whose announced answer, the
+    end of the relay, goes to the requester (:func:`continuation_requester`)
+    — durable, replayed after a restart like any delegation's. Started only
+    for a binding of the operator as configured now."""
     import tools as tools_mod
     from operator_calls import is_configured_operator
-    from plugin_bindings import BINDINGS
+    from plugin_bindings import BINDINGS, delivery_of
     from specialist_registry import DelegationRecord
 
     binding = pending.binding
@@ -345,20 +400,25 @@ async def run_continuation(pending: Pending, *, on_start) -> None:
     first = binding.chain[1] if len(binding.chain) > 1 else role
     fido_done = asyncio.Event()
     progress_only: list = []
+    requester = continuation_requester(binding)
+    task_text = CONTINUE_TASK.format(run_ref=pending.run_ref)
     try:
-        async with _desk_turn(pending.bot_id, binding.chat_id, role, deadline=deadline):
+        async with _lane_turn(binding.chat_id, role, deadline=deadline):
             if pending.dropped:
                 return          # its work was stopped while it waited: no turn
             on_start()
+            # the completion is announced to the requester, on its route: the
+            # route of the turn that asked (``continuation_requester``)
             record = DelegationRecord(
                 id=str(uuid.uuid4()), agent=first, started_at=time.time(),
-                origin={"role": binding.chain[0], "channel": "telegram",
+                origin={"role": requester.role, "channel": "telegram",
                         "chat_id": binding.chat_id, "user_id": binding.operator_id,
                         "cid": "cont-" + uuid.uuid4().hex[:12], "user_text": "",
                         "_origin_route": binding.origin.get("_origin_route", "telegram"),
                         "_origin_clearance": binding.origin.get("_origin_clearance",
                                                                 "private"),
-                        **carry_route(binding.origin)})
+                        **carry_route(binding.origin),
+                        **task_delivery_marker(delivery_of(binding))})
             await tools_mod._specialist_registry.register_delegation(record)
 
             async def _chain():
@@ -368,10 +428,13 @@ async def run_continuation(pending: Pending, *, on_start) -> None:
                     # around this turn only: relays and the requesters' turns stay fresh
                     tok = tools_mod._conversation.set(
                         tools_mod.ConversationTurn(binding.ref, resume))
-                    out = await _run_turn(cfg, CONTINUE_TASK.format(run_ref=pending.run_ref),
+                    out = await _run_turn(cfg, task_text,
                                           continuation_origin(binding), quota_key=record.id)
                 except Exception as exc:  # noqa: BLE001 — CancelledError is not one
                     if resume is None:
+                        from error_kinds import _classify_error
+                        _note_knowledge(binding, requester, role, _knowledge_line(
+                            requester.role, task_text, failed=_classify_error(exc).value))
                         raise       # a fresh turn that raises is announced as always
                     BINDINGS.turn_ended(binding.ref, raised=True)
                     logger.warning("continuation of run_ref=%s: its resumed turn raised (%s); "
@@ -390,9 +453,10 @@ async def run_continuation(pending: Pending, *, on_start) -> None:
                 if not out.run_aborted and (out.text or "").strip() == SILENCE_SENTINEL:
                     progress_only.append(out)
                     return out       # progress only (C4a): nothing climbs the chain
+                _note_knowledge(binding, requester, role,
+                                _knowledge_line(requester.role, task_text, out))
                 try:
                     return await _relay_up(binding, pending.run_ref, out,
-                                           bot_id=pending.bot_id,
                                            deadline=time.monotonic() + GIVE_UP_AFTER_S)
                 except asyncio.CancelledError:
                     if len(binding.chain) <= 2:
@@ -409,8 +473,8 @@ async def run_continuation(pending: Pending, *, on_start) -> None:
                 task, record, quiet_if=lambda out: any(o is out for o in progress_only))
             waiter = asyncio.ensure_future(fido_done.wait())
             try:
-                # the desk is held for the continuation turn only; the relay
-                # turns take their own requesters' desks
+                # the lane is held for the continuation turn only; the relay
+                # turns take their own requesters' lanes
                 await asyncio.wait({task, waiter}, return_when=asyncio.FIRST_COMPLETED)
             except asyncio.CancelledError:
                 task.cancel()

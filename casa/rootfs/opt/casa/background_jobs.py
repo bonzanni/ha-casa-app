@@ -786,9 +786,11 @@ class JobRunner:
 
     Wired into the in_casa driver as its turn-end and session-lost handlers.
     ``channel`` is the Telegram transport (the parking post, the start
-    line): it posts through the bot named by the job's origin route and edits
-    a post through the bot that posted it, never through a bot it picks;
-    ``agent_logs`` is the agent log sink (the resume line), when there is one.
+    line): a new post goes to the job's delivery (``rec.delivery``, decided
+    when the job was born; a job with none posts nothing) through the bot it
+    names, and a post is edited through the bot that posted it, never through
+    a bot it picks; ``agent_logs`` is the agent log sink (the resume line),
+    when there is one.
     """
 
     def __init__(self, *, registry: Any, channel: Any = None,
@@ -832,6 +834,19 @@ class JobRunner:
                     or drv.inbound_reservations(engagement_id) > 0)
         except Exception:  # noqa: BLE001 — no reading, no input assumed
             return False
+
+    def _delivery_method(self, rec: Any, name: str) -> Any:
+        """The method *name* of the endpoint at the job's delivery, or
+        ``None``: a job with no delivery posts nothing, anywhere."""
+        delivery = getattr(rec, "delivery", None)
+        endpoint = getattr(self.channel, "endpoint", None)
+        if delivery is None or not callable(endpoint):
+            return None
+        try:
+            return getattr(endpoint(delivery.bot_id), name, None)
+        except Exception:  # noqa: BLE001 — no endpoint for that bot: nothing is posted
+            logger.warning("job %s: no endpoint for its delivery", rec.id[:8])
+            return None
 
     def _write(self, rec: Any, text: str) -> None:
         self.driver.submit_casa(rec, text)
@@ -928,7 +943,7 @@ class JobRunner:
             except Exception:  # noqa: BLE001
                 logger.warning("job %s: quiet promotion failed", rec.id[:8],
                                exc_info=True)
-        poster = getattr(self.channel, "post_job_parked", None)
+        poster = self._delivery_method(rec, "post_job_parked")
         if not callable(poster):
             return
         try:

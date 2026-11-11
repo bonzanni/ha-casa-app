@@ -241,7 +241,7 @@ async def test_an_unloaded_requester_fails_the_relay_instead_of_passing_the_answ
     b = _binding(("assistant", "finance", "browser"))
     out = DelegatedOutput(text="browser secret answer")
     with pytest.raises(pc.RequesterUnavailable) as exc:
-        await pc._relay_up(b, "r-1", out, bot_id=BOT, deadline=1e18)
+        await pc._relay_up(b, "r-1", out, deadline=1e18)
     assert "browser secret answer" not in str(exc.value)
 
 
