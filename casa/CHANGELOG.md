@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.360.1] - 2026-11-11
+
+### Changed
+
+- **Agents sound more like people in their own chats.** Run cards, task lines, stop and end lines are written in the agent's own voice ("Ellen asked me: …", "On it for Ellen", "OK to start this browsing run?"), and what an agent remembers of earlier tasks reads like its own memory rather than a system record.
+- **The assistant closes the loop after a task in an agent's chat.** She now closes the loop herself, usually in one short line, instead of staying silent; when you already have the answer in the agent's chat she keeps it to a line or two instead of repeating it.
+- The "📊 Passed to …" line is gone; the agent's chat shows the work starting.
+- A file that just arrived reads "received just now".
+
+### Fixed
+
+- An agent's chat showed its working notes after its answer (for the browser specialist, a "progress" line after the sourced answer). Only the message it closes with is posted now, and nothing when it has nothing more to say.
+- When you steered a running task from the agent's chat, the assistant didn't know and could tell you the agent did something you hadn't asked for. Your words now reach her with the result.
+- The task line in an agent's chat showed your words in double quotes inside « ».
+
 ## [0.360.0] - 2026-11-11
 
 Not backward compatible. Update the browser specialist (0.1.32) and the finance specialist (0.29.0) right after Casa: a specialist role that still sets `session.desk_context` is refused at startup and stays unavailable until it is updated (the setting is now `session.long_runs`, with the opposite meaning). Jobs, delegations and plugin follow-ups that were in flight or recorded by an older version are not carried over: Casa skips them at startup and logs each one.
