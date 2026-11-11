@@ -783,7 +783,7 @@ class ChallengeCoordinator:
         target_role: str, tool_name: str, canonical_json: str,
         enforcement_role: str, channel: Any, grants: "GrantStore",
         summary: "str | None" = None, display_name: "str | None" = None,
-        engagement_id: str = "", plugin: str = "",
+        engagement_id: str = "", plugin: str = "", declared_tool: str = "",
     ) -> ChallengeHandle:
         existing = self._entries.get(key)
         if existing is not None:
@@ -793,7 +793,7 @@ class ChallengeCoordinator:
         # oversized -> refused handle, NO entry, NO keyboard, NO registration.
         # This rendering is the size measure only: what the operator reads is
         # the approval card below. The plugin-declared *summary* + the current
-        # *display_name* are captured here (W2) into the card AND, below, the
+        # *display_name* are captured here into the card AND, below, the
         # settlement finish hook.
         challenge_text = render_challenge_message(
             tool_name=tool_name, enforcement_role=enforcement_role,
@@ -803,7 +803,7 @@ class ChallengeCoordinator:
         card_request = self._tool_card_request(
             key, tool_name=tool_name, canonical_json=canonical_json,
             enforcement_role=enforcement_role, summary=summary,
-            display_name=display_name, plugin=plugin,
+            display_name=display_name, plugin=plugin, declared_tool=declared_tool,
         )
 
         # #663: an engagement-origin challenge dispatches a continuation on
@@ -866,17 +866,21 @@ class ChallengeCoordinator:
     def _tool_card_request(
         key: GrantKey, *, tool_name: str, canonical_json: str,
         enforcement_role: str, summary: "str | None",
-        display_name: "str | None", plugin: str,
+        display_name: "str | None", plugin: str, declared_tool: str,
     ) -> "approval_card.CardRequest":
         """The approval card asked for a protected tool call: the facts the
         model writes it from, and the card Casa writes itself from the
         arguments when the model does not answer in time. Display only — the
-        grant stays bound to *key* (the canonical arguments' hash)."""
+        grant stays bound to *key* (the canonical arguments' hash).
+
+        The tool is named as the plugin declares it (*declared_tool*), which
+        is also the name its description was listed under; the full tool id
+        carries a sanitized form of it."""
         import approval_card
         import tool_descriptions
 
         who = _resolve_display_name(display_name, enforcement_role)
-        short = short_tool_name(tool_name)
+        short = declared_tool or short_tool_name(tool_name)
         args = json.loads(canonical_json)
         described = tool_descriptions.get(key.artifact_id, short)
         if described is None:
@@ -1658,12 +1662,12 @@ def make_resident_authz_hook(
     ``role`` is the agent's own (plain, tier-stripped) role — asserted equal to
     ``origin.execution_role`` as defense in depth and used as
     ``GrantKey.enforcement_role``. ``protected`` maps each full tool name to
-    ``{"artifact_id": ..., "summary": ...}`` (from ``plugin_grants.protected_map``
-    over the SAME ``ResolutionResult`` used to build the agent's options — a
-    mid-TTL plugin update changes the artifact and invalidates the grant).
-    This hook consumes ONLY ``artifact_id`` — exactly as before v0.78.0, no
-    grant/GrantKey/enforcement change; ``summary`` is advisory copy threaded
-    to the challenge render by the coordinator (W2), not read here.
+    ``{"artifact_id", "summary", "plugin", "tool"}`` (from
+    ``plugin_grants.protected_map`` over the SAME ``ResolutionResult`` used to
+    build the agent's options — a mid-TTL plugin update changes the artifact
+    and invalidates the grant). Only ``artifact_id`` binds: it goes into the
+    GrantKey. ``summary``, ``plugin`` and the declared tool name ``tool`` are
+    display-only and feed the operator's approval card.
     ``deps_factory`` resolves the Telegram channel + stores LAZILY at call time;
     ``None`` (no DM reachable) is the unsupported-origin deny.
 
@@ -1755,6 +1759,7 @@ def make_resident_authz_hook(
                     display_name=deps.display_name,
                     engagement_id=engagement_id,
                     plugin=protected[tool_name].get("plugin", ""),
+                    declared_tool=protected[tool_name].get("tool", ""),
                 )
                 if handle.refused == "args_too_large":
                     return _deny(_DENY_UNRENDERABLE)

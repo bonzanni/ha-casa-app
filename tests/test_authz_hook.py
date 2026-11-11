@@ -59,9 +59,11 @@ def _casa_bot(monkeypatch):
 
 TOOL = "mcp__plugin_p_p__invoice_reset"
 ARTIFACT = "artifact-1"
-# protected_map values are {"artifact_id", "summary", "plugin"} — the hook
-# binds ONLY artifact_id into the grant; summary and plugin feed the card.
-PROTECTED = {TOOL: {"artifact_id": ARTIFACT, "summary": None, "plugin": "p"}}
+# protected_map values are {"artifact_id", "summary", "plugin", "tool"} — the
+# hook binds ONLY artifact_id into the grant; summary, plugin and the declared
+# tool name feed the card.
+PROTECTED = {TOOL: {"artifact_id": ARTIFACT, "summary": None, "plugin": "p",
+                    "tool": "invoice_reset"}}
 
 
 # ---------------------------------------------------------------------------
@@ -596,7 +598,8 @@ class TestConsumeAndChallenge:
                          display_name="Alex")
         protected = {TOOL: {"artifact_id": ARTIFACT,
                             "summary": "Delete the invoice draft for {period}",
-                            "plugin": "lantern-invoice"}}
+                            "plugin": "lantern-invoice",
+                            "tool": "invoice.reset"}}
         hook = _mk_hook(deps=deps, protected=protected)
         with _OriginCtx(_origin()):
             out = await _call(hook, tool_input={"period": "2025-05"})
@@ -604,7 +607,7 @@ class TestConsumeAndChallenge:
         assert len(seen) == 1
         assert seen[0]["requested_by"] == "Alex"
         assert seen[0]["plugin"] == "lantern-invoice"
-        assert seen[0]["tool"] == "invoice_reset"
+        assert seen[0]["tool"] == "invoice.reset"  # the declared name
         assert seen[0]["what_the_plugin_says_it_does"] == (
             "Delete the invoice draft for {period}")
         assert seen[0]["arguments"] == {"period": "2025-05"}
@@ -918,7 +921,8 @@ class TestWiring:
         from plugin_grants import protected_map
         assert protected_map(resolution) == {
             "mcp__plugin_p_p__invoice_reset":
-                {"artifact_id": e["artifact_id"], "summary": None, "plugin": "p"}}
+                {"artifact_id": e["artifact_id"], "summary": None, "plugin": "p",
+                 "tool": "invoice_reset"}}
 
     def test_specialist_without_protected_tools_has_no_authz_matcher(
         self, tmp_path, monkeypatch,

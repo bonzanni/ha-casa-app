@@ -564,15 +564,17 @@ def apply_profile_plan(allowed_tools, disallowed_tools, plan: ProfilePlan):
 
 def protected_map(resolution) -> dict[str, dict]:
     """Full-tool-name -> ``{"artifact_id": str, "summary": str | None,
-    "plugin": str}`` map for every ``casa.protectedTools`` entry across a RESOLVED
+    "plugin": str, "tool": str}`` map for every ``casa.protectedTools`` entry
+    across a RESOLVED
     ``ResolutionResult`` (A:§3.7, value shape extended v0.78.0 W1). Derived
     from the RESOLVED ARTIFACT's manifest (the content-addressed store copy
     named by the ``ResolutionResult`` — never a duplicated registry field).
     ``summary`` is the plugin-declared advisory copy (``None`` for a legacy
     string entry or an object entry without one) — the authz hook consumes
     ``artifact_id`` exactly as before (NO grant/GrantKey/enforcement
-    change); ``summary`` and ``plugin`` (the plugin's runtime name) are
-    display-only, threaded to the operator's approval card.
+    change); ``summary``, ``plugin`` (the plugin's runtime name) and ``tool``
+    (the tool name as declared, before sanitizing) are display-only, threaded
+    to the operator's approval card.
 
     Namespacing reuses the grant-derivation sanitization
     (``mcp__plugin_<plugin>_<server>__<tool>``); a BARE tool name expands
@@ -615,7 +617,8 @@ def protected_map(resolution) -> dict[str, dict]:
                         f"{sanitize_segment(server)}__{tool_seg}")
                 out[full] = {"artifact_id": rp.artifact_id,
                              "summary": tool_entry["summary"],
-                             "plugin": runtime_name(rp)}
+                             "plugin": runtime_name(rp),
+                             "tool": tool_entry["name"]}
     return out
 
 

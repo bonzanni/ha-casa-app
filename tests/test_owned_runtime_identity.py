@@ -68,7 +68,7 @@ def test_protected_map_uses_manifest_name(tmp_path):
     out = plugin_grants.protected_map(res)
     assert out == {
         "mcp__plugin_mtg_rules__reset": {"artifact_id": "a" * 64, "summary": None,
-                                         "plugin": "mtg"},
+                                         "plugin": "mtg", "tool": "reset"},
     }
 
 

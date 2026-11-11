@@ -1072,6 +1072,39 @@ class TestChallengeAtomicRegistration:
             "arguments": {"id": "INV-1"},
         }
 
+    async def test_description_is_found_under_the_declared_tool_name(
+        self, monkeypatch,
+    ):
+        """The plugin declared ``invoice.reset``; the full tool id carries
+        the sanitized ``invoice_reset``. The description was listed under the
+        declared name, so that is the name it is looked up by and the name
+        the model is shown."""
+        import approval_card
+        import tool_descriptions
+
+        seen = []
+
+        async def _ask(system, user):
+            seen.append(json.loads(user))
+            return _CARD_REPLY
+
+        monkeypatch.setattr(approval_card, "_ask", _ask)
+        broker, coord, channel = _fresh_env(monkeypatch)
+        tool = "mcp__plugin_p_s__invoice_reset"
+        key = _key(tool_name=tool)
+        tool_descriptions._cache[(key.artifact_id, "invoice.reset")] = {
+            "description": "Reset one invoice draft.", "inputSchema": None}
+        handle = coord.get_or_create(
+            key, chat_id=100, operator_id=7, target_role="finance-full",
+            tool_name=tool, canonical_json='{"id":"INV-1"}',
+            enforcement_role="finance", channel=channel, grants=GrantStore(),
+            plugin="p", declared_tool="invoice.reset",
+        )
+        assert await handle.settled_post() == "posted"
+        assert len(seen) == 1
+        assert seen[0]["tool"] == "invoice.reset"
+        assert seen[0]["tool_description"] == "Reset one invoice draft."
+
     async def test_cold_description_cache_logs_a_miss_and_still_posts(
         self, monkeypatch, caplog,
     ):
