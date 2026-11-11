@@ -3458,7 +3458,10 @@ class TelegramChannel(Channel):
 
     @staticmethod
     def _job_chat(rec) -> "int | None":
-        return strict_positive_id((getattr(rec, "origin", None) or {}).get("chat_id"))
+        """The chat of the job's delivery, decided at its birth; ``None``
+        when the job posts nothing."""
+        delivery = getattr(rec, "delivery", None)
+        return None if delivery is None else delivery.chat_id
 
     @staticmethod
     def _job_title(rec) -> str:
@@ -3470,6 +3473,14 @@ class TelegramChannel(Channel):
     def _job_agent_name(rec) -> str:
         import tools as tools_mod
         return tools_mod._display_name_for_role(rec.role_or_type)
+
+    def _job_start_text(self, rec) -> str:
+        """``📊 <Agent> started «<title>».`` — without the label in the
+        agent's own chat, where the chat is the agent."""
+        import result_broker
+        label = result_broker.label_at(rec.role_or_type, self)
+        title = self._job_title(rec)
+        return f"{label} started «{title}»." if label else f"Started «{title}»."
 
     async def post_job_start_line(self, rec) -> "int | None":
         """The silent ``📊 <Agent> started «<title>».`` line of a job the
@@ -3486,7 +3497,7 @@ class TelegramChannel(Channel):
         try:
             msg = await self.bot.send_message(
                 chat_id=chat,
-                text=f"📊 {self._job_agent_name(rec)} started «{self._job_title(rec)}».",
+                text=self._job_start_text(rec),
                 reply_markup=kbd, disable_notification=True)
         except Exception as exc:  # noqa: BLE001 — a start line is never the job's fault
             logger.info("job start line not posted: %s", type(exc).__name__)
@@ -3520,8 +3531,7 @@ class TelegramChannel(Channel):
             return
         if getattr(rec, "status", None) not in ("active", "idle"):
             return
-        text = (f"📊 {self._job_agent_name(rec)} started «{self._job_title(rec)}»."
-                + background_jobs.cost_suffix(rec))
+        text = self._job_start_text(rec) + background_jobs.cost_suffix(rec)
         await self.edit_dm_message(
             start.chat_id, start.message_id, text,
             buttons=[("Cancel", job_cancel_callback(rec.id))])

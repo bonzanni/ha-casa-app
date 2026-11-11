@@ -1543,44 +1543,19 @@ class TelegramHost:
             setattr(ep, attr, getattr(casa, attr, None))
         return ep
 
-    @staticmethod
-    def _register(transport, ep, bot_id: int, role: "str | None") -> None:
-        # The transport admits one endpoint per role; a bot still waiting for
-        # its role is registered by bot id only.
-        transport._endpoints.append(ep)
-        transport._by_bot[bot_id] = ep
-        if role:
-            transport._by_role[role] = ep
-        ep.on_identity = lambda seen: transport.observe_endpoint_identity(ep, seen)
-
-    @staticmethod
-    def _unregister(transport, ep) -> None:
-        if ep in transport._endpoints:
-            transport._endpoints.remove(ep)
-        for table in (transport._by_bot, transport._by_role):
-            for key in [k for k, v in table.items() if v is ep]:
-                del table[key]
-
-    def _set_role(self, transport, ep, role: "str | None") -> None:
-        for key in [k for k, v in transport._by_role.items() if v is ep]:
-            del transport._by_role[key]
-        if role:
-            transport._by_role[role] = ep
-        ep.default_agent = role or ""
-
     async def start_endpoint(self, bot_id: int, token: str, role: "str | None") -> None:
         transport = self._transport()
         if transport is None:
             raise RuntimeError("Telegram is not configured")
         ep = self.endpoint(bot_id)
         if ep is not None and ep.bot_token == token:
-            self._set_role(transport, ep, role)
+            transport.set_endpoint_role(ep, role)
             return
         if ep is not None:
             await ep.stop()
-            self._unregister(transport, ep)
+            transport.remove_endpoint(ep)
         ep = self.make_endpoint(bot_id, token, role)
-        self._register(transport, ep, bot_id, role)
+        transport.add_agent_endpoint(ep, bot_id, role)
         await ep.start()
 
     async def stop_endpoint(self, bot_id: int) -> None:
@@ -1588,7 +1563,7 @@ class TelegramHost:
         if ep is None:
             return
         await ep.stop()
-        self._unregister(self._transport(), ep)
+        self._transport().remove_endpoint(ep)
 
     async def notify(self, bot_id: int, text: str) -> bool:
         ep = self.endpoint(bot_id)

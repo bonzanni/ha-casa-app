@@ -11491,6 +11491,11 @@ async def ask_operator(args: dict) -> dict:
                         f"{_ASK_QUESTION_MAX} characters; options: at most "
                         f"{_ASK_OPTIONS_MAX} non-empty strings of at most "
                         f"{_ASK_OPTION_LABEL_MAX} characters each")})
+    if getattr(rec, "delivery", None) is None:
+        # a job that posts nothing has no chat to ask in
+        refusal = _surface_refusal(str(getattr(rec, "executor", "") or rec.role_or_type))
+        return _result({"status": "error", "kind": refusal.kind,
+                        "message": refusal.text})
     channel = _transport()
     if channel is None or not hasattr(channel, "post_job_question"):
         return _result({"status": "error", "kind": "delivery_failed",
@@ -11510,14 +11515,16 @@ async def ask_operator(args: dict) -> dict:
     import result_broker
     from channels.telegram import render_ask_body, resolve_button_labels
     captions = resolve_button_labels(list(options), multi=False)
-    body = (f"{result_broker.post_label(rec.role_or_type)}\n"
+    # labelled except in the agent's own chat, where the chat is the agent
+    label = result_broker.label_at(rec.role_or_type, rec.delivery)
+    body = ((f"{label}\n" if label else "")
             + render_ask_body(None, question, list(options), captions))
     qid = _engagement_registry.new_job_question(rec.id, question, options)
     if qid is None:
         return _result({"status": "error", "kind": "not_a_job"})
-    # Posted through the bot of the job's route. A route that names no bot
-    # Casa runs is reported like a post that failed: nothing reached the
-    # operator.
+    # Posted at the job's delivery. A job that posts nothing, or a delivery
+    # whose bot Casa no longer runs, is reported like a post that failed:
+    # nothing reached the operator.
     try:
         message_id = await channel.post_job_question(
             rec, qid, scope.admit(IntentKind.KEYBOARD, body), list(options),

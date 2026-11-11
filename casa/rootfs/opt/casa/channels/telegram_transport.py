@@ -246,6 +246,54 @@ class TelegramTransport(Channel):
             self._casa = ep
         ep.on_identity = partial(self.observe_endpoint_identity, ep)
 
+    def add_agent_endpoint(self, ep: "TelegramChannel", bot_id: int,
+                           role: "str | None") -> None:
+        """Register *ep*, an agent's own bot *bot_id*, before or after its
+        role is known: with no *role* it is reachable by its bot id only
+        (:meth:`endpoint`), and :meth:`set_endpoint_role` binds the role
+        later. A bot id already served is refused with
+        :class:`DuplicateEndpoint`; a role already bound moves to *ep*.
+        Installs ``ep.on_identity`` as :meth:`add_endpoint` does."""
+        if ep in self._endpoints:
+            raise ValueError("this Telegram endpoint is already registered")
+        if not is_route(bot_id) or bot_id == CASA:
+            raise AddressError(f"not a Telegram bot id: {bot_id!r}")
+        if bot_id in self._by_bot:
+            raise DuplicateEndpoint(bot_id)
+        self._endpoints.append(ep)
+        self._by_bot[bot_id] = ep
+        self.set_endpoint_role(ep, role)
+        ep.on_identity = partial(self.observe_endpoint_identity, ep)
+
+    def set_endpoint_role(self, ep: "TelegramChannel", role: "str | None") -> None:
+        """Bind *ep* (an agent endpoint) to *role*, or to no role with
+        ``None``: its previous role, if any, is released, and the role's
+        turns born from now on get *ep*'s bot (:meth:`route_for`). Casa's
+        endpoint is never re-keyed."""
+        if ep not in self._endpoints:
+            raise ValueError("not an endpoint of this transport")
+        if ep is self._casa:
+            raise ValueError("Casa's endpoint keeps its role")
+        if role and self._by_role.get(role) is self._casa:
+            raise ValueError(f"role {role!r} is Casa's endpoint's")
+        for key in [k for k, v in self._by_role.items() if v is ep]:
+            del self._by_role[key]
+        if role:
+            self._by_role[role] = ep
+        ep.default_agent = role or ""
+
+    def remove_endpoint(self, ep: "TelegramChannel") -> None:
+        """Forget *ep* (an agent endpoint, already stopped): its bot and its
+        role no longer resolve to it. Unknown endpoints are ignored; Casa's
+        endpoint is never removed."""
+        if ep is self._casa:
+            raise ValueError("Casa's endpoint is never removed")
+        if ep in self._endpoints:
+            self._endpoints.remove(ep)
+        for table in (self._by_bot, self._by_role):
+            for key in [k for k, v in table.items() if v is ep]:
+                del table[key]
+
     def observe_endpoint_identity(self, ep: "TelegramChannel", bot_id: int) -> None:
         """Record that *ep*'s ``getMe`` verified *bot_id*.
 
@@ -386,17 +434,21 @@ class TelegramTransport(Channel):
         return await ep.finalize_stream(full_text, context, on_token)
 
     # ------------------------------------------------------------------
-    # Job records: a new post goes through the job's route, an edit through
-    # the bot that posted the message being edited
+    # Job records: a new post goes through the job's delivery, an edit
+    # through the bot that posted the message being edited
     # ------------------------------------------------------------------
 
-    def _job_endpoint(self, rec: Any, site: str) -> "TelegramChannel":
-        return self.endpoint_for_route(getattr(rec, "origin", None) or {},
-                                       site=site)
+    def _job_endpoint(self, rec: Any) -> "TelegramChannel | None":
+        """The endpoint of the job's delivery (decided at its birth), or
+        ``None`` when the job posts nothing. A delivery whose bot has no
+        endpoint raises :class:`EndpointUnavailable`: no other bot is
+        tried."""
+        delivery = getattr(rec, "delivery", None)
+        return None if delivery is None else self.endpoint(delivery)
 
     async def post_job_start_line(self, rec: Any) -> "int | None":
-        ep = self._job_endpoint(rec, "post_job_start_line")
-        return await ep.post_job_start_line(rec)
+        ep = self._job_endpoint(rec)
+        return None if ep is None else await ep.post_job_start_line(rec)
 
     async def refresh_job_start_line(self, rec: Any) -> None:
         """Edit the job's start line through the bot that posted it. A job
@@ -409,12 +461,14 @@ class TelegramTransport(Channel):
                 return
 
     async def post_job_parked(self, rec: Any, text: str) -> "int | None":
-        ep = self._job_endpoint(rec, "post_job_parked")
-        return await ep.post_job_parked(rec, text)
+        ep = self._job_endpoint(rec)
+        return None if ep is None else await ep.post_job_parked(rec, text)
 
     async def post_job_question(self, rec: Any, qid: str, body: Any,
                                 options: list, captions: list) -> "int | None":
-        ep = self._job_endpoint(rec, "post_job_question")
+        ep = self._job_endpoint(rec)
+        if ep is None:
+            return None
         return await ep.post_job_question(rec, qid, body, options, captions)
 
     def _engagement_registry(self) -> Any:

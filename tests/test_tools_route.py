@@ -207,8 +207,10 @@ async def test_a_scheduled_jobs_route_is_born_at_launch_and_kept(monkeypatch):
     _init(manager)
     after = SimpleNamespace(ep={CASA_BOT: casa, FINANCE_BOT: butler})
     origin = {**persisted[0], "job": {"started_by": "scheduled"}}
+    from channels.tg_address import TgAddress
     rec = SimpleNamespace(id="e1", kind="specialist", role_or_type="butler",
-                          origin=origin)
+                          origin=origin, executor="butler",
+                          delivery=TgAddress(CASA_BOT, OPERATOR))
     monkeypatch.setattr(tools, "_engagement_registry", _JobRegistry(rec))
 
     token = tools.engagement_var.set(rec)
@@ -226,14 +228,16 @@ async def test_a_scheduled_jobs_route_is_born_at_launch_and_kept(monkeypatch):
 
 
 async def test_a_question_with_no_bot_for_its_route_is_not_asked(monkeypatch):
-    """A job whose stored route names a bot Casa no longer runs: the question
-    is reported not posted, as when a post fails, and nothing raises."""
+    """A job whose delivery names a bot Casa no longer runs: the question is
+    reported not posted, as when a post fails, and nothing raises."""
     env = build_two_endpoints()
     _init(env.manager)
     origin = {"role": "finance", "channel": "telegram", "chat_id": OPERATOR,
               "_tg_bot": 333, "job": {"started_by": "operator"}}
+    from channels.tg_address import TgAddress
     rec = SimpleNamespace(id="e2", kind="specialist", role_or_type="finance",
-                          origin=origin)
+                          origin=origin, executor="finance",
+                          delivery=TgAddress(333, OPERATOR))
     monkeypatch.setattr(tools, "_engagement_registry", _JobRegistry(rec))
     token = tools.engagement_var.set(rec)
     try:

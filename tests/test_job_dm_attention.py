@@ -180,7 +180,13 @@ async def _rig(tmp_path, monkeypatch, *, quiet=False, started_by="operator",
               "user_id": OPERATOR, "_tg_bot": BOT,
               "job": _job_state(started_by="scheduled" if quiet else started_by,
                                 quiet=quiet)}
-    r.rec = await r.reg.create(kind, "finance", "in_casa", "t", origin)
+    from channels.tg_address import TgAddress
+    from task_model import Requester
+    # the job posts in this chat, decided at its birth
+    r.rec = await r.reg.create(kind, "finance", "in_casa", "t", origin,
+                               executor="finance",
+                               requester=Requester("assistant", {"_tg_bot": BOT}),
+                               delivery=TgAddress(BOT, CHAT))
     ch = TelegramChannel(bot=r.bot, chat_id=str(CHAT), known_bot_id=BOT)
     r.client = _Session()
     r.drv = InCasaDriver(

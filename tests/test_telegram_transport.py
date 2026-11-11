@@ -421,9 +421,12 @@ class _Registry:
         return [r for r in self.records if r.ui_posts]
 
 
-def _job(eid="e1", route=111, posts=()):
+def _job(eid="e1", route=111, posts=(), delivery="route"):
     origin = {"chat_id": 100} if route is None else {"chat_id": 100, "_tg_bot": route}
-    return SimpleNamespace(id=eid, origin=origin, ui_posts=list(posts))
+    if delivery == "route":
+        delivery = TgAddress(route, 100) if isinstance(route, int) else None
+    return SimpleNamespace(id=eid, origin=origin, ui_posts=list(posts),
+                           delivery=delivery)
 
 
 @pytest.mark.parametrize("method,args", [
@@ -431,22 +434,23 @@ def _job(eid="e1", route=111, posts=()):
     ("post_job_parked", ("parked",)),
     ("post_job_question", ("q1", "body", ["a"], ["a"])),
 ])
-async def test_a_new_job_post_goes_through_the_jobs_route(two_endpoints, method, args):
+async def test_a_new_job_post_goes_through_the_jobs_delivery_not_its_route(
+        two_endpoints, method, args):
+    """A job's lines are posted at its delivery, decided at its birth: the
+    route of the turn that started it is not read."""
     h = two_endpoints
-    rec = _job(route=222)
+    rec = _job(route=111, delivery=TgAddress(222, 100))
     mid = await getattr(h.transport, method)(rec, *args)
     assert isinstance(mid, int)
     assert [c[0] for c in calls(h.finance)] == [method]
     assert calls(h.casa) == []
-    with pytest.raises(RouteMissing):
-        await getattr(h.transport, method)(_job(route=None), *args)
-
-
-async def test_a_job_route_of_casa_posts_through_casa(two_endpoints):
-    h = two_endpoints
-    await h.transport.post_job_start_line(_job(route=CASA))
-    assert [c[0] for c in calls(h.casa)] == ["post_job_start_line"]
-    assert calls(h.finance) == []
+    # a job that posts nothing posts nothing, anywhere
+    assert await getattr(h.transport, method)(_job(route=111, delivery=None), *args) is None
+    assert [c[0] for c in calls(h.finance)] == [method] and calls(h.casa) == []
+    # a delivery whose bot has no endpoint: no other bot is tried
+    with pytest.raises(EndpointUnavailable):
+        await getattr(h.transport, method)(_job(delivery=TgAddress(333, 100)), *args)
+    assert calls(h.casa) == []
 
 
 async def test_a_start_line_edit_goes_through_the_bot_that_posted_it(two_endpoints):
