@@ -3,6 +3,7 @@ mitmproxy grows without a bound of its own ends at the limit, the proxy exits ra
 on wedged, and s6 restarts it holding no policy; ordinary concurrent traffic stays under it."""
 from __future__ import annotations
 
+import ast
 import subprocess
 import threading
 import time
@@ -15,6 +16,41 @@ from probes import as_user, install_open_web, probe, revoke
 pytestmark = pytest.mark.docker
 
 LIMIT = 1073741824
+UPLOADS = 100           # concurrent 1 MB uploads per round
+UPLOADS_OK = 90         # of them at least this many answered 200, so a round's peak is a real load
+
+
+def _upstream_server_error(reply: str) -> bool:
+    """A 5xx the upstream sent, passed through: its Server header does not name mitmproxy
+    (the proxy's own error replies always do) or it has none. A 4xx without one stays the
+    proxy's: the addon's refusals carry no Server header."""
+    status, _, server = reply.partition(" from ")
+    return (len(status) == 3 and status.isdigit() and status.startswith("5") and bool(server)
+            and not server.startswith("mitmproxy"))
+
+
+def _upload_round_faults(counts: dict) -> list[str]:
+    """What in one round of uploads is the proxy's doing or leaves too little load: any reply
+    from the proxy itself, any empty reply or client error, or fewer than ``UPLOADS_OK`` at 200.
+    A third party's own server error on a few uploads is no proxy fault."""
+    faults = [r for r in counts if r != "200" and not _upstream_server_error(r)]
+    if sum(counts.values()) != UPLOADS:
+        faults.append(f"{sum(counts.values())} replies of {UPLOADS}")
+    if counts.get("200", 0) < UPLOADS_OK:
+        faults.append(f"{counts.get('200', 0)} at 200, under {UPLOADS_OK}")
+    return faults
+
+
+def test_an_upload_round_tolerates_only_a_few_upstream_server_errors():
+    assert _upload_round_faults({"200": 100}) == []
+    assert _upload_round_faults({"200": 93, "502 from no server header": 7}) == []
+    assert _upload_round_faults({"200": 95, "503 from cloudflare": 5}) == []
+    for bad in ("502 from mitmproxy 12.3.1", "empty", "err:ConnectionResetError",
+                "403 from no server header", "403 from cloudflare"):
+        assert _upload_round_faults({"200": 99, bad: 1}) == [bad], bad
+    assert _upload_round_faults({"200": 89, "502 from no server header": 11}) == [
+        "89 at 200, under 90"]
+    assert _upload_round_faults({"200": 99}) == ["99 replies of 100"]
 
 
 def _proxy_pid() -> int | None:
@@ -156,7 +192,9 @@ def test_repeated_concurrent_uploads_stay_well_under_the_limit():
     """Form posts and uploads, three times: 100 concurrent 1 MB POSTs per round. The event ring
     keeps each request's decision for the controller, bounded by its total size as well as by
     count, and large buffers are returned to the system when freed, so the
-    proxy's memory stays below the limit and does not grow from round to round."""
+    proxy's memory stays below the limit and does not grow from round to round. The upstream is
+    a public speed test: a few uploads it answers with its own server error are tolerated
+    (``_upload_round_faults``); any reply from the proxy itself is not."""
     install_open_web(revision=11)
     pid = _proxy_pid()
     code = r"""
@@ -190,7 +228,7 @@ print(dict(res))
     peaks, settled = [], []
     for _ in range(3):
         out, peak = _peak_while(pid, code)
-        assert out.strip() == "{'200': 100}", out
+        assert not _upload_round_faults(ast.literal_eval(out.strip())), out
         peaks.append(peak - base)
         time.sleep(3)                       # past one timed collection
         settled.append(_vm_data_kb(pid) - base)
