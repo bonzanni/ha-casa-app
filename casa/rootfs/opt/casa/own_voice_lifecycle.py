@@ -931,6 +931,13 @@ class Lifecycle:
             return {"status": "error", "kind": "delivery_failed",
                     "message": "the resident's bot is not reachable right now"}
         async with self._registry_lock:
+            # Checked again here: another offer may have taken the handle
+            # while this one waited on the probe.
+            owner = self._owner_of(username, besides=role)
+            if owner is not None:
+                return {"status": "error", "kind": "handle_owned",
+                        "message": f"@{username} was offered to {self._label(owner)} "
+                                   "already; choose another"}
             agent = self.store.agent(role, create=True)
             previous = agent.get("offer_card")
             if username.lower() not in {h.lower() for h in agent["handles"]}:

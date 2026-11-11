@@ -7,6 +7,7 @@ every durable write and every external effect of each transition and checks
 that boot completes or rolls it back."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -544,6 +545,32 @@ async def test_a_handle_once_offered_to_another_specialist_is_refused(world, roo
     assert res["status"] == "error" and res["kind"] == "handle_owned"
     assert "Alex" in res["message"]
     assert world.cards == cards and "browser" not in lc.store.agents
+
+
+async def test_two_offers_of_one_handle_at_once_give_it_to_one_specialist(world, root):
+    # Both offers pass the ownership check, then wait on the Telegram probe;
+    # only one of them may own the handle and post a card.
+    lc, host = make_lifecycle(world, root)
+    both_probing = asyncio.Event()
+    probing = 0
+
+    async def slow_probe(username):
+        nonlocal probing
+        probing += 1
+        if probing == 2:
+            both_probing.set()
+        await both_probing.wait()
+        return False
+
+    host.handle_taken = slow_probe
+    results = await asyncio.gather(lc.offer("finance", "CasaShared4821Bot"),
+                                   lc.offer("browser", "CasaShared4821Bot"))
+    assert sorted(r["status"] for r in results) == ["error", "offered"]
+    assert [r["kind"] for r in results if r["status"] == "error"] == ["handle_owned"]
+    owners = [role for role, agent in lc.store.agents.items()
+              if "casashared4821bot" in {h.lower() for h in agent.get("handles") or []}]
+    assert len(owners) == 1
+    assert len(world.cards) == 1
 
 
 async def test_a_taken_handle_is_refused(world, root):
