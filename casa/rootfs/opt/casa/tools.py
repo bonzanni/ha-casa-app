@@ -4092,7 +4092,8 @@ class _DelegatedRunLog:
     #1207: words written after a call still waiting on the operator's
     approval are held; they are logged when a consume of the same grant
     clears the cut, and never when the run ends with the cut in place. Steps
-    are not held: a step names the tool, never its outcome. Every call is
+    are not held: a step names the tool, never its outcome. Silence markers
+    are not logged (``output_boundary.without_sentinels``). Every call is
     synchronous and never waits on Telegram."""
 
     def __init__(self, cfg: Any, *, started: "datetime | None" = None) -> None:
@@ -4135,8 +4136,13 @@ class _DelegatedRunLog:
             self._log("✓ answered" if answered else "⚠️ aborted")
 
     def _flush(self, messages: list, stop: int) -> None:
+        # Words as the operator would see them: a leading or closing run of
+        # silence markers is dropped, and a message of markers alone adds no line.
+        from output_boundary import without_sentinels
         for text in messages[self._logged:stop]:
-            self._log(text)
+            text = without_sentinels(text)
+            if text:
+                self._log(text)
         self._logged = max(self._logged, stop)
 
 
