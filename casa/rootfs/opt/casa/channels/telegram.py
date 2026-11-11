@@ -136,6 +136,23 @@ def _replying_to(quoted_text: "str | None", text: str) -> str:
     return f"[replying to «{first[:200]}»]\n{text}" if first else text
 
 
+# #1314: the quoted message's text a reply note carries, at most
+REPLY_QUOTE_CHARS = 600
+
+
+def reply_note(who: str, posted: str | None, quoted_text: str | None) -> str:
+    """The Casa note the agent's turn carries when the operator's message
+    replied to another: who posted that message (a phrase the channel chose
+    from Telegram's sender ids and the task indexes, never from text), when,
+    and what it read, clipped."""
+    import chat_notes
+    when = f", posted {posted}" if posted else ""
+    body = chat_notes.clip(quoted_text, REPLY_QUOTE_CHARS) if quoted_text else "(no text)"
+    return (f"The person sent this as a reply to {who}{when}, which read:\n"
+            f"«{body}»\n"
+            "Their words answer that message, which may not be your latest one.")
+
+
 def _plain(text):
     """#1330: ``plain_text`` for a send without entities, keeping the
     admission of model text — the plain transports refuse a bare string, and
@@ -1119,7 +1136,7 @@ class TelegramChannel(Channel):
         # a done-callback that discards it. Cancelled in stop().
         self._turn_tasks: set[asyncio.Task] = set()
         # S6 §2.4 / §5: the 📎 armings (one per chat, memory-only) and the per-(chat, specialist)
-        # file-intake locks (FIFO) — a file is judged, stored and given its desk place under one
+        # file-intake locks (FIFO) — a file is judged and stored under one
         self._armings: dict = {}
         self._intake_locks: dict = {}
         # An album's destination, set by its first file and read by the rest
@@ -1722,7 +1739,7 @@ class TelegramChannel(Channel):
         chat = getattr(getattr(msg, "chat", None), "id", None)
         if chat is None or not self._user_id_is_operator(chat):
             return
-        await self.deliver_desk_notice(chat, line)
+        await self.deliver_casa_notice(chat, line)
 
     async def _hand_back(self, update: Any, msg: BusMessage) -> None:
         """A message this agent's bot delivered found no queue for its agent
@@ -2051,11 +2068,7 @@ class TelegramChannel(Channel):
 
     async def _handle_serialized(self, update: Update, chat_id: str) -> None:
         """Body of ``_handle``, run under ``_chat_serial_locks[chat_id]`` (#317)."""
-        # S4 §3: a swipe-reply on a retained specialist post is that
-        # specialist's turn — judged FIRST, ahead of the /new interception, so
-        # "/new, start over" on a Finance post is Finance's turn, as text: it
-        # resets nothing, and the desk turn's context says so (#1198).
-        # Everything that does not route takes the path below, byte for byte.
+        # A reply to a live task's post goes to the task; everything else takes the path below.
         ended_task = None
         if getattr(update.message, "reply_to_message", None) is not None:
             # A reply to a live task's post (a job or a delegation, on any
@@ -2070,11 +2083,7 @@ class TelegramChannel(Channel):
                 if taken == "ended":
                     ended_task = live
             # #1522: a reply to an ended task's post is this chat's agent's
-            # turn, with the task's end in its note — never the desk, which
-            # cannot see the task. The desk is the resident's chat's only.
-            if (ended_task is None and self.is_casa
-                    and await self._maybe_route_desk_reply(update, chat_id)):
-                return
+            # turn, with the task's end in its note.
         # /new reset — intercept before rate-limiting or bus dispatch (spec §4.2 #2, C2).
         text = (update.message.text or "").strip()
         # M10 (v0.52.0): tolerate a "/new@botname" mention suffix (defensive —
@@ -2277,8 +2286,8 @@ class TelegramChannel(Channel):
             # the text he typed (or a file's caption), on a reserved key
             # stamped only here, so run admission never reads anything else.
             context["_operator_words"] = content
-        # #1314: a reply the desk did not take still tells the resident what
-        # it answered — Casa's note, on a reserved key; the text stays raw.
+        # #1314: a reply tells the agent what it answered — Casa's note, on a
+        # reserved key; the text stays raw.
         reply_note = self._reply_note_for(update, chat_id, ended_task=ended_task)
         if reply_note is not None:
             context["_reply_note"] = reply_note
@@ -2310,42 +2319,30 @@ class TelegramChannel(Channel):
 
     def _reply_note_for(self, update: Update, chat_id: str, *,
                         ended_task: Any = None) -> str | None:
-        """#1314: the note of what a message the desk did not take replied to,
-        or ``None`` for a message that is not a reply. Who posted it is decided
-        from Casa's post map and Telegram's sender ids, never from its text: a
-        message sent on behalf of a chat names no person (its ``from_user`` may
-        be a placeholder shared by every anonymous admin). *ended_task*: the
-        ended task the caller already found the quoted post to be."""
-        import result_broker
-        import specialist_desk
+        """#1314: the note of what a message replied to, or ``None`` for a
+        message that is not a reply. Who posted it is decided from Telegram's
+        sender ids and the task indexes, never from its text: a message sent on
+        behalf of a chat names no person (its ``from_user`` may be a
+        placeholder shared by every anonymous admin). *ended_task*: the ended
+        task the caller already found the quoted post to be."""
         message = update.message
         quoted = getattr(message, "reply_to_message", None)
         if quoted is None:
             return None
-        chat = strict_positive_id(chat_id)
-        quoted_at = self._quoted_address(chat, quoted)
-        record = (result_broker.POST_MAP.get(quoted_at)
-                  if quoted_at is not None else None)
         quoted_from = getattr(quoted, "from_user", None)
         sender = getattr(message, "from_user", None) or update.effective_user
         bot_id = self.bot_id if self.has_bot_id else None
         if ended_task is None:
             _live, ended_task = self._quoted_task(chat_id, sender, quoted)
         if ended_task is not None:
-            # #1522: ahead of the post map, which names a specialist-hosted
-            # job's plugin post as that specialist's
             who = self._ended_task_phrase(ended_task)
-        elif record is not None:
-            import tools as tools_mod
-            who = ("one of your own earlier messages" if record.role == self.default_agent
-                   else f"an earlier message from {tools_mod._display_name_for_role(record.role)}")
         elif (getattr(quoted, "sender_chat", None) is not None
               or getattr(message, "sender_chat", None) is not None):
             who = "a message sent on behalf of a chat"
         elif quoted_from is not None and bot_id is not None and quoted_from.id == bot_id:
-            # #1335: the post map never held the resident's own replies, so
-            # nothing was lost; nor does its absence prove who wrote it (a
-            # specialist's file, Casa's notices, a forgotten post)
+            # #1335: Casa keeps no record of who posted a message in this chat,
+            # so a message from this bot may be the agent's own or a notice of
+            # the system's
             who = ("one of your earlier messages (most likely; it could also be a notice "
                    "from the system)")
         elif quoted_from is not None and sender is not None and quoted_from.id == sender.id:
@@ -2360,7 +2357,7 @@ class TelegramChannel(Channel):
             except (TypeError, ValueError, AttributeError):
                 posted = None
         text = getattr(quoted, "text", None) or getattr(quoted, "caption", None)
-        return specialist_desk.reply_note(who, posted, text)
+        return reply_note(who, posted, text)
 
     # ------------------------------------------------------------------
     # A reply to a task's post: a job's or a delegation's, on any bot
@@ -2494,116 +2491,6 @@ class TelegramChannel(Channel):
         return (f"a message from {whose} background job "
                 f"«{self._job_title(rec)}»{via}, {ended}")
 
-    # ------------------------------------------------------------------
-    # S4: the specialist desk — a swipe-reply on a specialist's post
-    # ------------------------------------------------------------------
-
-    async def _maybe_route_desk_reply(self, update: Update, chat_id: str) -> bool:
-        """INV-DESK-005: four positive conditions — the sender is the
-        authenticated operator, the quoted message is retained in the post
-        map for this chat and was posted for this operator, the poster is not
-        this chat's resident, and the poster holds a desk (a specialist or the
-        configurator) the resident may delegate to now — then the chat's rate decision, exactly as today's
-        path takes it, then ONE tracked desk task. ``True`` when the message
-        was consumed here (routed, or rate-limited with the notice)."""
-        import result_broker
-        import specialist_desk
-        quoted = update.message.reply_to_message
-        user = update.effective_user
-        chat = strict_positive_id(chat_id)
-        if chat is None or user is None or not self._sender_is_operator(user):
-            return False
-        quoted_at = self._quoted_address(chat, quoted)
-        record = result_broker.POST_MAP.get(quoted_at) if quoted_at is not None else None
-        if (record is None or record.operator_id != user.id
-                or record.role == self.default_agent
-                or not specialist_desk.desk_target_ok(self.default_agent, record.role)):
-            return False
-        if self._rate_limiter is not None and self._rate_limiter.enabled:
-            decision = self._rate_limiter.check(chat_id)
-            if not decision.allowed:
-                if decision.should_notify:
-                    logger.info("Telegram rate limit hit for chat_id=%s (desk reply); "
-                                "replying with one-shot notice", chat_id)
-                    await self._send_rate_limit_reply(chat_id)
-                return True
-        reservation = await self._reserve_desk_or_refuse(chat, record.role)
-        if reservation is None:
-            return True
-        cid = new_cid()
-        self._start_typing(chat_id, cid)
-        self._spawn_desk_turn(
-            chat_id=chat, user_id=user.id, user_name=user.first_name or "unknown",
-            message_id=getattr(update.message, "message_id", None), cid=cid,
-            text=update.message.text,
-            quoted_text=(getattr(quoted, "text", None) or getattr(quoted, "caption", None)),
-            record=record, desk_role=record.role, continuation=False,
-            reservation=reservation)
-        return True
-
-    async def _reserve_desk_or_refuse(self, chat_id: int, desk_role: str):
-        """§4: the queue place is taken BEFORE any task exists; a full queue is
-        the busy notice, inline, and no task."""
-        import specialist_desk
-        desk = specialist_desk.DESKS.get_or_create(self.bot_id, chat_id, desk_role)
-        if desk.faulted:
-            # S5 §14.8: no queueing on a faulted desk
-            line = specialist_desk.faulted_line(specialist_desk.label_for(desk_role))
-            await self.deliver_desk_notice(chat_id, line)
-            specialist_desk.record_echo(self.bot_id, chat_id, line)
-            return None
-        reservation = desk.reserve()
-        if reservation is None:
-            # S6 §2.2: a past event, composed within the echo cap (one-line S4 rewording)
-            line = specialist_desk.bounded_line("{label}'s desk was full when the place was requested.",
-                                                label=specialist_desk.label_for(desk_role))
-            await self.deliver_desk_notice(chat_id, line)
-            specialist_desk.record_echo(self.bot_id, chat_id, line)
-        return reservation
-
-    def _spawn_desk_turn(self, **kwargs: Any) -> None:
-        """One tracked background task per desk use (the shape of the
-        engagement turn task), so the per-chat serial lock is released at
-        once and a stop can drain it."""
-        import specialist_desk
-        task = asyncio.create_task(specialist_desk.handle_reply(
-            channel=self, resident_role=self.default_agent, bot_id=self.bot_id,
-            **kwargs))
-        self._turn_tasks.add(task)
-        task.add_done_callback(self._turn_tasks.discard)
-        reservation = kwargs.get("reservation")
-        if reservation is not None:
-            # a task cancelled before its coroutine starts has no finally
-            task.add_done_callback(reservation.release)
-
-    async def _dispatch_desk_continuation(
-        self, *, chat_id: int, user_id: int, desk_role: str, request_id: str, text: str,
-    ) -> bool:
-        """§7: an approval raised inside a desk turn continues the DESK — a
-        new desk turn whose task is the continuation text — admitted by the
-        route's own conditions at dispatch time: the approver is the
-        authenticated operator and the specialist is still one the resident
-        may delegate to. Otherwise one labelled notice and no specialist run
-        (the pending grant is left to expire). Returns True when the operator
-        was told either way."""
-        import specialist_desk
-        if (not self._user_id_is_operator(user_id)
-                or not specialist_desk.desk_target_ok(self.default_agent, desk_role)):
-            line = f"{specialist_desk.label_for(desk_role)} could not continue (not delegable)."
-            await self.deliver_desk_notice(chat_id, line)
-            specialist_desk.record_echo(self.bot_id, chat_id, line)     # §9: the echo says the same
-            return True
-        reservation = await self._reserve_desk_or_refuse(chat_id, desk_role)
-        if reservation is None:
-            return True
-        cid = new_cid()
-        self._start_typing(str(chat_id), cid)
-        self._spawn_desk_turn(
-            chat_id=chat_id, user_id=user_id, user_name="operator", message_id=None,
-            cid=cid, text=text, quoted_text=None, record=None, desk_role=desk_role,
-            continuation=True, reservation=reservation)
-        return True
-
     async def _on_proposal_callback(self, cq: Any, rid: str, idx: int | None) -> None:
         """S5 §4.1: the tap's admission, fail closed, nothing claimed before
         every check passes — presence, the live record, the chat, the
@@ -2672,7 +2559,7 @@ class TelegramChannel(Channel):
                 return          # slice 5f: a link button sends no callback; one naming it is void
             if idx < len(kinds) and kinds[idx] == "keep_card":
                 # #1362: a keep_card tap claims and commits nothing — the card keeps its
-                # text and every button; the file goes out through the same desk use
+                # text and every button; the file goes out through the same lane
                 if not BROKER.is_live_unclaimed(namespace="proposal", scope=scope,
                                                 request_id=rid):
                     return
@@ -2694,7 +2581,8 @@ class TelegramChannel(Channel):
                     # arrive before it; a later arming replaces this one (R4-1: no
                     # message follows; the edited keyboard is the acknowledgement).
                     # It records where the file goes: the task whose post the card
-                    # is, while that task is live, else the card's agent.
+                    # is, while that task is live; any other file is this chat's
+                    # agent's.
                     import task_posts
                     card = self.address(chat, tapped) if isinstance(tapped, int) else None
                     task = (self._task_lookup(task_posts.owner, card)
@@ -2720,7 +2608,7 @@ class TelegramChannel(Channel):
         fail closed, exactly one answer. The admission (durable thirty days, so a Stop after
         a restart works) must be ``admitted``; the tap must come from its chat and from its
         operator, who is still the operator as configured now. Then the toast at once, and
-        one tracked task stops the request directly (``plugin_stop``): no desk, no model."""
+        one tracked task stops the request directly (``plugin_stop``): no lane, no model."""
         import plugin_bindings
         import plugin_stop
         import run_admission
@@ -2778,7 +2666,7 @@ class TelegramChannel(Channel):
         """S5 §4.2/§4.4: the one owner of what follows a proposal's
         settlement. A tap: the keyboard edited away FIRST with the chosen
         label (``⏳ <label>`` for a call, ``☑ <label>`` for ``📎``), then the
-        desk hand-off; every other outcome — the TTL, a
+        hand-off to the executing agent's lane; every other outcome — the TTL, a
         supersede, a cancel — only edits the keyboard. The meta is read at
         settle time from the broker's own dict."""
         async def _finish(outcome: dict) -> None:
@@ -2810,7 +2698,7 @@ class TelegramChannel(Channel):
             kinds = meta.get("kinds") or []
             if isinstance(idx, int) and idx < len(kinds) and kinds[idx] == "close":
                 # #1375: a Close tap removes the keyboard and nothing else — the text stays
-                # as posted, no desk use, no plugin call, no model turn, nothing sent; the
+                # as posted, no lane use, no plugin call, no model turn, nothing sent; the
                 # commit already makes every later tap "already answered"
                 await self.clear_dm_keyboard(chat_id, message_id)
                 return
@@ -2818,17 +2706,17 @@ class TelegramChannel(Channel):
                 # S6 §2.4 / R4-1: an arm_file tap edits the keyboard and sends NOTHING; a
                 # failed edit is told with past facts only — never "applying your tap",
                 # never where the next file goes; nothing is dispatched
-                import specialist_desk
+                import chat_notes
                 edited = await self._edit_proposal_message(meta, f"{text}\n☑ {label}")
                 if not edited:
                     logger.warning("arm_file keyboard edit failed (rid=%s); telling by notice", rid[:8])
-                    await self.deliver_desk_notice(chat_id, specialist_desk.bounded_line(
+                    await self.deliver_casa_notice(chat_id, chat_notes.bounded_line(
                         "{label} ☑ {button} — the buttons could not be cleared.",
                         label=self._agent_label(str(meta.get("role") or "")),
                         fields={"button": label}))
                 return
             # A stored call of the declared stop tool starts at once, before any edit of the
-            # card (a slow or flood-limited edit must not keep the run going): no desk, no
+            # card (a slow or flood-limited edit must not keep the run going): no lane, no
             # turn, and no ⏳ line — its own outcome mark is the card's one edit
             try:
                 if await self._stop_tap(meta=meta, idx=idx):
@@ -2846,9 +2734,8 @@ class TelegramChannel(Channel):
                 # the operator still sees which button won BEFORE any effect —
                 # one labelled notice names it; the commit already excludes a
                 # second execution, so the stale buttons only answer a toast
-                import specialist_desk
                 logger.warning("proposal keyboard edit failed (rid=%s); telling by notice", rid[:8])
-                await self.deliver_desk_notice(
+                await self.deliver_casa_notice(
                     chat_id, f"{self._agent_label(str(meta.get('role') or ''))} ☑ {label} — "
                              "applying your tap (the buttons could not be cleared).")
             try:
@@ -2900,7 +2787,8 @@ class TelegramChannel(Channel):
 
     def _spawn_keep_tap(self, *, meta: dict, idx: int, request_id: str) -> None:
         """#1362: a keep_card tap has no settlement, so no finish hook hands it to
-        the desk — the callback does, as one tracked task (a stop drains it)."""
+        the executing agent's lane — the callback does, as one tracked task (a stop
+        drains it)."""
         async def _run() -> None:
             try:
                 await self._dispatch_proposal_tap(meta=meta, idx=idx, request_id=request_id)
@@ -2914,49 +2802,52 @@ class TelegramChannel(Channel):
         """How Casa's lines in this chat name *role*: in the resident's chat the
         ``📊 <name>`` head every specialist's post carries; in an agent's own
         chat its plain name, since every message there is its own."""
-        import specialist_desk
         if self.is_casa:
-            return specialist_desk.label_for(role)
+            import result_broker as rb
+            return rb.post_label(role)
         import tools as tools_mod
         return tools_mod._display_name_for_role(role)
 
     async def _dispatch_proposal_tap(self, *, meta: dict, idx: int, request_id: str) -> bool:
-        """S5 §4.2 steps 2–5: reserve the specialist's desk (a full queue ⇒
-        the busy line on the keyboard and the busy notice, nothing runs), take
-        the typing lease, and spawn ``specialist_desk.handle_tap`` as one
-        tracked desk use with the reservation's done-callback."""
-        import specialist_desk
-        chat_id, desk_role = int(meta["chat_id"]), str(meta.get("role") or "")
+        """S5 §4.2 steps 2–5: reserve a place in the executing agent's lane (a
+        full queue ⇒ the busy line on the keyboard and the busy notice, nothing
+        runs), take the typing lease, and spawn
+        ``stored_call_settler.handle_tap`` as one tracked task with the
+        reservation's done-callback."""
+        import agent_lane
+        import chat_notes
+        import stored_call_settler
+        chat_id, role = int(meta["chat_id"]), str(meta.get("role") or "")
         if await self._stop_tap(meta=meta, idx=idx):
-            return True             # a stored call of the declared stop tool: no desk, no turn
-        label = self._agent_label(desk_role)
-        desk = specialist_desk.DESKS.get_or_create(self.bot_id, chat_id, desk_role)
+            return True             # a stored call of the declared stop tool: no lane, no turn
+        label = self._agent_label(role)
+        lane = agent_lane.LANES.get(role)
         # #1362: a keep_card tap never writes a line over its card
-        keep = specialist_desk.keeps_card(meta, idx)
-        if desk.faulted:
-            line = specialist_desk.faulted_line(label)
-            await self.deliver_desk_notice(chat_id, line)
-            specialist_desk.record_echo(self.bot_id, chat_id, line)
+        keep = stored_call_settler.keeps_card(meta, idx)
+        if lane.faulted:
+            line = agent_lane.faulted_line(label)
+            await self.deliver_casa_notice(chat_id, line)
+            chat_notes.record(self.bot_id, chat_id, line)
             if not keep:
                 await self.mark_proposal(meta, "✖ faulted")
             return True
-        reservation = desk.reserve()
+        reservation = lane.reserve()
         if reservation is None:
             labels = meta.get("options") or []
             button = str(labels[idx]) if isinstance(idx, int) and 0 <= idx < len(labels) else "?"
-            await self.deliver_desk_notice(
+            await self.deliver_casa_notice(
                 chat_id, f"{label} is busy; the specialist will propose again, or type your verdict.")
-            # §10: the resident's line names the refused tap, as the desk's own refusals do
-            specialist_desk.record_echo(self.bot_id, chat_id, f"{label} refused your tap ({button}): busy.")
+            # the agent's note names the refused tap
+            chat_notes.record(self.bot_id, chat_id, f"{label} refused your tap ({button}): busy.")
             if not keep:
                 await self.mark_proposal(meta, "✖ busy")
             return True
         cid = new_cid()
         self._start_typing(str(chat_id), cid)
-        task = asyncio.create_task(specialist_desk.handle_tap(
+        task = asyncio.create_task(stored_call_settler.handle_tap(
             channel=self, resident_role=self.default_agent, bot_id=self.bot_id,
             chat_id=chat_id,
-            user_id=int(meta["operator_id"]), cid=cid, desk_role=desk_role, meta=meta,
+            user_id=int(meta["operator_id"]), cid=cid, executing_role=role, meta=meta,
             idx=idx, request_id=request_id, reservation=reservation))
         self._turn_tasks.add(task)
         task.add_done_callback(self._turn_tasks.discard)
@@ -2966,10 +2857,10 @@ class TelegramChannel(Channel):
     async def _stop_tap(self, *, meta: dict, idx: int) -> bool:
         """A tapped button whose stored call names its plugin's declared ``casa.stopTool``
         (the bare name equal, the plugin segment and artifact the proposal's own) reserves no
-        desk and runs no pinned turn: the stop is called directly in one tracked task
+        lane place and runs no pinned turn: the stop is called directly in one tracked task
         (``plugin_stop``), the proposal is marked with its outcome, the reply line is posted
         under it, and the request's start or status card is marked too. False for any other
-        call, which goes to the desk as before."""
+        call, which goes to the executing agent's lane as before."""
         import plugin_stop
         calls = meta.get("calls") or []
         call = calls[idx] if isinstance(idx, int) and 0 <= idx < len(calls) else None
@@ -3075,19 +2966,19 @@ class TelegramChannel(Channel):
             return
         await updater.start_polling(allowed_updates=list(self.allowed_updates))
 
-    async def deliver_desk_notice(self, chat_id: int, text: str) -> bool:
-        """§9: ONE Casa-composed, labelled, body-free notice to the operator's
-        chat about a desk turn's outcome — a notice, never model text
+    async def deliver_casa_notice(self, chat_id: int, text: str) -> bool:
+        """ONE Casa-composed, labelled, body-free notice to the operator's chat
+        — a refused tap, a busy agent, a dormant chat — never model text
         (INV-OUT-001's notice class). A failure is logged and nothing more is
         attempted."""
         if self._app is None:
-            logger.warning("Telegram channel not started; cannot deliver desk notice")
+            logger.warning("Telegram channel not started; cannot deliver Casa notice")
             return False
         try:
             await self._app.bot.send_message(chat_id=chat_id, text=text)
             return True
         except Exception as exc:  # noqa: BLE001 — a notice fault is logged
-            logger.warning("desk notice failed: %s", type(exc).__name__)
+            logger.warning("Casa notice failed: %s", type(exc).__name__)
             return False
 
     async def send_step_line(self, chat_id: int, text: str) -> "int | None":
@@ -3924,11 +3815,8 @@ class TelegramChannel(Channel):
         # S6 §2.1: WHO the file is addressed to — resolved before the classification
         # refusal, synchronously (an arming is consumed here whatever follows)
         address = self._file_address(chat_id, user, msg)
-        if address is not None and address[0] == "task":
-            await self._route_task_file(chat_id, user, msg, address)
-            return
         if address is not None:
-            await self._route_addressed_file(chat_id, user, msg, address)
+            await self._route_task_file(chat_id, user, msg, address)
             return
 
         # #1379: from here on every outcome is one entry of the chat's
@@ -4126,19 +4014,17 @@ class TelegramChannel(Channel):
     FILE_ARM_TTL_S = 600.0
 
     def _file_address(self, chat_id: Any, user: Any, msg: Any):
-        """S6 §2.1 step 1 — exactly one of: a reply to a live task's post, or a live 📎
-        arming whose destination is a live task (``("task", ref, how)``); on the
-        resident's bot, a swipe-reply on a retained specialist post for this operator
-        (``("reply", record, role)``) or a live 📎 arming of a specialist's card
-        (``("armed", None, role)``); or ``None``: the file is this chat's agent's — always
-        for a reply to an ended task's post (#1522). An arming is consumed here — expired
-        or not — before any await. The files of one album share the destination its first
-        file resolved."""
+        """S6 §2.1 step 1 — one of two outcomes: a reply to a live task's post, or a live
+        📎 arming whose destination is a live task (``("task", ref, how)``); or ``None``:
+        the file is this chat's agent's — always for a reply to an ended task's post
+        (#1522), and for an arming whose destination is not a task. An arming is consumed
+        here — expired or not — before any await. The files of one album share the
+        destination its first file resolved."""
         chat = strict_positive_id(chat_id)
         if chat is None or user is None:
             return None
         # the arming arms the NEXT file, whichever route that file takes: it is spent
-        # here, before the reply check, so a swipe-reply file cannot leave it live for a
+        # here, before the reply check, so a reply file cannot leave it live for a
         # later file (INV-FILE-003; diff round 1, Terra)
         arming = self._armings.pop(chat, None)
         album = getattr(msg, "media_group_id", None) or None
@@ -4154,28 +4040,19 @@ class TelegramChannel(Channel):
 
     def _resolve_file_address(self, chat: int, user: Any, msg: Any, arming: "dict | None"):
         """:meth:`_file_address`'s decision for one file, task first."""
-        import result_broker
         quoted = getattr(msg, "reply_to_message", None)
         live, ended = self._quoted_task(chat, user, quoted)
         if live is not None:
             return ("task", live, "reply")
         if ended is not None:
             # #1522: a file sent as a reply to an ended task's post is this chat's
-            # agent's, never the desk's, which cannot see the task
+            # agent's
             return None
-        quoted_at = self._quoted_address(chat, quoted)
-        if quoted_at is not None and self.is_casa:
-            record = result_broker.POST_MAP.get(quoted_at)
-            if (record is not None and record.operator_id == getattr(user, "id", None)
-                    and record.role != self.default_agent):
-                return ("reply", record, record.role)
         if (arming is not None and arming.get("operator_id") == getattr(user, "id", None)
                 and float(arming.get("expires_at", 0.0)) > time.monotonic()):
             dest = arming.get("dest")
             if isinstance(dest, tuple) and dest[0] == "task":
                 return ("task", dest[1], "armed")
-            if self.is_casa:
-                return ("armed", None, str(arming.get("role") or ""))
         return None
 
     async def _route_task_file(self, chat_id: Any, user: Any, msg: Any, address: tuple) -> None:
@@ -4196,7 +4073,7 @@ class TelegramChannel(Channel):
 
         async def tell(line: str) -> None:
             try:
-                await self.deliver_desk_notice(chat, line)
+                await self.deliver_casa_notice(chat, line)
             except Exception as exc:  # noqa: BLE001 — nothing more is attempted
                 logger.warning("task file notice failed: %s", type(exc).__name__)
 
@@ -4255,88 +4132,6 @@ class TelegramChannel(Channel):
         else:
             await tell(f"I've kept {name}, but that task had already finished. "
                        "Tell me what you'd like done with it.")
-
-    async def _route_addressed_file(self, chat_id: Any, user: Any, msg: Any, address: tuple) -> None:
-        """S6 §2.1 step 2, under the per-(chat, specialist) intake lock (§5): delegable now,
-        an inbox, an accepted kind, the download into THAT specialist's inbox, the
-        post-download re-check, the desk place — then ONE desk turn with a Casa-composed
-        task. Every refusal is a completed event, told once and echoed with the same
-        string; nothing here ever reaches the default agent's inbox (F1)."""
-        import agent_inbox
-        import specialist_desk as sd
-        kind, record, role = address
-        chat = strict_positive_id(chat_id)
-        label = sd.label_for(role)
-        cls = _classify_inbound(msg)
-        doc = getattr(msg, "document", None)
-        name = cls.display_name or getattr(doc, "file_name", None) or "your file"
-        ext = (cls.ext or "").lstrip(".").upper() or "file"
-
-        async def tell(line: str) -> None:
-            try:
-                await self.deliver_desk_notice(chat, line)
-            except Exception as exc:  # noqa: BLE001 — nothing more is attempted
-                logger.warning("file route notice failed: %s", type(exc).__name__)
-            sd.record_echo(self.bot_id, chat, line)
-
-        lock = self._intake_locks.setdefault((chat, role), asyncio.Lock())
-        async with lock:
-            if not sd.desk_target_ok(self.default_agent, role):
-                await tell(sd.bounded_line("{label} could not take your file (not delegable).", label=label))
-                return
-            inbox = agent_inbox.get_inbox(role)
-            if inbox is None:
-                await tell(sd.bounded_line("{label} could not take your file (storage).", label=label))
-                return
-            if not cls.accept:
-                await tell(sd.bounded_line("{label} could not take {name}: it was not a kind it can read.",
-                                           label=label, fields={"name": name}))
-                return
-            bot = self.bot
-            try:
-                receipt = await inbox.receive(
-                    lambda cap: agent_inbox.fetch_telegram_file(bot, cls.file_id, cap),
-                    ext=cls.ext, display_name=cls.display_name, declared_size=cls.declared_size)
-            except Exception:  # noqa: BLE001 — the outcome is unknown, never "absent"
-                logger.warning("routed file: unexpected failure", exc_info=True)
-                receipt = agent_inbox.Receipt(agent_inbox.Outcome.UNCERTAIN)
-            logger.info("routed file: role=%s outcome=%s bytes=%d", role, receipt.outcome.value, receipt.size)
-            line = sd.file_outcome(label, name, receipt.outcome, kind=ext)
-            if line is not None:
-                await tell(line)
-                return
-            stored_path = os.path.join(inbox.ready_dir, receipt.name)
-            if not sd.desk_target_ok(self.default_agent, role):
-                await tell(sd.bounded_line(
-                    "{label} stored {name} in its inbox but was not delegable at the post-download check.",
-                    label=label, fields={"name": name}))
-                return
-            desk = sd.DESKS.get_or_create(self.bot_id, chat, role)
-            if desk.faulted:
-                await tell(sd.faulted_line(label))
-                return
-            reservation = desk.reserve()
-            if reservation is None:
-                await tell(sd.bounded_line(
-                    "{label} stored {name} in its inbox; its desk was full when the place was requested.",
-                    label=label, fields={"name": name}))
-                return
-        # the place is taken; the turn runs outside the intake lock
-        task = (f"[casa file] The operator sent you a file: {name} ({ext}, {receipt.size} bytes). "
-                f"It is in your inbox at {stored_path}. File it with your plugin and report what you did. "
-                "The inbox path is for your tools, not for your reply.")
-        caption = getattr(msg, "caption", None)
-        if caption:
-            task += f"\nThe operator wrote: {caption}"
-        quoted = getattr(msg, "reply_to_message", None) if kind == "reply" else None
-        quoted_text = (getattr(quoted, "text", None) or getattr(quoted, "caption", None)) if quoted else None
-        cid = new_cid()
-        self._start_typing(str(chat), cid)
-        self._spawn_desk_turn(
-            chat_id=chat, user_id=user.id, user_name=getattr(user, "first_name", None) or "unknown",
-            message_id=getattr(msg, "message_id", None), cid=cid, text=task, quoted_text=quoted_text,
-            record=record, desk_role=role, continuation=False, reservation=reservation,
-            file_name=name, file_path=stored_path)
 
     async def _redirect_from_log_group(self, msg: Any) -> None:
         """The log group is read-only. A person who writes there (text, a
@@ -5111,12 +4906,12 @@ class TelegramChannel(Channel):
             logger.warning("Final stream disclosure send failed: %s", exc)
 
     def _record_post(self, chat_id, sent, post) -> None:
-        """S4 §2: file the message that just landed under *post* in the post
-        map — as it lands, one physical message at a time — so the operator's
-        swipe-reply on it routes to the poster. Nothing without a record (every
-        resident reply today), nothing without a message id (a stub). A landed
-        post of a specialist that keeps no memory also leaves Casa's one
-        body-free line in memory (INV-MEM-040)."""
+        """File each landed message of a task under its task — as it lands, one
+        physical message at a time — so the operator's reply to it reaches the
+        task, and leave the memory line: a landed post of a specialist that
+        keeps no memory leaves Casa's one body-free line in memory
+        (INV-MEM-040). Nothing without a record (every resident reply today),
+        nothing without a message id (a stub)."""
         if post is None:
             return
         message_id = getattr(sent, "message_id", None)
@@ -5128,9 +4923,6 @@ class TelegramChannel(Channel):
         # address on this bot, never at a bare chat and message id another
         # bot could also have.
         address = self.address(chat, message_id) if type(message_id) is int else None
-        if address is not None:
-            import result_broker
-            result_broker.POST_MAP.record(address, post)
         # Every landed post of a task — each page, proposal, link, file and
         # run card — is also filed under that task (a job's or a
         # delegation's), so a reply to any of them reaches the task for as
@@ -5416,8 +5208,8 @@ class TelegramChannel(Channel):
         result broker composed it — ONE page by the deposit's rule) with one
         button per label, ``callback_data = v1|proposal|<rid>|<i>``, rendered
         rich with the plain fallback ``post_dm_keyboard`` uses, and file the
-        sent message under *post* (so a swipe-reply on the proposal routes to
-        the specialist's desk). Returns the message id, or ``None`` when
+        sent message under *post* (so a reply to the proposal of a task reaches
+        the task). Returns the message id, or ``None`` when
         nothing landed.
 
         Slice 5b: with *photo* — ``(bytes, file name)`` the result broker claimed
@@ -5572,8 +5364,8 @@ class TelegramChannel(Channel):
             logger.warning("Telegram channel not started; cannot send message")
             return DeliveryOutcome.NOT_DELIVERED
         pages = render_paged(message)
-        # S4 §2/§5.5: a desk reply's context carries the post record its
-        # pages are filed under as they land; every other reply carries none.
+        # A task post's context carries the post record its pages are filed
+        # under as they land; every other reply carries none.
         post = context.get("_post")
 
         def _landed(sent):

@@ -86,11 +86,10 @@ async def test_a_failed_keyboard_edit_on_an_arm_tap_sends_exactly_the_past_fact_
     async def notice(chat_id, text):
         notices.append(text)
         return True
-    monkeypatch.setattr(tap_env.ch, "deliver_desk_notice", notice)
+    monkeypatch.setattr(tap_env.ch, "deliver_casa_notice", notice)
     assert await _tap(tap_env, _cq(data=f"v1|proposal|{RID}|1")) == "✔"
     await _settle()
-    import specialist_desk as sd
-    assert notices == [f"{sd.label_for('finance')} ☑ 📎 Add a document — the buttons could not be cleared."]
+    assert notices == [f"{rb.post_label('finance')} ☑ 📎 Add a document — the buttons could not be cleared."]
     assert tap_env.taps == [] and OPERATOR in tap_env.ch._armings
 
 
@@ -132,7 +131,8 @@ def test_only_the_tap_commit_writes_an_arming_and_only_a_file_consumes_it():
 async def test_an_arm_tap_on_a_live_tasks_card_records_the_task_as_its_destination(
         tap_env, monkeypatch):
     """The arming records where the next file goes, at commit: the task whose
-    post the card is, while that task is live; otherwise the card's agent."""
+    post the card is, while that task is live; otherwise the card's agent's
+    conversation, whose file is this chat's agent's."""
     import task_posts_double
     from channels.tg_address import TgAddress
     index = task_posts_double.install(monkeypatch)
