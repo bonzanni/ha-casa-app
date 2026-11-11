@@ -241,3 +241,42 @@ async def test_settings_changed_after_the_approval_refuse_at_the_library(
     assert _snapshot(tmp_path) == before
     assert (sorted((tmp_path / "ops").iterdir()) if (tmp_path / "ops").exists() else []) == \
         journals
+
+
+# -- 8: a kept new version ----------------------------------------------------------------
+
+async def test_the_run_that_finishes_a_kept_upgrade_asks_for_a_new_approval(
+        tmp_path, monkeypatch, env):
+    """An upgrade that kept its new version (it failed after the new version
+    was put in place) is finished by running the same upgrade again, and that
+    run needs a new tap: the new version is kept only when it makes a plain
+    setting secret, and an upgrade whose component declares secret names, or
+    whose request names one, never counts as changing nothing. So asking
+    again, with the same values or without the secret name, posts a card."""
+    import plugin_registry
+    from test_specialist_bundle_commit import _UpgradeFixture
+    fx = _UpgradeFixture(tmp_path, monkeypatch, v2_required=(), v2_secret_names=("k",),
+                         value="plain-8e4b")
+    fx.approve_v2(secret_names_provided=frozenset({"k"}))
+    real_swap = plugin_registry.apply_owned_swap
+    swaps: list = []
+
+    def _swap_fails_once(**kw):
+        swaps.append(1)
+        if len(swaps) == 1:
+            raise OSError(5, "Input/output error")
+        return real_swap(**kw)
+    monkeypatch.setattr(plugin_registry, "apply_owned_swap", _swap_fails_once)
+    with pytest.raises(SpecialistInstallError) as raised:
+        fx.upgrade(config={}, secret_names_provided=frozenset({"k"}))
+    assert raised.value.kind == "upgrade_kept_new_version"
+    assert InstanceDir(fx.slug_dir).active().root.endswith(fx.insp2.root_digest)
+
+    same = await _ask(fx.insp2, config={}, secrets=["k"])
+    assert same["approval"] == "requested", same
+    assert len(env.cards) == 1 and _current(fx.insp2).state == "pending"
+    assert env.cards[-1].record.values == {"config": {}, "secrets": ["k"]}
+
+    unnamed = await _ask(fx.insp2, config={})
+    assert unnamed["approval"] == "requested", unnamed
+    assert len(env.cards) == 2 and _current(fx.insp2).state == "pending"
