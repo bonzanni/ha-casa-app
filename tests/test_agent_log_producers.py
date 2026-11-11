@@ -27,9 +27,8 @@ from agent_logs import LogKey
 from authz_grants import _DENY_POSTED
 
 from test_authz_hook import _deny_reason
-from test_pending_approval_desk import (  # noqa: F401 — the desk harness
-    ARGS, TOOL, _Scripted, _Step, _ask, _call, _result, _text, desk, env,
-)
+from scripted_delegate import ARGS, TOOL, _Scripted, _Step, _call, _result, _text  # noqa: F401
+from test_pending_approval_desk import _ask, desk, env  # noqa: F401 — the desk harness
 from test_pending_approval_desk import _reply
 from test_pending_approval_pins import _desk_key
 

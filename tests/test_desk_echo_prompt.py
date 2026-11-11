@@ -4,76 +4,14 @@ spent on the echo, the origin's user_text left raw (INV-DESK-002).
 """
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import pytest
 
 import result_broker as rb
 import specialist_desk as sd
+from notes_harness import BOT, _FakeClient, _agent, _turn  # noqa: F401
 from timekeeping import split_time_envelope
 
-try:
-    from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
-except ImportError:
-    from role_artifact_stub import STUB_ROLE_ARTIFACT
-
 pytestmark = pytest.mark.asyncio
-
-#: the bot the operator's Telegram turns arrive on
-BOT = 111
-
-
-class _FakeClient:
-    captured: dict = {}
-
-    def __init__(self, options):
-        _FakeClient.captured["options"] = options
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *a):
-        return False
-
-    async def query(self, text):
-        _FakeClient.captured.setdefault("queries", []).append(text)
-        return None
-
-    async def receive_response(self):
-        return
-        yield  # pragma: no cover
-
-    @property
-    def session_id(self):
-        return "sid"
-
-
-def _agent(tmp_path):
-    import agent as agent_mod
-    from channels import ChannelManager
-    from config import AgentConfig, CharacterConfig, MemoryConfig, ToolsConfig
-    from mcp_registry import McpServerRegistry
-    from session_registry import SessionRegistry
-    cfg = AgentConfig(role_artifact=STUB_ROLE_ARTIFACT, role="assistant",
-                      model="claude-sonnet-4-6", system_prompt="You are Ellen.",
-                      character=CharacterConfig(name="Ellen"), tools=ToolsConfig(allowed=[]),
-                      memory=MemoryConfig(token_budget=0))
-    return agent_mod.Agent(config=cfg,
-                           session_registry=SessionRegistry(str(tmp_path / "sessions.json")),
-                           mcp_registry=McpServerRegistry(), channel_manager=ChannelManager())
-
-
-async def _turn(agent, text="hello", channel="telegram", chat_id="42", **context):
-    from bus import BusMessage, MessageType
-    _FakeClient.captured = {}
-    if channel == "telegram":
-        context.setdefault("_tg_bot", BOT)
-    with patch("sdk_client_pool._default_make_client", _FakeClient):
-        msg = BusMessage(type=MessageType.REQUEST, source=channel, target="assistant",
-                         content=text, channel=channel,
-                         context={"chat_id": chat_id, "cid": "c-1", **context})
-        await agent._process(msg, on_token=None)
-    return _FakeClient.captured["queries"][-1]
 
 
 async def test_the_residents_next_turn_carries_the_echo_once_then_nothing(tmp_path, monkeypatch):

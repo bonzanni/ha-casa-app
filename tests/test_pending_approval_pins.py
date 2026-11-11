@@ -28,10 +28,10 @@ from output_boundary import TurnScope
 from test_authz_hook import (
     _FakeChannel, _OriginCtx, _deny_reason, _engagement, _origin,
 )
-from test_pending_approval_desk import (  # noqa: F401 — the desk harness
-    _Scripted, _ask as _desk_ask, _call as _desk_call, _result as _desk_result,
-    _text as _desk_text, desk, env,
+from scripted_delegate import (
+    _Scripted, _call as _desk_call, _result as _desk_result, _text as _desk_text,
 )
+from test_pending_approval_desk import _ask as _desk_ask, desk, env  # noqa: F401 — the desk harness
 from test_pending_approval_desk import BOT as DESK_BOT, LABEL, OPERATOR as DESK_OPERATOR, _reply
 from test_pending_approval_output import (  # noqa: F401 — the resident harness
     ARGS, CASA_BOT, PROTECTED, TAIL, TOOL, _Factory, _Gate, _ask, _call, _drive,
@@ -157,7 +157,7 @@ async def test_desk_deny_then_consume_then_prose_is_posted_whole(desk):
         desk.answers.append(await desk.hook(
             {"tool_name": TOOL, "tool_input": dict(ARGS)}, "retry-1", {}))
 
-    from test_pending_approval_desk import _Step
+    from scripted_delegate import _Step
     _Scripted.load(_desk_text("BEFORE"), _desk_call("deny-1"), _desk_ask(desk, "deny-1"),
                    _Step(_consume), _desk_result("deny-1"), _desk_call("retry-1"),
                    _desk_result("retry-1", error=False), _desk_text("Filed it."))

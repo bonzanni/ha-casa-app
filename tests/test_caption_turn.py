@@ -17,8 +17,8 @@ import pytest
 
 import agent_inbox as ai
 from provenance import sanitize_external_context
-from test_desk_echo_prompt import _agent, _turn
-from test_desk_route import OPERATOR, _channel, _FakeBot  # noqa: F401
+from notes_harness import _agent, _turn
+from telegram_reply_harness import OPERATOR, _channel, _FakeBot  # noqa: F401
 from test_inbound_files import PDF, _doc, _msg
 from test_telegram_new_reset import _drain_bus
 

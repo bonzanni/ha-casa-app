@@ -15,7 +15,8 @@ import result_broker as rb
 import specialist_desk as sd
 from provenance import sanitize_external_context
 from channels.tg_address import TgAddress
-from test_desk_route import BOT, OPERATOR, _channel, _record, _settle, routed  # noqa: F401
+from telegram_reply_harness import BOT, OPERATOR, _channel, _record, _settle
+from test_desk_route import routed  # noqa: F401
 from test_telegram_new_reset import _drain_bus
 from timekeeping import resolve_tz
 

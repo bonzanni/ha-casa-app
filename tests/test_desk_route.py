@@ -7,7 +7,6 @@ approver is the operator and the specialist is still delegable.
 """
 from __future__ import annotations
 
-import asyncio
 import types
 from unittest.mock import AsyncMock
 
@@ -15,36 +14,11 @@ import pytest
 
 import result_broker as rb
 import specialist_desk as sd
-from bus import MessageBus
-from channels.telegram import TelegramChannel
 from channels.tg_address import TgAddress
-from two_endpoints import CASA_BOT
-from test_telegram_new_reset import _drain_bus, _noop
+from telegram_reply_harness import BOT, OPERATOR, _channel, _record, _settle  # noqa: F401
+from test_telegram_new_reset import _drain_bus
 
 pytestmark = pytest.mark.asyncio
-
-OPERATOR = 42
-BOT = CASA_BOT
-
-
-class _FakeBot:
-    def __init__(self):
-        self.sent = []
-
-    async def send_message(self, **kwargs):
-        self.sent.append(kwargs)
-        return types.SimpleNamespace(message_id=1)
-
-
-def _channel():
-    bus = MessageBus()
-    bus.register("assistant", _noop)
-    ch = TelegramChannel(bot_token="T", chat_id=str(OPERATOR), default_agent="assistant", bus=bus,
-                         is_casa=True, known_bot_id=BOT)
-    ch._start_typing = lambda *a, **k: None
-    ch._app = types.SimpleNamespace(bot=_FakeBot())
-    ch._session_registry = None
-    return ch, bus
 
 
 def _update(text, *, user_id=OPERATOR, quoted_id=11, quoted_text="📊 Finance\nQ3 report",
@@ -55,13 +29,6 @@ def _update(text, *, user_id=OPERATOR, quoted_id=11, quoted_text="📊 Finance\n
     message = types.SimpleNamespace(text=text, message_id=70, reply_to_message=quoted)
     return types.SimpleNamespace(message=message, effective_chat=types.SimpleNamespace(id=chat_id),
                                  effective_user=user)
-
-
-def _record(**over):
-    base = dict(role="finance", operator_id=OPERATOR, plugin="probe", slot="report",
-                tool_use_id="call-1", owner="d-1", posted_at=1.0)
-    base.update(over)
-    return rb.PostRecord(**base)
 
 
 @pytest.fixture
@@ -75,13 +42,6 @@ def routed(monkeypatch):
     spawned = AsyncMock(return_value=None)
     monkeypatch.setattr(sd, "handle_reply", spawned)
     return pm, spawned
-
-
-async def _settle(ch):
-    for t in list(ch._turn_tasks):
-        await t
-    await asyncio.sleep(0)                                    # let done-callbacks run
-    await asyncio.sleep(0)
 
 
 async def test_a_reply_on_a_retained_specialist_post_routes_with_the_exact_words(routed):

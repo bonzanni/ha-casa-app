@@ -231,9 +231,8 @@ async def test_a_link_posted_as_a_button_leaves_a_line(mem, roles):
 # ``test_pending_approval_desk``'s harness)
 
 from test_desk_turn import _reply, env  # noqa: E402,F401 — fixture
-from test_pending_approval_desk import (  # noqa: E402,F401 — fixtures
-    _Scripted, _ask, _call, _result, _text, desk,
-)
+from scripted_delegate import _Scripted, _call, _result, _text  # noqa: E402
+from test_pending_approval_desk import _ask, desk  # noqa: E402,F401 — the desk harness
 
 
 def _desk_post(env) -> rb.PostRecord:

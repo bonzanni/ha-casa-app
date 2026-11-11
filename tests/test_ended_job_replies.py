@@ -23,10 +23,11 @@ import pytest
 import agent_inbox as ai
 import result_broker as rb
 import specialist_desk as sd
-from test_desk_route import OPERATOR, _channel, _record, _settle, routed  # noqa: F401
+from telegram_reply_harness import OPERATOR, _channel, _record, _settle
+from test_desk_route import routed  # noqa: F401
 from channels.tg_address import TgAddress
 from task_model import Requester
-from test_desk_route import BOT
+from telegram_reply_harness import BOT
 from test_inbound_files import PDF, _doc, _msg
 from test_telegram_new_reset import _drain_bus
 from timekeeping import resolve_tz
