@@ -70,7 +70,7 @@ from channels.tg_address import (
     AddressError, EndpointNotReady, EndpointUnavailable, RouteMissing, TgAddress,
     scope as tg_scope,
 )
-from provenance import carry_route, route_context
+from provenance import carry_route, route_context, task_delivery_marker
 from output_boundary import (
     Admitted, ApprovalCut, IntentKind, ReadBeforeDescribe, TurnScope,
     UnadmittedText, casa_text, resolve_scope,
@@ -700,6 +700,229 @@ def _handoff_line_posted(task: "asyncio.Task[bool] | None") -> bool:
             and task.result() is True)
 
 
+# ---------------------------------------------------------------------------
+# Tasks. A task is work that does not belong to an agent's conversation: a
+# delegation or a plugin job. Its launcher decides two destinations once, when
+# the task is born (``task_model``), and never recomputes them: its delivery,
+# where every post of the task goes (``None``: it posts nothing, for its whole
+# life), and its requester, who receives its result. A task of an agent with
+# its own open chat shows there: a start line naming who asked, the full
+# answer, and the operator's replies reach its live session.
+# ---------------------------------------------------------------------------
+
+# The brief as quoted in a task's start line and in its executor's note.
+_TASK_START_BRIEF_CHARS = 200
+_TASK_NOTE_BRIEF_CHARS = 120
+# One task post (the start line, or every page of the answer) is bounded: a
+# slow chat never holds the work or its requester's result.
+_TASK_POST_TIMEOUT_S = 30.0
+
+
+@dataclass(frozen=True)
+class TaskBirth:
+    """What a task's launcher decided when the task was born: its id and
+    brief, the agent that runs it, who receives its result, and where its
+    posts go."""
+    task_id: str
+    brief: str
+    executor: str
+    requester: Any            # task_model.Requester
+    delivery: "TgAddress | None"
+
+    @property
+    def in_own_chat(self) -> bool:
+        """The task shows in its executor's own chat: it has a delivery and
+        its executor is not a resident (a resident's work keeps today's
+        posts in its own chat)."""
+        cfg = _agent_role_map.get(self.executor)
+        return self.delivery is not None and getattr(cfg, "kind", "") != "resident"
+
+    @property
+    def leaves_note(self) -> bool:
+        """The executor's conversation did not ask for this work, so it learns
+        the outcome as a note on its next turn."""
+        return self.in_own_chat and self.requester.role != self.executor
+
+
+def _task_birth(task_id: str, brief: str, executor: str, origin: dict) -> TaskBirth:
+    """The task *task_id* of *executor*, born now from the turn *origin*: the
+    requester is that turn's agent on that turn's route, and the delivery is
+    decided here, once."""
+    import task_model
+    route = carry_route(origin or {})
+    requester = task_model.Requester(str((origin or {}).get("role") or "assistant"), route)
+    return TaskBirth(task_id=task_id, brief=brief if isinstance(brief, str) else "",
+                     executor=executor, requester=requester,
+                     delivery=task_model.delivery_for(executor, route))
+
+
+def _task_record_fields(birth: "TaskBirth | None") -> dict:
+    """The task record's fields, as born: the agent that runs it, who
+    receives its result, where its posts go. Nothing for work that is no
+    task (a voice delegation)."""
+    if birth is None:
+        return {}
+    return {"executor": birth.executor, "requester": birth.requester,
+            "delivery": birth.delivery}
+
+
+def _clip_line(text: str, limit: int) -> str:
+    one = " ".join(str(text or "").split())
+    return one if len(one) <= limit else one[:limit - 1].rstrip() + "…"
+
+
+# Delegations whose input destination is open: task id → executing role. The
+# run attaches its client under that id; the task's end closes it.
+_TASK_INPUTS: dict[str, str] = {}
+
+
+def _open_task(birth: TaskBirth) -> None:
+    """The task's post index and its input destination exist before its first
+    post: a reply to its start line, sent before its session's client exists,
+    is queued for the task, never taken for the conversation's."""
+    import task_input
+    import task_posts
+    task_posts.open(birth.task_id, birth.delivery)
+    task_input.open_pending(birth.task_id)
+    _TASK_INPUTS[birth.task_id] = birth.executor
+
+
+def _end_task_input(task_id: str, *_ignored: Any) -> None:
+    """The task's run is over: a later reply to its posts is a reply to an
+    ended task. Idempotent; a done-callback, so a run cancelled before it
+    started still ends it."""
+    if _TASK_INPUTS.pop(task_id, None) is None:
+        return
+    import task_input
+    try:
+        task_input.close(task_id)
+    except Exception:  # noqa: BLE001 — closing never fails the work
+        logger.warning("task %s input not closed", task_id[:8], exc_info=True)
+
+
+def _attach_task_input(task_id: str, role: str, client: Any) -> bool:
+    """*client*, the live session of *role*'s run for the task *task_id*,
+    takes the task's queued and later replies. A run of another agent under
+    the same id (a hand-off inside the task) attaches nothing."""
+    if not task_id or _TASK_INPUTS.get(task_id) != role:
+        return False
+    import task_input
+    try:
+        task_input.attach(task_id, client)
+    except Exception:  # noqa: BLE001 — the run goes on without the operator's replies
+        logger.warning("task %s input not attached", task_id[:8], exc_info=True)
+        return False
+    return True
+
+
+async def _post_task_text(birth: TaskBirth, text: str, *, intent: IntentKind,
+                          kind: str = "") -> bool:
+    """Post *text* at the task's delivery, through its executor's endpoint,
+    every page filed under the task (its post record's owner is the task), so
+    a reply to any page reaches the task. Bounded; a failure is logged and
+    reported as ``False``."""
+    import result_broker as rb
+    from output_boundary import without_sentinels
+    delivery, transport = birth.delivery, _transport()
+    if delivery is None or transport is None:
+        return False
+    try:
+        ep = transport.endpoint(delivery)
+    except (AddressError, EndpointUnavailable) as exc:
+        logger.warning("task %s: no endpoint for its chat: %s", birth.task_id[:8],
+                       type(exc).__name__)
+        return False
+    scope = TurnScope(id=birth.task_id, cid="-", role=birth.executor,
+                      display_name=_display_name_for_role(birth.executor),
+                      channel="telegram", message_type="task")
+    admitted = scope.admit(intent, text)
+    if intent is IntentKind.FINAL_REPLY and not admitted.suppressed:
+        admitted = admitted.with_text(without_sentinels(admitted))
+    if admitted.suppressed or not admitted.strip():
+        return False
+    post = rb.PostRecord(role=birth.executor, operator_id=delivery.chat_id, plugin="",
+                         slot="task", tool_use_id=birth.task_id, owner=birth.task_id,
+                         posted_at=time.time(), kind=kind)
+    try:
+        outcome = await asyncio.wait_for(
+            ep.send_response(admitted, {"chat_id": delivery.chat_id, "_post": post}),
+            _TASK_POST_TIMEOUT_S)
+    except Exception as exc:  # noqa: BLE001 — a task post is never the work's fault
+        logger.warning("task %s post not delivered: %s", birth.task_id[:8],
+                       type(exc).__name__)
+        return False
+    return outcome is DeliveryOutcome.DELIVERED
+
+
+async def _post_task_start(birth: TaskBirth) -> None:
+    """The task's start line in its executor's chat: who asked, and what."""
+    who = _display_name_for_role(birth.requester.role)
+    await _post_task_text(
+        birth, f"{who} asked: «{_clip_line(birth.brief, _TASK_START_BRIEF_CHARS)}»",
+        intent=IntentKind.DISCRETE)
+
+
+async def _settle_task(birth: "TaskBirth | None", *, answer: "str | None" = None,
+                       failure: str = "") -> None:
+    """A task of an agent with its own chat has ended: its whole answer — the
+    raw text, never the requester's bounded copy — is posted at its delivery,
+    and its executor's conversation, when it did not ask for the work, gets a
+    body-free note for its next turn. Never raises."""
+    if birth is None or not birth.in_own_chat:
+        return
+    try:
+        if answer is not None:
+            import result_broker as rb
+            await _post_task_text(birth, answer, intent=IntentKind.FINAL_REPLY,
+                                  kind=rb.DESK_REPLY)
+        _note_task(birth, "asked you",
+                   f"you answered ({len(answer)} chars)" if answer is not None
+                   else f"it failed: {failure or 'unknown'}")
+    except Exception:  # noqa: BLE001 — the requester's result never waits on this
+        logger.warning("task %s not settled in its chat", birth.task_id[:8], exc_info=True)
+
+
+def _note_task(birth: TaskBirth, asked: str, outcome: str) -> None:
+    """The body-free line the executor's conversation reads on its next turn,
+    when it did not ask for the task itself: who asked what, and how it
+    ended."""
+    if not birth.leaves_note:
+        return
+    import chat_notes
+    who = _display_name_for_role(birth.requester.role)
+    chat_notes.record(
+        birth.delivery.bot_id, birth.delivery.chat_id,
+        f"{who} {asked} «{_clip_line(birth.brief, _TASK_NOTE_BRIEF_CHARS)}»; {outcome}")
+
+
+def _record_birth(rec: Any) -> "TaskBirth | None":
+    """A task record's destinations, as its launcher stamped them; ``None``
+    for a record that carries none."""
+    requester = getattr(rec, "requester", None)
+    if requester is None or not hasattr(rec, "delivery"):
+        return None
+    return TaskBirth(task_id=str(getattr(rec, "id", "") or ""),
+                     brief=str(getattr(rec, "task", "") or ""),
+                     executor=str(getattr(rec, "executor", "")
+                                  or getattr(rec, "role_or_type", "") or ""),
+                     requester=requester, delivery=getattr(rec, "delivery", None))
+
+
+def _surface_refusal(executor: str) -> Any:
+    """The typed refusal of a surface of *executor* that may not post: the
+    capability rule's own, or — its chat having opened after the task was
+    born — that the task posts nothing."""
+    import own_voice
+    label = _display_name_for_role(executor)
+    refusal = own_voice.require_open_chat(executor, label=label)
+    if refusal is None:
+        refusal = own_voice.Refusal(
+            "own_chat_not_open",
+            f"{label}'s chat was not open when this task started, so this task "
+            "posts nothing there; put it in your answer instead.")
+    return refusal
+
+
 def _with_post_echo_payload(payload: dict, owner: str) -> dict:
     """The sync delegation's result, ok or error: the echo rides ``text``
     when the result has one, else ``message`` — a post proven before the
@@ -905,6 +1128,22 @@ _bounded_tree: ContextVar["Any | None"] = ContextVar("_bounded_tree", default=No
 _REAPS: set = set()
 
 
+def _media_delivery(eng, origin: dict) -> "tuple[str, bool, TgAddress | None]":
+    """``(executor, is_task, delivery)`` of a ``send_media`` call. A bound
+    engagement is a job: its record's delivery. Otherwise the origin's task
+    delivery, stamped by the task's launcher — and a delegated turn that
+    carries none is a task with no delivery. A turn of the agent that is
+    its own executor, with no task stamp, is no task."""
+    from provenance import task_delivery
+    if eng is not None:
+        return str(getattr(eng, "role_or_type", "") or ""), True, getattr(eng, "delivery", None)
+    executor = str(origin.get("execution_role") or origin.get("role") or "")
+    is_task, delivery = task_delivery(origin)
+    if is_task or executor != str(origin.get("role") or ""):
+        return executor, True, delivery
+    return executor, False, None
+
+
 def _debit_specialist_media_send(eng, origin: dict) -> "dict | None":
     """Synchronous specialist-context debit for one send_media attempt.
 
@@ -916,9 +1155,22 @@ def _debit_specialist_media_send(eng, origin: dict) -> "dict | None":
         if getattr(eng, "kind", "") != "specialist":
             return None  # executor engagements are image-owned, unmetered
         key = f"eng:{eng.id}"
+    elif int((origin or {}).get("delegation_depth", 0) or 0) <= 0:
+        # A direct turn: the resident's own is unmetered; a specialist's
+        # own conversation turn is that specialist's context, metered per
+        # turn (its correlation id), as a delegated turn is per delegation.
+        role = str((origin or {}).get("execution_role") or (origin or {}).get("role") or "")
+        if getattr(_agent_role_map.get(role), "kind", "") != "specialist":
+            return None
+        cid = (origin or {}).get("cid")
+        if not isinstance(cid, str) or not cid or cid == "-":
+            return {
+                "status": "error", "kind_error": "quota_key_missing",
+                "message": ("specialist conversation turn carries no "
+                            "correlation id — media send refused"),
+            }
+        key = f"turn:{role}:{cid}"
     else:
-        if int((origin or {}).get("delegation_depth", 0) or 0) <= 0:
-            return None  # resident/operator turn
         # #541 (Terra diff r1): a delegated RESIDENT is not specialist
         # context — its tool grants come from the operator's own image/
         # config role.yaml, not a third-party bundle. Exempt only on the
@@ -1059,6 +1311,19 @@ async def send_media(args: dict) -> dict:
         if not origin:
             return _result({"status": "error", "kind_error": "no_origin",
                             "message": "no turn origin"})
+        # A task's file goes where the task's posts go, decided when it was
+        # born — never the route of the turn that started it. A task born
+        # with no delivery posts nothing, even if its executor's chat has
+        # opened since. A turn that is no task (the resident's own, an
+        # agent's own conversation) delivers in its own chat.
+        executor, is_task, delivery = _media_delivery(eng, origin)
+        if is_task:
+            if delivery is None:
+                refusal = _surface_refusal(executor)
+                return _result({"status": "error", "kind_error": refusal.kind,
+                                "message": refusal.text})
+            origin.update(channel="telegram", chat_id=delivery.chat_id,
+                          _tg_bot=delivery.bot_id)
         if origin.get("channel") != "telegram":
             return _result({"status": "error", "kind_error": "invalid_origin",
                             "message": f"origin channel {origin.get('channel')!r} "
@@ -2719,8 +2984,15 @@ def _build_specialist_options(
     output_format=None,
     max_turns: int | None = None,
     plan_out: "list | None" = None,
+    task_id: "str | None" = None,
 ) -> ClaudeAgentOptions:
     """Build ClaudeAgentOptions for a Tier 2 specialist invocation.
+
+    ``task_id``: the task this build runs — a job's id, passed by its
+    launcher; a delegated build's task is the delegation its run serves (the
+    run's delegation id, bound around the run). A file the operator sent to
+    that task is readable by it — exactly the files granted to it, asked at
+    each Read, so one granted while the build runs is readable at once.
 
     ``plan_out`` (S8): when a list is given, the ``ProfilePlan`` this build
     APPLIED is appended to it, so the caller persists exactly what the plan
@@ -2744,9 +3016,13 @@ def _build_specialist_options(
     # the coordinator's ruling R-D1 (a): only a desk or delegated turn gets the inbox; a job or
     # engagement build — the only callers that pass launch grants — gets neither the
     # path nor the tools, and the #541 dispatch ceiling stays as it is
-    _grants = agent_inbox.delegated_build_grants(cfg, engagement=bool(extra_casa_tools))
+    if not task_id and not extra_casa_tools:
+        task_id = _delegation_quota_key.get()
+    _grants = agent_inbox.delegated_build_grants(
+        cfg, engagement=bool(extra_casa_tools), task_id=task_id or None)
     _inbox_prefixes, _inbox_tools = _grants.prefixes, _grants.tools
-    resolved_hooks = resolve_hooks(cfg.hooks, default_cwd=cfg.cwd, extra_readable=_inbox_prefixes)
+    resolved_hooks = resolve_hooks(cfg.hooks, default_cwd=cfg.cwd, extra_readable=_inbox_prefixes,
+                                   extra_read_check=_grants.read_check)
     # Sol #5: inject the /config/plugins + settings.json guard code-side (like
     # residents — agent.py step 5). A delegated specialist with Bash could
     # otherwise `echo > /config/plugins/registry.json`, bypassing validation and
@@ -3208,12 +3484,14 @@ def build_engagement_resume_options(
                     resolution=_resolution_from_recorded(recorded),
                     extra_casa_tools=grants,
                     plan_out=_applied_plans,
+                    task_id=getattr(engagement, "id", None),
                 )
             else:
                 opts = _build_specialist_options(
                     cfg,
                     extra_casa_tools=grants,
                     plan_out=_applied_plans,
+                    task_id=getattr(engagement, "id", None),
                 )
             if job:
                 opts = background_jobs.job_session_options(opts, engagement)
@@ -4506,6 +4784,11 @@ async def _run_delegated_turn(
                     await _await_mcp_servers_settled(client)    # #1220
                 await client.query(prompt)
                 _ph["query"] = time.monotonic()
+                if conv is None:
+                    # a task's session takes the operator's replies to its
+                    # posts from here: those queued so far, then each as it comes
+                    _attach_task_input(str(child_origin.get("_delegation_id") or ""),
+                                       cfg.role, client)
                 async for sdk_msg in client.receive_response():
                     _msg_count += 1
                     _ph.setdefault("first_msg", time.monotonic())
@@ -4910,8 +5193,16 @@ async def _settle_then_announce(
     record: DelegationRecord,
     complete: DelegationComplete,
     settle: Awaitable[VoiceJob | None],
+    *,
+    birth: "TaskBirth | None" = None,
+    raw_text: "str | None" = None,
 ) -> None:
     """Persist the terminal, THEN announce it, THEN acknowledge on delivery.
+
+    A task of an agent with its own chat (*birth*) also settles there before
+    the announcement: *raw_text*, the delegate's whole answer as it wrote it
+    (never the bounded, annotated copy the requester is told), is posted at
+    the task's delivery, and its conversation's note is written.
 
     #701. Three properties, each of which the previous shape — two independent
     `create_task` calls — could not hold:
@@ -4949,6 +5240,10 @@ async def _settle_then_announce(
             record.id[:8],
         )
         return
+    if complete.status == "ok":
+        await _settle_task(birth, answer=raw_text if raw_text is not None else "")
+    else:
+        await _settle_task(birth, failure=str(complete.kind or ""))
     target_role = record.origin.get("role") or "assistant"
     registry = _specialist_registry.job_registry
 
@@ -4970,6 +5265,18 @@ async def _settle_then_announce(
         },
         on_delivery=_ack,
     ))
+
+
+def _delegation_failure_kind(exc: BaseException) -> str:
+    """The typed kind of a delegation that raised: its agent's lane was full
+    (``busy``) or is out of service until restart (``agent_faulted``), else
+    the classified error."""
+    import agent_lane
+    if isinstance(exc, agent_lane.LaneBusy):
+        return "busy"
+    if isinstance(exc, agent_lane.LaneFaulted):
+        return "agent_faulted"
+    return _classify_error(exc).value
 
 
 def _run_abort_failure(output: DelegatedOutput) -> JobFailure:
@@ -4994,6 +5301,7 @@ def _attach_completion_callback(
     record: DelegationRecord,
     *,
     quiet_if: "Callable[[DelegatedOutput], bool] | None" = None,
+    birth: "TaskBirth | None" = None,
 ) -> None:
     """Wire the bus NOTIFICATION post on delegation completion.
 
@@ -5031,6 +5339,7 @@ def _attach_completion_callback(
             return
         complete: DelegationComplete | None = None
         settle: Awaitable[VoiceJob | None] | None = None
+        raw_text: str | None = None
         try:
             output = t.result()
             if output.run_aborted:
@@ -5057,6 +5366,7 @@ def _attach_completion_callback(
                                                       announce_creator=False)
             else:
                 text = output.text
+                raw_text = text      # the answer as written, before the cap
                 bounded, output_truncated = (
                     specialist_limits.truncate_output(text))
                 if output_truncated:
@@ -5085,10 +5395,7 @@ def _attach_completion_callback(
                 settle = _complete_delegation_durably(
                     record.id, bounded, closing_message=closing)
         except Exception as exc:
-            import specialist_desk as _desk_mod
-            kind = ("busy" if isinstance(exc, _desk_mod.DeskBusy)
-                    else "desk_faulted" if isinstance(exc, _desk_mod.DeskFaulted)
-                    else _classify_error(exc).value)
+            kind = _delegation_failure_kind(exc)
             complete = DelegationComplete(
                 delegation_id=record.id,
                 agent=record.agent,
@@ -5109,7 +5416,8 @@ def _attach_completion_callback(
         # The durable terminal is written either way: with no bus to announce
         # on there is still work whose outcome a restart must not ORPHAN.
         coro = (
-            _settle_then_announce(record, complete, settle)
+            _settle_then_announce(record, complete, settle,
+                                  birth=birth, raw_text=raw_text)
             if _bus is not None and complete is not None
             else settle
         )
@@ -6906,6 +7214,7 @@ async def _launch_interactive_engagement(
     *, job: background_jobs.JobDecl,
     plugin_host: background_jobs.JobHost | None = None,
     self_host: bool = False,
+    task_birth: "TaskBirth | None" = None,
 ) -> dict:
     """One launch owner for background jobs, hosted on a specialist or run
     by a resident's plugin worker (``plugin_host``): the job runs as an
@@ -7096,6 +7405,7 @@ async def _launch_interactive_engagement(
                                )) + casa_grants,
                 # #283: reservation rides the record from here (r4).
                 agent_spawn_permit=spawn_owned,
+                **_task_record_fields(task_birth),
             )
         except asyncio.CancelledError:
             # create() already compensated the record.
@@ -7145,7 +7455,7 @@ async def _launch_interactive_engagement(
                 return background_jobs.job_session_options(
                     _build_specialist_options(
                         cfg, resolution=_spec_res, extra_casa_tools=casa_grants,
-                        plan_out=_applied_plans),
+                        plan_out=_applied_plans, task_id=rec.id),
                     rec, brief=_pad_brief)
             try:
                 if plugin_host is not None:
@@ -7273,6 +7583,13 @@ async def _start_job_on_host(host: Any, task: str, context: str, origin: dict,
     scheduled fire (``start_scheduled_job``) calls it with a scheduled origin —
     one place knows how a job is launched, not two edits that must agree."""
     role, job = host.role, host.decl
+    # A job reports to the operator (its start, parked, question and ended
+    # lines): a surface of its host, so it starts only where that host's own
+    # chat is open — never falling back to the resident's chat.
+    surface = _host_surface_refusal(role)
+    if surface is not None:
+        return _result({"status": "error", "kind": surface.kind,
+                        "message": surface.text})
     refusal = background_jobs.claim_job_start(host, _engagement_registry)
     if refusal is not None:
         return _result(refusal)
@@ -7287,9 +7604,17 @@ async def _start_job_on_host(host: Any, task: str, context: str, origin: dict,
         return await _launch_interactive_engagement(
             role, task, context, origin,
             job=job, plugin_host=host if host.kind == "resident" else None,
+            task_birth=_task_birth("", task, role, origin),
             **({"self_host": True} if self_host else {}))
     finally:
         background_jobs.release_job_start(background_jobs.host_plugin_name(host))
+
+
+def _host_surface_refusal(role: str) -> Any:
+    """The capability rule for a job's host *role*: ``None`` when its own
+    chat is open (the resident's always is), else the typed refusal."""
+    import own_voice
+    return own_voice.require_open_chat(role, label=_display_name_for_role(role))
 
 
 async def start_scheduled_job(role: str, trig: Any) -> None:
@@ -7372,6 +7697,12 @@ async def start_scheduled_job(role: str, trig: Any) -> None:
         payload = {"status": "error", "kind": "unknown"}
     if payload.get("status") == "error":
         kind = str(payload.get("kind") or "unknown")
+        if kind.startswith("own_chat_"):
+            # the host's own chat is not open: its job posts nowhere, and the
+            # resident's chat is not its place either
+            logger.info("scheduled job %s for %s not started: %s",
+                        trig.name, role, kind)
+            return
         reason = {
             "job_busy": "another job of this plugin held the claim at this occurrence.",
             "busy": "Casa was at its work limit at this occurrence.",
@@ -7405,9 +7736,12 @@ async def start_job(args: dict) -> dict:
         host = next((h for h in hosts
                      if h.decl.qualified_name == args.get("job", "")), None)
         # the work's origin: the calling turn's, without the markers that identify
-        # the calling turn (its desk use, its quota and echo key, its conversation)
+        # the calling turn (its desk use, its quota and echo key, its conversation,
+        # its task's delivery: the job is a task of its own, born at its launch)
+        from provenance import TASK_DELIVERY_KEY
         origin = {k: v for k, v in origin.items()
-                  if k not in ("desk", "_delegation_id", "_delegated_session_id")}
+                  if k not in ("desk", "_delegation_id", "_delegated_session_id",
+                               TASK_DELIVERY_KEY)}
     else:
         delegates = [d.agent for d in (getattr(cfg, "delegates", None) or [])]
         host = background_jobs.find_job_host(args.get("job", ""), caller, delegates)
@@ -7649,7 +7983,8 @@ async def delegate_to_agent(args: dict) -> dict:
     # Every release is idempotent, so an overlapping release on the SAME
     # permit is a safe no-op.
     owned = permit
-    _desk_reservation = None  # S4 §4: the desk queue place, until transferred
+    _desk_reservation = None  # S4 §4: the lane queue place, until transferred
+    _task_input_open = None   # a task's input destination, until its run owns it
     try:
         is_voice = str(origin.get("channel", "")) == "voice"
         if is_voice and mode == "async":
@@ -7713,33 +8048,42 @@ async def delegate_to_agent(args: dict) -> dict:
         # task. Jobs, engagements, scheduled and webhook turns touch no desk.
         _desk = _desk_pre
         _desk_scope = ""
-        if _desk is not None and getattr(_desk, "faulted", None):
-            # S5 §14.8: a faulted desk refuses every use at once — sync,
-            # degraded and async alike (an async launch must not return
-            # ``pending`` for a desk that will never run it).
+        # Every delegation to an agent with a lane (a specialist, the
+        # configurator) is one use of that agent's lane — shared with its
+        # taps, its continuations and every other delegation to it, whatever
+        # chat the work came from — reserved on the lane's queue BEFORE any
+        # task exists. An agent out of service refuses every use at once —
+        # sync, degraded and async alike (an async launch must not return
+        # ``pending`` for work that will never run).
+        import agent_lane
+        _lane = agent_lane.LANES.get(agent_name) if _desk_mod.has_desk(cfg) else None
+        if _lane is not None and _lane.faulted:
             return _result({
                 "status": "error",
-                "kind": "desk_faulted",
+                "kind": "agent_faulted",
                 "agent": agent_name,
-                "message": (
-                    f"Agent {agent_name!r}'s desk in this chat is faulted; "
-                    "a Casa restart clears it."
-                ),
+                "message": agent_lane.faulted_line(_display_name_for_role(agent_name)),
             })
         if _desk is not None:
             _desk_reservation = _desk.reserve()
             # the permit was left to the desk's own use (skip_permit above)
             _desk_scope = _delegation_scope(origin, agent_name, mode)
-        if _desk is not None and _desk_reservation is None:
+        elif _lane is not None:
+            _desk_reservation = _lane.reserve()
+        if _lane is not None and _desk_reservation is None:
             return _result({
                 "status": "error",
                 "kind": "busy",
                 "agent": agent_name,
                 "message": (
-                    f"Agent {agent_name!r} has a full desk queue in this chat — "
-                    "try again shortly."
+                    f"Agent {agent_name!r} has a full queue — try again shortly."
                 ),
             })
+        # The delegation is a task: where its posts go and who receives its
+        # result are decided here, once. A voice delegation keeps its own
+        # path (its result is spoken; it posts nothing).
+        _birth = None if is_voice else _task_birth(
+            delegation_id, task_text, agent_name, origin)
         # #1038 §7, §3.3: the brief is model text STORED for a later turn to
         # narrate — ANY delegation can detach (a sync one degrades to pending
         # at the wait), so every launch resolves its note now. The note rides
@@ -7753,7 +8097,7 @@ async def delegate_to_agent(args: dict) -> dict:
         _rec_origin, _note = _launch_note(origin, task_text)
         record = DelegationRecord(
             id=delegation_id, agent=agent_name, started_at=started_at,
-            origin=_rec_origin,
+            origin=_rec_origin, **_task_record_fields(_birth),
         )
         # Task 6 (spec §4.6): stash the permit on the record for
         # observability only. The SOLE release for this legacy path is the
@@ -7790,6 +8134,13 @@ async def delegate_to_agent(args: dict) -> dict:
                 )
                 return _deadline_exceeded_result(delegation_id, agent_name)
 
+        if _birth is not None and _birth.in_own_chat:
+            # A task of an agent with its own open chat: its post index and its
+            # input destination open first, then its start line there.
+            _open_task(_birth)
+            _task_input_open = delegation_id
+            await _post_task_start(_birth)
+
         # Task 6 (spec §4.6): create the task, then ATOMICALLY (no await between)
         # attach the unconditional permit-release done-callback and transfer
         # ownership (`owned = None`). Attaching the release as a done-callback —
@@ -7810,6 +8161,10 @@ async def delegate_to_agent(args: dict) -> dict:
         if _launch_scope is not None:
             _child_origin["turn_scope"] = TurnScope.for_child(
                 _launch_scope, _note, synchronous=(mode != "async"))
+        if _birth is not None:
+            # the task's own delivery, never one inherited from the turn
+            # that launched it
+            _child_origin.update(task_delivery_marker(_birth.delivery))
         _ov_tok = _agent_mod.origin_var.set(_child_origin)
         try:
             if _desk is not None:
@@ -7820,6 +8175,11 @@ async def delegate_to_agent(args: dict) -> dict:
                     run=_run_delegated_agent_bounded, cfg=cfg,
                     task_text=task_text, context_text=context_text,
                     scope=_desk_scope, resolution=resolution,
+                    output_format=(VOICE_JOB_OUTPUT_FORMAT if is_voice else None))
+            elif _lane is not None:
+                _run_coro = _delegation_in_lane(
+                    _lane, _desk_reservation, cfg, task_text, context_text,
+                    resolution=resolution,
                     output_format=(VOICE_JOB_OUTPUT_FORMAT if is_voice else None))
             else:
                 _run_coro = _run_delegated_agent_bounded(
@@ -7834,6 +8194,10 @@ async def delegate_to_agent(args: dict) -> dict:
             # a task cancelled before its coroutine starts has no finally
             task.add_done_callback(_desk_reservation.release)
             _desk_reservation = None  # __TRANSFER_DESK_RESERVATION__
+        if _task_input_open is not None:
+            # the task's input ends with its run, however it ends
+            task.add_done_callback(functools.partial(_end_task_input, _task_input_open))
+            _task_input_open = None
         if permit is not None:
             task.add_done_callback(_permit_release_callback(permit))
         owned = None  # __TRANSFER_SYNC__
@@ -7844,7 +8208,7 @@ async def delegate_to_agent(args: dict) -> dict:
             origin, f"📊 Passed to {_handoff_name}.")
 
         if mode == "async":
-            _attach_completion_callback(task, record)
+            _attach_completion_callback(task, record, birth=_birth)
             logger.info(
                 "Delegation %s → %s (async mode)",
                 delegation_id[:8], agent_name,
@@ -7884,7 +8248,7 @@ async def delegate_to_agent(args: dict) -> dict:
 
             if pending:
                 # 60s elapsed; detach and degrade to pending with callback.
-                _attach_completion_callback(task, record)
+                _attach_completion_callback(task, record, birth=_birth)
                 logger.info(
                     "Delegation %s → %s timed out at 60s — degraded to pending",
                     delegation_id[:8], agent_name,
@@ -7922,9 +8286,7 @@ async def delegate_to_agent(args: dict) -> dict:
                 _launch_scope.delegated_approvals[delegation_id] = _outcome
         if finished.exception() is not None:
             exc = finished.exception()
-            kind = ("busy" if isinstance(exc, _desk_mod.DeskBusy)
-                    else "desk_faulted" if isinstance(exc, _desk_mod.DeskFaulted)
-                    else _classify_error(exc).value)
+            kind = _delegation_failure_kind(exc)
             elapsed = time.time() - started_at
             if is_voice:
                 failure = JobFailure(
@@ -7952,6 +8314,7 @@ async def delegate_to_agent(args: dict) -> dict:
             # failure reconciliation carrying this same typed failure.
             await _fail_delegation_durably(
                 delegation_id, JobFailure(kind=kind, message=str(exc)))
+            await _settle_task(_birth, failure=kind)
             logger.info(
                 "Delegation %s → %s failed: %s (%s)",
                 delegation_id[:8], agent_name, kind, exc,
@@ -8062,6 +8425,7 @@ async def delegate_to_agent(args: dict) -> dict:
             if delegated_output.run_aborted:
                 failure = _run_abort_failure(delegated_output)
                 await _fail_delegation_durably(delegation_id, failure)
+                await _settle_task(_birth, failure=failure.kind)
                 elapsed = time.time() - started_at
                 logger.warning(
                     "Delegation %s → %s aborted by the CLI kind=%s subtype=%s "
@@ -8123,6 +8487,9 @@ async def delegate_to_agent(args: dict) -> dict:
                         "Delegation %s completion reconciliation scheduling "
                         "failed; restart recovery required", delegation_id[:8],
                     )
+            # the delegate's whole answer, as it wrote it, in its own chat —
+            # the requester is told the bounded copy above
+            await _settle_task(_birth, answer=delegated_output.text)
         elapsed = time.time() - started_at
         logger.info(
             "Delegation %s → %s ok (%.2fs)",
@@ -8141,10 +8508,48 @@ async def delegate_to_agent(args: dict) -> dict:
     finally:
         if owned is not None:
             owned.release()
-        # S4 §4: the desk queue place, when still lexically owned (never
+        # S4 §4: the lane queue place, when still lexically owned (never
         # transferred to a created task — a cancel during registration).
         if _desk_reservation is not None:
             _desk_reservation.release()
+        # a task whose run was never created: its input ends here
+        if _task_input_open is not None:
+            _end_task_input(_task_input_open)
+
+
+async def _delegation_in_lane(lane: Any, reservation: Any, cfg: Any, task_text: str,
+                              context_text: str, *, resolution: Any = None,
+                              output_format: Any = None) -> "DelegatedOutput":
+    """One delegation as one use of its agent's lane: the lock first (the
+    queue place released on admission, or on any earlier exit), the fault
+    re-read under it (a delegation queued before the fault must not run),
+    the run, and — before the lock is released — a run still unwinding past
+    the bounded runner's teardown holds the lane until it ends. A
+    configurator delegation's whole wait, lane then lease, is one bound."""
+    import agent_lane
+    import configurator_run
+    deadline = configurator_run.wait_deadline() if configurator_run.is_configurator(cfg) else None
+    try:
+        async with lane.use(reservation, deadline) as admitted:
+            if not admitted:
+                raise configurator_run.busy_error()
+            if lane.faulted:
+                raise agent_lane.LaneFaulted(
+                    agent_lane.faulted_line(_display_name_for_role(cfg.role)))
+            runs: list = []
+            sink_tok = _desk_run_sink.set(runs)
+            try:
+                with (configurator_run.waiting_until(deadline) if deadline is not None
+                      else nullcontext()):
+                    return await _run_delegated_agent_bounded(
+                        cfg, task_text, context_text, resolution=resolution,
+                        output_format=output_format)
+            finally:
+                _desk_run_sink.reset(sink_tok)
+                lane.hold_unwinding(runs)
+    finally:
+        if reservation is not None:
+            reservation.release()
 
 
 # ---------------------------------------------------------------------------
@@ -8289,6 +8694,10 @@ async def hand_off(args: dict) -> dict:
         if isinstance(_launch_scope, TurnScope):
             _child_origin["turn_scope"] = TurnScope.for_child(
                 _launch_scope, _note, synchronous=True)
+        # The target's surfaces go to its own chat, decided now, never to the
+        # chat of the specialist that handed the work on.
+        _child_origin.update(task_delivery_marker(
+            _task_birth(handoff_id, task_text, target, origin).delivery))
         _qk_tok = _delegation_quota_key.set(handoff_id)
         _ov_tok = _agent_mod.origin_var.set(_child_origin)
         try:
@@ -10791,6 +11200,16 @@ async def _finalize_engagement_tail(
     await _settle_job_journal(engagement, driver)
     if await_turn_end:
         _paint_job_end(engagement)
+    # The job's host's own conversation learns how a job it did not start
+    # ended; the result itself goes to the job's requester, below.
+    _job_birth = _record_birth(engagement)
+    if _job_birth is not None:
+        try:
+            _note_task(_job_birth, "started your job",
+                       "it completed" if outcome == "completed" else f"it ended: {outcome}")
+        except Exception:  # noqa: BLE001 — a note never holds the finalize
+            logger.warning("finalize engagement %s: note not recorded",
+                           engagement.id[:8], exc_info=True)
 
     # 4. NOTIFY the assistant (via existing DelegationComplete-shaped pathway).
     # #1301: not for a quiet run's completed end — its plugin already posted
@@ -12399,12 +12818,12 @@ def _regenerate_plugin_health(extra_issues: list) -> None:
                 for reason in reasons:
                     _add(name, None, reason,
                          detail=_env_detail_for(verify, reason))
-    # S5 §14.8: a faulted specialist desk (a stored call's processes
+    # S5 §14.8: an agent out of service (a stored call's processes
     # unconfirmed ended) is a RECOMPUTABLE runtime row — read fresh from the
-    # desk registry on every regeneration, standing until a restart clears
-    # the desk, never passed as a one-shot extra.
-    import specialist_desk
-    for issue in specialist_desk.faulted_desk_issues():
+    # agents' faults on every regeneration, standing until a restart clears
+    # it, never passed as a one-shot extra.
+    import agent_lane
+    for issue in agent_lane.FAULTS.issues():
         _add(issue.name, issue.target, issue.reason_code, detail=issue.detail)
     # #211: a registered plugin targeting a NOT-yet-installed specialist is
     # the documented plugin-before-specialist install order — WARNING-class
@@ -15094,7 +15513,12 @@ async def specialist_install_commit(args: dict) -> dict:
                 # doors.
                 **_swap_removal_disclosure(txn)}
 
-    return _result(await _run_bundle_transaction(_txn))
+    slug = str(args["slug"])
+    persona_before = await asyncio.to_thread(_bound_persona, slug)
+    out = await _run_bundle_transaction(_txn)
+    if isinstance(out, dict) and out.get("ok") is True and out.get("state") == "active":
+        await _after_own_chat_change(out, slug, "on_install_committed", persona_before)
+    return _result(out)
 
 
 @tool(
@@ -15236,8 +15660,13 @@ async def specialist_upgrade(args: dict) -> dict:
                 # persisting removal, same disclosure.
                 **_swap_removal_disclosure(txn)}
 
-    return _result(_after_ordinary_change(
-        await _run_bundle_transaction(_txn), args["slug"], ack, seen))
+    persona_before = await asyncio.to_thread(_bound_persona, str(args["slug"]))
+    out = _after_ordinary_change(
+        await _run_bundle_transaction(_txn), args["slug"], ack, seen)
+    if isinstance(out, dict) and out.get("ok") is True:
+        await _after_own_chat_change(out, str(args["slug"]), "on_upgrade_committed",
+                                     persona_before)
+    return _result(out)
 
 
 @tool(
@@ -15286,8 +15715,12 @@ async def specialist_rollback(args: dict) -> dict:
                 # prior one never had is dropped by the swap.
                 **_swap_removal_disclosure(txn)}
 
-    return _result(_after_ordinary_change(
-        await _run_bundle_transaction(_txn), slug, ack, seen))
+    persona_before = await asyncio.to_thread(_bound_persona, slug)
+    out = _after_ordinary_change(
+        await _run_bundle_transaction(_txn), slug, ack, seen)
+    if isinstance(out, dict) and out.get("ok") is True:
+        await _after_own_chat_change(out, slug, "on_rollback_committed", persona_before)
+    return _result(out)
 
 
 @tool(
@@ -15408,7 +15841,14 @@ async def specialist_uninstall(args: dict) -> dict:
         payload.update(_swap_removal_disclosure(txn))
         return payload
 
+    own_bot = _own_chat_bot(slug)
     outcome = await _run_bundle_transaction(_txn)
+    if isinstance(outcome, dict) and outcome.get("ok") is True:
+        # the agent's own bot, if it has one, goes dormant; the operator may
+        # delete it in BotFather, which the result names so it can be offered
+        await _own_chat_hook("on_uninstall_committed", slug)
+        if own_bot is not None:
+            outcome["own_chat"] = {"bot": own_bot, "delete_link": _BOTFATHER_DELETE_LINK}
     if reports and isinstance(outcome, dict) and outcome.get("ok") is True:
         # The reload takes the plugin guard itself, so it runs after the
         # transaction released the lock.
@@ -15809,7 +16249,104 @@ async def persona_apply(args: dict) -> dict:
             slot, ack, seen)
     if isinstance(out, dict) and out.get("ok") is True:
         out.update(await _reload_after_untracked_write("agent", slot))
+        # the agent's own bot takes on the new persona (its name, its avatar)
+        await _own_chat_hook("on_persona_applied", slot)
     return _result(out)
+
+
+@tool(
+    "offer_own_chat",
+    "Offer a specialist that can have its own Telegram chat with the person that "
+    "chat: Casa posts the card that creates it, or, once created, the one that opens "
+    "it. Use it when the person asks for a specialist's own chat. When the chat is "
+    "already open it returns already_open with its link; for a specialist that "
+    "cannot have its own chat, an error saying so.",
+    {"type": "object", "properties": {"agent": {"type": "string"}}, "required": ["agent"]},
+)
+async def offer_own_chat(args: dict) -> dict:
+    """The resident's on-demand offer: the body is the own-chat lifecycle's."""
+    import own_voice
+    agent = args.get("agent")
+    role, refusal = _handoff_target(agent if isinstance(agent, str) else "")
+    if refusal is not None:
+        return refusal
+    try:
+        return _result(await own_voice.offer_own_chat(role))
+    except Exception:  # noqa: BLE001 — a result, never a raise
+        logger.exception("offer_own_chat for %s failed", role)
+        return _result({"status": "error", "kind": "offer_failed",
+                        "message": "The offer could not be posted; try again shortly."})
+
+
+# ---------------------------------------------------------------------------
+# An agent's own chat across specialist changes. Each hook runs after the
+# bundle transaction has committed and released its lock; a hook's failure
+# is logged and never turns a committed change into a failed one (the next
+# boot reconciles the chat against the committed state).
+# ---------------------------------------------------------------------------
+
+_BOTFATHER_DELETE_LINK = "https://t.me/BotFather?start=deletebot"
+
+
+async def _own_chat_hook(name: str, role: str) -> bool:
+    """Run the own-chat lifecycle hook *name* for *role*; ``False`` when it
+    failed (logged)."""
+    import own_voice
+    try:
+        await getattr(own_voice, name)(role)
+    except Exception:  # noqa: BLE001 — the committed change stands
+        logger.warning("own chat: %s for %s failed", name, role, exc_info=True)
+        return False
+    return True
+
+
+def _bound_persona(slug: str) -> "str | None":
+    """The persona *slug*'s active tuple binds, as one comparable string, or
+    ``None`` (not installed, unreadable). Off the event loop: it reads the
+    instance files."""
+    try:
+        from specialist_registry import InstalledSpecialistIndex
+        index = InstalledSpecialistIndex()
+        index.load()
+        inst = index.get_instance(slug)
+        binding = inst.active.binding if inst is not None and inst.active is not None else None
+    except Exception:  # noqa: BLE001 — unknown is "no persona"
+        return None
+    if binding is None:
+        return None
+    return f"{binding.persona_id}@{binding.persona_version}#{binding.persona_checksum}"
+
+
+def _own_chat_bot(role: str) -> "str | None":
+    """``@username`` of the bot *role* speaks through, or ``None``."""
+    import own_voice
+    try:
+        ep = own_voice.endpoint_for(role)
+        name = ep._app.bot.username if ep is not None and ep._app is not None else None
+    except Exception:  # noqa: BLE001 — no bot known
+        return None
+    return f"@{name}" if isinstance(name, str) and name else None
+
+
+async def _after_own_chat_change(out: dict, slug: str, hook: str,
+                                 persona_before: "str | None") -> None:
+    """After a committed install, upgrade or rollback of *slug*: the chat's
+    lifecycle *hook* (an offer for a newly declared chat, dormancy for one no
+    longer declared), the bot's self-setup again when the bound persona
+    changed, and ``own_chat: "offered"`` in the result when Casa has offered
+    the chat, so the configurator's words can match without posting
+    anything."""
+    import own_voice
+    ran = await _own_chat_hook(hook, slug)
+    if await asyncio.to_thread(_bound_persona, slug) != persona_before:
+        await _own_chat_hook("on_persona_applied", slug)
+    if not ran:
+        return
+    try:
+        if own_voice.declared(slug) and own_voice.own_chat_state(slug) == "no_bot":
+            out["own_chat"] = "offered"
+    except Exception:  # noqa: BLE001 — the result just does not say so
+        logger.warning("own chat state for %s unreadable", slug, exc_info=True)
 
 
 async def _reload_after_untracked_write(scope: str, role: "str | None") -> dict:
@@ -18798,6 +19335,7 @@ async def persona_ack_revoke(args: dict) -> dict:
 CASA_TOOLS: tuple = (
     send_message,
     stop_work,                     # the resident's direct stop of a specialist's own work
+    offer_own_chat,                # the resident offers a specialist its own chat
     send_media,
     ask_user,
     delegate_to_agent,

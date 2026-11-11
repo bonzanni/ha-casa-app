@@ -17,6 +17,7 @@ import pytest
 import agent as agent_mod
 import plugin_outbox
 import tools
+from channels.tg_address import TgAddress
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
@@ -117,6 +118,7 @@ async def test_specialist_engagement_keys_on_record_id(wired):
     eng.allocated_uid = None
     eng.origin = {"role": "finance", "channel": "telegram",
                   "chat_id": 1197017861}
+    eng.delivery = TgAddress(222, 1197017861)
     eng.context_rebuild_pending = False
     tok = tools.engagement_var.set(eng)
     try:
@@ -181,6 +183,7 @@ async def test_executor_engagement_is_unmetered(wired):
     eng.allocated_uid = None
     eng.origin = {"role": "assistant", "channel": "telegram",
                   "chat_id": 1197017861}
+    eng.delivery = TgAddress(111, 1197017861)
     eng.context_rebuild_pending = False
     tok = tools.engagement_var.set(eng)
     try:
