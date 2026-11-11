@@ -775,7 +775,8 @@ class Lifecycle:
             return f"{label}'s chat is open.", []
         found = self.store.bot_of(role)
         username = found[1].get("username") if found else ""
-        return (f"{label}'s chat is ready: @{username}. Open it and say hi.",
+        which = "new chat" if agent.get("moved_from") else "chat"
+        return (f"{label}'s {which} is ready: @{username}. Open it and say hi.",
                 [(f"Open {label}'s chat", f"https://t.me/{username}")])
 
     async def _card_bound(self, role: str) -> None:
@@ -793,9 +794,19 @@ class Lifecycle:
         agent = self.store.agent(role, create=True)
         if agent.get("chat_open_at"):
             return
+        old = agent.get("moved_from")
         agent["chat_open_at"] = _now_iso()
+        agent["moved_from"] = None
         await self.store.save()
-        await self._edit(agent.get("offer_card"), f"{self._label(role)}'s chat is open.")
+        label = self._label(role)
+        if not old:
+            await self._edit(agent.get("offer_card"), f"{label}'s chat is open.")
+            return
+        found = self.store.bot_of(role)
+        new = found[1].get("username") if found else ""
+        await self._edit(agent.get("offer_card"),
+                         f"{label} has moved to @{new}. You can delete @{old} now.",
+                         [(f"Delete @{old}", BOTFATHER_DELETE)])
 
     def chat_opening(self, bot_id: int) -> bool:
         """Whether a turn delivered on *bot_id* now is the one that opens its
@@ -804,6 +815,14 @@ class Lifecycle:
         binding releases what was held for it."""
         role = (self.store.bots.get(bot_id) or {}).get("role")
         return bool(role) and not (self.store.agents.get(role) or {}).get("chat_open_at")
+
+    def chat_moved(self, bot_id: int) -> bool:
+        """Whether *bot_id* is an agent's new bot after a handle change whose
+        chat has not opened yet: its first turn opens a new chat, not a first
+        one."""
+        role = (self.store.bots.get(bot_id) or {}).get("role")
+        agent = self.store.agents.get(role) or {} if role else {}
+        return bool(agent.get("moved_from")) and not agent.get("chat_open_at")
 
     async def mark_open(self, bot_id: int) -> None:
         """The agent's queue took the turn that opened *bot_id*'s chat: the

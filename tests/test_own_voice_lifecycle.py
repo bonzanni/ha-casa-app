@@ -951,6 +951,50 @@ def test_a_token_item_already_gone_counts_as_deleted(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# a moved chat: its cards say so, and its opening offers to delete the old bot
+# ---------------------------------------------------------------------------
+
+async def _moved(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _created_switch(lc, host, world)
+    return await _restart_applying_switches(world, root)
+
+
+async def test_the_new_chats_card_says_it_is_new(world, root):
+    lc, _host = await _moved(world, root)
+    text, buttons = world.cards[lc.store.agents["finance"]["offer_card"][2]]
+    assert text == "Alex's new chat is ready: @CasaFinance4821Bot. Open it and say hi."
+    assert buttons == [("Open Alex's chat", "https://t.me/CasaFinance4821Bot")]
+
+
+async def test_opening_the_new_chat_offers_to_delete_the_old_bot(world, root):
+    lc, _host = await _moved(world, root)
+    assert await lc.intake(NEW_BOT, update(1, "hi")) == "deliver"
+    assert lc.state("finance") == "open"
+    text, buttons = world.cards[lc.store.agents["finance"]["offer_card"][2]]
+    assert text == "Alex has moved to @CasaFinance4821Bot. You can delete @HeyAlexTestBot now."
+    assert buttons == [("Delete @HeyAlexTestBot", ovl.BOTFATHER_DELETE)]
+    disk = _disk(root)["agents"]["finance"]
+    assert disk["moved_from"] is None and disk["chat_open_at"]
+    assert await lc.intake(NEW_BOT, update(2)) == "deliver"     # said once
+    assert world.card_text(lc.store.agents["finance"]["offer_card"]) == text
+
+
+async def test_a_moved_chat_is_reported_until_it_opens(world, root):
+    lc, _host = await _moved(world, root)
+    assert lc.chat_moved(NEW_BOT) and lc.chat_opening(NEW_BOT)
+    await lc.intake(NEW_BOT, update(1, "hi"))
+    assert not lc.chat_moved(NEW_BOT) and not lc.chat_opening(NEW_BOT)
+
+
+async def test_a_first_chat_is_not_a_moved_one(world, root):
+    lc, host = make_lifecycle(world, root, channel=False)
+    await _bind_alex(lc, host)
+    assert lc.chat_opening(ALEX_BOT) and not lc.chat_moved(ALEX_BOT)
+    assert not lc.chat_moved(FIDO_BOT)
+
+
+# ---------------------------------------------------------------------------
 # every unbound bot has an answerable question after a restart
 # ---------------------------------------------------------------------------
 
