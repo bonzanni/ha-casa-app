@@ -268,17 +268,16 @@ class TestCompactionHeader:
 
 try:
     from tests.test_specialist_job_host import _real_discovery
-    from tests.test_specialist_start_job import _desk_turn_origin, _own_ledger, start_as
+    from tests.test_specialist_start_job import _delegated_turn_origin, _own_ledger, start_as
 except ImportError:
     from test_specialist_job_host import _real_discovery
-    from test_specialist_start_job import _desk_turn_origin, _own_ledger, start_as
+    from test_specialist_start_job import _delegated_turn_origin, _own_ledger, start_as
 
 
 @pytest.fixture
 def specialist_runtime(runtime, tmp_path, monkeypatch):
-    import specialist_desk
     runtime.cfg.kind = "specialist"
-    assert specialist_desk.is_specialist(tools._agent_role_map["finance"])
+    assert tools._agent_role_map["finance"].kind == "specialist"
     _real_discovery(monkeypatch, tmp_path)
     _own_ledger(tmp_path)
     return runtime
@@ -316,8 +315,8 @@ class DelegateClient(LaunchClient):
 
 
 class TestSpecialistSelfStart:
-    async def test_a_desk_turn_starts_an_operator_job(self, specialist_runtime):
-        result = await start_as(_desk_turn_origin())
+    async def test_an_operator_delegated_turn_starts_an_operator_job(self, specialist_runtime):
+        result = await start_as(_delegated_turn_origin())
         assert result["status"] == "pending", result
         await drain_launch_turns()
         _assert_self_start(specialist_runtime, "operator")
@@ -809,25 +808,3 @@ class TestApprovalAndSetup:
         origin, rec = await run_turn(turns, msg)
         assert origin.get("user_id") == OPERATOR
         assert_record_says(rec, "agent")
-
-    async def test_a_desk_approve_continues_into_an_operator_self_start(
-            self, turns, specialist_runtime, monkeypatch):
-        """The operator's Approve on a desk turn's protected call continues the
-        DESK through the real ``_dispatch_desk_continuation``; the desk turn's
-        specialist starts its own job."""
-        import asyncio
-        monkeypatch.setattr(tools, "ClaudeSDKClient", DelegateClient)
-        monkeypatch.setattr(DelegateClient, "started", [])
-        # the chat's resident, as casa_core configures the channel
-        monkeypatch.setattr(turns.runtime.channel, "default_agent", "assistant")
-        ok = await turns.runtime.channel._dispatch_desk_continuation(
-            chat_id=OPERATOR, user_id=OPERATOR, desk_role="finance", request_id="r-desk",
-            text="[authorization approved] invoice_reset")
-        assert ok is True
-        for _ in range(200):
-            if DelegateClient.started:
-                break
-            await asyncio.sleep(0.01)
-        assert [r.get("status") for r in DelegateClient.started] == ["pending"]
-        await drain_launch_turns()
-        _assert_self_start(specialist_runtime, "operator")

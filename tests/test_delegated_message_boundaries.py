@@ -6,8 +6,7 @@ does (agent.py); TextBlocks inside one message join as before, a message with
 no text (a tool call, an empty block, a sub-agent's API-error message) adds
 nothing, and the caller's 20,000-character bound applies to the joined text.
 Every case drives the REAL runner with a scripted SDK client — never a
-hand-built `DelegatedOutput` — on the sync `delegate_to_agent` payload and on
-the desk file turn's labelled reply.
+hand-built `DelegatedOutput` — on the sync `delegate_to_agent` payload.
 """
 from __future__ import annotations
 
@@ -17,24 +16,20 @@ from unittest.mock import patch
 import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, SystemMessage, TextBlock, ToolUseBlock
 
-import result_broker as rb
-import specialist_desk as sd
 import specialist_limits
 import tools as tools_mod
 from bus import MessageBus
 from channels import ChannelManager
 from specialist_registry import SpecialistRegistry
 from test_delegate_to_agent import (
-    _FakeSpecialistClient, _caller_cfg, _origin, _seed_specialist_dir, _specialist_cfg,
+    _FakeSpecialistClient, _caller_cfg, _origin, _seed_specialist_dir,
     _use_synthetic_roles_dir, _with_origin,
 )
-from test_desk_turn import _REAL_BOUNDED, LABEL, OPERATOR, _reply, env  # noqa: F401 — the real desk harness
 
 pytestmark = pytest.mark.asyncio
 
 A = "Obtaining the handoff path."
 B = "Filed the operator's file."
-FILE = "invoice.pdf"
 
 
 def _text(t):
@@ -118,36 +113,11 @@ async def _sync(tmp_path, monkeypatch, *messages):
     return payload["text"]
 
 
-@pytest.fixture
-def desk(env, monkeypatch):
-    """The real desk harness with the REAL bounded runner and the REAL
-    `_run_delegated_agent` underneath, on a real specialist config."""
-    monkeypatch.setattr(tools_mod, "_run_delegated_agent_bounded", _REAL_BOUNDED)
-    cfg = _specialist_cfg("finance")
-    cfg.kind = "specialist"
-    tools_mod._agent_role_map["finance"] = cfg
-    with patch("tools.ClaudeSDKClient", _Scripted):
-        yield env
-
-
-async def _desk_file_turn(desk, *messages, on_message=None):
-    _Scripted.load(*messages, on_message=on_message)
-    await _reply(desk, text="[casa file] The operator sent you a file: invoice.pdf", file_name=FILE)
-    _ran_once(len(messages))
-
-
 # --- the defect: the boundary between two messages ------------------------------
 
 async def test_sync_message_boundary(tmp_path, monkeypatch):
     text = await _sync(tmp_path, monkeypatch, _msg(_text(A), _tool()), _msg(_text(B)))
     assert text == A + "\n\n" + B
-
-
-async def test_file_desk_message_boundary(desk):
-    await _desk_file_turn(desk, _msg(_text(A), _tool()), _msg(_text(B)))
-    assert desk.channel.notices == []
-    (message, _), = desk.channel.replies
-    assert str(message) == LABEL + "\n" + A + "\n\n" + B
 
 
 async def test_subagent_error_adds_nothing(tmp_path, monkeypatch):
@@ -170,12 +140,6 @@ async def test_sync_bound_after_join(tmp_path, monkeypatch):
     assert text == "A" * 19_999 + "\n"
 
 
-async def test_file_desk_bound_after_join(desk):
-    await _desk_file_turn(desk, _msg(_text("A" * 19_999)), _msg(_text("B" * 10)))
-    body = "".join(str(m) for m, _ in desk.channel.replies)
-    assert body == LABEL + "\n" + "A" * 19_999 + "\n"
-
-
 # --- controls: unchanged at base ----------------------------------------------------
 
 async def test_one_message_unchanged(tmp_path, monkeypatch):
@@ -186,15 +150,3 @@ async def test_one_message_unchanged(tmp_path, monkeypatch):
 async def test_blocks_within_message_unchanged(tmp_path, monkeypatch):
     text = await _sync(tmp_path, monkeypatch, _msg(_text("A"), _text("B")))
     assert text == "AB"
-
-
-async def test_two_sentinels_keep_silent_branch(desk):
-    def post(m):
-        if m is first:          # a proven post, recorded under the running delegation
-            rb.POSTS.record(tools_mod._delegation_quota_key.get(),
-                            rb.PostEvent("c", "probe", "report", LABEL, 1, None))
-    first = _msg(_text("<silent/>"), _tool())
-    await _desk_file_turn(desk, first, _msg(_text("<silent/>")), on_message=post)
-    assert desk.channel.replies == []
-    assert desk.channel.notices == []
-    assert desk.desk.log[-1].text == sd.POSTED_VIEW
