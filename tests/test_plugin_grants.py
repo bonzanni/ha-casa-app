@@ -276,7 +276,8 @@ def test_protected_map_single_server(tmp_path):
     res = ResolutionResult(registry_valid=True, plugins=[rp])
     assert protected_map(res) == {
         "mcp__plugin_lantern-invoice_lantern-invoice__invoice_reset":
-            {"artifact_id": "0" * 64, "summary": None},
+            {"artifact_id": "0" * 64, "summary": None,
+             "plugin": "lantern-invoice"},
     }
 
 
@@ -290,9 +291,11 @@ def test_protected_map_expands_across_two_declared_servers(tmp_path):
     res = ResolutionResult(registry_valid=True, plugins=[rp])
     assert protected_map(res) == {
         "mcp__plugin_multi_alpha__do_thing": {"artifact_id": "a" * 64,
-                                              "summary": None},
+                                              "summary": None,
+                                              "plugin": "multi"},
         "mcp__plugin_multi_beta__do_thing": {"artifact_id": "a" * 64,
-                                             "summary": None},
+                                             "summary": None,
+                                             "plugin": "multi"},
     }
 
 
@@ -303,7 +306,7 @@ def test_protected_map_sanitizes_segments(tmp_path):
     res = ResolutionResult(registry_valid=True, plugins=[rp])
     assert protected_map(res) == {
         "mcp__plugin_weird-name_srv_one_two__do_the_thing":
-            {"artifact_id": "0" * 64, "summary": None},
+            {"artifact_id": "0" * 64, "summary": None, "plugin": "weird-name"},
     }
 
 
@@ -322,7 +325,7 @@ def test_protected_map_per_plugin_degradation(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="plugin_grants"):
         out = protected_map(res)
     assert out == {"mcp__plugin_good_good__safe_tool":
-                   {"artifact_id": "a" * 64, "summary": None}}
+                   {"artifact_id": "a" * 64, "summary": None, "plugin": "good"}}
     assert any("bad" in r.message for r in caplog.records)
 
 
@@ -340,6 +343,7 @@ def test_protected_map_object_entry_carries_summary(tmp_path):
         "mcp__plugin_lantern-invoice_lantern-invoice__invoice_reset": {
             "artifact_id": "0" * 64,
             "summary": "Delete the invoice draft for {period}",
+            "plugin": "lantern-invoice",
         },
     }
 

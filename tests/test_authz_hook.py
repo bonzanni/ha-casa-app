@@ -59,9 +59,9 @@ def _casa_bot(monkeypatch):
 
 TOOL = "mcp__plugin_p_p__invoice_reset"
 ARTIFACT = "artifact-1"
-# v0.78.0 W1: protected_map values are {"artifact_id", "summary"} — the hook
-# consumes ONLY artifact_id (zero enforcement change); summary is unused here.
-PROTECTED = {TOOL: {"artifact_id": ARTIFACT, "summary": None}}
+# protected_map values are {"artifact_id", "summary", "plugin"} — the hook
+# binds ONLY artifact_id into the grant; summary and plugin feed the card.
+PROTECTED = {TOOL: {"artifact_id": ARTIFACT, "summary": None, "plugin": "p"}}
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +180,8 @@ class _FakeChannel:
     def _user_id_is_operator(self, user_id) -> bool:
         return self.operator_ok
 
-    async def post_dm_keyboard(self, *, chat_id, request_id, text, options):
+    async def post_dm_keyboard(self, *, chat_id, request_id, text, options,
+                               entities=None):
         self.posts.append((chat_id, request_id, text, tuple(options)))
         if self.post_gate is not None:
             await self.post_gate.wait()
@@ -188,7 +189,7 @@ class _FakeChannel:
             raise RuntimeError("post boom")
         return self.post_result
 
-    async def edit_dm_message(self, chat_id, message_id, text):
+    async def edit_dm_message(self, chat_id, message_id, text, literal=False):
         self.edits.append((chat_id, message_id, text))
         return True
 
@@ -568,25 +569,91 @@ class TestConsumeAndChallenge:
     async def test_hook_threads_summary_and_display_name_end_to_end(
         self, monkeypatch,
     ):
-        """The summary travels: hook reads it from ``protected_map`` next to
-        ``artifact_id`` → passes into get_or_create → coordinator renders. The
-        posted challenge carries the interpolated sentence AND the verbatim
-        canonical block AND the full tool id."""
+        """The summary and the plugin travel: the hook reads them from
+        ``protected_map`` next to ``artifact_id`` → passes them into
+        get_or_create → the card the model is asked for carries them with the
+        display name and the arguments. The posted card is the model's, titled
+        with the display name, and shows neither the tool id nor the raw
+        canonical JSON."""
+        import approval_card
+        import json
+
+        seen = []
+        reply = json.dumps({
+            "action": "delete the May 2025 invoice draft",
+            "summary": "The draft is removed; issued invoices stay.",
+            "lines": [{"label": "Period", "value": "2025-05",
+                       "sensitive": False}],
+        })
+
+        async def _ask(system, user):
+            seen.append(json.loads(user))
+            return reply
+
+        monkeypatch.setattr(approval_card, "_ask", _ask)
         broker, coord, channel = _fresh_coord(monkeypatch)
         deps = AuthzDeps(channel=channel, grants=GrantStore(), challenges=coord,
                          display_name="Alex")
         protected = {TOOL: {"artifact_id": ARTIFACT,
-                            "summary": "Delete the invoice draft for {period}"}}
+                            "summary": "Delete the invoice draft for {period}",
+                            "plugin": "lantern-invoice"}}
         hook = _mk_hook(deps=deps, protected=protected)
         with _OriginCtx(_origin()):
             out = await _call(hook, tool_input={"period": "2025-05"})
         assert _deny_reason(out) == _DENY_POSTED
+        assert len(seen) == 1
+        assert seen[0]["requested_by"] == "Alex"
+        assert seen[0]["plugin"] == "lantern-invoice"
+        assert seen[0]["tool"] == "invoice_reset"
+        assert seen[0]["what_the_plugin_says_it_does"] == (
+            "Delete the invoice draft for {period}")
+        assert seen[0]["arguments"] == {"period": "2025-05"}
         ((_chat_id, _rid, text, _opts),) = channel.posts
-        assert (
-            "Alex (finance) wants to: Delete the invoice draft for 2025-05"
-        ) in text
-        assert '```\n{"period":"2025-05"}\n```' in text  # verbatim binding
-        assert f"Tool id: {TOOL}" in text
+        assert text == (
+            "🔐 Allow Alex to delete the May 2025 invoice draft?\n\n"
+            "The draft is removed; issued invoices stay.\n\n"
+            "Period: 2025-05"
+        )
+        assert "mcp__" not in text
+        assert '{"period":"2025-05"}' not in text
+
+    async def test_deeply_nested_arguments_still_get_an_answerable_card(
+        self, monkeypatch,
+    ):
+        """Arguments nested 500 deep are canonical (they bind a grant like any
+        other), so the operator must still get a card to answer: with the model
+        unresponsive, exactly one card Casa wrote itself is posted, within its
+        budget, with Approve and Deny."""
+        import functools
+
+        import approval_card
+        from authz_grants import canonical_args_json
+        from text_util import utf16_len
+
+        async def _hang(system, user):
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(approval_card, "_ask", _hang)
+        # The model's time budget, shortened so the hang ends in the fallback
+        # quickly; everything else about the request is the real one.
+        monkeypatch.setattr(approval_card, "CardRequest", functools.partial(
+            approval_card.CardRequest, budget_s=0.05))
+        deep: dict = {"leaf": "x"}
+        for _ in range(499):
+            deep = {"a": deep}
+        canonical_args_json(deep)  # accepted: it binds a grant like any other
+        broker, coord, channel = _fresh_coord(monkeypatch)
+        deps = AuthzDeps(channel=channel, grants=GrantStore(), challenges=coord,
+                         display_name="Alex")
+        hook = _mk_hook(deps=deps)
+        with _OriginCtx(_origin()):
+            out = await _call(hook, tool_input=deep)
+        assert _deny_reason(out) == _DENY_POSTED
+        assert len(channel.posts) == 1
+        (_chat_id, _rid, text, opts) = channel.posts[0]
+        assert opts == ("Approve", "Deny")
+        assert text.startswith("🔐 Allow Alex to use p?")
+        assert utf16_len(text) <= 2600
 
 
 # ===========================================================================
@@ -851,7 +918,7 @@ class TestWiring:
         from plugin_grants import protected_map
         assert protected_map(resolution) == {
             "mcp__plugin_p_p__invoice_reset":
-                {"artifact_id": e["artifact_id"], "summary": None}}
+                {"artifact_id": e["artifact_id"], "summary": None, "plugin": "p"}}
 
     def test_specialist_without_protected_tools_has_no_authz_matcher(
         self, tmp_path, monkeypatch,

@@ -94,7 +94,7 @@ class _Channel:
             await self.gate.wait()
         return self._post_result
 
-    async def edit_dm_message(self, chat_id, message_id, text):
+    async def edit_dm_message(self, chat_id, message_id, text, literal=False):
         self.edits.append((chat_id, message_id, text))
         return True
 

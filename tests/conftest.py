@@ -508,6 +508,32 @@ def _tool_descriptions_state_reset():
 
 
 @pytest.fixture(autouse=True)
+def _approval_card_model_unreachable(monkeypatch):
+    """A protected tool call's approval card is written by a model call
+    (``approval_card._ask``) that would start the real CLI. No test reaches it:
+    by default the call fails at once, so every challenge gets the card Casa
+    writes itself from the arguments, which is deterministic. A test that wants
+    a model-written card replaces ``_ask`` with its own reply. The reply cache
+    is cleared at both test boundaries so no test reads another's card.
+
+    Guarded like the fixtures above for the bare root lane, where
+    ``approval_card`` (it imports ``telegram``) cannot be imported."""
+    try:
+        import approval_card
+    except ImportError:
+        yield
+        return
+
+    async def _no_model(system: str, user: str) -> str:
+        raise RuntimeError("no model in tests")
+
+    monkeypatch.setattr(approval_card, "_ask", _no_model)
+    approval_card.clear_cache()
+    yield
+    approval_card.clear_cache()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_job_inbox(tmp_path, monkeypatch):
     """Point a background job's operator-message journal (``job_inbox``) and
     its scratchpad files (``background_jobs.JOB_PAD_ROOT``) at a per-test tmp

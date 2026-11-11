@@ -783,7 +783,7 @@ class ChallengeCoordinator:
         target_role: str, tool_name: str, canonical_json: str,
         enforcement_role: str, channel: Any, grants: "GrantStore",
         summary: "str | None" = None, display_name: "str | None" = None,
-        engagement_id: str = "",
+        engagement_id: str = "", plugin: str = "",
     ) -> ChallengeHandle:
         existing = self._entries.get(key)
         if existing is not None:
@@ -791,13 +791,19 @@ class ChallengeCoordinator:
 
         # Rendering + size validation runs BEFORE any insert [A:§3.4]:
         # oversized -> refused handle, NO entry, NO keyboard, NO registration.
-        # The plugin-declared *summary* + the current *display_name* are
-        # captured here (W2) into the challenge render AND, below, the
+        # This rendering is the size measure only: what the operator reads is
+        # the approval card below. The plugin-declared *summary* + the current
+        # *display_name* are captured here (W2) into the card AND, below, the
         # settlement finish hook.
         challenge_text = render_challenge_message(
             tool_name=tool_name, enforcement_role=enforcement_role,
             canonical_json=canonical_json, summary=summary,
             display_name=display_name,
+        )
+        card_request = self._tool_card_request(
+            key, tool_name=tool_name, canonical_json=canonical_json,
+            enforcement_role=enforcement_role, summary=summary,
+            display_name=display_name, plugin=plugin,
         )
 
         # #663: an engagement-origin challenge dispatches a continuation on
@@ -853,6 +859,43 @@ class ChallengeCoordinator:
                 "canonical_args_json": canonical_json,
                 "enforcement_role": enforcement_role,
             },
+            card_request=card_request,
+        )
+
+    @staticmethod
+    def _tool_card_request(
+        key: GrantKey, *, tool_name: str, canonical_json: str,
+        enforcement_role: str, summary: "str | None",
+        display_name: "str | None", plugin: str,
+    ) -> "approval_card.CardRequest":
+        """The approval card asked for a protected tool call: the facts the
+        model writes it from, and the card Casa writes itself from the
+        arguments when the model does not answer in time. Display only — the
+        grant stays bound to *key* (the canonical arguments' hash)."""
+        import approval_card
+        import tool_descriptions
+
+        who = _resolve_display_name(display_name, enforcement_role)
+        short = short_tool_name(tool_name)
+        args = json.loads(canonical_json)
+        described = tool_descriptions.get(key.artifact_id, short)
+        if described is None:
+            logger.info(
+                "approval card: no tool description cached for %s (artifact %s)",
+                tool_name, key.artifact_id)
+            described = {}
+        return approval_card.CardRequest(
+            kind="authz", who=who,
+            facts={
+                "requested_by": who,
+                "plugin": plugin,
+                "tool": short,
+                "tool_description": described.get("description"),
+                "input_schema": described.get("inputSchema"),
+                "what_the_plugin_says_it_does": summary,
+                "arguments": args,
+            },
+            fallback=approval_card.tool_fallback(who=who, plugin=plugin, args=args),
         )
 
     # -- owned setup driver -------------------------------------------------
@@ -993,7 +1036,7 @@ class ChallengeCoordinator:
 
         async def _deliver(text: str, fail_text: str) -> None:
             if not await _safe_dispatch(text) and not _seam_tells_its_loss():
-                await channel.edit_dm_message(chat_id, message_id, fail_text)
+                await channel.edit_dm_message(chat_id, message_id, fail_text, literal=True)
 
         async def _hand_over(text: str, fail_text: str) -> None:
             """#1049: a delegated call's decision goes back to the resident that
@@ -1031,6 +1074,7 @@ class ChallengeCoordinator:
                     _challenge_retired_text(
                         tool_name, o, outcome.get("reason")
                         if isinstance(outcome, dict) else None),
+                    literal=True,
                 )
                 return
             idx = outcome.get("option_index")
@@ -1043,6 +1087,7 @@ class ChallengeCoordinator:
                         chat_id, message_id,
                         "internal error recording the approval — "
                         "call the tool again",
+                        literal=True,
                     )
                     return
                 # Edit the SUCCESS state FIRST, then dispatch, then overwrite
@@ -1052,6 +1097,7 @@ class ChallengeCoordinator:
                     f"✅ Approved — {display} ({enforcement_role}) may run "
                     f"{short} once with exactly these arguments in the next "
                     f"{_GRANT_TTL_MINUTES} minutes",
+                    literal=True,
                 )
                 await _hand_over(
                     "[authorization approved]: have "
@@ -1069,6 +1115,7 @@ class ChallengeCoordinator:
             else:
                 await channel.edit_dm_message(
                     chat_id, message_id, f"❌ Denied — {short} will not run",
+                    literal=True,
                 )
                 # #1071: bound to the one call refused, as the approval is —
                 # a tool-wide "do not retry {tool}" read as a ban on the tool
@@ -1707,6 +1754,7 @@ def make_resident_authz_hook(
                     summary=protected[tool_name].get("summary"),
                     display_name=deps.display_name,
                     engagement_id=engagement_id,
+                    plugin=protected[tool_name].get("plugin", ""),
                 )
                 if handle.refused == "args_too_large":
                     return _deny(_DENY_UNRENDERABLE)
