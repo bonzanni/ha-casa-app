@@ -106,15 +106,40 @@ def render_erase_choice(what: str,
         lines.append(f"• {plugin}: {tool}" + (f" — {summary}" if summary else ""))
     lines.append("")
     lines += [_EXPLAIN[c] for c in choices if c in _EXPLAIN]
-    if not any(c in (ERASE, ERASE_DATA_ONLY) for c in choices):
-        lines.append("No erase option is offered: the plugins being "
-                     "uninstalled do not all declare the same kind of eraser.")
-    else:
-        lines.append("An erase goes ahead with the uninstall only if the "
-                     "plugin reports the erasure complete.")
-    lines.append("Home Assistant backups taken before now still contain the "
-                 "data either way.")
+    lines += _notes(choices)
     return "\n".join(lines)
+
+
+def _notes(choices: "tuple[int, ...]") -> "list[str]":
+    if not any(c in (ERASE, ERASE_DATA_ONLY) for c in choices):
+        first = ("No erase option is offered: the plugins being "
+                 "uninstalled do not all declare the same kind of eraser.")
+    else:
+        first = ("An erase goes ahead with the uninstall only if the "
+                 "plugin reports the erasure complete.")
+    return [first, "Home Assistant backups taken before now still contain the "
+                   "data either way."]
+
+
+def erase_card_request(what: str,
+                       erasers: "list[tuple[str, str, str | None]]",
+                       choices: "tuple[int, ...]" = (KEEP, ERASE, CANCEL), *,
+                       requester_name: str = "Casa") -> Any:
+    """The card of the erase question: a fixed title, the facts a model
+    writes the rest from (the question's inputs: what is uninstalled, each
+    eraser with the plugin's own summary, and what each offered choice does)
+    and, as the fallback, :func:`render_erase_choice` kept literally."""
+    import approval_card
+    return approval_card.CardRequest(
+        kind="plugin_erase_choice", who=requester_name,
+        title=f"\U0001F510 Uninstall {what}: erase its data too?",
+        facts={"requested_by": requester_name, "uninstalling": what,
+               "erasers": [{"plugin": p, "tool": t, "what_the_plugin_says_it_does": s}
+                           for p, t, s in erasers],
+               "choices": {LABELS[c]: _EXPLAIN.get(c, "Nothing is removed.")
+                           for c in choices},
+               "notes": _notes(tuple(choices))},
+        fallback=approval_card.text_fallback(render_erase_choice(what, erasers, choices)))
 
 
 _EDITS = {
@@ -132,10 +157,13 @@ def prompt_erase_choice(
     continue_cb: "Callable[[int], Awaitable[bool]]",
     grants: "ChoiceGrants | None" = None,
     choices: "tuple[int, ...]" = (KEEP, ERASE, CANCEL),
+    card_request: Any = None,
 ) -> Any:
     """Post the question with *choices* as its buttons, in order; every
     callback below receives the choice id, never the button index.
-    *channel* is the endpoint of ``key.bot_id`` (Casa's)."""
+    *channel* is the endpoint of ``key.bot_id`` (Casa's). With a
+    *card_request* the operator reads the card written for it, *text* (the
+    registration's size measure) being its fallback."""
     grants = grants if grants is not None else CHOICES
     choices = tuple(choices)
 
@@ -157,7 +185,8 @@ def prompt_erase_choice(
                 await channel.edit_dm_message(
                     key.chat_id, message_id,
                     "This uninstall question is no longer open — nothing was "
-                    "removed. Ask the configurator again to uninstall.")
+                    "removed. Ask the configurator again to uninstall.",
+                    literal=True)
                 return
             idx = _choice(outcome.get("option_index"))
             if idx not in _EDITS:
@@ -172,7 +201,7 @@ def prompt_erase_choice(
             if continued is not True:
                 text_out += (" (The configurator was not resumed automatically — "
                              "ask it to continue.)")
-            await channel.edit_dm_message(key.chat_id, message_id, text_out)
+            await channel.edit_dm_message(key.chat_id, message_id, text_out, literal=True)
 
         return _finish
 
@@ -183,4 +212,5 @@ def prompt_erase_choice(
         on_commit_sync=_on_commit_sync, finish_factory=_finish_factory,
         kind="plugin_erase_choice", meta_extra={"subject": key.subject},
         timeout_s=QUESTION_TTL_S,
+        card_request=card_request,
     )

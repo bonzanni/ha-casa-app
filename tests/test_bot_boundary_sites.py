@@ -349,7 +349,7 @@ IDENTITY_SITE_HITS = {
     },
     "callback_acks.py": {"CallbackAckStore.record": 2, "CallbackAckStore.revoke_effective": 1},
     "callback_consent.py": {
-        "CallbackConsentKey": 1, "prompt_callback_consent": 2,
+        "CallbackConsentKey": 1, "callback_card_request": 1, "prompt_callback_consent": 2,
         "prompt_callback_consent._finish_factory._finish": 2,
         "render_callback_consent_message": 1,
     },
@@ -606,7 +606,7 @@ IDENTITY_SITE_HITS = {
     "trigger_consent.py": {
         "ConsentTarget": 1, "TriggerConsentKey": 1, "casa_consent_target": 1,
         "prompt_trigger_consent": 1, "prompt_trigger_consent._finish_factory._finish": 1,
-        "render_trigger_consent_message": 1,
+        "render_trigger_consent_message": 1, "trigger_card_request": 1,
     },
     "trigger_reconcile.py": {
         "_unavailable_rows": 1, "compute_desired": 1, "pin_resolver": 2, "seal_setup_state": 6,

@@ -60,9 +60,11 @@ class CallbackConsentKey:
 
 
 def render_callback_consent_message(*, plugin: str, effective: str) -> str:
-    """The verbatim consent prose. Only the plugin name and the
-    effective callback name are interpolated — both grammar-validated
-    identifiers, never plugin-authored prose."""
+    """The consent text Casa writes itself. Only the plugin name and the
+    effective callback name are interpolated, both grammar-validated
+    identifiers. The operator reads the card a separate model writes from the
+    request's facts (:func:`callback_card_request`); this text, kept literally,
+    is that card's fallback."""
     return (
         "\U0001F510 Plugin callback consent\n\n"
         f"Plugin '{plugin}' wants to receive browser redirects at\n"
@@ -70,6 +72,23 @@ def render_callback_consent_message(*, plugin: str, effective: str) -> str:
         "no memory access).\n\n"
         "Approve to open it; Deny to leave it closed."
     )
+
+
+def callback_card_request(*, plugin: str, effective: str) -> Any:
+    """The approval card asked for one plugin callback: the facts a model
+    writes it from (the renderer's inputs, with what the callback can and
+    cannot do) and, as the fallback, :func:`render_callback_consent_message`
+    kept literally. Display only."""
+    import approval_card
+    who = f"the {plugin} plugin"
+    return approval_card.CardRequest(
+        kind="callback_consent", who=who,
+        facts={"requested_by": who, "plugin": plugin,
+               "opens": f"GET /callback/{effective}",
+               "receives": "browser redirects of an authorization (sign-in) flow",
+               "grants": "no agent turn, no memory access"},
+        fallback=approval_card.text_fallback(
+            render_callback_consent_message(plugin=plugin, effective=effective)))
 
 
 def prompt_callback_consent(
@@ -169,6 +188,7 @@ def prompt_callback_consent(
                         o, outcome.get("reason") if isinstance(outcome, dict)
                         else None,
                         consequence="it stays closed"),
+                    literal=True,
                 )
                 await _feed_setup_episode(approved=False)
                 return
@@ -181,6 +201,7 @@ def prompt_callback_consent(
                         chat_id, message_id,
                         "internal error recording the callback consent — "
                         "re-run the plugin mutation to be prompted again",
+                        literal=True,
                     )
                     return
                 # Edit the SUCCESS state FIRST, then reconcile, then overwrite
@@ -189,6 +210,7 @@ def prompt_callback_consent(
                     chat_id, message_id,
                     f"✅ Open — GET /callback/{effective} now accepts "
                     f"authorization redirects for '{plugin}'",
+                    literal=True,
                 )
                 # The approval is DURABLE here (the ack is persisted) — feed
                 # the setup evaluator REGARDLESS of the reconcile outcome
@@ -206,6 +228,7 @@ def prompt_callback_consent(
                             chat_id, message_id,
                             f"⚠️ Approved, but opening /callback/{effective} "
                             "failed — run plugin_verify",
+                            literal=True,
                         )
                 try:
                     import plugin_setup_episodes
@@ -216,6 +239,7 @@ def prompt_callback_consent(
                 await channel.edit_dm_message(
                     chat_id, message_id,
                     f"❌ Denied — GET /callback/{effective} stays closed",
+                    literal=True,
                 )
                 await _feed_setup_episode(approved=False)
 
@@ -231,4 +255,5 @@ def prompt_callback_consent(
                     "callback_declared": declared,
                     "callback_plugin": plugin},
         timeout_s=CALLBACK_CONSENT_TTL_S,
+        card_request=callback_card_request(plugin=plugin, effective=effective),
     )

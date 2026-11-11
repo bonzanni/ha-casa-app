@@ -132,6 +132,28 @@ def render_trigger_consent_message(
     )
 
 
+def trigger_card_request(
+    *, plugin: str, effective: str, role: str, auth: dict,
+    clearance: str = "public", deliver: str = "none",
+    max_body_kib: int = plugin_triggers.MAX_BODY_KIB_DEFAULT,
+) -> Any:
+    """The approval card asked for one plugin trigger: the facts a model
+    writes it from (the renderer's inputs) and, as the fallback,
+    :func:`render_trigger_consent_message` kept literally. Display only."""
+    import approval_card
+    who = f"the {plugin} plugin"
+    return approval_card.CardRequest(
+        kind="trigger_consent", who=who,
+        facts={"requested_by": who, "plugin": plugin,
+               "opens": f"POST /webhook/{effective}",
+               "each_call_starts_a_turn_of": role,
+               "auth": dict(auth), "memory_clearance": clearance,
+               "max_body_kib": max_body_kib, "deliver": deliver},
+        fallback=approval_card.text_fallback(render_trigger_consent_message(
+            plugin=plugin, effective=effective, role=role, auth=auth,
+            clearance=clearance, deliver=deliver, max_body_kib=max_body_kib)))
+
+
 def prompt_trigger_consent(
     *, coordinator: Any, channel: Any, chat_id: int, operator_id: int,
     plugin: str, artifact_id: str, effective: str, target: str,
@@ -246,6 +268,7 @@ def prompt_trigger_consent(
                         o, outcome.get("reason") if isinstance(outcome, dict)
                         else None,
                         consequence="it stays unrouted"),
+                    literal=True,
                 )
                 await _feed_setup_episode(approved=False)
                 return
@@ -258,6 +281,7 @@ def prompt_trigger_consent(
                         chat_id, message_id,
                         "internal error recording the trigger consent — "
                         "re-run the plugin mutation to be prompted again",
+                        literal=True,
                     )
                     return
                 # Edit the SUCCESS state FIRST, then reconcile, then overwrite
@@ -267,6 +291,7 @@ def prompt_trigger_consent(
                     chat_id, message_id,
                     f"✅ Enabled — POST /webhook/{effective} now "
                     f"routes to {role}",
+                    literal=True,
                 )
                 # v0.112.0 (impl r2): the DECISION is durable here — the ack
                 # is persisted (the yield-free commit step above) — so feed
@@ -300,6 +325,7 @@ def prompt_trigger_consent(
                             f"⚠️ Approved, but activating "
                             f"/webhook/{effective} failed — run "
                             "plugin_verify",
+                            literal=True,
                         )
                 # impl r4: wake the setup worker — either the settlement
                 # above created an episode, or a previously-gated pending
@@ -314,6 +340,7 @@ def prompt_trigger_consent(
                     chat_id, message_id,
                     f"❌ Denied — POST /webhook/{effective} stays "
                     "unrouted",
+                    literal=True,
                 )
                 await _feed_setup_episode(approved=False)
 
@@ -327,4 +354,7 @@ def prompt_trigger_consent(
         kind="trigger_consent",
         meta_extra={"trigger_effective": effective, "trigger_plugin": plugin},
         timeout_s=TRIGGER_CONSENT_TTL_S,
+        card_request=trigger_card_request(
+            plugin=plugin, effective=effective, role=role, auth=auth,
+            clearance=clearance, deliver=deliver, max_body_kib=max_body_kib),
     )

@@ -108,6 +108,21 @@ def render_event_consent_message(*, subscriber: str, emitter: str, event: str,
     )
 
 
+def event_card_request(*, subscriber: str, emitter: str, event: str,
+                       targets: "list[str]") -> Any:
+    """The approval card asked for one event subscription: the facts a
+    model writes it from (the renderer's inputs) and, as the fallback,
+    :func:`render_event_consent_message` kept literally. Display only."""
+    import approval_card
+    who = f"the {subscriber} plugin"
+    return approval_card.CardRequest(
+        kind="event_consent", who=who,
+        facts={"requested_by": who, "subscriber": subscriber, "event": event,
+               "emitted_by": emitter, "delivered_to": _target_roles(targets)},
+        fallback=approval_card.text_fallback(render_event_consent_message(
+            subscriber=subscriber, emitter=emitter, event=event, targets=targets)))
+
+
 def prompt_event_consent(
     *, coordinator: Any, channel: Any, chat_id: int, operator_id: int,
     subscriber: str, artifact_id: str, emitter: str, event: str,
@@ -164,6 +179,7 @@ def prompt_event_consent(
                         o, outcome.get("reason") if isinstance(outcome, dict)
                         else None,
                         consequence="it stays undelivered"),
+                    literal=True,
                 )
                 return
             if outcome.get("option_index") == 0:
@@ -175,6 +191,7 @@ def prompt_event_consent(
                         chat_id, message_id,
                         "internal error recording the event consent — "
                         "re-run the plugin mutation to be prompted again",
+                        literal=True,
                     )
                     return
                 # Edit the SUCCESS state FIRST, then reconcile, then overwrite
@@ -183,6 +200,7 @@ def prompt_event_consent(
                     chat_id, message_id,
                     f"✅ Enabled — '{subscriber}' now receives '{event}' "
                     f"from '{emitter}' ({_target_roles(targets)})",
+                    literal=True,
                 )
                 if reconcile_cb is not None:
                     try:
@@ -196,12 +214,14 @@ def prompt_event_consent(
                             chat_id, message_id,
                             f"⚠️ Approved, but starting delivery of '{event}' "
                             "failed — run plugin_verify",
+                            literal=True,
                         )
             else:
                 await channel.edit_dm_message(
                     chat_id, message_id,
                     f"❌ Denied — '{subscriber}' will not receive '{event}' "
                     f"from '{emitter}'",
+                    literal=True,
                 )
 
         return _finish
@@ -215,4 +235,6 @@ def prompt_event_consent(
         meta_extra={"event_subscriber": subscriber, "event_emitter": emitter,
                     "event_name": event, "event_targets": sorted(targets)},
         timeout_s=EVENT_CONSENT_TTL_S,
+        card_request=event_card_request(subscriber=subscriber, emitter=emitter,
+                                        event=event, targets=targets),
     )

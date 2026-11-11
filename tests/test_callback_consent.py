@@ -46,11 +46,12 @@ class _FakeChannel:
         self.chat_id = "100"
         self.bot_id = 111
 
-    async def post_dm_keyboard(self, *, chat_id, request_id, text, options):
+    async def post_dm_keyboard(self, *, chat_id, request_id, text, options,
+                               entities=None):
         self.posts.append((chat_id, request_id, text, tuple(options)))
         return 55
 
-    async def edit_dm_message(self, chat_id, message_id, text):
+    async def edit_dm_message(self, chat_id, message_id, text, literal=False):
         self.edits.append((chat_id, message_id, text))
         return True
 
@@ -133,17 +134,34 @@ def test_message_is_the_verbatim_consent_prose():
 
 
 async def test_prompt_posts_the_keyboard(monkeypatch, tmp_path):
+    import json
+
+    import approval_card
     broker, coord, channel, acks = _fresh_env(monkeypatch, tmp_path)
+    facts = []
+
+    async def _no_model(system, user):
+        facts.append(json.loads(user))
+        raise RuntimeError("no model")
+    monkeypatch.setattr(approval_card, "_ask", _no_model)
     handle = _prompt(coord, channel, acks)
     assert handle.created is True
     await handle.settled_post()
     chat_id, _rid, text, options = channel.posts[0]
     assert chat_id == 100
     assert options == ("Approve", "Deny")
+    # The card is model-written now; the literal detail moved to its fallback
+    # (posted when the model fails, as here) and to the facts the model gets.
+    body = cc.render_callback_consent_message(plugin="gmail", effective=EFFECTIVE)
+    assert text == approval_card.render_card(approval_card.text_fallback(body))[0]
     assert "GET /callback/plg-gmail--authorize" in text
     # a callback grants NO turn and NO memory access — say so, and never
     # borrow the trigger prose's role/clearance/auth vocabulary
     assert "no agent turn, no memory access" in text
+    [f] = facts
+    assert f["opens"] == "GET /callback/plg-gmail--authorize"
+    assert f["grants"] == "no agent turn, no memory access"
+    assert not {"role", "clearance", "auth", "memory_clearance"} & set(f)
 
 
 async def test_duplicate_prompt_is_deduped(monkeypatch, tmp_path):

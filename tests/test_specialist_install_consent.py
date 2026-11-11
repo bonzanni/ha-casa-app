@@ -220,13 +220,16 @@ def test_render_message_names_slug_and_dependencies() -> None:
 
 def test_render_message_discloses_role_casa_tool_grants() -> None:
     # #541: the operator approving the install must see the casa-framework
-    # powers the specialist arrives with.
-    text = render_install_consent_message(_inspection(role_tool_grants=(
-        "mcp__casa-framework__search_memory",
-        "mcp__casa-framework__send_media",
-    )))
+    # powers the specialist arrives with. The card is model-written now, so the
+    # literal line moved to its fallback and the grants to the model's facts.
+    import approval_card
+    from specialist_install_consent import install_card_request
+    grants = ("mcp__casa-framework__search_memory", "mcp__casa-framework__send_media")
+    req = install_card_request(_inspection(role_tool_grants=grants))
+    text = approval_card.render_card(req.fallback)[0]
     assert ("Casa tools: mcp__casa-framework__search_memory, "
             "mcp__casa-framework__send_media") in text
+    assert req.facts["casa_tools_granted"] == list(grants)
 
 
 def test_render_message_omits_casa_tools_line_when_role_grants_none() -> None:
@@ -258,11 +261,12 @@ class _Channel:
         self.edits = []
         self.post_result = 55
 
-    async def post_dm_keyboard(self, *, chat_id, request_id, text, options):
+    async def post_dm_keyboard(self, *, chat_id, request_id, text, options,
+                               entities=None):
         self.posts.append((chat_id, request_id, text, tuple(options)))
         return self.post_result
 
-    async def edit_dm_message(self, chat_id, message_id, text):
+    async def edit_dm_message(self, chat_id, message_id, text, literal=False):
         self.edits.append((chat_id, message_id, text))
         return True
 
