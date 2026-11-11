@@ -81,8 +81,11 @@ pair is two separate invocations under the suite lock and memory cage, so the lo
 taken while held. `make test-browser-integration` runs the browser app's
 integration tests in its built test image; the `browser-integration` job runs the same script
 (`casa_browser/test/run-integration.sh`) only on the nightly schedule (04:00 UTC) and on a
-manual dispatch, never on a push or a pull request, since it takes about 40 minutes; a red
-night wakes `nightly-alarm`, which files or comments on the tracking issue. It starts the app
+manual dispatch, never on a push or a pull request, since it takes about an hour of test
+time; a red night wakes `nightly-alarm`, which files or comments on the tracking issue. Its
+tests run one at a time inside one container, since each takes over the container's proxy
+ports, so the job is split in two parts on two runners (the action gate and run lifecycle
+files, and every other file), each well inside the job's 60-minute cap. It starts the app
 container as Supervisor starts it (`NET_ADMIN` only, `seccomp=unconfined`), then runs the
 live view's viewer in WebKit and Chromium (`run-viewer-engines.sh`, Playwright's image). The app linter in `.github/workflows/lint.yml`
 runs once per app. Until `casa_browser/` exists, every browser lane and target states that
