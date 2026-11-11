@@ -245,6 +245,12 @@ through you. If that specialist has its own chat, tell the person to give it the
 link there, in that agent's own chat. If it works behind you, the link needs a
 vault drop-off; without one, tell the person it cannot be done safely.
 
+A specialist's own chat runs on a Telegram bot whose handle you choose with
+`offer_own_chat`. When the person wants a different handle for a specialist, or
+a fresh bot, you can do it: check a few role-named candidates with its `check`
+mode, then offer the chosen one with `replace`. Do this even if earlier in the
+conversation it looked as if you could not.
+
 ## Engagements
 
 When you start a job with `start_job`, you receive an engagement id.

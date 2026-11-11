@@ -1231,11 +1231,16 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # nothing about it. Measured with `difflib` over base-vs-new compiled text,
 # word by word: exactly ONE `insert` on `assistant:text`, that sentence; the
 # eight other carriers byte-identical. No retention claim.
+# MOVED (a specialist's handle), `assistant:text` only: one paragraph before
+# the retention paragraph says she chooses a specialist's bot handle with
+# `offer_own_chat`, can give it a different handle (check, then replace), and
+# should do so even if earlier in the conversation it looked as if she could
+# not. The eight other carriers byte-identical. No retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "f7f8d0dcbbc197ff0349557cbebe0f95e5e360377030dacd09f38cf61ab7e335",
     "assistant:text":
-        "b21de43208ce72a950f5f510ba1d46df07d561f8610b30e0df76f0a61bd2e511",
+        "dd5955e68019c9181b456fa6dbb4f7c60862a0f281e3aa6dee2491713f405d7e",
     "assistant:voice":
         "71805d1c8fd3a8ef47a7de718e60db1123752388d8203a66e358eedac7b007d1",
     "butler:restricted_webhook":
@@ -2088,3 +2093,17 @@ def test_system_prompt_forbids_task_context_bleed(system_md_text):
     text = system_md_text.lower()
     assert "engage_executor" not in text
     assert "pass only the" in text and "do not carry" in text
+
+
+def test_the_text_doctrine_says_she_can_change_a_specialists_handle():
+    """A conversation that began before the handle change existed must not
+    keep her saying it cannot be done: the text projection says she can, and
+    that this holds even if earlier in the conversation it looked otherwise."""
+    from pathlib import Path
+    doctrine = (Path(__file__).resolve().parent.parent / "casa/rootfs/opt/casa/defaults"
+                / "roles/resident/assistant/doctrine.md").read_text(encoding="utf-8")
+    text = " ".join(doctrine.split("## Text projection", 1)[1]
+                    .split("## Voice projection", 1)[0].split())
+    assert "a different handle for a specialist" in text
+    assert "`replace`" in text and "`check`" in text
+    assert "even if earlier in the conversation it looked as if you could not" in text
