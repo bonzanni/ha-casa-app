@@ -312,10 +312,51 @@ def _refused(env, reason):
     assert env.channel.released == [(str(OPERATOR), "cid-1")]
 
 
-async def test_a_resident_that_no_longer_declares_the_specialist_is_refused(env):
+async def test_a_tap_whose_executing_agent_is_no_longer_loaded_is_refused(env):
+    del tools_mod._agent_role_map["finance"]
+    await _tap(env)
+    label = sd.label_for("finance")             # no display name once the agent is gone
+    assert env.calls == [] and env.channel.marks == ["✖ not delegable"]
+    assert env.channel.notices == [(OPERATOR, f"{label} could not apply your tap (not delegable).")]
+    assert env.desk.log == [] and env.limiter.permits == []
+    assert env.desk.waiting == 0 and not env.desk.lock.locked()
+
+
+async def test_a_card_of_another_agent_in_an_agents_own_chat_is_refused(env):
+    tools_mod._agent_role_map["browser"] = SimpleNamespace(role="browser", kind="specialist",
+                                                           delegates=())
+    await _tap(env, resident_role="browser")
+    _refused(env, "not delegable")
+
+
+async def test_the_card_is_the_executing_agents_whatever_the_resident_declares(env):
+    """The tap's executing agent owns the card: a resident that no longer
+    declares the agent does not take the card from it."""
     env.assistant.delegates = ()
     await _tap(env)
-    _refused(env, "not delegable")
+    (call,) = env.calls
+    assert call.origin["execution_role"] == "finance"
+    assert _echo() == [f"{LABEL} applied your tap (Yes)."]
+
+
+async def test_a_residents_own_card_is_settled_in_its_own_chat(env):
+    """Residents included: a card the resident itself posted is its to settle."""
+    sd.DESKS.get_or_create(BOT, OPERATOR, "assistant")
+    await _tap(env, desk_role="assistant", meta={"role": "assistant"},
+               reservation=sd.DESKS.get(BOT, OPERATOR, "assistant").reserve())
+    (call,) = env.calls
+    assert call.origin["execution_role"] == "assistant" and call.cfg is env.assistant
+
+
+def test_owns_card_reads_the_card_against_the_chat_it_arrived_in(env):
+    import stored_call_settler as settler
+    tools_mod._agent_role_map["browser"] = SimpleNamespace(role="browser", kind="specialist")
+    assert settler.owns_card("assistant", "finance") is True        # a resident's chat
+    assert settler.owns_card("assistant", "assistant") is True      # the resident's own card
+    assert settler.owns_card("browser", "browser") is True          # an agent's own chat
+    assert settler.owns_card("browser", "finance") is False         # another agent's card there
+    assert settler.owns_card("assistant", "gone") is False          # not loaded
+    assert settler.owns_card("assistant", "") is False
 
 
 async def test_a_plugin_no_longer_assigned_to_the_role_is_refused(env):
@@ -589,11 +630,11 @@ async def test_an_unconfirmed_termination_faults_the_desk_releases_the_permit_an
     async def respond(call):
         await asyncio.sleep(30)
     env.respond = respond
-    with caplog.at_level(logging.ERROR, logger="specialist_desk"):
+    with caplog.at_level(logging.ERROR, logger="stored_call_settler"):
         await asyncio.wait_for(_tap(env), 5)
     assert env.desk.faulted
     assert any(r.levelno == logging.ERROR and "faulted" in r.getMessage() for r in caplog.records)
-    faulted_line = f"{LABEL}'s desk is faulted; a Casa restart clears it."
+    faulted_line = f"{LABEL} is out of service until Casa restarts."
     assert env.channel.notices == [(OPERATOR, f"{LABEL} could not apply your tap (timed out)."),
                                    (OPERATOR, faulted_line)]
     assert faulted_line in _echo()
@@ -604,7 +645,7 @@ async def test_an_unconfirmed_termination_faults_the_desk_releases_the_permit_an
 
 async def test_a_faulted_desk_refuses_a_tap_a_reply_and_a_queued_reply_at_once(env):
     env.desk.faulted = "unconfirmed termination of run abc"
-    faulted_line = f"{LABEL}'s desk is faulted; a Casa restart clears it."
+    faulted_line = f"{LABEL} is out of service until Casa restarts."
     await _tap(env)
     assert env.calls == [] and env.channel.marks == ["✖ faulted"]
     assert env.channel.notices == [(OPERATOR, faulted_line)]
@@ -760,7 +801,7 @@ async def test_a_faulted_desk_is_listed_with_its_plugin_and_lands_in_the_health_
     assert env.refreshes == [True]                           # the report is regenerated at once
     (issue,) = sd.faulted_desk_issues()
     assert (issue.name, issue.target, issue.reason_code) == ("probe", "specialist:finance", "desk_faulted")
-    assert str(OPERATOR) in str(issue.detail)
+    assert "since" in str(issue.detail)
     # the regeneration carries the row, and the operator phrasing never shows the code
     import callback_reconcile
     import event_reconcile
@@ -846,7 +887,7 @@ async def test_a_cancel_in_flight_runs_the_bounded_termination_before_the_desk_i
 
 async def test_a_cancel_whose_termination_is_unconfirmed_faults_the_desk(env, caplog):
     env.confirm = False
-    with caplog.at_level(logging.ERROR, logger="specialist_desk"):
+    with caplog.at_level(logging.ERROR, logger="stored_call_settler"):
         await _cancel_in_flight(env)
     assert env.terminated and env.desk.faulted
     assert any("faulted" in r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
@@ -913,7 +954,8 @@ def test_the_pinned_runs_release_is_reachable_only_through_the_one_settle_functi
     through `_shielded`; nothing else in `handle_tap` performs any of them."""
     import ast
     import inspect
-    tree = ast.parse(inspect.getsource(sd))
+    import stored_call_settler
+    tree = ast.parse(inspect.getsource(stored_call_settler))
     fns = {n.name: n for n in tree.body if isinstance(n, ast.AsyncFunctionDef)}
     settle, tap = fns["_settle_pinned_run"], fns["handle_tap"]
     RELEASING = {"owner.finish", "owner.terminate", "owner.close_fds", "permit.release"}
@@ -966,7 +1008,7 @@ async def test_a_cancellation_during_the_receipts_send_is_disclosed_not_silent(e
     env.channel.send_response = slow_send
     task = asyncio.create_task(_tap(env))
     await gate.wait()
-    with caplog.at_level(logging.ERROR, logger="specialist_desk"):
+    with caplog.at_level(logging.ERROR, logger="stored_call_settler"):
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, 5)

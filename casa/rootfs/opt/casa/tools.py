@@ -87,6 +87,7 @@ from claude_runtime import (
 from media_policies import MEDIA_POLICIES
 import plugin_outbox
 import scratchpad
+import specialist_session
 from error_kinds import (
     ApiErrorTurn, ErrorKind, _USER_MESSAGES, _classify_error, api_error_kind,
     result_api_error_kind,
@@ -2743,8 +2744,8 @@ def _build_specialist_options(
     # the coordinator's ruling R-D1 (a): only a desk or delegated turn gets the inbox; a job or
     # engagement build — the only callers that pass launch grants — gets neither the
     # path nor the tools, and the #541 dispatch ceiling stays as it is
-    _inbox_prefixes, _inbox_tools = agent_inbox.delegated_build_grants(
-        cfg, engagement=bool(extra_casa_tools))
+    _grants = agent_inbox.delegated_build_grants(cfg, engagement=bool(extra_casa_tools))
+    _inbox_prefixes, _inbox_tools = _grants.prefixes, _grants.tools
     resolved_hooks = resolve_hooks(cfg.hooks, default_cwd=cfg.cwd, extra_readable=_inbox_prefixes)
     # Sol #5: inject the /config/plugins + settings.json guard code-side (like
     # residents — agent.py step 5). A delegated specialist with Bash could
@@ -4256,9 +4257,7 @@ async def _run_delegated_agent(
         run.close()
         # The conversation ends with its run unless a binding can resume it: this also
         # covers a binding minted during the run, which names this session from then on.
-        from plugin_bindings import BINDINGS
-        if not BINDINGS.holds_session(run.session_id):
-            scratchpad.PADS.discard(run.session_id)
+        specialist_session.release_pad(run.session_id)
 
 
 async def _run_delegated_turn(
@@ -4430,9 +4429,10 @@ async def _run_delegated_turn(
     # The configurator's live step line in the
     # operator's DM, removed when the run ends.
     _steps = _configurator_step_line(cfg, parent)
-    # The run in its agent's log (a specialist's or the configurator's).
-    _log = _DelegatedRunLog(cfg)
-    _log.start()
+    # The session's extras: the run in its agent's log (a specialist's or the
+    # configurator's), the long-run compaction window and the pad.
+    _extras = specialist_session.session_env_and_pad(cfg, child_origin, run_id=run.session_id)
+    _log = _extras.log
     _raised = False
 
     def _options_and_binding():
@@ -4466,21 +4466,12 @@ async def _run_delegated_turn(
                               cwd=run.directory or options.cwd)
             if conv is not None:
                 BINDINGS.adopt(conv.binding_ref, run.session_id)
-        # A mechanical stand-in for "this role's requests are one long conversation".
-        _long_conversation = (
-            getattr(getattr(cfg, "session", None), "desk_context", True) is False)
-        if _long_conversation:
-            options = replace(options, env={**options.env,
-                                            "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "200000"})
         # This client's pad is this run's session, fixed here; a stored call runs Casa's one
         # pinned call, so it has no tool. A conversation's first turn opens it with the brief;
         # a continuation's pad is the request's, as the model left it.
-        if not parent.get("stored_call"):
-            options = scratchpad.attach(
-                options, run.session_id, eager=_long_conversation,
-                **({"task": task_text, "words": operator_words(child_origin)}
-                   if conv is None else {}))
-            scratchpad.PADS.expire(BINDINGS.holds_session)
+        options = _extras.apply(
+            options, **({"task": task_text, "words": operator_words(child_origin)}
+                        if conv is None else {}))
         own_sid = run.session_id
         _ph["options"] = time.monotonic()
         token = agent_mod.origin_var.set(child_origin)

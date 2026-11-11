@@ -46,6 +46,7 @@ import stat
 import time
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Awaitable, Callable
 
 import atomic_io
@@ -630,20 +631,45 @@ def grants_for(role: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     return (inbox.ready_dir,), INBOX_TOOLS
 
 
-def delegated_build_grants(cfg, *, engagement: bool) -> tuple[tuple[str, ...], tuple[str, ...]]:
+@dataclass(frozen=True)
+class Grants:
+    """What a delegated build may read and call from its agent's inbox: the
+    readable prefixes, the inbound-file tools, and — for a build that runs one
+    task — the check a Read outside those prefixes is given, bound to that
+    task (:func:`task_file_granted`)."""
+    prefixes: tuple[str, ...]
+    tools: tuple[str, ...]
+    read_check: "Callable[[Path], bool] | None" = None
+
+
+def grant_task_file(task_id: str, path: Path) -> None:
+    """Grant the task *task_id* the read of exactly *path*, a file in its
+    executor's own inbox addressed to that task."""
+
+
+def task_file_granted(task_id: str, path: Path) -> bool:
+    """Whether *path* was granted to the task *task_id*."""
+    return False
+
+
+def delegated_build_grants(cfg, *, engagement: bool, task_id: "str | None" = None) -> Grants:
     """The ONE rule for the delegated builder (diff rounds 1–3 found the same
     grant three times, each from a different caller — generalised here):
     a job or engagement build gets nothing (coordinator's ruling R-D1 (a));
     any other build of an inbox role gets its own ``ready/`` as a readable
     prefix; only a SPECIALIST also gets the two inbound-file tools — a
     resident's tools stay what its own configuration lists, wherever it runs
-    (INV-FILE-002)."""
+    (INV-FILE-002). A build for the task *task_id* also gets that task's read
+    check, consulted at each Read decision."""
+    read_check = None
+    if task_id is not None:
+        read_check = lambda path: task_file_granted(task_id, path)  # noqa: E731
     if engagement:
-        return (), ()
+        return Grants((), (), read_check)
     prefixes, tools = grants_for(getattr(cfg, "role", ""))
     if getattr(cfg, "kind", "") != "specialist":
         tools = ()
-    return prefixes, tools
+    return Grants(prefixes, tools, read_check)
 
 
 def readable_prefixes(role: str) -> tuple[str, ...]:

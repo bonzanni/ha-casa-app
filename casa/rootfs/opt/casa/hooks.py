@@ -14,7 +14,7 @@ import logging
 import os
 import re
 import shlex
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Awaitable, Callable
 
 
@@ -610,6 +610,7 @@ def make_path_scope_hook_v2(
     *,
     writable: list[str] | None = None,
     readable: list[str] | None = None,
+    extra_read_check: Callable[[Path], bool] | None = None,
 ) -> HookCallback:
     """Return a PreToolUse hook that enforces absolute-path prefixes.
 
@@ -617,6 +618,10 @@ def make_path_scope_hook_v2(
     ``writable`` applies to Write/Edit. ``readable`` applies to
     Read/Write/Edit. Anything outside the allowed set denies;
     exact-match or prefix-match.
+
+    ``extra_read_check`` is asked about a Read the readable prefixes deny,
+    at that Read's decision: a path it accepts is allowed. It is consulted
+    live, so a file granted after the hook was built is readable at once.
     """
     # #442: type-check BEFORE the comprehension — a bare string would
     # otherwise expand per character into a '/' prefix that matches
@@ -651,7 +656,8 @@ def make_path_scope_hook_v2(
                 )
         else:  # Read
             if not (_has_prefix(norm, readable)
-                    or _is_own_tool_result(norm, input_data)):
+                    or _is_own_tool_result(norm, input_data)
+                    or (extra_read_check is not None and extra_read_check(Path(norm)))):
                 return _deny(
                     f"path_scope: Read denied — {raw!r} outside "
                     f"readable prefixes {readable}"

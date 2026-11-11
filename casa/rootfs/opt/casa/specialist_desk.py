@@ -24,11 +24,16 @@ line saying these are its OWN exchanges in this chat, and party labels
 (``the operator``, ``you``, ``<resident>, on the operator's behalf``) — and
 a desk turn's context opens with a line saying the message is from that same
 operator, now. Only the rendering changed; the log stores what it stored.
+
+A desk's lock, queue and fault are its specialist's: one lane and one fault
+per executing agent (:mod:`agent_lane`), shared by every chat and by every
+other use of that agent. A tap on a stored-call button is settled by
+:mod:`stored_call_settler`. The names this module gave them stay, for their
+callers.
 """
 from __future__ import annotations
 
 import asyncio
-import collections
 import contextlib
 import dataclasses
 import logging
@@ -36,7 +41,13 @@ import time
 import uuid
 from typing import Any, Callable
 
-from stored_calls import OPERATOR_FILE, TELL_LINE   # the one tell line (§14.7), shared with the result hook
+import agent_lane
+from agent_lane import LaneBusy, LaneFaulted, Reservation
+from stored_call_settler import (  # noqa: F401 — the settler's names, kept for their callers
+    NO_RECEIPT, OPERATOR_FILE, POSTED_FILE, POSTED_PROPOSAL, STORED_CALL_RECEIPT_CHARS,
+    TELL_ECHO, TELL_LINE, UNCONFIRMED, _assigned_plugin, _outcome_text, _post_next_card,
+    _posted, _profile_refuses, _refuse_failed, _settle_pinned_run, _shielded, _tap_prompt,
+    handle_tap, keeps_card)
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +55,7 @@ DESK_LOG_EXCHANGES = 12
 DESK_LOG_SIDE_CHARS = 400
 DESK_LOG_CHARS = 10_000
 DESK_IDLE_S = 3600.0
-DESK_QUEUE_MAX = 3
+DESK_QUEUE_MAX = agent_lane.QUEUE_MAX
 DESK_TASK_CHARS = 4096
 DESK_QUOTE_CHARS = 2000
 DESK_CONTEXT_CHARS = 12_500
@@ -54,21 +65,13 @@ CLIP = "[…]"
 POSTED_VIEW = "[posted a view]"
 NO_REPLY = "[no reply]"
 ECHO_OWNER_PREFIX = "desk:"
-UNWINDING = "an earlier run is still unwinding"   # #1197: the desk's refusal reason
+UNWINDING = agent_lane.UNWINDING   # #1197: the desk's refusal reason
 # #1198: a swipe-reply starting with "/" reaches the specialist as text — the
 # route runs ahead of the /new interception — and the desk turn's context says so.
 # It is framing: with the longest frame and quote header it stays within
 # DESK_FRAMING_CHARS, so it never costs the block or the quote a character.
 SLASH_TASK_LINE = ('The "/" task is plain text: Casa did not run it as a command and reset '
                    "nothing; earlier exchanges stand.")
-# S5: the pinned one-call turn (stored-call buttons)
-STORED_CALL_RECEIPT_CHARS = 4000
-NO_RECEIPT = "[no receipt]"
-POSTED_PROPOSAL = "[posted a proposal]"
-POSTED_FILE = "[posted a file]"
-# #1341: _post_next_card's word for an in-place edit that may have landed
-UNCONFIRMED = "not confirmed"
-TELL_ECHO = " — the CLI reported arguments changed by an installed hook"
 PROMPT_PREFIX = "(front desk) "
 # §5.6/§6: the body-free echo line for an outcome of a silent turn that has
 # no S3 echo event of its own, keyed by the outcome's kind — a landed post's
@@ -190,22 +193,15 @@ class Exchange:
     at: float
 
 
-@dataclasses.dataclass(frozen=True)
-class DeskFault:
-    """S5 §14.8: why a desk is faulted — the pinned run whose termination
-    stayed unconfirmed at its deadline, the plugin it ran, when."""
-    run_id: str
-    plugin: str
-    since: float
-    reason: str
+DeskFault = agent_lane.Fault
 
 
 class Desk:
-    """One (bot, chat, specialist) thread: the log, the activity stamp, the
-    lock that serialises every use, and the queue reservation count. The bot
-    is the endpoint the operator wrote to: two bots' private chats with the
-    operator share the chat id, so a desk keyed by the chat alone would mix
-    two conversations."""
+    """One (bot, chat, specialist) thread: the log and the activity stamp. The
+    bot is the endpoint the operator wrote to: two bots' private chats with
+    the operator share the chat id, so a log keyed by the chat alone would mix
+    two conversations. The lock, the queue and the fault are the specialist's
+    lane (:mod:`agent_lane`), shared by all of its desks."""
 
     def __init__(self, bot_id: int, chat_id: int, role: str) -> None:
         self.bot_id = bot_id
@@ -213,105 +209,52 @@ class Desk:
         self.role = role
         self.log: list[Exchange] = []
         self.last_used: float | None = None
-        self.lock = asyncio.Lock()
-        # S5 §14.8: set when a pinned run's termination stayed unconfirmed at
-        # its deadline; every later use is refused at once until restart.
-        self.fault: DeskFault | None = None
-        # #1197: the inner task of a use that left while it was still
-        # unwinding past the bounded runner's teardown bound; the desk is
-        # refused, like a faulted one, until that task has ended.
-        self._unwinding: asyncio.Task | None = None
-        # The queue in RESERVATION order: a use is admitted only when its
-        # reservation is at the head, so a use reserved earlier but whose
-        # task reached the desk later (a delegation still registering) is
-        # never overtaken (arrival order = reservation order).
-        self._queue: "collections.deque[Reservation]" = collections.deque()
-        self._changed = asyncio.Event()
+
+    @property
+    def lane(self) -> agent_lane.Lane:
+        return agent_lane.LANES.get(self.role)
+
+    @property
+    def lock(self) -> asyncio.Lock:
+        return self.lane.lock
+
+    @property
+    def fault(self) -> "DeskFault | None":
+        return agent_lane.FAULTS.faulted(self.role)
+
+    @fault.setter
+    def fault(self, value: "DeskFault | None") -> None:
+        agent_lane.FAULTS.set(self.role, value)
 
     @property
     def faulted(self) -> str | None:
         """The fault's reason, or None — the one truth every use checks.
         A run still unwinding (#1197) refuses the desk as a fault does, and
         only until it has ended: it is not a ``fault`` (no health row)."""
-        if self.fault is not None:
-            return self.fault.reason
-        if self._unwinding is not None and not self._unwinding.done():
-            return UNWINDING
-        return None
+        return self.lane.faulted
 
     @faulted.setter
     def faulted(self, reason: str | None) -> None:
         self.fault = (None if reason is None
-                      else DeskFault(run_id="", plugin="", since=DESKS.now(), reason=str(reason)))
+                      else DeskFault(run_id="", plugin="", since=agent_lane.FAULTS.now(),
+                                     reason=str(reason)))
 
     @property
     def waiting(self) -> int:
-        return len(self._queue) + self._extra_waiting
-
-    _extra_waiting = 0   # tests that simulate a full queue set ``waiting``
+        return self.lane.waiting
 
     @waiting.setter
     def waiting(self, value: int) -> None:
-        self._extra_waiting = max(int(value) - len(self._queue), 0)
+        self.lane.waiting = value
 
-    # -- queue (reserved BEFORE any task exists; released on admission) ----
     def reserve(self) -> "Reservation | None":
-        """One place in the queue, or ``None`` when DESK_QUEUE_MAX are
-        already waiting. The reservation is released ONCE — on admission,
-        or on any exit before it (a cancel while waiting, a task cancelled
-        before its coroutine started: the holder's done-callback)."""
-        if self.waiting >= DESK_QUEUE_MAX:
-            return None
-        reservation = Reservation(self)
-        self._queue.append(reservation)
-        return reservation
+        return self.lane.reserve()
 
     def hold_unwinding(self, runs: list) -> None:
-        """#1197: called under the lock as a use leaves, before its permit is
-        released — a run the bounded runner gave up waiting for refuses the
-        desk until it ends. Synchronous: no later use can enter first."""
-        for run in runs:
-            if not run.done():
-                self._unwinding = run
+        self.lane.hold_unwinding(runs)
 
-    def _unreserve(self, reservation: "Reservation") -> None:
-        try:
-            self._queue.remove(reservation)
-        except ValueError:
-            return
-        self._changed.set()
-
-    @contextlib.asynccontextmanager
-    async def use(self, reservation: "Reservation | None", deadline: "float | None" = None):
-        """One use of the desk: wait until *reservation* is at the head of
-        the queue (an abandoned place ahead is skipped as it is released),
-        take the lock, release the place, yield ``True``; the lock is released
-        on every exit. With *deadline* (a ``time.monotonic`` instant) the wait
-        ends there: the place is released and the use yields ``False``,
-        holding nothing."""
-        async def _admit() -> None:
-            if reservation is not None:
-                while self._queue and self._queue[0] is not reservation and not reservation.released:
-                    self._changed.clear()
-                    await self._changed.wait()
-            await self.lock.acquire()
-
-        if deadline is None:
-            await _admit()
-        else:
-            try:
-                await asyncio.wait_for(_admit(), max(deadline - time.monotonic(), 0.0))
-            except asyncio.TimeoutError:
-                if reservation is not None:
-                    reservation.release()
-                yield False
-                return
-        try:
-            if reservation is not None:
-                reservation.release()
-            yield True
-        finally:
-            self.lock.release()
+    def use(self, reservation: "Reservation | None", deadline: "float | None" = None):
+        return self.lane.use(reservation, deadline)
 
     # -- the window (every call below runs under ``lock``) ------------------
     def begin_use(self, now: float) -> None:
@@ -328,33 +271,9 @@ class Desk:
         self.last_used = now
 
 
-class Reservation:
-    """A place in a desk's queue; ``release`` is idempotent."""
-
-    def __init__(self, desk: Desk) -> None:
-        self._desk = desk
-        self._released = False
-
-    def release(self, *_ignored: Any) -> None:
-        if self._released:
-            return
-        self._released = True
-        self._desk._unreserve(self)
-
-    @property
-    def released(self) -> bool:
-        return self._released
-
-
-class DeskBusy(Exception):
-    """A desk use admitted by the lock found the specialist's permit held by
-    a use outside the desk; the delegation reports ``busy``."""
-
-
-class DeskFaulted(Exception):
-    """A desk use admitted by the lock found the desk faulted (S5 §14.8: a
-    pinned run's processes unconfirmed dead); the delegation reports
-    ``desk_faulted`` and nothing runs."""
+DeskBusy = LaneBusy
+DeskFaulted = LaneFaulted
+faulted_line = agent_lane.faulted_line
 
 
 def _require_bot(bot_id: Any) -> int:
@@ -368,32 +287,21 @@ def _positive_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool) and v > 0
 
 
-def faulted_line(label: str) -> str:
-    return f"{label}'s desk is faulted; a Casa restart clears it."
-
-
 def faulted_desk_issues() -> list:
-    """S5 §14.8: the standing health report's rows for the faulted desks —
-    one ``desk_faulted`` row per desk, against the plugin the pinned run
-    ran and the specialist target, the chat and the time in the detail —
-    recomputed on every regeneration, so the row stands exactly as long as
-    the fault does (a restart clears both)."""
-    from plugin_registry import PluginIssue
-    rows = []
-    for desk in DESKS.faulted():
-        fault = desk.fault
-        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(fault.since))
-        rows.append(PluginIssue(
-            name=fault.plugin or "casa", target=f"specialist:{desk.role}", stage="verify",
-            reason_code="desk_faulted",
-            detail=f"chat {desk.chat_id}, since {when}"))
-    return rows
+    """The standing health report's rows for the faulted agents."""
+    return agent_lane.FAULTS.issues()
 
 
 class DeskRegistry:
-    def __init__(self, now: Callable[[], float] = time.time) -> None:
+    """The desks, by (bot, chat, specialist). A new registry is a fresh
+    world: it starts from no lanes and no faults, with *now* as their clock.
+    The module's own registry (``adopt_lanes``) takes them as they are."""
+
+    def __init__(self, now: Callable[[], float] = time.time, *, adopt_lanes: bool = False) -> None:
         self._desks: dict[tuple[int, int, str], Desk] = {}
         self.now = now
+        if not adopt_lanes:
+            agent_lane.reset(now=now)
 
     def get(self, bot_id: int, chat_id: int, role: str) -> Desk | None:
         return self._desks.get((bot_id, chat_id, role))
@@ -410,11 +318,11 @@ class DeskRegistry:
         return desk
 
     def faulted(self) -> list[Desk]:
-        """Every faulted desk (S5 §14.8), until restart empties the registry."""
-        return [d for d in self._desks.values() if d.fault is not None]
+        """Every desk whose specialist is faulted, until restart."""
+        return [d for d in self._desks.values() if agent_lane.FAULTS.faulted(d.role) is not None]
 
 
-DESKS = DeskRegistry()
+DESKS = DeskRegistry(adopt_lanes=True)
 
 
 # #1192: the block's first line. The specialist read the earlier entries as a
@@ -813,17 +721,6 @@ def _compose_context(block: str, quoted_text: str | None, record: Any, now: floa
     return context[:DESK_CONTEXT_CHARS]
 
 
-def _outcome_text(output: Any) -> tuple[str | None, str | None]:
-    """``(text, failure_kind)``: the runner's output classified exactly as
-    ``delegate_to_agent`` classifies it — a CLI-aborted run yields no text."""
-    import specialist_limits
-    import tools as tools_mod
-    if getattr(output, "run_aborted", False):
-        return None, tools_mod._run_abort_kind(getattr(output, "run_subtype", None))
-    text, _truncated = specialist_limits.truncate_output(str(getattr(output, "text", "") or ""))
-    return text, None
-
-
 async def handle_reply(
     *, channel: Any, resident_role: str, chat_id: int, user_id: int, user_name: str,
     message_id: Any, cid: str, text: str, quoted_text: str | None, record: Any,
@@ -1069,519 +966,3 @@ async def handle_reply(
     finally:
         reservation.release()                 # idempotent: a cancel while waiting
         channel._release_typing(context, str(chat_id))
-
-
-# -- S5 §5: the tap's desk use — the pinned one-call turn -------------------
-
-def _tap_prompt(label: str, runtime_name: str, canonical: str) -> str:
-    """§5.2.3: the only text the model is given besides its role prompt — no
-    desk block, no recalled memory, no operator frame (#1282). The model is
-    the hands; the pin enforces the one call, and whether the tap still
-    applies is the plugin's to decide, not the model's."""
-    return (f'[casa stored call] The operator tapped "{label}" on your proposal. '
-            f"Call the tool `{runtime_name}` exactly once, with exactly these arguments "
-            f"and nothing else: {canonical}. Make the call even if it looks out of date or "
-            f"already done: the plugin decides whether the tap still applies, and its answer "
-            f"is what the operator sees. Then stop. Do not call any other tool and do "
-            f"not write anything to the operator — Casa posts the tool's result.")
-
-
-def keeps_card(meta: dict, idx: int) -> bool:
-    """#1362: the tapped button is a ``keep_card`` file button — its tap settled
-    nothing, so nothing it does may write a line over the card."""
-    kinds = meta.get("kinds") or []
-    return isinstance(idx, int) and 0 <= idx < len(kinds) and kinds[idx] == "keep_card"
-
-
-def _assigned_plugin(resolution: Any, seg: str) -> Any:
-    """The resolved plugin whose runtime segment is *seg*, or None."""
-    from plugin_registry import runtime_name as _runtime_name
-    from text_util import sanitize_segment
-    for rp in getattr(resolution, "plugins", None) or []:
-        if sanitize_segment(_runtime_name(rp)) == seg:
-            return rp
-    return None
-
-
-def _profile_refuses(plan: Any, runtime_name: str) -> bool:
-    """§4.3: when the plan has an entry whose prefixes cover the name, the
-    name must be in its allowed names (S8's per-prefix guard); no entry, no
-    further restriction."""
-    for entry in getattr(plan, "entries", None) or ():
-        if runtime_name.startswith(tuple(entry.prefixes)):
-            return runtime_name not in entry.allowed_names
-    return False
-
-
-async def handle_tap(
-    *, channel: Any, resident_role: str, chat_id: int, user_id: int, cid: str,
-    desk_role: str, meta: dict, idx: int, request_id: str, reservation: "Reservation | None",
-    bot_id: "int | None" = None,
-) -> None:
-    """One desk use for a committed tap (§5.2, ``handle_reply``'s sibling):
-    under the lock the faulted check, the re-checks of §4.3 on ONE captured
-    build input and the deadline; the permit after the lock; the pinned run
-    created DIRECTLY as a task (never the bounded wrapper) under the
-    ``PinnedRun`` ContextVar, the ceiling driven here; the outcome — a
-    validated capture is the receipt, authoritative over an aborted turn;
-    anything else is one labelled notice; the model's text is discarded —
-    the exchange ``[tapped: <label>]`` and one body-free echo line. The
-    reservation, the typing lease and the permit are released on every exit.
-    *channel* is the endpoint the tap arrived on; the desk, the echo and the
-    turn's route are keyed by its bot (*bot_id*, which defaults to
-    ``channel.bot_id``).
-    """
-    import agent as agent_mod
-    import plugin_erasure
-    import result_broker as rb
-    import tools as tools_mod
-    from channels import DeliveryOutcome
-    from output_boundary import IntentKind, TurnScope
-    from pinned_run import PinnedRun
-    from stored_calls import stored_call_still_ok
-
-    label = label_for(desk_role)
-    bot = channel.bot_id if bot_id is None else bot_id
-    context = {"chat_id": str(chat_id), "cid": cid, "_tg_bot": bot}
-    desk = DESKS.get_or_create(bot, chat_id, desk_role)
-    calls, options = list(meta.get("calls") or []), list(meta.get("options") or [])
-    call = dict(calls[idx]) if 0 <= idx < len(calls) else {}
-    button = str(options[idx]) if 0 <= idx < len(options) else "?"
-    runtime = str(call.get("runtime_name") or "")
-    canonical = str(call.get("canonical") or "")
-    seg = str(meta.get("plugin_seg") or "")
-    keep = keeps_card(meta, idx)
-
-    async def _notice(line: str) -> None:
-        try:
-            await channel.deliver_desk_notice(chat_id, line)
-        except Exception as exc:  # noqa: BLE001 — nothing more is attempted
-            logger.warning("desk notice failed: %s", type(exc).__name__)
-
-    async def _mark(line: str) -> bool:
-        mark = getattr(channel, "mark_proposal", None)
-        if mark is None or keep:          # #1362: a keep_card tap leaves its card live
-            return False
-        try:
-            return await mark(meta, line) is not False
-        except Exception as exc:  # noqa: BLE001 — the keyboard line is cosmetic
-            logger.warning("proposal mark failed: %s", type(exc).__name__)
-            return False
-
-    async def _refuse(reason: str) -> None:
-        """§10: the keyboard line, one notice, the refused echo line; not a use."""
-        await _mark(f"✖ {reason}")
-        await _notice(f"{label} could not apply your tap ({reason}).")
-        record_echo(bot, chat_id, f"{label} refused your tap ({button}): {reason}.")
-
-    async def _tell_faulted() -> None:
-        line = faulted_line(label)
-        await _notice(line)
-        record_echo(bot, chat_id, line)
-
-    try:
-        async with desk.use(reservation):
-            if desk.faulted:
-                await _mark("✖ faulted")
-                await _tell_faulted()
-                return
-            # §4.3: the re-checks, on one captured build input, under the lock
-            if not desk_target_ok(resident_role, desk_role):
-                await _refuse("not delegable")
-                return
-            cfg = tools_mod._agent_role_map.get(desk_role)
-            build = tools_mod._capture_build_input(cfg)
-            rp = _assigned_plugin(build.resolution, seg)
-            if rp is None:
-                await _refuse("plugin unassigned")
-                return
-            if str(getattr(rp, "artifact_id", "") or "") != str(meta.get("artifact_id") or ""):
-                await _refuse("plugin changed")
-                return
-            if _profile_refuses(build.plan, runtime):
-                await _refuse("profile")
-                return
-            if plugin_erasure.FENCE.fenced(str(getattr(rp, "name", "") or "")):
-                await _refuse("plugin erasing")
-                return
-            why = stored_call_still_ok(runtime, contract_map=build.contract_map,
-                                       protected=build.protected)
-            if why is not None:
-                await _refuse(why)
-                return
-            deadline = meta.get("deadline")
-            # #1362 (d1, both reviewers): a keep_card tap admitted while its card was
-            # live sends its file even if the TTL passed while it waited for the desk
-            if not keep and (not isinstance(deadline, (int, float))
-                             or asyncio.get_running_loop().time() >= deadline):
-                await _mark("⌛ expired")           # no notice, no exchange
-                return
-            now = DESKS.now()
-            desk.begin_use(now)
-            run_id = uuid.uuid4().hex
-            tapped = f"[tapped: {button}]"
-            origin = _desk_origin(
-                resident_role=resident_role, desk_role=desk_role, bot_id=bot,
-                chat_id=chat_id, user_id=user_id, user_name="",
-                message_id=meta.get("message_id"), cid=cid, text=tapped, turn_id=run_id)
-            origin["stored_call"] = {"run_id": run_id, "runtime_name": runtime,
-                                     "canonical": canonical, "label": button}
-            origin["turn_scope"] = TurnScope.for_desk(
-                origin, display_name=tools_mod._display_name_for_role(desk_role))
-            task_text = _tap_prompt(button, runtime, canonical)
-            # #1282: the pinned turn is given Casa's instruction only — not the
-            # desk's exchanges, nor a frame calling the task the operator's
-            # message — so nothing invites the model to judge the tap itself;
-            # the desk log is still written after the tap
-            context_text = ""
-            # the permit AFTER the lock; it never waits
-            permit = None
-            limiter = tools_mod._specialist_limiter
-            if limiter is not None:
-                permit = limiter.try_acquire(tools_mod._delegation_scope(origin, desk_role))
-                if permit is None:
-                    await _mark("✖ busy")
-                    await _notice(f"{label} is busy; the specialist will propose again, "
-                                  "or type your verdict.")
-                    record_echo(bot, chat_id, f"{label} refused your tap ({button}): busy.")
-                    return
-            owner = PinnedRun(run_id=run_id, runtime_name=runtime, canonical=canonical,
-                              label=button, build_input=build)
-            plugin_name = str(getattr(rp, "name", "") or "")
-            failure: str | None = None
-            told_failed = False
-            run = None
-            mode = "normal"
-            pending_cancel: BaseException | None = None
-
-            async def _tell_failed(kind: str) -> None:
-                nonlocal told_failed
-                await _refuse_failed(_mark, _notice, label, button, bot, chat_id, kind)
-                told_failed = True
-
-            async def _on_alive() -> None:
-                nonlocal failure
-                failure = "processes alive"
-                await _tell_failed(failure)
-
-            def _disclose_cancelled(capture) -> None:
-                """A cancelled tap whose call RAN (a capture exists): the
-                receipt cannot be posted on a stopping channel — an ERROR
-                names the run, the exchange is logged and the resident's line
-                records the applied tap; nothing is silent."""
-                logger.error("stored call %s: the tap was cancelled after its call ran; the "
-                             "receipt was not posted", run_id)
-                side = (clip(str(capture.text or ""), STORED_CALL_RECEIPT_CHARS).split("\n", 1)[0]
-                        if capture.kind in ("receipt", "no_post") else _posted(capture))
-                stamp = DESKS.now()
-                desk.append("operator", tapped, stamp)
-                desk.append("specialist", side, stamp)
-                record_echo(bot, chat_id, f"{label} applied your tap ({button})"
-                                     f"{TELL_ECHO if capture.rewritten else ''}.")
-
-            try:
-                ov = agent_mod.origin_var.set(origin)
-                qk = tools_mod._delegation_quota_key.set(run_id)
-                pk = tools_mod._pinned_run.set(owner)
-                try:
-                    run = asyncio.create_task(tools_mod._run_delegated_agent(
-                        cfg, task_text, context_text, resolution=build.resolution))
-                finally:
-                    agent_mod.origin_var.reset(ov)
-                    tools_mod._delegation_quota_key.reset(qk)
-                    tools_mod._pinned_run.reset(pk)
-                _done, pending = await asyncio.wait({run}, timeout=tools_mod._DELEGATION_CEILING_S)
-                if pending:
-                    # §5.2.4: the notice at once; the desk and the permit stay
-                    # held through the bounded termination path
-                    mode = "ceiling"
-                    failure = "timed out"
-                    await _tell_failed(failure)
-                else:
-                    exc = run.exception()
-                    if exc is not None:
-                        failure = tools_mod._classify_error(exc).value
-                        logger.warning("pinned run for %s failed: %s", desk_role,
-                                       type(exc).__name__)
-                    else:
-                        _text, failure = _outcome_text(run.result())    # the text is discarded
-            except asyncio.CancelledError as exc:
-                mode = "cancel"
-                pending_cancel = exc
-            except Exception as exc:  # noqa: BLE001 — the launch itself failed: settle as a normal end
-                failure = tools_mod._classify_error(exc).value
-                logger.warning("pinned run for %s could not start: %s", desk_role, type(exc).__name__)
-            # THE one release path — the normal end, the ceiling and a
-            # cancellation alike (BRAIN, diff round 2): the confirmation, the
-            # fault decision, the fd close and the
-            # permit release happen together, in one function, shielded from
-            # the cancellation; nothing in this turn releases by another route.
-            _confirmed, interrupted = await _shielded(_settle_pinned_run(
-                owner, run, mode, permit=permit, desk=desk, desk_role=desk_role, chat_id=chat_id,
-                run_id=run_id, plugin_name=plugin_name, on_alive=_on_alive,
-                tell_faulted=_tell_faulted))
-            if pending_cancel is not None or interrupted:
-                # cancelled before or DURING the settle (Terra, diff round 4): the
-                # turn does not continue — a receipt captured meanwhile is
-                # disclosed, never posted as if nothing had happened
-                if owner.captured is not None and owner.captured.kind in ("receipt", "no_post", "delivered"):
-                    _disclose_cancelled(owner.captured)
-                if pending_cancel is not None:
-                    raise pending_cancel
-                raise asyncio.CancelledError()
-            # §5.2.5/§5.4/§10: the outcome
-            rb.POSTS.drain(run_id)
-            capture = owner.settle(failure or "no_call")
-            tell = capture.rewritten
-            applied = f"{label} applied your tap ({button}){TELL_ECHO if tell else ''}."
-            specialist_side = NO_RECEIPT
-            replaced = in_place_unknown = False
-            try:
-                tapped_mid = meta.get("message_id")
-                if (capture.kind == "receipt" and capture.next and capture.in_place
-                        and not desk.faulted and isinstance(tapped_mid, int)
-                        and not isinstance(tapped_mid, bool)):
-                    # #1339: the card replaces the tapped one in place and no
-                    # receipt is sent; anything short of a landed edit is
-                    # today's sequence below — the receipt, then the card
-                    why = await _post_next_card(capture.next, meta=meta, build=build,
-                                                runtime=runtime, seg=seg, run_id=run_id,
-                                                edit_message_id=tapped_mid,
-                                                warning=TELL_LINE if tell else None)
-                    if why is None:
-                        specialist_side = clip(str(capture.text or ""),
-                                               STORED_CALL_RECEIPT_CHARS).split("\n", 1)[0]
-                        record_echo(bot, chat_id, applied)
-                        replaced = True
-                    else:
-                        logger.info("stored call %s: the card was not replaced in place (%s)",
-                                    run_id, why)
-                        # an edit that may have landed leaves the message to the
-                        # new card's record; the tapped card is not marked over it
-                        in_place_unknown = why == UNCONFIRMED
-                on_card = False
-                tick = "✖" if capture.not_done else "☑"
-                if (not replaced and not in_place_unknown and capture.kind == "receipt"
-                        and capture.on_card and not capture.next and not tell):
-                    # the plugin asked for its receipt as the card's last line: no
-                    # message; a card line that did not land falls back to one
-                    line = clip(str(capture.text or ""), STORED_CALL_RECEIPT_CHARS).split("\n", 1)[0]
-                    on_card = await _mark(f"{tick} {line}")
-                    if on_card:
-                        specialist_side = line
-                        record_echo(bot, chat_id, applied)
-                if (not replaced and not in_place_unknown and not on_card
-                        and capture.kind in ("receipt", "no_post", "delivered")):
-                    await _mark(f"{tick} {button}")     # #1341: the tap is applied
-                if replaced or on_card:
-                    pass
-                elif capture.kind in ("receipt", "no_post"):
-                    receipt = clip(str(capture.text or ""), STORED_CALL_RECEIPT_CHARS)
-                    body = f"{TELL_LINE}\n{receipt}" if tell else receipt
-                    admitted = origin["turn_scope"].admit(IntentKind.FINAL_REPLY, body)
-                    labelled = admitted.with_text(f"{label}\n{admitted}")
-                    post = rb.PostRecord(role=desk_role, operator_id=user_id, plugin=seg,
-                                         slot="receipt", tool_use_id=run_id, owner=run_id,
-                                         posted_at=DESKS.now(), kind=rb.RECEIPT)
-                    delivered = False
-                    try:
-                        outcome = await channel.send_response(labelled, {**context, "_post": post})
-                        delivered = outcome is DeliveryOutcome.DELIVERED
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:  # noqa: BLE001 — not proven
-                        logger.warning("receipt send failed: %s", type(exc).__name__)
-                    specialist_side = receipt.split("\n", 1)[0]
-                    if not delivered:
-                        await _notice(f"{label} applied your tap; the receipt did not go out.")
-                    record_echo(bot, chat_id, applied)
-                    # #1302: the card follows a receipt that landed, never stands in for one
-                    if capture.kind == "receipt" and capture.next and delivered and not desk.faulted:
-                        why = await _post_next_card(capture.next, meta=meta, build=build,
-                                                    runtime=runtime, seg=seg, run_id=run_id)
-                        if why is not None:
-                            logger.info("stored call %s: the next card was not shown (%s)",
-                                        run_id, why)
-                            await _notice(f"{label} could not show the next card ({why}).")
-                elif capture.kind == "delivered":
-                    specialist_side = _posted(capture)       # the landed post is the receipt
-                    if tell and capture.text == OPERATOR_FILE:
-                        # #1303: a file's caption is the plugin's, so the tell is
-                        # one notice after it (a proposal composes its own)
-                        await _notice(f"{label} {TELL_LINE}")
-                    record_echo(bot, chat_id, applied)
-                else:
-                    if tell:
-                        # #1303: the call ran with changed arguments even though
-                        # nothing landed — the tell precedes the refusal
-                        await _notice(f"{label} {TELL_LINE}")
-                    if capture.kind == "error":
-                        kind = capture.text or "error"
-                    elif capture.kind == "withheld":
-                        kind = capture.text or "not delivered"
-                    else:
-                        kind = failure or "no_call"
-                    if not told_failed:
-                        await _tell_failed(kind)
-            except asyncio.CancelledError:
-                # a cancellation during the telling: an executed call is never
-                # silent (Astra, diff round 2)
-                if capture.kind in ("receipt", "no_post", "delivered"):
-                    _disclose_cancelled(capture)
-                raise
-            done = DESKS.now()
-            desk.append("operator", tapped, done)
-            desk.append("specialist", specialist_side, done)
-    finally:
-        if reservation is not None:
-            reservation.release()             # idempotent: a cancel while waiting
-        channel._release_typing(context, str(chat_id))
-
-
-def _posted(capture: Any) -> str:
-    """The desk exchange's side for a landed ``delivered`` capture."""
-    return POSTED_FILE if capture.text == OPERATOR_FILE else POSTED_PROPOSAL
-
-
-async def _post_next_card(value: str, *, meta: dict, build: Any, runtime: str, seg: str,
-                          run_id: str, edit_message_id: int | None = None,
-                          warning: str | None = None) -> str | None:
-    """#1302: the next card a ``safe`` tap tool returned beside its receipt,
-    posted right after the receipt in the same desk use. It is a proposal
-    deposit like any other: judged by ``proposal_ok`` against the stored
-    tool's own entry (its plugin and server) and the SAME captured maps the
-    tap was re-checked against, then posted through ``_post_proposal`` (the
-    live bound, the revision supersede, registered before the send). The
-    identity is the tapped proposal's own record. Returns ``None`` when the
-    card landed, else the reason word for the operator's notice —
-    ``UNCONFIRMED`` for an in-place edit that may have landed (#1341).
-
-    #1339: with *edit_message_id* the card replaces the tapped card in place
-    (``_post_proposal`` edits that message); *warning* is the rewritten-call
-    tell, composed into the card as for the ``More`` exception. A card with
-    ``pages`` (#1377) is never an edit: it returns ``"pages"`` before anything is
-    registered or sent, and the caller's fallback posts the receipt, the pages
-    and the card."""
-    import types
-    import result_broker as rb
-    from authz_grants import GrantIdentity
-    entry = build.contract_map.tools.get(runtime)
-    identity = GrantIdentity(
-        operator_id=int(meta["operator_id"]), bot_id=int(meta["bot_id"]),
-        chat_id=int(meta["chat_id"]), enforcement_role=str(meta.get("role") or ""),
-        artifact_id=str(meta.get("artifact_id") or ""), engagement_id="")
-    call = types.SimpleNamespace(identity=identity, entry=entry, tool_use_id=run_id,
-                                 contract_map=build.contract_map, protected=build.protected)
-    try:
-        parsed, _why = rb.proposal_ok(value, call)
-    except Exception as exc:  # noqa: BLE001 — e.g. a lone surrogate the encoder refuses
-        logger.info("next card refused: %s", type(exc).__name__)
-        parsed = None
-    if parsed is None:
-        return "invalid"
-    if edit_message_id is not None and parsed.get("pages"):
-        return "pages"          # #1377: a card with pages is never an edit; the fallback posts it
-    if edit_message_id is not None and (parsed.get("photo") or meta.get("photo")):
-        return "photo"          # slice 5b: a photo card is neither edited into nor out of text
-    post = rb.PostRecord(role=identity.enforcement_role, operator_id=identity.operator_id,
-                         plugin=seg, slot=rb.OPERATOR_PROPOSAL, tool_use_id=run_id,
-                         owner=run_id, posted_at=DESKS.now(), kind=rb.OPERATOR_PROPOSAL)
-    try:
-        delivered, _detail, _event, withheld = await rb._post_proposal(
-            identity, seg, rb.OPERATOR_PROPOSAL, call, parsed,
-            rb.post_label(identity.enforcement_role), post, warning=warning,
-            edit_message_id=edit_message_id)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:  # noqa: BLE001 — not proven
-        logger.warning("next card post failed: %s", type(exc).__name__)
-        return "not delivered"
-    if delivered:
-        return None
-    if withheld == rb.EDIT_UNCONFIRMED:
-        return UNCONFIRMED
-    return "too many open" if withheld == rb._REASON_PROPOSAL_TOO_MANY else "not delivered"
-
-
-async def _settle_pinned_run(owner: Any, run: "asyncio.Task | None", mode: str, *, permit: Any,
-                             desk: Desk, desk_role: str, chat_id: int, run_id: str,
-                             plugin_name: str, on_alive: Callable[[], Any],
-                             tell_faulted: Callable[[], Any]) -> bool:
-    """THE one release path of a pinned run (BRAIN, diff round 2 — "same
-    shape twice: cut the mechanism"). Called once per run, for the normal
-    end (``mode == "normal"``: the controller's orderly close, then the
-    termination path if a pinned process is still alive, told first through
-    *on_alive*), the ceiling and a cancellation (``"ceiling"`` / ``"cancel"``:
-    the termination path on the execution task). Its only input is the
-    confirmation predicate — every pinned fd's own pidfd readable, every
-    callback drained, every identity established — and on it, together and
-    in this order: the fault decision (unconfirmed, or a teardown itself
-    cancelled by a loop shutdown ⇒ the desk is faulted, told, and the health
-    report refreshed), the fd close and the permit release. Nothing else in
-    ``handle_tap`` performs any of these (pinned structurally in
-    tests/test_desk_tap.py). The pinned run's transcript is not deleted here:
-    like every delegated run's, it is kept for the retention pass
-    (INV-ENG-028)."""
-    import tools as tools_mod
-    confirmed = False
-    try:
-        try:
-            if mode == "normal":
-                confirmed = await owner.finish()
-                if not confirmed:
-                    await on_alive()
-                    confirmed = await owner.terminate()
-            else:
-                confirmed = await owner.terminate(run)
-        except asyncio.CancelledError:
-            confirmed = False               # the teardown itself was cancelled: unconfirmed
-        if not confirmed:
-            desk.fault = DeskFault(run_id=run_id, plugin=plugin_name, since=DESKS.now(),
-                                   reason=f"run {run_id}: termination unconfirmed ({mode})")
-            logger.error("desk %s/%s faulted: run %s termination unconfirmed (%s)",
-                         chat_id, desk_role, run_id, mode)
-            try:
-                await tell_faulted()
-                await tools_mod._refresh_plugin_health_live()   # the report says so at once
-            except asyncio.CancelledError:
-                logger.warning("faulted-desk telling interrupted by a cancellation")
-            except Exception as exc:  # noqa: BLE001 — the next regeneration carries it
-                logger.warning("faulted-desk telling failed: %s", type(exc).__name__)
-    finally:
-        owner.close_fds()
-        if permit is not None:
-            permit.release()                # inside the desk lock, before it is released
-    return confirmed
-
-
-async def _shielded(coro) -> "tuple[Any, bool]":
-    """Run *coro* to completion although the caller is being cancelled: the
-    work is a task of its own, awaited through a shield, and a repeated
-    cancellation only re-arms the wait — the coroutine is bounded by its
-    own deadlines, never by the caller's. Returns ``(result, interrupted)``:
-    *interrupted* says a cancellation reached the caller meanwhile, so the
-    caller can honour it once the work is done (Terra, diff round 4: a
-    cancellation absorbed here must never let the turn continue as if it had
-    not happened)."""
-    task = asyncio.ensure_future(coro)
-    interrupted = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            # the caller is being cancelled: re-arm the wait for the work
-            # (Terra, diff round 2: a cancellation landing as the work finishes
-            # must not lose its result)
-            interrupted = True
-            continue
-    # the work's own result — or its own cancellation, when the work's task
-    # was itself cancelled (a loop shutdown): never a spin, never a swallow
-    return task.result(), interrupted
-
-
-async def _refuse_failed(mark, notice, label: str, button: str, bot_id: int, chat_id: int,
-                         kind: str) -> None:
-    """§10's ``✖ failed`` row: the keyboard line, the notice, the refused echo."""
-    await mark("✖ failed")
-    await notice(f"{label} could not apply your tap ({kind}).")
-    record_echo(bot_id, chat_id, f"{label} refused your tap ({button}): {kind}.")

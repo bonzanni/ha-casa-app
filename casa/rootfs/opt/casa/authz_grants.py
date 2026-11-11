@@ -32,7 +32,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from channels.tg_address import CASA, AddressError, is_route, scope
+from channels.tg_address import CASA, AddressError, TgAddress, is_route, scope
 from text_util import escape_unsafe_text, is_unsafe_text, utf16_len
 
 logger = logging.getLogger(__name__)
@@ -1353,6 +1353,12 @@ class GrantIdentity:
     # destination. Advisory, like ``target_role``: never identity, excluded
     # from equality and binding; ``target_role`` keeps the resident.
     desk_role: str = field(default="", compare=False)
+    # Where the call's posts physically go — a card, a link, a file, a run
+    # card, a Stop line — or ``None`` when they go nowhere. A task's call
+    # carries the delivery its task was born with, ``None`` included, copied
+    # and never recomputed; any other turn's posts go to its own chat.
+    # Advisory, like ``target_role``: never identity.
+    delivery: "TgAddress | None" = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         _require_bot_id(self.bot_id)
@@ -1474,6 +1480,8 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
             enforcement_role=role, artifact_id=artifact_id,
             engagement_id=str(rec.id),
             target_role=getattr(rec, "role_or_type", None),
+            # the job's delivery, recorded when it was born
+            delivery=getattr(rec, "delivery", None),
         ), None
     if (prov.transport not in ("dm", "button", "setup", "continuation")
             or prov.execution not in ("direct", "delegated")):
@@ -1491,12 +1499,18 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
     delegation_id = origin.get("_delegation_id")
     desk = origin.get("desk")
     desk_role = desk.get("role") if isinstance(desk, dict) else None
+    from provenance import task_delivery
+    is_task, delivery = task_delivery(origin)
+    if not is_task:
+        # not a task: the turn's posts go to its own chat
+        delivery = TgAddress(bot_id, chat_id)
     return GrantIdentity(
         operator_id=operator_id, bot_id=bot_id, chat_id=chat_id,
         enforcement_role=role, artifact_id=artifact_id,
         engagement_id="", target_role=origin.get("role"),
         delegation_id=delegation_id if isinstance(delegation_id, str) else "",
         desk_role=desk_role if isinstance(desk_role, str) and desk_role == role else "",
+        delivery=delivery,
     ), None
 
 
