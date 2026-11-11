@@ -18,6 +18,7 @@ import result_broker as rb
 import tools as tools_mod
 from authz_grants import GrantIdentity
 from channels.tg_address import TgAddress
+from provenance import task_delivery_marker
 from plugin_grants import PluginContract, ResultContractMap, ToolContract
 from _fixture_a import install_casa_bot
 
@@ -32,7 +33,7 @@ FIDO_RUN = {"role": "assistant", "execution_role": "browser", "channel": "telegr
             "user_text": "download my latest RunPod invoice",
             "_operator_words": "download my latest RunPod invoice", "_delegation_id": "d-1",
             "delegation_depth": 1, "_handoff_chain": ("assistant", "browser"),
-            "_tg_bot": 111}
+            "_tg_bot": 111, **task_delivery_marker(TgAddress(111, 42))}
 
 
 def _map() -> ResultContractMap:
