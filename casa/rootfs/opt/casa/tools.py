@@ -716,22 +716,6 @@ def _clip_line(text: str, limit: int) -> str:
     return one if len(one) <= limit else one[:limit - 1].rstrip() + "…"
 
 
-_QUOTE_PAIRS = {'"': '"', "'": "'", "“": "”", "‘": "’", "«": "»", "„": "“"}
-
-
-def _unquoted(text: str) -> str:
-    """*text*, whitespace-collapsed, without one pair of quote marks enclosing
-    all of it when neither mark occurs inside: how a brief its requester
-    quoted is shown."""
-    one = " ".join(str(text or "").split())
-    close = _QUOTE_PAIRS.get(one[:1])
-    if close and len(one) >= 2 and one.endswith(close):
-        inner = one[1:-1]
-        if one[0] not in inner and close not in inner:
-            return inner.strip()
-    return one
-
-
 # Delegations whose input destination is open: task id → executing role. The
 # run attaches its client under that id; the task's end closes it.
 _TASK_INPUTS: dict[str, str] = {}
@@ -862,7 +846,7 @@ async def _post_task_start(birth: TaskBirth) -> None:
     who = _display_name_for_role(birth.requester.role)
     await _post_task_text(
         birth,
-        f"{who} asked me: «{_clip_line(_unquoted(birth.brief), _TASK_START_BRIEF_CHARS)}»",
+        f"{who} asked me: {_clip_line(birth.brief, _TASK_START_BRIEF_CHARS)}",
         intent=IntentKind.DISCRETE)
 
 
@@ -896,7 +880,7 @@ def _note_task(birth: TaskBirth, asked: str, outcome: str) -> None:
     who = _display_name_for_role(birth.requester.role)
     chat_notes.record(
         birth.delivery.bot_id, birth.delivery.chat_id,
-        f"{who} {asked} «{_clip_line(_unquoted(birth.brief), _TASK_NOTE_BRIEF_CHARS)}»; {outcome}")
+        f"{who} {asked}: {_clip_line(birth.brief, _TASK_NOTE_BRIEF_CHARS)} — {outcome}")
 
 
 def _record_birth(rec: Any) -> "TaskBirth | None":
@@ -1003,7 +987,9 @@ OWN_CHAT_ANSWER_NOTE = (
 # The line that tells the requester what the person wrote straight into the
 # task while it ran (a reply in the delegate's own chat).
 OPERATOR_WORDS_NOTE = ("(Casa: the person also wrote to {name} directly while it worked "
-                       "on this: {words})")
+                       "on this: {words}. {name} got those words in the task itself and worked "
+                       "with them, so they are not yours to pass on or to start again as a "
+                       "new task.)")
 
 
 def _with_silent_close_note(text: str, output: "DelegatedOutput", role: str, *,
@@ -8328,7 +8314,11 @@ async def delegate_to_agent(args: dict) -> dict:
             _task_input_open = delegation_id
             # this run's closing message is posted to the person
             _ANSWER_IN_CHAT.add(delegation_id)
-            await _post_task_start(_birth)
+            # a task Casa started (a plugin's setup or erase turn) has no asker to name:
+            # only its answer shows
+            from provenance import CASA_PLUGIN_TURN_TARGETS
+            if origin.get("synthetic") not in CASA_PLUGIN_TURN_TARGETS:
+                await _post_task_start(_birth)
 
         # Task 6 (spec §4.6): create the task, then ATOMICALLY (no await between)
         # attach the unconditional permit-release done-callback and transfer

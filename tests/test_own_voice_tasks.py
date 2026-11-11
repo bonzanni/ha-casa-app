@@ -238,8 +238,8 @@ def _ellen_turn():
             "user_text": "groceries in october?"}
 
 
-async def _delegate(mode="sync", task="How much on groceries in October?"):
-    token = agent_mod.origin_var.set(_ellen_turn())
+async def _delegate(mode="sync", task="How much on groceries in October?", origin=None):
+    token = agent_mod.origin_var.set(origin or _ellen_turn())
     try:
         res = await tools.delegate_to_agent.handler(
             {"agent": "finance", "task": task, "context": "", "mode": mode})
@@ -295,7 +295,7 @@ async def test_a_task_of_alexs_open_chat_shows_there_whole_and_ellen_gets_her_bo
     # Alex's chat: the start line, then the whole answer, marker included,
     # no echo; every landed message filed under the task
     texts = _alex_texts(world)
-    assert texts[0].startswith("Ellen asked me: «How much on groceries in October?»")
+    assert texts[0].startswith("Ellen asked me: How much on groceries in October?")
     answer = "".join(texts[1:])
     assert MARKER in answer and ECHO.strip() not in answer
     assert len(texts) >= 3                       # paged
@@ -305,7 +305,7 @@ async def test_a_task_of_alexs_open_chat_shows_there_whole_and_ellen_gets_her_bo
     assert _casa_sends(world) == []
     # the conversation learns the outcome on its next turn, once
     (line,) = chat_notes.drain(FINANCE_BOT, OPERATOR)
-    assert line == "Ellen asked you «How much on groceries in October?»; you answered"
+    assert line == "Ellen asked you: How much on groceries in October? — you answered"
     assert chat_notes.drain(FINANCE_BOT, OPERATOR) == []
     # the record carries the task as born
     assert world.inputs.state[did] == "ended"
@@ -594,7 +594,7 @@ async def _ellens_result(world, mode, task="How much on groceries in October?"):
 
 # Alex runs here under his role's display name
 NAME = "Finance"
-START = "Ellen asked me: «How much on groceries in October?»"
+START = "Ellen asked me: How much on groceries in October?"
 
 
 @pytest.mark.parametrize("mode", ["sync", "async"])
@@ -619,31 +619,33 @@ async def test_a_task_posts_its_closing_message_not_its_notes(world, monkeypatch
     assert "Reading the ledger now." in result
 
 
-async def test_a_brief_its_requester_quoted_shows_without_the_quotes(world):
+async def test_a_quoted_brief_is_shown_as_written(world):
     _FakeSpecialistClient.reset(response="€420.")
     await _delegate("sync", task='"How much on groceries in October?"')
-    assert _alex_texts(world)[0] == START
+    assert _alex_texts(world)[0] == 'Ellen asked me: "How much on groceries in October?"'
     (line,) = chat_notes.drain(FINANCE_BOT, OPERATOR)
-    assert line.startswith("Ellen asked you «How much on groceries in October?»;")
+    assert line == 'Ellen asked you: "How much on groceries in October?" — you answered'
 
 
-@pytest.mark.parametrize("text,shown", [
-    ('"a" and "b"', '"a" and "b"'),
-    ("“Split it by week”", "Split it by week"),
-    ("«only Lidl»", "only Lidl"),
-    ("'it''s'", "'it''s'"),
-    ('"', '"'),
-    ("  plain  words ", "plain words"),
-])
-async def test_only_one_quote_pair_enclosing_the_whole_brief_is_dropped(text, shown):
-    assert tools._unquoted(text) == shown
+@pytest.mark.parametrize("synthetic", ["plugin_setup", "plugin_erase"])
+async def test_a_task_casa_started_shows_only_its_answer(world, synthetic):
+    # a plugin's setup or erase turn has no asker to name: only the answer shows
+    _FakeSpecialistClient.reset(response="Paired.")
+    payload = await _delegate(
+        "sync", origin={**_ellen_turn(), "synthetic": synthetic,
+                        f"{synthetic}_target": "finance"})
+    assert payload["status"] == "ok", payload
+    assert _alex_texts(world) == ["Paired."]
 
 
 # ---------------------------------------------------------------------------
 # What the person wrote straight into a running task reaches its requester
 # ---------------------------------------------------------------------------
 
-WORDS_LINE = "(Casa: the person also wrote to Finance directly while it worked on this: «only Lidl»)"
+WORDS_LINE = (
+    "(Casa: the person also wrote to Finance directly while it worked on this: «only Lidl». "
+    "Finance got those words in the task itself and worked with them, so they are not yours "
+    "to pass on or to start again as a new task.)")
 
 
 @pytest.mark.parametrize("mode", ["sync", "async"])
