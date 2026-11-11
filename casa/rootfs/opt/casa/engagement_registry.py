@@ -32,6 +32,7 @@ from atomic_io import atomic_write_json
 from channels.tg_address import AddressError, TgAddress, is_route
 from job_registry import CASA_SHUTDOWN_REASON
 from sensitivity import TIERS
+from task_model import Requester
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,35 @@ def _keyboard_posts(value: object,
             continue
         posts.append((addr, item[3]))
     return posts
+
+
+def _task_fields(row: dict, *, required: bool) -> dict:
+    """A stored record's ``executor``, ``requester`` and ``delivery``.
+    ``required`` (a Telegram job): all three keys must be present —
+    ``delivery`` may be ``null``. Otherwise an absent key decodes to nothing.
+    A value present but malformed raises ``ValueError``."""
+    out: dict[str, Any] = {}
+    missing = [k for k in ("executor", "requester", "delivery") if k not in row]
+    if required and missing:
+        raise ValueError(f"task record without {', '.join(missing)}")
+    if "executor" in row:
+        executor = row["executor"]
+        if not isinstance(executor, str) or (required and not executor):
+            raise ValueError(f"not a stored executor: {executor!r}")
+        out["executor"] = executor
+    if "requester" in row:
+        value = row["requester"]
+        if value is None and required:
+            raise ValueError("task record without a requester")
+        out["requester"] = None if value is None else Requester.from_json(value)
+    if "delivery" in row:
+        value = row["delivery"]
+        if value is not None:
+            value = TgAddress.from_json(value)        # AddressError is a ValueError
+            if value.message_id is not None:
+                raise ValueError(f"not a stored delivery: {row['delivery']!r}")
+        out["delivery"] = value
+    return out
 
 
 def _post_key(addr: TgAddress) -> tuple[int, int, int]:
@@ -336,6 +366,13 @@ class EngagementRecord:
     # buttons carry: ``{"text": str, "options": [str, ...]}``. Emptied by the
     # write that settles the terminal transition.
     questions: dict = field(default_factory=dict)
+    # The job as a task (``task_model``), set by its launcher at its birth
+    # and never recomputed: the agent that runs it, who receives its result,
+    # and where its posts go — ``None``: nowhere, for its whole life. A
+    # Telegram job's record without all three is refused at load.
+    executor: str = ""
+    requester: Requester | None = None
+    delivery: TgAddress | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -473,6 +510,17 @@ class EngagementRegistry:
                     "route (_tg_bot=%r)", row.get("id"), origin.get("_tg_bot"))
                 continue
             try:
+                task_fields = _task_fields(
+                    row, required=(isinstance(origin, dict)
+                                   and origin.get("channel") == "telegram"
+                                   and isinstance(origin.get("job"), dict)))
+            except ValueError as exc:
+                # A job's delivery and requester are decided at its birth; a
+                # record that does not carry them has nothing to post at or
+                # report to, and none is guessed for it.
+                logger.error("Skipping engagement %s: %s", row.get("id"), exc)
+                continue
+            try:
                 rec = EngagementRecord(
                     id=row["id"],
                     kind=row["kind"],
@@ -502,6 +550,7 @@ class EngagementRegistry:
                     ui_posts=_keyboard_posts(row.get("ui_posts"),
                                              row.get("id")),
                     questions=_question_map(row.get("questions")),
+                    **task_fields,
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 logger.warning("Skipping malformed engagement row: %s", exc)
@@ -866,6 +915,11 @@ class EngagementRegistry:
                 "questions": ({} if rec.status in _TERMINAL_STATUSES
                               else {qid: dict(q)
                                     for qid, q in rec.questions.items()}),
+                "executor": rec.executor,
+                "requester": (None if rec.requester is None
+                              else rec.requester.to_json()),
+                "delivery": (None if rec.delivery is None
+                             else rec.delivery.to_json()),
             })
         write = asyncio.ensure_future(
             asyncio.to_thread(self._write_tombstone, snapshot),
@@ -909,6 +963,10 @@ class EngagementRegistry:
         permission_mode: str = "acceptEdits",
         plugin_artifacts: tuple[dict, ...] | list[dict] = (),
         agent_spawn_permit: Any = None,
+        *,
+        executor: str = "",
+        requester: Requester | None = None,
+        delivery: TgAddress | None = None,
     ) -> EngagementRecord:
         # #283 belt-and-suspenders: a record whose origin carries the
         # agent-spawn marker must arrive WITH its reservation — the call
@@ -946,6 +1004,9 @@ class EngagementRegistry:
             # the caller's lexical finally still owns it; SpawnToken.release
             # is idempotent so the overlap is safe.
             agent_spawn_permit=agent_spawn_permit,
+            executor=executor,
+            requester=requester,
+            delivery=delivery,
         )
         async with self._lock:
             self._records[engagement_id] = rec

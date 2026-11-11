@@ -18,10 +18,11 @@ from enum import StrEnum
 from typing import Any, Awaitable, Callable, Mapping
 
 from atomic_io import PRIVATE, atomic_write_json
-from channels.tg_address import is_route
+from channels.tg_address import AddressError, TgAddress, is_route
 from personality_types import SpeakerProvenance
 from provenance import ROUTING_KEYS
 from speaker_provenance import provenance_from_mapping, provenance_mapping
+from task_model import Requester
 
 
 logger = logging.getLogger(__name__)
@@ -170,11 +171,35 @@ class VoiceJob:
     # and never through whichever bot the role is bound to now. A Telegram row
     # without a valid route is refused at load.
     route: dict = field(default_factory=dict)
+    # The delegation as a task (``task_model``): the agent that runs it, who
+    # receives its result, and where its posts go — decided once, at its
+    # birth, by its launcher and never recomputed. ``delivery`` ``None`` means
+    # the delegation posts nothing, for its whole life. A Telegram row
+    # without all three is refused at load.
+    executor: str = ""
+    requester: Requester | None = None
+    delivery: TgAddress | None = None
 
 
 @dataclass(frozen=True)
 class CancelResult:
     status: str
+
+
+def _post_key(addr: TgAddress) -> tuple[int, int, int]:
+    """The index key of one post: its bot, chat and message."""
+    return (addr.bot_id, addr.chat_id, addr.message_id)
+
+
+def _decode_delivery(value: Any) -> TgAddress | None:
+    """A stored ``delivery``: ``null``, or ``[bot, chat, null]`` — a chat,
+    never a message. Anything else raises ``ValueError``."""
+    if value is None:
+        return None
+    addr = TgAddress.from_json(value)        # AddressError is a ValueError
+    if addr.message_id is not None:
+        raise ValueError(f"not a stored delivery: {value!r}")
+    return addr
 
 
 def _inherit_delivery_modality(parent: VoiceJob, child: VoiceJob) -> VoiceJob:
@@ -285,6 +310,19 @@ class JobRegistry:
         # #671: per-job "this settling is NOT the stop" latches — see
         # `note_cancel_cause`. Process-local, never encoded.
         self._cancel_causes: dict[str, str] = {}
+        # A delegation's posts in a chat, oldest first, by job id: its start
+        # line and every page of its answer, so a reply to one of them finds
+        # the delegation (``task_post_owner``) — and, once it ended, is known
+        # as a reply to the ended one (``ended_task_post_owner``). Persisted
+        # with the row (``task_posts``) and rebuilt at load; kept beside the
+        # rows rather than on them, so filing a post (synchronous) never
+        # races a commit that is building its candidate from the rows.
+        self._task_posts: dict[str, list[TgAddress]] = {}
+        # (bot, chat, message) -> job id, for every filed post. Telegram
+        # numbers messages per bot and per chat, so all three name a post.
+        self._task_post_index: dict[tuple[int, int, int], str] = {}
+        # Strong references to the snapshot writes a filing schedules.
+        self._deferred_writes: set[asyncio.Task] = set()
 
     @property
     def path(self) -> str:
@@ -300,11 +338,17 @@ class JobRegistry:
             if snapshot_exists:
                 raw = await asyncio.to_thread(self._read_json, self._path)
                 jobs = self._decode_snapshot(raw)
+                posts = self._decode_task_posts(raw, jobs)
             else:
                 jobs = {}
+                posts = {}
 
             def publish_load() -> None:
                 self._jobs = jobs
+                self._task_posts = posts
+                self._task_post_index = {
+                    _post_key(addr): job_id
+                    for job_id, addrs in posts.items() for addr in addrs}
                 self._delivery_sequence = max(
                     (job.delivery_sequence for job in jobs.values()), default=0,
                 )
@@ -321,6 +365,83 @@ class JobRegistry:
 
     def get(self, job_id: str) -> VoiceJob | None:
         return self._jobs.get(job_id)
+
+    # -- a delegation's posts --------------------------------------------
+
+    def record_task_post(self, job_id: str, addr: Any) -> bool:
+        """File one landed post of the delegation *job_id* at *addr* (the
+        ``TgAddress`` the posting endpoint gave it) and schedule the write.
+        SYNCHRONOUS: the channel calls it from the step in which the post
+        landed.
+
+        ``False`` for an unknown job or an address that names no message —
+        nothing is filed — and for a delegation that has already ended: its
+        post is still filed, so a reply to it is known as a reply to the
+        ended delegation (``ended_task_post_owner``)."""
+        job = self._jobs.get(job_id)
+        if (job is None or not isinstance(addr, TgAddress)
+                or addr.message_id is None):
+            return False
+        posts = self._task_posts.setdefault(job_id, [])
+        if addr not in posts:
+            posts.append(addr)
+        self._task_post_index[_post_key(addr)] = job_id
+        self._schedule_snapshot_write()
+        return job.execution_state not in self._TERMINAL_EXECUTION
+
+    def task_posts(self, job_id: str) -> list[TgAddress]:
+        """The delegation's filed posts, oldest first."""
+        return list(self._task_posts.get(job_id, ()))
+
+    def task_post_owner(self, addr: Any) -> VoiceJob | None:
+        """The live delegation that filed the post at *addr*, else ``None``.
+        Only the bot that posted the message names it."""
+        job = self._task_post_job(addr)
+        if job is None or job.execution_state in self._TERMINAL_EXECUTION:
+            return None
+        return job
+
+    def ended_task_post_owner(self, addr: Any) -> VoiceJob | None:
+        """The ended delegation that filed the post at *addr*, else ``None``
+        (a live one is ``task_post_owner``'s; a row no longer held is
+        nobody's)."""
+        job = self._task_post_job(addr)
+        if job is None or job.execution_state not in self._TERMINAL_EXECUTION:
+            return None
+        return job
+
+    def _task_post_job(self, addr: Any) -> VoiceJob | None:
+        if not isinstance(addr, TgAddress) or addr.message_id is None:
+            return None
+        job_id = self._task_post_index.get(_post_key(addr))
+        return self._jobs.get(job_id) if job_id is not None else None
+
+    def _forget_task_posts_of_deleted(self) -> None:
+        """A row deleted from the snapshot takes its posts with it."""
+        gone = [job_id for job_id in self._task_posts if job_id not in self._jobs]
+        for job_id in gone:
+            for addr in self._task_posts.pop(job_id):
+                key = _post_key(addr)
+                if self._task_post_index.get(key) == job_id:
+                    del self._task_post_index[key]
+
+    def _schedule_snapshot_write(self) -> None:
+        """Write the snapshot soon, under the lock, without awaiting it here."""
+        if not self._loaded:
+            return
+
+        async def write() -> None:
+            async with self._lock:
+                try:
+                    await self._finish_atomic_commit(
+                        self._write_snapshot_locked(self._jobs))
+                except Exception:  # noqa: BLE001 — filing never fails a post
+                    logger.warning("job snapshot write after a filed post "
+                                   "failed", exc_info=True)
+
+        task = asyncio.get_running_loop().create_task(write())
+        self._deferred_writes.add(task)
+        task.add_done_callback(self._deferred_writes.discard)
 
     def all(self) -> list[VoiceJob]:
         """Return a stable delivery-order snapshot."""
@@ -1502,6 +1623,11 @@ class JobRegistry:
         if reconciliations:
             await asyncio.gather(*reconciliations, return_exceptions=True)
 
+        # A filed post's write is let land, never abandoned.
+        if self._deferred_writes:
+            await asyncio.gather(*list(self._deferred_writes),
+                                 return_exceptions=True)
+
     # -- persistence -----------------------------------------------------
 
     def _read_json(self, path: str) -> Any:
@@ -1514,6 +1640,15 @@ class JobRegistry:
         jobs: dict[str, VoiceJob] = {}
         for row in raw:
             job = self._decode_job(row)
+            try:
+                job = replace(job, **self._decode_task_fields(
+                    row, required=job.creator_peer == "telegram"))
+            except ValueError as exc:
+                # A delegation's delivery and requester are decided at its
+                # birth; a row that does not carry them has nothing to post
+                # at or report to, and none is guessed for it.
+                logger.error("Skipping job %s: %s", job.id[:8], exc)
+                continue
             if job.creator_peer == "telegram" and not is_route(
                     job.route.get("_tg_bot")):
                 # A Telegram delegation's completion goes through the bot
@@ -1601,6 +1736,57 @@ class JobRegistry:
             raise JobRegistryError(f"invalid job snapshot row: {exc}") from exc
 
     @staticmethod
+    def _decode_task_fields(row: dict, *, required: bool) -> dict:
+        """A stored row's ``executor``, ``requester`` and ``delivery``.
+        ``required`` (a Telegram row): all three keys must be present —
+        ``delivery`` may be ``null``. Otherwise an absent key decodes to
+        nothing. A value present but malformed raises ``ValueError``."""
+        out: dict[str, Any] = {}
+        missing = [k for k in ("executor", "requester", "delivery")
+                   if k not in row]
+        if required and missing:
+            raise ValueError(f"task row without {', '.join(missing)}")
+        if "executor" in row:
+            executor = row["executor"]
+            if not isinstance(executor, str) or (required and not executor):
+                raise ValueError(f"not a stored executor: {executor!r}")
+            out["executor"] = executor
+        if "requester" in row:
+            value = row["requester"]
+            if value is None and required:
+                raise ValueError("task row without a requester")
+            out["requester"] = (None if value is None
+                                else Requester.from_json(value))
+        if "delivery" in row:
+            out["delivery"] = _decode_delivery(row["delivery"])
+        return out
+
+    def _decode_task_posts(self, raw: list,
+                           jobs: Mapping[str, VoiceJob]) -> dict[str, list[TgAddress]]:
+        """The stored ``task_posts`` of every loaded row. An entry that does
+        not name its bot, chat and message is skipped, loudly."""
+        posts: dict[str, list[TgAddress]] = {}
+        for row in raw:
+            job_id = row.get("id") if isinstance(row, dict) else None
+            if job_id not in jobs or not isinstance(row.get("task_posts"), list):
+                continue
+            kept: list[TgAddress] = []
+            for item in row["task_posts"]:
+                try:
+                    addr = TgAddress.from_json(item)
+                except AddressError:
+                    addr = None
+                if addr is None or addr.message_id is None:
+                    logger.error("job %s: task post %r names no bot, chat and "
+                                 "message; skipped", str(job_id)[:8], item)
+                    continue
+                if addr not in kept:
+                    kept.append(addr)
+            if kept:
+                posts[job_id] = kept
+        return posts
+
+    @staticmethod
     def _decode_route(value: Any) -> dict:
         """A stored ``route``: the routing keys it holds, nothing else."""
         if not isinstance(value, dict):
@@ -1668,18 +1854,24 @@ class JobRegistry:
             "output_note": job.output_note,
             "closing_message": job.closing_message,
             "route": dict(job.route),
+            "executor": job.executor,
+            "requester": (None if job.requester is None
+                          else job.requester.to_json()),
+            "delivery": (None if job.delivery is None
+                         else job.delivery.to_json()),
         }
 
     async def _write_snapshot_locked(
         self, jobs: Mapping[str, VoiceJob],
     ) -> None:
-        snapshot = [
-            self._encode_job(job)
-            for job in sorted(
+        snapshot = []
+        for job in sorted(
                 jobs.values(),
-                key=lambda item: (item.delivery_sequence, item.created_at, item.id),
-            )
-        ]
+                key=lambda item: (item.delivery_sequence, item.created_at, item.id)):
+            row = self._encode_job(job)
+            row["task_posts"] = [addr.to_json()
+                                 for addr in self._task_posts.get(job.id, ())]
+            snapshot.append(row)
         await asyncio.to_thread(
             atomic_write_json, self._path, snapshot, indent=2,
             mode=PRIVATE,
@@ -1695,6 +1887,7 @@ class JobRegistry:
         async def commit() -> None:
             await self._write_snapshot_locked(jobs)
             self._jobs = jobs
+            self._forget_task_posts_of_deleted()
             self._delivery_sequence = max(
                 (job.delivery_sequence for job in jobs.values()), default=0,
             )

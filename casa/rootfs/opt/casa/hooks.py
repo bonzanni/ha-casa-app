@@ -2588,6 +2588,7 @@ def resolve_hooks(
     *,
     default_cwd: str,
     extra_readable: tuple[str, ...] = (),
+    extra_read_check: Callable[[Path], bool] | None = None,
 ) -> dict[str, list[Any]]:
     """Turn a HooksConfig into ``{"PreToolUse": [HookMatcher, ...]}``.
 
@@ -2603,6 +2604,12 @@ def resolve_hooks(
     (``agent_inbox.readable_prefixes``); the in-casa executor resynthesis
     passes nothing, so it can never resynthesize a wider scope than its
     snapshot.
+
+    ``extra_read_check`` is given to EVERY ``path_scope`` entry built here,
+    the same way: a Read its readable prefixes deny is allowed when the check
+    accepts the path, asked at that Read's decision. Code passes it (a
+    task's own files, ``agent_inbox.delegated_build_grants``); a hooks file
+    cannot declare it.
     """
     from claude_agent_sdk import HookMatcher
 
@@ -2641,6 +2648,11 @@ def resolve_hooks(
             params["readable"] = [*(params.get("readable") or ()),
                                   *extra_readable]
         callback = policy["factory"](**params)
+        if policy_name == "path_scope" and extra_read_check is not None:
+            # the factory above validated the declared parameters
+            callback = make_path_scope_hook_v2(
+                writable=params.get("writable"), readable=params.get("readable"),
+                extra_read_check=extra_read_check)
         matchers.append(HookMatcher(
             matcher=policy["matcher"],
             hooks=[callback],

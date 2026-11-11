@@ -22,6 +22,7 @@ import threading
 import pytest
 
 from channels.tg_address import TgAddress
+from task_model import Requester
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
@@ -46,7 +47,10 @@ async def _job_record(tmp_path, *, quiet: bool = False, job: bool = True):
               "user_id": 100, "_tg_bot": 111}
     if job:
         origin["job"] = _job(quiet)
-    rec = await reg.create("specialist", "finance", "in_casa", "t", origin)
+    rec = await reg.create(
+        "specialist", "finance", "in_casa", "t", origin, executor="finance",
+        requester=Requester("assistant", {"_tg_bot": 111}),
+        delivery=TgAddress(111, 100))
     return reg, rec
 
 
@@ -454,3 +458,60 @@ class TestOwedDecisionInsideTheTransition:
             owes_terminal_notification=lambda r: not tools._told_nowhere(
                 r.origin, "completed"))
         assert rec.terminal_notification_pending is False
+
+
+class TestTaskFields:
+    async def test_executor_requester_and_delivery_survive_a_reload(self, tmp_path):
+        from engagement_registry import EngagementRegistry
+        reg, rec = await _job_record(tmp_path)
+        row = _disk(tmp_path, rec.id)
+        assert row["executor"] == "finance"
+        assert row["requester"] == {"role": "assistant", "route": {"_tg_bot": 111}}
+        assert row["delivery"] == [111, 100, None]
+        again = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
+        await again.load()
+        loaded = again.get(rec.id)
+        assert loaded.executor == "finance"
+        assert loaded.requester == Requester("assistant", {"_tg_bot": 111})
+        assert loaded.delivery == TgAddress(111, 100)
+
+    async def test_a_null_delivery_is_stored_and_loaded_as_null(self, tmp_path):
+        from engagement_registry import EngagementRegistry
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
+        origin = {"role": "assistant", "channel": "telegram", "chat_id": "100",
+                  "user_id": 100, "_tg_bot": 111, "job": _job()}
+        rec = await reg.create("specialist", "finance", "in_casa", "t", origin,
+                               executor="finance",
+                               requester=Requester("assistant", {"_tg_bot": 111}),
+                               delivery=None)
+        assert _disk(tmp_path, rec.id)["delivery"] is None
+        again = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
+        await again.load()
+        assert again.get(rec.id) is not None
+        assert again.get(rec.id).delivery is None
+
+    @pytest.mark.parametrize("drop", ["executor", "requester", "delivery"])
+    async def test_a_telegram_job_without_a_task_field_is_refused_at_load(
+            self, tmp_path, drop):
+        from engagement_registry import EngagementRegistry
+        reg, rec = await _job_record(tmp_path)
+        rows = json.loads((tmp_path / "e.json").read_text())
+        for row in rows:
+            row.pop(drop)
+        (tmp_path / "e.json").write_text(json.dumps(rows))
+        again = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
+        await again.load()
+        assert again.get(rec.id) is None
+
+    async def test_a_record_that_is_not_a_telegram_job_needs_no_task_fields(
+            self, tmp_path):
+        from engagement_registry import EngagementRegistry
+        reg, rec = await _job_record(tmp_path, job=False)
+        rows = json.loads((tmp_path / "e.json").read_text())
+        for row in rows:
+            for key in ("executor", "requester", "delivery"):
+                row.pop(key)
+        (tmp_path / "e.json").write_text(json.dumps(rows))
+        again = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
+        await again.load()
+        assert again.get(rec.id) is not None
