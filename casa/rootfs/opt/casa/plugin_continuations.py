@@ -356,11 +356,11 @@ def _knowledge_line(requester: str, task: str, out=None, *, failed: "str | None"
     brief = task if len(task) <= 80 else task[:79] + "…"
     who = tools_mod._display_name_for_role(requester)
     if failed is not None:
-        return f"{who} asked you «{brief}»; you couldn't finish it ({failed})"
+        return f"{who} asked you: {brief} — you couldn't finish it ({failed})"
     if getattr(out, "run_aborted", False):
-        return (f"{who} asked you «{brief}»; you couldn't finish it "
+        return (f"{who} asked you: {brief} — you couldn't finish it "
                 f"({out.run_subtype or 'aborted'})")
-    return f"{who} asked you «{brief}»; you answered"
+    return f"{who} asked you: {brief} — you answered"
 
 
 def _note_knowledge(binding, requester, role: str, line: str) -> None:
