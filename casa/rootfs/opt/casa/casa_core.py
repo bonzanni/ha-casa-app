@@ -3108,6 +3108,11 @@ async def main() -> None:
     if public_url:
         logger.info("Public URL: %s", public_url)
     telegram_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    if telegram_token:
+        # The Bot API carries the token in every request URL, which the HTTP
+        # client logs; it is a credential and never reaches a log line.
+        import log_redact as _redact
+        _redact.register_secret(telegram_token)
     # Casa's own Telegram endpoint (its bot is the one the operator talks
     # to), and the transport that holds every endpoint by bot id and is the
     # one channel registered as "telegram".
