@@ -775,7 +775,7 @@ class Lifecycle:
             return f"{label}'s chat is open.", []
         found = self.store.bot_of(role)
         username = found[1].get("username") if found else ""
-        return (f"{label}'s chat is ready: @{username}. Open it and press Start.",
+        return (f"{label}'s chat is ready: @{username}. Open it and say hi.",
                 [(f"Open {label}'s chat", f"https://t.me/{username}")])
 
     async def _card_bound(self, role: str) -> None:

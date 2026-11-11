@@ -364,6 +364,15 @@ async def test_every_effect_finds_its_phase_on_disk(world, root):
 # edited once; the turn that opens it is told so when it is built
 # ---------------------------------------------------------------------------
 
+async def test_the_ready_card_asks_the_operator_to_say_hi(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _bind_alex(lc, host)
+    text, buttons = world.cards[lc.store.agents["finance"]["offer_card"][2]]
+    assert text == "Alex's chat is ready: @HeyAlexTestBot. Open it and say hi."
+    assert "Start" not in text
+    assert buttons == [("Open Alex's chat", "https://t.me/HeyAlexTestBot")]
+
+
 async def test_a_released_held_start_opens_the_chat_once(world, root):
     lc, host = make_lifecycle(world, root)
     await lc.post_offer("finance", "HeyAlexTestBot")
