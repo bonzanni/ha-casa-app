@@ -21,6 +21,10 @@ _REDACT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(xox[bpsa]-[a-zA-Z0-9]{4})[a-zA-Z0-9-]+"), r"\1***"),
     # Bearer tokens in headers
     (re.compile(r"(Bearer\s+)[^\s'\"]+", re.IGNORECASE), r"\1***"),
+    # Telegram bot tokens ("<bot id>:<secret>", also inside a Bot API URL):
+    # the bot id stays readable, the secret part never is. Casa's own bot and
+    # every agent bot it creates are covered, registered or not.
+    (re.compile(r"((?<!\d)\d{5,}:)[A-Za-z0-9_-]{30,}"), r"\1***"),
     # Generic password/token/key/secret value patterns in key=value or key: value.
     # The lookahead keeps %-format PLACEHOLDERS intact: redacting record.msg
     # happens before args are merged, and eating "%(api_key)s" down to

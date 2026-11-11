@@ -4,6 +4,7 @@
   summary: The scratchpad tool of a delegated client and of a background job's session — whose pad it reaches, when a pad goes, a job pad's file, its plain line operations and the bound on its replies.
   when_changing: the scratchpad tool, the casa-pad server, the pad broker route a plugin's code fills and reads it through, a pad's brief, what a delegated client's or a job's system prompt is told about its pad, a job pad's file, what a job is told of its pad after a compaction, or when a pad is moved or deleted
   covers:
+    - casa/rootfs/opt/casa/specialist_session.py
     - casa/rootfs/opt/casa/scratchpad.py
     - casa/rootfs/opt/casa/tools.py::_run_delegated_agent
     - casa/rootfs/opt/casa/plugin_bindings.py::BindingStore.holds_session
@@ -18,6 +19,7 @@
     - tests/test_scratchpad_lifetime.py
     - tests/test_scratchpad_route.py
     - tests/test_job_scratchpad.py
+    - tests/test_specialist_session.py
   related: [architecture/background-job-session.md, architecture/plugin-operator-calls.md, architecture/delegation.md, architecture/plugin-continuations.md, architecture/mcp-and-tools.md, architecture/tools-interface.md, architecture/stored-call-buttons.md, architecture/persistent-state.md]
   defines_invariants: [INV-PAD-001, INV-PAD-002, INV-PAD-003, INV-PAD-004, INV-PAD-005, INV-PAD-006, INV-PAD-007, INV-PAD-008, INV-PAD-009, INV-PAD-010, INV-PAD-011]
   invariant_tests:

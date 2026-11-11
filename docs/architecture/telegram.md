@@ -109,12 +109,28 @@ reply's page-1 unit did not land, both finalizers send the admission's lines onc
 own message, before the overflow pages, which go untouched. The contract is INV-OUT-001 in
 [`output-boundary.md`](output-boundary.md), which also records every call site.
 
+**Casa's bot also hears of the bots it manages; an agent's bot passes its lifecycle first.**
+Each endpoint states the update types it wants on every `setWebhook` and `getUpdates`
+(`allowed_updates`): `message` and `callback_query`, plus `managed_bot` on Casa's bot alone.
+On Casa's bot a `managed_bot_created` service message is caught by its own handler, registered
+ahead of the non-text one (which would otherwise answer it as an unreadable message): from the
+operator in his chat it is handed to the own-chat lifecycle and is never a turn; anything else
+is logged and ignored. The `managed_bot` update is handed over the same way. An agent's own bot
+queues every update through `_IntakeQueue`, which asks `own_voice.intake` before the update is
+queued: an update held or answered there reaches no handler; the lifecycle later replays held
+ones through `release_update`. On such a bot a bare `/start` from the operator is an ordinary
+turn with Casa's note that he just opened the chat, `/new` resets that agent's own
+conversation, and Casa's lines name the agent plainly, without the `📊` label. All of it is
+[`own-voice.md`](own-voice.md).
+
 **A tap is authorised against the request it answers.** Callback data is versioned and
 carries the namespace and request id; resolution is bound to the operator the request was
 posted for. A tap from someone else is refused. Note that the parser still accepts a legacy
 permission format — but actionability is bounded by process memory: a callback of a broker
 namespace resolves only while its request lives in the current process's broker, so buttons
-from before a restart are rejected as expired however well their format parses. The
+from before a restart are rejected as expired however well their format parses. Ahead of
+every namespace's handler, a tap on Casa's bot whose card records an agent that now declares
+its own chat is answered with one line naming that chat (`_refuse_moved_card`, INV-OWN-009). The
 namespaces are `_CALLBACK_NAMESPACES`; `proposal` is
 [`stored-call-buttons.md`](stored-call-buttons.md). `run_stop`, the Stop on a browsing
 request's card, is no broker request: it reads the durable admission, so it still acts after
@@ -251,8 +267,10 @@ judgement and multi-page loop for a message, the kind's media method for a file 
 [`plugin-delivered-slots.md`](plugin-delivered-slots.md) (INV-PLUG-025, -045, -046); all
 three are Casa-composed notices under the output boundary.
 
-**A swipe-reply on a specialist's post** is routed first in the serialised DM handler (ahead of
-`/new`, after the rate decision) to that specialist's desk: [`specialist-desk.md`](specialist-desk.md).
+**A reply to a live task's post** — a job's or a delegation's, on any bot — is routed first in
+the serialised DM handler, into that task ([`own-voice.md`](own-voice.md)); then, on Casa's bot
+only, **a swipe-reply on a specialist's post** goes (ahead of `/new`, after the rate decision)
+to that specialist's desk: [`specialist-desk.md`](specialist-desk.md).
 
 ## Failure behavior
 

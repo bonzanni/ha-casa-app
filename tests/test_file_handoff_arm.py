@@ -127,3 +127,25 @@ def test_only_the_tap_commit_writes_an_arming_and_only_a_file_consumes_it():
     assert sites == ["self._armings[chat] =", "self._armings.pop("], sites
     pop_owner = src[:src.index("self._armings.pop(")].rsplit("    def ", 1)[1].split("(", 1)[0]
     assert pop_owner == "_file_address"
+
+
+async def test_an_arm_tap_on_a_live_tasks_card_records_the_task_as_its_destination(
+        tap_env, monkeypatch):
+    """The arming records where the next file goes, at commit: the task whose
+    post the card is, while that task is live; otherwise the card's agent."""
+    import task_posts_double
+    from channels.tg_address import TgAddress
+    index = task_posts_double.install(monkeypatch)
+    ref = index.delegation("d-1", "finance")
+    index.post("d-1", TgAddress(BOT, OPERATOR, 501))
+    tap_env.register(meta=_mixed_meta())
+    assert await _tap(tap_env, _cq(data=f"v1|proposal|{RID}|1")) == "✔"
+    assert tap_env.ch._armings[OPERATOR]["dest"] == ("task", ref)
+
+
+async def test_an_arm_tap_on_a_card_of_no_live_task_records_the_cards_agent(tap_env, monkeypatch):
+    import task_posts_double
+    task_posts_double.install(monkeypatch)
+    tap_env.register(meta=_mixed_meta())
+    assert await _tap(tap_env, _cq(data=f"v1|proposal|{RID}|1")) == "✔"
+    assert tap_env.ch._armings[OPERATOR]["dest"] == ("conversation", "finance")

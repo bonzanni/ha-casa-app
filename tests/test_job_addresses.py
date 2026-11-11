@@ -47,6 +47,16 @@ def _origin(route=CASA_BOT, **extra) -> dict:
     return origin
 
 
+def _task(route=CASA_BOT) -> dict:
+    """A job's task fields, decided at its birth: finance runs it for the
+    resident, and its posts go to the operator's chat on the bot of *route*."""
+    from task_model import Requester
+    bot = CASA_BOT if route == CASA else route
+    return {"executor": "finance",
+            "requester": Requester("assistant", {"_tg_bot": route}),
+            "delivery": TgAddress(bot, CHAT)}
+
+
 async def _registry(tmp_path):
     from engagement_registry import EngagementRegistry
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
@@ -83,9 +93,9 @@ class TestEqualMessageIdsOnTwoBots:
     async def test_live_owners_are_distinct_per_bot(self, tmp_path):
         reg = await _registry(tmp_path)
         a = await reg.create("specialist", "finance", "in_casa", "a",
-                             _origin(CASA_BOT))
+                             _origin(CASA_BOT), **_task(CASA_BOT))
         b = await reg.create("specialist", "finance", "in_casa", "b",
-                             _origin(FINANCE_BOT))
+                             _origin(FINANCE_BOT), **_task(FINANCE_BOT))
         assert reg.record_job_post(a.id, TgAddress(CASA_BOT, CHAT, 5))
         assert reg.record_job_post(b.id, TgAddress(FINANCE_BOT, CHAT, 5))
         assert reg.job_post_owner(TgAddress(CASA_BOT, CHAT, 5)) is a
@@ -96,7 +106,7 @@ class TestEqualMessageIdsOnTwoBots:
     async def test_a_reply_on_another_bot_does_not_reach_the_live_job(self, tmp_path):
         reg = await _registry(tmp_path)
         a = await reg.create("specialist", "finance", "in_casa", "a",
-                             _origin(CASA_BOT))
+                             _origin(CASA_BOT), **_task(CASA_BOT))
         assert reg.record_job_post(a.id, TgAddress(CASA_BOT, CHAT, 5))
         assert reg.job_post_owner(TgAddress(FINANCE_BOT, CHAT, 5)) is None
         # a bare message id or a (chat, message) pair names no post at all
@@ -107,7 +117,7 @@ class TestEqualMessageIdsOnTwoBots:
             self, tmp_path):
         reg = await _registry(tmp_path)
         a = await reg.create("specialist", "finance", "in_casa", "a",
-                             _origin(CASA_BOT))
+                             _origin(CASA_BOT), **_task(CASA_BOT))
         assert reg.record_job_post(a.id, TgAddress(CASA_BOT, CHAT, 5))
         assert await reg.try_transition_terminal(a.id, "completed", strict=True)
         assert reg.ended_job_post_owner(TgAddress(CASA_BOT, CHAT, 5)) is a
@@ -121,9 +131,9 @@ class TestEqualMessageIdsOnTwoBots:
     async def test_the_live_index_is_rebuilt_per_bot_at_load(self, tmp_path):
         reg = await _registry(tmp_path)
         a = await reg.create("specialist", "finance", "in_casa", "a",
-                             _origin(CASA_BOT))
+                             _origin(CASA_BOT), **_task(CASA_BOT))
         b = await reg.create("specialist", "finance", "in_casa", "b",
-                             _origin(FINANCE_BOT))
+                             _origin(FINANCE_BOT), **_task(FINANCE_BOT))
         reg.record_job_post(a.id, TgAddress(CASA_BOT, CHAT, 5))
         reg.record_job_post(b.id, TgAddress(FINANCE_BOT, CHAT, 5))
         await _flush(reg)
@@ -141,7 +151,7 @@ class TestEngagementRoundTrip:
     async def test_the_origin_keeps_its_route_through_a_reload(self, tmp_path, route):
         reg = await _registry(tmp_path)
         rec = await reg.create("specialist", "finance", "in_casa", "t",
-                               _origin(route))
+                               _origin(route), **_task(route))
         assert _rows(tmp_path)[0]["origin"]["_tg_bot"] == route
         again = await _reload(tmp_path)
         assert again.get(rec.id).origin["_tg_bot"] == route
@@ -150,7 +160,7 @@ class TestEngagementRoundTrip:
         from engagement_registry import JOB_POST_QUESTION, JOB_POST_START
         reg = await _registry(tmp_path)
         rec = await reg.create("specialist", "finance", "in_casa", "t",
-                               _origin(FINANCE_BOT))
+                               _origin(FINANCE_BOT), **_task(FINANCE_BOT))
         start = TgAddress(FINANCE_BOT, CHAT, 7)
         question = TgAddress(FINANCE_BOT, CHAT, 8)
         plain = TgAddress(FINANCE_BOT, CHAT, 9)
@@ -171,7 +181,7 @@ class TestEngagementRoundTrip:
         from engagement_registry import JOB_POST_START
         reg = await _registry(tmp_path)
         rec = await reg.create("specialist", "finance", "in_casa", "t",
-                               _origin(FINANCE_BOT))
+                               _origin(FINANCE_BOT), **_task(FINANCE_BOT))
         start = TgAddress(FINANCE_BOT, CHAT, 7)
         reg.record_job_post(rec.id, start, keyboard=JOB_POST_START)
         reg._terminal_observer = None
@@ -184,7 +194,7 @@ class TestEngagementRoundTrip:
     async def test_an_address_that_names_no_message_is_not_filed(self, tmp_path):
         reg = await _registry(tmp_path)
         rec = await reg.create("specialist", "finance", "in_casa", "t",
-                               _origin(CASA_BOT))
+                               _origin(CASA_BOT), **_task(CASA_BOT))
         assert reg.record_job_post(rec.id, TgAddress(CASA_BOT, CHAT)) is False
         assert reg.record_job_post(rec.id, 5) is False
         assert rec.dm_posts == []
@@ -196,9 +206,9 @@ class TestEngagementStrictLoad:
             self, tmp_path, caplog, bad):
         reg = await _registry(tmp_path)
         rec = await reg.create("specialist", "finance", "in_casa", "t",
-                               _origin(CASA_BOT))
+                               _origin(CASA_BOT), **_task(CASA_BOT))
         keep = await reg.create("specialist", "finance", "in_casa", "k",
-                                _origin(CASA_BOT))
+                                _origin(CASA_BOT), **_task(CASA_BOT))
         rows = _rows(tmp_path)
         for row in rows:
             if row["id"] == rec.id:
@@ -227,7 +237,7 @@ class TestEngagementStrictLoad:
         from engagement_registry import JOB_POST_START
         reg = await _registry(tmp_path)
         rec = await reg.create("specialist", "finance", "in_casa", "t",
-                               _origin(CASA_BOT))
+                               _origin(CASA_BOT), **_task(CASA_BOT))
         rows = _rows(tmp_path)
         rows[0]["dm_posts"] = [5, [100, 6], [None, 100, 7], [111, 100, 8]]
         rows[0]["ui_posts"] = [[5, JOB_POST_START], [None, 100, 7, JOB_POST_START],
@@ -307,6 +317,7 @@ class TestJournalNotice:
 def _voice_job(**changes):
     from job_registry import DeliveryState, ExecutionState, VoiceJob
     from personality_types import SpeakerProvenance
+    from task_model import Requester
     system = SpeakerProvenance(speaker_kind="system")
     base = VoiceJob(
         id="job-1", parent_job_id=None,
@@ -323,6 +334,9 @@ def _voice_job(**changes):
         continuable_until=None, delivery_sequence=0,
         delivery_attempt_id=None, lease_until=None, cancel_pending=False,
         route={"_tg_bot": CASA_BOT},
+        executor="finance",
+        requester=Requester("assistant", {"_tg_bot": CASA_BOT}),
+        delivery=TgAddress(CASA_BOT, CHAT),
     )
     return replace(base, **changes)
 

@@ -12,7 +12,9 @@ from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
 
 import background_jobs as jobs
 import tools
+from channels.tg_address import TgAddress
 from engagement_registry import EngagementRegistry
+from task_model import Requester
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
@@ -37,7 +39,11 @@ async def job(tmp_path):
         "specialist", "worker", "in_casa", "Process rows",
         {"role": "assistant", "channel": "telegram", "_tg_bot": 111, "chat_id": "100", "user_id": 77,
          "job": jobs.initial_job_state(decl)},
-        tools_allowed=tools.SPECIALIST_CASA_GRANTS + jobs.JOB_CASA_GRANTS)
+        tools_allowed=tools.SPECIALIST_CASA_GRANTS + jobs.JOB_CASA_GRANTS,
+        # the job as a task: the worker runs it for the resident; its lines
+        # go to the operator's chat on bot 111
+        executor="worker", requester=Requester("assistant", {"_tg_bot": 111}),
+        delivery=TgAddress(111, 100))
     channel = MagicMock()
     cm = MagicMock()
     cm.get.return_value = channel

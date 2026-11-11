@@ -352,7 +352,7 @@ async def test_requester_ceiling_does_not_run_while_its_handoff_runs(monkeypatch
     stuck.cancel()
 
 
-def test_role_yaml_desk_context_reaches_the_runtime_shape():
+def test_role_yaml_long_runs_reaches_the_runtime_shape():
     import json as _json
     from pathlib import Path
 
@@ -360,22 +360,22 @@ def test_role_yaml_desk_context_reaches_the_runtime_shape():
     import specialist_materialize
 
     mapped = specialist_materialize._map_session(
-        {"strategy": "ephemeral", "idle_timeout_seconds": 0, "desk_context": False})
-    assert mapped == {"strategy": "ephemeral", "idle_timeout": 0, "desk_context": False}
+        {"strategy": "ephemeral", "idle_timeout_seconds": 0, "long_runs": True})
+    assert mapped == {"strategy": "ephemeral", "idle_timeout": 0, "long_runs": True}
     root = Path(tools.__file__).parent / "defaults" / "schema"
     runtime = _json.loads((root / "runtime.v1.json").read_text())
     jsonschema.validate(mapped, runtime["properties"]["session"])
     role = _json.loads((root / "role.v1.json").read_text())
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({"strategy": "ephemeral", "idle_timeout_seconds": 0,
-                             "desk_context": "no"}, role["properties"]["session"])
+                             "long_runs": "yes"}, role["properties"]["session"])
 
 
-def test_a_role_without_desk_context_is_shown_no_earlier_exchanges():
+def test_a_long_runs_role_is_shown_no_earlier_exchanges():
     import specialist_desk
     log = [object()]
     fake = type("D", (), {"log": log})()
     assert specialist_desk.desk_log(_cfg("browser", "Fido"), fake) is log
-    off = _cfg("browser", "Fido", session=SessionConfig(desk_context=False))
+    off = _cfg("browser", "Fido", session=SessionConfig(long_runs=True))
     assert specialist_desk.desk_log(off, fake) == []
     assert specialist_desk.desk_log(None, fake) is log

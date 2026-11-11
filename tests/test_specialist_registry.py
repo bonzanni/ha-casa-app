@@ -10,6 +10,8 @@ import pytest
 
 from config import MODEL_MAP
 import yaml
+from channels.tg_address import TgAddress
+from task_model import Requester
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
@@ -269,6 +271,7 @@ class TestDurableJobFacade:
             id="d-1", agent="finance", started_at=1.0,
             origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111,
                     "chat_id": "chat-1", "cid": "route-1"},
+            requester=Requester("assistant", {"_tg_bot": 111}), delivery=None,
         ))
 
         assert not hasattr(reg, "_delegations")
@@ -301,6 +304,8 @@ class TestDurableJobFacade:
             id="orphan-1", agent="finance", started_at=100.0,
             origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111,
                     "chat_id": "chat-1", "cid": "route-1"},
+            requester=Requester("assistant", {"_tg_bot": 111}),
+            delivery=TgAddress(222, 100),
         ))
 
         # A restart orphans the still-running row; the facade view reads it
@@ -312,7 +317,30 @@ class TestDurableJobFacade:
             str(tmp_path / "specialists"), job_registry=jobs,
         )
 
-        assert [record.id for record in reg.orphans_from_disk()] == ["orphan-1"]
+        [orphan] = reg.orphans_from_disk()
+        assert orphan.id == "orphan-1"
+        # the task's birth-time facts come back from the row as they were
+        assert orphan.executor == "finance"
+        assert orphan.requester == Requester("assistant", {"_tg_bot": 111})
+        assert orphan.delivery == TgAddress(222, 100)
+
+    async def test_a_telegram_delegation_without_its_task_fields_is_refused_at_load(
+        self, tmp_path,
+    ):
+        from job_registry import JobRegistry
+        from specialist_registry import DelegationRecord, SpecialistRegistry
+
+        jobs = JobRegistry(tmp_path / "jobs.json")
+        await jobs.load()
+        reg = SpecialistRegistry(str(tmp_path / "specialists"), job_registry=jobs)
+        await reg.register_delegation(DelegationRecord(
+            id="no-requester", agent="finance", started_at=1.0,
+            origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111,
+                    "chat_id": "chat-1", "cid": "route-1"},
+        ))
+        reloaded = JobRegistry(tmp_path / "jobs.json")
+        await reloaded.load()
+        assert reloaded.get("no-requester") is None
 
 
 class TestDelegationLifecycle:

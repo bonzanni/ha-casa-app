@@ -2388,9 +2388,9 @@ class TestClusterSAbortMatrix:
         attach_calls = []
         real_attach = tools_mod._attach_completion_callback
 
-        def _spy_attach(task, record):
+        def _spy_attach(task, record, **_kw):
             attach_calls.append(record.id)
-            return real_attach(task, record)
+            return real_attach(task, record, **_kw)
 
         monkeypatch.setattr(
             tools_mod, "_attach_completion_callback", _spy_attach)
@@ -2422,9 +2422,9 @@ class TestClusterSAbortMatrix:
         attach_calls = []
         real_attach = tools_mod._attach_completion_callback
 
-        def _spy_attach(task, record):
+        def _spy_attach(task, record, **_kw):
             attach_calls.append(record.id)
-            return real_attach(task, record)
+            return real_attach(task, record, **_kw)
 
         monkeypatch.setattr(
             tools_mod, "_attach_completion_callback", _spy_attach)

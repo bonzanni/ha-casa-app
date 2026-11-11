@@ -887,3 +887,21 @@ class _OperatorSeam:
 def operator_seam(monkeypatch):
     """#930: the real ``operator_notify`` before the channels have started."""
     return _OperatorSeam(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_agent_task_state():
+    """Forget, after every test, the module-wide state an agent's tasks keep in
+    memory: the per-agent lanes and faults, the notes waiting for an agent's
+    conversation, the latest sign-in link per plugin, and the opened task
+    deliveries. Each lives for the process in production; in a test worker a
+    fault one test leaves behind would refuse another file's delegations."""
+    yield
+    import agent_lane
+    import callback_owner
+    import chat_notes
+    import task_posts
+    agent_lane.reset()
+    chat_notes.reset()
+    callback_owner.reset()
+    task_posts.reset()

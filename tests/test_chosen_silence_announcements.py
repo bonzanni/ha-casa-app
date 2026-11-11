@@ -341,6 +341,7 @@ class _BusProbe:
 def _job(**changes):
     from job_registry import DeliveryState, ExecutionState, VoiceJob
     from personality_types import SpeakerProvenance
+    from task_model import Requester
     system = SpeakerProvenance(speaker_kind="system")
     base = VoiceJob(
         id="job-1079", parent_job_id=None,
@@ -359,6 +360,10 @@ def _job(**changes):
         continuable_until=None, delivery_sequence=0,
         delivery_attempt_id=None, lease_until=None,
         cancel_pending=False,
+        # the delegation as a task: finance runs it for the resident, behind
+        # it, so it posts nothing of its own
+        executor="finance", requester=Requester(ROLE, {"_tg_bot": 111}),
+        delivery=None,
     )
     return replace(base, **changes)
 

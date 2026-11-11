@@ -34,12 +34,14 @@ that a run opens the sites it was admitted for is the plugin's and the app's.
 Meaning is judged by the model; the clean context is the guard, because no web
 text can reach it.
 
-A request is identified by its plugin, the Telegram bot its binding's route
-resolves to, the operator and the plugin's request key: one plugin can serve
-agents on two bots, and its request keys may be equal on both. The bot is read
-from that endpoint when the request is decided; before Casa's bot has verified
-its id (a first boot, or a replaced token) the request is refused as not
-delivered, as when its card cannot be posted, and nothing is stored."""
+The card goes to the call's delivery (``GrantIdentity.delivery``): the
+executing agent's own chat, or the resident's for its own plugin; a call with
+no delivery is refused as not delivered and posts nothing anywhere. A request
+is identified by its plugin, the Telegram bot of that delivery, the operator
+and the plugin's request key: one plugin can serve agents on two bots, and its
+request keys may be equal on both. The bot is read from that endpoint when the
+request is decided; before it has verified its id the request is refused as
+not delivered, as when its card cannot be posted, and nothing is stored."""
 from __future__ import annotations
 
 import asyncio
@@ -376,6 +378,17 @@ class Confirmations:
                     return c
             return None
 
+    def by_key_on_any_bot(self, *, plugin: str, operator_id: int,
+                          request_key: str) -> "list[Confirmation]":
+        """Every request of *plugin* and the operator with this key, whatever
+        bot it was asked on, oldest first."""
+        want = (plugin, int(operator_id), request_key)
+        with self._lock:
+            self._load_locked()
+            return sorted((c for c in self._items.values()
+                           if (c.plugin, c.operator_id, c.request_key) == want),
+                          key=lambda c: c.created_at)
+
     def add(self, c: Confirmation) -> None:
         with self._lock:
             self._load_locked()
@@ -470,12 +483,16 @@ async def request_admission(call, runs: list[dict], request_key: str) -> dict:
     one at a time, so an overlapping retry waits for the first and gets its
     answer."""
     from operator_calls import binding_for
-    from plugin_bindings import ChannelUnavailable, binding_target
+    from plugin_bindings import ChannelUnavailable, delivery_target
+    delivery = getattr(call.identity, "delivery", None)
+    if delivery is None:
+        logger.warning("run admission: refused, this call has nowhere to post")
+        return _not_delivered(request_key)
     binding = binding_for(call)
     try:
-        endpoint, bot_id = binding_target(binding)
+        endpoint, bot_id = delivery_target(delivery)
     except ChannelUnavailable:
-        logger.warning("run admission: refused, the binding's bot has no id yet")
+        logger.warning("run admission: refused, the delivery's bot has no id yet")
         return _not_delivered(request_key)
     key = (call.plugin, bot_id, int(call.identity.operator_id), request_key)
     lock = _KEY_LOCKS.setdefault(key, asyncio.Lock())
@@ -486,14 +503,15 @@ async def request_admission(call, runs: list[dict], request_key: str) -> dict:
                                         request_key=request_key)
             if seen is not None:
                 return _answer(seen)
-            return await _decide(call, runs, request_key, binding, endpoint, bot_id)
+            return await _decide(call, runs, request_key, binding, endpoint, bot_id,
+                                 int(delivery.chat_id))
     finally:
         if not lock.locked() and _KEY_LOCKS.get(key) is lock:
             del _KEY_LOCKS[key]
 
 
 async def _decide(call, runs: list[dict], request_key: str, binding, endpoint,
-                  bot_id: int) -> dict:
+                  bot_id: int, chat_id: int) -> dict:
     from operator_calls import post_question
 
     started = time.monotonic()
@@ -518,7 +536,7 @@ async def _decide(call, runs: list[dict], request_key: str, binding, endpoint,
             logger.info("run admission: %d run(s) admitted by his words extract_ms=%s "
                         "total_ms=%d", len(runs), extract_ms,
                         int((time.monotonic() - started) * 1000))
-            _spawn_status_card(call, runs, binding, cid, endpoint)
+            _spawn_status_card(call, runs, binding, cid, endpoint, chat_id)
             return _answer(conf)
     import tools as tools_mod
     conf = Confirmation(cid=cid, plugin=call.plugin, bot_id=bot_id,
@@ -555,7 +573,8 @@ async def _decide(call, runs: list[dict], request_key: str, binding, endpoint,
         endpoint=endpoint, identity=call.identity, role=call.role,
         text=compose_question(runs, tools_mod._display_name_for_role(binding.requester)),
         options=[start, "Not now"], timeout_s=CONFIRM_TIMEOUT_S, on_settle=_on_settle,
-        after_choice={0: [stop_button(cid)]})
+        after_choice={0: [stop_button(cid)]}, chat_id=chat_id,
+        post=_card_post(call, cid))
     logger.info("run admission: %d run(s) put to the operator (%s) extract_ms=%s",
                 len(runs), "posted" if landed else "not delivered", extract_ms)
     if not landed:
@@ -566,19 +585,31 @@ async def _decide(call, runs: list[dict], request_key: str, binding, endpoint,
 _CARD_TASKS: set = set()
 
 
-def _spawn_status_card(call, runs: list[dict], binding, cid: str, endpoint) -> None:
+def _card_post(call, cid: str):
+    """The post record a request's card (its question, or its status card) is
+    filed under: the calling agent's, owned by the call's task (its job or its
+    delegation, ``result_broker._post_owner``), so a reply to the card reaches
+    the task the call runs in."""
+    import result_broker as rb
+    return rb.PostRecord(role=call.role, operator_id=int(call.identity.operator_id),
+                         plugin=call.plugin, slot="run_admission", tool_use_id=cid,
+                         owner=rb._post_owner(call.identity), posted_at=time.time())
+
+
+def _spawn_status_card(call, runs: list[dict], binding, cid: str, endpoint,
+                       chat_id: int) -> None:
     """His words admitted the runs, so no start card exists: one status card with the Stop
-    button is posted beside the answer (never awaited by it), through *endpoint*, the
-    binding's route. A failed post is logged and nothing else — Ellen's ``stop_work``
-    remains."""
+    button is posted beside the answer (never awaited by it), through *endpoint* in
+    *chat_id*, the call's delivery. A failed post is logged and nothing else — Ellen's
+    ``stop_work`` remains."""
     async def _post() -> None:
         import tools as tools_mod
-        from result_broker import compose_operator_message, post_label
+        from result_broker import compose_operator_message, label_at
         text = compose_operator_message(
             compose_status(runs, tools_mod._display_name_for_role(binding.requester)),
-            post_label(call.role))
-        chat_id = int(call.identity.chat_id)
-        mid = await endpoint.deliver_run_card(chat_id, text, [stop_button(cid)])
+            label_at(call.role, endpoint))
+        mid = await endpoint.deliver_run_card(chat_id, text, [stop_button(cid)],
+                                              post=_card_post(call, cid))
         if isinstance(mid, int) and not isinstance(mid, bool):
             CONFIRMATIONS.set_card(cid, TgAddress(endpoint.bot_id, chat_id, mid), text)
         else:

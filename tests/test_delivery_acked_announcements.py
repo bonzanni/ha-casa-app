@@ -25,6 +25,8 @@ from job_registry import (
     VoiceJob,
 )
 from personality_types import SpeakerProvenance
+from channels.tg_address import TgAddress
+from task_model import Requester
 
 pytestmark = [pytest.mark.asyncio]
 
@@ -48,6 +50,10 @@ def make_job(**changes):
         continuable_until=None, delivery_sequence=0,
         delivery_attempt_id=None, lease_until=None,
         cancel_pending=False, route={"_tg_bot": 111},
+        # the delegation as a task, decided at its birth: finance runs it for
+        # the resident, and its posts go to the operator's chat on bot 111
+        executor="finance", requester=Requester("concierge", {"_tg_bot": 111}),
+        delivery=TgAddress(111, 100),
     )
     return replace(base, **changes)
 

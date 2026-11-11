@@ -45,8 +45,9 @@ awaits the append, so every capture a turn made has returned by the time the tur
   memory-writing specialists.
 - **Casa's line that a specialist which keeps no memory posted to the operator's chat**, in
   the Telegram channel's `_record_post`, where every message Casa sends on a specialist's
-  behalf lands: a plugin's link, message, page, proposal or file, a desk reply and a
-  stored-call receipt. The line is Casa's own words with the time, never anything of the post (INV-MEM-040): "Fido posted his answer to your chat."
+  behalf lands: a plugin's link, message, page, proposal or file, a file sent with
+  `send_media`, a run admission's question or status card, a desk reply and a stored-call
+  receipt (the Stop's line is filed as the card it answers: the card's one event). The line is Casa's own words with the time, never anything of the post (INV-MEM-040): "Fido posted his answer to your chat."
   when the path that sent the post carries his answer — a desk reply, the message the
   specialist's turn closed with (`result_broker.ANSWER_KINDS`, read from the post record's `kind`) — and "Fido posted to
   your chat." for every other post, a desk reply cut at a call still waiting on the
@@ -102,6 +103,10 @@ the run whenever it is non-blank — the caller did genuinely make it — regard
 the specialist produces any answer text. The answer is captured only when it is non-empty and
 the terminal evidence says the model actually finished it; a withheld answer is logged where
 the run's evidence is read, and a blank request beside a withheld answer captures nothing.
+
+**A specialist's own conversation is captured as the specialist's.** The conversation turn's
+capture (`_TurnCapture`) labels the agent's messages with its own kind: `resident` for a
+resident, `specialist` for a specialist talking in its own chat ([`own-voice.md`](own-voice.md)).
 
 ## Contracts & invariants
 

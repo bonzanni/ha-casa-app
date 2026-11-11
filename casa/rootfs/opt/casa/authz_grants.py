@@ -32,7 +32,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from channels.tg_address import CASA, AddressError, is_route, scope
+from channels.tg_address import CASA, AddressError, TgAddress, is_route, scope
 from text_util import escape_unsafe_text, is_unsafe_text, utf16_len
 
 logger = logging.getLogger(__name__)
@@ -1353,6 +1353,12 @@ class GrantIdentity:
     # destination. Advisory, like ``target_role``: never identity, excluded
     # from equality and binding; ``target_role`` keeps the resident.
     desk_role: str = field(default="", compare=False)
+    # Where the call's posts physically go — a card, a link, a file, a run
+    # card, a Stop line — or ``None`` when they go nowhere. A task's call
+    # carries the delivery its task was born with, ``None`` included, copied
+    # and never recomputed; any other turn's posts go to its own chat.
+    # Advisory, like ``target_role``: never identity.
+    delivery: "TgAddress | None" = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         _require_bot_id(self.bot_id)
@@ -1383,6 +1389,24 @@ def _route_bot(route_source: dict, *, site: str) -> "tuple[int | None, str | Non
         return None, "unreachable"
 
 
+def _route_agent(route_source: dict) -> str:
+    """The agent role whose endpoint *route_source*'s route resolves to
+    (``""`` when none): the chat a non-task turn may post in is its own
+    only if this is the turn's executing role."""
+    from channels.tg_address import (
+        EndpointNotReady, EndpointUnavailable, RouteMissing)
+    from channels.telegram_transport import telegram_transport
+    transport = telegram_transport()
+    if transport is None:
+        return ""
+    try:
+        ep = transport.endpoint_for_route(route_source, site="authz_delivery")
+    except (EndpointNotReady, EndpointUnavailable, RouteMissing, AddressError):
+        return ""
+    role = getattr(ep, "default_agent", "")
+    return role if isinstance(role, str) else ""
+
+
 def resolve_grant_identity(role: str, artifact_id: str = ""):
     """The authz hook's identity derivation, factored (#792).
 
@@ -1406,6 +1430,11 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
     or the engagement origin's) resolves to — never copied from the route.
     When that endpoint has no id yet the reason is ``"channel_unavailable"``:
     the challenge could not be posted, and nothing has been registered.
+
+    The identity's ``delivery`` is a task's birth-time delivery when the
+    origin carries one (``None`` included). Otherwise it is the turn's own
+    chat, and only when that chat's endpoint is the executing role's own;
+    a turn running another agent there gets ``None`` and posts nothing.
     """
     import agent as agent_mod
     from provenance import strict_positive_id, turn_provenance
@@ -1474,6 +1503,8 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
             enforcement_role=role, artifact_id=artifact_id,
             engagement_id=str(rec.id),
             target_role=getattr(rec, "role_or_type", None),
+            # the job's delivery, recorded when it was born
+            delivery=getattr(rec, "delivery", None),
         ), None
     if (prov.transport not in ("dm", "button", "setup", "continuation")
             or prov.execution not in ("direct", "delegated")):
@@ -1491,12 +1522,22 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
     delegation_id = origin.get("_delegation_id")
     desk = origin.get("desk")
     desk_role = desk.get("role") if isinstance(desk, dict) else None
+    from provenance import task_delivery
+    is_task, delivery = task_delivery(origin)
+    if not is_task:
+        # Not a task: the turn's posts go to its own chat, but only when that
+        # chat is the executing agent's own. A turn running another agent in
+        # this chat (a delegation that carries no task delivery) posts
+        # nothing: an agent's surface never lands in someone else's chat.
+        delivery = (TgAddress(bot_id, chat_id)
+                    if _route_agent(origin) == role else None)
     return GrantIdentity(
         operator_id=operator_id, bot_id=bot_id, chat_id=chat_id,
         enforcement_role=role, artifact_id=artifact_id,
         engagement_id="", target_role=origin.get("role"),
         delegation_id=delegation_id if isinstance(delegation_id, str) else "",
         desk_role=desk_role if isinstance(desk_role, str) and desk_role == role else "",
+        delivery=delivery,
     ), None
 
 

@@ -96,6 +96,7 @@ async def _delegate(tmp_path, monkeypatch, steps, mode="sync", origin=None):
 def _make_job(**changes):
     from job_registry import DeliveryState, ExecutionState, VoiceJob
     from personality_types import SpeakerProvenance
+    from task_model import Requester
     system = SpeakerProvenance(speaker_kind="system")
     base = VoiceJob(
         id=DID, parent_job_id=None,
@@ -112,6 +113,10 @@ def _make_job(**changes):
         result=None, failure=None, awaiting_input=False,
         continuable_until=None, delivery_sequence=0,
         delivery_attempt_id=None, lease_until=None, cancel_pending=False,
+        # a Telegram delegation is a task: who runs it, who asked, where it
+        # posts (nowhere: finance has no chat of its own here)
+        executor="finance", requester=Requester("assistant", {"_tg_bot": 111}),
+        delivery=None,
     )
     return replace(base, **changes)
 

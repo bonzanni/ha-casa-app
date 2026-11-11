@@ -34,6 +34,7 @@ What this module deliberately does NOT do:
 from __future__ import annotations
 
 import asyncio
+import collections
 from typing import Any
 import errno
 import json
@@ -46,6 +47,7 @@ import stat
 import time
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Awaitable, Callable
 
 import atomic_io
@@ -630,20 +632,77 @@ def grants_for(role: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     return (inbox.ready_dir,), INBOX_TOOLS
 
 
-def delegated_build_grants(cfg, *, engagement: bool) -> tuple[tuple[str, ...], tuple[str, ...]]:
+@dataclass(frozen=True)
+class Grants:
+    """What a delegated build may read and call from its agent's inbox: the
+    readable prefixes, the inbound-file tools, and — for a build that runs one
+    task — the check a Read outside those prefixes is given, bound to that
+    task (:func:`task_file_granted`)."""
+    prefixes: tuple[str, ...]
+    tools: tuple[str, ...]
+    read_check: "Callable[[Path], bool] | None" = None
+
+
+#: How many tasks hold file grants at once, and how many files each; the
+#: oldest task's grants go first. Memory-only: a restart ends every task.
+GRANT_TASKS_MAX = 256
+GRANT_FILES_MAX = MAX_FILES
+
+_task_grants: "collections.OrderedDict[str, list[str]]" = collections.OrderedDict()
+
+
+def grant_task_file(task_id: str, path: Path) -> None:
+    """Grant the task *task_id* the read of exactly *path*, a file in its
+    executor's own inbox addressed to that task.
+
+    *path* must be a file directly in the ``ready/`` folder of the inbox of
+    the agent that runs the task (``task_posts.executor_of``); anything else
+    is refused, logged, and grants nothing. The grant is read at each Read
+    decision (:func:`task_file_granted`), so it applies to a build that is
+    already running."""
+    import task_posts
+    norm = os.path.normpath(str(path))
+    executor = task_posts.executor_of(task_id)
+    inbox = _inboxes.get(executor) if executor else None
+    if inbox is None or os.path.dirname(norm) != os.path.normpath(inbox.ready_dir) \
+            or not os.path.isabs(norm):
+        logger.warning("task %s: %s is not a file of its agent's own inbox; "
+                       "not granted", str(task_id)[:8], norm)
+        return
+    granted = _task_grants.setdefault(task_id, [])
+    _task_grants.move_to_end(task_id)
+    if norm not in granted:
+        granted.append(norm)
+        del granted[:-GRANT_FILES_MAX]
+    while len(_task_grants) > GRANT_TASKS_MAX:
+        _task_grants.popitem(last=False)
+
+
+def task_file_granted(task_id: str, path: Path) -> bool:
+    """Whether *path* was granted to the task *task_id*: an exact match of
+    the normalised path, nothing under it, nothing beside it."""
+    granted = _task_grants.get(task_id)
+    return bool(granted) and os.path.normpath(str(path)) in granted
+
+
+def delegated_build_grants(cfg, *, engagement: bool, task_id: "str | None" = None) -> Grants:
     """The ONE rule for the delegated builder (diff rounds 1–3 found the same
     grant three times, each from a different caller — generalised here):
     a job or engagement build gets nothing (coordinator's ruling R-D1 (a));
     any other build of an inbox role gets its own ``ready/`` as a readable
     prefix; only a SPECIALIST also gets the two inbound-file tools — a
     resident's tools stay what its own configuration lists, wherever it runs
-    (INV-FILE-002)."""
+    (INV-FILE-002). A build for the task *task_id* also gets that task's read
+    check, consulted at each Read decision."""
+    read_check = None
+    if task_id is not None:
+        read_check = lambda path: task_file_granted(task_id, path)  # noqa: E731
     if engagement:
-        return (), ()
+        return Grants((), (), read_check)
     prefixes, tools = grants_for(getattr(cfg, "role", ""))
     if getattr(cfg, "kind", "") != "specialist":
         tools = ()
-    return prefixes, tools
+    return Grants(prefixes, tools, read_check)
 
 
 def readable_prefixes(role: str) -> tuple[str, ...]:
@@ -733,3 +792,4 @@ def _reset_for_tests() -> None:
     for inbox in _inboxes.values():
         inbox.close()
     _inboxes.clear()
+    _task_grants.clear()

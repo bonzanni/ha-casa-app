@@ -12,10 +12,13 @@ import json
 import pytest
 
 import result_broker as rb
+from channels.tg_address import TgAddress
 from plugin_grants import PluginContract, ResultContractMap, ToolContract
+from provenance import task_delivery_marker
 from test_operator_link_delivery import (ARTIFACT, LINK, FETCH, PLUGIN, SETUP_CAP,
                                          SLOT, URL, _map, _post, _pre,
-                                         _replacement, _store, recorder)  # noqa: F401
+                                         _replacement, _store, recorder,
+                                         finance_chat_open)  # noqa: F401
 from test_result_broker import DM, _Origin
 
 MULTI = "mcp__plugin_probe_api__multi"      # provides [a, b], delivers {a}
@@ -29,8 +32,13 @@ def _multi_map() -> ResultContractMap:
     return ResultContractMap(tools=tools, plugins=base.plugins)
 
 
+# finance runs as a task whose delivery is the operator's chat, as every
+# launcher of a non-resident agent stamps it
+FINANCE_TASK = {**DM, **task_delivery_marker(TgAddress(DM["_tg_bot"], 42))}
+
+
 async def _admit(pre, tool, call):
-    with _Origin(DM):
+    with _Origin(FINANCE_TASK):
         assert await pre(_pre(tool), call, {}) == {}
 
 

@@ -402,6 +402,76 @@ yourself with `plugin_add` are operator-owned — a specialist's lifecycle never
 touches them, and plugin management tools refuse to modify a specialist's
 bundled plugins (manage those through the specialist's own upgrade/uninstall).
 
+### Agents with their own chat (v0.360.0)
+
+Some specialists talk to you from their own Telegram bot, in a chat of their
+own: the browsing specialist and the finance specialist do. A specialist's
+repository says so in its `role.yaml` with an `own_chat` block (a short and a
+long description for its bot). Every other specialist stays behind the
+assistant: you talk to it through her, and it shows you nothing directly — no
+cards, buttons, links, files or job lines. When such a specialist has something
+for you, it gives it to the assistant as text and she tells you.
+
+**Once: let the assistant's bot manage bots.** In BotFather's Mini App, open
+your assistant's bot, go to its Mode Settings and turn on **Bot Management
+Mode**. Casa needs this to receive the bots you create for your
+specialists. Telegram can take several minutes to report the change; Casa does
+not wait for it, and simply tries again later.
+
+**The offer.** When you install a specialist that can have its own chat (or
+upgrade to a version that adds one), the assistant's chat shows a card: "Alex
+can get a separate chat with you. Tap below, check the name, then Create."
+Tap the button: Telegram opens its "Create Bot" form, filled in with a name and
+username derived from your assistant's own bot. Change them if you like, then
+tap **Create**. You can also ask the assistant for it later ("give Alex his own
+chat"). If the name Casa suggested no longer matches the bot you created, the
+assistant's chat asks which specialist the new bot is for; answer
+"None — I'll delete it" to keep it out of Casa.
+
+**Open and Start.** Casa sets the bot up (its description, a `/new` command,
+the specialist's picture when its persona has one, and access limited to you)
+and the card changes to "Alex's chat is ready: @…. Open it and press Start."
+Tap **Open Alex's chat** and press **Start**: a bot cannot write first, so the
+chat opens with your first message. Until then the specialist cannot show you
+anything. Messages you send while the chat is being set up are kept and
+answered once it is ready.
+
+**What lives where.**
+
+- **The specialist's own chat** holds your conversation with it — write to it
+  there directly, and `/new` starts a fresh conversation with that specialist
+  only — and everything it shows you: cards and their buttons, links you must
+  open, reports, files, its job lines with **Cancel**, and its run cards with
+  **Stop**. Its messages there carry no `📊` label: the chat is the
+  specialist.
+- **Work the assistant hands over** also appears there: a line "Ellen asked:
+  «…»" when it starts, then the specialist's whole answer when it ends. The
+  assistant still gets the result and tells you in her own chat. The
+  specialist's own conversation learns in one line that it did this work.
+- **The assistant's chat** keeps your conversation with her, the offer cards,
+  and her own plugins' posts. A button on a specialist's card from before its
+  chat existed answers "This card belongs to Alex's chat now — open it there."
+  and does nothing else.
+
+**Replying to a task's post.** While a piece of work is running, swipe-reply on
+any message it posted in the specialist's chat — its start line, a page of its
+answer, a card — and your words go into that running work, not into the
+conversation. A file sent as such a reply, or after tapping 📎 on its card, goes
+to that work too: it is stored in the specialist's inbox and that work is
+given that one file to read. Once the work has ended, a reply is an ordinary message to the
+specialist, told which ended work you were answering.
+
+**If a specialist is uninstalled** its bot goes quiet: a message there gets one
+line saying the specialist isn't installed. Reinstall it and the same bot comes
+back. To get rid of the bot, delete it in BotFather
+(`https://t.me/BotFather?start=deletebot`); the uninstall result names the bot
+and that link. When Casa next checks the bot (at the latest at its next
+restart) it notices the deletion, and the specialist waits for a new bot: ask
+the assistant for a new chat.
+
+Not backward compatible: a specialist's plugin that posts to you now needs that
+specialist's own chat to be open.
+
 ### Background jobs (v0.321.0)
 
 Some plugins declare long work — classifying a year of transactions, say — as a
@@ -1076,8 +1146,10 @@ plugin says so by adding `delivers` to the capability tool that produces it:
 
 The tool deposits the `https` URL as any capability, optionally with a
 `label` (up to 40 characters) and a `caption` (up to 200), and returns the
-reference. Casa itself then posts **one message to the chat you asked in** —
-your chat with the assistant, never an agent's log — as a link
+reference. Casa itself then posts **one message in the chat of the agent whose
+plugin made it** — your chat with the assistant for her own plugins, a
+specialist's own chat for its plugins (see [Agents with their own
+chat](#agents-with-their-own-chat-v03600)), never an agent's log — as a link
 whose text is the label and the real destination host, with the caption
 beneath. The assistant's tool result is replaced by a receipt saying the link
 was delivered; if Casa could not confirm delivery, the result is withheld and
@@ -1118,8 +1190,9 @@ the media `kind` it is — `document`, `photo`, `audio`, `voice`, `zip` or
 `text` — an optional one-line `caption`, and, since v0.344.0, an optional
 `filename` for the name you see when the plugin declares `"filename": true` on that
 tool), and deposits it like any
-capability. Casa posts it to the chat you asked in, headed by `📊` and the
-specialist's name — the plugin cannot change or hide that line — and the
+capability. Casa posts it in that specialist's own chat (the assistant's chat
+for her own plugins), headed in the assistant's chat by `📊` and the agent's
+name — the plugin cannot change or hide that line — and the
 assistant gets a receipt instead of the text, so nothing is paraphrased on the
 way. A message is split into pages like any long reply; one that would need
 more than six pages, or that could not be sent whole, is refused and nothing
@@ -1146,7 +1219,7 @@ that answer herself, in her own words: the specialist's "I" becomes its name
 ("Alex found €420 in October…"), and every amount, date, name and question it
 gave you reaches you as it gave it. Casa no longer posts a specialist's answer
 under its name. What a specialist posts itself — its cards, links, files
-and replies to your swipe-replies — still arrives headed by `📊` and its name.
+and replies to your swipe-replies — arrives in its own chat (since v0.360.0).
 A specialist that ends its turn silently has nothing for you: Casa tells the
 assistant so, and she does not say it is still working. When a specialist's
 answer is too long for what the assistant reads, Casa keeps the message the
@@ -1173,7 +1246,9 @@ answered (and how long the answer was) at your next message to it. One
 specialist turn runs per desk at a time; at most three replies wait behind
 it, and a fourth is told the desk is busy. A reply on a message posted before
 Casa last restarted, or older than the last 4,096 posted messages, is an
-ordinary message to the assistant.
+ordinary message to the assistant. Since v0.360.0 a specialist's posts are in
+its own chat, where any message is already the specialist's; this route still
+serves its posts from before then in your chat with the assistant.
 
 #### Buttons on a specialist's post (v0.342.0)
 
@@ -1199,7 +1274,7 @@ but show a short toast; a button whose plugin has since been updated,
 unassigned, narrowed or is being erased is refused with the reason. If the
 turn hits its time limit, Casa tells you at once, ends the turn's processes
 and frees the specialist; in the rare case it cannot confirm they ended, that
-specialist's desk is put out of service in that chat ("faulted") until the
+specialist is put out of service ("faulted") until the
 next Casa restart, and the health report says so. If an installed hook changed
 the call's arguments on the way, the receipt still arrives with a warning line
 above it. A proposal expires after an hour; at most 32 live ones per chat. The
@@ -1267,7 +1342,9 @@ assigned to the assistant — are never passed to the assistant instead: you get
 labelled line saying what happened, and a file already saved stays in the specialist's
 inbox. The turn's lines start with what happened to the file: `📊 Finance received your
 file statement.pdf; answered (1 page).` Files sent any other way go to the assistant as
-before.
+before. In a specialist's own chat (since v0.360.0) a file is simply the
+specialist's, or the running work's when it replies to one of that work's
+posts.
 
 #### Links a plugin needs from you: the vault drop-off (v0.330.0)
 

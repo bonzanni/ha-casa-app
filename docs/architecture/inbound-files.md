@@ -133,7 +133,10 @@ text as a new message, and a send that fails is retried by the next file's updat
 ## A file for a specialist (S6)
 
 A file follows the same rule as a reply. The non-text handler resolves WHO the file is
-addressed to before it classifies it: a swipe-reply on a retained specialist post for this
+addressed to before it classifies it, task first: a file replying to a live task's post, or
+after a `📎` tap on a live task's card, goes into that task, on any bot — stored in the
+executor's inbox and readable by that task alone (`agent_inbox.grant_task_file`,
+INV-OWN-005, [`own-voice.md`](own-voice.md)). On the resident's bot only: a swipe-reply on a retained specialist post for this
 operator, or a live `📎 Add a document` arming in this chat ([`stored-call-buttons.md`](stored-call-buttons.md))
 — and otherwise the file is the default agent's, exactly as before. An addressed file is
 judged under one per-(chat, specialist) intake lock, from the eligibility check through the

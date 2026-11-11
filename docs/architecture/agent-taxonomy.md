@@ -60,6 +60,12 @@ disabled names, load failures) are published by three rebinds, so a reader consu
 them across the publish can see two whole generations. What it can no longer see is half of
 one, which was the defect.
 
+**A specialist may keep its own conversation.** A loaded specialist whose committed component
+declares `own_chat` (`role.yaml`; the role and runtime schemas refuse the block on any other
+kind) is also an `Agent` on the bus under its role, at boot and on every reload
+(`agent_registry.keeps_own_conversation`), so the operator's messages in its own chat reach it;
+every other specialist is reached only through delegation ([`own-voice.md`](own-voice.md)).
+
 ## Contracts & invariants
 
 **INV-AGENT-001**: A role claimed by both a resident and a specialist is refused at boot, when the role registry is built.

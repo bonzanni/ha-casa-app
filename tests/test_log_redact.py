@@ -466,3 +466,15 @@ class TestMsgObjectAndNumericSafety:
         register_secret("whsec_dynamicKey9876")
         out = redact_extras({"whsec_dynamicKey9876": "ok"})
         assert "whsec_dynamicKey9876" not in out
+
+
+def test_a_telegram_bot_token_keeps_its_bot_id_and_loses_its_secret():
+    """A bot token in a Bot API URL or on its own: the id after redaction,
+    never the secret part."""
+    from log_redact import redact
+    secret = "AAH" + "x9_Kq-" * 6
+    for line in (f"HTTP Request: POST https://api.telegram.org/bot123456789:{secret}/getMe",
+                 f"123456789:{secret}"):
+        out = redact(line)
+        assert secret not in out and "123456789:***" in out, out
+    assert secret not in redact(f"token=123456789:{secret}")

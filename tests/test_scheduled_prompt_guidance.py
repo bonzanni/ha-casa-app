@@ -424,6 +424,9 @@ WRITES_TO_A_CHAT_ELSEWHERE = {
     "tools.py::consent_reprompt":
         "re-posts Casa's own consent keyboards to the operator's DM; none of "
         "them is the calling turn's message",
+    "tools.py::offer_own_chat":
+        "posts Casa's own card that creates or opens an agent's chat, in the "
+        "resident's chat; none of it is the calling turn's message",
     "tools.py::stop_work":
         "stops a specialist's own work (browsing) and may mark that request's card; it "
         "is refused on every turn but the operator's own live message, so it has no "

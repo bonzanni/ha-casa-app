@@ -33,7 +33,7 @@ once, and only its absence makes filtering per-tool. The SDK server also loads e
 — adding a tool is a prompt-cost decision, not just a dispatch one. The one tool outside this
 registry is the [`scratchpad`](scratchpad.md) of a delegated client or a background job's
 session: its handler is built per client around the pad's key, on a server of its own that stays
-deferred, except for a role with `session.desk_context: false` and a job's session, which get that
+deferred, except for a role with `session.long_runs: true` and a job's session, which get that
 server eagerly.
 
 **A result has two layers, and the outer one is inferred.** A tool returns a payload

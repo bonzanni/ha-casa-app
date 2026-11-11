@@ -93,6 +93,10 @@ def test_reserved_context_keys_are_exactly_the_spec_set():
         # The turn's Telegram route: a caller who could set it would choose
         # which bot an untrusted turn speaks through.
         "_tg_bot",
+        # A task's birth-time delivery: a caller who could set it would choose
+        # the chat a task's surface posts in, or pose as a task to post in
+        # none.
+        "_task_delivery",
     })
 
 

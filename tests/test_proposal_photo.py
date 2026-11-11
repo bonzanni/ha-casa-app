@@ -81,6 +81,7 @@ def penv(monkeypatch):
     monkeypatch.setattr(tools_mod, "outbox_for_current_context", lambda: outbox)
     monkeypatch.setattr(vb, "BROKER", vb.VerdictBroker())
     monkeypatch.setattr(rb, "POSTS", rb.PostLedger())
+    __import__("test_proposal_slot").open_chats(monkeypatch, "finance")
     monkeypatch.setattr(rb, "POST_MAP", rb.PostMap())
     return SimpleNamespace(rec=rec, outbox=outbox, store=rb.ReferenceStore(now=lambda: 1000.0))
 

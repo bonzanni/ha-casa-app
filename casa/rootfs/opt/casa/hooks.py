@@ -14,7 +14,7 @@ import logging
 import os
 import re
 import shlex
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Awaitable, Callable
 
 
@@ -610,6 +610,7 @@ def make_path_scope_hook_v2(
     *,
     writable: list[str] | None = None,
     readable: list[str] | None = None,
+    extra_read_check: Callable[[Path], bool] | None = None,
 ) -> HookCallback:
     """Return a PreToolUse hook that enforces absolute-path prefixes.
 
@@ -617,6 +618,10 @@ def make_path_scope_hook_v2(
     ``writable`` applies to Write/Edit. ``readable`` applies to
     Read/Write/Edit. Anything outside the allowed set denies;
     exact-match or prefix-match.
+
+    ``extra_read_check`` is asked about a Read the readable prefixes deny,
+    at that Read's decision: a path it accepts is allowed. It is consulted
+    live, so a file granted after the hook was built is readable at once.
     """
     # #442: type-check BEFORE the comprehension — a bare string would
     # otherwise expand per character into a '/' prefix that matches
@@ -651,7 +656,8 @@ def make_path_scope_hook_v2(
                 )
         else:  # Read
             if not (_has_prefix(norm, readable)
-                    or _is_own_tool_result(norm, input_data)):
+                    or _is_own_tool_result(norm, input_data)
+                    or (extra_read_check is not None and extra_read_check(Path(norm)))):
                 return _deny(
                     f"path_scope: Read denied — {raw!r} outside "
                     f"readable prefixes {readable}"
@@ -2582,6 +2588,7 @@ def resolve_hooks(
     *,
     default_cwd: str,
     extra_readable: tuple[str, ...] = (),
+    extra_read_check: Callable[[Path], bool] | None = None,
 ) -> dict[str, list[Any]]:
     """Turn a HooksConfig into ``{"PreToolUse": [HookMatcher, ...]}``.
 
@@ -2597,6 +2604,12 @@ def resolve_hooks(
     (``agent_inbox.readable_prefixes``); the in-casa executor resynthesis
     passes nothing, so it can never resynthesize a wider scope than its
     snapshot.
+
+    ``extra_read_check`` is given to EVERY ``path_scope`` entry built here,
+    the same way: a Read its readable prefixes deny is allowed when the check
+    accepts the path, asked at that Read's decision. Code passes it (a
+    task's own files, ``agent_inbox.delegated_build_grants``); a hooks file
+    cannot declare it.
     """
     from claude_agent_sdk import HookMatcher
 
@@ -2635,6 +2648,11 @@ def resolve_hooks(
             params["readable"] = [*(params.get("readable") or ()),
                                   *extra_readable]
         callback = policy["factory"](**params)
+        if policy_name == "path_scope" and extra_read_check is not None:
+            # the factory above validated the declared parameters
+            callback = make_path_scope_hook_v2(
+                writable=params.get("writable"), readable=params.get("readable"),
+                extra_read_check=extra_read_check)
         matchers.append(HookMatcher(
             matcher=policy["matcher"],
             hooks=[callback],

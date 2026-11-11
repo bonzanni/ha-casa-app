@@ -19,9 +19,11 @@ boot replay tells the resident, is [`delegation-announcements.md`](delegation-an
 **The resident tells the person the answer itself.** A delegate's answer comes back to the
 resident as the delegation result — in-band for a `sync` delegation, in a notice for an
 `async` one or a `sync` wait that went `pending` — and she passes it on in her own words.
-Casa posts nothing of the answer under the delegate's name; the delegate's own posts (cards,
-links, files, desk replies) still carry its `📊 <name>` label
-([`specialist-desk.md`](specialist-desk.md)).
+Casa posts nothing of the answer under the delegate's name in the resident's chat; the
+delegate's own posts there (cards, links, files, desk replies) still carry its `📊 <name>` label
+([`specialist-desk.md`](specialist-desk.md)). A delegate with its own open chat also gets its
+whole answer, as it wrote it and before any cut, posted in that chat, while the resident still
+receives the bounded result described here ([`own-voice.md`](own-voice.md)).
 
 **The result text is the whole turn, cut from the end.** Every text-bearing message of the
 delegate's turn, joined (`DelegatedOutput.text`), truncated at the result cap

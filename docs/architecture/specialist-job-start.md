@@ -59,9 +59,12 @@ Its voice doctrine says no job starts on a call. The
 
 **The work's origin is the turn's.** The job records the calling turn's origin, without the
 two markers that identify the calling turn rather than the work: the desk use and the turn's
-quota and echo key. It keeps the turn's clearance, chat and operator, and its `role` stays
-the chat's resident, so the job posts into the operator's chat as a DM-started job does, and
-its end notice, with its post echoes, goes to the resident.
+quota and echo key, and the calling task's delivery (the job is a task of its own, born at its
+launch). It keeps the turn's clearance, chat and operator, and its `role` stays the role of the
+turn that asked — the chat's resident, or the specialist's own conversation in its own chat —
+which is the job's requester: its end notice, with its post echoes, goes there. Where the job
+posts is its own delivery, decided at launch: the specialist's own chat when that is open; with
+no open chat `start_job` is refused ([`own-voice.md`](own-voice.md)).
 
 ## Contracts & invariants
 

@@ -44,6 +44,10 @@ the authenticated operator, so the job reads, posts and recalls with exactly the
 same job started from the operator's DM would have. With no operator configured there is
 nobody to tell, and the fire only logs.
 
+**A job whose host has no open chat is not started.** A scheduled fire whose host's own chat is
+not open logs one INFO line and starts nothing: the job would post nowhere, and the resident's
+chat is not its place ([`own-voice.md`](own-voice.md)).
+
 ## Contracts & invariants
 
 **INV-TRIG-022**: A scheduled trigger carrying `job` registers whenever its resident declares the channel, which for a job entry is `telegram` (schema and upsert refuse any other; never fatal to boot for an unstartable job); the typed upsert refuses a job the resident cannot start; at fire the job is launched through the one launcher `start_job` uses, with an origin carrying the live operator's identity and clearance, and no resident turn runs; a fire that cannot start the job tells the operator once — the admission decision as a past event at the occurrence — and runs nothing; the job then runs, posts and ends exactly as one the resident started, except that its brief and the header re-stated after a compaction say a schedule started it, and that a job declaring `quietWhenScheduled` runs quietly (INV-BGJOB-025).

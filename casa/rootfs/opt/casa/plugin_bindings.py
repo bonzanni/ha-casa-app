@@ -23,12 +23,17 @@ cumulative cost when last counted. It therefore owns that session's pad (``scrat
 follows a session the binding adopts, stays while the binding is kept, and goes when the binding
 is dropped, unless another binding still names the session.
 
-A binding keeps the Telegram route of the turn that asked (``origin._tg_bot``):
-the bot its later cards, continuations and deliveries go through, which may be
-``CASA`` when Casa's bot had not verified its id yet. Every per-bot identity a
-binding's work forms (an admission, a continuation, a Stop) reads its bot from
-the endpoint that route resolves to, when the identity is formed
-(:func:`binding_target`). A stored binding without a route is refused at load."""
+A binding keeps the Telegram route of the turn that asked (``origin._tg_bot``),
+which may be ``CASA`` when Casa's bot had not verified its id yet: the route its
+continuations run on, so their results reach whoever asked. It also keeps the
+**delivery** of the call that asked (``GrantIdentity.delivery``): where every
+post of the work goes — its cards, its run card, its Stop line, its
+continuations' deliveries — or ``None`` when the work posts nothing. A task's
+delivery is decided once, when the task is born, and a binding carries it
+unchanged for the life of the work. Every per-bot fact a binding's work keys
+(a run admission, a queued continuation, a Stop) names the delivery's bot, or
+the route's bot for work that posts nothing (:func:`binding_target`). A stored
+binding without a route, or without a valid delivery, is refused at load."""
 from __future__ import annotations
 
 import dataclasses
@@ -41,7 +46,8 @@ from typing import Any
 
 import scratchpad
 from atomic_io import PRIVATE, atomic_write_json
-from channels.tg_address import EndpointNotReady, EndpointUnavailable, is_route
+from channels.tg_address import (
+    AddressError, EndpointNotReady, EndpointUnavailable, TgAddress, is_route)
 from provenance import ROUTING_KEYS
 
 logger = logging.getLogger(__name__)
@@ -71,6 +77,8 @@ class Binding:
     turn_key: str
     created_at: float
     last_used: float
+    # where the work's posts go, as ``TgAddress.to_json()``, or None: nothing
+    delivery: "list | None"
     session_id: "str | None" = None
     resume_failures: int = 0
     cost_seen: float = 0.0
@@ -97,8 +105,33 @@ def route_target(context: dict) -> "tuple[Any, int]":
         raise ChannelUnavailable(str(exc)) from exc
 
 
+def delivery_of(binding: Binding) -> "TgAddress | None":
+    """Where *binding*'s work posts, or ``None`` when it posts nothing."""
+    raw = binding.delivery
+    return None if raw is None else TgAddress.from_json(raw)
+
+
+def delivery_target(delivery: TgAddress) -> "tuple[Any, int]":
+    """The endpoint of *delivery*'s bot and that bot's id. Raises
+    :class:`ChannelUnavailable` when there is none: no other bot is tried."""
+    from channels.telegram_transport import telegram_transport
+    transport = telegram_transport()
+    if transport is None:
+        raise ChannelUnavailable("Telegram is not configured")
+    try:
+        ep = transport.endpoint(delivery.bot_id)
+        return ep, ep.bot_id
+    except (EndpointUnavailable, EndpointNotReady, AddressError) as exc:
+        raise ChannelUnavailable(str(exc)) from exc
+
+
 def binding_target(binding: Binding) -> "tuple[Any, int]":
-    """:func:`route_target` of *binding*'s stored route."""
+    """The endpoint *binding*'s work posts through and keys by: its
+    delivery's bot (:func:`delivery_target`), or, for work that posts
+    nothing, its route's (:func:`route_target`)."""
+    delivery = delivery_of(binding)
+    if delivery is not None:
+        return delivery_target(delivery)
     return route_target(binding.origin)
 
 
@@ -113,7 +146,17 @@ def route_of(origin: dict, identity: Any) -> dict:
 
 def _route_ok(entry: Any) -> bool:
     origin = entry.get("origin") if isinstance(entry, dict) else None
-    return isinstance(origin, dict) and is_route(origin.get("_tg_bot"))
+    if not (isinstance(origin, dict) and is_route(origin.get("_tg_bot"))):
+        return False
+    if "delivery" not in entry:
+        return False
+    if entry["delivery"] is None:
+        return True
+    try:
+        TgAddress.from_json(entry["delivery"])
+    except AddressError:
+        return False
+    return True
 
 
 def requester_kind(chain: tuple | list) -> str:
@@ -152,7 +195,7 @@ class BindingStore:
                     self._items[b.ref] = b
             if refused:
                 logger.error("plugin bindings: %d binding(s) without a Telegram route "
-                             "refused", refused)
+                             "or a delivery refused", refused)
         except FileNotFoundError:
             return
         except Exception:  # noqa: BLE001 — a corrupt store loses its bindings, loudly
@@ -184,7 +227,8 @@ class BindingStore:
                  origin: dict) -> Binding:
         """The binding of this plugin's call in this turn — minted once. Its
         route is the turn's; a turn that carries none (an engagement's) takes
-        the bot the call's grant identity was resolved on."""
+        the bot the call's grant identity was resolved on. Its delivery is the
+        call's (``identity.delivery``), ``None`` included."""
         with self._lock:
             self._load_locked()
             for b in self._items.values():
@@ -200,6 +244,7 @@ class BindingStore:
                 requester_kind=requester_kind(chain), chain=list(chain),
                 origin=_kept_origin(origin, identity),
                 turn_key=turn_key, created_at=now, last_used=now,
+                delivery=_delivery_json(identity),
                 session_id=origin.get("_delegated_session_id"))
             self._items[b.ref] = b
             self._prune_and_save_locked()
@@ -271,6 +316,11 @@ class BindingStore:
                     self._prune_and_save_locked()
                     return spent
         return cumulative
+
+
+def _delivery_json(identity: Any) -> "list | None":
+    delivery = getattr(identity, "delivery", None)
+    return None if delivery is None else delivery.to_json()
 
 
 def _kept_origin(origin: dict, identity: Any) -> dict:

@@ -111,3 +111,28 @@ class AgentRegistry:
 
     def all_known(self) -> list[KnownAgent]:
         return list(self._role_to_known.values())
+
+
+def keeps_own_conversation(role: str) -> bool:
+    """Whether the loaded specialist *role* keeps a conversation of its own:
+    its committed component declares its own chat (``own_voice.declared``).
+    Such an agent is on the bus as an ``Agent`` for its role, at boot and on
+    every reload, so the operator's direct messages in its chat reach it.
+
+    A declaration that cannot be read counts as none, logged: the agent then
+    stays behind the resident until the next boot or reload reads it."""
+    import own_voice
+    try:
+        return bool(own_voice.declared(role))
+    except Exception:  # noqa: BLE001 — a declaration read never fails a caller
+        logger.warning("own chat declaration of %s not read", role,
+                       exc_info=True)
+        return False
+
+
+def own_conversation_roles(specialists: dict[str, AgentConfig]) -> list[str]:
+    """The loaded specialists that keep a conversation of their own, in
+    load order (:func:`keeps_own_conversation`)."""
+    return [role for role, cfg in specialists.items()
+            if getattr(cfg, "kind", "specialist") == "specialist"
+            and keeps_own_conversation(role)]

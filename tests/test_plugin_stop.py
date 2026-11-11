@@ -192,7 +192,8 @@ def env(monkeypatch, tmp_path):
     def admit(*, status="admitted", card=True, request_key="k1", cid=CID, plugin="browser",
               operator=OPERATOR):
         ident = GrantIdentity(operator_id=operator, chat_id=OPERATOR, enforcement_role="browser",
-                              artifact_id=ARTIFACT, engagement_id="", bot_id=BOT)
+                              artifact_id=ARTIFACT, engagement_id="", bot_id=BOT,
+                          delivery=TgAddress(BOT, OPERATOR))
         b = plugin_bindings.BINDINGS.for_turn(plugin=plugin, turn_key="d-" + cid, identity=ident,
                                               chain=("assistant", "browser"), origin=ORIGIN)
         c = run_admission.Confirmation(
@@ -424,7 +425,7 @@ async def test_the_start_tap_ordering_is_admitted_before_the_stop_shows(env, mon
     order: list = []
     ch = types.SimpleNamespace(default_agent="assistant", bot_id=BOT, has_bot_id=True)
 
-    async def deliver_operator_question(chat_id, text, labels, rid):
+    async def deliver_operator_question(chat_id, text, labels, rid, *, post=None):
         return CARD_MID
 
     async def edit_dm_message(chat_id, message_id, text, buttons=None):
@@ -528,7 +529,8 @@ async def test_stop_work_does_not_wait_for_the_running_desk_use(env, held_desk):
 
 def _binding():
     ident = GrantIdentity(operator_id=OPERATOR, chat_id=OPERATOR, enforcement_role="browser",
-                          artifact_id=ARTIFACT, engagement_id="", bot_id=BOT)
+                          artifact_id=ARTIFACT, engagement_id="", bot_id=BOT,
+                          delivery=TgAddress(BOT, OPERATOR))
     return plugin_bindings.BINDINGS.for_turn(plugin="browser", turn_key="d-x", identity=ident,
                                              chain=("assistant", "browser"), origin=ORIGIN)
 
@@ -779,6 +781,36 @@ async def test_stop_work_neither_lists_nor_stops_another_operators_request(env):
     assert [c["args"] for c in _calls(rp)] == [{}]          # the listing only, no stop
 
 
+def _admit_on(bot, *, chain, request_key, cid):
+    """A request admitted on *bot* (an agent's own chat), for work *chain*'s
+    root asked for. No card, so a stop marks nothing."""
+    ident = GrantIdentity(operator_id=OPERATOR, chat_id=OPERATOR, enforcement_role="browser",
+                          artifact_id=ARTIFACT, engagement_id="", bot_id=bot,
+                          delivery=TgAddress(bot, OPERATOR))
+    b = plugin_bindings.BINDINGS.for_turn(plugin="browser", turn_key="d-" + cid, identity=ident,
+                                          chain=chain, origin={**ORIGIN, "_tg_bot": bot})
+    run_admission.CONFIRMATIONS.add(run_admission.Confirmation(
+        cid=cid, plugin="browser", bot_id=bot, operator_id=OPERATOR, binding_ref=b.ref,
+        request_key=request_key, status="admitted", admissions=[], created_at=time.time()))
+
+
+async def test_stop_work_reaches_work_she_asked_for_in_another_agents_chat(env):
+    """A delegation to an agent with its own chat runs there, on that agent's
+    bot: Ellen still lists and stops it from her chat. Work the agent's own
+    conversation started stays the agent's — she neither lists nor stops it."""
+    rp = env.use(_plugin(env.tmp / "p", listing={"requests": [
+        {"ref": "request:k1", "tasks": ["invoice: RunPod"], "state": "running"},
+        {"ref": "request:k2", "tasks": ["receipt: Hetzner"], "state": "running"}]}))
+    _admit_on(222, chain=("assistant", "browser"), request_key="k1", cid="conf-" + "1" * 32)
+    _admit_on(222, chain=("browser",), request_key="k2", cid="conf-" + "2" * 32)
+    assert await _stop_work(env, {}) == "- request:k1: Fido — invoice: RunPod (running)"
+    text = await _stop_work(env, {"ref": "request:k2"})
+    assert text.startswith("Error: nothing running has that ref")
+    text = await _stop_work(env, {"ref": "request:k1"})
+    assert text.startswith("Stopped: invoice: get the RunPod invoice.")
+    assert [c["args"] for c in _calls(rp)] == [{}, {"ref": "request:k1"}]
+
+
 async def test_stop_work_by_an_unknown_ref_says_so(env):
     env.use(_plugin(env.tmp / "p", answer={"outcome": "unknown"}))
     text = await _stop_work(env, {"ref": "request:nope"})
@@ -791,7 +823,8 @@ async def _pending_card(env, monkeypatch):
     import operator_calls
     monkeypatch.setattr(operator_calls, "CALLS", operator_calls.OperatorCalls())
     ident = GrantIdentity(operator_id=OPERATOR, chat_id=OPERATOR, enforcement_role="browser",
-                          artifact_id=ARTIFACT, engagement_id="", bot_id=BOT)
+                          artifact_id=ARTIFACT, engagement_id="", bot_id=BOT,
+                          delivery=TgAddress(BOT, OPERATOR))
     origin = {**ORIGIN, "execution_role": "browser", "_delegation_id": "d-1",
               "delegation_depth": 1, "_handoff_chain": ("assistant", "browser"),
               "synthetic": "continuation", "user_text": ""}

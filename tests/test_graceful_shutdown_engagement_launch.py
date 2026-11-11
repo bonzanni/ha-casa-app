@@ -21,6 +21,16 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from task_model import Requester
+
+
+def _task_fields(origin: dict) -> dict:
+    """The delegation as a task: the researcher runs it for the resident that
+    asked on *origin*'s route, behind it, so it posts nothing of its own."""
+    return {"executor": "researcher",
+            "requester": Requester(origin["role"], {"_tg_bot": origin["_tg_bot"]}),
+            "delivery": None}
+
 
 async def _spin_until(predicate, *, what: str, limit: int = 4000):
     """Yield until ``predicate()`` — no sleeps, no wall clock.
@@ -244,7 +254,8 @@ def _run_delegation_stop(monkeypatch, tmp_path, *, late_pair: bool,
         gates["boundary"] = asyncio.Event()
         for did in ids:
             rec = DelegationRecord(id=did, agent="researcher",
-                                   started_at=time.time(), origin=origin)
+                                   started_at=time.time(), origin=origin,
+                                   **_task_fields(origin))
             await spec.register_delegation(rec)
             tasks[did] = asyncio.create_task(_run(did))
             # The PRODUCTION callback — the only thing that mints a tail.

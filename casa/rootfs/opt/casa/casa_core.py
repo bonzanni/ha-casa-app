@@ -31,6 +31,7 @@ from bus import BusMessage, BusShutdownError, MessageBus, MessageType
 from channel_authz import agent_allowed_on
 from channels import (ChannelManager, DeliveryOutcome,
                       OperatorNotifyBeforeStart)
+from channels.tg_address import is_route
 from claude_runtime import (
     CLAUDE_CLI_PATH,
     CLAUDE_CLI_VERSION,
@@ -253,10 +254,44 @@ def _repair_private_state() -> None:
 def _bus_loop_targets(agents: dict) -> list[str]:
     """H4 (v0.53.0): bus targets that need a ``run_agent_loop`` consumer.
 
-    Residents (``agents`` roles) + the ``telegram`` outbound target.
+    The ``agents`` roles (residents, and every specialist that keeps a
+    conversation in its own chat) + the ``telegram`` outbound target.
     ``dict.fromkeys`` dedupes while preserving order.
     """
     return list(dict.fromkeys(list(agents.keys()) + ["telegram"]))
+
+
+def _own_conversation_agents(specialist_configs: Mapping[str, Any], *,
+                             construct: Callable[[Any], Any]) -> dict[str, Any]:
+    """An ``Agent`` for every loaded specialist that keeps a conversation in
+    its own chat (``agent_registry.own_conversation_roles``), built by
+    *construct*. The caller registers each on the bus before the channels
+    start. Boot does not release anything held for them: that waits for the
+    own chats' reconcile (:func:`_reconcile_own_chats`), which releases each
+    bound chat's held messages into the queue registered here. One agent
+    that cannot be built is logged and left out; the others are built."""
+    from agent_registry import own_conversation_roles
+    built: dict[str, Any] = {}
+    for role in own_conversation_roles(dict(specialist_configs)):
+        try:
+            built[role] = construct(specialist_configs[role])
+        except Exception:  # noqa: BLE001 — one agent never stops the boot
+            logger.exception("conversation of %s not built", role)
+    return built
+
+
+async def _reconcile_own_chats() -> None:
+    """The own chats' boot reconcile: every agent bot against the committed
+    declarations, its phase completed or rolled back, its held messages
+    released into its agent's queue. Run once Casa's endpoint has started and
+    every conversation's queue is registered and consumed. A failure is
+    logged, never fatal: an agent endpoint that was not reconciled delivers
+    nothing."""
+    import own_voice
+    try:
+        await own_voice.boot_reconcile()
+    except Exception:  # noqa: BLE001 — never fatal at boot
+        logger.exception("own chats not reconciled at boot")
 
 
 async def _drain_broker_before_channel_shutdown(channel_manager: Any) -> None:
@@ -893,15 +928,21 @@ def _setup_turn_context(transport: Any, context: Mapping[str, Any]) -> dict | No
 
     A setup turn is Casa's own conversation with the operator: it is born on
     Casa's bot, whatever endpoint the role is bound to, and every reply and
-    post of it stays there."""
+    post of it stays there. One turn is not: a callback nudge that answers an
+    agent's own sign-in (``callback_episodes``) carries the bot of the chat
+    that sign-in was delivered in, and is born there."""
     operator = transport.operator_user_id() if transport is not None else None
     if operator is None:
         return None
+    route = transport.casa_route()
+    if (context.get("synthetic") == "callback_nudge"
+            and is_route(context.get("_tg_bot"))):
+        route = context["_tg_bot"]
     return {
         "chat_id": operator, "user_id": operator, "cid": new_cid(),
         **context,  # reserved synthetic/plugin_setup markers —
                     # Casa-composed internal, never external ingress
-        "_tg_bot": transport.casa_route(),
+        "_tg_bot": route,
     }
 
 
@@ -2998,6 +3039,23 @@ async def main() -> None:
         ha_mcp_url=ha_mcp_url,
         supervisor_token=supervisor_token,
     )
+    # The specialists that keep a conversation in their own chat: an Agent
+    # each, on the bus under its role like a resident, run on the same
+    # session machinery. Any other specialist still gets its Agent only from
+    # a reload's backfill.
+    for role, agent in _own_conversation_agents(
+            specialist_configs,
+            construct=lambda cfg: Agent(
+                config=cfg,
+                session_registry=session_registry,
+                mcp_registry=mcp_registry,
+                channel_manager=channel_manager,
+                agent_registry=agent_registry,
+            )).items():
+        bus.register(role, agent.handle_message)
+        agents[role] = agent
+        logger.info("Agent '%s' registered for its own chat (name=%s)",
+                    role, agent.config.character.name)
     runtime.agents = agents  # share the dict reference; reload handlers mutate this directly.
 
     # 9. Webhook secret (auto-generated if auth enabled, see setup-configs.sh)
@@ -3050,6 +3108,11 @@ async def main() -> None:
     if public_url:
         logger.info("Public URL: %s", public_url)
     telegram_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    if telegram_token:
+        # The Bot API carries the token in every request URL, which the HTTP
+        # client logs; it is a credential and never reaches a log line.
+        import log_redact as _redact
+        _redact.register_secret(telegram_token)
     # Casa's own Telegram endpoint (its bot is the one the operator talks
     # to), and the transport that holds every endpoint by bot id and is the
     # one channel registered as "telegram".
@@ -3711,6 +3774,13 @@ async def main() -> None:
         if name in bus.queues:
             loop_tasks.append(bus.start_agent_loop(name))
 
+    # 13a. The own chats' reconcile: Casa's endpoint has started (12) and every
+    # conversation's queue is registered and consumed (8, 13), so a bound
+    # chat's held messages are released into a live queue; no agent endpoint
+    # delivers before this. Before the replays and job resumes below, which
+    # may post in an agent's own chat.
+    await _reconcile_own_chats()
+
     # 13b. Restart-orphan notifications come from the recovered durable job
     # failures. Voice jobs remain READY for their delivery coordinator; the
     # compatibility notification below is only for the legacy Telegram route.
@@ -4268,6 +4338,15 @@ async def _shutdown_cleanup(
             await asyncio.wait_for(_logs.stop(), timeout=5)
         except Exception:  # noqa: BLE001 — shutdown must complete
             logger.warning("agent log stop failed", exc_info=True)
+
+    # The own-chat lifecycle's retries and reconciles start, stop and edit
+    # agent endpoints: cancelled before the channels stop, so none wakes in
+    # the teardown. Crash-safe by design: a cancelled step resumes at boot.
+    try:
+        import own_voice_lifecycle
+        await asyncio.wait_for(own_voice_lifecycle.close_current(), timeout=5)
+    except Exception:  # noqa: BLE001 — shutdown must complete
+        logger.warning("own-chat lifecycle close failed", exc_info=True)
 
     # Channel teardown (Telegram bot, voice, etc.) — resolve in-flight broker
     # work first, then stop the channels.

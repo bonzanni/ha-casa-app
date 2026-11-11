@@ -26,7 +26,10 @@ find and collect it. Target selection is the shared
 ``plugin_dispatch.compose`` — the same target-order decision
 ``plugin_setup_episodes._compose`` makes: ``resident:assistant`` when
 targeted, else the lexicographically-first resident, else the first specialist
-via assistant delegation.
+via assistant delegation. One thing comes first: when an agent's capability
+delivered the plugin's latest unexpired sign-in link (``callback_owner``), the
+callback answers that agent's operation, and the nudge goes to that agent, on
+the bot of the chat the link was delivered in.
 
 **No private ledger (v0.147.0).** The JSON episode store and its consumed-key
 tombstones are retired: "the bus accepted a turn" was treated as terminal, and
@@ -71,6 +74,7 @@ import time
 from typing import Any, Awaitable, Callable
 
 import callback_attempts
+import callback_owner
 import plugin_dispatch
 from channels import OperatorNotifyBeforeStart
 
@@ -426,7 +430,14 @@ async def _run_nudge(spool: Any, plugin: str, h: str, rec: dict) -> None:
     entry = _resolve(plugin)
     if entry is None:
         return
-    role, instruction = _compose(entry, _message(plugin, h, rec))
+    # The sign-in this callback answers was delivered by one agent's
+    # capability: the nudge goes to that agent, in its own chat, when the
+    # entry still targets it; with no such link, the entry's own order.
+    operation = callback_owner.operation_for(plugin)
+    role, instruction = _compose(entry, _message(plugin, h, rec),
+                                 operation=operation[0] if operation else None)
+    route = ({"_tg_bot": operation[1].bot_id}
+             if operation is not None and role == operation[0] else {})
     if role is None:
         await _defer(spool, plugin, h, rec)
         if not rec.get("deferrals"):
@@ -435,7 +446,7 @@ async def _run_nudge(spool: Any, plugin: str, h: str, rec: dict) -> None:
                 f"run ({instruction}). Ask the agent to collect handle {h} "
                 "manually.")
         return
-    ok = await _dispatch_with_retry(role, instruction, plugin, h)
+    ok = await _dispatch_with_retry(role, instruction, plugin, h, route=route)
     if ok:
         # #935: the ONE log record per INV-CB-008 budget unit. It sits after
         # the seam that spends the unit and inside the branch that writes it,
@@ -456,17 +467,19 @@ async def _run_nudge(spool: Any, plugin: str, h: str, rec: dict) -> None:
 
 
 async def _dispatch_with_retry(role: str, instruction: str, plugin: str,
-                               h: str) -> bool:
+                               h: str, *, route: "dict | None" = None) -> bool:
     """The per-PASS attempt budget (never the six-dispatch nudge budget, which
     only bus ACCEPTS consume): a transient bus outage that exhausts this pass
-    leaves the attempt due-but-deferred, and a later pass retries afresh."""
+    leaves the attempt due-but-deferred, and a later pass retries afresh.
+    *route* is the bot of the chat the answered link was delivered in, for a
+    nudge that goes to the agent whose operation it answers."""
     tries = 0
     while tries < _MAX_DISPATCH_ATTEMPTS:
         tries += 1
         if _dispatch is not None:
             try:
                 if await _dispatch(role, instruction,
-                                   {"synthetic": "callback_nudge"}):
+                                   {"synthetic": "callback_nudge", **(route or {})}):
                     return True
             except asyncio.CancelledError:
                 raise

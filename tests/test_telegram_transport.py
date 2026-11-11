@@ -372,6 +372,35 @@ def test_one_endpoint_per_role_and_per_bot(two_endpoints):
         t.endpoint(333)
 
 
+def test_an_agent_endpoint_is_registered_by_bot_rekeyed_and_removed(two_endpoints):
+    """An agent's own bot is reachable by its id before it has a role; its
+    role is bound and moved without re-registering it; removed, neither its
+    bot nor its role resolves to it. Casa's endpoint is never re-keyed or
+    removed, and a served bot id is refused."""
+    t, casa = two_endpoints.transport, two_endpoints.casa
+    ep = FakeEndpoint("", bot_id=333)
+    t.add_agent_endpoint(ep, 333, None)
+    assert t.endpoint(333) is ep and t.route_for("butler") == 111
+    assert callable(ep.on_identity)
+    t.set_endpoint_role(ep, "butler")
+    assert t.route_for("butler") == 333 and ep.default_agent == "butler"
+    t.set_endpoint_role(ep, "gardener")
+    assert t.route_for("butler") == 111 and t.route_for("gardener") == 333
+    with pytest.raises(DuplicateEndpoint):
+        t.add_agent_endpoint(FakeEndpoint("", bot_id=222), 222, None)
+    with pytest.raises(ValueError):
+        t.set_endpoint_role(casa, "butler")
+    with pytest.raises(ValueError):
+        t.set_endpoint_role(ep, "assistant")       # Casa's endpoint's role
+    with pytest.raises(ValueError):
+        t.remove_endpoint(casa)
+    t.remove_endpoint(ep)
+    with pytest.raises(EndpointUnavailable):
+        t.endpoint(333)
+    assert t.route_for("gardener") == 111
+    t.remove_endpoint(ep)                          # unknown: ignored
+
+
 # ---------------------------------------------------------------------------
 # Rule C and the operator
 # ---------------------------------------------------------------------------
@@ -421,9 +450,12 @@ class _Registry:
         return [r for r in self.records if r.ui_posts]
 
 
-def _job(eid="e1", route=111, posts=()):
+def _job(eid="e1", route=111, posts=(), delivery="route"):
     origin = {"chat_id": 100} if route is None else {"chat_id": 100, "_tg_bot": route}
-    return SimpleNamespace(id=eid, origin=origin, ui_posts=list(posts))
+    if delivery == "route":
+        delivery = TgAddress(route, 100) if isinstance(route, int) else None
+    return SimpleNamespace(id=eid, origin=origin, ui_posts=list(posts),
+                           delivery=delivery)
 
 
 @pytest.mark.parametrize("method,args", [
@@ -431,22 +463,23 @@ def _job(eid="e1", route=111, posts=()):
     ("post_job_parked", ("parked",)),
     ("post_job_question", ("q1", "body", ["a"], ["a"])),
 ])
-async def test_a_new_job_post_goes_through_the_jobs_route(two_endpoints, method, args):
+async def test_a_new_job_post_goes_through_the_jobs_delivery_not_its_route(
+        two_endpoints, method, args):
+    """A job's lines are posted at its delivery, decided at its birth: the
+    route of the turn that started it is not read."""
     h = two_endpoints
-    rec = _job(route=222)
+    rec = _job(route=111, delivery=TgAddress(222, 100))
     mid = await getattr(h.transport, method)(rec, *args)
     assert isinstance(mid, int)
     assert [c[0] for c in calls(h.finance)] == [method]
     assert calls(h.casa) == []
-    with pytest.raises(RouteMissing):
-        await getattr(h.transport, method)(_job(route=None), *args)
-
-
-async def test_a_job_route_of_casa_posts_through_casa(two_endpoints):
-    h = two_endpoints
-    await h.transport.post_job_start_line(_job(route=CASA))
-    assert [c[0] for c in calls(h.casa)] == ["post_job_start_line"]
-    assert calls(h.finance) == []
+    # a job that posts nothing posts nothing, anywhere
+    assert await getattr(h.transport, method)(_job(route=111, delivery=None), *args) is None
+    assert [c[0] for c in calls(h.finance)] == [method] and calls(h.casa) == []
+    # a delivery whose bot has no endpoint: no other bot is tried
+    with pytest.raises(EndpointUnavailable):
+        await getattr(h.transport, method)(_job(delivery=TgAddress(333, 100)), *args)
+    assert calls(h.casa) == []
 
 
 async def test_a_start_line_edit_goes_through_the_bot_that_posted_it(two_endpoints):

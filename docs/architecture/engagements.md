@@ -80,6 +80,11 @@ terminal tombstones age out after thirty days, bounding the post-mortem record (
 completion time is not a finite number has no known age and is kept, and an `in_casa` one
 only once its transcripts are reaped, per `architecture/engagement-transcript-reaping.md`).
 
+**A job's record carries its task fields.** `EngagementRecord.executor`, `requester` and
+`delivery` are stamped by the job launch owner at the job's birth and persisted: the delivery
+is the chat every post of the job goes to (`None`: it posts nothing), the requester who is told
+its outcome ([`own-voice.md`](own-voice.md)).
+
 ## Contracts & invariants
 
 The record's own contracts are defined where the behaviour is: the terminal transition and

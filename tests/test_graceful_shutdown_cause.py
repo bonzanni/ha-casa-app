@@ -40,6 +40,7 @@ from job_registry import (
     VoiceJob,
 )
 from personality_types import SpeakerProvenance
+from task_model import Requester
 
 
 SYSTEM_SPEAKER = SpeakerProvenance(speaker_kind="system")
@@ -200,7 +201,9 @@ async def test_an_unlatched_cancellation_during_a_stop_still_defers(tmp_path):
     `asyncio.wait` cannot tell a barge-in from process death, and those are the
     arms #671 exists for. Unlatched must stay deferred, or the fix is undone.
     """
-    registry = await loaded(tmp_path, make_voice_job(creator_peer="telegram", route={"_tg_bot": 111}))
+    registry = await loaded(tmp_path, make_voice_job(
+        creator_peer="telegram", route={"_tg_bot": 111}, executor="researcher",
+        requester=Requester("concierge", {"_tg_bot": 111}), delivery=None))
     commits = Commits(registry)
 
     registry.begin_shutdown()

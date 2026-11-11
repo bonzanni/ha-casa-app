@@ -324,7 +324,7 @@ async def test_only_a_synchronous_delegate_shares_the_launchers_record(
                      agent_role_map={"butler": _specialist_cfg(role="butler"),
                                      "assistant": _caller_cfg(delegates=("butler",))})
     monkeypatch.setattr(tools, "_attach_completion_callback",
-                        lambda task, record: None)
+                        lambda task, record, **_kw: None)
     child_ran = asyncio.Event()
 
     async def _child(cfg, task_text, context_text, resolution=None,

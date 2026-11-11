@@ -129,7 +129,10 @@ class _FakeBus:
     pass
 
 class _FakeChanMgr:
-    pass
+    # No channel is registered here, as on a Telegram-less install: a task's
+    # delivery looks the Telegram channel up by name and gets None.
+    def get(self, name):
+        return None
 
 init_tools(
     _FakeChanMgr(), _FakeBus(), _FakeSpecialistRegistry(), _FakeMcpRegistry(),

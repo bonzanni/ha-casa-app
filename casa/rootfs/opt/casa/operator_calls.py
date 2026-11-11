@@ -151,15 +151,20 @@ def binding_for(call: OperatorCall):
 
 def call_target(call: OperatorCall) -> "tuple[Any, int]":
     """The endpoint and bot id the call's binding resolves to — the
-    continuation's own binding, else the route a binding minted for this turn
-    would keep — read now, without minting one. Raises
-    ``plugin_bindings.ChannelUnavailable`` when there is none to read."""
-    from plugin_bindings import BINDINGS, route_of, route_target
+    continuation's own binding, else the one a binding minted for this turn
+    would name (``plugin_bindings.binding_target``: the call's delivery, or
+    its route when the call posts nothing) — read now, without minting one.
+    Raises ``plugin_bindings.ChannelUnavailable`` when there is none to read."""
+    from plugin_bindings import (
+        BINDINGS, binding_target, delivery_target, route_of, route_target)
     if call.binding_ref is not None:
         b = BINDINGS.get(call.binding_ref, plugin=call.plugin,
                          operator_id=call.identity.operator_id)
         if b is not None:
-            return route_target(b.origin)
+            return binding_target(b)
+    delivery = getattr(call.identity, "delivery", None)
+    if delivery is not None:
+        return delivery_target(delivery)
     return route_target(route_of(call.origin, call.identity))
 
 
@@ -176,12 +181,16 @@ def requester_facts(call: OperatorCall) -> dict:
 async def post_question(*, endpoint: Any, identity: Any, role: str, text: str,
                         options: list[str], timeout_s: float,
                         on_settle: Callable[[dict], Awaitable[None]],
-                        after_choice: "dict[int, list[tuple[str, str]]] | None" = None
-                        ) -> bool:
+                        after_choice: "dict[int, list[tuple[str, str]]] | None" = None,
+                        chat_id: "int | None" = None, post: Any = None) -> bool:
     """Post *text* under *role*'s label with one button per option, through
-    the Telegram *endpoint* the caller resolved (the binding's route for a run
+    the Telegram *endpoint* the caller resolved (the call's delivery for a run
     admission, Casa's own for its restart card), to the operator *identity*
-    names; ``on_settle`` runs once with the outcome — ``{"outcome":
+    names, in *chat_id* (the identity's chat when not given). In *role*'s own
+    chat the label is left out: the chat is the agent. The question's record
+    keeps *role*, the agent it is asked for, and the address it was delivered
+    at, as every card's does. ``on_settle`` runs
+    once with the outcome — ``{"outcome":
     "answered", "choice": i}``, ``no_answer`` at the timeout or
     ``cancelled``. Returns whether the keyboard landed. Detached: the caller
     does not wait. Only that operator can answer, on that bot (the
@@ -196,9 +205,13 @@ async def post_question(*, endpoint: Any, identity: Any, role: str, text: str,
     (the start card's Stop). That choice's ``on_settle`` runs BEFORE the edit
     that shows the keyboard, and is also given the card's ``message_id``, its
     ``address`` and its settled ``text``, so what the buttons act on is saved
-    before they appear."""
+    before they appear.
+
+    ``post``: the post record the landed question is filed under (a task's
+    question is filed under that task, so a reply to it reaches the task).
+    """
     from channels.tg_address import EndpointNotReady, TgAddress, scope as lane_scope
-    from result_broker import compose_operator_message, post_label
+    from result_broker import compose_operator_message, label_at
     from verdict_broker import BROKER
 
     channel = endpoint
@@ -209,18 +222,23 @@ async def post_question(*, endpoint: Any, identity: Any, role: str, text: str,
     except EndpointNotReady:
         logger.warning("operator question not posted: the bot has no id yet")
         return False
-    chat_id, operator_id = identity.chat_id, identity.operator_id
-    body = compose_operator_message(text, post_label(role))
+    chat_id = identity.chat_id if chat_id is None else chat_id
+    operator_id = identity.operator_id
+    body = compose_operator_message(text, label_at(role, channel))
     rid = uuid.uuid4().hex
     scope = lane_scope("ask", bot_id, chat_id)
     req, _ = BROKER.register(
         namespace="resident_ask", scope=scope, request_id=rid, timeout_s=timeout_s,
         detached=True, meta={"options": list(options), "chat_id": chat_id,
                              "bot_id": bot_id, "operator_id": operator_id,
-                             "kind": "casa_question", "_scope": scope})
+                             "kind": "casa_question", "_scope": scope,
+                             # the agent the question is asked for, and where it was
+                             # delivered, as every card records them
+                             "role": role, "delivery": TgAddress(bot_id, int(chat_id))})
 
     async def _post():
-        return await channel.deliver_operator_question(chat_id, body, list(options), rid)
+        return await channel.deliver_operator_question(chat_id, body, list(options), rid,
+                                                       post=post)
 
     def _finish_factory(message_id: int):
         async def _finish(outcome: dict) -> None:

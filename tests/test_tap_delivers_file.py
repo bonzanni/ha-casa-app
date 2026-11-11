@@ -20,7 +20,10 @@ import tools as tools_mod
 from test_desk_tap import ART, LABEL, OPERATOR, _build, _echo, _tap, _tool, env  # noqa: F401
 from test_operator_file_delivery import (DATA, EXPORT, SLOT, _identity, _map, _open, _put,  # noqa: F401
                                          names, outbox, recorder)
+from channels.tg_address import TgAddress
+from test_proposal_slot import open_chats
 from test_stored_calls import _map as _sc_map
+from two_endpoints import CASA_BOT as BOT
 from test_stored_calls import _runtime as _sc_runtime
 from test_stored_calls import _tool as _sc_tool
 
@@ -58,13 +61,16 @@ def test_every_other_file_shape_is_still_refused(tool, reason):
 
 # --- the pinned turn's capture -----------------------------------------------------
 
-async def test_a_landed_file_is_captured_as_delivered_with_its_kind(recorder, names, outbox):
+async def test_a_landed_file_is_captured_as_delivered_with_its_kind(recorder, names, outbox,
+                                                                    monkeypatch):
+    open_chats(monkeypatch, "finance")
     path = _put(outbox, "q3.zip.csv")
     store = rb.ReferenceStore(now=lambda: 1000.0)
     owner = pr.PinnedRun(run_id="run-1", runtime_name=EXPORT, canonical="{}", label="Get package",
                          build_input=None)
     hook = rb.make_result_hook(_map(), client_id="c1", store=store, owner=owner)
-    _open(store)
+    # the call's file goes to the chat it runs in
+    _open(store, identity=_identity(delivery=TgAddress(BOT, 42)))
     ref, err = store.deposit(client_id="c1", slot=SLOT, value=path, kind="text", caption="Q3")
     assert err is None
     await hook({"hook_event_name": "PostToolUse", "tool_name": EXPORT, "tool_input": {},

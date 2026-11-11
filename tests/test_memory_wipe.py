@@ -313,6 +313,7 @@ async def _wiped_job(tmp_path, monkeypatch, *, awaiting=None):
     from claude_agent_sdk import ClaudeAgentOptions
     from drivers import in_casa_driver as drv
     from engagement_registry import EngagementRecord, EngagementRegistry
+    from task_model import Requester
     try:
         from tests.test_job_session_driver import FakeCLI
     except ImportError:  # pragma: no cover — direct-path collection
@@ -332,7 +333,11 @@ async def _wiped_job(tmp_path, monkeypatch, *, awaiting=None):
         last_user_turn_ts=0.0, completed_at=None, sdk_session_id=w.SID,
         origin={"channel": "telegram", "_tg_bot": 111, "_origin_route": "telegram",
                 "_origin_clearance": "private", "job": job},
-        task="Tidy the garden notes")
+        task="Tidy the garden notes",
+        # the job as a task: finance runs it for the resident, and posts
+        # nothing of its own
+        executor="finance", requester=Requester("assistant", {"_tg_bot": 111}),
+        delivery=None)
     await writer._write_tombstone_locked(strict=True)
     w.write(w.under(root, f"/config/cc-home/.claude/projects/-cwd/{w.SID}.jsonl"),
             "turns")

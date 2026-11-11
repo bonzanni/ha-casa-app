@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import agent_lane
 import result_broker as rb
 import specialist_desk as sd
 import tools as tools_mod
@@ -65,7 +66,10 @@ def env(tmp_path, monkeypatch):
             await env.gate.wait()
         return tools_mod.DelegatedOutput(text=f"answer {len(calls)}")
     monkeypatch.setattr(tools_mod, "_run_delegated_agent_bounded", runner)
-    return env
+    yield env
+    # the lanes and faults are module-wide and keyed by agent: a fault left
+    # standing here would refuse the next file's delegations to finance
+    agent_lane.reset()
 
 
 def _payload(result):
@@ -294,14 +298,15 @@ async def test_the_prelaunch_seam_keeps_its_five_argument_call(env, monkeypatch)
     assert tools_mod._desk_skip_permit.get() is False                # reset after the call
 
 
-async def test_a_faulted_desk_is_the_typed_desk_faulted_result_before_any_queue_place(env):
+async def test_a_faulted_desk_is_the_typed_agent_faulted_result_before_any_queue_place(env):
     """S5 §14.8: a delegation to a faulted desk is refused at once — sync and
-    async alike — with no reservation, no task and no exchange."""
+    async alike — with no reservation, no task and no exchange. The model is
+    told the agent is out of service (``agent_faulted``)."""
     desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     desk.faulted = "run abc: termination unconfirmed"
     for mode in ("sync", "async"):
         payload = await _delegate(mode=mode)
-        assert payload == {**payload, "status": "error", "kind": "desk_faulted", "agent": "finance"}
+        assert payload == {**payload, "status": "error", "kind": "agent_faulted", "agent": "finance"}
     assert env.calls == [] and desk.waiting == 0 and desk.log == []
 
 
@@ -331,7 +336,7 @@ async def _no_second_run_until_the_first_has_ended(desk, survivor):
         await asyncio.wait({second}, timeout=0.3)
         assert survivor.starts == 1 and survivor.peak == 1
         refused = second.done()
-        if refused:                     # refused: the typed desk_faulted, nothing ran
+        if refused:                     # refused: the typed DeskFaulted, nothing ran
             assert isinstance(second.exception(), sd.DeskFaulted)
     finally:
         await survivor.end_first()

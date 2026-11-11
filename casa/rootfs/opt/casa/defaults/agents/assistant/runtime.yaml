@@ -44,6 +44,8 @@ tools:
     - mcp__casa-framework__send_message
     # the direct stop of a specialist's own work (browsing): no desk, no specialist turn
     - mcp__casa-framework__stop_work
+    # Casa posts the card that offers a specialist its own chat
+    - mcp__casa-framework__offer_own_chat
     - mcp__casa-framework__send_media
   disallowed:
     # #460: the assistant is a router—all concrete work is delegated.

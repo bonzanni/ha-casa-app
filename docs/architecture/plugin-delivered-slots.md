@@ -25,11 +25,13 @@ in.** A capability tool may declare one of its slots as `delivers: {slot: "opera
 The producer deposits an `https` URL — with an optional caption and label, validated
 before any reference is minted — and returns the reference exactly as for any capability.
 After the result's structural check passes, the same PostToolUse hook takes the deposit
-once and posts ONE message to the chat of the call's grant identity: a link whose text is
+once and posts ONE message at the call's delivery: a link whose text is
 the label and the destination host, the host printed by Casa from the URL and never
-supplied by the plugin, with the caption beneath. That chat is the operator's chat with
-the resident on a direct turn, a sync delegation from it, or a Casa-dispatched setup turn;
-for a specialist engagement it is the chat the operator asked in, never the agent's log —
+supplied by the plugin, with the caption beneath. That delivery is the executing agent's
+own chat — the resident's chat for the resident's own plugin, an agent's own open chat for
+its tasks and its conversation — fixed when the task was born, and a call with none is
+refused before it runs ([`own-voice.md`](own-voice.md)); in an agent's own chat the label
+line is left out (`label_at`), the chat being the agent. It is never the agent's log —
 the log is read-only and best effort, and its posts are deleted after about two days.
 Proven delivery replaces the result with a receipt (`casa_delivery.status` is
 `delivered`, every producer field and the reference intact); anything short of proven

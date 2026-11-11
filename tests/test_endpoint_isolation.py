@@ -336,14 +336,23 @@ async def test_a_turn_on_222_is_answered_through_222_only(pair):
 
 
 def _job(eid: str = "j" * 32, *, status: str = "active"):
+    # the job was born delivering to the operator's chat on bot 111
     return NS(id=eid, origin={"user_id": OPERATOR, "chat_id": OPERATOR,
                               "job": {"title": "Accounting check"}},
               status=status, role_or_type="finance", completed_at=None,
-              ui_posts=[], questions={})
+              delivery=TgAddress(CASA_BOT, OPERATOR), ui_posts=[], questions={})
 
 
-async def test_a_reply_on_222_to_message_5_never_reaches_111s_live_job(pair):
+def _indexed(monkeypatch, reg: _Registry) -> None:
+    """The task-post index answers from *reg*'s job posts, as the real index
+    answers from the engagement registry."""
+    from task_posts_double import install
+    install(monkeypatch).regs.append(reg)
+
+
+async def test_a_reply_on_222_to_message_5_never_reaches_111s_live_job(pair, monkeypatch):
     reg, driver = _Registry(), _Driver()
+    _indexed(monkeypatch, reg)
     rec = _job()
     reg.records[rec.id] = rec
     for ep in (pair.casa, pair.finance):
@@ -364,8 +373,9 @@ async def test_a_reply_on_222_to_message_5_never_reaches_111s_live_job(pair):
         (rec.id, CASA_BOT)]
 
 
-async def test_a_reply_on_222_to_message_5_is_not_named_as_111s_ended_job(pair):
+async def test_a_reply_on_222_to_message_5_is_not_named_as_111s_ended_job(pair, monkeypatch):
     reg = _Registry()
+    _indexed(monkeypatch, reg)
     rec = _job(status="completed")
     reg.records[rec.id] = rec
     reg.ended[TgAddress(CASA_BOT, OPERATOR, 5)] = rec
@@ -609,7 +619,8 @@ async def test_getme_reports_the_id_before_the_endpoint_is_ready(built):
     assert ep.is_ready and ep.bot_id == 333
     assert transport.casa_route() == 333 and transport.endpoint(333) is ep
     built[0].bot.set_webhook.assert_awaited_once_with(
-        url="https://casa.example/telegram/update/333", secret_token="secret-333")
+        url="https://casa.example/telegram/update/333", secret_token="secret-333",
+        allowed_updates=list(ep.allowed_updates))
 
 
 async def test_a_bot_another_endpoint_serves_stops_this_one_for_good(built):

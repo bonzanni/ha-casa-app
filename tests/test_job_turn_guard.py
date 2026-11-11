@@ -20,6 +20,7 @@ from claude_agent_sdk import ResultMessage
 
 import background_jobs as bj
 import job_inbox
+from channels.tg_address import TgAddress
 from error_kinds import ErrorKind
 
 pytestmark = pytest.mark.asyncio
@@ -90,6 +91,10 @@ class Channel:
     async def refresh_job_start_line(self, rec):
         self.refreshed += 1
 
+    def endpoint(self, bot_id):
+        # the transport's endpoint for the job's delivery bot: this one
+        return self
+
     def __getattr__(self, name):
         # Any other post or send is recorded, so "nothing posted" is checked.
         if not name.lstrip("_").startswith(("send", "post", "deliver")):
@@ -105,6 +110,7 @@ def _rec(kind="specialist", **job):
         id="j" * 32, kind=kind, role_or_type="finance", status="active",
         task="Check the accounts",
         started_at=1000.0, completed_at=None,
+        delivery=TgAddress(111, 42),          # the job's lines go to the operator's chat
         origin={"job": {"title": "Accounting check", "skill": "q:job",
                         "brief_uuid": "b-1", "context": "", **job}})
 

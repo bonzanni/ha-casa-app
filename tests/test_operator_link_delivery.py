@@ -22,8 +22,10 @@ import agent as agent_mod
 import result_broker as rb
 import tools as tools_mod
 from authz_grants import GrantIdentity
+from own_voice_fixtures import delivery_for, open_own_chats, with_delivery
 from channels import DeliveryOutcome
 from plugin_grants import PluginContract, ResultContractMap, ToolContract
+from provenance import task_delivery_marker
 from text_util import utf16_len
 from telegram_channel_double import make_transport
 from two_endpoints import CASA_BOT as BOT
@@ -43,7 +45,7 @@ def _identity(**over) -> GrantIdentity:
     base = dict(operator_id=42, chat_id=42, enforcement_role="finance",
                 artifact_id=ARTIFACT, engagement_id="", bot_id=BOT)
     base.update(over)
-    return GrantIdentity(**base)
+    return with_delivery(GrantIdentity(**base))
 
 
 def _map() -> ResultContractMap:
@@ -111,6 +113,13 @@ def _Manager(channel):
     """The channel manager with Telegram's transport over *channel*, Casa's
     endpoint on bot 111; ``None`` (no Telegram) for no channel."""
     return make_transport(channel) if channel is not None else None
+
+
+@pytest.fixture(autouse=True)
+def finance_chat_open(monkeypatch):
+    """Finance's own chat is open: these tests are about what its delivered
+    slots do, not about whether it may post at all."""
+    return open_own_chats(monkeypatch, "finance")
 
 
 @pytest.fixture
@@ -499,7 +508,8 @@ async def test_a_setup_tool_declared_capability_takes_the_path_through_both_real
         out = await pre(_pre(SETUP_CAP), "s-0", {})
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert store._inflight == {}
-    with _Origin({**DM, "_tg_bot": BOT}):
+    # finance runs as a task whose delivery is the operator's chat
+    with _Origin({**DM, "_tg_bot": BOT, **task_delivery_marker(delivery_for(BOT, 42))}):
         assert await pre(_pre(SETUP_CAP), "s-1", {}) == {}
     assert len(store._inflight) == 1
     ref, err = store.deposit(client_id="c1", slot="auth_url", value=URL,
@@ -523,11 +533,13 @@ async def test_a_setup_tool_declared_capability_takes_the_path_through_both_real
 @pytest.mark.asyncio
 async def test_an_engagements_link_goes_to_the_origin_chat_not_the_topic(recorder):
     """The engagement identity's chat is the origin chat the operator asked
-    in; the topic (a negative supergroup id) receives nothing."""
+    in, and its posts go to the delivery the engagement was born with (that
+    same chat); the topic (a negative supergroup id) receives nothing."""
     from test_result_broker import _Origin
+    from own_voice_fixtures import delivery_for
     rec = SimpleNamespace(
         id="eng-1", kind="specialist", status="active",
-        role_or_type="finance",
+        role_or_type="finance", delivery=delivery_for(BOT, 42),
         origin={"role": "assistant", "channel": "telegram", "chat_id": 42,
                 "user_id": 42, "message_type": "channel_in", "source": "telegram",
                 "execution_role": "assistant", "_tg_bot": BOT})

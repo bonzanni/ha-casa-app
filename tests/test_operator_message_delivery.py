@@ -21,6 +21,7 @@ import pytest
 import result_broker as rb
 import tools as tools_mod
 from authz_grants import GrantIdentity
+from own_voice_fixtures import open_own_chats, with_delivery
 from channels import DeliveryOutcome
 from channels.tg_richtext import render_paged
 from plugin_grants import PluginContract, ResultContractMap, ToolContract
@@ -40,7 +41,7 @@ def _identity(**over) -> GrantIdentity:
     base = dict(operator_id=42, chat_id=42, enforcement_role="finance",
                 artifact_id=ARTIFACT, engagement_id="", bot_id=BOT)
     base.update(over)
-    return GrantIdentity(**base)
+    return with_delivery(GrantIdentity(**base))
 
 
 def _map() -> ResultContractMap:
@@ -99,6 +100,13 @@ def _Manager(channel):
     """The channel manager with Telegram's transport over *channel*, Casa's
     endpoint on bot 111; ``None`` (no Telegram) for no channel."""
     return make_transport(channel) if channel is not None else None
+
+
+@pytest.fixture(autouse=True)
+def finance_chat_open(monkeypatch):
+    """Finance's own chat is open: these tests are about what its delivered
+    slots do, not about whether it may post at all."""
+    return open_own_chats(monkeypatch, "finance")
 
 
 @pytest.fixture

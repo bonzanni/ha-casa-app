@@ -263,3 +263,18 @@ async def test_a_receipt_that_did_not_go_out_posts_no_card(card_env):
     assert [k for k, _ in env.log] == ["receipt"]
     assert env.proposals == [] and _live() == []
     assert env.channel.notices == [(OPERATOR, f"{LABEL} applied your tap; the receipt did not go out.")]
+
+
+async def test_in_the_agents_own_chat_the_next_card_carries_no_label(card_env, monkeypatch):
+    """The next card follows the tapped one into the chat it was posted in;
+    in the agent's own chat it is not headed with the agent's label — the
+    chat is the agent — exactly as its first card was not."""
+    env = card_env
+    env.channel.default_agent = "finance"
+    casa = SimpleNamespace(default_agent="assistant")
+    transport = SimpleNamespace(endpoint=lambda bot: env.channel, casa_endpoint=lambda: casa)
+    monkeypatch.setattr(rb, "_transport", lambda: transport)
+    env.respond = _respond_with(nxt=_card())
+    await _tap(env)
+    (card,) = env.proposals
+    assert not card.text.startswith(LABEL) and card.text.startswith("Adobe")

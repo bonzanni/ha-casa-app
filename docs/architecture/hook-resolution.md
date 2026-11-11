@@ -47,6 +47,11 @@ logged and returns an empty decision, so evidence never breaks the tool. What th
 discharges is [`output-boundary.md`](output-boundary.md)'s INV-OUT-002; the
 delegated builder, which builds specialists and the configurator, does not carry these matchers.
 
+**A task's read check is asked live.** `resolve_hooks` takes an optional `extra_read_check`
+that `path_scope` consults on every Read its readable prefixes deny, so a file granted to a
+task while it runs is readable at once (`agent_inbox.task_file_granted`; INV-OWN-005 in
+[`own-voice.md`](own-voice.md)).
+
 ## Contracts & invariants
 
 **INV-MCP-007**: A hook policy parameter of the wrong type fails the build of that policy.

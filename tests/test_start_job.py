@@ -111,6 +111,13 @@ async def runtime(tmp_path, monkeypatch):
                         host if name == DECL.qualified_name and 'finance' in roles else None)
     monkeypatch.setattr(jobs, 'startable_jobs', lambda caller, roles:
                         [host] if 'finance' in roles else [])
+    # A job is a surface of its host: these jobs' hosts may post (their own
+    # chat open, or the resident's), and no own endpoint is bound, so a job
+    # posts as it did through the route it was started on.
+    import own_voice
+    monkeypatch.setattr(own_voice, 'require_open_chat', lambda role, *, label: None)
+    monkeypatch.setattr(own_voice, 'own_chat_state', lambda role: 'not_declared')
+    monkeypatch.setattr(own_voice, 'endpoint_for', lambda role: None)
     yield SimpleNamespace(registry=registry, driver=driver, channel=channel, bot=bot,
                           cfg=cfg, caller=caller, limiter=limiter)
     await drain_launch_turns()

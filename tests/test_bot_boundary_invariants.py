@@ -163,6 +163,16 @@ def _a_job_state() -> dict:
     return jobs.initial_job_state(decl, started_by="operator")
 
 
+def _a_task(executor: str, origin: dict) -> dict:
+    """The task fields a launcher records for work *executor* runs, born now
+    from the turn *origin* (``tools._task_birth``): who receives its result
+    and where its posts go, decided here once."""
+    import tools as tools_mod
+    birth = tools_mod._task_birth("", "", executor, origin)
+    return {"executor": birth.executor, "requester": birth.requester,
+            "delivery": birth.delivery}
+
+
 async def _a_registry(path):
     from engagement_registry import EngagementRegistry
     reg = EngagementRegistry(tombstone_path=str(path))
@@ -209,19 +219,24 @@ def a_pair(a_isolated, monkeypatch):
 
 
 async def test_after_a_restart_a_jobs_posts_and_replies_stay_on_the_bot_it_ran_on(
-        a_pair, tmp_path):
-    """A finance job ran on bot 111 and posted its question there as message
-    5. After a restart finance has its own bot, 222. The job's posts are
-    re-indexed from the stored record: a reply on 111 to message 5 reaches
-    the job, the same message id quoted on 222 is an ordinary finance turn,
-    and the job's next question goes out through 111."""
+        a_pair, tmp_path, monkeypatch):
+    """A finance job ran on bot 111 — its stored delivery is the operator's
+    chat there — and posted its question there as message 5. After a restart
+    finance has its own bot, 222. The job's posts are re-indexed from the
+    stored record: a reply on 111 to message 5 reaches the job, the same
+    message id quoted on 222 is an ordinary finance turn, and the job's next
+    question goes out through 111."""
     from engagement_registry import JOB_POST_QUESTION
+    from task_model import Requester
     path = tmp_path / "engagements.json"
     reg = await _a_registry(path)
     rec = await reg.create(
         "specialist", "finance", "in_casa", "check the ledger",
         {"role": "finance", "channel": "telegram", "chat_id": str(OPERATOR),
-         "user_id": OPERATOR, "job": _a_job_state(), "_tg_bot": CASA_BOT})
+         "user_id": OPERATOR, "job": _a_job_state(), "_tg_bot": CASA_BOT},
+        executor="finance",
+        requester=Requester("finance", {"_tg_bot": CASA_BOT}),
+        delivery=TgAddress(CASA_BOT, OPERATOR))
     assert reg.record_job_post(rec.id, TgAddress(CASA_BOT, OPERATOR, 5),
                                keyboard=JOB_POST_QUESTION)
     await _a_flush(reg)
@@ -230,6 +245,8 @@ async def test_after_a_restart_a_jobs_posts_and_replies_stay_on_the_bot_it_ran_o
     driver = _A_Driver()
     for ep in (a_pair.casa, a_pair.finance):
         ep._engagement_registry, ep._engagement_driver = again, driver
+    # the task post index reads the registry Casa holds
+    monkeypatch.setattr(tools, "_engagement_registry", again, raising=False)
     loaded = again.get(rec.id)
     assert loaded.origin["_tg_bot"] == CASA_BOT
 
@@ -258,6 +275,7 @@ async def test_after_a_restart_a_jobs_posts_and_replies_stay_on_the_bot_it_ran_o
 def _a_voice_job(**changes):
     from job_registry import DeliveryState, ExecutionState, VoiceJob
     from personality_types import SpeakerProvenance
+    from task_model import Requester
     system = SpeakerProvenance(speaker_kind="system")
     base = VoiceJob(
         id="d" * 32, parent_job_id=None,
@@ -274,6 +292,9 @@ def _a_voice_job(**changes):
         continuable_until=None, delivery_sequence=0,
         delivery_attempt_id=None, lease_until=None, cancel_pending=False,
         route={"_tg_bot": CASA_BOT},
+        executor="reporter",
+        requester=Requester("finance", {"_tg_bot": CASA_BOT}),
+        delivery=None,
     )
     return replace(base, **changes)
 
@@ -546,8 +567,10 @@ async def test_a_scheduled_job_born_on_casas_bot_keeps_it_after_its_role_gets_a_
         tmp_path, monkeypatch):
     """A scheduled job is launched for finance while finance has no bot of
     its own: it is born on Casa's bot, 111, and its record keeps that route.
-    Finance is then given bot 222 and Casa restarts: the reloaded job's
-    question and its start line still go out through 111."""
+    Its delivery is decided at the same birth: finance has no chat of its
+    own, so the job posts nothing. Finance is then given bot 222 and Casa
+    restarts: the reloaded job keeps both — its route is still 111, and its
+    question and start line go out through neither bot."""
     import authz_grants
     import background_jobs
     import tools as tools_mod
@@ -573,7 +596,8 @@ async def test_a_scheduled_job_born_on_casas_bot_keeps_it_after_its_role_gets_a_
 
         async def start_on_host(_host, task, context, origin, **_kw):
             created.append(await reg.create("specialist", "finance", "in_casa",
-                                            task, {**origin, "job": _a_job_state()}))
+                                            task, {**origin, "job": _a_job_state()},
+                                            **_a_task("finance", origin)))
             return tools_mod._result({"status": "pending",
                                       "engagement_id": created[-1].id})
 
@@ -583,6 +607,7 @@ async def test_a_scheduled_job_born_on_casas_bot_keeps_it_after_its_role_gets_a_
             task="Check the ledger.", context="", channel="telegram"))
         (rec,) = created
         assert rec.origin["_tg_bot"] == CASA_BOT
+        assert rec.delivery is None
         await _a_flush(reg)
 
         # finance gets its own bot; Casa restarts
@@ -595,12 +620,13 @@ async def test_a_scheduled_job_born_on_casas_bot_keeps_it_after_its_role_gets_a_
         again = await _a_registry(path)
         loaded = again.get(rec.id)
         assert loaded.origin["_tg_bot"] == CASA_BOT
+        assert loaded.delivery is None
 
-        await transport.post_job_question(
-            loaded, "q1", admitted("Split by week?"), ["Yes", "No"], ["Yes", "No"])
-        await transport.post_job_start_line(loaded)
-        assert [n for n, _ in calls(casa)] == ["post_job_question",
-                                               "post_job_start_line"]
+        assert await transport.post_job_question(
+            loaded, "q1", admitted("Split by week?"), ["Yes", "No"],
+            ["Yes", "No"]) is None
+        assert await transport.post_job_start_line(loaded) is None
+        assert calls(casa) == []
         assert calls(finance) == []
     finally:
         (tools_mod._channel_manager, tools_mod._bus,
@@ -812,8 +838,10 @@ def _b_job(eid: str = "j" * 32, *, route=FINANCE_BOT):
               "user_id": OPERATOR, "job": {"title": "Accounting check"}}
     if route is not None:
         origin["_tg_bot"] = route
+    # a job posts at its delivery, decided at its birth: here the chat on 222
+    delivery = TgAddress(route, OPERATOR) if isinstance(route, int) and route != CASA else None
     return NS(id=eid, origin=origin, status="active", role_or_type="finance",
-                 completed_at=None, ui_posts=[], questions={})
+                 completed_at=None, ui_posts=[], questions={}, delivery=delivery)
 
 
 async def _b_job_question(h, mode):
@@ -1161,9 +1189,8 @@ async def test_a_token_that_turns_out_to_be_another_endpoints_bot_stays_stopped(
 
 def _b_route_bound(transport, ctx):
     """Each route-bound method of the transport, called with *ctx* as its
-    delivery context (a job method: as the job's origin)."""
-    rec = _b_job(route=None)
-    rec.origin = {**{k: v for k, v in rec.origin.items() if k != "chat_id"}, **ctx}
+    delivery context. A job's lines are not route-bound: they post at the
+    job's delivery (``test_telegram_transport``)."""
     return {
         "send": lambda: transport.send("hi", ctx),
         "send_media": lambda: transport.send_media(b"x", "document", "a.pdf", ctx),
@@ -1173,10 +1200,6 @@ def _b_route_bound(transport, ctx):
         "turn_finished": lambda: transport.turn_finished(ctx),
         "create_on_token": lambda: transport.create_on_token(ctx),
         "finalize_stream": lambda: transport.finalize_stream("hi", ctx, None),
-        "post_job_start_line": lambda: transport.post_job_start_line(rec),
-        "post_job_parked": lambda: transport.post_job_parked(rec, "parked"),
-        "post_job_question": lambda: transport.post_job_question(
-            rec, "q1", admitted("Which?"), ["A"], ["A"]),
     }
 
 
@@ -2085,7 +2108,8 @@ async def _d_launch_scheduled_job(env, registry) -> str:
 
     async def start_on_host(_host, task, context, origin, **_kw):
         rec = await registry.create(kind="specialist", role_or_type="assistant",
-                                    driver="in_casa", task=task, origin=origin)
+                                    driver="in_casa", task=task, origin=origin,
+                                    **_a_task("assistant", origin))
         created.append(rec.id)
         return tools._result({"status": "pending", "engagement_id": rec.id})
 
@@ -2105,16 +2129,19 @@ async def _d_delegate(env, origin: dict) -> None:
                              job_registry=JobRegistry(env.tmp / "jobs.json"))
     await reg.register_delegation(DelegationRecord(
         id="d" * 32, agent="finance", started_at=1.0,
-        origin={**origin, "user_text": "What did October cost?"}))
+        origin={**origin, "user_text": "What did October cost?"},
+        **_a_task("finance", origin)))
 
 
 @pytest.mark.parametrize("case", _D_UNKNOWN_ID)
 async def test_records_persisted_before_casas_bot_has_an_id_deliver_through_it_after_a_restart(
         d_boot, case):
     """A scheduled job and a delegation born from turns with the route CASA
-    are persisted with it, reloaded through the strict loaders, and deliver
-    through Casa's bot once it has connected: the job's start line, and the
-    delegation's notice through the real boot replay."""
+    are persisted with it and reloaded through the strict loaders. The
+    delegation's notice, rebuilt by the real boot replay, delivers through
+    Casa's bot once it has connected. The job's posts go to its delivery,
+    decided at its birth: born before Casa's bot had an id, it has none, so
+    its start line posts nothing before the bot connects or after."""
     import casa_core
     from engagement_registry import EngagementRegistry
     from job_registry import JobRegistry
@@ -2131,6 +2158,7 @@ async def test_records_persisted_before_casas_bot_has_an_id_deliver_through_it_a
     await engagements.load()
     rec = engagements.get(eid)
     assert rec is not None and rec.origin["_tg_bot"] == CASA
+    assert rec.delivery is None
     jobs = JobRegistry(env.tmp / "jobs.json")
     await jobs.load()
     recovered = await jobs.recover_after_restart()
@@ -2153,14 +2181,13 @@ async def test_records_persisted_before_casas_bot_has_an_id_deliver_through_it_a
     assert env.sent() == []
 
     await env.connect()
-    assert await env.transport.post_job_start_line(rec) is not None
+    assert await env.transport.post_job_start_line(rec) is None
     out = await env.transport.send_response(
         admitted("Finance answered: October cost 412 euros."), notice.context)
     assert out is DeliveryOutcome.DELIVERED
     texts = env.sent()
-    assert len(texts) == 2
-    assert texts[0].startswith("📊 ") and "Check the ledger." in texts[0]
-    assert "412 euros" in texts[1]
+    assert len(texts) == 1
+    assert "412 euros" in texts[0]
 
 
 # -- the unknown-id window -----------------------------------------------------
@@ -2362,9 +2389,10 @@ async def _e_delegation_row(env, tmp_path, monkeypatch):
     )
     reg = SpecialistRegistry(str(tmp_path / "specialists"),
                              job_registry=JobRegistry(tmp_path / "jobs.json"))
+    origin = {**_e_origin(), "role": "assistant"}
     await reg.register_delegation(DelegationRecord(
-        id="d-2", agent="finance", started_at=1.0,
-        origin={**_e_origin(), "role": "assistant"}))
+        id="d-2", agent="finance", started_at=1.0, origin=origin,
+        **_a_task("finance", origin)))
     again = JobRegistry(tmp_path / "jobs.json")
     await again.load()
     return [origin_from_job(again.get("d-2")).get("_tg_bot")]

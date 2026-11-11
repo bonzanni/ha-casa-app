@@ -16,7 +16,7 @@ from plugin_grants import ToolContract
 from plugin_store import StoreError, manifest_result_contract
 from test_operator_file_delivery import (  # noqa: F401  (fixtures and helpers)
     ARTIFACT, DATA, EXPORT, LABEL, PLUGIN, SLOT, _identity, _map, _outbox_is_empty,
-    _post, _put, _replacement, _store, names, outbox, recorder,
+    _post, _put, _replacement, _store, names, outbox, recorder, finance_chat_open,
 )
 from plugin_grants import ResultContractMap
 

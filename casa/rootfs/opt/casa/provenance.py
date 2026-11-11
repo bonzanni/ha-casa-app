@@ -26,6 +26,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from channels.tg_address import TgAddress
 
 # Keys Casa itself uses to record turn provenance. A caller-supplied
 # context (Telegram update payload, /invoke body, voice SSE/WS payload)
@@ -54,6 +58,17 @@ ANSWERED_BY_OPERATOR = "_answered_by_operator"
 # parent), and copied by every builder that derives an origin, context or
 # record from another, so a reply never re-derives its bot from the role.
 ROUTING_KEYS: tuple[str, ...] = ("_tg_bot",)
+
+# A task's delivery: the one reserved key holding where every post of the task
+# physically goes, decided once when the task is born and never recomputed —
+# the executor's own chat, the resident's chat for its own work, or ``None`` (the task
+# posts nothing). Stored JSON-safe (``TgAddress.to_json()`` or ``None``), since
+# an origin may be persisted. Present only on a task's origin: an origin without
+# it is not a task, and its posts go to the turn's own chat. Copied with the
+# route by every builder that derives a task's origin from another
+# (:func:`carry_task_delivery`).
+TASK_DELIVERY_KEY = "_task_delivery"
+TASK_KEYS: tuple[str, ...] = (TASK_DELIVERY_KEY,)
 
 RESERVED_CONTEXT_KEYS = frozenset({
     "synthetic",
@@ -162,6 +177,9 @@ RESERVED_CONTEXT_KEYS = frozenset({
     # The turn's route: stamped by Casa where the turn is born. A caller who
     # could set it would choose which bot an untrusted turn speaks through.
     *ROUTING_KEYS,
+    # A task's delivery: stamped by the task's launcher. A caller who could
+    # set it would choose which chat a task's posts land in.
+    *TASK_KEYS,
 })
 
 
@@ -171,6 +189,36 @@ def carry_route(src: Mapping) -> dict:
     stay absent, so a route-less source yields a route-less derivation that
     fails at delivery instead of being given a guessed bot."""
     return {k: src[k] for k in ROUTING_KEYS if k in src}
+
+
+def task_delivery_marker(delivery: "TgAddress | None") -> dict:
+    """The origin entry a task's launcher stamps: *delivery*, the task's
+    birth-time destination, or ``None`` for a task that posts nothing."""
+    return {TASK_DELIVERY_KEY: None if delivery is None else delivery.to_json()}
+
+
+def carry_task_delivery(src: Mapping) -> dict:
+    """*src*'s task delivery, to spread into an origin derived from it, beside
+    :func:`carry_route`: the key copied as it is (``None`` included), or
+    nothing when *src* is not a task's origin."""
+    return {k: src[k] for k in TASK_KEYS if k in src}
+
+
+def task_delivery(origin: Mapping) -> "tuple[bool, TgAddress | None]":
+    """``(is_task, delivery)`` read from *origin*: ``(False, None)`` for an
+    origin that is not a task's; otherwise ``True`` and the task's delivery.
+    A value that does not decode to an address is ``None``: the task posts
+    nothing rather than somewhere guessed."""
+    from channels.tg_address import AddressError, TgAddress
+    if not isinstance(origin, Mapping) or TASK_DELIVERY_KEY not in origin:
+        return False, None
+    raw = origin[TASK_DELIVERY_KEY]
+    if raw is None:
+        return True, None
+    try:
+        return True, TgAddress.from_json(raw)
+    except AddressError:
+        return True, None
 
 
 def route_context(origin: Mapping) -> dict:

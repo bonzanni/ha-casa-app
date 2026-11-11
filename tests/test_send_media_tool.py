@@ -10,6 +10,7 @@ import pytest
 import agent as agent_mod
 import plugin_outbox
 import tools
+from channels.tg_address import TgAddress
 from output_boundary_testing import with_scope
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
@@ -118,9 +119,12 @@ async def test_origin_refusals(wired, origin, expected):
 async def test_engagement_origin_preferred(wired):
     ob, ch = wired
     path = _drop(ob, "b.pdf", PDF)
-    # origin_var says chat 1197017861, but the active engagement says chat 42.
+    # origin_var and the job's origin say chat 1197017861, but the job's
+    # delivery says chat 42.
     eng = MagicMock()
-    eng.origin = {"channel": "telegram", "chat_id": 42}
+    eng.origin = {"channel": "telegram", "chat_id": 1197017861}
+    # the job's delivery, decided at its birth, is where its file goes
+    eng.delivery = TgAddress(111, 42)
     eng.status = "active"
     eng.context_rebuild_pending = False
     etok = tools.engagement_var.set(eng)

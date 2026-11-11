@@ -120,6 +120,11 @@ The trigger schema declares the key; the job codec writes it on every row and de
 without it as owing nothing. Their contract is [`output-boundary.md`](output-boundary.md)
 (INV-OUT-003).
 
+**Agents' own bots** keep their state under `/data`: `agent-voices.json` (one record per agent
+and per bot, set aside when corrupt or foreign, owner-only), the held journals
+`agent-voices/held/<bot>.jsonl`, and, without 1Password, each agent's token in
+`agent-voices/tokens/<role>` ([`own-voice.md`](own-voice.md)).
+
 ## Contracts & invariants
 
 **INV-STATE-001**: Only an explicit whitelist of the mapped configuration root is admitted into version control.

@@ -17,6 +17,8 @@ import plugin_store
 import result_broker as rb
 import tools as tools_mod
 from authz_grants import GrantIdentity
+from channels.tg_address import TgAddress
+from provenance import task_delivery_marker
 from plugin_grants import PluginContract, ResultContractMap, ToolContract
 from _fixture_a import install_casa_bot
 
@@ -31,7 +33,7 @@ FIDO_RUN = {"role": "assistant", "execution_role": "browser", "channel": "telegr
             "user_text": "download my latest RunPod invoice",
             "_operator_words": "download my latest RunPod invoice", "_delegation_id": "d-1",
             "delegation_depth": 1, "_handoff_chain": ("assistant", "browser"),
-            "_tg_bot": 111}
+            "_tg_bot": 111, **task_delivery_marker(TgAddress(111, 42))}
 
 
 def _map() -> ResultContractMap:
@@ -61,7 +63,11 @@ def _pre(tool):
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch, tmp_path):
     import authz_grants
+    import own_voice
     install_casa_bot(monkeypatch)
+    # every agent's own chat is open here: the capability rule is
+    # tests/test_capability_rule.py's subject
+    monkeypatch.setattr(own_voice, "require_open_chat", lambda role, *, label: None)
     live = {"id": (42, 100)}
     monkeypatch.setattr(authz_grants, "_live_operator_identity", lambda: live["id"])
     monkeypatch.setattr(operator_calls, "CALLS", operator_calls.OperatorCalls())
@@ -76,7 +82,8 @@ def _fresh(monkeypatch, tmp_path):
 
 def _identity(operator_id=100):
     return GrantIdentity(operator_id=operator_id, bot_id=111, chat_id=42, enforcement_role="browser",
-                         artifact_id=ARTIFACT, engagement_id="")
+                         artifact_id=ARTIFACT, engagement_id="",
+                         delivery=TgAddress(111, 42))
 
 
 def _open(origin=FIDO_RUN, client="c1", tu="tu"):
@@ -152,7 +159,8 @@ async def test_a_bindings_chain_ends_with_the_agent_that_made_the_call():
                                          store=rb.ReferenceStore())
     engagement = SimpleNamespace(id="e-1", kind="specialist", status="active",
                                  role_or_type="browser",
-                                 origin={**ENGAGEMENT_TURN, "chat_id": 42})
+                                 origin={**ENGAGEMENT_TURN, "chat_id": 42},
+                                 delivery=TgAddress(111, 42))
     with _Origin(ENGAGEMENT_TURN):
         etok = tools_mod.engagement_var.set(engagement)
         try:

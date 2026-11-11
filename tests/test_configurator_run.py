@@ -580,7 +580,7 @@ class _KeyboardChannel:
         self.questions: list = []
         self.edits: list = []
 
-    async def deliver_operator_question(self, chat_id, body, labels, rid):
+    async def deliver_operator_question(self, chat_id, body, labels, rid, *, post=None):
         self.questions.append((chat_id, body, list(labels), rid))
         return 900 + len(self.questions)
 

@@ -236,6 +236,8 @@ async def test_the_hook_passes_a_record_with_the_identitys_role_and_operator(mon
         "finance": SimpleNamespace(character=SimpleNamespace(name="Finance"))})
     rec = _Recorder()
     monkeypatch.setattr(tools_mod, "_channel_manager", _Manager(rec), raising=False)
+    from test_proposal_slot import open_chats
+    open_chats(monkeypatch, "finance")
     store = rb.ReferenceStore(now=lambda: 1000.0)
     tools = {REPORT: ToolContract(ARTIFACT, "probe", "capability", (SLOT,), {},
                                   {SLOT: "operator_message"})}
@@ -243,7 +245,7 @@ async def test_the_hook_passes_a_record_with_the_identitys_role_and_operator(mon
     hook = rb.make_result_hook(cmap, client_id="c1", store=store)
     identity = GrantIdentity(operator_id=42, chat_id=42, enforcement_role="finance",
                              artifact_id=ARTIFACT, engagement_id="", delegation_id="d-9",
-                             bot_id=BOT)
+                             bot_id=BOT, delivery=TgAddress(BOT, 42))
     store.open_call(client_id="c1", artifact_id=ARTIFACT, tool_name=REPORT,
                     tool_use_id="call-7", identity=identity, provides=(SLOT,),
                     delivers={SLOT: "operator_message"})

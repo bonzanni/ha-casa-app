@@ -58,6 +58,7 @@ from error_kinds import ErrorKind, api_error_kind, result_api_error_kind
 from engagement_registry import LAUNCH_CWD_KEY, EngagementRecord
 import job_inbox
 import sdk_logging
+import task_input
 from log_cid import cid_var, new_cid
 from output_boundary import ApprovalCut
 
@@ -387,18 +388,6 @@ class _Ticket:
 
     def written_text(self) -> str:
         return f"{self.prefix}\n{self.text}" if self.prefix else self.text
-
-
-async def _one_message(payload: dict) -> Any:
-    yield payload
-
-
-def _user_payload(ticket: _Ticket, text: str) -> dict:
-    """The stream-json line for one write. The SDK passes a dict through to
-    the CLI unchanged; the CLI echoes ``uuid`` back at take-up."""
-    return {"type": "user", "message": {"role": "user", "content": text},
-            "parent_tool_use_id": None, "session_id": "default",
-            "uuid": ticket.uuid}
 
 
 # -- sessions --------------------------------------------------------------
@@ -1151,7 +1140,7 @@ class InCasaDriver(DriverProtocol):
             if owed is not None:
                 owed.owe()
             try:
-                await session.client.query(_one_message(_user_payload(ticket, text)))
+                await task_input.write(session.client, text, uuid=ticket.uuid)
             except BaseException as exc:  # noqa: BLE001 — the CLI died during the write
                 if owed is not None:
                     # A failed write is retried and owes nothing here; a write

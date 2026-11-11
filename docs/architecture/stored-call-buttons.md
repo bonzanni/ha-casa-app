@@ -110,8 +110,8 @@ proposal's record lasts (`_RETIRE_S`, 60 seconds from its settlement), "expired"
 specialist's desk lock, immediately before the session build, Casa captures ONCE exactly the
 derivations that decide which artifacts and tools the session admits — the role's plugin
 resolution, the environment withholding, the protected map, the contract map and the
-profile plan — and judges the stored call against them: the resident still declares the
-specialist; the plugin is still assigned to the role; the artifact is the one the proposal
+profile plan — and judges the stored call against them: the card's agent is loaded and
+this chat is its own; the plugin is still assigned to the role; the artifact is the one the proposal
 ran on; the profile still allows the tool; the plugin's erasure is not running; the stored
 call still passes the deposit predicate against the live maps; the deadline has not passed.
 Each refusal is a named reason (`✖ profile`, `… could not apply your tap (profile).`), never
@@ -217,7 +217,7 @@ expiry, after a restart, a second tap, or a tap on a replaced proposal.** A toas
 `expired`, `invalid`, `not for you`, `already answered`, `replaced`; the keyboard is
 untouched, nothing runs.
 
-**A re-check fails** (not delegable, plugin unassigned, plugin changed, profile, plugin
+**A re-check fails** (agent unavailable, not this chat's card, plugin unassigned, plugin changed, profile, plugin
 erasing, undeclared, protected, transport). `✖ <reason>` on the keyboard, one labelled
 notice, the refused echo line; no turn, no exchange.
 
@@ -273,8 +273,8 @@ starts it ([`specialist-job-start.md`](specialist-job-start.md)).
 - `casa/rootfs/opt/casa/result_broker.py::proposal_ok`
 - `casa/rootfs/opt/casa/result_broker.py::_post_proposal`
 - `casa/rootfs/opt/casa/result_broker.py::_capture_of`
-- `casa/rootfs/opt/casa/specialist_desk.py::handle_tap`
-- `casa/rootfs/opt/casa/specialist_desk.py::faulted_desk_issues`
+- `casa/rootfs/opt/casa/stored_call_settler.py::handle_tap`
+- `casa/rootfs/opt/casa/agent_lane.py::FaultRegistry.issues`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_proposal_callback`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.proposal_finish_hook`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._dispatch_proposal_tap`

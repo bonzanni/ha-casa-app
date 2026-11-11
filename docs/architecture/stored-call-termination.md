@@ -2,15 +2,15 @@
 last_reviewed: 2026-10-05
 ---
 
-# Stored-call buttons: the pinned turn's termination and the faulted desk
+# Stored-call buttons: the pinned turn's termination and the faulted agent
 
 > Code is the source of truth. This file is a map; when it and the code disagree, the code wins.
 
 ## Scope
 
 How the pinned one-call turn of a stored-call tap ends: the `PinnedRun` controller that owns
-the run's processes, the one release path every end goes through, and the faulted desk when
-termination cannot be confirmed. The proposal, the tap's admission chain and re-checks, the
+the run's processes, the one release path every end goes through (`stored_call_settler._settle_pinned_run`), and
+the faulted agent when termination cannot be confirmed. The proposal, the tap's admission chain and re-checks, the
 pin, the capture and the receipt are [`stored-call-buttons.md`](stored-call-buttons.md); the
 desk a tap uses is [`specialist-desk.md`](specialist-desk.md); the bounded delegation
 wrapper's own process tree is [`delegation.md`](delegation.md). Telegram only.
@@ -29,7 +29,7 @@ kill, reparented to init, with no fault and no notice). A walk that cannot be co
 a confirmation: a proven pinned process other than the CLI that is found exited before Casa
 signalled anything — already dead when the termination began, or dying while the walk ran —
 may have left a child reparented before any walk could see it, so the run is unconfirmed and
-the desk is faulted and told rather than released over a survivor Casa cannot see. On the turn's normal end the controller starts the SDK's close as a detached task and
+the agent is faulted and told rather than released over a survivor Casa cannot see. On the turn's normal end the controller starts the SDK's close as a detached task and
 confirms every pinned process's exit by pidfd readability under one deadline — nothing
 inside the SDK's teardown is awaited. On the desk turn's ceiling, or when a process is still
 alive after that, the operator is told at once (`✖ failed`), and the controller cancels the
@@ -47,7 +47,7 @@ cancellation (a Casa stop cancels the turn's task) — goes through one settle f
 shielded from any cancellation, whose only input is the confirmation predicate: every pinned
 fd's own pidfd readable, every callback drained, every identity established. On it, together
 and in order, the function decides the fault (unconfirmed — a teardown itself cancelled by a
-loop shutdown included — faults the desk, tells, refreshes the health report), closes the
+loop shutdown included — faults the agent, tells, refreshes the health report), closes the
 fds and releases the permit; nothing else in the tap performs any of these. The pinned run's
 transcript is not deleted here: like every delegated run's, it is kept for the delegated
 retention pass (INV-ENG-028, [`engagement-transcript-reaping.md`](engagement-transcript-reaping.md)). A pinned fd is dropped as extinct only on its own pidfd's evidence,
@@ -64,10 +64,12 @@ already accepts today.
 
 **Bounded best effort, told.** If a pinned process's exit stayed unconfirmed at the
 deadline, or its identity could not be established while pinned, or a callback was still
-inside, the desk is *faulted*: every later use of it — reply, tap, delegation — is refused
-at once with a labelled notice (`📊 Finance's desk is faulted; a Casa restart clears it.`),
-the permit is released, an ERROR is logged, and the standing plugin-health report carries a
-`desk_faulted` row against the plugin and the specialist until a restart. A worker that a
+inside, the agent that ran it is *faulted* (`agent_lane.FAULTS`, one fault per agent): every
+later use of its lane — reply, tap, continuation, delegation from any chat — is refused at
+once with a labelled notice (`📊 Finance is out of service until Casa restarts.`), no plugin
+operation of that agent is admitted, the permit is released, an ERROR is logged, and the
+standing plugin-health report carries an `agent_faulted` row against the plugin and the
+specialist until a restart. A worker that a
 plugin deliberately detaches — `setsid`, a double fork — is not a descendant and is outside
 the pin: that is the plugin's own responsibility, an accepted risk rather than a Casa
 guarantee; an ordinary child started after the start-time snapshot is not (it is re-walked at
@@ -89,15 +91,15 @@ no health row, and it ends when that run does.
 The release this document describes is part of INV-PROP-001, defined in
 [`stored-call-buttons.md`](stored-call-buttons.md): a desk is not released to a later use until
 the CLI, the plugin servers it started and the ordinary children those servers started by
-termination time are terminated, or the desk is faulted.
+termination time are terminated, or the agent is faulted.
 
 ## Failure behavior
 
-**Termination unconfirmed at the deadline.** The desk is faulted (above); the plugin-health
+**Termination unconfirmed at the deadline.** The agent is faulted (above); the plugin-health
 report says so until restart.
 
 **A Casa stop while a tap runs.** The channel's stop cancels the turn's task in-process: the
-settle function runs before the cancellation propagates — on the run, or on the receipt's send; an unconfirmed exit faults the desk for the
+settle function runs before the cancellation propagates — on the run, or on the receipt's send; an unconfirmed exit faults the agent for the
 rest of the process's life; a receipt captured meanwhile cannot be posted: an ERROR names the
 run, the exchange and the applied echo line are still recorded.
 
@@ -113,7 +115,7 @@ not done here; the bounded termination path stays simple.
 
 **Source**
 - `casa/rootfs/opt/casa/pinned_run.py::PinnedRun`
-- `casa/rootfs/opt/casa/specialist_desk.py::_settle_pinned_run`
+- `casa/rootfs/opt/casa/stored_call_settler.py::_settle_pinned_run`
 
 **Tests**
 - `tests/test_pinned_run.py`

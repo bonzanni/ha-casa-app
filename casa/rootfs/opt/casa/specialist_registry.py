@@ -17,7 +17,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import jsonschema
 import yaml
@@ -32,6 +32,10 @@ from job_registry import (
 from personality_binding import InstanceDir
 from personality_types import SpeakerProvenance
 from provenance import carry_route
+from task_model import Requester
+
+if TYPE_CHECKING:
+    from channels.tg_address import TgAddress
 # Forward re-export for future Plan 2 / Task 14 callers (module-level-accessor
 # precedent this file already follows, e.g. _active_index below).
 from specialist_lifecycle import InstanceState, SpecialistInstance, check_slug_uniqueness  # noqa: F401
@@ -100,6 +104,13 @@ class DelegationRecord:
     # Task 6 (spec §4.6): the legacy delegate task still owns this Permit via
     # its done callback. It is never copied into the durable job snapshot.
     permit: Any = None
+    # The delegation as a task (``task_model``), set by its launcher at its
+    # birth and copied onto the durable job: the agent that runs it (empty
+    # means ``agent``), who receives its result, and where its posts go
+    # (``None``: nowhere, for its whole life).
+    executor: str = ""
+    requester: "Requester | None" = None
+    delivery: "TgAddress | None" = None
 
 
 # The line a delegation notice puts between a result the length cap cut and
@@ -420,6 +431,9 @@ class SpecialistRegistry:
             # The creating turn's route, so the completion notice goes
             # through the same bot even after a restart (``origin_from_job``).
             route=carry_route(origin),
+            executor=record.executor or record.agent,
+            requester=record.requester,
+            delivery=record.delivery,
         ))
 
     # Task 6 (spec §4.6): these terminal transitions deliberately do NOT
@@ -481,6 +495,9 @@ class SpecialistRegistry:
                 agent=job.specialist_role,
                 started_at=job.started_at or job.created_at,
                 origin=origin_from_job(job),
+                executor=job.executor,
+                requester=job.requester,
+                delivery=job.delivery,
             )
             for job in self._job_registry.all()
             if job.execution_state is ExecutionState.ORPHANED

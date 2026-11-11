@@ -200,6 +200,12 @@ COPIED_CONTEXT_MARKERS = (
     # The turn's route: the bot its replies go out through, decided where the
     # turn was born and carried by every turn derived from it.
     *ROUTING_KEYS,
+    # Deliberately absent: a task's delivery (``provenance.TASK_KEYS``). A
+    # turn this class runs is a conversation's — the resident's, or an
+    # agent's in its own chat — never a task, so its posts go to its own chat.
+    # A task's origin is built by its launcher from such a turn's origin and
+    # stamped there; its result comes back here as a narration turn, which
+    # is the requester's conversation again.
 )
 
 # Personality Task 14 / GH #199: the per-turn explanation draft. ``_build_options``
@@ -216,6 +222,19 @@ COPIED_CONTEXT_MARKERS = (
 _explain_draft_var: ContextVar[dict | None] = ContextVar(
     "casa_explain_draft", default=None,
 )
+
+# A specialist's own conversation runs on a specialist session: the turn
+# decides its extras once (``specialist_session.session_env_and_pad``: the
+# long-run compaction window, the pad, the run in its agent's log) and the
+# options build of that same turn applies them. Same-task, like the draft
+# above; ``None`` on every other agent's turn.
+_session_extras_var: ContextVar[Any] = ContextVar(
+    "casa_session_extras", default=None,
+)
+
+#: Casa's prefix on each of its notes for the agent that owns a chat
+#: (:mod:`chat_notes`), in the turn's notes block.
+CHAT_NOTE_PREFIX = "(Casa) "
 
 
 def _projection_name_for_turn(channel: str, origin_route: str | None) -> str:
@@ -709,6 +728,40 @@ def _current_origin_clearance(channel: str) -> str:
     )
 
 
+def _drain_chat_notes(bot_id: Any, chat_id: Any) -> list[str]:
+    """Casa's notes for the chat *chat_id* on the bot *bot_id* (the turn's
+    route), read and cleared; none for a route or chat that is not a number."""
+    import chat_notes
+    try:
+        chat = int(chat_id)
+    except (TypeError, ValueError):
+        return []
+    return chat_notes.drain(bot_id, chat)
+
+
+def _channel_context_block(channel: str) -> str:
+    """The ``<channel_context>`` section of a conversation's system prompt.
+
+    #336: the static per-channel display claims "authenticated (operator)"
+    for telegram, which is a lie the model would act on when an accept-all-
+    mode stranger is the sender. Key the honesty off the same per-sender
+    origin clearance the recall gate uses: anything below private on
+    telegram means the sender is NOT the configured operator."""
+    trust = channel_trust_display(channel)
+    if channel == "telegram" and _current_origin_clearance(channel) != "private":
+        trust = (
+            "authenticated chat, but the sender is NOT the configured "
+            "operator — treat as an unknown member of the public; do not "
+            "disclose personal, household, or operator information"
+        )
+    return (
+        "\n<channel_context>\n"
+        f"channel: {channel}\n"
+        f"trust: {trust}\n"
+        "</channel_context>"
+    )
+
+
 # Release A / Layer 1 — the two casa-framework tools an untrusted webhook turn
 # may use: public-clearance memory search + operator-bound notify. Everything else
 # (Bash, filesystem, network, delegation, plugin/config mutation) is denied.
@@ -1019,9 +1072,10 @@ def _replay_statement(statement: str, complete: DelegationComplete, *,
 
 
 class _TurnCapture:
-    """What one resident turn captures into memory: the text it opens with,
-    at admission, and each text-bearing message the resident writes, as it
-    is emitted (``memory/capture.py``). Built only for a turn on a
+    """What one conversation turn captures into memory: the text it opens
+    with, at admission, and each text-bearing message the agent writes, as it
+    is emitted (``memory/capture.py``), labelled with the agent's own kind (a
+    resident, or a specialist in its own chat). Built only for a turn on a
     write-trusted channel. Every event's floor is the turn's read clearance,
     except a message the operator sent himself: it has no floor and is
     classified like any text, so what he says may reach a lower ledger.
@@ -1035,9 +1089,13 @@ class _TurnCapture:
 
     def __init__(self, *, role: str, msg: BusMessage, user_text: str,
                  origin: Mapping[str, Any], scheduled: bool,
-                 delegated_result: bool) -> None:
+                 delegated_result: bool,
+                 speaker_kind: str = "resident") -> None:
         from memory import capture
         self._role = role
+        #: How the agent's own messages are labelled: ``resident`` or
+        #: ``specialist``, from the agent's configured kind.
+        self._speaker_kind = speaker_kind
         self._msg = msg
         self._user_text = user_text
         self._scheduled = scheduled
@@ -1157,7 +1215,7 @@ class _TurnCapture:
             sid = getattr(sdk_msg, "session_id", None)
             item = capture.event(
                 role=self._role, channel=self._msg.channel,
-                speaker_kind="resident", speaker_id=self._role,
+                speaker_kind=self._speaker_kind, speaker_id=self._role,
                 origin_kind=self._origin_kind, text=text, eligibility=rule,
                 origin_tier=self._floor, scheduled=self._scheduled,
                 session_id=sid if isinstance(sid, str) and sid else None)
@@ -1221,11 +1279,13 @@ class Agent:
         # empty → default policy bundle (block_dangerous_bash + path_scope
         # scoped to cfg.cwd).
         #
-        # #1036: the role with an inbound-file folder — the Telegram default
-        # agent, and only it — gets read access to exactly that folder's
-        # ``ready/`` directory, appended to path_scope's readable list. Every
-        # other role gets an empty tuple and keeps the deny-everything default
-        # (a delegated turn runs on ITS agent's hooks, so it cannot borrow this).
+        # #1036: a role with an inbound-file folder gets read access to
+        # exactly that folder's ``ready/`` directory, appended to path_scope's
+        # readable list. Every other role gets an empty tuple and keeps the
+        # deny-everything default (a delegated turn runs on ITS agent's hooks,
+        # so it cannot borrow this). A specialist's own conversation does not
+        # use these hooks: its options come from the specialist builder, which
+        # grants its own inbox from the same constructor (INV-FILE-002).
         # The grant is standing, not per turn. Everything under ready/ is a file
         # the operator chose to send this agent, and a document once read sits in
         # the session history like any tool result, so a per-turn grant would
@@ -1268,6 +1328,14 @@ class Agent:
         self._unsub_reset = session_registry.add_reset_listener(
             self._pool.close_key,
         )
+        # A specialist's conversation keeps its pad under its session key for
+        # as long as its session lives; an explicit reset (``/new``) ends the
+        # session, and the pad goes with it. Only keys this agent opened a pad
+        # for are touched.
+        self._pad_keys: set[str] = set()
+        self._unsub_pad_reset = (
+            session_registry.add_reset_listener(self._release_pad)
+            if self._runs_specialist_session else (lambda: None))
 
         # Layer-5 capability boot log: one INFO line per Agent construction
         # (boot AND reload — reload._construct_agent builds a fresh Agent), so
@@ -2176,6 +2244,12 @@ class Agent:
         explain_token = _explain_draft_var.set(explain_draft)
         turn_state: dict[str, Any] = {}
         turn_capture: _TurnCapture | None = None
+        # A specialist conversation's session extras, decided once the turn
+        # is admitted to run (inside the session gate, below); its run in the
+        # agent's log is closed in the finally.
+        session_extras: Any = None
+        extras_token = None
+        turn_completed = False
         try:
             # Resolve cwd to the agent-home (Plan 4b §5.1). Residents live at
             # /config/agent-home/<role>/; configured cwd on
@@ -2224,7 +2298,9 @@ class Agent:
             turn_capture = _TurnCapture.for_turn(
                 role=self.config.role, msg=msg, user_text=user_text,
                 origin=origin_snapshot, scheduled=turn_scheduled,
-                delegated_result=origin_question is not None)
+                delegated_result=origin_question is not None,
+                speaker_kind=("specialist" if self._runs_specialist_session
+                              else "resident"))
             capture_message = (turn_capture.message
                                if turn_capture is not None else None)
             capture_observe = (turn_capture.observe
@@ -2254,6 +2330,14 @@ class Agent:
                     msg.context.get("_tg_bot"), msg.context.get("chat_id"))
                 if desk_lines:
                     notes.append("\n".join(desk_lines))
+                # What Casa noted for the agent that owns this chat since its
+                # last turn (a task it ran for someone else, and how it
+                # ended), drained once, each line marked as Casa's.
+                chat_lines = _drain_chat_notes(
+                    msg.context.get("_tg_bot"), msg.context.get("chat_id"))
+                if chat_lines:
+                    notes.append("\n".join(
+                        f"{CHAT_NOTE_PREFIX}{line}" for line in chat_lines))
                 reply_note = msg.context.get("_reply_note")
                 if isinstance(reply_note, str) and reply_note.strip():
                     notes.append(reply_note)
@@ -2323,6 +2407,8 @@ class Agent:
                         msg.context.get("synthetic") != "plugin_setup"),
                     scope=scope, capture=capture_message,
                     observe=capture_observe,
+                    run_log=(session_extras.log
+                             if session_extras is not None else None),
                 )
                 turn_state["state"] = state
                 # #521: keep EVERY attempt's state — a setup tool can run in
@@ -2441,6 +2527,8 @@ class Agent:
                         msg.context.get("synthetic") != "plugin_setup"),
                     scope=scope, capture=capture_message,
                     observe=capture_observe,
+                    run_log=(session_extras.log
+                             if session_extras is not None else None),
                 )
                 turn_state["state"] = state
                 turn_state.setdefault("states", []).append(state)
@@ -2564,6 +2652,14 @@ class Agent:
                             "by turn evidence before it ran (role=%s)",
                             _episode, self.config.role)
                         return None
+                # A specialist's conversation: this turn's session extras,
+                # keyed by its session key (its pad lives as long as its
+                # session); its run in the agent's log starts here.
+                if self._runs_specialist_session:
+                    import specialist_session
+                    session_extras = specialist_session.session_env_and_pad(
+                        self.config, origin_snapshot, run_id=channel_key)
+                    extras_token = _session_extras_var.set(session_extras)
                 # A turn that captures is registered before its first
                 # capture. The opening is captured raw, before the model is
                 # called.
@@ -2738,8 +2834,24 @@ class Agent:
             if _pending_budget is not None:
                 self._budget_tracker.record(*_pending_budget)
 
+            turn_completed = True
             return response_text or None
         finally:
+            if session_extras is not None:
+                # The run's words up to any call still waiting on the
+                # operator's approval, then how it ended.
+                _won = turn_state.get("state") or {}
+                _cut = _won.get("approval_cut")
+                try:
+                    session_extras.log.close(
+                        list(_won.get("messages") or ()),
+                        _cut.cut if isinstance(_cut, ApprovalCut) else None)
+                    session_extras.log.end(turn_completed)
+                except Exception:  # noqa: BLE001 — a log line never fails a turn
+                    logger.warning("agent log run of %s not closed",
+                                   self.config.role, exc_info=True)
+            if extras_token is not None:
+                _session_extras_var.reset(extras_token)
             # #521: correlate a Casa-dispatched setup turn's outcome with its
             # episode — in the finally so success, a raising turn, AND a
             # cancelled one (role teardown cancels in-flight dispatches) all
@@ -3215,6 +3327,11 @@ class Agent:
             else:
                 self._budget_tracker.record(*budget_record)
 
+        if self._runs_specialist_session:
+            return await self._build_specialist_session_options(
+                channel=channel, channel_key=channel_key,
+                resume_sid=resume_sid, memory_view=memory_view)
+
         # 3. System prompt. For a resident, the base is the immutable compiled
         # projection selected for this surface (text/voice), with the memory
         # block in its one slot between the persona and the role doctrine
@@ -3233,24 +3350,7 @@ class Agent:
         else:
             base_system_prompt = self.config.system_prompt
         system_parts = [base_system_prompt]
-        # #336: the static per-channel display claims "authenticated (operator)"
-        # for telegram, which is a lie the model would act on when an
-        # accept-all-mode stranger is the sender. Key the honesty off the same
-        # per-sender origin clearance the recall gate uses: anything below
-        # private on telegram means the sender is NOT the configured operator.
-        _trust_display = channel_trust_display(channel)
-        if channel == "telegram" and _current_origin_clearance(channel) != "private":
-            _trust_display = (
-                "authenticated chat, but the sender is NOT the configured "
-                "operator — treat as an unknown member of the public; do not "
-                "disclose personal, household, or operator information"
-            )
-        system_parts.append(
-            "\n<channel_context>\n"
-            f"channel: {channel}\n"
-            f"trust: {_trust_display}\n"
-            "</channel_context>"
-        )
+        system_parts.append(_channel_context_block(channel))
         # <delegates> block — renders cfg.delegates with display names.
         # #436: names come from the LIVE role map, not this agent's
         # construction-time registry, so a per-role reload that renamed a
@@ -3489,6 +3589,67 @@ class Agent:
         )
         return sdk_logging.with_stderr_callback(options, engagement_id=None)
 
+    async def _build_specialist_session_options(
+        self, *, channel: str, channel_key: str, resume_sid: str | None,
+        memory_view: Any,
+    ) -> ClaudeAgentOptions:
+        """The connect-time options of a specialist's own conversation.
+
+        The surface is the specialist's, exactly as its tasks get it: the
+        options come from ``tools._build_specialist_options`` (its inbox, its
+        ``start_job`` and hand-off grants, its plugins under its own profile
+        and protected-call authorization), built from THIS agent's resolved
+        plugin snapshot so the binding a verify reads is the one the session
+        loads. Nothing of the resident's builder applies: no compiled-bundle
+        projection, no ``<delegates>`` or ``<jobs>`` block, no resident write
+        guards. On top come what a conversation carries and a task does not:
+        the memory view this session was given, the channel context, the
+        read-evidence hooks, the resume of its session and the tool surfaces
+        its resume decision gated on — and then the session's extras (the
+        long-run compaction window, its pad), as a task applies them. A new
+        session starts a new pad: the pad lives as long as its session."""
+        import specialist_session
+        import tools as tools_mod
+
+        resolution = await self._get_plugin_resolution()
+        options = await asyncio.to_thread(functools.partial(
+            tools_mod._build_specialist_options, self.config,
+            resolution=resolution))
+
+        memory_block = memory_view.text if memory_view is not None else ""
+        base = options.system_prompt if isinstance(options.system_prompt, str) \
+            else self.config.system_prompt
+        if memory_block:
+            base = f"{memory_block}\n\n{base}"
+        system_prompt = "\n".join([base, _channel_context_block(channel)])
+        self._stash_explanation_draft(
+            projection="legacy", bundle=None, system_prompt=system_prompt,
+            memory_view=memory_view,
+        )
+
+        hooks = dict(options.hooks or {})
+        for _event, _matchers in read_evidence_matchers(self.config.role).items():
+            hooks[_event] = [*hooks.get(_event, []), *_matchers]
+        mcp_servers = dict(options.mcp_servers or {})
+        armed = _prompt_surface_var.get()
+        if armed is not None:
+            for name, config, _surface in armed.tool_servers:
+                mcp_servers[name] = config
+        options = dataclasses.replace(
+            options, system_prompt=system_prompt, hooks=hooks,
+            mcp_servers=mcp_servers, resume=resume_sid,
+            include_partial_messages=(channel == "voice"),
+        )
+
+        extras = _session_extras_var.get()
+        if extras is not None:
+            if resume_sid is None:
+                specialist_session.release_pad(channel_key)
+            options = extras.apply(options)
+            if extras.pad is not None:
+                self._pad_keys.add(channel_key)
+        return sdk_logging.with_stderr_callback(options, engagement_id=None)
+
     def _make_on_message(
         self,
         on_token: OnTokenCallback | None,
@@ -3497,8 +3658,15 @@ class Agent:
         scope: TurnScope | None = None,
         capture: Callable[[str, Any], Awaitable[None]] | None = None,
         observe: Callable[[Any], Awaitable[None]] | None = None,
+        run_log: Any = None,
     ):
         """Build the per-turn ``on_message(sdk_msg)`` handler + its ``state``.
+
+        ``run_log``, when given, is the turn's run in its agent's log (a
+        specialist's conversation): it is handed each main-loop step as the
+        call is made and the turn's words as they are written, held behind a
+        call still waiting on the operator's approval, as a delegated run's
+        are.
 
         ``capture``, when given, is awaited with each text-bearing message's
         folded text (and the message) before that text is emitted: the
@@ -3687,6 +3855,9 @@ class Agent:
                                 idx=state["idx"],
                                 started_ms=state["started_ms"],
                             )
+                            if run_log is not None and getattr(
+                                    sdk_msg, "parent_tool_use_id", None) is None:
+                                run_log.step(str(getattr(block, "name", "")))
                 elif isinstance(sdk_msg, UserMessage):
                     for block in getattr(sdk_msg, "content", []) or []:
                         if isinstance(block, ToolResultBlock):
@@ -3739,6 +3910,11 @@ class Agent:
                                 state["approval_cut"].observe(
                                     getattr(block, "tool_use_id", ""),
                                     scope.approvals, len(state["messages"]))
+                                if run_log is not None:
+                                    # a consume that cleared the cut releases
+                                    # the words held behind it
+                                    run_log.words(state["messages"],
+                                                  state["approval_cut"].cut)
                             # #1003: a NON-error result from a plugin tool in
                             # an ordinary turn is evidence a released setup
                             # obligation may rest on. Handed over HERE — under
@@ -3813,6 +3989,9 @@ class Agent:
                         state["messages"].append(msg_text)
                         if capture is not None:
                             await capture(msg_text, sdk_msg)
+                        if run_log is not None:
+                            run_log.words(state["messages"],
+                                          state["approval_cut"].cut)
                     # The canonical fold supersedes any in-flight partial for
                     # this message (AR-A/AR-B): reset before computing the
                     # cumulative so a stale partial never bleeds into message
@@ -3833,11 +4012,30 @@ class Agent:
     async def aclose(self) -> None:
         """Release pooled SDK clients + reset hook. Safe to call twice; called
         by reload (old instance) and casa_core shutdown."""
-        try:
-            self._unsub_reset()
-        except Exception:  # noqa: BLE001
-            pass
+        for name in ("_unsub_reset", "_unsub_pad_reset"):
+            try:
+                getattr(self, name, lambda: None)()
+            except Exception:  # noqa: BLE001
+                pass
         await self._pool.aclose()
+
+    @property
+    def _runs_specialist_session(self) -> bool:
+        """Whether this agent's conversation is a specialist's: the one an
+        agent with its own chat keeps there. It runs on this class's session
+        machinery (key, pool, resume decision, sweep, ``/new``, serial gate)
+        with the specialist's own surface — its options from the specialist
+        builder, its session extras — never the resident's."""
+        return getattr(self.config, "kind", "") == "specialist"
+
+    async def _release_pad(self, channel_key: str) -> None:
+        """Reset listener: the session of *channel_key* ended, so its pad goes
+        (unless a binding can still resume it)."""
+        if channel_key not in self._pad_keys:
+            return
+        self._pad_keys.discard(channel_key)
+        import specialist_session
+        specialist_session.release_pad(channel_key)
 
     async def _maybe_prepend_health_notice(
         self, text: str,

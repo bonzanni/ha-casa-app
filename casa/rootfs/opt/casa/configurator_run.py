@@ -37,7 +37,7 @@ from contextvars import ContextVar
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable
 
-import specialist_desk
+import agent_lane
 from channels.tg_address import AddressError, EndpointNotReady, TgAddress
 
 logger = logging.getLogger(__name__)
@@ -52,8 +52,9 @@ RESTART_BUTTON_TTL_S = 24 * 3600.0
 RESTART_FAILED = "Casa could not ask Home Assistant for the restart ({status}). Try again later."
 
 
-class ConfiguratorBusy(specialist_desk.DeskBusy):
-    """Another configurator run held the lease past the wait bound."""
+class ConfiguratorBusy(agent_lane.LaneBusy):
+    """Another configurator run held the lease past the wait bound, or the
+    configurator's lane did: the two waits share one deadline."""
 
 
 def busy_text(task: str) -> str:

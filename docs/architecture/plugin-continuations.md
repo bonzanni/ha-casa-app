@@ -15,14 +15,14 @@ its answer back up the requester chain, and the once-a-minute driver sweep that 
 nothing is driving. Stopping such work at once — the plugin's declared stop tool, called
 directly with the sweep's own resolution and client — is [`plugin-stop.md`](plugin-stop.md).
 The binding and the `continue` route that feeds the queue are
-[`plugin-operator-calls.md`](plugin-operator-calls.md); the desk a continuation waits for
+[`plugin-operator-calls.md`](plugin-operator-calls.md); the lane a continuation waits for
 is [`specialist-desk.md`](specialist-desk.md); the announcement its answer becomes is
 [`delegation-announcements.md`](delegation-announcements.md).
 
 ## Mental model
 
 **A run is continued, never waited on inside a turn.** A specialist turn cannot wait for
-a tap on its own card: the tap is a use of the same desk the turn holds. So the plugin ends
+a tap on its own card: the tap is a use of the same lane the turn holds. So the plugin ends
 the turn when its run must wait or has run long enough, and the run is continued by a
 new turn. `CONTINUATIONS.request(binding, run_ref, reason)` keeps at most one pending
 continuation per plugin, bot, operator and `run_ref`; once its turn has started, a new request
@@ -32,24 +32,30 @@ is applied after that turn.
 **A stopped request's continuations are dropped** (`Continuations.drop`). When the operator
 stops a request and its plugin answers `stopped` ([`plugin-stop.md`](plugin-stop.md)),
 every pending continuation of that plugin and operator whose `run_ref` the stop names is
-taken off the queue and marked `dropped`; its worker, once it holds the desk, returns
+taken off the queue and marked `dropped`; its worker, once it holds the lane, returns
 before the turn starts (`run_continuation`). A continuation whose turn has started is the
 session driving the work and is left to end itself.
 
 **A continuation turn is rebuilt from the binding alone** (`continuation_origin`), and only
 for a binding of the operator as configured now, whose chain ends with a loaded specialist:
 a binding that ends with any other role — a resident has no plugin run to continue — is
-dropped with one warning, as is one whose role is not loaded. The worker takes the specialist's desk in
-the binding's chat and a concurrency slot (`_desk_turn`: the queue, the lock, a fault
-recheck under the lock, the permit after it, and on the way out the desk's own guard for a
-run still unwinding past its teardown bound, `Desk.hold_unwinding`), then runs one delegated turn of the
+dropped with one warning, as is one whose role is not loaded. The worker takes the specialist's lane
+(`agent_lane`: one per executing agent, whatever chat or bot) and a concurrency slot
+(`_lane_turn`: the queue, the lock, a fault recheck under the lock, the permit after it, and
+on the way out the lane's own guard for a run still unwinding past its teardown bound,
+`Lane.hold_unwinding`), then runs one delegated turn of the
 specialist, resuming its binding's conversation, through the bounded runner, with the fixed task
 `Continue browsing run <run_ref>.`. Its origin carries the
 binding's chain, chat and operator and Casa's `synthetic: "continuation"` marker, which
 gives the turn the operator's grant identity (`provenance.turn_provenance`'s
 `continuation` transport) and no operator words: a run it starts goes to the operator's
-tap ([`plugin-operator-calls.md`](plugin-operator-calls.md)). A role that declares
-`session.desk_context: false` in its `role.yaml` is shown no earlier desk exchanges in any
+tap ([`plugin-operator-calls.md`](plugin-operator-calls.md)). It also carries the binding's
+**delivery** as its task delivery, so the turn posts exactly where the work it continues
+posted, or nowhere when that work had none; a relay turn of an agent that asked on the way
+posts nothing ([`own-voice.md`](own-voice.md)). In the executor's own chat the continuation
+is a task there: its post index and input open before its turn, each of its posts is filed
+under its record (the turn's `_delegation_id`), and a reply to one goes into its session. A role that declares
+`session.long_runs: true` in its `role.yaml` is shown no earlier desk exchanges in any
 desk use — a delegation, a swipe-reply or a continuation (`specialist_desk.desk_log`) — so
 an earlier request's text never enters another request's context; the desk still keeps its log.
 
@@ -63,19 +69,24 @@ binding then adopts (`BindingStore.adopt`): a transcript the SDK's own lookup ca
 raised on a session it could not get past has a good chance on a new one. A resumed turn that
 raises is quiet, since the sweep carries the run on; a fresh turn that raises is announced as
 always. A resumed session reports its running total, so `note_cost` counts each turn once. A role
-with `desk_context: false`, a mechanical stand-in for "its requests are long conversations", gets
+with `long_runs: true`, a mechanical stand-in for "its requests are long conversations", gets
 `CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000`, so such a session compacts well before its model's whole
 window. A new request is a new binding and a new conversation. A binding owns its session's
 [scratchpad](scratchpad.md) (INV-PAD-003, INV-PAD-004), so a turn's end loses no notes and a
 fresh session takes them along.
 
 **Its answer climbs the chain one requester at a time** (`_relay_up`). The whole climb is
-registered as one asynchronous delegation of the chain's first specialist, so the resident
-is told its final answer exactly as it is told any delegation's — durably owed and
-replayed after a restart (INV-JOB-010). The specialist's desk is held for its own turn
+registered as one asynchronous delegation of the chain's first specialist, whose answer goes
+to the continuation's **requester**, the chain's root (`continuation_requester`): the
+resident when its delegation started the run, the executing agent's own conversation when
+its direct turn in its own chat did. The requester is told the final answer exactly as it
+is told any delegation's — durably owed and
+replayed after a restart (INV-JOB-010). The specialist's lane is held for its own turn
 only; when a specialist asked (finance handing invoices to the browsing specialist), the
 answer then becomes the task of a turn of that specialist under that specialist's own
-desk, whose answer climbs on. A requester no longer loaded fails the climb with Casa's own
+lane, whose answer climbs on. A requester other than the executing agent's own conversation
+leaves that conversation one body-free note (`chat_notes`) of what the continuation
+answered, in the chat the work posts in. A requester no longer loaded fails the climb with Casa's own
 message (`RequesterUnavailable`), never with one role's answer passed off as another's. A relay's task is Casa's text and is
 never captured as the requester's words (INV-MEM-032).
 
@@ -137,19 +148,19 @@ to be asked first.
 
 ## Contracts & invariants
 
-**INV-PLUG-053**: A continuation turn runs only for a binding of the configured operator and of the plugin that asked for it or that the sweep called, under an origin rebuilt from that binding with no operator words, as one use of its specialist's desk, and its answer reaches the binding's resident through a durably announced delegation after each specialist requester in the chain has had its turn with it under that requester's desk — or the climb fails with Casa's message.
+**INV-PLUG-053**: A continuation turn runs only for a binding of the configured operator and of the plugin that asked for it or that the sweep called, under an origin rebuilt from that binding with no operator words, as one use of its specialist's lane, and its answer reaches the binding's requester — the chain's root, the resident or the executing agent's own conversation — through a durably announced delegation after each specialist requester in the chain has had its turn with it under that requester's lane — or the climb fails with Casa's message.
 
 Enforced by `Continuations.request` (one pending per plugin, bot, operator and run), by
 `run_continuation` checking the operator and that the chain ends with a loaded specialist,
-and taking the desk and a slot (`_desk_turn`)
+and taking the lane and a slot (`_lane_turn`)
 before it registers the delegation record and attaches the completion callback, by
 `continuation_origin` (the marker, an empty `user_text`, no `_operator_words`), by
 `sweep_once` comparing each returned binding's plugin with the plugin it called and its
 operator with the configured one, and by `_relay_up` running the requesters nearest first,
-each under `_desk_turn`.
+each under `_lane_turn`.
 
-What it does not cover: a continuation that cannot get a desk or a slot within ten
-minutes, or whose desk faults while it waits, which is dropped for the next sweep to
+What it does not cover: a continuation that cannot get its lane or a slot within ten
+minutes, or whose agent faults while it waits, which is dropped for the next sweep to
 re-find; a relay a crash interrupts (the announced record is then reported to the
 resident as lost; a graceful stop instead fails it with `RelayInterrupted`, Casa's own
 message, durably announced); and whether the plugin's predicate is right — the browser
@@ -185,7 +196,7 @@ nothing, and an unusable `unless_delivered` holds nothing. **Casa restarts.** Th
 empty; bindings survive, so the first sweep re-finds every run still needing a driver.
 **Casa stops.** Pending and running continuations are cancelled, then any stop call still
 tearing down its server (`plugin_stop.drain`), before delegation settlements drain; a running turn is cancelled and given its bounded teardown before its
-desk and permit are released.
+lane and permit are released.
 
 ## Extension points
 

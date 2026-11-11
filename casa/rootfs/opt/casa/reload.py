@@ -1250,6 +1250,24 @@ def _start_bus_loop(runtime: Any, role: str) -> None:
         _note_failure(role, f"start_agent_loop_failed:{role}:{exc}")
 
 
+async def _conversation_queue_registered(role: str) -> None:
+    """A specialist's Agent was (re)registered on the bus: when it keeps a
+    conversation in its own chat, what its chat held while it had no queue is
+    released into the new one (``own_voice.on_queue_registered``). Never
+    fails the reload: a release that did not run leaves the messages held for
+    the next trigger."""
+    from agent_registry import keeps_own_conversation
+    if not keeps_own_conversation(role):
+        return
+    import own_voice
+    try:
+        await own_voice.on_queue_registered(role)
+    except Exception:  # noqa: BLE001 — the reload stands; messages stay held
+        logger.warning("held messages of %s not released after its reload",
+                       role, exc_info=True)
+        _note_failure(role, f"own_chat_release_failed:{role}")
+
+
 async def _teardown_role(runtime: Any, role: str) -> list[str]:
     """Best-effort full deregistration of an evicted role.
 
@@ -1668,6 +1686,8 @@ async def reload_agent(runtime: Any, *, role: str | None = None) -> list[str]:
     # idempotent no-op for roles that already have one.
     _start_bus_loop(runtime, role)
     actions.append("reregister_bus")
+    if tier == "specialist":
+        await _conversation_queue_registered(role)
 
     # F12: drain/close the replaced Agent's SDK client pool in the
     # background so no warm subprocess outlives this swap. Sol #4: track its
@@ -1795,6 +1815,8 @@ async def _reload_role_after_policies(
     runtime.agents[role] = new_agent
     runtime.bus.register(role, new_agent.handle_message)
     _start_bus_loop(runtime, role)
+    if tier == "specialist":
+        await _conversation_queue_registered(role)
     # F12: drain/close the replaced Agent's SDK client pool in the
     # background so no warm subprocess outlives this swap.
     _schedule_agent_close(old_agent, runtime=runtime, role=role)
@@ -2270,6 +2292,7 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
         runtime.agents[s] = new_agent
         runtime.bus.register(s, new_agent.handle_message)
         _start_bus_loop(runtime, s)
+        await _conversation_queue_registered(s)
 
     # Evict missing specialists from runtime.agents (registry already
     # forgot them via its own load()).

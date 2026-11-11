@@ -24,6 +24,7 @@ from config import (
     DisclosureConfig,
     HooksConfig,
     MemoryConfig,
+    OwnChatConfig,
     RequiresConfig,
     ResponseShapeConfig,
     SessionConfig,
@@ -1068,7 +1069,12 @@ def _build_runtime_fields(
     cfg.session = SessionConfig(
         strategy=session.get("strategy", "ephemeral"),
         idle_timeout=int(session.get("idle_timeout", 300)),
-        desk_context=session.get("desk_context", True) is not False,
+        long_runs=session.get("long_runs", False) is True,
+    )
+    own_chat = runtime.get("own_chat")
+    cfg.own_chat = None if own_chat is None else OwnChatConfig(
+        short_description=own_chat["short_description"],
+        description=own_chat["description"],
     )
 
     tts = runtime.get("tts") or {}

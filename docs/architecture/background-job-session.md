@@ -187,7 +187,8 @@ The CLI reports `total_cost_usd` cumulatively for its own process, which starts 
 after a resume, so the job's cost is `cost_base` (the record's cost when this client opened)
 plus that total, kept on `origin["job"]["cost_usd"]`. The DM start line of an operator-started
 job is edited silently at each turn end and every five minutes:
-`📊 Finance started «Accounting check». · 40 min · $2.40` — elapsed time always, the cost once a
+`📊 Finance started «Accounting check». · 40 min · $2.40` (in the host's own chat, without the
+label: `Started «Accounting check». · …`) — elapsed time always, the cost once a
 turn has ended. A job's end paints that line `✅ Finance «Accounting check» · 1 h 5 min · $3.90`,
 and the end notice to the resident carries `Job ran 1 h 5 min · $3.90`, so a job with no start
 line (scheduled or agent-started) still shows it.

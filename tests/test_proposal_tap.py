@@ -91,6 +91,8 @@ def env(monkeypatch):
     monkeypatch.setattr(rb, "POST_MAP", rb.PostMap())
     monkeypatch.setattr(sd, "DESKS", sd.DeskRegistry())
     monkeypatch.setattr(sd, "DESK_ECHO", rb.PostLedger(max_events=64))
+    from test_proposal_slot import open_chats
+    open_chats(monkeypatch, "finance")      # the card's agent may post: its chat is open
     ch = _channel()
     taps = []
 
@@ -490,7 +492,7 @@ def _post_args(revision=""):
     from authz_grants import GrantIdentity
     identity = GrantIdentity(operator_id=OPERATOR, chat_id=OPERATOR, enforcement_role="finance",
                              artifact_id="7" * 64, engagement_id="", delegation_id="d-1",
-                             bot_id=BOT)
+                             bot_id=BOT, delivery=TgAddress(BOT, OPERATOR))
     call = types.SimpleNamespace(tool_use_id="call-1")
     proposal = {"text": "Pair 17?", "revision": revision,
                 "buttons": [{"label": "Yes", "call": _meta()["calls"][0]},

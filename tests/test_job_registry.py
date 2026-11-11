@@ -20,11 +20,16 @@ from job_registry import (
     VoiceJob,
 )
 from personality_types import SpeakerProvenance
+from task_model import Requester
 
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
 SYSTEM_SPEAKER = SpeakerProvenance(speaker_kind="system")
+# A Telegram delegation's task fields, as its launcher sets them at its birth.
+TG_TASK = dict(executor="mtg-judge",
+               requester=Requester("concierge", {"_tg_bot": 111}),
+               delivery=None)
 
 
 def make_job(**changes):
@@ -674,7 +679,7 @@ async def test_restart_finalizes_cancel_pending_job_as_cancelled(tmp_path):
             started_at=101.0,
             execution_state=ExecutionState.RUNNING,
             cancel_pending=True,
-            creator_peer="telegram", route={"_tg_bot": 111},
+            creator_peer="telegram", route={"_tg_bot": 111}, **TG_TASK,
         ),
         now=120.0,
     )
@@ -1000,7 +1005,7 @@ async def test_telegram_orphan_notification_retries_until_durable_ack(tmp_path):
     first = JobRegistry(jobs_path, clock=lambda: 120.0)
     await first.load()
     await first.create(make_job(
-        creator_peer="telegram", route={"_tg_bot": 111},
+        creator_peer="telegram", route={"_tg_bot": 111}, **TG_TASK,
         scope_id="chat-1",
         origin_route_id="route-1",
         origin_device_id=None,
@@ -1050,7 +1055,7 @@ async def test_recovered_orphan_carries_scheduled_delivery_across_restart(
     registry = await loaded_registry(tmp_path)
     await registry.create(make_job(
         id="job-sched",
-        creator_peer="telegram", route={"_tg_bot": 111},
+        creator_peer="telegram", route={"_tg_bot": 111}, **TG_TASK,
         scope_id="cron-weekly-invoice",
         origin_device_id=None,
         execution_state=ExecutionState.ORPHANED,
@@ -1104,7 +1109,7 @@ async def test_recovered_orphan_failure_isolated_before_later_success(
     registry = await loaded_registry(tmp_path)
     failed_job = make_job(
         id="job-fail",
-        creator_peer="telegram", route={"_tg_bot": 111},
+        creator_peer="telegram", route={"_tg_bot": 111}, **TG_TASK,
         scope_id="chat-1",
         origin_device_id=None,
         execution_state=ExecutionState.ORPHANED,
@@ -1186,7 +1191,7 @@ async def test_recovered_orphan_notification_does_not_swallow_cancellation():
     from casa_core import _notify_recovered_delegations
 
     job = make_job(
-        creator_peer="telegram", route={"_tg_bot": 111},
+        creator_peer="telegram", route={"_tg_bot": 111}, **TG_TASK,
         execution_state=ExecutionState.ORPHANED,
         failure=JobFailure("restart_orphan", "Lost on restart"),
         orphan_notification_pending=True,
@@ -1579,7 +1584,7 @@ async def test_recovered_orphan_enqueue_without_consumer_stays_durably_owed(
     first = JobRegistry(jobs_path, clock=lambda: 120.0)
     await first.load()
     await first.create(make_job(
-        creator_peer="telegram", route={"_tg_bot": 111},
+        creator_peer="telegram", route={"_tg_bot": 111}, **TG_TASK,
         scope_id="chat-1",
         origin_route_id="route-1",
         origin_device_id=None,
@@ -1773,7 +1778,7 @@ async def test_expire_due_keeps_an_owed_announcement_until_it_is_delivered(
     registry = JobRegistry(jobs_path, clock=lambda: now[0])
     await registry.load()
     await registry.create(make_job(
-        creator_peer="telegram", route={"_tg_bot": 111},
+        creator_peer="telegram", route={"_tg_bot": 111}, **TG_TASK,
         creator_user_id=77,
         origin_route_id=None,
         origin_device_id=None,
@@ -1880,7 +1885,7 @@ async def test_completion_reconciliation_retries_the_same_answer_after_first_wri
     )
     await registry.load()
     await registry.create(make_job(
-        creator_peer="telegram", route={"_tg_bot": 111},
+        creator_peer="telegram", route={"_tg_bot": 111}, **TG_TASK,
         creator_user_id=None,
         origin_route_id=None,
         origin_device_id=None,

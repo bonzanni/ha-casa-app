@@ -37,6 +37,14 @@ three rules, and then calls that endpoint's own method:
   install and erase cards, Casa's operator notices, the limit line of a turn that did not come
   from a chat), which always go through Casa's bot whatever bot the triggering turn came from.
 
+An agent's own bot ([`own-voice.md`](own-voice.md)) is an endpoint the own-chat lifecycle adds
+and removes while Casa runs: `add_agent_endpoint` registers it by bot id before its role is
+known, `set_endpoint_role` binds or releases the role (Casa's endpoint keeps its own), and
+`remove_endpoint` forgets a stopped one. A job's posts are address-bound to the job's
+delivery (`_job_endpoint`), decided at its birth; a job with no delivery posts nothing. Each
+endpoint states the update types it asks Telegram for on every `setWebhook` and `getUpdates`:
+Casa's bot adds `managed_bot` to `message` and `callback_query`.
+
 Resolution never falls back. A bot with no endpoint is `EndpointUnavailable`, never answered
 by another endpoint. The transport adds no outcome of its own: an endpoint that is not ready
 reports `NOT_DELIVERED` from `send`, raises its availability error from `send_media`, and
@@ -119,6 +127,9 @@ row, which `specialist_registry.origin_from_job` returns unchanged at the boot r
 
 What it does not cover: a derivation that never copied its source's route. It has none and
 fails at delivery with `RouteMissing`; nothing finds that before the send.
+Nor is the route where a task's posts go: that is the task's delivery, decided once at its birth
+([`own-voice.md`](own-voice.md)). A job of an agent behind the resident carries its route and has
+no delivery, so its lines are not posted anywhere.
 
 **INV-TG-019**: A stored Telegram message is addressed by bot, chat and message, and an address, a lane scope or a memory key refuses a bot that is not an integer bot id; a stored record or key that lacks its bot is refused at load and logged, and the rest of the file still loads.
 
@@ -148,7 +159,7 @@ refused with `DuplicateEndpoint`, and that endpoint stays stopped.
 What it does not cover: whether the operator's chat is configured; a route says which bot,
 never which chat.
 
-**INV-TG-022**: A turn born before Casa's endpoint is ready, and every record persisted from it, delivers once through that endpoint after its `getMe` succeeds; until then each method behaves as the unready endpoint does, and an identity that must name Casa's bot before its post is not formed, so no broker, grant, challenge or question store changes.
+**INV-TG-022**: A turn born before Casa's endpoint is ready, and every record persisted from it, delivers its routed messages — its reply and a delegation's completion notice — once through that endpoint after its `getMe` succeeds; a task born in that window has no delivery and posts nothing, even after `getMe`, while its result still reaches its requester; until then each method behaves as the unready endpoint does, and an identity that must name Casa's bot before its post is not formed, so no broker, grant, challenge or question store changes.
 
 Enforced by the route a birth gets (Casa's persisted id, else `CASA`), which resolves to Casa's
 endpoint at delivery whatever id it then verifies; by the transport passing each call to that
@@ -159,6 +170,9 @@ answering as when its post fails before it touches a store.
 
 What it does not cover: a message sent in that window. It is reported not delivered, as it was
 with one channel, and is not queued for later.
+A task's own posts — its start line, progress, job lines — follow its delivery, decided once at
+its birth ([`own-voice.md`](own-voice.md), INV-OWN-002); a resident task born before Casa's bot
+has an id gets none, so they are never posted.
 
 ## Failure behavior
 

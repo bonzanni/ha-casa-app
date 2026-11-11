@@ -21,8 +21,10 @@ import result_broker as rb
 import stored_calls as sc
 import tools as tools_mod
 import verdict_broker as vb
+import own_voice
 from authz_grants import GrantIdentity
 from channels import DeliveryOutcome
+from channels.tg_address import TgAddress
 from plugin_grants import PluginContract, ResultContractMap, ToolContract
 from telegram_channel_double import make_transport
 from two_endpoints import CASA_BOT as BOT
@@ -42,7 +44,19 @@ def _identity(**over) -> GrantIdentity:
     base = dict(operator_id=42, chat_id=42, enforcement_role="finance",
                 artifact_id=ARTIFACT, engagement_id="", delegation_id="d-1", bot_id=BOT)
     base.update(over)
+    # the call posts where its identity's delivery says: the chat it runs in
+    base.setdefault("delivery", TgAddress(base["bot_id"], base["chat_id"]))
     return GrantIdentity(**base)
+
+
+def open_chats(monkeypatch, *roles):
+    """The own-chat state for a test: the resident's chat and each of *roles*'
+    own chats are open, so a post of theirs is admitted."""
+    def require_open_chat(role, *, label):
+        if role == "assistant" or role in roles:
+            return None
+        return own_voice.Refusal("own_chat_missing", f"{label} has no chat of its own")
+    monkeypatch.setattr(own_voice, "require_open_chat", require_open_chat)
 
 
 def _tool(name, kind="safe", provides=(), delivers=None, consumes=None):
@@ -107,6 +121,7 @@ def env(monkeypatch):
         "finance": SimpleNamespace(character=SimpleNamespace(name="Finance"))})
     monkeypatch.setattr(vb, "BROKER", vb.VerdictBroker())
     monkeypatch.setattr(rb, "POSTS", rb.PostLedger())
+    open_chats(monkeypatch, "finance")
     store = rb.ReferenceStore(now=lambda: 1000.0)
     return SimpleNamespace(rec=rec, store=store, broker=vb.BROKER)
 

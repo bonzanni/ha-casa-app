@@ -100,6 +100,9 @@ FILES: tuple[Entry, ...] = (
     Entry("/data/telegram-casa-bot.json", 0o600, PRIVATE,
           "Casa's own Telegram bot id and a digest of the token it was "
           "verified for: which bot the operator talks to."),
+    Entry("/data/agent-voices.json", 0o600, PRIVATE,
+          "The agents' own Telegram bots: which bot belongs to which agent, "
+          "each bot's phase, and the addresses of Casa's cards about them."),
     Entry("/data/plugin-health.json", 0o600, PRIVATE,
           "Per-plugin health state, regenerated every boot."),
     Entry("/data/plugin-setup-episodes.json", 0o600, PRIVATE,
@@ -119,6 +122,9 @@ FILES: tuple[Entry, ...] = (
 
 # --- file globs ----------------------------------------------------------
 FILE_GLOBS: tuple[Entry, ...] = (
+    Entry("/data/agent-voices/tokens/*", 0o600, CREDENTIAL,
+          "An agent bot's token, when no 1Password vault is configured: "
+          "whoever reads it speaks as that agent to the operator."),
     Entry("/data/*.corrupt", 0o600, PRIVATE,
           "Quarantine alias: session_registry archives a corrupt sessions.json "
           "aside with os.replace, which PRESERVES the pre-upgrade 0644 inode "
@@ -141,6 +147,11 @@ DIRS: tuple[Entry, ...] = (
     Entry("/data/job-pads", 0o700, PRIVATE,
           "A background job's scratchpad: the notes its session keeps, which "
           "can hold page text, kept until the job ends."),
+    Entry("/data/agent-voices/held", 0o700, PRIVATE,
+          "The operator's messages to an agent's bot held until the bot "
+          "is bound to its agent, verbatim."),
+    Entry("/data/agent-voices/tokens", 0o700, CREDENTIAL,
+          "The agents' bot tokens, when no 1Password vault is configured."),
     Entry("/data/memory", 0o700, PRIVATE,
           "The memory store: every captured conversation turn verbatim, the "
           "ledgers written from them, and their exports."),

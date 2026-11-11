@@ -73,17 +73,29 @@ classify itself as the operator, because absence fails closed.
 within the caller's declared delegates, by role id first and display name second, and every
 `<delegates>` block is rendered from the same live map the ACL resolves against.
 
-**A delegation from the operator's DM to a specialist is a use of that specialist's desk.**
-It gets or creates the desk, runs under the desk's lock as one use (sync, degraded or async
-alike — an async launch still returns `pending` at once while its task waits), has the desk's
-bounded dialogue block fitted into its context after the resident's own validated arguments,
-and commits its brief and the bounded answer as an exchange; a full desk queue is the tool's
-typed `busy` result with no task, and a faulted desk — one a stored-call turn's processes could
-not be confirmed to have left, or one whose earlier use's run is still unwinding past its
-teardown bound — is the typed `desk_faulted` result, refused before any queue
-place and for sync, degraded and async alike. The desk, its bounds and the swipe-reply route
-that shares it are [`specialist-desk.md`](specialist-desk.md); the faulted desk is
-[`stored-call-buttons.md`](stored-call-buttons.md). A file the operator addresses to the specialist
+**Every delegation to a specialist or the configurator is one use of that agent's lane.**
+The lane (`agent_lane`) is the agent's alone, shared with its taps, its continuations and every
+other delegation to it from any chat or bot; the place in its queue is reserved before any task
+exists (sync, degraded or async alike — an async launch still returns `pending` at once while
+its task waits). A full queue is the tool's typed `busy` result with no task, and a faulted
+agent — one a stored-call turn's processes could not be confirmed to have left, or one whose
+earlier use's run is still unwinding past its teardown bound — is the typed `agent_faulted`
+result ("Finance is out of service until Casa restarts."), refused before any queue place and
+for sync, degraded and async alike. A delegation from the operator's DM to a specialist also
+uses the specialist's desk in that chat: the desk's bounded dialogue block is fitted into its
+context after the resident's own validated arguments, and its brief and the bounded answer
+are committed as an exchange. The desk, its bounds and the swipe-reply route that shares it
+are [`specialist-desk.md`](specialist-desk.md); the faulted agent is
+[`stored-call-termination.md`](stored-call-termination.md).
+
+**A delegation is a task, and an agent with its own chat shows it there.** Its launcher stamps
+its executor, its delivery and its requester once, at its birth (voice delegations excepted:
+their result is spoken). When the target's own chat is open at that moment, the task's post
+index and input open first, a start line "Ellen asked: «…»" is posted in the target's chat, the
+target's whole answer is posted there when it ends, and the resident still gets the bounded
+result; replies to those posts reach the running task. A target with no open chat posts
+nothing and its surfaces are refused. A hand-off inside it stamps its target's own delivery
+([`own-voice.md`](own-voice.md)). A file the operator addresses to the specialist
 starts a use of the same desk; its route is [`inbound-files.md`](inbound-files.md).
 
 **A brief is text stored for a later turn to narrate, and its disclosure resolves at

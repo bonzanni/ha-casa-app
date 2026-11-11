@@ -43,10 +43,18 @@ seam Casa owns is the CLI's hook protocol, and the boundary is built there:
 * **Delivery** (#1015): a slot the tool declares ``delivers`` as an
   ``operator_link`` never reaches the model at all. After the structural
   check, the same PostToolUse hook takes the deposit once and posts ONE
-  labelled-link message to the chat of the call's grant identity — the chat
-  the operator asked in, never a task topic, through the Telegram bot that
-  identity was resolved on (never another bot) — with the destination host
-  printed by Casa from the URL. Proven delivery REPLACES the result with a
+  labelled-link message at the call's delivery (``GrantIdentity.delivery``:
+  the executing agent's own chat, or a task's birth-time delivery), through
+  the Telegram bot that delivery names (never another bot) — with the
+  destination host printed by Casa from the URL.
+* **The capability rule**: an agent's surface — a delivered slot, a call that
+  asks Casa (run card, Stop) — exists only in that agent's own open chat (the
+  resident's chat always is) and only at the call's delivery. Admission
+  refuses anything else with a typed line before the plugin runs
+  (``own_voice.require_open_chat``, :func:`surface_refusal`), and the
+  delivery checks again before it posts; nothing ever falls back to another
+  chat. Admission also refuses every plugin call of an agent whose lane is
+  faulted (``agent_lane.FAULTS``). Proven delivery REPLACES the result with a
   receipt (``casa_delivery.status = "delivered"``); anything short of it
   withholds the result and drops the deposit. The producer's own result is
   delivery-neutral: the CLI abandons a hook past its matcher timeout and
@@ -453,18 +461,49 @@ def post_label(role: str) -> str:
     return f"{POST_LABEL_GLYPH} {tools_mod._display_name_for_role(role)}"
 
 
+def own_chat_of(role: str, endpoint: Any) -> bool:
+    """Whether *endpoint* is *role*'s own chat: an endpoint other than
+    Casa's, whose chat belongs to *role*."""
+    if endpoint is None or getattr(endpoint, "default_agent", None) != role:
+        return False
+    transport = _transport()
+    if transport is None:
+        return False
+    try:
+        return endpoint is not transport.casa_endpoint()
+    except RuntimeError:
+        return False
+
+
+def label_at(role: str, where: Any) -> str:
+    """The label for a post of *role* at *where* (an endpoint, or an address
+    whose bot names one): :func:`post_label`, except in *role*'s own chat,
+    where it is left out — the chat is the agent."""
+    endpoint = where
+    if isinstance(where, TgAddress):
+        transport = _transport()
+        try:
+            endpoint = transport.endpoint(where.bot_id) if transport is not None else None
+        except Exception:  # noqa: BLE001 — no endpoint: the post fails on its own
+            endpoint = None
+    return "" if own_chat_of(role, endpoint) else post_label(role)
+
+
 def compose_operator_message(body: str, label: str) -> str:
     """The ONE text ``render_paged`` splits: the label line, then the body
     as deposited. Paginating the composed text budgets the header like any
     other line, so page 1 carries it and pages 2+ are bare — no planner,
     no reserved budget (a header added after pagination overflows a full
-    page)."""
-    return f"{label}\n{body}"
+    page). With no label (an agent's own chat) it is the body alone."""
+    return f"{label}\n{body}" if label else body
 
 
 def compose_file_caption(label: str, caption: str) -> str:
     """The file's caption: the label line first, the plugin's caption (if
-    any) beneath; a file with no plugin caption is still labelled."""
+    any) beneath; a file with no plugin caption is still labelled, except in
+    an agent's own chat, where there is no label."""
+    if not label:
+        return caption
     return f"{label}\n{caption}" if caption else label
 
 
@@ -1084,6 +1123,49 @@ _DENY_ERASING = (
     "the erasure stops. Tell the operator; do not retry.")
 
 
+# An agent's surface (a capability that posts to the operator, a run card,
+# Stop) exists only in its own chat. A task born while that chat was not open
+# posts nothing for its whole life, even if the chat opens while it runs.
+_NO_DELIVERY = (
+    "{name}'s chat was not open when this task started, so nothing from this "
+    "task can be shown to the operator. Put what matters in your answer "
+    "instead; do not retry.")
+# The executing agent's fault: an earlier run's end is unconfirmed, so no
+# plugin operation of it starts until Casa restarts.
+_DENY_FAULTED = (
+    "not executed: {line} An earlier run of its plugins may still be going, "
+    "so none starts until then. Tell the operator; do not retry.")
+
+
+def _display_name(role: str) -> str:
+    import tools as tools_mod
+    return tools_mod._display_name_for_role(role)
+
+
+def surface_refusal(role: str, identity: Any) -> "str | None":
+    """The capability rule, for a post of *role* on a call of *identity*:
+    ``None`` when it may post, else the line the call is told. *role*'s own
+    chat must be open now (``own_voice.require_open_chat``; the resident's
+    chat always is), and the call must have somewhere to post
+    (``identity.delivery``). Never a fall-back to another chat."""
+    import own_voice
+    refusal = own_voice.require_open_chat(role, label=_display_name(role))
+    if refusal is not None:
+        return refusal.text
+    if identity is not None and getattr(identity, "delivery", None) is None:
+        return _NO_DELIVERY.format(name=_display_name(role))
+    return None
+
+
+def _posts(entry: Any) -> bool:
+    """Whether a call of *entry* puts something in front of the operator:
+    a capability that delivers a slot, or a call that asks Casa (a run card,
+    Stop)."""
+    return entry is not None and (
+        (entry.kind == "capability" and bool(getattr(entry, "delivers", None)))
+        or bool(getattr(entry, "calls_casa", False)))
+
+
 def _erasing(name: str) -> bool:
     from plugin_erasure import FENCE
     return FENCE.fenced(name)
@@ -1196,6 +1278,14 @@ def make_plugin_admission_hook(
                 why = owner.pin(tool_name, (input_data or {}).get("tool_input") or {})
                 if why is not None:
                     return _deny(why)
+            # The executing agent's fault, whatever started this turn: no
+            # plugin operation of a faulted agent starts. Casa's own erase
+            # turn for an uninstall is gated below on its own terms.
+            if _erase_turn() is None:
+                import agent_lane
+                if agent_lane.FAULTS.faulted(role) is not None:
+                    return _deny(_DENY_FAULTED.format(
+                        line=agent_lane.faulted_line(_display_name(role))))
             seg = contract_map.plugin_seg_of(tool_name)
             plugin = contract_map.plugins.get(seg) if seg is not None else None
             entry = contract_map.tools.get(tool_name) if plugin is not None else None
@@ -1243,6 +1333,25 @@ def make_plugin_admission_hook(
                 if entry is None:
                     return _deny(_DENY_UNDECLARED)
 
+            identity = None
+            if _posts(entry):
+                # The capability rule, before the authorization decision (a
+                # challenge for a call that may not post would ask for
+                # nothing) and before anything is recorded: the call posts at
+                # its delivery, in its agent's own open chat, or not at all.
+                from authz_grants import resolve_grant_identity
+                why = surface_refusal(role, None)
+                if why is not None:
+                    return _deny(f"not executed: {why}")
+                identity, why = resolve_grant_identity(
+                    role, artifact_id=entry.artifact_id)
+                if identity is None:
+                    return _deny(_DENY_CHANNEL_UNAVAILABLE
+                                 if why == "channel_unavailable" else _DENY_NO_IDENTITY)
+                if identity.delivery is None:
+                    return _deny("not executed: "
+                                 + _NO_DELIVERY.format(name=_display_name(role)))
+
             # Authorization for a protected tool — sequenced BEFORE arming.
             if (authz_hook is not None and tool_name in protected
                     and not erase_admitted):
@@ -1258,8 +1367,7 @@ def make_plugin_admission_hook(
             asks = bool(getattr(entry, "calls_casa", False))
             needs_identity = (entry.kind == "capability" or bool(entry.consumes)
                               or asks)
-            identity = None
-            if needs_identity:
+            if needs_identity and identity is None:
                 from authz_grants import resolve_grant_identity
                 identity, why = resolve_grant_identity(
                     role, artifact_id=entry.artifact_id)
@@ -1399,19 +1507,14 @@ def _transport():
 
 
 def _endpoint_for(target: Any):
-    """Rule A: the endpoint of the bot *target* names — a grant identity's
-    bot, or an address's. ``None`` when Telegram is not configured; a bot
+    """Rule A: the endpoint of the bot the address *target* names — a call's
+    delivery, or a card's. ``None`` when Telegram is not configured; a bot
     with no endpoint raises ``EndpointUnavailable``, so nothing is ever sent
     through another bot."""
     transport = _transport()
     if transport is None:
         return None
     return transport.endpoint(int(target.bot_id))
-
-
-def _chat_of(identity: Any) -> TgAddress:
-    """The chat a delivery for *identity* goes to, on the identity's bot."""
-    return TgAddress(int(identity.bot_id), int(identity.chat_id))
 
 
 async def _post_operator_message(to: TgAddress, text: str,
@@ -1561,16 +1664,21 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
     page that does not land sends no card and the record is unregistered. The
     proof — and the receipt's ``pages`` count — needs every page and the card.
 
-    The card goes through the bot the identity names. Its lane
-    (``proposal:<bot>:<chat>``, the open-proposal cap) and the bot stored with
-    it are that endpoint's id, read before the count and the register: an
-    endpoint with no id yet posts nothing and registers nothing, and the
-    proposal is withheld as not delivered."""
+    The card goes to the call's delivery (``identity.delivery``), through
+    the bot it names; the card's record keeps both where it was delivered and
+    the agent that executes it (``role``), and every reaction to it follows
+    that record. Its lane (``proposal:<bot>:<chat>``, the open-proposal cap)
+    and the bot stored with it are that endpoint's id, read before the count
+    and the register: an endpoint with no id yet posts nothing and registers
+    nothing, and the proposal is withheld as not delivered."""
     from channels.tg_richtext import render_paged
     from text_util import utf16_len
     from verdict_broker import BROKER
-    chat_id, role = int(identity.chat_id), str(identity.enforcement_role)
-    channel = _endpoint_for(identity)
+    delivery = identity.delivery
+    if delivery is None:
+        return False, {}, None, None
+    chat_id, role = int(delivery.chat_id), str(identity.enforcement_role)
+    channel = _endpoint_for(delivery)
     if channel is None:
         return False, {}, None, None
     try:
@@ -1626,6 +1734,8 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
         "urls": urls,
         "revision": revision, "label": head, "text": text, "options": list(labels),
         "message_id": None, "owner": _post_owner(identity), "_scope": scope,
+        # where the card was delivered; ``role`` is the agent that executes it
+        "delivery": to,
         # slice 5b: a photo card's text is its caption — every later edit is a caption edit
         "photo": bool(proposal.get("photo")),
     }
@@ -1695,7 +1805,8 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
             if on_proven is not None:
                 # #1312: the proof point — before the mark or the tell below await
                 on_proven(_proposal_detail(rid, len(labels), len(pages)), (scope, rid),
-                          PostEvent(call.tool_use_id, seg, slot, head, len(pages) or None,
+                          PostEvent(call.tool_use_id, seg, slot, post_label(role),
+                                    len(pages) or None,
                                     None, buttons=len(labels)))
     finally:
         if not delivered and not unconfirmed:
@@ -1719,11 +1830,13 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
         notice = getattr(channel, "deliver_desk_notice", None)
         if notice is not None:
             try:
-                await asyncio.wait_for(notice(chat_id, f"{head} {warning}"), DELIVERY_TIMEOUT_S)
+                await asyncio.wait_for(notice(chat_id, f"{head} {warning}".strip()),
+                                       DELIVERY_TIMEOUT_S)
             except Exception as exc:  # noqa: BLE001 — the post is proven; the tell is logged
                 logger.warning("proposal tell notice failed: %s", type(exc).__name__)
     n = len(labels)
-    event = PostEvent(call.tool_use_id, seg, slot, head, len(pages) or None, None, buttons=n)
+    event = PostEvent(call.tool_use_id, seg, slot, post_label(role), len(pages) or None, None,
+                      buttons=n)
     return True, _proposal_detail(rid, n, len(pages)), event, None
 
 
@@ -1823,15 +1936,29 @@ async def _settle_repeat(seg: str, identity: Any, dkind: str, value: str,
         except Exception as exc:  # noqa: BLE001 — the original delivery stands
             logger.warning("repeat file not consumed: %s", type(exc).__name__)
     if dkind == OPERATOR_PROPOSAL and warning:
-        channel = _endpoint_for(identity)
+        to = identity.delivery
+        channel = _endpoint_for(to)
         notice = getattr(channel, "deliver_desk_notice", None)
         if notice is not None:
             try:
-                head = post_label(identity.enforcement_role)
-                await asyncio.wait_for(notice(int(identity.chat_id), f"{head} {warning}"),
+                head = label_at(identity.enforcement_role, to)
+                await asyncio.wait_for(notice(int(to.chat_id), f"{head} {warning}".strip()),
                                        DELIVERY_TIMEOUT_S)
             except Exception as exc:  # noqa: BLE001 — the tell is logged
                 logger.warning("repeat proposal tell failed: %s", type(exc).__name__)
+
+
+def _note_link(call: _InFlight, seg: str, executor: str, to: TgAddress) -> None:
+    """A delivered sign-in link: the plugin's callback for it, while the link
+    lives, answers this agent's operation (``callback_owner``). Never undoes
+    the delivery."""
+    try:
+        import callback_owner
+        plugins = getattr(call.contract_map, "plugins", None) or {}
+        name = getattr(plugins.get(seg), "name", "") or seg
+        callback_owner.note_link(name, executor, to, ttl_s=int(PROPOSAL_TTL_S))
+    except Exception:  # noqa: BLE001
+        logger.warning("sign-in link owner not noted", exc_info=True)
 
 
 async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
@@ -1863,11 +1990,21 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
         taken = store.take_for_delivery(call.deposits.get(slot, ""))
         key = taken[7] if taken is not None else ""
         bot_id = 0
+        to: "TgAddress | None" = None
         if taken is not None:
-            # the bot the delivery goes through, read from its endpoint before
-            # any key is held or read: one with no id yet delivers nothing
-            # (EndpointNotReady, withheld below) and writes no key
-            channel = _endpoint_for(taken[3])
+            refusal = surface_refusal(taken[3].enforcement_role, taken[3])
+            if refusal is not None:
+                # the capability rule's backstop: admission refused this
+                # already, unless the agent's chat changed since — nothing is
+                # posted, here or anywhere else
+                withheld_reason, taken, key = refusal, None, ""
+        if taken is not None:
+            # the delivery the call carries, and the bot it goes through, read
+            # from its endpoint before any key is held or read: one with no id
+            # yet delivers nothing (EndpointNotReady, withheld below) and
+            # writes no key
+            to = taken[3].delivery
+            channel = _endpoint_for(to)
             bot_id = channel.bot_id if channel is not None else 0
         if not key or not bot_id:
             hold = contextlib.nullcontext()
@@ -1923,11 +2060,11 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
                     role=identity.enforcement_role, operator_id=identity.operator_id,
                     plugin=seg, slot=slot, tool_use_id=call.tool_use_id,
                     owner=_post_owner(identity), posted_at=time.time(), kind=dkind)
+                head = label_at(identity.enforcement_role, to)
                 if dkind == OPERATOR_MESSAGE:
-                    head = post_label(identity.enforcement_role)
                     text = compose_operator_message(value, head)
                     outcome = await asyncio.wait_for(
-                        _post_operator_message(_chat_of(identity), text, post=post),
+                        _post_operator_message(to, text, post=post),
                         DELIVERY_TIMEOUT_S)
                     delivered = outcome is DeliveryOutcome.DELIVERED
                     if delivered:
@@ -1935,11 +2072,11 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
                         pages = len(render_paged(text))
                         detail = {"pages": pages}
                         _remember(detail)
-                        event = PostEvent(call.tool_use_id, seg, slot, head, pages, None)
+                        event = PostEvent(call.tool_use_id, seg, slot,
+                                          post_label(identity.enforcement_role), pages, None)
                 elif dkind == OPERATOR_FILE:
-                    head = post_label(identity.enforcement_role)
                     outcome = await asyncio.wait_for(
-                        _post_operator_file(_chat_of(identity), value, media_kind,
+                        _post_operator_file(to, value, media_kind,
                                             compose_file_caption(head, caption),
                                             post=post, delivered_name=filename),
                         FILE_DELIVERY_TIMEOUT_S)
@@ -1947,26 +2084,27 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
                     if delivered:
                         detail = {"kind": media_kind}
                         _remember(detail)
-                        event = PostEvent(call.tool_use_id, seg, slot, head, None, media_kind)
+                        event = PostEvent(call.tool_use_id, seg, slot,
+                                          post_label(identity.enforcement_role), None,
+                                          media_kind)
                 elif dkind == OPERATOR_PROPOSAL:
-                    head = post_label(identity.enforcement_role)
                     delivered, detail, event, withheld_reason = await _post_proposal(
                         identity, seg, slot, call, proposal, head, post, warning=warning,
                         on_proven=_remember)
                 else:
-                    head = post_label(identity.enforcement_role)
                     text, entities, plain = compose_operator_link(
                         value, caption=caption, label=label, head=head)
                     button_text, button_label = compose_operator_link_button(
                         value, caption=caption, label=label, head=head)
                     outcome = await asyncio.wait_for(
-                        _post_operator_link(_chat_of(identity), text, entities, plain,
+                        _post_operator_link(to, text, entities, plain,
                                             post=post,
                                             button=(button_text, button_label, value)),
                         DELIVERY_TIMEOUT_S)
                     delivered = outcome is DeliveryOutcome.DELIVERED
                     if delivered:
                         _remember(detail)
+                        _note_link(call, seg, identity.enforcement_role, to)
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 — not proven ⇒ withheld
