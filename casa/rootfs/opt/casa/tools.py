@@ -800,11 +800,29 @@ def _task_post_admitted(birth: TaskBirth, text: str, intent: IntentKind) -> Any:
     return admitted
 
 
+def _task_endpoint(birth: TaskBirth) -> Any:
+    """The endpoint that posts at the task *birth*'s delivery, or ``None``
+    when there is none now: no delivery, no Telegram, or no endpoint serves
+    the delivery's bot (its bot was released)."""
+    delivery, transport = birth.delivery, _transport()
+    if delivery is None or transport is None:
+        return None
+    try:
+        return transport.endpoint(delivery)
+    except (AddressError, EndpointUnavailable) as exc:
+        logger.warning("task %s: no endpoint for its chat: %s", birth.task_id[:8],
+                       type(exc).__name__)
+        return None
+
+
 def _answer_posts(birth: "TaskBirth | None", answer: str) -> bool:
     """Whether settling the task *birth* with *answer* posts it in its
-    executor's own chat — the same rule the post itself applies."""
+    executor's own chat — the same rule the post itself applies: an endpoint
+    serves its delivery now, and *answer*, the delegate's whole closing
+    message, is not silence."""
     try:
-        return (birth is not None and birth.in_own_chat and _transport() is not None
+        return (birth is not None and birth.in_own_chat
+                and _task_endpoint(birth) is not None
                 and _task_post_admitted(birth, answer, IntentKind.FINAL_REPLY) is not None)
     except Exception:  # noqa: BLE001 — a steer, never the work's fault
         logger.warning("task answer post not predicted", exc_info=True)
@@ -818,15 +836,10 @@ async def _post_task_text(birth: TaskBirth, text: str, *, intent: IntentKind,
     a reply to any page reaches the task. Bounded; a failure is logged and
     reported as ``False``."""
     import result_broker as rb
-    delivery, transport = birth.delivery, _transport()
-    if delivery is None or transport is None:
+    ep = _task_endpoint(birth)
+    if ep is None:
         return False
-    try:
-        ep = transport.endpoint(delivery)
-    except (AddressError, EndpointUnavailable) as exc:
-        logger.warning("task %s: no endpoint for its chat: %s", birth.task_id[:8],
-                       type(exc).__name__)
-        return False
+    delivery = birth.delivery
     admitted = _task_post_admitted(birth, text, intent)
     if admitted is None:
         return False
@@ -996,14 +1009,17 @@ OPERATOR_WORDS_NOTE = ("(Casa: the person also wrote to {name} directly while it
 def _with_silent_close_note(text: str, output: "DelegatedOutput", role: str, *,
                             own_chat: bool = False) -> str:
     """*text* with :data:`SILENT_CLOSE_NOTE` after it when the delegate's
-    closing message (:func:`_closing_words`) is silence with a sentinel in
-    it — :data:`OWN_CHAT_SILENT_CLOSE_NOTE` when the task shows in the
+    whole closing message (:func:`_closing_text`) is silence with a sentinel
+    in it — :data:`OWN_CHAT_SILENT_CLOSE_NOTE` when the task shows in the
     delegate's own chat (*own_chat*). An empty closing message is not a
-    closing silence. Never raises."""
+    closing silence. Judged on the whole message, never the copy the result
+    cap bounds: a long answer that opens with the sentinel is an answer, and
+    is posted as one. Never raises."""
     from output_boundary import SILENCE_SENTINEL, strips_to_silence
     try:
-        words = _closing_words(output)
-        if SILENCE_SENTINEL not in words or not strips_to_silence(words):
+        words = _closing_text(output)
+        if (not isinstance(words, str) or SILENCE_SENTINEL not in words
+                or not strips_to_silence(words)):
             return text
         note = (OWN_CHAT_SILENT_CLOSE_NOTE if own_chat else SILENT_CLOSE_NOTE).format(
             name=_display_name_for_role(role))
@@ -1060,8 +1076,10 @@ def _closing_words(output: "DelegatedOutput") -> str:
     """The message a delegate closed its turn with — its last text-bearing
     message, bounded at the result cap — never the narration it wrote between
     tool calls. A closing ``<silent/>`` is that message. An output with no
-    reported closing message is one message: its whole text. Never raises: an
-    output it cannot read yields ``""``."""
+    reported closing message is one message: its whole text. This is the copy
+    that travels; whether the delegate closed silent is judged on the whole
+    message (:func:`_closing_text`), never on this bounded copy. Never raises:
+    an output it cannot read yields ``""``."""
     try:
         words = _closing_text(output)
         return specialist_limits.truncate_output(words)[0] if isinstance(words, str) else ""
@@ -1076,15 +1094,21 @@ def _closing_beyond_cut(output: "DelegatedOutput", prefix: str, truncated: bool)
     ends with the closing message, or when that message is silence. The cut
     keeps the start of the turn, so an answer the delegate closed with would
     otherwise be lost behind a long narration; it is returned whole (bounded
-    at the same cap), its sentinels dropped. Never raises."""
+    at the same cap), its sentinels dropped. Whether it is silence is judged
+    on the whole message, never the bounded copy; a bounded copy with no
+    words left once its sentinels go carries nothing. Never raises."""
     if not truncated:
         return ""
     from output_boundary import strips_to_silence, without_sentinels
     try:
-        words = _closing_words(output)
-        if not words or strips_to_silence(words) or prefix.endswith(words):
+        whole = _closing_text(output)
+        if not isinstance(whole, str) or strips_to_silence(whole):
             return ""
-        return without_sentinels(words)
+        words = _closing_words(output)
+        if prefix.endswith(words):
+            return ""
+        kept = without_sentinels(words)
+        return kept if kept.strip() else ""
     except Exception:  # noqa: BLE001 — the result stands without it
         logger.warning("delegate closing message not attached", exc_info=True)
         return ""

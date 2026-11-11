@@ -736,6 +736,66 @@ async def test_the_persons_words_follow_the_answer_note(world, monkeypatch, mode
     assert result.endswith(f"{note}\n\n{WORDS_LINE}")
 
 
+# A closing answer longer than the result cap that opens with the marker: its
+# capped copy is nothing but the marker and blank lines, its whole text is an
+# answer.
+MARKED_LONG_ANSWER = "<silent/>" + "\n" * 20000 + "EUR/USD is 1.08."
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+async def test_a_long_closing_answer_opening_with_the_marker_is_an_answer_not_silence(
+        world, monkeypatch, mode):
+    _FakeSpecialistClient.reset(response="unused")
+    _script(monkeypatch, [("Checking the rate.", "run_fetch"), (MARKED_LONG_ANSWER, None)])
+    _, result = await _ellens_result(world, mode)
+    assert _alex_texts(world)[1:] == ["EUR/USD is 1.08."]
+    assert tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME) in result
+    assert tools.OWN_CHAT_SILENT_CLOSE_NOTE.format(name=NAME) not in result
+    assert tools.SILENT_CLOSE_NOTE.format(name=NAME) not in result
+
+
+@pytest.mark.parametrize("closing,posted", [
+    ("EUR/USD is 1.08.", "EUR/USD is 1.08."),
+    ("<silent/>", None),
+    ("EUR/USD is 1.08.\n\n<silent/>", "EUR/USD is 1.08."),
+    (MARKED_LONG_ANSWER, "EUR/USD is 1.08."),
+    ("<silent/>" + "\n" * 20000 + "<silent/>", None),
+    ("<silent/> " * 3000, None),
+], ids=["answer", "silence", "answer-then-marker", "marker-then-long-answer",
+        "long-silence", "many-markers"])
+@pytest.mark.parametrize("mode", ["sync", "async"])
+async def test_ellens_notes_agree_with_what_alexs_chat_shows(
+        world, monkeypatch, mode, closing, posted):
+    """Every place that judges the closing message reads the same whole text:
+    the answer note exactly when the answer posted, the silent-close note only
+    for a closing silence, never both."""
+    _FakeSpecialistClient.reset(response="unused")
+    _script(monkeypatch, [("Checking the rate.", "run_fetch"), (closing, None)])
+    _, result = await _ellens_result(world, mode)
+    assert _alex_texts(world)[1:] == ([posted] if posted else [])
+    answer_note = tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME) in result
+    silent_note = tools.OWN_CHAT_SILENT_CLOSE_NOTE.format(name=NAME) in result
+    assert answer_note is (posted is not None)
+    assert silent_note is ("<silent/>" in closing and posted is None)
+    assert not (answer_note and silent_note)
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+async def test_ellen_is_not_told_the_person_read_an_answer_whose_chat_went_away(
+        world, monkeypatch, mode):
+    """Alex's bot is released while he works: his answer cannot post, so Ellen
+    is not told the person already read it."""
+    async def release_alexs_bot(client):
+        tools._transport().remove_endpoint(world.alex)
+
+    Client.on_query = release_alexs_bot
+    _FakeSpecialistClient.reset(response="EUR/USD is 1.08.")
+    _, result = await _ellens_result(world, mode)
+    assert "EUR/USD is 1.08." not in _alex_texts(world)
+    assert "EUR/USD is 1.08." in result
+    assert tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME) not in result
+
+
 async def test_a_task_of_a_chat_that_is_not_open_keeps_ellens_usual_notes(world, monkeypatch):
     world.chats.state["finance"] = "not_open"
     _FakeSpecialistClient.reset(response="unused")

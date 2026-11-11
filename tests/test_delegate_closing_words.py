@@ -29,6 +29,12 @@ ANSWER = ("October groceries: €420.18 on 3 November; Albert Heijn €301.40. "
           "Shall I split it by week?")
 LONG = "narration line. " * 1600          # ~25,600 chars, over the 20,000 cap
 CARD = "I'm posting its card now."
+# Closing messages longer than the cap whose capped copy is only the marker
+# and blank space, or only blank space: the whole text is an answer (or a
+# silence).
+MARKED_LONG = "<silent/>" + "\n" * 20000 + "EUR/USD is 1.08."
+BLANK_LED_LONG = "\n" * 10 + " " * 20000 + "EUR/USD is 1.08."
+LONG_SILENCE = "<silent/>" + "\n" * 20000 + "<silent/>"
 
 
 def _origin(**over):
@@ -397,22 +403,24 @@ NARRATION_THEN_ANSWER = (
 )
 
 
-def _spy_closing_words(monkeypatch):
+def _spy_closing_text(monkeypatch):
+    """What every judgement of the closing message reads: the delegate's
+    whole closing message."""
     seen = []
-    real = tools_mod._closing_words
+    real = tools_mod._closing_text
 
     def spy(output):
         words = real(output)
         seen.append(words)
         return words
-    monkeypatch.setattr(tools_mod, "_closing_words", spy)
+    monkeypatch.setattr(tools_mod, "_closing_text", spy)
     return seen
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["sync", "async"])
 async def test_narration_then_a_closing_silence_holds_nothing(tmp_path, monkeypatch, mode):
-    seen = _spy_closing_words(monkeypatch)
+    seen = _spy_closing_text(monkeypatch)
     payload = await _delegate(tmp_path, monkeypatch, NARRATION_THEN_SILENCE, mode)
     assert seen and set(seen) == {"<silent/>"}       # the closing message, not the narration
     assert "relay" not in payload and "closing_message" not in payload
@@ -427,7 +435,7 @@ async def test_narration_then_a_closing_silence_holds_nothing(tmp_path, monkeypa
 @pytest.mark.parametrize("mode", ["sync", "async"])
 async def test_only_the_closing_message_is_held_never_the_narration(
         tmp_path, monkeypatch, mode):
-    seen = _spy_closing_words(monkeypatch)
+    seen = _spy_closing_text(monkeypatch)
     payload = await _delegate(tmp_path, monkeypatch, NARRATION_THEN_ANSWER, mode)
     assert seen and set(seen) == {FINAL}
     assert "relay" not in payload and "closing_message" not in payload
@@ -486,12 +494,27 @@ async def _late_notice(monkeypatch, output):
     ("Waiting for the run.\n\nYou're signed in.", "You're signed in.", False),
     ("Done.\n\n<silent/>", "Done.\n\n<silent/>", False),   # words beside the sentinel
     ("", None, False),                                      # no answer is not a silence
+    # longer than the cap: judged whole, never on the capped copy
+    ("Checking.\n\n" + MARKED_LONG, MARKED_LONG, False),
+    ("Checking.\n\n" + LONG_SILENCE, LONG_SILENCE, True),
 ])
 async def test_a_late_closing_silence_is_told_as_silence(monkeypatch, text, final, noted):
     content = await _late_notice(monkeypatch, _output(text, final=final))
     note = _silent_note(tools_mod._display_name_for_role("finance"))
     assert (note in content.text) is noted
     assert content.closing_message == ""
+
+
+@pytest.mark.parametrize("final", [MARKED_LONG, BLANK_LED_LONG],
+                         ids=["marker-led", "blank-led"])
+def test_a_long_answer_whose_capped_copy_is_blank_is_judged_whole_and_carries_no_blank(final):
+    """The capped copy of such an answer holds no words: the answer is no
+    silence (no silent-close note), and nothing blank rides beside the cut."""
+    out = _output(LONG + "\n\n" + final, final=final)
+    prefix = specialist_limits.truncate_output(out.text)[0]
+    assert tools_mod._closing_beyond_cut(out, prefix, True) == ""
+    assert tools_mod._with_silent_close_note("r", out, "finance") == "r"
+    assert tools_mod._with_silent_close_note("r", out, "finance", own_chat=True) == "r"
 
 
 # --- a plugin's setup turn ----------------------------------------------------------
