@@ -905,3 +905,13 @@ def _fresh_agent_task_state():
     chat_notes.reset()
     callback_owner.reset()
     task_posts.reset()
+
+
+@pytest.hookimpl(wrapper=True, optionalhook=True)
+def pytest_timeout_set_timer(item, settings):
+    """A test that outlives the unit gate's ``--timeout`` fails with the awaits its
+    event loop was parked on (see ``pending_awaits``), not only the thread stacks."""
+    installed = yield
+    from pending_awaits import wrap_timeout_handler
+    wrap_timeout_handler(settings)
+    return installed

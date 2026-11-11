@@ -30,6 +30,8 @@ jobs:
 
   tier2-functional:
     runs-on: ubuntu-latest
+    # A green run takes 7 to 11 minutes. Without a cap a hang held the job for hours.
+    timeout-minutes: 30
     if: >
       github.event_name == 'push'
       || github.event_name == 'pull_request'
@@ -43,8 +45,11 @@ jobs:
       # without it — a skipped guard would not have caught the v0.125.0
       # boot-path NameError, so it must be installed here, not just locally.
       - run: pip install -r casa/requirements.txt -r casa/requirements-test.txt
+      # --timeout: the slowest unit test takes under 30 s here; one that hangs fails after
+      # 120 s instead of holding the job, and its report lists the awaits its event loop was
+      # parked on (tests/pending_awaits.py), since xdist prints only finished tests.
       - name: Unit pytest (opt-out gate — everything except docker/slow)
-        run: python -m pytest tests/ -m "not docker and not slow" -v -n auto --maxprocesses=12 --dist loadfile --tb=short
+        run: python -m pytest tests/ -m "not docker and not slow" -v -n auto --maxprocesses=12 --dist loadfile --tb=short --timeout=120
       # GHSA-569r-7crq-xr43's guarantee is about what an unprivileged uid can
       # READ, so the pinning test forks and setuid()s to check it for real
       # instead of asserting mode bits. That needs to start as root, which this
