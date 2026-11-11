@@ -193,7 +193,7 @@ outcome is unknown rather than that nothing was kept. Display metadata is writte
 publication and is best-effort: a missing display name falls back to Casa's name and is never
 a failure.
 
-**INV-FILE-001**: A non-text message in the operator's chat goes into a live task when it replies to one of that task's posts or arrives while this operator's `📎` arming of that task's card is live (INV-OWN-005); every other non-text message — a reply to a specialist's post that belongs to no live task, a reply to an ended task's post (INV-BGJOB-024), one arriving under an arming that names no live task or has expired — takes the chat's default agent's path, byte for byte the path an unaddressed file takes, which starts a turn only for a stored file's caption (INV-FILE-004).
+**INV-FILE-006**: A non-text message in the operator's chat goes into a live task when it replies to one of that task's posts or arrives while this operator's `📎` arming of that task's card is live (INV-OWN-005); every other non-text message — a reply to a specialist's post that belongs to no live task, a reply to an ended task's post (INV-BGJOB-024), one arriving under an arming that names no live task or has expired — takes the chat's default agent's path, byte for byte the path an unaddressed file takes, which starts a turn only for a stored file's caption (INV-FILE-004).
 
 The address is resolved before the classification refusal, synchronously, and an arming is
 consumed there whatever follows; for a file without a caption the default agent's path is
@@ -213,7 +213,7 @@ like the proposal keyboards — the next file is the default agent's).
 
 What it does not cover: the order between a caption turn and a text sent while its file was
 downloading (the lock is taken after the download); a caption on a file that goes into a
-live task, which is [`own-voice.md`](own-voice.md)'s (INV-FILE-001); and what the agent then
+live task, which is [`own-voice.md`](own-voice.md)'s (INV-FILE-006); and what the agent then
 does with the file, which is the model's to judge.
 
 ## Failure behavior
@@ -231,7 +231,7 @@ own refusal.
 `ready/` is unchanged.
 
 **The directory flush fails after publication, or the upload fails unexpectedly.** The
-uncertainty reply is sent (INV-INBOX-005, INV-FILE-001). Sending the file again is always safe: a re-send is a new file under a new
+uncertainty reply is sent (INV-INBOX-005, INV-FILE-006). Sending the file again is always safe: a re-send is a new file under a new
 name.
 
 **The folder is full.** The refusal says the oldest files go after seven days and offers to

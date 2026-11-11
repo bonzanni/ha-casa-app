@@ -99,7 +99,7 @@ unregistered, unless its send broke off (a timeout, a lost link): its card may b
 
 **INV-PROP-007**: A button may store a `capability` tool only when its one provided slot delivers `operator_proposal` or `operator_file`; a stored file is sent only through the delivered-slot path and, landed, is the tap's receipt; a stored call that ran with arguments an installed hook changed is told to the operator whatever the outcome.
 
-**INV-FILE-003**: A `📎` tap arms the next file in that chat, for the operator who tapped — into the live task whose post the card is, or for a card of no live task the chat's own agent's path — for at most ten minutes; the arming exists from the moment the tap is committed, before the keyboard is edited or anything is sent; exactly one file consumes it; a later arming replaces it; a restart forgets it; and Casa sends no message about an arming — the edited keyboard is the whole acknowledgement, and the only text a tap can produce is the past-fact line that the buttons could not be cleared.
+**INV-FILE-007**: A `📎` tap arms the next file in that chat, for the operator who tapped — into the live task whose post the card is, or for a card of no live task the chat's own agent's path — for at most ten minutes; the arming exists from the moment the tap is committed, before the keyboard is edited or anything is sent; exactly one file consumes it; a later arming replaces it; a restart forgets it; and Casa sends no message about an arming — the edited keyboard is the whole acknowledgement, and the only text a tap can produce is the past-fact line that the buttons could not be cleared.
 
 ## Failure behavior
 

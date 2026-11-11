@@ -4025,7 +4025,7 @@ class TelegramChannel(Channel):
             return None
         # the arming arms the NEXT file, whichever route that file takes: it is spent
         # here, before the reply check, so a reply file cannot leave it live for a
-        # later file (INV-FILE-003; diff round 1, Terra)
+        # later file (INV-FILE-007; diff round 1, Terra)
         arming = self._armings.pop(chat, None)
         album = getattr(msg, "media_group_id", None) or None
         if album is not None and (chat, album) in self._album_dest:

@@ -1,5 +1,5 @@
 """S6 §2.1 / §5 — a file follows the reply rule: a file for a live task's post goes to
-the task; every other file in Ellen's chat is Ellen's, byte for byte (INV-FILE-001) — a
+the task; every other file in Ellen's chat is Ellen's, byte for byte (INV-FILE-006) — a
 reply on a specialist's post and a 📎 arming of a card of no live task included. An
 arming is spent by the next file whatever that file's route."""
 from __future__ import annotations
@@ -107,7 +107,7 @@ async def test_an_expired_arming_is_ellens(routed, wired):
 
 
 async def test_a_reply_file_spends_a_live_arming(routed, wired):
-    """INV-FILE-003: the arming arms the NEXT file; a reply file is that next file
+    """INV-FILE-007: the arming arms the NEXT file; a reply file is that next file
     and spends it, so no later file follows the arming."""
     routed.ch._armings[OPERATOR] = {"chat_id": OPERATOR, "operator_id": OPERATOR, "role": "records",
                                     "artifact_id": "art", "expires_at": time.monotonic() + 600,

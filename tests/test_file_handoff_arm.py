@@ -1,7 +1,7 @@
 """S6 §2.4 — the `arm_file` button kind: deposited without a call, carried as a parallel kind
 in the metadata, admitted by the options count, its tap writes the arming at commit before any
 await, and its finish hook edits the keyboard and sends NOTHING (operator ruling R4-1;
-INV-FILE-003)."""
+INV-FILE-007)."""
 from __future__ import annotations
 
 import asyncio
