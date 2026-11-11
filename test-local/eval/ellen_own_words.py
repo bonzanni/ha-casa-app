@@ -166,7 +166,7 @@ ENERGY = ("Q3 energy came to €612.80: €418.30 for electricity and €194.50 
 WEATHER = ("The weather plugin v1.2.0 is installed. Before it posts the daily "
            "forecast at 07:30 it needs one choice from the person: temperatures "
            "in Celsius or in Fahrenheit?")
-SILENT_DESK = "Starting the Q3 accounting check; the card is on its way.\n\n<silent/>"
+SILENT_DELEGATE = "Starting the Q3 accounting check; the card is on its way.\n\n<silent/>"
 
 CASES = [
     {"id": "a-sync-answer", "user": "how much did we spend on groceries in October?",
@@ -177,7 +177,7 @@ CASES = [
      "user": "install the weather plugin from owner/casa-plugin-weather@v1.2.0",
      "agent": "configurator", "name": "configurator", "answer": WEATHER, "late": True},
     {"id": "d-silent-close", "user": "start the Q3 accounting",
-     "agent": "finance", "name": "Alex", "answer": SILENT_DESK, "silent": True},
+     "agent": "finance", "name": "Alex", "answer": SILENT_DELEGATE, "silent": True},
 ]
 
 # The judge's own check: three replies that are wrong in the way a retelling
@@ -354,7 +354,7 @@ def _last_verdict(raw: str) -> dict | None:
     return found
 
 
-def _desk_words(answer: str) -> str:
+def _delegate_words(answer: str) -> str:
     return answer.replace("<silent/>", "").strip()
 
 
@@ -366,7 +366,7 @@ async def judge(answer: str, reply: str, asked: list, cli: str | None) -> tuple[
     for a in asked:
         shown += (f"\n[question put with buttons] {a.get('question', '')} "
                   f"buttons: {json.dumps(a.get('options') or [], ensure_ascii=False)}")
-    prompt = f"ANSWER:\n{_desk_words(answer)}\n\nREPLY:\n{shown}\n"
+    prompt = f"ANSWER:\n{_delegate_words(answer)}\n\nREPLY:\n{shown}\n"
     kw = _sdk_kw(JUDGE_MODEL, cli)
     kw.update(system_prompt=JUDGE_SYSTEM, tools=[], allowed_tools=[],
               strict_mcp_config=True, setting_sources=[], skills=[],
