@@ -78,10 +78,11 @@ the binding is re-derived through the same three gates the loader uses before it
 compiled and committed.
 
 **An agent's own chat follows a committed change.** After a committed install, upgrade or
-rollback, once the transaction has released its lock, the own-chat lifecycle's hook runs (an
-offer for a newly declared chat, dormancy for one no longer declared), and the bot's self-setup
-runs again when the bound persona changed; the result says `own_chat: "offered"` when the
-chat was offered. A committed uninstall puts the agent's bot dormant and its result carries
+rollback, once the transaction has released its lock, the own-chat lifecycle's hook runs
+(dormancy for a chat no longer declared, back for one declared again), and the bot's
+self-setup runs again when the bound persona changed; the result says `own_chat: "offer_due"`
+when the agent declares a chat it has no bot for yet. Casa posts no offer itself: the
+configurator says so in its answer and the resident makes the offer with `offer_own_chat`. A committed uninstall puts the agent's bot dormant and its result carries
 `own_chat: {bot, delete_link}`. A hook's failure is logged and never turns a committed change
 into a failed one: the next boot reconciles ([`own-voice-lifecycle.md`](own-voice-lifecycle.md)).
 

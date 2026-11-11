@@ -12,7 +12,7 @@ How a specialist that declares its own chat talks to the operator from its own T
 bot: the capability rule that keeps every agent's surface in its own chat, the agent's
 conversation there, the tasks it runs for others, and how a message in an agent's chat
 finds its destination. The bot's lifecycle (offer, creation, binding, self-setup, opening,
-token changes, dormancy, release) is [`own-voice-lifecycle.md`](own-voice-lifecycle.md). The
+a move to a new bot, token changes, dormancy, release) is [`own-voice-lifecycle.md`](own-voice-lifecycle.md). The
 per-bot transport these bots run on is [`telegram-bots.md`](telegram-bots.md); a plugin's delivered posts are
 [`plugin-delivered-slots.md`](plugin-delivered-slots.md); the run card and its admission
 are [`plugin-operator-calls.md`](plugin-operator-calls.md); the stored-call settler and the
@@ -39,6 +39,36 @@ component declares one (`own_voice.declared`): the committed declaration is trut
 **The bot's lifecycle** — the records and phases that drive it, the offer, creation,
 binding and self-setup, the chat's opening, the held journal, dormancy, recovery and
 release — is [`own-voice-lifecycle.md`](own-voice-lifecycle.md).
+
+**The resident's tool for an agent's chat.** `offer_own_chat` (`tools.offer_own_chat` →
+`own_voice.offer_own_chat`) takes the agent and a `mode`: `check` reports on up to five
+candidate handles and gives the context to choose one; `offer`, the default, posts the
+card that creates the chat with the handle the resident chose (`username`), or, once the
+bot exists, the card that opens it, and answers `already_open` with the link when the chat
+is open; `replace` offers a new bot with a new handle in place of the current one, and,
+asked again after a switch was held back, requests the restart that finishes it; `drop`
+keeps the current bot, while the new one does not exist yet. The handle is always the
+resident's: the tool's description carries the guidance (the role, not the persona;
+`Casa<Role><digits>Bot` by default; the operator's pattern and wishes first), and code
+only checks it. An install, upgrade or rollback that leaves a declared agent without a bot
+says `own_chat: "offer_due"` in its result, and the configurator's prompt has it say so,
+so the resident makes the offer; Casa posts none by itself.
+
+**What still waits on a bot.** `own_voice.open_on_bot(role, bot_id)` lists, one short
+phrase per kind in a fixed order, what Casa still holds that waits on an agent's bot; an
+agent moves to a new bot only when it is empty. Durable kinds: a delegation asked on the
+bot or delivering there that is accepted or running, waiting for input it can still take,
+or still owing its requester an announcement; a live or idle job started on the bot or
+posting there; an ended job whose keyboard post on the bot is not retired; a scheduled
+question stored as posted through it; a run card whose Stop still works
+(`run_admission.Confirmations.open_cards_on_bot`); an update held for it. Memory-only
+kinds: a live question or card asked on it (`verdict_broker.VerdictBroker.live_on_bot`), a
+continuation queued on it (`plugin_continuations.Continuations.pending_on_bot`), and a turn
+of the agent being answered now — any of its turns, since turns are not tracked per bot.
+`durable_only` reads the durable kinds alone, which is all that exists at boot. A store
+that is not there holds nothing; one that fails to read is logged and reported as
+"something Casa could not check", so the change waits. Reminders and triggers are not
+counted: they pick their bot when they fire.
 
 **A task's two destinations, decided once.** A task is work that is not a conversation's:
 a delegation, a plugin job, a plugin continuation. Its launcher stamps, at its birth:
