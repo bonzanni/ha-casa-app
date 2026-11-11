@@ -517,6 +517,16 @@ def test_a_long_answer_whose_capped_copy_is_blank_is_judged_whole_and_carries_no
     assert tools_mod._with_silent_close_note("r", out, "finance", own_chat=True) == "r"
 
 
+def test_a_long_silence_whose_capped_copy_ends_mid_marker_carries_nothing():
+    """A closing message of nothing but markers is silence when judged whole,
+    even where the capped copy ends partway through a marker and so would not
+    read as silence on its own."""
+    final = "<silent/>" * 3000
+    out = _output(LONG + "\n\n" + final, final=final)
+    prefix = specialist_limits.truncate_output(out.text)[0]
+    assert tools_mod._closing_beyond_cut(out, prefix, True) == ""
+
+
 # --- a plugin's setup turn ----------------------------------------------------------
 
 def test_the_setup_turn_asks_for_the_outcome_in_one_plain_line():
