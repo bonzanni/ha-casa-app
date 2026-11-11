@@ -29,7 +29,7 @@ def _reference(options, cfg, origin, session_id, *, task=None, words=None, conv=
     """The delegated runner's inline code before the extraction, verbatim."""
     from plugin_bindings import BINDINGS
     _long_conversation = (
-        getattr(getattr(cfg, "session", None), "desk_context", True) is False)
+        getattr(getattr(cfg, "session", None), "long_runs", False) is True)
     if _long_conversation:
         options = dataclasses.replace(options, env={**options.env,
                                                     "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "200000"})
@@ -61,20 +61,20 @@ def bindings(monkeypatch, tmp_path):
     return store
 
 
-def _cfg(desk_context, kind="specialist"):
+def _cfg(long_runs, kind="specialist"):
     from types import SimpleNamespace
     return SimpleNamespace(role="browser", kind=kind,
-                           session=SimpleNamespace(desk_context=desk_context))
+                           session=SimpleNamespace(long_runs=long_runs))
 
 
 # --- the helper equals the inline code it replaced ----------------------------------------------
 
-@pytest.mark.parametrize("desk_context", [True, False])
+@pytest.mark.parametrize("long_runs", [False, True])
 @pytest.mark.parametrize("stored_call", [False, True])
 @pytest.mark.parametrize("first", [True, False])
 def test_the_extras_equal_the_inline_code_they_replaced(pads, bindings, logs, monkeypatch,  # noqa: F811
-                                                        desk_context, stored_call, first):
-    cfg = _cfg(desk_context)
+                                                        long_runs, stored_call, first):
+    cfg = _cfg(long_runs)
     origin = {"stored_call": {"run_id": "r"}} if stored_call else {}
     base = ClaudeAgentOptions(system_prompt="x", env={"A": "1"})
     brief = {"task": "find the receipt", "words": "his words"} if first else {}
@@ -87,19 +87,19 @@ def test_the_extras_equal_the_inline_code_they_replaced(pads, bindings, logs, mo
                       **({"task": brief["task"], "words": brief["words"]} if first else {}))
     assert _shape(got) == _shape(want)
     assert got_pads == {k: pads_ref.lines(k) for k in pads_ref.keys()}       # the same pad, the same brief
-    assert (LONG in got.env) is (desk_context is False)
+    assert (LONG in got.env) is long_runs
     assert base.env == {"A": "1"}                                            # the options are copied, never changed
 
 
 def test_the_run_starts_in_the_agents_log_and_cleanup_lets_an_unheld_pad_go(pads, bindings, logs):  # noqa: F811
-    extras = specialist_session.session_env_and_pad(_cfg(True), {}, run_id="S1")
+    extras = specialist_session.session_env_and_pad(_cfg(False), {}, run_id="S1")
     assert logs.texts(LogKey("agent", "browser")) == ["▶ started"]
     extras.apply(ClaudeAgentOptions(system_prompt="x"), task="t")
     assert pads.keys() == ["S1"]
     extras.cleanup()
     assert pads.keys() == []
     # a pad a binding can still resume stays
-    held = specialist_session.session_env_and_pad(_cfg(True), {}, run_id="S2")
+    held = specialist_session.session_env_and_pad(_cfg(False), {}, run_id="S2")
     held.apply(ClaudeAgentOptions(system_prompt="x"), task="t")
     ident = GrantIdentity(operator_id=100, bot_id=111, chat_id=42, enforcement_role="browser",
                           artifact_id="1" * 64, engagement_id="")
@@ -112,7 +112,7 @@ def test_the_run_starts_in_the_agents_log_and_cleanup_lets_an_unheld_pad_go(pads
 
 def test_a_conversation_session_is_keyed_by_its_own_key(pads, bindings, logs):  # noqa: F811
     """An agent's own conversation takes the same extras, its pad keyed by its session."""
-    extras = specialist_session.session_env_and_pad(_cfg(False), {}, run_id="conversation:browser")
+    extras = specialist_session.session_env_and_pad(_cfg(True), {}, run_id="conversation:browser")
     assert extras.env == {LONG: "200000"} and extras.pad.key == "conversation:browser"
     assert extras.pad.eager is True
     opts = extras.apply(ClaudeAgentOptions(system_prompt="x"))
@@ -130,10 +130,10 @@ async def _delegate(conv, origin=None):  # noqa: F811
         agent_mod.origin_var.reset(tok)
 
 
-@pytest.mark.parametrize("desk_context", [True, False])
+@pytest.mark.parametrize("long_runs", [False, True])
 async def test_a_delegated_run_has_the_env_the_pad_and_the_log_lines(conv, pads, logs,  # noqa: F811
-                                                                       desk_context):
-    conv.roles["browser"].session.desk_context = desk_context
+                                                                       long_runs):
+    conv.roles["browser"].session.long_runs = long_runs
     seen: list = []
 
     async def _during():
@@ -141,7 +141,7 @@ async def test_a_delegated_run_has_the_env_the_pad_and_the_log_lines(conv, pads,
     conv.h.on_receive = _during
     await _delegate(conv)
     (opts,) = conv.h.launches
-    long = desk_context is False
+    long = long_runs
     assert (opts.env.get(LONG) == "200000") is long and (LONG in opts.env) is long
     assert GRANT in opts.allowed_tools and SERVER in opts.mcp_servers
     assert opts.mcp_servers[SERVER].get("alwaysLoad") is (True if long else None)
@@ -153,7 +153,7 @@ async def test_a_delegated_run_has_the_env_the_pad_and_the_log_lines(conv, pads,
 
 
 async def test_a_stored_call_run_has_no_pad_but_keeps_its_env(conv, pads, logs):  # noqa: F811
-    conv.roles["browser"].session.desk_context = False
+    conv.roles["browser"].session.long_runs = True
     origin = {**ORIGIN, "stored_call": {"run_id": "r", "runtime_name": "x", "canonical": "{}",
                                         "label": "go"}}
     await _delegate(conv, origin)

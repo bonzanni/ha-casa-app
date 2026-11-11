@@ -408,11 +408,11 @@ def turn_frame(resident_name: str | None, continuation: bool = False, file: bool
 
 def desk_log(cfg: Any, desk: "Desk") -> list:
     """The exchanges a use of *desk* is shown: the desk's log, or none for a
-    role that declares ``session.desk_context: false`` (browser executor
-    §5.4 — each request is a fresh context, so an earlier request's text never
-    enters another's). The log itself is kept either way."""
+    role that declares ``session.long_runs: true`` — each of its requests is
+    one long conversation of its own, so an earlier request's text never
+    enters another's. The log itself is kept either way."""
     session = getattr(cfg, "session", None)
-    if getattr(session, "desk_context", True) is False:
+    if getattr(session, "long_runs", False) is True:
         return []
     return desk.log
 

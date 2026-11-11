@@ -1117,10 +1117,10 @@ async def test_a_fresh_conversation_counts_its_cost_from_zero(conv, monkeypatch)
     assert recorded == [0.5]
 
 
-async def test_the_compaction_window_is_set_only_for_a_role_without_desk_context(conv):
+async def test_the_compaction_window_is_set_only_for_a_long_runs_role(conv):
     from config import SessionConfig
     browser = conv.roles["browser"]
-    browser.session = SessionConfig(strategy="ephemeral", idle_timeout=0, desk_context=False)
+    browser.session = SessionConfig(strategy="ephemeral", idle_timeout=0, long_runs=True)
     tok = agent_mod.origin_var.set(dict(ORIGIN))
     try:
         await tools_mod._run_delegated_agent(browser, "go", "")

@@ -4,7 +4,7 @@ A specialist's session — one delegated run, or an agent's own conversation in
 its chat — gets three things its options builder does not give it:
 
 * **The long-run compaction window.** A role whose requests are long
-  conversations (``session.desk_context: false`` in its manifest) gets the
+  conversations (``session.long_runs: true`` in its manifest) gets the
   CLI's auto-compaction window widened, so a long browsing run is not
   compacted at the default size.
 * **Its pad** (:mod:`scratchpad`), keyed by the session: the pad tool, its
@@ -29,7 +29,7 @@ LONG_RUN_ENV = {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "200000"}
 
 def long_runs(cfg: Any) -> bool:
     """A mechanical stand-in for "this role's requests are one long conversation"."""
-    return getattr(getattr(cfg, "session", None), "desk_context", True) is False
+    return getattr(getattr(cfg, "session", None), "long_runs", False) is True
 
 
 @dataclasses.dataclass(frozen=True)

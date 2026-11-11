@@ -109,9 +109,9 @@ async def test_a_stored_call_has_no_tool(conv, pads):  # noqa: F811
     assert pads.keys() == []
 
 
-@pytest.mark.parametrize("desk_context, always", [(True, None), (False, True)])
-async def test_only_a_long_conversation_role_loads_it_up_front(conv, desk_context, always):  # noqa: F811
-    conv.roles["browser"].session.desk_context = desk_context
+@pytest.mark.parametrize("long_runs, always", [(False, None), (True, True)])
+async def test_only_a_long_conversation_role_loads_it_up_front(conv, long_runs, always):  # noqa: F811
+    conv.roles["browser"].session.long_runs = long_runs
     await _delegate(conv)
     (opts,) = conv.h.launches
     assert opts.mcp_servers[SERVER].get("alwaysLoad") is always
