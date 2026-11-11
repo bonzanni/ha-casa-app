@@ -665,35 +665,37 @@ _MEDIA_WORDS = {
 }
 
 
-def echo_parts(events: list[PostEvent]) -> list[tuple[str, str]]:
+def echo_parts(events: list[PostEvent], *,
+               where: str = "to your chat") -> list[tuple[str, str]]:
     """The echo lines' parts, ``(label, outcome)``: one per proven post, at most
     ECHO_MAX_LINES, then ``("", "…and N more.")``. A composer that re-labels a
     line (S6's file turn) takes the outcome from here, never by stripping a
     label off the rendered line — the event's label may differ from the
-    turn's (diff round 1, Astra)."""
+    turn's (diff round 1, Astra). *where* says where the posts went."""
     parts: list[tuple[str, str]] = []
     for event in events[:ECHO_MAX_LINES]:
         if getattr(event, "buttons", None) is not None:
             n = event.buttons
             lead = f"{event.pages} pages and " if event.pages else ""
-            tail = f"posted {lead}a proposal to your chat ({n} button{'s' if n != 1 else ''})."
+            tail = f"posted {lead}a proposal {where} ({n} button{'s' if n != 1 else ''})."
         elif event.media_kind:
-            tail = f"posted {_MEDIA_WORDS.get(event.media_kind, 'a file')} to your chat."
+            tail = f"posted {_MEDIA_WORDS.get(event.media_kind, 'a file')} {where}."
         else:
             pages = event.pages or 1
-            tail = f"posted to your chat ({pages} page{'s' if pages != 1 else ''})."
+            tail = f"posted {where} ({pages} page{'s' if pages != 1 else ''})."
         parts.append((event.label, tail))
     if len(events) > ECHO_MAX_LINES:
         parts.append(("", f"…and {len(events) - ECHO_MAX_LINES} more."))
     return parts
 
 
-def echo_lines(events: list[PostEvent]) -> list[str]:
+def echo_lines(events: list[PostEvent], *, where: str = "to your chat") -> list[str]:
     """§6: one Casa-authored line per proven post, at most ECHO_MAX_LINES
     then ``…and N more.``, each within ECHO_LINE_MAX characters; the label,
-    the kind and the page count or media kind — nothing plugin-authored."""
+    the kind and the page count or media kind — nothing plugin-authored.
+    *where* says where the posts went."""
     lines: list[str] = []
-    for label, tail in echo_parts(events):
+    for label, tail in echo_parts(events, where=where):
         if not label:
             lines.append(tail)
             continue

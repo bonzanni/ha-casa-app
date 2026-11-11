@@ -72,7 +72,7 @@ def _script_turn(monkeypatch, steps):
 async def _delegate(tmp_path, monkeypatch, steps, mode="sync", origin=None):
     """``delegate_to_agent`` from a resident's Telegram turn, the real handler
     over a scripted delegate (Alex, the finance specialist)."""
-    from test_delegate_to_agent import TestHandoffLine, _origin as d_origin
+    from test_delegate_to_agent import _DelegateHarness, _origin as d_origin
     import test_delegate_to_agent as tdta
     import plugin_registry
     _script_turn(monkeypatch, steps)
@@ -82,8 +82,8 @@ async def _delegate(tmp_path, monkeypatch, steps, mode="sync", origin=None):
     monkeypatch.setattr(tools_mod, "ClaudeSDKClient", tdta._FakeSpecialistClient)
     monkeypatch.setattr(plugin_registry, "resolve_for",
                         lambda *a, **kw: tdta.ResolutionResult(registry_valid=True))
-    payload, _ = await TestHandoffLine()._run(tmp_path, monkeypatch, mode=mode,
-                                              origin=origin)
+    payload, _ = await _DelegateHarness()._run(tmp_path, monkeypatch, mode=mode,
+                                               origin=origin)
     await asyncio.gather(*list(tools_mod._delegation_callback_tasks))
     for _ in range(5):                  # an async answer settles in a task of its own
         await asyncio.sleep(0)

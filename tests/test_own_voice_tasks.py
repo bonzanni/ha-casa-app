@@ -5,9 +5,12 @@ A delegation or a job is a task: its launcher decides, once, where its posts go
 (``assistant``, Casa's bot 111) delegates to Alex (``finance``, his own bot
 222); both serve operator 100. Pinned:
 
-* a task of Alex's open chat posts its start line and Alex's whole answer —
-  the raw text, never Ellen's bounded copy — in Alex's chat, every page under
-  the task; Ellen gets her bounded result; Alex's conversation gets a note;
+* a task of Alex's open chat posts its start line and the message Alex closed
+  his turn with, whole (never Ellen's bounded copy, never the notes he wrote
+  between tool calls; nothing when he closed silent) — in Alex's chat, every
+  page under the task; Ellen gets her bounded result, told where the person
+  saw it; Alex's conversation gets a note;
+* what the person wrote straight into the task reaches Ellen once;
 * the task's input destination exists before its first post: a reply sent
   while the run's client does not exist yet is queued for the task and
   written into its session after the brief, never taken for the conversation;
@@ -88,7 +91,7 @@ class Inputs:
         for text in self.queue.pop(tid, []):
             client.writes.append(text)
 
-    def submit(self, tid, text):
+    def submit(self, tid, text, *, said=None):
         state = self.state.get(tid)
         if state == "pending":
             self.queue[tid].append(text)
@@ -222,7 +225,7 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(Client, "built", None)
     real_echo = tools._with_post_echo
     monkeypatch.setattr(tools, "_with_post_echo",
-                        lambda text, owner: real_echo(text, owner) + ECHO)
+                        lambda text, owner, **kw: real_echo(text, owner, **kw) + ECHO)
     yield SimpleNamespace(alex=alex, casa=casa, chats=chats, inputs=inputs, opened=opened,
                           notified=notified, reg=reg, te=te)
     agent_lane.reset()
@@ -292,7 +295,7 @@ async def test_a_task_of_alexs_open_chat_shows_there_whole_and_ellen_gets_her_bo
     # Alex's chat: the start line, then the whole answer, marker included,
     # no echo; every landed message filed under the task
     texts = _alex_texts(world)
-    assert texts[0].startswith("Ellen asked: «How much on groceries in October?»")
+    assert texts[0].startswith("Ellen asked me: «How much on groceries in October?»")
     answer = "".join(texts[1:])
     assert MARKER in answer and ECHO.strip() not in answer
     assert len(texts) >= 3                       # paged
@@ -302,7 +305,7 @@ async def test_a_task_of_alexs_open_chat_shows_there_whole_and_ellen_gets_her_bo
     assert _casa_sends(world) == []
     # the conversation learns the outcome on its next turn, once
     (line,) = chat_notes.drain(FINANCE_BOT, OPERATOR)
-    assert line.startswith("Ellen asked you «How much on groceries in October?»; you answered (")
+    assert line == "Ellen asked you «How much on groceries in October?»; you answered"
     assert chat_notes.drain(FINANCE_BOT, OPERATOR) == []
     # the record carries the task as born
     assert world.inputs.state[did] == "ended"
@@ -528,7 +531,7 @@ async def test_each_job_completes_to_the_agent_whose_turn_started_it(
     rec = SimpleNamespace(id="e1", task="classify", executor=birth.executor,
                           requester=birth.requester, delivery=birth.delivery,
                           role_or_type="finance")
-    tools._note_task(tools._record_birth(rec), "started your job", "it completed")
+    tools._note_task(tools._record_birth(rec), "started your job", "it finished")
     notes = chat_notes.drain(FINANCE_BOT, OPERATOR)
     assert len(notes) == (1 if requester.role == "assistant" else 0)
 
@@ -543,3 +546,316 @@ async def test_a_delegation_to_an_agent_out_of_service_is_refused_at_once(world)
     assert payload["status"] == "error" and payload["kind"] == "agent_faulted"
     assert payload["message"] == "Finance is out of service until Casa restarts."
     assert world.alex.sent == [] and world.opened == []
+
+
+# ---------------------------------------------------------------------------
+# What a task posts as its answer: the message its delegate closed its turn
+# with, never the notes it wrote between tool calls
+# ---------------------------------------------------------------------------
+
+def _script(monkeypatch, steps):
+    """The delegate's turn as several text-bearing messages, a tool call and
+    its result between them, as a real delegate's turn runs: each step is
+    ``(words, tool)``; ``tool`` None closes the turn."""
+    from claude_agent_sdk import (AssistantMessage, TextBlock, ToolResultBlock,
+                                  ToolUseBlock, UserMessage)
+    real = Client.receive_response
+
+    async def receive_response(self):
+        async for msg in real(self):
+            if not isinstance(msg, AssistantMessage):
+                yield msg
+                continue
+            for i, (words, tool) in enumerate(steps):
+                content = [TextBlock(text=words)]
+                if tool is not None:
+                    content.append(ToolUseBlock(id=f"tu{i}", name=f"mcp__ledger__{tool}",
+                                                input={}))
+                yield AssistantMessage(content=content, model="m")
+                if tool is not None:
+                    yield UserMessage(content=[ToolResultBlock(tool_use_id=f"tu{i}",
+                                                               content="ok")])
+    monkeypatch.setattr(Client, "receive_response", receive_response)
+
+
+async def _ellens_result(world, mode, task="How much on groceries in October?"):
+    """Ellen's result of one delegation to Alex: the sync payload's text, or
+    the late notice's once the async run settled."""
+    payload = await _delegate(mode, task=task)
+    if mode == "async":
+        assert payload["status"] == "pending", payload
+        await asyncio.sleep(0.05)
+        await _settled()
+        (note,) = [m for m in world.notified if getattr(m.content, "delegation_id", "")]
+        return payload, note.content.text
+    assert payload["status"] == "ok", payload
+    return payload, payload["text"]
+
+
+# Alex runs here under his role's display name
+NAME = "Finance"
+START = "Ellen asked me: «How much on groceries in October?»"
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+async def test_a_task_closing_silent_after_notes_posts_only_its_start_line(
+        world, monkeypatch, mode):
+    _FakeSpecialistClient.reset(response="unused")
+    _script(monkeypatch, [("Fetch all eight in parallel.", "run_fetch"), ("<silent/>", None)])
+    await _ellens_result(world, mode)
+    assert _alex_texts(world) == [START]
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+async def test_a_task_posts_its_closing_message_not_its_notes(world, monkeypatch, mode):
+    _FakeSpecialistClient.reset(response="unused")
+    _script(monkeypatch, [("Reading the ledger now.", "run_fetch"),
+                          ("€420, mostly Albert Heijn.", None)])
+    _, result = await _ellens_result(world, mode)
+    assert _alex_texts(world)[0] == START
+    assert _alex_texts(world)[1:] == ["€420, mostly Albert Heijn."]
+    assert "Reading the ledger" not in "".join(_alex_texts(world))
+    # Ellen still reads the whole turn, notes included
+    assert "Reading the ledger now." in result
+
+
+async def test_a_brief_its_requester_quoted_shows_without_the_quotes(world):
+    _FakeSpecialistClient.reset(response="€420.")
+    await _delegate("sync", task='"How much on groceries in October?"')
+    assert _alex_texts(world)[0] == START
+    (line,) = chat_notes.drain(FINANCE_BOT, OPERATOR)
+    assert line.startswith("Ellen asked you «How much on groceries in October?»;")
+
+
+@pytest.mark.parametrize("text,shown", [
+    ('"a" and "b"', '"a" and "b"'),
+    ("“Split it by week”", "Split it by week"),
+    ("«only Lidl»", "only Lidl"),
+    ("'it''s'", "'it''s'"),
+    ('"', '"'),
+    ("  plain  words ", "plain words"),
+])
+async def test_only_one_quote_pair_enclosing_the_whole_brief_is_dropped(text, shown):
+    assert tools._unquoted(text) == shown
+
+
+# ---------------------------------------------------------------------------
+# What the person wrote straight into a running task reaches its requester
+# ---------------------------------------------------------------------------
+
+WORDS_LINE = "(Casa: the person also wrote to Finance directly while it worked on this: «only Lidl»)"
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+async def test_the_requester_learns_what_the_person_wrote_into_the_task(
+        world, monkeypatch, mode):
+    said: dict[str, list[str]] = {}
+
+    async def reply_mid_run(client):
+        said[world.opened[0][0]] = ["only Lidl"]
+
+    Client.on_query = reply_mid_run
+    taken = []
+
+    def take_said(tid):
+        taken.append(tid)
+        return said.pop(tid, [])
+
+    monkeypatch.setattr(task_input, "take_said", take_said)
+    _FakeSpecialistClient.reset(response="€395 without the Lidl runs.")
+    payload, result = await _ellens_result(world, mode)
+    assert result.endswith("\n\n" + WORDS_LINE)
+    assert result.count("only Lidl") == 1
+    assert taken == [payload["delegation_id"]]
+
+
+# ---------------------------------------------------------------------------
+# Ellen's notes for a task of Alex's own chat
+# ---------------------------------------------------------------------------
+
+def _post_card(world):
+    """Alex's plugin posts a card in his chat mid-run, filed under the task."""
+    import result_broker as rb
+
+    async def post(client):
+        rb.POSTS.record(world.opened[0][0], rb.PostEvent(
+            tool_use_id="tu-card", plugin="ledger", slot="card", label="📊 Alex",
+            pages=1, media_kind=None))
+
+    Client.on_query = post
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+async def test_ellens_result_for_an_own_chat_task_with_posts_asks_her_to_close_the_loop(
+        world, monkeypatch, mode):
+    _post_card(world)
+    _FakeSpecialistClient.reset(response="unused")
+    _script(monkeypatch, [("Posting the card.", "post_card"), ("<silent/>", None)])
+    _, result = await _ellens_result(world, mode)
+    assert "📊 Alex posted to the person in Finance's chat (1 page)." in result
+    assert tools.OWN_CHAT_ECHO_NOTE.format(name=NAME) in result
+    assert tools.OWN_CHAT_SILENT_CLOSE_NOTE.format(name=NAME) in result
+    assert tools.POST_ECHO_SILENCE_NOTE not in result
+    assert tools.SILENT_CLOSE_NOTE.format(name=NAME) not in result
+    assert tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME) not in result
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+async def test_ellen_is_told_the_person_already_read_alexs_answer(world, monkeypatch, mode):
+    _FakeSpecialistClient.reset(response="unused")
+    _script(monkeypatch, [("Checking the rate.", "run_fetch"), ("EUR/USD is 1.08.", None)])
+    _, result = await _ellens_result(world, mode)
+    assert _alex_texts(world)[1:] == ["EUR/USD is 1.08."]
+    assert result.endswith("\n\n" + tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME))
+    assert tools.SILENT_CLOSE_NOTE.format(name=NAME) not in result
+    assert tools.OWN_CHAT_SILENT_CLOSE_NOTE.format(name=NAME) not in result
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+async def test_a_silent_close_is_never_called_an_answer_the_person_read(
+        world, monkeypatch, mode):
+    _FakeSpecialistClient.reset(response="unused")
+    _script(monkeypatch, [("Checking the rate.", "run_fetch"), ("<silent/>", None)])
+    _, result = await _ellens_result(world, mode)
+    assert tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME) not in result
+    assert result.endswith(tools.OWN_CHAT_SILENT_CLOSE_NOTE.format(name=NAME))
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+async def test_the_persons_words_follow_the_answer_note(world, monkeypatch, mode):
+    said: dict[str, list[str]] = {}
+
+    async def reply_mid_run(client):
+        said[world.opened[0][0]] = ["only Lidl"]
+
+    Client.on_query = reply_mid_run
+    monkeypatch.setattr(task_input, "take_said", lambda tid: said.pop(tid, []))
+    _FakeSpecialistClient.reset(response="€395.")
+    _, result = await _ellens_result(world, mode)
+    note = tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME)
+    assert result.endswith(f"{note}\n\n{WORDS_LINE}")
+
+
+async def test_a_task_of_a_chat_that_is_not_open_keeps_ellens_usual_notes(world, monkeypatch):
+    world.chats.state["finance"] = "not_open"
+    _FakeSpecialistClient.reset(response="unused")
+    _script(monkeypatch, [("Checking.", "run_fetch"), ("<silent/>", None)])
+    _, result = await _ellens_result(world, "sync")
+    assert result.endswith(tools.SILENT_CLOSE_NOTE.format(name=NAME))
+    assert "Finance's chat" not in result
+    assert tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME) not in result
+
+
+# ---------------------------------------------------------------------------
+# A continuation: no birth of its own, its record's destinations
+# ---------------------------------------------------------------------------
+
+async def _continuation(world, monkeypatch, output, *, quiet_if=None, did="cont-1"):
+    """A continuation's completion: the real callback over a record whose
+    delivery is Alex's chat, with no birth passed. Returns the notices sent."""
+    from specialist_registry import DelegationRecord
+
+    class _Registry:
+        job_registry = SimpleNamespace(ack_terminal_notification=AsyncMock())
+
+        async def complete_delegation(self, *a, **kw):
+            return None
+
+    monkeypatch.setattr(tools, "_specialist_registry", _Registry())
+    record = DelegationRecord(id=did, agent="finance", started_at=0.0, origin=_ellen_turn(),
+                              executor="finance",
+                              requester=Requester("assistant", {"_tg_bot": CASA_BOT}),
+                              delivery=ALEX_CHAT)
+
+    async def _run():
+        return output
+
+    task = asyncio.ensure_future(_run())
+    tools._attach_completion_callback(task, record, quiet_if=quiet_if)
+    await task
+    await _settled()
+    return [m for m in world.notified if getattr(m.content, "delegation_id", "") == did]
+
+
+async def test_a_continuations_notes_follow_its_record_birth(world, monkeypatch):
+    import result_broker as rb
+    rb.POSTS.record("cont-1", rb.PostEvent(
+        tool_use_id="tu-card", plugin="ledger", slot="card", label="📊 Alex",
+        pages=1, media_kind=None))
+    out = tools.DelegatedOutput(text="note\n\n<silent/>", run_subtype="success",
+                                final_message="<silent/>")
+    (notice,) = await _continuation(world, monkeypatch, out)
+    text = notice.content.text
+    assert tools.OWN_CHAT_ECHO_NOTE.format(name=NAME) in text
+    assert tools.OWN_CHAT_SILENT_CLOSE_NOTE.format(name=NAME) in text
+    # a continuation's answer is not posted in Alex's chat: never "already read"
+    assert world.alex.sent == []
+    assert tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME) not in text
+
+
+async def test_a_continuations_answer_is_never_called_read_in_alexs_chat(world, monkeypatch):
+    out = tools.DelegatedOutput(text="EUR/USD is 1.08.", run_subtype="success",
+                                final_message="EUR/USD is 1.08.")
+    (notice,) = await _continuation(world, monkeypatch, out)
+    assert world.alex.sent == []
+    assert tools.OWN_CHAT_ANSWER_NOTE.format(name=NAME) not in notice.content.text
+
+
+async def test_a_quiet_continuation_still_tells_the_requester_the_persons_words(
+        world, monkeypatch):
+    said = {"cont-1": ["only Lidl"]}
+    monkeypatch.setattr(task_input, "take_said", lambda tid: said.pop(tid, []))
+    out = tools.DelegatedOutput(text="<silent/>", run_subtype="success",
+                                final_message="<silent/>")
+    (notice,) = await _continuation(world, monkeypatch, out, quiet_if=lambda o: True)
+    assert notice.content.status == "ok"
+    assert notice.content.text == WORDS_LINE
+    assert said == {}
+
+
+async def test_a_quiet_continuation_without_words_stays_quiet(world, monkeypatch):
+    monkeypatch.setattr(task_input, "take_said", lambda tid: [])
+    out = tools.DelegatedOutput(text="<silent/>", run_subtype="success",
+                                final_message="<silent/>")
+    assert await _continuation(world, monkeypatch, out, quiet_if=lambda o: True) == []
+
+
+# ---------------------------------------------------------------------------
+# The delegate knows when its closing message is posted to the person
+# ---------------------------------------------------------------------------
+
+async def test_an_own_chat_task_tells_its_delegate_its_closing_message_is_shown(world):
+    _FakeSpecialistClient.reset(response="€420.")
+    await _delegate("sync")
+    assert "answer_shown:" in Client.built.writes[0]
+    assert tools._ANSWER_IN_CHAT == set()
+
+
+async def test_a_delegation_whose_answer_is_not_posted_is_not_told_so(world):
+    world.chats.state["finance"] = "not_open"
+    _FakeSpecialistClient.reset(response="€420.")
+    await _delegate("sync")
+    assert "answer_shown:" not in Client.built.writes[0]
+
+
+async def test_a_run_under_another_id_inside_the_task_is_not_told_so(world):
+    """A hand-off or a nested run of the task runs under its own id: its
+    answer returns to its caller, never to the person's chat."""
+    nested = {}
+
+    async def nested_run(client):
+        if nested:
+            return
+        nested["outer"] = client.writes[0]
+        token = tools._delegation_quota_key.set("handoff-under-the-task")
+        try:
+            await tools._run_delegated_agent(tools._agent_role_map["finance"], "sub", "")
+        finally:
+            tools._delegation_quota_key.reset(token)
+        nested["inner"] = Client.built.writes[0]
+
+    Client.on_query = nested_run
+    _FakeSpecialistClient.reset(response="€420.")
+    await _delegate("sync")
+    assert "answer_shown:" in nested["outer"]
+    assert "answer_shown:" not in nested["inner"]

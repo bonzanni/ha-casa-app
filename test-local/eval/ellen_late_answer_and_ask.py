@@ -22,10 +22,6 @@ case runs TWO turns in one session, as production does: the person's ask
 (answered ``pending``), then the notice body the installed
 ``_synthesize_delegation_turn`` builds. Nothing is started, asked or posted.
 
-``--handoff-shown`` (slice 5f) serves the pending result an operator turn gets
-once Casa showed its hand-off line: ``tools.PENDING_HANDOFF_SHOWN_NOTE`` after
-the note, and the reply to it must then be silence (no holding line).
-
 ``--variant baseline`` serves the projection as compiled. ``--variant
 doctrine`` applies the own-words doctrine edits of ``ellen_own_words.py``,
 after which the projection carries ``DOCTRINE_PARAGRAPH``, so a deployed image
@@ -180,15 +176,10 @@ def _silent(text: str) -> bool:
     return strips_to_silence(text)
 
 
-HANDOFF_SHOWN = False   # --handoff-shown: only silence passes
-
-
 def judge_holding(reply: str) -> tuple[bool, str]:
     """The reply to a ``pending`` result: silence, or the one holding line."""
     if _silent(reply):
         return True, "silent"
-    if HANDOFF_SHOWN:
-        return False, "a line under the hand-off line"
     if HOLDING_LINE.fullmatch(_norm(reply)):
         return True, "one short line"
     return False, "not the holding line"
@@ -261,10 +252,8 @@ async def _one(case: dict, system_prompt: str, model: str,
     from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, create_sdk_mcp_server
     import tools as casa_tools
     captured: list = []
-    note = PENDING_NOTE + (" " + casa_tools.PENDING_HANDOFF_SHOWN_NOTE.format(name="Alex")
-                           if HANDOFF_SHOWN else "")
     pending = json.dumps({"status": "pending", "delegation_id": "0f3c9a2e-eval",
-                          "agent": "finance", "timeout_s": 60, "note": note})
+                          "agent": "finance", "timeout_s": 60, "note": PENDING_NOTE})
     fakes = [
         _fake(casa_tools.delegate_to_agent, captured, lambda _a: pending),
         _fake(casa_tools.ask_user, captured, lambda _a: json.dumps(AWAITING)),
@@ -330,11 +319,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--variant", choices=("baseline", "doctrine"), required=True)
     parser.add_argument("--runs", type=int, default=3)
-    parser.add_argument("--handoff-shown", action="store_true")
     parser.add_argument("--cli", default=None, help="Claude Code CLI to drive the model with")
     args = parser.parse_args()
-    global HANDOFF_SHOWN
-    HANDOFF_SHOWN = args.handoff_shown
     try:
         ok = asyncio.run(_run(args.variant, args.runs, args.cli))
     except Exception:  # noqa: BLE001
