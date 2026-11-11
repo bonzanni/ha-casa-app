@@ -43,6 +43,14 @@ orphan becomes ready so its *failure* can be delivered. In-flight delivery lease
 retained for one fresh lease rather than revoked, so a device mid-playback is not
 stolen from.
 
+**A delegation row is a task record too.** Beside its route, a Telegram delegation's
+`VoiceJob` carries the task fields its launcher stamped at birth — `executor`, `requester`
+(`{role, route}`) and `delivery` (`[bot, chat, null]` or `null`) — and, for a task shown in an
+agent's own chat, its posts (snapshot key `task_posts`), indexed by address again at load
+(`JobRegistry.task_post_owner`, `ended_task_post_owner`) so a reply finds the task after a
+restart. A stored Telegram row without the task fields is refused at load
+([`own-voice.md`](own-voice.md)).
+
 ## Contracts & invariants
 
 **INV-JOB-001**: Every job mutation writes the complete snapshot to disk before publishing it in memory; a failed write publishes nothing.

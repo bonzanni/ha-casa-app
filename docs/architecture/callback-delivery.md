@@ -168,6 +168,11 @@ credential: unframed, it read as something the operator pasted, and the assistan
 carry the handle in a delegation brief. A specialist-target nudge reaches the assistant through
 `plugin_dispatch.compose`, whose courier wrap is marked as a casa notice and names
 `mode='sync'` — the one mode the specialist's own open engagement does not refuse as busy.
+One thing comes before that order: when an agent's capability delivered the plugin's latest
+unexpired sign-in link (`callback_owner.operation_for`, memory-only, bounded by the link's
+life), the nudge answers that agent's operation — it goes to that agent while the entry still
+targets it, born on the bot of the chat the link was delivered in
+([`own-voice.md`](own-voice.md)); with no such link, the entry's own order.
 An accepted nudge dispatch emits exactly one INFO record naming the plugin, the phase
 (`result` or `outcome`), the outcome enum and the target role, and never the handle. It is
 emitted inside the branch that spends the budget unit, before the ledger write, so the count of

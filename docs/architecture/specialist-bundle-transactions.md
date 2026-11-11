@@ -77,6 +77,14 @@ under the model resolution in force at rollback time: when only the resolved mod
 the binding is re-derived through the same three gates the loader uses before it is
 compiled and committed.
 
+**An agent's own chat follows a committed change.** After a committed install, upgrade or
+rollback, once the transaction has released its lock, the own-chat lifecycle's hook runs (an
+offer for a newly declared chat, dormancy for one no longer declared), and the bot's self-setup
+runs again when the bound persona changed; the result says `own_chat: "offered"` when the
+chat was offered. A committed uninstall puts the agent's bot dormant and its result carries
+`own_chat: {bot, delete_link}`. A hook's failure is logged and never turns a committed change
+into a failed one: the next boot reconciles ([`own-voice.md`](own-voice.md)).
+
 ## Contracts & invariants
 
 **INV-SPEC-003**: An upgrade failure retains the complete prior active tuple; a rollback restores it.

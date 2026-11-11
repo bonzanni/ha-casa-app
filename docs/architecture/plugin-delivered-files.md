@@ -22,7 +22,7 @@ whatever the outcome.
 
 ## Contracts & invariants
 
-**INV-PLUG-046**: A capability slot a plugin declares as `operator_file` reaches the operator only as one media send Casa makes through the kind's media policy to the chat of the call's grant identity, captioned with the label Casa derives from the specialist's display name and the plugin cannot influence, with the plugin's caption beneath as the deposit validated it; proven delivery replaces the result with a receipt, and anything short withholds the result and drops the deposit, except that a keyed deposit whose key was already delivered is not sent again — its staged file is still consumed — and gets the original delivery's receipt (INV-PLUG-050).
+**INV-PLUG-046**: A capability slot a plugin declares as `operator_file` reaches the operator only as one media send Casa makes through the kind's media policy at the call's delivery (its grant identity's), captioned with the label Casa derives from the specialist's display name and the plugin cannot influence — none in the agent's own chat — with the plugin's caption beneath as the deposit validated it; proven delivery replaces the result with a receipt, and anything short withholds the result and drops the deposit, except that a keyed deposit whose key was already delivered is not sent again — its staged file is still consumed — and gets the original delivery's receipt (INV-PLUG-050).
 
 The deposit requires the media `kind` — one of the kinds `send_media` has a policy for
 (`bad_kind` otherwise) — and judges the optional caption as one printable line whose

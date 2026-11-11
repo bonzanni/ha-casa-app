@@ -121,6 +121,7 @@
     - casa/rootfs/opt/casa/persona_install.py::persona_pack_roots
     - casa/rootfs/opt/casa/persona_install.py::inspect_persona_repo
   tests:
+    - tests/test_persona_avatar.py
     - tests/test_persona_install.py
     - tests/test_persona_removal.py
     - tests/test_persona_apply_resident_staging.py

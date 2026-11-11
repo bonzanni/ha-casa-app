@@ -20,7 +20,8 @@ a plugin's output is deposited and delivered — are
 its ACL and its limits are [`delegation.md`](delegation.md); the approval challenge is
 [`plugin-authorization.md`](plugin-authorization.md). Button taps and the stored calls they
 execute are [`stored-call-buttons.md`](stored-call-buttons.md); files sent as a reply are a
-later slice; the desk is Telegram-only.
+later slice; the desk is Telegram-only and lives in the resident's chat: an agent with its own
+chat answers there as its own conversation ([`own-voice.md`](own-voice.md)).
 
 ## Mental model
 
@@ -36,6 +37,8 @@ poster is not the chat's own resident, and the poster holds a desk (`has_desk`: 
 role's `kind` is `specialist`, or `executor` for the configurator; the same predicate the
 delegation gate reads) and is one the resident may delegate to now — takes the resident's
 path, its text unchanged (a reply carrying Casa's note of what it answered, below). The route
+runs on the resident's bot only; on an agent's own bot the same reply is that agent's
+conversation turn, unless it quotes a live task's post ([`own-voice.md`](own-voice.md)). The route
 runs first in the DM handler, ahead of the `/new` interception (so `/new, start over` on a Finance post is
 Finance's turn, as text: it resets nothing, neither the resident nor the desk), and after the
 chat's rate decision, taken exactly as today's path takes it.
@@ -106,9 +109,18 @@ nothing. The task itself stays the operator's exact words, and a tap, a continua
 file's turn (whose task is Casa's note, opening `[casa file]`, even when the caption starts
 with `/`) never carries the line.
 
+**The lock, the queue and the fault are the agent's lane.** A desk keeps its log per (bot,
+chat, specialist), but its lock, its queue and its fault are its specialist's one lane
+(`agent_lane.LANES.get(role)`, `agent_lane.FAULTS`), keyed by the agent alone and shared by
+every chat and every other use of that agent: a stored-call tap, a plugin continuation, and
+every delegation to it from anywhere (a delegation with no desk takes the lane directly,
+`tools._delegation_in_lane`). The operator's private chat has the same id on every bot, and
+one agent's plugin processes are one set whichever chat asked. `specialist_desk`'s names for
+them (`DeskBusy`, `DeskFaulted`, `DeskFault`, `faulted_desk_issues`) are the lane's.
+
 **One desk, one use at a time, the lock covering the whole use.** Every use of a desk — a
 swipe-reply turn, an approval continuation, and the resident's delegations to that
-specialist from that chat whether sync, degraded or async — runs alone under the desk's lock
+specialist from that chat whether sync, degraded or async — runs alone under the lane's lock
 from the idle check and the log read through the run, the classification, the delivery
 bookkeeping and the exchange's commit, in arrival order. The specialist's concurrency permit
 is taken after the lock (it never waits; a refusal is a notice) and released inside the
@@ -141,7 +153,7 @@ opens it or shares it with a plugin, whatever else the inbox holds
 
 ## Contracts & invariants
 
-**INV-DESK-005**: An operator's Telegram message that quotes a message Casa posted for an agent that holds a desk (a specialist or the configurator) in that chat, for that operator, and still retained in its post map, reaches that agent as one desk turn carrying the operator's exact words — never a resident turn — when it is one the chat's resident may delegate to, unless the quoted message is a post of a background job — one whose record still counts as live goes into that job instead (INV-BGJOB-012), and one of an ended job this operator started in this chat goes to the resident with the job's end named (INV-BGJOB-024); every other message, quoting or not, takes the resident's path.
+**INV-DESK-005**: An operator's Telegram message in the resident's chat that quotes a message Casa posted for an agent that holds a desk (a specialist or the configurator) in that chat, for that operator, and still retained in its post map, reaches that agent as one desk turn carrying the operator's exact words — never a resident turn — when it is one the chat's resident may delegate to, unless the quoted message is a post of a background job — one whose record still counts as live goes into that job instead (INV-BGJOB-012), and one of an ended job this operator started in this chat goes to the resident with the job's end named (INV-BGJOB-024); every other message, quoting or not, takes the resident's path.
 
 The four conditions are positive and read from Casa's own state — the authenticated
 operator check the ingress already makes, the post map the channel filed, the chat's default
@@ -167,6 +179,12 @@ an async launch or a degraded sync still returns `pending` to the resident at on
 task waits for the desk. A delegation launched elsewhere (an engagement, a scheduled or
 webhook turn, another chat), a job's session, and a voice turn touch no desk.
 
+**INV-DESK-006**: Each executing agent has one lane and one fault, keyed by the agent alone: every use of it — a stored-call tap, a continuation, a delegation from any chat or bot — waits in one queue of at most three behind one lock, and a faulted agent refuses every use at once until Casa restarts.
+
+A run still unwinding past its runner's teardown bound refuses the lane only until it ends,
+and is not a fault. A delegation to a faulted agent is the typed `agent_faulted` result,
+before any queue place ([`delegation.md`](delegation.md)).
+
 **INV-DESK-004**: A Telegram DM text message that replies to another message and that the desk does not take reaches the chat's resident with its text unchanged and one Casa-composed note on the reserved `_reply_note` context key, naming who posted the quoted message — decided from Casa's post map and Telegram's sender ids, never from text — when, and what it read, clipped to 600 characters.
 
 The key is in `provenance.RESERVED_CONTEXT_KEYS`, so no external ingress can set it, and the
@@ -188,8 +206,8 @@ longer say who posted it; the next desk turn starts a fresh log.
 ## Extension points
 
 **Buttons on a specialist's post** land in the same desk: a tap is a use of the desk under its
-lock and queue, the stored call its task, and a desk whose pinned run could not be confirmed
-terminated is *faulted* — every later use refused until restart
+lane and queue, the stored call its task, and an agent whose pinned run could not be confirmed
+terminated is *faulted* — every later use of its lane refused until restart
 ([`stored-call-termination.md`](stored-call-termination.md)). The one exception is a stored
 call of the plugin's declared stop tool, which takes no desk and is called directly
 ([`plugin-stop.md`](plugin-stop.md)).
@@ -204,6 +222,7 @@ follows.
 
 **Source**
 - `casa/rootfs/opt/casa/specialist_desk.py`
+- `casa/rootfs/opt/casa/agent_lane.py`
 - `casa/rootfs/opt/casa/result_broker.py::PostMap`
 - `casa/rootfs/opt/casa/result_broker.py::PostRecord`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._maybe_route_desk_reply`
@@ -221,6 +240,7 @@ follows.
 - `tests/test_file_handoff_turn.py`
 - `tests/test_file_handoff_lines.py`
 - `tests/test_reply_note.py`
+- `tests/test_agent_lane.py`
 
 **Related**
 - [`architecture/plugin-delivered-slots.md`](../architecture/plugin-delivered-slots.md)

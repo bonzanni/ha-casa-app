@@ -109,7 +109,11 @@ the turn is the operator's own live message — the spawn cap's `_is_agent_conte
 (the server-stamped operator marker, no engagement, no delegation) and the sender is the
 configured operator — so voice, narration, scheduled and delegated turns cannot stop
 anything. It reaches only his own requests: a ref whose admission
-(`plugin_stop.confirmation_for`) is not this operator's is neither listed nor stopped. With
+(`plugin_stop.visible_confirmation`) is not this operator's is neither listed nor stopped. An
+admission asked on the resident's own bot is found there; one asked on another bot is found
+when the resident asked for that work — the root of its binding's chain — as a delegation to
+an agent with its own chat runs in that agent's chat ([`own-voice.md`](own-voice.md)). The
+card's line then goes through the bot that holds it. With
 no `ref` it lists every stop plugin's running requests, each with its ref,
 its specialist's name, its tasks and its state, and says of a specialist whose listing
 `failed` that what it is doing could not be listed right now. With a `request:` ref from

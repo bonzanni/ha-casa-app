@@ -90,6 +90,11 @@ in the tree — the two sets are equal by contract, not by coincidence. The imag
 distribution channel: specialists and their personas arrive by install, which is why a pack
 that no slot defaults to has no reachable consumer at all.
 
+**A pack may carry the agent's picture**, `avatar.jpg` (`persona_pack.AVATAR_FILE`): a JPEG of
+at most 1 MiB, read as raw bytes and part of the pack's checksum, refused when it is not a
+JPEG, too large, a symlink or executable. An install copies it; an agent with its own chat
+shows it as its bot's picture, set again at each persona apply ([`own-voice.md`](own-voice.md)).
+
 **Removing a persona is decided by who still refers to it, not by who is using it.** A
 persona's bytes are needed for as long as any binding tuple that a later load — or a later
 *recovery* — can read still names them. That set is wider than "what is active": a staged
@@ -324,6 +329,7 @@ tuples, retained priors, pending rotations and replayable bundle journals).
 - `casa/rootfs/opt/casa/persona_install.py::inspect_persona_repo`
 
 **Tests**
+- `tests/test_persona_avatar.py`
 - `tests/test_persona_install.py`
 - `tests/test_persona_removal.py`
 - `tests/test_persona_apply_resident_staging.py`

@@ -72,6 +72,11 @@ ends it, or when its session cannot be resumed (INV-BGJOB-022). A job declaring
 interacts with the operator
 ([`background-job-quiet-runs.md`](background-job-quiet-runs.md)).
 
+**A job's lines need its host's open chat.** A job reports to the operator through its host's
+surface, so `start_job` refuses a host whose own chat is not open with the capability rule's
+typed result before the start claim (the resident's chat always is), and a job's record keeps
+the delivery and requester its launch owner stamped at birth ([`own-voice.md`](own-voice.md)).
+
 ## Contracts & invariants
 
 **INV-BGJOB-004**: A resident-hosted job's session is offered exactly its declaring plugin's tools, `Skill`, `ToolSearch`, the two job tools and its scratchpad — never a delegation, messaging, memory or question tool, and never the resident's own settings, prompt or plugins.

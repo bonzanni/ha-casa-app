@@ -122,6 +122,10 @@ held under INV-PLUG-008 dispatchable. The webhook secret is also
 resolved by the Supervisor discovery publisher, so the companion integration signs with
 the same value the add-on verifies.
 
+**A specialist's role may declare its own chat** (`AgentConfig.own_chat`, an `OwnChatConfig`
+of two profile texts), and `session.long_runs: true` marks a role whose requests are each one
+long conversation ([`own-voice.md`](own-voice.md), [`scratchpad.md`](scratchpad.md)).
+
 ## Contracts & invariants
 
 **INV-CFG-001**: Exactly seven reload scopes exist, and none of them rereads the app manifest options.

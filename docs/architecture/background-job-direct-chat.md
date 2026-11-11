@@ -36,13 +36,24 @@ the job (INV-BGJOB-017). A specialist's job asks with
 **Cancel job** button. A resident's plugin worker has no question tool; it parks what needs an
 answer and reports it, and its plugin's delivered posts reach the DM as before.
 
+**Every post goes to the job's delivery, and a reply finds it task-first.** A job is a task:
+its launcher fixes, at its birth, the chat its posts go to (`rec.delivery` — its host's own
+chat when that is open, the resident's for a resident's job, none otherwise) and who receives
+its result (`rec.requester`) ([`own-voice.md`](own-voice.md)). Its start line, questions,
+parking line and plugin posts all go there, through that delivery's bot; a job with no
+delivery posts none of them, and `ask_operator` refuses. In the host's own chat the lines carry
+no label (`Started «<title>».`). The reply route described here is one case of the task-first
+route every endpoint runs: a delegation's posts in an agent's chat are filed and routed the same
+way, and a file replying to a job's post reaches the job (INV-OWN-004, INV-OWN-005).
+
 **Ownership lives on the engagement record.** The post map is memory-only and bounded, so it
 cannot say which live job owns a DM message. The record does: `dm_posts` lists the job's start
 line, questions and plugin posts (newest last, unbounded while the job lives, and kept with the
 tombstone after it ends), `ui_posts` the ones carrying a keyboard (start line, questions,
 parking lines), and `questions` the asked questions by a random id. The channel files
-each post as it lands (`EngagementRegistry.record_job_post`, called from the post-landing seam
-for plugin posts and from the start-line and question posters), and the registry keeps an index
+each post as it lands (`EngagementRegistry.record_job_post`, reached through `task_posts.record`
+from the post-landing seam for plugin posts, and called from the start-line and question
+posters), and the registry keeps an index
 from each post's address — the bot that posted it, the chat and the message id, since Telegram
 numbers messages per bot and per chat — to live record, rebuilt at load. When the job ends, its
 posts move to a second index keyed by the same address, which load rebuilds
@@ -68,13 +79,13 @@ notice the same way
 ([`background-job-message-journal.md`](background-job-message-journal.md)). A question may appear twice (asked again, or a send that timed out
 but landed); either copy answers while the job lives.
 
-**A reply to an ended job's post goes to the resident, told how the job ended.** Once the job
+**A reply to an ended job's post goes to the chat's own agent, told how the job ended.** Once the job
 has ended, a reply quoting one of its posts — its start line, a question, a plugin post, a post
 that landed after the end — is not the desk's: the desk cannot see the job, and a specialist-hosted
 job's plugin post sits in the post map under that specialist. The channel checks the ended
 index before the post map (`EngagementRegistry.ended_job_post_owner`), with the live route's
 own checks — the authenticated operator who started the job, in its chat — and the message
-becomes the resident's ordinary turn, whose reply note names the job's agent, its title, how it
+becomes the ordinary turn of that chat's own agent (the resident, in the resident's chat), whose reply note names the job's agent, its title, how it
 ended and when (`TelegramChannel._ended_job_phrase`), as in "a message Casa posted for
 Finance's background job «Q3 accounting», which ended (completed) at 2026-11-10 14:02". A job a
 resident's plugin worker ran is named as the resident's own, with its plugin. The resident narrated the
@@ -107,11 +118,12 @@ what the completion gate counts and what memory keeps (INV-MEM-044) — and the 
 receives carries Casa's `[replying to «…»]` line before them. It is written into the running
 session as it arrives, never held for a turn to end (INV-BGJOB-016).
 
-**INV-BGJOB-024**: An authenticated operator's reply in their direct chat — text, or a file with a caption — quoting a post filed in that chat by a job they started that no longer counts as live, including a post that landed after the job ended, never reaches a specialist's desk while the tombstone holds the record: it is the resident's turn, whose reply note names the job's agent, title, outcome and end time from its record; a reply from anyone else, or in another chat, keeps the routes and the note it would have had.
+**INV-BGJOB-024**: An authenticated operator's reply in their direct chat — text, or a file with a caption — quoting a post filed in that chat by a job they started that no longer counts as live, including a post that landed after the job ended, never reaches a specialist's desk while the tombstone holds the record: it is the turn of that chat's own agent — the resident in the resident's chat — whose reply note names the job's agent, title, outcome and end time from its record; a reply from anyone else, or in another chat, keeps the routes and the note it would have had.
 
-Checked ahead of the post map in both the text path (`_handle_serialized`, after the live route,
-so a live or pending-terminal job still takes its reply) and the file path (`_file_address`).
-What it does not cover: a file without a caption, which is stored in the resident's inbox and
+Checked ahead of the post map in both the text path (`_handle_serialized`, through
+`_quoted_task` after the live route `_route_task_reply`, so a live or pending-terminal job still
+takes its reply) and the file path (`_file_address`).
+What it does not cover: a file without a caption, which is stored in the chat's agent's inbox and
 acknowledged and starts no turn, so no note is attached; and a reply to an ended job whose
 record the tombstone has pruned, which gets the note any reply would.
 
@@ -163,7 +175,7 @@ parser.
 - `casa/rootfs/opt/casa/tools.py::ask_operator`
 - `casa/rootfs/opt/casa/tools.py::_post_job_start_line`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.deliver_operator_reply`
-- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._maybe_route_job_reply`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._route_task_reply`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_start_line`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_question`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_job_question_callback`
@@ -174,7 +186,7 @@ parser.
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.record_job_post`
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.job_post_owner`
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.ended_job_post_owner`
-- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._ended_job_quoted`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._quoted_task`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._ended_job_phrase`
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.counts_as_live`
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.take_ui_posts`

@@ -72,12 +72,16 @@ delegation exclude one another alike, and waiting never counts toward the run's 
 is released by `configurator_run.release_when_done`, a done callback on the run's own task.
 A run of any other agent takes no lease.
 
-A desk reply and the assistant's DM delegation also wait for the configurator's desk in that
-chat before the lease (`specialist_desk.Desk.use`), and the run holding the lease usually holds
-that desk too. So the bound starts when the request reaches its desk
-(`configurator_run.wait_deadline`), covers the desk wait and the lease wait together, and a
-request still waiting for the desk at the bound is refused with the same busy text, its queue
-place released; the desk lock only orders the dialogue.
+A desk reply and every delegation to the configurator also wait for its lane before the
+lease — the one lane per executing agent (`agent_lane`) its desk uses in any chat, taken
+through `specialist_desk.Desk.use` or, for a delegation with no desk,
+`tools._delegation_in_lane` — and the run holding the lease usually holds that lane too. So
+the bound starts when the request reaches the lane (`configurator_run.wait_deadline`), covers
+the lane wait and the lease wait together, and a request still waiting for the lane at the
+bound is refused with the same busy text, its queue place released; the lane only orders the
+uses. That refusal is `configurator_run.ConfiguratorBusy`, a subclass of `agent_lane.LaneBusy`
+(`specialist_desk.DeskBusy` is the same class), so every caller that treats a busy lane treats
+it alike.
 
 The erasures waited for are the plugin erasers
 `plugin_remove` and `specialist_uninstall` start (`tools._ERASE_TASKS`): an eraser runs

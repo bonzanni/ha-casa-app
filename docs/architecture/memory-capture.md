@@ -103,6 +103,10 @@ the specialist produces any answer text. The answer is captured only when it is 
 the terminal evidence says the model actually finished it; a withheld answer is logged where
 the run's evidence is read, and a blank request beside a withheld answer captures nothing.
 
+**A specialist's own conversation is captured as the specialist's.** The conversation turn's
+capture (`_TurnCapture`) labels the agent's messages with its own kind: `resident` for a
+resident, `specialist` for a specialist talking in its own chat ([`own-voice.md`](own-voice.md)).
+
 ## Contracts & invariants
 
 **INV-MEM-005**: Only write-trusted channels capture into memory.

@@ -47,10 +47,15 @@ reference, the requester (the chain's element before the plugin's role), its kin
 One binding is minted per plugin and turn; a continuation turn answers the binding it was
 queued for. Bindings are durable (`/data/plugin-bindings.json`, `0600`) because a run can
 outlive a restart, keep only plain origin markers — never the operator's words, always the
-turn's Telegram route (`_tg_bot`; a stored binding without one is refused at load) — and age
-out thirty days after their last use. The keys formed from a binding (its request, its
-continuations, its delivery keys, a stop) take their bot from the endpoint that route resolves
-to ([`telegram-bots.md`](telegram-bots.md), INV-TG-020). A binding is honoured only for the plugin and
+turn's Telegram route (`_tg_bot`) and the call's **delivery** (`GrantIdentity.delivery`, `null`
+when the work posts nothing; a stored binding without either is refused at load) — and age
+out thirty days after their last use. The delivery is where every post of the work goes: its
+cards, its run card, its Stop line, its continuations' deliveries. The keys formed from a
+binding (its request, its continuations, its delivery keys, a stop) take their bot from the
+delivery's endpoint, or from the route's for work that posts nothing
+(`plugin_bindings.binding_target`; [`telegram-bots.md`](telegram-bots.md), INV-TG-020). A call
+with no delivery is refused run admission as not delivered and posts nothing anywhere
+([`own-voice.md`](own-voice.md)); in an agent's own chat the card and its lines carry no label. A binding is honoured only for the plugin and
 operator it was minted for. It also keeps its request's conversation, the session its
 continuation turns resume ([`plugin-continuations.md`](plugin-continuations.md)).
 

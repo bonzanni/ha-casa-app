@@ -57,11 +57,23 @@ reference for that one call and rewrites the argument the tool receives to
 message carries the bare reference and the transcript records that message, not the
 rewritten input, so a parallel tool cannot present the ticket.
 
+**A call that posts runs only where its agent may post.** The grant identity carries the
+call's **delivery**: a task's turn copies the delivery its task was born with (from the
+engagement record, or the origin's reserved `_task_delivery`), `None` included, and never
+recomputes it; any other turn (the resident's own, an agent's conversation) delivers in its
+own chat. Admission, before the authorization decision and before anything is recorded,
+refuses a call that delivers a slot or asks Casa unless its agent's own chat is open (the
+resident's always is) and the call has a delivery (`surface_refusal`); the post checks again,
+and nothing falls back to another chat (INV-OWN-001, [`own-voice.md`](own-voice.md)). Admission
+also refuses every plugin call of an agent that is faulted (`agent_lane.FAULTS`), whatever
+started the turn, except Casa's own erase turn. A delivered sign-in link is noted for the
+plugin's callback (`callback_owner`).
+
 **A slot a tool declares it delivers is posted by Casa, never returned to the model.** A
 capability tool may declare one of its slots as `delivers: {slot: kind}` — a link the
 operator must open, or a message or a file a specialist's plugin shows the operator — and
-the same PostToolUse hook, after the structural check, posts the deposit to the chat of the
-call's grant identity and replaces the result with a receipt, or withholds it when delivery
+the same PostToolUse hook, after the structural check, posts the deposit at the call's
+delivery (`GrantIdentity.delivery`) and replaces the result with a receipt, or withholds it when delivery
 is not proven. The kinds, each deposit's validation, the plan a message is judged by before
 its first send, the channel's part and the body-free echo the resident's conversation sees
 are in [`plugin-delivered-slots.md`](plugin-delivered-slots.md) (INV-PLUG-025, -026, -028,
@@ -119,7 +131,8 @@ The two hooks and the failure-event housekeeping matcher are appended in code, b
 guards the same builders already append, whenever the session's plugin resolution is
 non-empty. They are not declarable: the hooks schema still admits only `pre_tool_use`,
 and a session with no plugins loads no plugin tool and gets no broker. Admission is ONE
-callback that runs, in order, contract admission, then the authorization decision for a
+callback that runs, in order, contract admission (the fault and capability checks first),
+then the authorization decision for a
 protected tool, then arming — because the SDK dispatches same-event matchers concurrently
 and arming must follow the authorization decision, never race it.
 

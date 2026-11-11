@@ -35,7 +35,7 @@
     - casa/rootfs/opt/casa/tools.py::ask_operator
     - casa/rootfs/opt/casa/tools.py::_post_job_start_line
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.deliver_operator_reply
-    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._maybe_route_job_reply
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._route_task_reply
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_start_line
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_question
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_job_question_callback
@@ -46,7 +46,7 @@
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.record_job_post
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.job_post_owner
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.ended_job_post_owner
-    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._ended_job_quoted
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._quoted_task
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._ended_job_phrase
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.counts_as_live
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.take_ui_posts

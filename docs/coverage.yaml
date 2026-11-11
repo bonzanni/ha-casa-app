@@ -7,6 +7,8 @@
   doc: architecture/turn-loop.md
 - item: casa/rootfs/opt/casa/agent_inbox.py
   doc: architecture/inbound-files.md
+- item: casa/rootfs/opt/casa/agent_lane.py
+  doc: architecture/specialist-desk.md
 - item: casa/rootfs/opt/casa/agent_logs.py
   doc: architecture/agent-logs.md
 - item: casa/rootfs/opt/casa/agent_loader.py
@@ -17,6 +19,10 @@
   doc: architecture/plugin-authorization.md
 - item: casa/rootfs/opt/casa/background_jobs.py
   doc: architecture/background-jobs.md
+- item: casa/rootfs/opt/casa/callback_owner.py
+  doc: architecture/own-voice.md
+- item: casa/rootfs/opt/casa/chat_notes.py
+  doc: architecture/own-voice.md
 - item: casa/rootfs/opt/casa/job_inbox.py
   doc: architecture/background-job-message-journal.md
 - item: casa/rootfs/opt/casa/bus.py
@@ -85,6 +91,10 @@
   doc: architecture/specialist-handoff.md
 - item: casa/rootfs/opt/casa/operator_calls.py
   doc: architecture/plugin-operator-calls.md
+- item: casa/rootfs/opt/casa/own_voice.py
+  doc: architecture/own-voice.md
+- item: casa/rootfs/opt/casa/own_voice_lifecycle.py
+  doc: architecture/own-voice.md
 - item: casa/rootfs/opt/casa/run_admission.py
   doc: architecture/plugin-operator-calls.md
 - item: casa/rootfs/opt/casa/action_judgement.py
@@ -103,6 +113,16 @@
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/engagement_transcript_reaper.py
   doc: architecture/engagement-transcript-reaping.md
+- item: casa/rootfs/opt/casa/specialist_session.py
+  doc: architecture/scratchpad.md
+- item: casa/rootfs/opt/casa/stored_call_settler.py
+  doc: architecture/stored-call-buttons.md
+- item: casa/rootfs/opt/casa/task_input.py
+  doc: architecture/own-voice.md
+- item: casa/rootfs/opt/casa/task_model.py
+  doc: architecture/own-voice.md
+- item: casa/rootfs/opt/casa/task_posts.py
+  doc: architecture/own-voice.md
 - item: casa/rootfs/opt/casa/uid_kill.py
   doc: architecture/script-runner.md
 - item: casa/rootfs/opt/casa/trusted_path.py
@@ -413,6 +433,8 @@
   doc: architecture/triggers.md
 - item: tool:continue_voice_job
   doc: architecture/tools-interface.md
+- item: tool:offer_own_chat
+  doc: architecture/own-voice.md
 - item: tool:start_job
   doc: architecture/background-jobs.md
 - item: tool:report_job_progress
