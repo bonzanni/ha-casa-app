@@ -372,6 +372,35 @@ def test_one_endpoint_per_role_and_per_bot(two_endpoints):
         t.endpoint(333)
 
 
+def test_an_agent_endpoint_is_registered_by_bot_rekeyed_and_removed(two_endpoints):
+    """An agent's own bot is reachable by its id before it has a role; its
+    role is bound and moved without re-registering it; removed, neither its
+    bot nor its role resolves to it. Casa's endpoint is never re-keyed or
+    removed, and a served bot id is refused."""
+    t, casa = two_endpoints.transport, two_endpoints.casa
+    ep = FakeEndpoint("", bot_id=333)
+    t.add_agent_endpoint(ep, 333, None)
+    assert t.endpoint(333) is ep and t.route_for("butler") == 111
+    assert callable(ep.on_identity)
+    t.set_endpoint_role(ep, "butler")
+    assert t.route_for("butler") == 333 and ep.default_agent == "butler"
+    t.set_endpoint_role(ep, "gardener")
+    assert t.route_for("butler") == 111 and t.route_for("gardener") == 333
+    with pytest.raises(DuplicateEndpoint):
+        t.add_agent_endpoint(FakeEndpoint("", bot_id=222), 222, None)
+    with pytest.raises(ValueError):
+        t.set_endpoint_role(casa, "butler")
+    with pytest.raises(ValueError):
+        t.set_endpoint_role(ep, "assistant")       # Casa's endpoint's role
+    with pytest.raises(ValueError):
+        t.remove_endpoint(casa)
+    t.remove_endpoint(ep)
+    with pytest.raises(EndpointUnavailable):
+        t.endpoint(333)
+    assert t.route_for("gardener") == 111
+    t.remove_endpoint(ep)                          # unknown: ignored
+
+
 # ---------------------------------------------------------------------------
 # Rule C and the operator
 # ---------------------------------------------------------------------------

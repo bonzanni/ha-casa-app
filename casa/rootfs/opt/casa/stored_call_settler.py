@@ -19,7 +19,7 @@ confirmed, or the agent is faulted until restart, and only then are the
 pinned fds closed and the permit released.
 
 The card's executing agent is the agent the card records (``meta["role"]``),
-and it must own the card: see :func:`owns_card`.
+and the tap must arrive in that agent's own chat: see :func:`owns_card`.
 """
 from __future__ import annotations
 
@@ -45,16 +45,19 @@ def owns_card(endpoint_agent: str, role: str) -> bool:
     """The tap's executing agent owns the card: *role*, the agent the card
     records, is loaded, and the chat the tap arrived in is that agent's own
     (the endpoint's agent, *endpoint_agent*, is *role* itself, a resident
-    included) or a resident's, whose chat holds the cards of the agents that
-    work behind it. A card of another agent in an agent's own chat is not its
-    to settle."""
+    included). A card of another agent is never settled in this chat: an
+    agent's cards are posted only in its own chat, and a card of an agent
+    that moved to its own chat is answered at the callback's ingress."""
+    return _ownership_refusal(endpoint_agent, role) is None
+
+
+def _ownership_refusal(endpoint_agent: str, role: str) -> "str | None":
+    """The reason word a tap is refused with when *role*'s card may not be
+    settled in *endpoint_agent*'s chat, else ``None``."""
     import tools as tools_mod
     if not role or tools_mod._agent_role_map.get(role) is None:
-        return False
-    if role == endpoint_agent:
-        return True
-    host = tools_mod._agent_role_map.get(endpoint_agent)
-    return getattr(host, "kind", "") == "resident"
+        return "agent unavailable"
+    return None if role == endpoint_agent else "not this chat's card"
 
 
 def _card_bot(meta: dict, fallback: int) -> int:
@@ -193,8 +196,9 @@ async def handle_tap(
                 await _tell_faulted()
                 return
             # §4.3: the re-checks, on one captured build input, under the lock
-            if not owns_card(resident_role, desk_role):
-                await _refuse("not delegable")
+            why = _ownership_refusal(resident_role, desk_role)
+            if why is not None:
+                await _refuse(why)
                 return
             cfg = tools_mod._agent_role_map.get(desk_role)
             build = tools_mod._capture_build_input(cfg)
@@ -502,7 +506,7 @@ async def _post_next_card(value: str, *, meta: dict, build: Any, runtime: str, s
     try:
         delivered, _detail, _event, withheld = await rb._post_proposal(
             identity, seg, rb.OPERATOR_PROPOSAL, call, parsed,
-            rb.post_label(identity.enforcement_role), post, warning=warning,
+            rb.label_at(identity.enforcement_role, identity.delivery), post, warning=warning,
             edit_message_id=edit_message_id)
     except asyncio.CancelledError:
         raise
