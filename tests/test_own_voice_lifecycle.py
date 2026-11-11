@@ -156,6 +156,39 @@ async def test_no_target_keeps_that_record_and_every_later_one(world, root):
     assert world.released == [(ALEX_BOT, 1), (ALEX_BOT, 2), (ALEX_BOT, 3)]
 
 
+async def test_a_refused_record_holds_every_later_one_even_if_intake_would_take_them(
+        world, root):
+    lc, host = make_lifecycle(world, root)
+    await lc.on_created(created(ALEX_BOT, "Alex", "AlexHomeBot"), OPERATOR)
+    for uid in (1, 2, 3):
+        await lc.intake(ALEX_BOT, update(uid))
+    inner = host.release_update
+    refuse = {1}
+
+    async def first_refused(bot_id, upd):
+        if upd["update_id"] in refuse:
+            refuse.discard(upd["update_id"])
+            return "no_target"
+        return await inner(bot_id, upd)
+    host.release_update = first_refused
+    await host.answer("Alex")
+    assert world.released == []
+    assert [u["update_id"] for u in lc.journal.pending(ALEX_BOT)] == [1, 2, 3]
+    await lc.on_queue("finance")
+    assert world.released == [(ALEX_BOT, 1), (ALEX_BOT, 2), (ALEX_BOT, 3)]
+
+
+async def test_a_bound_bot_whose_agent_has_no_queue_holds_a_new_message(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _bind_alex(lc, host)
+    world.queues.discard("finance")
+    assert await lc.intake(ALEX_BOT, update(1)) == "held"
+    assert [u["update_id"] for u in lc.journal.pending(ALEX_BOT)] == [1]
+    world.queues.add("finance")
+    await lc.on_queue("finance")
+    assert world.released == [(ALEX_BOT, 1)]
+
+
 async def test_a_new_update_never_overtakes_a_held_one(world, root):
     lc, host = make_lifecycle(world, root)
     world.queues.discard("finance")
@@ -233,6 +266,16 @@ async def test_a_second_bot_for_a_bound_agent_is_asked_without_it(world, root):
     assert lc.store.bots[777]["phase"] == ovl.UNBOUND
     assert "finance" not in lc.store.bots[777]["ask"]["candidates"]
     assert lc.store.agents["finance"]["bot_id"] == ALEX_BOT
+
+
+async def test_the_registry_refuses_a_second_bot_for_an_agent(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _bind_alex(lc, host)
+    world.tokens[777] = "777:another-token-zzzzzzzzzzzz"
+    await lc.on_created(created(777, "Other", "OtherHomeBot"), OPERATOR)
+    assert await lc._enter_binding(777, "finance") is False
+    assert lc.store.agents["finance"]["bot_id"] == ALEX_BOT
+    assert lc.store.bots[777]["phase"] == ovl.UNBOUND
 
 
 async def test_a_tap_on_a_stale_question_cannot_bind(world, root):

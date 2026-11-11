@@ -881,7 +881,7 @@ class Lifecycle:
         await self.store.save()
         return True
 
-    async def _match_or_ask(self, bot_id: int, *, reask: bool) -> None:
+    async def _match_or_ask(self, bot_id: int) -> None:
         rec = self.store.bots[bot_id]
         async with self._registry_lock:
             role = self._match(rec)
@@ -893,9 +893,8 @@ class Lifecycle:
         if self._manager_down:
             return  # the question goes out once the resident's bot is back
         ask = rec.get("ask")
-        if (not reask and ask is not None and ask["state"] == "posted"
-                and ask["rid"] in self._live_asks):
-            return
+        if ask is not None and ask["state"] == "posted" and ask["rid"] in self._live_asks:
+            return  # answerable: posted by this process
         if ask is not None and ask.get("card") is not None:
             await self._edit(ask["card"], "Asked again below.")
         await self._post_ask(bot_id)
@@ -1145,7 +1144,7 @@ class Lifecycle:
         self.store.bots[bot_id]["phase"] = UNBOUND
         await self.store.save()
         await self._start(bot_id, token, None)
-        await self._match_or_ask(bot_id, reask=False)
+        await self._match_or_ask(bot_id)
 
     async def _step_unbound(self, bot_id: int) -> None:
         token, outcome = await self._token_for(bot_id)
@@ -1153,7 +1152,7 @@ class Lifecycle:
             await self._start(bot_id, token, None)
         elif outcome != "wait":
             self._schedule_retry(bot_id, "token not fetched")
-        await self._match_or_ask(bot_id, reask=True)
+        await self._match_or_ask(bot_id)
 
     async def _step_binding(self, bot_id: int) -> None:
         rec = self.store.bots[bot_id]
@@ -1317,24 +1316,13 @@ class Lifecycle:
     # -- triggers ---------------------------------------------------------
 
     async def boot(self) -> None:
-        """Boot order: committed eligibility first, then the resident's bot,
-        then every bot's phase completed or rolled back (an agent endpoint
-        holds its intake until its own reconcile is done), then the one
-        offer owed to an eligible agent with no record at all."""
+        """Boot order: the resident's bot first, then every bot's phase
+        completed or rolled back — a bound or dormant bot against its role's
+        committed declaration first, and an agent endpoint is built, started
+        and delivers only once its own reconcile is done — then the one offer
+        owed to an eligible agent with no record at all."""
         if self.host.operator_id() is None:
             return
-        async with self._registry_lock:
-            changed = False
-            for rec in self.store.bots.values():
-                role = rec.get("role")
-                if rec["phase"] == BOUND and not self.declared(role):
-                    rec["phase"] = DORMANT
-                    changed = True
-                elif rec["phase"] == DORMANT and self.declared(role):
-                    rec["phase"] = BINDING
-                    changed = True
-            if changed:
-                await self.store.save()
         status = await self.host.manager_check()
         if status == "unauthorized":
             self._manager_unauthorized()
