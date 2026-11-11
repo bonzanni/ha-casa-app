@@ -152,7 +152,10 @@ then runs in its own session. Its whole answer, as the agent wrote it, is posted
 pages (never the requester's bounded copy), and the requester gets today's bounded result.
 When the requester is not the executor's conversation, the conversation gets a body-free
 note (`chat_notes`) at its next turn: who asked what, and how it ended. Jobs and
-continuations leave the same note. A hand-off inside a task stamps the target's own
+continuations leave the same note. A continuation of a run in the agent's chat opens its
+index and its input the same way, right after its record is registered and before its
+turn runs; its session attaches the input after its first message, and the input closes
+when the work ends, however it ends. A hand-off inside a task stamps the target's own
 delivery, never the handing agent's chat.
 
 **The conversation.** Each loaded specialist that declares its own chat is an `Agent` on

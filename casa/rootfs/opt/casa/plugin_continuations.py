@@ -57,6 +57,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import functools
 import json
 import logging
 import os
@@ -424,6 +425,17 @@ async def run_continuation(pending: Pending, *, on_start) -> None:
                 # delivery — persisted, so a restart replays it whole
                 executor=role, requester=requester, delivery=delivery_of(binding))
             await tools_mod._specialist_registry.register_delegation(record)
+            # In its executor's own chat the continuation is a task like any
+            # other: its post index and its input destination open before its
+            # turn runs, so a reply to any of its posts — queued while the
+            # session starts — reaches it, never the conversation. Its run is
+            # this record's (the turn's ``_delegation_id``); the input ends
+            # with the work, however it ends.
+            birth = tools_mod.TaskBirth(task_id=record.id, brief=task_text, executor=role,
+                                        requester=requester, delivery=record.delivery)
+            input_open = birth.in_own_chat
+            if input_open:
+                tools_mod._open_task(birth)
 
             async def _chain():
                 resume, tok = None, None
@@ -471,6 +483,9 @@ async def run_continuation(pending: Pending, *, on_start) -> None:
                         "run again") from None
 
             task = asyncio.create_task(_chain())
+            if input_open:
+                task.add_done_callback(
+                    functools.partial(tools_mod._end_task_input, record.id))
             # quiet only when THIS turn declared progress — never inferred
             # from a relay requester's own answer
             tools_mod._attach_completion_callback(

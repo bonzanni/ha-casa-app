@@ -4818,11 +4818,11 @@ async def _run_delegated_turn(
                     await _await_mcp_servers_settled(client)    # #1220
                 await client.query(prompt)
                 _ph["query"] = time.monotonic()
-                if conv is None:
-                    # a task's session takes the operator's replies to its
-                    # posts from here: those queued so far, then each as it comes
-                    _attach_task_input(str(child_origin.get("_delegation_id") or ""),
-                                       cfg.role, client)
+                # a task's session (a delegation's, or a continuation's)
+                # takes the operator's replies to its posts from here: those
+                # queued so far, then each as it comes
+                _attach_task_input(str(child_origin.get("_delegation_id") or ""),
+                                   cfg.role, client)
                 async for sdk_msg in client.receive_response():
                     _msg_count += 1
                     _ph.setdefault("first_msg", time.monotonic())

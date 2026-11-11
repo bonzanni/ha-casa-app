@@ -98,7 +98,8 @@ class RecordingBot:
                 kwargs = {**kwargs, "_args": args}
             self.calls.append((name, kwargs))
             if name.startswith(("send_", "copy_")):
-                return SimpleNamespace(message_id=next(self._ids), chat=SimpleNamespace(
+                kwargs["_mid"] = mid = next(self._ids)
+                return SimpleNamespace(message_id=mid, chat=SimpleNamespace(
                     id=kwargs.get("chat_id")), photo=None, document=None)
             return True
         return call
@@ -1511,3 +1512,67 @@ async def test_a_file_sent_after_tapping_a_live_tasks_paperclip_reaches_that_tas
     Held.release.set()
     await call
     await _settled()
+
+
+# ---------------------------------------------------------------------------
+# A continuation in Alex's chat is a task there: a reply to its post reaches
+# it, even before its session is up
+# ---------------------------------------------------------------------------
+
+def _mids_since(world, before: int) -> list[int]:
+    return [k["_mid"] for _n, k in world.alex.recorder.sends()[before:] if "_mid" in k]
+
+
+async def _live_continuation(world, monkeypatch, inside) -> tuple:
+    """A continuation of the run Ellen's task for Alex started, held live;
+    *inside* runs within its turn. Returns the running continuation and its
+    task id."""
+    import plugin_continuations as pc
+    binding = await _binding_from(world, "finance")
+    monkeypatch.setattr(tools, "ClaudeSDKClient", Held)
+    monkeypatch.setattr(Held, "release", asyncio.Event())
+    monkeypatch.setattr(Held, "built", None)
+    Client.on_query = inside
+    run = asyncio.ensure_future(pc.run_continuation(
+        pc.Pending(binding, "r-1", "sweep", 0.0, bot_id=ALEX_BOT), on_start=lambda: None))
+    for _ in range(500):
+        await asyncio.sleep(0.002)
+        live = [t for t in tools._TASK_INPUTS if task_input.state(t) == "live"]
+        if live and Held.built is not None:
+            Client.on_query = None
+            return run, live[0]
+        if run.done():
+            break
+    Client.on_query = None
+    raise AssertionError(f"the continuation never went live: {run}")
+
+
+async def _end_continuation(run) -> None:
+    Held.release.set()
+    await run
+    await asyncio.sleep(0.05)
+    await _settled()
+
+
+async def test_a_reply_to_a_continuations_post_reaches_it_even_before_its_session_is_up(
+        world, monkeypatch):
+    """The continuation's post lands while its session is still starting; the
+    operator's reply to it is queued for the continuation and written into its
+    session once it is up, and a later reply goes straight in — never to
+    Alex's conversation."""
+    posted: list = []
+
+    async def inside(_client):
+        before = len(world.alex.recorder.sends())
+        await call_tool("finance", LINK, client="c-cont", tu="t9")
+        posted.extend(_mids_since(world, before))
+        await _handle(world.alex, _text("use the March one", reply_to=posted[0]))
+
+    run, cid = await _live_continuation(world, monkeypatch, inside)
+    await asyncio.sleep(0.01)
+    assert Held.built.writes[-1].endswith("use the March one")
+    await _handle(world.alex, _text("and April", reply_to=posted[0]))
+    assert Held.built.writes[-1].endswith("and April")
+    assert _queued(world.bus, "finance") == []
+    await _end_continuation(run)
+    assert task_input.state(cid) == "ended"

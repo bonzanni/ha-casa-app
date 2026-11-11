@@ -52,7 +52,9 @@ gives the turn the operator's grant identity (`provenance.turn_provenance`'s
 tap ([`plugin-operator-calls.md`](plugin-operator-calls.md)). It also carries the binding's
 **delivery** as its task delivery, so the turn posts exactly where the work it continues
 posted, or nowhere when that work had none; a relay turn of an agent that asked on the way
-posts nothing ([`own-voice.md`](own-voice.md)). A role that declares
+posts nothing ([`own-voice.md`](own-voice.md)). In the executor's own chat the continuation
+is a task there: its post index and input open before its turn, each of its posts is filed
+under its record (the turn's `_delegation_id`), and a reply to one goes into its session. A role that declares
 `session.long_runs: true` in its `role.yaml` is shown no earlier desk exchanges in any
 desk use — a delegation, a swipe-reply or a continuation (`specialist_desk.desk_log`) — so
 an earlier request's text never enters another request's context; the desk still keeps its log.
