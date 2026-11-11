@@ -11,7 +11,7 @@ import agent as agent_mod
 import handoff
 import specialist_limits
 import tools
-from config import AgentConfig, CharacterConfig, SessionConfig
+from config import AgentConfig, CharacterConfig
 from tools import DelegatedOutput
 
 try:
@@ -32,7 +32,7 @@ def _payload(result: dict) -> dict:
 
 # -- pure helpers -------------------------------------------------------------
 
-def test_chain_of_a_direct_turn_a_desk_turn_and_a_delegated_run():
+def test_chain_of_a_direct_turn_a_pinned_turn_and_a_delegated_run():
     assert handoff.handoff_chain({"role": "assistant", "execution_role": "assistant"}) == ("assistant",)
     assert handoff.handoff_chain({"role": "assistant", "execution_role": "finance"}) == (
         "assistant", "finance")
@@ -41,10 +41,10 @@ def test_chain_of_a_direct_turn_a_desk_turn_and_a_delegated_run():
         "assistant", "finance", "browser")
 
 
-def test_child_chain_does_not_repeat_a_desk_run_role():
-    desk = {"role": "assistant", "execution_role": "finance"}
-    assert handoff.child_chain(desk, "finance") == ("assistant", "finance")
-    assert handoff.child_chain(desk, "browser") == ("assistant", "finance", "browser")
+def test_child_chain_does_not_repeat_a_pinned_run_role():
+    pinned = {"role": "assistant", "execution_role": "finance"}
+    assert handoff.child_chain(pinned, "finance") == ("assistant", "finance")
+    assert handoff.child_chain(pinned, "browser") == ("assistant", "finance", "browser")
     assert handoff.requester_of(("assistant", "finance", "browser")) == "finance"
     assert handoff.requester_of(("assistant", "browser")) == "assistant"
 
@@ -63,15 +63,6 @@ def test_child_chain_does_not_repeat_a_desk_run_role():
 ])
 def test_operator_words_only_from_a_live_operator_message(origin, expected):
     assert handoff.operator_words(origin) == expected
-
-
-def test_a_desk_reply_carries_his_words_and_a_desk_continuation_does_not():
-    import specialist_desk
-    kw = dict(resident_role="assistant", desk_role="browser", bot_id=111, chat_id=7, user_id=7,
-              user_name="N", message_id=1, cid="c", text="get the invoice", turn_id="t")
-    assert handoff.operator_words(
-        specialist_desk._desk_origin(**kw, operator_typed=True)) == "get the invoice"
-    assert handoff.operator_words(specialist_desk._desk_origin(**kw)) is None
 
 
 def test_the_words_marker_is_reserved_and_copied():
@@ -371,11 +362,3 @@ def test_role_yaml_long_runs_reaches_the_runtime_shape():
                              "long_runs": "yes"}, role["properties"]["session"])
 
 
-def test_a_long_runs_role_is_shown_no_earlier_exchanges():
-    import specialist_desk
-    log = [object()]
-    fake = type("D", (), {"log": log})()
-    assert specialist_desk.desk_log(_cfg("browser", "Fido"), fake) is log
-    off = _cfg("browser", "Fido", session=SessionConfig(long_runs=True))
-    assert specialist_desk.desk_log(off, fake) == []
-    assert specialist_desk.desk_log(None, fake) is log

@@ -60,10 +60,10 @@ def notice_from_excluded_role(text: str) -> bool:
 # posts to the operator's chat stays out of memory, so the writer saw a request
 # handed to it and then nothing, and kept the errand open. Casa keeps one line
 # of its own per post instead: that the specialist posted, never what.
-# v0.347.6 (operator decision 2026-11-04): a post that is his answer — a kind
-# in ``result_broker.ANSWER_KINDS``, decided by the path that sent it — says
-# so, since the neutral line rarely closed the errand; every other post keeps
-# the neutral line.
+# v0.347.6 (operator decision 2026-11-04): a post that is the task's answer —
+# a kind in ``result_broker.ANSWER_KINDS``, decided by the path that sent it —
+# says so, since the neutral line rarely closed the errand; every other post
+# keeps the neutral line.
 # ---------------------------------------------------------------------------
 
 POST_LINE = "{name} posted to your chat."
@@ -116,53 +116,6 @@ def capture_post_line(*, channel: str, chat_id, operator_chat, resident: str,
 
 
 # ---------------------------------------------------------------------------
-# INV-MEM-043: a swipe-reply on such a specialist's post reaches his desk, not
-# a resident turn, so no turn captured it, and memory kept only the line that
-# his answer came. The operator's own words are his message like any other:
-# captured once, as he typed them, and classified like any message of his.
-# ---------------------------------------------------------------------------
-
-def capture_desk_reply(*, channel, chat_id, user_id, user_name,
-                       message_id, resident: str, desk_role: str,
-                       text: str) -> None:
-    """Capture the operator's own words *text*, sent as a reply on the desk
-    of *desk_role* in *chat_id*, as his message: when that specialist keeps
-    no memory and the chat is the channel's configured operator chat.
-    Speaker ``operator``, origin ``operator``, no floor, the chat's
-    *resident* as its role, keyed by the provider's message id. Detached,
-    like Casa's post line: his words come from no run's transcript, so no
-    run waits on the write. *channel* is the endpoint that received the
-    reply; its bot is part of the key. Never raises."""
-    import logging
-    try:
-        operator_chat = str(getattr(channel, "chat_id", "") or "").strip()
-        if not operator_chat or str(chat_id) != operator_chat:
-            return
-        name = str(getattr(channel, "name", "") or "")
-        from channel_policy import writes_to_bank
-        from memory import capture, eligibility, occurrence
-        rule = eligibility.admit(
-            eligibility.Source.DESK_REPLY, text=text,
-            channel_writes=writes_to_bank(name),
-            role_writes_memory=role_writes_memory(desk_role))
-        if rule is None:
-            return
-        item = capture.event(
-            source_key=(occurrence.message_key(name, channel.bot_id, str(chat_id),
-                                               str(message_id))
-                        if message_id is not None else None),
-            role=resident, channel=name, speaker_kind="operator",
-            origin_kind="operator", text=text, eligibility=rule,
-            origin_tier=None, speaker_id=str(user_id),
-            speaker_name=user_name,
-            provider_message_id=None if message_id is None else str(message_id))
-        capture.record_detached(item)
-    except Exception:  # noqa: BLE001 — memory never fails a desk turn
-        logging.getLogger(__name__).exception(
-            "memory: the operator's desk reply was not captured")
-
-
-# ---------------------------------------------------------------------------
 # INV-MEM-044: what the operator types to such a specialist's job — a reply in
 # their direct chat to one of its job's posts — reaches the specialist's turn,
 # and that engagement captures nothing (INV-MEM-032), so their words were lost.
@@ -178,7 +131,7 @@ def capture_job_reply(*, channel, engagement, user_id, user_name,
     the sender is the channel's configured operator. Speaker ``operator``,
     origin ``operator``, no floor, the chat's *resident* as its role, keyed by
     their message (``engagement_key``, the key a memory-writing specialist's
-    engagement gives it). Detached, like the desk reply: no run's transcript
+    engagement gives it). Detached, like Casa's post line: no run's transcript
     holds his words. *channel* is the endpoint that received the reply; its
     bot is part of the key. Never raises."""
     import logging

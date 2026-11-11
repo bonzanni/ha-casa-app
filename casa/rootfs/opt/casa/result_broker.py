@@ -132,7 +132,7 @@ OPERATOR_FILE = "operator_file"
 # tap commits; posted labelled with an inline keyboard, the calls held by
 # Casa under the broker's ``proposal`` namespace (design §2–§3).
 OPERATOR_PROPOSAL = "operator_proposal"
-PROPOSAL_TTL_S = 3600.0          # the desk's idle bound: a proposal older than a dialogue is stale
+PROPOSAL_TTL_S = 3600.0          # an hour: a proposal older than a dialogue is stale
 PROPOSAL_MAX_LIVE = 32           # live proposals per chat; the 33rd deposit is withheld
 PROPOSAL_TEXT_CHARS = 4000
 PROPOSAL_MAX_BUTTONS = 6
@@ -536,10 +536,10 @@ class PostLedger:
     def __init__(self, max_owners: int = 512, max_events: int | None = None) -> None:
         self._events: "collections.OrderedDict[str, list[PostEvent]]" = collections.OrderedDict()
         self._max_owners = max_owners
-        # S4 §6: a ledger may bound events per owner too, oldest dropped — the
-        # desk's resident echo asks for it (a chat's lines could grow without a
-        # resident turn to drain them); the S3 post ledger does not, and keeps
-        # every event of an owner as before.
+        # a ledger may bound events per owner too, oldest dropped: the chat
+        # notes ask for it (a chat's lines could grow without an agent turn to
+        # drain them); the post ledger does not, and keeps every event of an
+        # owner.
         self._max_events = max_events
         self._lock = threading.Lock()
 
@@ -566,30 +566,26 @@ class PostLedger:
 POSTS = PostLedger()
 
 
-# -- S4 §2: the post map ----------------------------------------------------
+# -- the post kinds -----------------------------------------------------------
 
 # The kinds of the posts Casa sends on a specialist's behalf outside a
 # delivered slot (whose posts carry the slot's OPERATOR_* kind).
-DESK_REPLY = "desk_reply"           # a desk turn's reply (``specialist_desk``)
-#: the words a desk turn wrote before a call that waits on the operator's
-#: approval (#1252): posted as its reply, but the work is not done
-DESK_REPLY_BEFORE_APPROVAL = "desk_reply_before_approval"
 RECEIPT = "receipt"                 # a stored call's receipt after a tap
 #: the message a task's delegate closed with, posted in the task's own chat
 TASK_ANSWER = "task_answer"
-#: v0.347.6: the kinds whose post is the message the specialist's turn closed
-#: with, his answer. A delivered slot and a receipt are sent the same way
-#: mid-run and at the end, so neither is, nor a desk reply cut at a pending
-#: approval: the send path decides, never the text.
-ANSWER_KINDS = frozenset({DESK_REPLY, TASK_ANSWER})
+#: the kinds whose post is the task's answer, the message the specialist's
+#: run closed with. A delivered slot and a receipt are sent the same way
+#: mid-run and at the end, so neither is: the send path decides, never the
+#: text.
+ANSWER_KINDS = frozenset({TASK_ANSWER})
 
 
 @dataclasses.dataclass(frozen=True)
 class PostRecord:
-    """Who posted a message Casa sent on a plugin's or a desk's behalf: the
+    """Who posted a message Casa sent on a plugin's or an agent's behalf: the
     specialist (``role``, the call's enforcement role), the operator it was
-    posted for, and the slot/tool/owner of the post. The route (§3) reads
-    ``role`` and ``operator_id``; nothing here is plugin-authored."""
+    posted for, and the slot/tool/owner of the post. ``owner`` files the post
+    under its task; nothing here is plugin-authored."""
     role: str
     operator_id: int
     plugin: str
@@ -597,69 +593,10 @@ class PostRecord:
     tool_use_id: str
     owner: str
     posted_at: float
-    # the delivery kind (an OPERATOR_* slot kind, DESK_REPLY,
-    # DESK_REPLY_BEFORE_APPROVAL or RECEIPT): the desk's outcome echo names a landed post by it, never by its
-    # body, and memory's line says from it whether the post is his answer
+    # the delivery kind (an OPERATOR_* slot kind, TASK_ANSWER or RECEIPT):
+    # memory's line says from it whether the post is his answer
     kind: str = ""
 
-
-POST_MAP_MAX = 4096
-
-
-class PostMap:
-    """``TgAddress(bot, chat, message) → PostRecord`` for every physical
-    message a delivered post produced — each page, each fallback chunk, the
-    media message, the link message, a desk reply's pages — recorded by the
-    channel AS IT LANDS, at the address the post returned, so a page the
-    operator holds is routable even when a later page failed and the hook
-    withheld the result. The bot is part of the key: two bots number their
-    messages independently in the same private chat, so a reply on one bot
-    never finds the other's post. Memory-only and FIFO-bounded: a restart
-    forgets it and an entry older than ``POST_MAP_MAX`` newer messages is
-    evicted — a reply on either is a plain message to the resident (the
-    fallback decision 2 names)."""
-
-    def __init__(self, max_entries: int = POST_MAP_MAX) -> None:
-        self._entries: "collections.OrderedDict[TgAddress, PostRecord]" = collections.OrderedDict()
-        self._max = max_entries
-        self._lock = threading.Lock()
-
-    @staticmethod
-    def _key(addr: Any) -> "TgAddress | None":
-        if not isinstance(addr, TgAddress):
-            return None
-        if addr.chat_id <= 0 or addr.message_id is None or addr.message_id <= 0:
-            return None
-        return addr
-
-    def record(self, addr: Any, record: PostRecord) -> None:
-        key = self._key(addr)
-        if key is None:
-            return
-        with self._lock:
-            self._entries[key] = record
-            self._entries.move_to_end(key)
-            while len(self._entries) > self._max:
-                self._entries.popitem(last=False)
-
-    def get(self, addr: Any) -> PostRecord | None:
-        key = self._key(addr)
-        if key is None:
-            return None
-        with self._lock:
-            return self._entries.get(key)
-
-    def owned(self, owner: str) -> list[PostRecord]:
-        """Every retained record filed under *owner* (a delegation or desk
-        turn id), in landing order — the complete account of what Casa
-        posted for that turn, whatever the slot's kind (S4 §5.6)."""
-        if not owner:
-            return []
-        with self._lock:
-            return [r for r in self._entries.values() if r.owner == owner]
-
-
-POST_MAP = PostMap()
 
 _MEDIA_WORDS = {
     "document": "a document", "photo": "a photo", "audio": "an audio file",
@@ -1651,7 +1588,7 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
     ``warning`` (§14.7, the ``More`` exception with a rewritten input): the
     tell line is composed INTO the message above the label when the result
     still fits one page; otherwise the proposal lands without it and the
-    tell goes out as ONE labelled desk notice right after the post — the
+    tell goes out as ONE labelled Casa notice right after the post — the
     landed proposal stays the sole visible receipt and the tell is never
     silently dropped.
 
@@ -1748,7 +1685,6 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
         timeout_s=PROPOSAL_TTL_S, detached=True, supersede=False, meta=meta)
     if edit_message_id is not None:
         req.meta["message_id"] = edit_message_id
-        POST_MAP.record(TgAddress(bot_id, chat_id, edit_message_id), post)
     factory = getattr(channel, "proposal_finish_hook", None)
     if factory is not None:
         BROKER.set_finish_hook(req, factory(rid=rid, req=req))
@@ -1831,7 +1767,7 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
             except Exception as exc:  # noqa: BLE001 — the post is proven; the mark is logged
                 logger.warning("late proposal mark failed: %s", type(exc).__name__)
     if tell_after:
-        notice = getattr(channel, "deliver_desk_notice", None)
+        notice = getattr(channel, "deliver_casa_notice", None)
         if notice is not None:
             try:
                 await asyncio.wait_for(notice(chat_id, f"{head} {warning}".strip()),
@@ -1925,7 +1861,7 @@ async def _settle_repeat(seg: str, identity: Any, dkind: str, value: str,
     """#1312: what a repeat still owes, nothing of it sent as the post again.
     A file deposit's staged file is consumed (best-effort: the original
     delivery stands either way); a ``More`` call's rewritten-input tell goes
-    out as one labelled desk notice, since no card carries it this time."""
+    out as one labelled Casa notice, since no card carries it this time."""
     staged = value if dkind == OPERATOR_FILE else _proposal_photo(value) \
         if dkind == OPERATOR_PROPOSAL else None
     if staged:
@@ -1942,7 +1878,7 @@ async def _settle_repeat(seg: str, identity: Any, dkind: str, value: str,
     if dkind == OPERATOR_PROPOSAL and warning:
         to = identity.delivery
         channel = _endpoint_for(to)
-        notice = getattr(channel, "deliver_desk_notice", None)
+        notice = getattr(channel, "deliver_casa_notice", None)
         if notice is not None:
             try:
                 head = label_at(identity.enforcement_role, to)
@@ -2435,7 +2371,7 @@ def broker_matchers(
     """The three ``HookMatcher`` lists a plugin-bearing SDK session appends —
     code-side, beside the authz hook, never from a hooks document. ``owner``
     (S5): on a pinned one-call turn the contract map is the one the tap
-    CAPTURED under the desk lock — never rebuilt here — and the three
+    CAPTURED when the tap was taken — never rebuilt here — and the three
     callbacks run inside the owner's guard."""
     from claude_agent_sdk import HookMatcher
 

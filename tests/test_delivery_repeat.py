@@ -260,7 +260,7 @@ async def test_a_repeated_proposal_still_tells_its_rewritten_input(env):
     async def notice(chat_id, text):
         notices.append((chat_id, text))
         return True
-    env.rec.deliver_desk_notice = notice
+    env.rec.deliver_casa_notice = notice
     await _deliver_proposal(env, call="call-1")
     again = await _deliver_proposal(env, call="call-2", warning="⚠ the call was rewritten")
     assert len(env.rec.proposals) == 1 and again["casa_delivery"]["repeat"] is True
@@ -276,7 +276,7 @@ async def test_a_proposal_is_remembered_at_its_proof_before_any_later_await(env,
     async def stuck_notice(chat_id, text):
         started.set()
         await asyncio.Event().wait()
-    env.rec.deliver_desk_notice = stuck_notice
+    env.rec.deliver_casa_notice = stuck_notice
     long_warning = "⚠ " + "w" * 4000                      # cannot fit the card: told after
     task = asyncio.create_task(_deliver_proposal(env, call="call-1", warning=long_warning))
     await started.wait()
@@ -334,7 +334,7 @@ async def test_a_proposal_superseded_during_the_repeat_tell_is_posted_fresh(env)
         started.set()
         await gate.wait()
         return True
-    env.rec.deliver_desk_notice = notice
+    env.rec.deliver_casa_notice = notice
     await _deliver_proposal(env, call="call-1")
     task = asyncio.create_task(_deliver_proposal(env, call="call-2", warning="⚠ rewritten"))
     await started.wait()
@@ -356,13 +356,13 @@ async def test_a_cancelled_proposal_keeps_its_echo_and_its_repeat_adds_none(env,
     async def stuck_notice(chat_id, text):
         started.set()
         await asyncio.Event().wait()
-    env.rec.deliver_desk_notice = stuck_notice
+    env.rec.deliver_casa_notice = stuck_notice
     task = asyncio.create_task(_deliver_proposal(env, call="call-1", warning="⚠ " + "w" * 4000))
     await started.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    env.rec.deliver_desk_notice = None
+    env.rec.deliver_casa_notice = None
     await _deliver_proposal(env, call="call-2")
     owner = rb._post_owner(_prop_identity())
     assert len(rb.POSTS.drain(owner)) == 1

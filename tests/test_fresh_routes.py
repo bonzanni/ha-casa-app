@@ -1,4 +1,4 @@
-"""The bot in memory keys and desk keys, and the routes FRESH turns are born with.
+"""The bot in memory keys and chat-note keys, and the routes FRESH turns are born with.
 
 Telegram numbers messages per bot, and two bots' private chats with the
 operator share the chat id. So:
@@ -6,8 +6,8 @@ operator share the chat id. So:
 * a memory key of an operator message names the bot that received it, or
   bot B's message N collapses into bot A's message N and is lost
   (``events.source_key`` is unique);
-* a desk and its echo lines are keyed by the bot, or one bot's desk serves the
-  other's conversation;
+* Casa's notes for a chat are keyed by the bot, or one bot's agent hears what
+  happened in the other's conversation;
 * a turn with no parent (a fired trigger, a swept reminder, a voice
   utterance) is stamped with ``route_for(role)`` when it is created, so every
   later delivery of that turn goes through the bot decided then, and with one
@@ -27,7 +27,6 @@ import pytest
 import yaml
 from aiohttp import WSMsgType, web
 
-import specialist_desk as sd
 import tools as tools_mod
 from channels.tg_address import CASA, AddressError, RouteMissing, TgAddress
 from memory import capture, occurrence
@@ -36,12 +35,10 @@ from two_endpoints import (
 )
 from telegram_channel_double import MemoryBotIdStore, make_transport
 
-# fixtures shared with the memory and desk suites
+# fixtures shared with the memory suites
 from test_memory_capture import (  # noqa: F401 — pytest fixtures
     _engagement_client, _rows_when, captured_events, mem,
 )
-from test_desk_turn import env  # noqa: F401 — pytest fixture
-from test_desk_turn import OPERATOR as DESK_CHAT, _reply
 from test_voice_context_sanitize import voice_app  # noqa: F401 — pytest fixture
 
 pytestmark = pytest.mark.asyncio
@@ -136,7 +133,7 @@ async def test_a_job_reply_is_keyed_by_the_bot_that_received_it(mem):
 
 
 class _Endpoint:
-    """What the desk- and job-reply captures read off the receiving endpoint."""
+    """What the job-reply capture reads off the receiving endpoint."""
 
     name = "telegram"
     chat_id = OPERATOR
@@ -150,8 +147,8 @@ class _Endpoint:
 
 @pytest.fixture
 def no_memory_specialist(monkeypatch):
-    """``finance`` keeps no memory, so his desk and job replies are captured
-    by the operator-words seams."""
+    """``finance`` keeps no memory, so the replies to his job are captured by
+    the operator-words seam."""
     monkeypatch.setattr(tools_mod, "_agent_role_map", {
         "assistant": SimpleNamespace(kind="resident"),
         "finance": SimpleNamespace(kind="specialist",
@@ -159,77 +156,35 @@ def no_memory_specialist(monkeypatch):
     })
 
 
-async def test_desk_and_job_replies_on_two_bots_are_two_events_each(
+async def test_job_replies_on_two_bots_are_two_events(
         mem, no_memory_specialist):
-    from delegated_memory import capture_desk_reply, capture_job_reply
+    from delegated_memory import capture_job_reply
 
     job = SimpleNamespace(kind="specialist", id="a" * 32, role_or_type="finance")
     for bot in (CASA_BOT, FINANCE_BOT):
-        ep = _Endpoint(bot)
-        capture_desk_reply(channel=ep, chat_id=OPERATOR, user_id=OPERATOR,
-                           user_name="Op", message_id=9, resident="assistant",
-                           desk_role="finance", text=f"desk on {bot}")
-        capture_job_reply(channel=ep, engagement=job, user_id=OPERATOR,
+        capture_job_reply(channel=_Endpoint(bot), engagement=job, user_id=OPERATOR,
                           user_name="Op", message_id=9, resident="assistant",
                           text=f"job on {bot}")
     rows = await captured_events(mem)
     keys = {r["text"]: r["source_key"] for r in rows}
     assert keys == {
-        f"desk on {b}": occurrence.message_key("telegram", b, str(OPERATOR), "9")
-        for b in (CASA_BOT, FINANCE_BOT)
-    } | {
         f"job on {b}": occurrence.engagement_key("telegram", b, job.id, "9")
         for b in (CASA_BOT, FINANCE_BOT)
     }
 
 
-# --- the desk's keys ---------------------------------------------------------
+# --- the chat notes' keys -----------------------------------------------------
 
-async def test_desks_and_echo_lines_are_per_bot(monkeypatch):
-    import result_broker as rb
-    monkeypatch.setattr(sd, "DESKS", sd.DeskRegistry())
-    monkeypatch.setattr(sd, "DESK_ECHO", rb.PostLedger(max_events=64))
-    one = sd.DESKS.get_or_create(CASA_BOT, OPERATOR, "finance")
-    other = sd.DESKS.get_or_create(FINANCE_BOT, OPERATOR, "finance")
-    assert one is not other and (one.bot_id, other.bot_id) == (CASA_BOT, FINANCE_BOT)
-    assert sd.DESKS.get(CASA_BOT, OPERATOR, "finance") is one
-    with pytest.raises(AddressError):
-        sd.DESKS.get_or_create(CASA, OPERATOR, "finance")
-
-    sd.record_echo(CASA_BOT, OPERATOR, "📊 Finance answered your reply (1 page).")
-    assert sd.prompt_lines(FINANCE_BOT, OPERATOR) == []
-    assert sd.prompt_lines(CASA_BOT, OPERATOR) == [
-        "(front desk) 📊 Finance answered your reply (1 page)."]
-    sd.record_echo(CASA, OPERATOR, "never recorded")
-    assert sd.drain_echo_lines(CASA_BOT, OPERATOR) == []
-
-
-async def test_a_delegation_uses_the_desk_on_the_bot_the_operator_wrote_to(monkeypatch):
-    monkeypatch.setattr(sd, "DESKS", sd.DeskRegistry())
-    cfg = SimpleNamespace(kind="specialist", delegates=())
-    dm = {"_operator_turn": True, "channel": "telegram", "chat_id": OPERATOR}
-    desk = sd.desk_for_delegation({**dm, "_tg_bot": FINANCE_BOT}, cfg, "finance")
-    assert desk is sd.DESKS.get(FINANCE_BOT, OPERATOR, "finance")
-    assert sd.DESKS.get(CASA_BOT, OPERATOR, "finance") is None
-    # a route that names no verified bot keys no desk
-    assert sd.desk_for_delegation({**dm, "_tg_bot": CASA}, cfg, "finance") is None
-    assert sd.desk_for_delegation(dm, cfg, "finance") is None
-
-
-async def test_a_desk_turn_runs_and_replies_on_the_receiving_bot(env):  # noqa: F811
-    """The desk turn's origin and its reply's delivery context carry the bot
-    that received the operator's reply, and the desk is that bot's."""
-    env.channel.bot_id = FINANCE_BOT
-    await _reply(env)
-    (call,) = env.calls
-    assert call.origin["_tg_bot"] == FINANCE_BOT
-    ((_message, context),) = env.channel.replies
-    assert context["_tg_bot"] == FINANCE_BOT
-    desk = sd.DESKS.get(FINANCE_BOT, DESK_CHAT, "finance")
-    assert desk is not None and desk.log
-    assert env.desk.bot_id == CASA_BOT and env.desk.log == []   # the other bot's desk
-    assert sd.prompt_lines(CASA_BOT, DESK_CHAT) == []
-    assert sd.prompt_lines(FINANCE_BOT, DESK_CHAT)
+async def test_chat_notes_are_per_bot():
+    import chat_notes
+    chat_notes.reset()
+    chat_notes.record(CASA_BOT, OPERATOR, "📊 Finance answered your reply (1 page).")
+    assert chat_notes.drain(FINANCE_BOT, OPERATOR) == []
+    assert chat_notes.drain(CASA_BOT, OPERATOR) == [
+        "📊 Finance answered your reply (1 page)."]
+    chat_notes.record(CASA, OPERATOR, "never recorded")
+    assert chat_notes.drain(CASA_BOT, OPERATOR) == []
+    chat_notes.reset()
 
 
 # --- FRESH routes: triggers --------------------------------------------------
