@@ -1165,3 +1165,69 @@ async def test_the_sweep_reaches_every_phase_but_released_ones_alone(tmp_path):
         lc.store.save = record
         await run(lc, host, w)
     assert seen == set(ovl.PHASES)
+
+
+# ---------------------------------------------------------------------------
+# The production host: agent endpoints on the real transport
+# ---------------------------------------------------------------------------
+
+class _Ep:
+    def __init__(self, bot_id, token, role):
+        self.bot_id, self.bot_token, self.default_agent = bot_id, token, role or ""
+        self.has_bot_id, self.started, self.stopped, self.on_identity = True, 0, 0, None
+
+    async def start(self):
+        self.started += 1
+
+    async def stop(self):
+        self.stopped += 1
+
+
+async def test_the_host_builds_registers_binds_swaps_and_removes_agent_endpoints(
+        tmp_path, monkeypatch):
+    from channels.telegram_transport import CasaBotIdStore, TelegramTransport
+
+    transport = TelegramTransport(casa_bot_ids=CasaBotIdStore(tmp_path / "c.json", "t"))
+    casa = _Ep(7000, "casa-token", "assistant")
+    transport.add_endpoint(casa, casa=True)
+    host = ovl.TelegramHost()
+    monkeypatch.setattr(host, "_transport", lambda: transport)
+    monkeypatch.setattr(host, "make_endpoint", lambda b, t, r: _Ep(b, t, r))
+
+    await host.start_endpoint(ALEX_BOT, ALEX_TOKEN, None)       # holding
+    await host.start_endpoint(FIDO_BOT, FIDO_TOKEN, None)       # two at once
+    alex = transport.endpoint(ALEX_BOT)
+    assert alex.started == 1 and transport.route_for("finance") == transport.casa_route()
+    await host.start_endpoint(ALEX_BOT, ALEX_TOKEN, "finance")  # bound: same endpoint
+    assert transport.endpoint(ALEX_BOT) is alex and alex.started == 1
+    assert transport.route_for("finance") == ALEX_BOT and alex.default_agent == "finance"
+    await host.start_endpoint(ALEX_BOT, ALEX_TOKEN_2, "finance")  # a new token: swapped
+    swapped = transport.endpoint(ALEX_BOT)
+    assert swapped is not alex and alex.stopped == 1 and swapped.bot_token == ALEX_TOKEN_2
+    assert transport.route_for("finance") == ALEX_BOT
+    await host.start_endpoint(ALEX_BOT, ALEX_TOKEN_2, None)     # dormant: no agent
+    assert transport.route_for("finance") == transport.casa_route()
+    await host.stop_endpoint(ALEX_BOT)
+    assert host.endpoint(ALEX_BOT) is None and swapped.stopped == 1
+    assert swapped not in transport._endpoints
+    await transport.stop()                                      # stops what is left
+    assert transport.endpoint(FIDO_BOT).stopped == 1
+
+
+def test_an_agent_endpoint_is_configured_like_casas(monkeypatch):
+    from channels.telegram import TelegramChannel
+
+    secret = lambda bot: f"secret-{bot}"  # noqa: E731
+    casa = TelegramChannel(bot_token="7000:casa", chat_id=str(OPERATOR),
+                           default_agent="assistant", bus=object(),
+                           webhook_url="https://casa.example", is_casa=True,
+                           known_bot_id=7000, webhook_secret_for=secret)
+    casa._session_registry = object()
+    host = ovl.TelegramHost()
+    monkeypatch.setattr(host, "_casa", lambda: casa)
+    ep = host.make_endpoint(ALEX_BOT, ALEX_TOKEN, None)
+    assert (ep.bot_id, ep.bot_token, ep.chat_id, ep.default_agent) == (
+        ALEX_BOT, ALEX_TOKEN, str(OPERATOR), "")
+    assert ep.is_casa is False and ep._bus is casa._bus
+    assert ep._webhook_url == "https://casa.example" and ep._webhook_secret_for is secret
+    assert ep._session_registry is casa._session_registry
