@@ -93,6 +93,10 @@ _OWN_JOB_SENTENCES = (
     "not start it.",
     "Never do the work of a job that is not a delegate's own through "
     "`delegate_to_agent` instead.",
+    # a delegation starts fresh and the job's end is told to her, not to the
+    # delegate: she passes on what she knows of the job's state
+    "When you ask a delegate about one of its jobs, put what you already know "
+    "of that job's state in `context=`: whether it has ended, how, and when.",
 )
 _VOICE_LINE = ("On a voice call no background job can start: do not call `start_job`, "
                "and do not delegate a request to start one. Ask the person to make the "

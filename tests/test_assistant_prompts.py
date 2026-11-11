@@ -1217,11 +1217,18 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # compiled text, word by word: five non-equal opcodes on each `assistant:*`
 # carrier, all inside that sentence; the six other carriers byte-identical. No
 # retention claim.
+# MOVED (a delegate asked about its own job), `assistant:text` only: the
+# background-jobs paragraph ends with one sentence telling her to put what she
+# already knows of the job's state (whether it ended, how, and when) in the
+# delegation's `context=`, since the delegate starts fresh and a job's end is
+# told to her. Measured with `difflib` over base-vs-new compiled text, word by
+# word: exactly ONE `insert` on `assistant:text`, that sentence; the eight
+# other carriers byte-identical. No retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "f7f8d0dcbbc197ff0349557cbebe0f95e5e360377030dacd09f38cf61ab7e335",
     "assistant:text":
-        "abe92176aace039a3eed53517f50596a437d2423f48d44f6f8767273c4525fd0",
+        "bf69a78ec816cc8ae10218658d7cc19ecbb4a391b63220fb5380c3a0458644fc",
     "assistant:voice":
         "71805d1c8fd3a8ef47a7de718e60db1123752388d8203a66e358eedac7b007d1",
     "butler:restricted_webhook":

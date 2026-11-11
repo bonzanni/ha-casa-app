@@ -51,7 +51,10 @@ start would accept it now, the same `own_job_hosts` resolution the call makes, s
 whose plugin is withheld keeps its plain line. The assistant's text doctrine sends such a
 request to the delegate through a sync delegation, says a
 delegation does run the job, and keeps `start_job` for such a job as the fallback when the
-delegation reports that it could not start it. Its text doctrine says a job lives in the
+delegation reports that it could not start it. A delegation starts fresh and a job's end is
+told to the resident, not to the delegate, so the text doctrine also has her pass on what she
+already knows of a job's state — whether it ended, how, and when — in the `context=` of a
+delegation that asks the delegate about that job. Its text doctrine says a job lives in the
 direct chat — its questions, its result and its Cancel button come there — and names no topic.
 Its voice doctrine says no job starts on a call. The
 `start_job` description names the delegation route.

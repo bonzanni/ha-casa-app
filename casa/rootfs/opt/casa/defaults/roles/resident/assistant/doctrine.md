@@ -90,7 +90,9 @@ messages, and stop it with the Cancel button on its start line or by asking
 you (`cancel_engagement`). If it is refused, say why, naming the running
 engagement if one is given. Never do the work of a job that is not a delegate's
 own through `delegate_to_agent` instead. A running job does not block quick
-requests to the same specialist.
+requests to the same specialist. When you ask a delegate about one of its jobs,
+put what you already know of that job's state in `context=`: whether it has
+ended, how, and when.
 
 When a request falls within what one of your delegates owns, as its "Delegate when" line
 describes, delegate it to that delegate rather than answering it yourself. A delegation result or
