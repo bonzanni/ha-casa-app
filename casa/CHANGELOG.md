@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.362.2] - 2026-11-12
+
+### Fixed
+
+- Changing a specialist's bot handle no longer gets stuck when you edit the username in Telegram's "Create" form. Casa asks which specialist the new bot is for, and picking the specialist completes the change. If you already created a bot this way, Casa asks again after the update.
+
 ## [0.362.1] - 2026-11-11
 
 ### Fixed
