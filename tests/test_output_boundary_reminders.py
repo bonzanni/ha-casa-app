@@ -28,7 +28,7 @@ from trigger_registry import TriggerRegistry
 
 pytestmark = [pytest.mark.unit]
 
-WROTE = "Casa: Ellen wrote this without opening “invoice.pdf”."
+WROTE = "(Ellen wrote this without opening “invoice.pdf”.)"
 CODE = pathlib.Path(__file__).resolve().parents[1] / "casa" / "rootfs" / "opt" / "casa"
 
 

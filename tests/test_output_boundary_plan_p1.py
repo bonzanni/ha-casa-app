@@ -32,9 +32,9 @@ from text_util import utf16_len
 pytestmark = [pytest.mark.unit]
 
 INVOICE = ("/data/agent-inbox/assistant/ready/1758500000000-a1b2.pdf", "invoice.pdf")
-ANSWERED = "Casa: Test answered without opening “invoice.pdf” in this turn."
-WROTE = "Casa: Test wrote this without opening “invoice.pdf”."
-LINE = "Casa: Ellen answered without opening “invoice.pdf” in this turn."
+ANSWERED = "(Test hasn't opened “invoice.pdf”.)"
+WROTE = "(Test wrote this without opening “invoice.pdf”.)"
+LINE = "(Ellen hasn't opened “invoice.pdf”.)"
 
 
 def _admitted(text: str, *lines: str) -> Admitted:

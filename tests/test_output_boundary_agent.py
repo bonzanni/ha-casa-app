@@ -22,7 +22,7 @@ from test_agent_process import FakeClient, _StubChannel, _make_agent, _msg, _req
 pytestmark = [pytest.mark.unit]
 
 INVOICE = ("/data/agent-inbox/assistant/ready/1758500000000-a1b2.pdf", "invoice.pdf")
-ANSWERED = "Casa: Test answered without opening “invoice.pdf” in this turn."
+ANSWERED = "(Test hasn't opened “invoice.pdf”.)"
 
 
 def _arming_process(reply: str):
@@ -76,7 +76,7 @@ async def test_a_classified_error_reply_is_casa_text_never_annotated(tmp_path):
     assert isinstance(delivered, Admitted)
     assert delivered.source == "casa"
     assert delivered.annotations == ()
-    assert "Casa: Test answered" not in delivered
+    assert "Test hasn't opened" not in delivered
 
 
 async def test_the_health_notice_is_prepended_outside_the_disclosure(tmp_path):

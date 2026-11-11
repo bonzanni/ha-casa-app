@@ -786,17 +786,14 @@ class TurnScope:
     def _answered_line(self, unread: tuple[tuple[str, str], ...],
                        sources: dict[str, str]) -> str:
         persona = self._persona()
-        which, own = _which(unread, sources, persona)
-        # "in this turn" only where it is true of the files: one named file
-        # (it qualifies the answering) or files the turn received (#1218)
-        when = " in this turn" if len(unread) == 1 or own else ""
-        return f"Casa: {persona} answered without opening {which}{when}."
+        which, _own = _which(unread, sources, persona)
+        return f"({persona} hasn't opened {which}.)"
 
     def _wrote_line(self, unread: tuple[tuple[str, str], ...],
                     sources: dict[str, str]) -> str:
         persona = self._persona()
         which, _own = _which(unread, sources, persona)
-        return f"Casa: {persona} wrote this without opening {which}."
+        return f"({persona} wrote this without opening {which}.)"
 
 
 # The persona name a disclosure line may carry — `authz_grants._DISPLAY_NAME_MAX`,

@@ -23,7 +23,7 @@ from telegram_channel_double import _mk_channel_with_fake_bot
 
 pytestmark = [pytest.mark.asyncio]
 
-LINE = "Casa: Ellen answered without opening “invoice.pdf” in this turn."
+LINE = "(Ellen hasn't opened “invoice.pdf”.)"
 
 
 def _admitted(text: str, *lines: str) -> Admitted:

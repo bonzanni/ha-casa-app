@@ -26,8 +26,8 @@ from _fixture_d import as_endpoint, endpoint_manager
 pytestmark = [pytest.mark.unit]
 
 INVOICE = ("/data/agent-inbox/assistant/ready/1758500000000-a1b2.pdf", "invoice.pdf")
-ANSWERED = "Casa: Test answered without opening “invoice.pdf” in this turn."
-WROTE = "Casa: Test wrote this without opening “invoice.pdf”."
+ANSWERED = "(Test hasn't opened “invoice.pdf”.)"
+WROTE = "(Test wrote this without opening “invoice.pdf”.)"
 
 
 def _text(result: dict) -> str:
@@ -182,7 +182,7 @@ async def test_list_inbound_files_arms_the_obligation_with_the_listed_files(tmp_
             await tools.list_inbound_files.handler({})
         finally:
             agent_mod.origin_var.reset(token)
-        line = ("Casa: Test answered without opening “1758500000000-0123456789abcdef.pdf” in this turn.")
+        line = ("(Test hasn't opened “1758500000000-0123456789abcdef.pdf”.)")
         assert s.admit(K.FINAL_REPLY, "It's €412").annotations == (line,)
     finally:
         agent_inbox._reset_for_tests()

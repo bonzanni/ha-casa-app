@@ -32,7 +32,7 @@ from test_delegate_to_agent import _caller_cfg, _specialist_cfg
 pytestmark = [pytest.mark.unit]
 
 INVOICE = ("/data/agent-inbox/assistant/ready/1758500000000-a1b2.pdf", "invoice.pdf")
-WROTE = "Casa: Test wrote this without opening “invoice.pdf”."
+WROTE = "(Test wrote this without opening “invoice.pdf”.)"
 SYSTEM = SpeakerProvenance(speaker_kind="system")
 
 
