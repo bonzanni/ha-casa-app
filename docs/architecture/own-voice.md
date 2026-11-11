@@ -156,9 +156,13 @@ it, never the requester's bounded copy, and nothing when it closes with `<silent
 the requester gets today's bounded result. That result's Casa notes name the agent's chat:
 a post echo says the posts went to the person there and asks the requester to close the
 loop in its own words (`OWN_CHAT_ECHO_NOTE`), a closing silence is said without steering it
-to silence (`OWN_CHAT_SILENT_CLOSE_NOTE`), and a closing message that was posted is said to
-be already read there, so the requester closes in a line or two instead of retelling it
-(`OWN_CHAT_ANSWER_NOTE`). What the operator wrote into the task while it ran reaches the
+to silence (`OWN_CHAT_SILENT_CLOSE_NOTE`), and a closing message that posts is said to be
+already read there, so the requester closes in a line or two instead of retelling it
+(`OWN_CHAT_ANSWER_NOTE`). That prediction is the post's own rule: an endpoint still serves
+the task's delivery (`tools._task_endpoint`, the lookup the post makes, so an answer whose
+bot was released meanwhile is not called read), and the whole closing message is no
+silence — the same text both silence notes judge, so the notes never contradict each other
+or the chat. What the operator wrote into the task while it ran reaches the
 requester as one more line after them (`OPERATOR_WORDS_NOTE`, from `task_input.take_said`);
 a continuation that declares progress only is announced for those words alone.
 When the requester is not the executor's conversation, the conversation gets a body-free

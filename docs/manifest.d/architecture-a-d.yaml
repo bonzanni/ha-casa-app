@@ -190,7 +190,7 @@
   related: [architecture/delegation.md, architecture/delegation-announcements.md, architecture/specialist-desk.md]
   defines_invariants: [INV-PASS-004]
   invariant_tests:
-    INV-PASS-004: [tests/test_delegate_closing_words.py::test_a_sync_closing_silence_is_told_as_silence, tests/test_delegate_closing_words.py::test_a_sync_answer_carries_no_silence_note, tests/test_delegate_closing_words.py::test_a_late_closing_silence_is_told_as_silence]
+    INV-PASS-004: [tests/test_delegate_closing_words.py::test_a_sync_closing_silence_is_told_as_silence, tests/test_delegate_closing_words.py::test_a_sync_answer_carries_no_silence_note, tests/test_delegate_closing_words.py::test_a_late_closing_silence_is_told_as_silence, tests/test_delegate_closing_words.py::test_a_long_answer_whose_capped_copy_is_blank_is_judged_whole_and_carries_no_blank]
 
 - doc: architecture/delegation-announcements.md
   summary: What a finished delegation owes its creator — the delivery-acknowledged announcement, the answer retained for it, the boot replay's re-announcement, and how long the finished row is kept.
