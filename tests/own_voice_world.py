@@ -178,6 +178,10 @@ class FakeHost:
         self.w.setup.append(("access", bot_id, True))
         self.w.tick("access")
 
+    async def set_name(self, token, name):
+        self.w.setup.append(("name", token, name))
+        self.w.tick("name")
+
     async def set_description(self, token, text):
         self.w.setup.append(("description", token, text))
         self.w.tick("description")

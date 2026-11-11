@@ -1131,18 +1131,20 @@ class Lifecycle:
         return data
 
     async def _self_setup(self, bot_id: int, role: str) -> None:
-        """Describe the bot, set its commands, restrict it to its owner and
-        give it the persona's picture — each call idempotent, each failure
-        logged and retried at the next trigger. Runs when the declared
-        values' digest differs from the one last applied."""
+        """Name the bot after the persona, describe it, set its commands,
+        restrict it to its owner and give it the persona's picture — each
+        call idempotent, each failure logged and retried at the next trigger.
+        Runs when the declared values' digest differs from the one last
+        applied."""
         cfg = self._configs().get(role)
         own = getattr(cfg, "own_chat", None)
         if own is None:
             return
         rec = self.store.bots[bot_id]
         photo = self._avatar(role, cfg)
+        label = self._label(role)
         digest = hashlib.sha256(json.dumps([
-            own.description, own.short_description, list(COMMANDS), "owner-only",
+            label, own.description, own.short_description, list(COMMANDS), "owner-only",
             hashlib.sha256(photo).hexdigest() if photo is not None else None,
         ]).encode("utf-8")).hexdigest()
         if rec.get("setup_digest") == digest:
@@ -1152,6 +1154,7 @@ class Lifecycle:
             return
         ok = True
         calls = (
+            ("name", lambda: self.host.set_name(token, label)),
             ("description", lambda: self.host.set_description(token, own.description)),
             ("short description",
              lambda: self.host.set_short_description(token, own.short_description)),
@@ -1843,6 +1846,10 @@ class TelegramHost:
         except Exception as exc:  # noqa: BLE001
             return "unauthorized" if is_unauthorized(exc) else "error"
         return "ok"
+
+    async def set_name(self, token: str, name: str) -> None:
+        async with self._bot(token) as bot:
+            await bot.set_my_name(name)
 
     async def set_description(self, token: str, text: str) -> None:
         async with self._bot(token) as bot:

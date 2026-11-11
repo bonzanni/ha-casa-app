@@ -1365,6 +1365,23 @@ async def test_a_refused_picture_never_fails_the_binding(world, root, tmp_path):
     assert lc.state("finance") == "not_open"
 
 
+async def test_self_setup_names_the_bot_after_the_persona(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _bind_alex(lc, host)               # created as "AlexTest"
+    assert [c for c in world.setup if c[0] == "name"] == [("name", ALEX_TOKEN, "Alex")]
+
+
+async def test_a_persona_rename_sets_the_name_again(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _bind_alex(lc, host)
+    world.configs["finance"] = specialist("Alexa")
+    await lc.on_persona("finance")
+    assert [c for c in world.setup if c[0] == "name"] == [
+        ("name", ALEX_TOKEN, "Alex"), ("name", ALEX_TOKEN, "Alexa")]
+    await lc.on_persona("finance")           # unchanged: not set again
+    assert len([c for c in world.setup if c[0] == "name"]) == 2
+
+
 async def test_self_setup_restricts_the_bot_to_its_owner(world, root):
     lc, host = make_lifecycle(world, root)
     await _bind_alex(lc, host)
