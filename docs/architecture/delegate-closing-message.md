@@ -22,8 +22,9 @@ resident as the delegation result — in-band for a `sync` delegation, in a noti
 Casa posts nothing of the answer under the delegate's name in the resident's chat; the
 delegate's own posts there (cards, links, files, desk replies) still carry its `📊 <name>` label
 ([`specialist-desk.md`](specialist-desk.md)). A delegate with its own open chat also gets its
-whole answer, as it wrote it and before any cut, posted in that chat, while the resident still
-receives the bounded result described here ([`own-voice.md`](own-voice.md)).
+closing message, whole and before any cut, posted in that chat (nothing when it is silence),
+while the resident still receives the bounded result described here
+([`own-voice.md`](own-voice.md)).
 
 **The result text is the whole turn, cut from the end.** Every text-bearing message of the
 delegate's turn, joined (`DelegatedOutput.text`), truncated at the result cap
@@ -33,14 +34,19 @@ whether it was cut. Casa's post-echo lines follow it.
 **The closing message is the turn's last text-bearing message.** A delegate's turn often
 writes text before or between its tool calls and then ends with its answer. The runner
 records that last message (`DelegatedOutput.final_message`) beside the joined text, whole,
-before any cut shortens `reply_messages` for the desk. `_closing_words` reads it, bounded at
-the same cap from its start; a producer that reports no messages is a single-message turn,
-whose closing message is its whole text. It is read for two things only.
+before any cut shortens `reply_messages` for the desk. `_closing_text` reads it whole, and
+`_closing_words` bounds that at the same cap from its start; a producer that reports no
+messages is a single-message turn, whose closing message is its whole text. The bounded
+words are read for the two things below; the whole message is what a task in the delegate's
+own chat posts there, and what a plugin continuation's turn must be exactly to declare
+progress only ([`plugin-continuations.md`](plugin-continuations.md)).
 
 **A closing silence is told as silence.** When the closing message is `<silent/>` — as after a
 hand-over that already reached the person — the result or notice ends with Casa's note that
 the delegate has nothing for the person (`_with_silent_close_note`), so the resident does not
-retell the narration that came before it. This is the #1075 closing-silence rule judged on
+retell the narration that came before it. For a task shown in the delegate's own chat the note
+says the same without steering the resident to silence, since the person asked her
+(`OWN_CHAT_SILENT_CLOSE_NOTE`, [`own-voice.md`](own-voice.md)). This is the #1075 closing-silence rule judged on
 the last message alone.
 
 **A closing message the cap cut away travels beside the result.** When the result text was
@@ -90,6 +96,7 @@ it, so a closing silence and a cut answer are told the same way on every path.
 
 **Source**
 - `casa/rootfs/opt/casa/tools.py::_closing_words`
+- `casa/rootfs/opt/casa/tools.py::_closing_text`
 - `casa/rootfs/opt/casa/tools.py::_closing_beyond_cut`
 - `casa/rootfs/opt/casa/tools.py::_with_silent_close_note`
 

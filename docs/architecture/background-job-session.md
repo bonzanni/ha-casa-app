@@ -189,7 +189,8 @@ plus that total, kept on `origin["job"]["cost_usd"]`. The DM start line of an op
 job is edited silently at each turn end and every five minutes:
 `📊 Finance started «Accounting check». · 40 min · $2.40` (in the host's own chat, without the
 label: `Started «Accounting check». · …`) — elapsed time always, the cost once a
-turn has ended. A job's end paints that line `✅ Finance «Accounting check» · 1 h 5 min · $3.90`,
+turn has ended. A job's end paints that line `✅ Finance «Accounting check» · 1 h 5 min · $3.90`
+(in the host's own chat `✅ «Accounting check» · …`),
 and the end notice to the resident carries `Job ran 1 h 5 min · $3.90`, so a job with no start
 line (scheduled or agent-started) still shows it.
 
@@ -205,8 +206,8 @@ finalizes with the last cost known. Who owns finalization and the completion gat
 
 **A turn ends on an API fault.** The first fault since the last successful turn end waits a
 minute and writes "Continue the job.", resuming the session first if it died. A second in a row
-parks the job with "«title» stopped on an error from Claude (<kind>). Reply to continue it, or
-Cancel." Operator input during the wait cancels the continue.
+parks the job with "«title» stopped on an error (<kind>). Reply to continue it, or Cancel."
+Operator input during the wait cancels the continue.
 
 **The CLI dies during a write.** The write raises; the ticket stays unwritten at the head of the
 queue and the session is treated as lost (INV-BGJOB-018).

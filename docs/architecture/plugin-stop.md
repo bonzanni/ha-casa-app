@@ -151,8 +151,8 @@ plugin's app has actually stopped the work — Casa records only the plugin's an
 ## Failure behavior
 
 **The plugin does not answer within sixty seconds, fails, or answers another shape.**
-`not_taken`: the card reads `☑ Stop asked` and the line says the browsing stops as soon as
-Casa Browser answers; a call still running at the timeout is cancelled. **The plugin does
+`not_taken`: the card reads `☑ Stop asked` and the line says, in the agent's voice, that it
+will stop as soon as the browser answers; a call still running at the timeout is cancelled. **The plugin does
 not know the request** (`unknown`). The request's card keeps its Stop and no line is
 posted; a proposal reads `✖ expired`. **The plugin is no longer resolved for the role.**
 `unavailable`: no card mark, the line says so. **The card edit or the line fails.** It is logged; the stop already ran. **The stop

@@ -86,7 +86,7 @@ job's plugin post sits in the post map under that specialist. The channel checks
 index before the post map (`EngagementRegistry.ended_job_post_owner`), with the live route's
 own checks — the authenticated operator who started the job, in its chat — and the message
 becomes the ordinary turn of that chat's own agent (the resident, in the resident's chat), whose reply note names the job's agent, its title, how it
-ended and when (`TelegramChannel._ended_job_phrase`), as in "a message Casa posted for
+ended and when (`TelegramChannel._ended_job_phrase`), as in "a message from
 Finance's background job «Q3 accounting», which ended (completed) at 2026-11-10 14:02". A job a
 resident's plugin worker ran is named as the resident's own, with its plugin. The resident narrated the
 job's result in this chat, so she can connect the two. A file sent as such a reply is the
@@ -97,7 +97,7 @@ stored and acknowledged, like every captionless file, and no turn starts.
 observer — told by every in-process terminal winner: the finalize funnel, the launch-death
 report, the reap, the legacy direct mutators — has the channel take the record's keyboard posts
 in one synchronous step and edit them away: the start line to `✅`/`🛑`/`❌ <Agent> «<title>»`
-with the job's running time and cost, a question or parking line to no buttons. A job that
+(without the agent's name in the host's own chat) with the job's running time and cost, a question or parking line to no buttons. A job that
 completes from inside a running turn is the one exception to the timing: the observer leaves its
 keyboards to the completion's finalize tail, which retires them once that turn has ended (or a
 bounded wait passed), so the end paint carries the completing turn's cost. A keyboard post that lands after the terminal write settled is

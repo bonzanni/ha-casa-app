@@ -182,6 +182,7 @@
   when_changing: the closing-silence note a delegation result or notice carries, the delegate's closing message, or the closing_message that travels beside a result the length cap cut
   covers:
     - casa/rootfs/opt/casa/tools.py::_closing_words
+    - casa/rootfs/opt/casa/tools.py::_closing_text
     - casa/rootfs/opt/casa/tools.py::_closing_beyond_cut
     - casa/rootfs/opt/casa/tools.py::_with_silent_close_note
   tests:
@@ -223,9 +224,8 @@
     - casa/rootfs/opt/casa/specialist_limits.py::SpawnToken
     - casa/rootfs/opt/casa/tools.py::_reap_bounded_tree
     - casa/rootfs/opt/casa/pinned_run.py::ProcessTree
-    - casa/rootfs/opt/casa/tools.py::_post_handoff_line
   tests:
-    - tests/test_delegate_to_agent.py::TestHandoffLine
+    - tests/test_delegate_to_agent.py::test_no_handoff_line_and_no_note
     - tests/test_bounded_run_processes.py
     - tests/test_delegation_acl.py
     - tests/test_delegates_block_live_names.py

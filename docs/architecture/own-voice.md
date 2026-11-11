@@ -147,9 +147,20 @@ its posts carry no `📊` label (`result_broker.label_at`): the chat is the agen
 
 **A task in an agent's chat.** A delegation to an agent whose chat is open at its birth
 opens its post index (`task_posts.open`) and its input destination
-(`task_input.open_pending`) first, then posts its start line there — "Ellen asked: «…»" —
-then runs in its own session. Its whole answer, as the agent wrote it, is posted there in
-pages (never the requester's bounded copy), and the requester gets today's bounded result.
+(`task_input.open_pending`) first, then posts its start line there — "Ellen asked me: «…»",
+the brief shown without one pair of quote marks enclosing all of it (`tools._unquoted`) —
+then runs in its own session, whose delegation context says that its closing message is
+posted to the operator (`answer_shown`). The message it closed its turn with
+(`tools._closing_text`), whole, is posted there in pages — never its working notes before
+it, never the requester's bounded copy, and nothing when it closes with `<silent/>` — and
+the requester gets today's bounded result. That result's Casa notes name the agent's chat:
+a post echo says the posts went to the person there and asks the requester to close the
+loop in its own words (`OWN_CHAT_ECHO_NOTE`), a closing silence is said without steering it
+to silence (`OWN_CHAT_SILENT_CLOSE_NOTE`), and a closing message that was posted is said to
+be already read there, so the requester closes in a line or two instead of retelling it
+(`OWN_CHAT_ANSWER_NOTE`). What the operator wrote into the task while it ran reaches the
+requester as one more line after them (`OPERATOR_WORDS_NOTE`, from `task_input.take_said`);
+a continuation that declares progress only is announced for those words alone.
 When the requester is not the executor's conversation, the conversation gets a body-free
 note (`chat_notes`) at its next turn: who asked what, and how it ended. Jobs and
 continuations leave the same note. A continuation of a run in the agent's chat opens its
@@ -168,13 +179,17 @@ plugins under its profile), plus the session's extras every specialist session g
 (`specialist_session.session_env_and_pad`: the long-run compaction window, its pad, its
 run in the agent's log). What it writes is captured with speaker kind `specialist`. Its
 turns come from the operator's direct messages in its chat and from results of work it
-started; work the resident started reaches it only as a `(Casa) ` note line.
+started; work the resident started reaches it only as a `(Casa) ` note line, under one
+frame line that hands those notes to it as its own memory (`agent.CHAT_NOTES_FRAME`).
 
 **Own-chat routing, on every endpoint.** In any chat, task first:
 - a text reply to a live task's post goes into that task — a job's through its driver
   ([`background-job-direct-chat.md`](background-job-direct-chat.md)), a delegation's
   through `task_input.submit`, prefixed `[replying to «<first line>»]`; while the task is
-  pending its replies queue in order and are written after its brief;
+  pending its replies queue in order and are written after its brief. The operator's own
+  words (a file's as its caption and name) are also kept apart from the input, so closing
+  it leaves them, for the requester to be told once (`task_input.take_said`): the last five
+  per task, 300 characters each, for the 64 latest tasks, memory-only;
 - a file replying to a live task's post, or after a 📎 tap on a live task's card, is stored
   in the executor's inbox, granted to that task alone (`agent_inbox.grant_task_file`,
   asked at each Read), and handed to the task as a `[casa file] <name> at <path>` line;
@@ -212,7 +227,7 @@ surface and runs as before.
 
 **INV-OWN-002**: A task's delivery is decided once, by its launcher, at its birth — the resident's chat for the resident, the executor's own chat when it is open at that moment, otherwise none — and is carried unchanged by its origin, its records and its binding for the task's whole life; a task born without one posts nothing even after the chat opens.
 
-**INV-OWN-003**: A task's result goes to its requester, the agent whose turn started it; an agent's conversation receives the results of work it started and only a body-free note of work another agent started, and a task in an agent's open chat posts its whole answer there while the requester gets its bounded result.
+**INV-OWN-003**: A task's result goes to its requester, the agent whose turn started it; an agent's conversation receives the results of work it started and only a body-free note of work another agent started, and a task in an agent's open chat posts there the message it closed its turn with (nothing when that is silence) while the requester gets its bounded result.
 
 **INV-OWN-004**: Every landed post of a task is filed under that task, keyed by bot, chat and message, found again after a reload; an operator's reply or file quoting a live task's post goes into that task — queued in order while it is pending, never to a conversation — and a reply to an ended task's post, or any other message, is the chat's own agent's turn.
 
@@ -276,6 +291,9 @@ derives an origin from another task's.
 - `casa/rootfs/opt/casa/tools.py::TaskBirth`
 - `casa/rootfs/opt/casa/tools.py::_task_birth`
 - `casa/rootfs/opt/casa/tools.py::_settle_task`
+- `casa/rootfs/opt/casa/tools.py::_unquoted`
+- `casa/rootfs/opt/casa/tools.py::_with_operator_words`
+- `casa/rootfs/opt/casa/task_input.py::take_said`
 - `casa/rootfs/opt/casa/tools.py::_media_delivery`
 - `casa/rootfs/opt/casa/tools.py::_closed_own_chat`
 - `casa/rootfs/opt/casa/tools.py::_after_own_chat_change`

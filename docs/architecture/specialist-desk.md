@@ -71,11 +71,12 @@ stamped after sanitization (`TelegramChannel._reply_note_for`, composed by `repl
 posted the quoted message, when (in Casa's zone), and what it read — its text or caption,
 clipped to 600 characters (`REPLY_QUOTE_CHARS`), or `(no text)`. Who posted it is decided
 from the post map and Telegram's sender ids, never from text, the first match winning: a
-retained post names the specialist's label, or "on your behalf" for the chat's resident; a
-message sent on behalf of a chat (`sender_chat` on either message) names no person; the
-bot's own id with no record is "an earlier message from Casa with no record of who wrote it":
-the map never holds the resident's own replies, so the note says it is most likely one of
-the resident's, without claiming a lost record or a certain author — a specialist's file, Casa's
+retained post names the agent ("an earlier message from <its name>"), or "one of your own
+earlier messages" for the chat's resident; a message sent on behalf of a chat (`sender_chat`
+on either message) names no person; the bot's own id with no record is "one of your earlier
+messages (most likely; it could also be a notice from the system)": the map never holds the
+resident's own replies, so the note says it is most likely one of the resident's, without
+claiming a lost record or a certain author — a specialist's file, Casa's
 notices and a forgotten post have no record either; the sender's own id is their own
 earlier message;
 anything else is someone else's message. The resident's turn carries the note in its Casa
