@@ -132,11 +132,40 @@ async def test_a_backend_error_returns_the_fallback(monkeypatch):
     assert await write_card(REQ) is REQ.fallback
 
 
-async def test_a_pathologically_nested_reply_returns_the_fallback(monkeypatch):
-    async def nested(system, user):
-        return "[" * 100_000
-    monkeypatch.setattr(approval_card, "_ask", nested)
-    assert await write_card(REQ) is REQ.fallback
+async def test_a_pathologically_nested_reply_is_invalid_and_retried(monkeypatch):
+    nested = '{"a":' * 100_000 + "1" + "}" * 100_000
+    with pytest.raises(RecursionError):
+        json.loads(nested)                                           # the reply really is hostile
+    stub = Stub(replies=(nested,))
+    monkeypatch.setattr(approval_card, "_ask", stub)
+    assert await write_card(REQ) is REQ.fallback and stub.calls == 2
+
+
+async def test_a_fenced_reply_becomes_the_card(monkeypatch):
+    stub = Stub(replies=(f"```json\n{VALID_REPLY}\n```",))
+    monkeypatch.setattr(approval_card, "_ask", stub)
+    card = await write_card(REQ)
+    assert stub.calls == 1 and card.title == "🔐 Allow Ellen to send an email to Marco?"
+
+
+async def test_a_reply_with_a_leading_sentence_becomes_the_card(monkeypatch):
+    stub = Stub(replies=(f"Here is the card: {VALID_REPLY} Hope that helps.",))
+    monkeypatch.setattr(approval_card, "_ask", stub)
+    assert (await write_card(REQ)).title == "🔐 Allow Ellen to send an email to Marco?"
+
+
+def test_a_reply_without_braces_is_not_a_card():
+    assert approval_card.card_from_reply("no card here", who="Ellen") is None
+    assert approval_card.card_from_reply("} backwards {", who="Ellen") is None
+
+
+async def test_the_failure_log_carries_the_message(monkeypatch, caplog):
+    async def boom(system, user):
+        raise RuntimeError("cli exploded")
+    monkeypatch.setattr(approval_card, "_ask", boom)
+    with caplog.at_level("WARNING", logger="approval_card"):
+        assert await write_card(REQ) is REQ.fallback
+    assert "RuntimeError: cli exploded" in caplog.text
 
 
 async def test_waiting_for_a_slot_counts_against_the_budget(stub_ask_hangs):

@@ -144,10 +144,15 @@ def _bounded_str(value: object, limit: int) -> str | None:
 
 def card_from_reply(text: str, *, who: str, title: str | None = None) -> Card | None:
     """Parse the model's JSON reply into a card, or None when it is not
-    exactly the agreed shape or any field is out of bounds."""
+    exactly the agreed shape or any field is out of bounds. A reply wrapped
+    in a code fence or a sentence is read from its first "{" to its last "}"."""
+    if isinstance(text, str):
+        start, end = text.find("{"), text.rfind("}")
+        if 0 <= start < end:
+            text = text[start:end + 1]
     try:
         data = json.loads(text)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return None
     if not isinstance(data, dict):
         return None
@@ -538,6 +543,6 @@ async def write_card(req: CardRequest) -> Card:
     try:
         return await _write(req)
     except Exception as exc:  # noqa: BLE001 -- an approval must never fail for want of a nicer card
-        logger.warning("approval card could not be written (%s); using the fallback",
-                       type(exc).__name__)
+        logger.warning("approval card could not be written (%s: %s); using the fallback",
+                       type(exc).__name__, exc)
         return req.fallback
