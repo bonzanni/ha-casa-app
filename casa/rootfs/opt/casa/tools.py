@@ -12540,6 +12540,25 @@ async def _settle_through_cancellation(coro):
         raise
 
 
+async def _to_thread_settled(fn, /, *args, **kwargs):
+    """`asyncio.to_thread` for work that runs while `_PLUGIN_TOOLS_LOCK` is held.
+
+    A cancelled `asyncio.to_thread` await returns at once while the thread keeps
+    running, so a plugin tool cancelled mid-hop (an operator cancel, a run's
+    time limit, shutdown) would release the lock with its worker still writing:
+    the next mutation could then save the registry and report success, and the
+    old worker's save of the registry it read earlier would land last and drop
+    that entry. Here the caller waits for the thread to finish and only then
+    sees the cancellation, so the lock is released after the worker is done.
+
+    Every thread hop under the lock goes through this, the read-only ones too,
+    so the rule has no exceptions to keep track of. It starts no task that takes
+    the lock, so it is safe inside a hold of either the raw lock or the guard.
+    """
+    return await _settle_through_cancellation(
+        asyncio.to_thread(fn, *args, **kwargs))
+
+
 async def _regenerate_plugin_health_held(extra_issues: list | None = None) -> None:
     """#1055: regenerate the plugin health report for a caller that ALREADY holds
     `_PLUGIN_TOOLS_LOCK` (raw or through the guard), letting the worker thread
@@ -12586,7 +12605,7 @@ async def _regenerate_plugin_health_guarded(*, then=None) -> None:
 
     async def _unit() -> None:
         async with _plugin_tools_guard():
-            await asyncio.to_thread(_regenerate_plugin_health, [])
+            await _to_thread_settled(_regenerate_plugin_health, [])
             written.set()
             if then is not None:
                 await then()
@@ -13261,7 +13280,7 @@ async def _reload_and_verify_targets(name: str, targets: list,
     FIRST, reconstruct affected in-casa agents, desired==active verify, then
     regenerate + notify health. Order is load-bearing (stale-snapshot hazard)."""
     _record_plugin_installer([name])   # #1053
-    await asyncio.to_thread(plugin_registry.reload_snapshot)   # 1. FIRST
+    await _to_thread_settled(plugin_registry.reload_snapshot)   # 1. FIRST
     import agent as agent_mod
     import reload as reload_mod
     runtime = getattr(agent_mod, "active_runtime", None)
@@ -13330,7 +13349,7 @@ async def _reload_and_verify_targets(name: str, targets: list,
             _snap = getattr(agents.get(_role), "plugin_binding_snapshot", None)
             if _snap is not None and _snap.generation != gen_now:
                 stale_gen.append(t)
-        verify = await asyncio.to_thread(
+        verify = await _to_thread_settled(
             _tool_verify_plugin_state, plugin_name=name)
         raced = (bool(stale_gen)
                  or plugin_registry.snapshot_generation() != gen_now)
@@ -13397,7 +13416,7 @@ async def _reload_and_verify_targets(name: str, targets: list,
     # commit that picks the registry up instead reloads nothing for it either
     # (INV-TOOL-014).
     import config_git
-    await asyncio.to_thread(
+    await _to_thread_settled(
         config_git.commit_casa_write, str(plugin_registry.REGISTRY_PATH),
         f"casa: plugin {name} registry change")
     mutation_issues = _issues_from_mutation(
@@ -14729,7 +14748,7 @@ async def plugin_add(args: dict) -> dict:
         # then runs exactly as before.
         core, ack, seen = await _plugin_gate_phase("plugin_add", "added", args, reached)
         if core is None:
-            core = await asyncio.to_thread(
+            core = await _to_thread_settled(
                 _plugin_add_sync, name=args["name"], repo=args["repo"],
                 ref=args["ref"], subdir=args.get("subdir", ""),
                 targets=args.get("targets") or [],
@@ -14752,13 +14771,13 @@ async def plugin_add(args: dict) -> dict:
             core["name"], manifest=published_manifest))
         # Design 2026-09-15 §2.D: the tool explores the default vault for the
         # unresolved secrets; the configurator decides what to wire.
-        core.update(await asyncio.to_thread(
+        core.update(await _to_thread_settled(
             _secret_candidates, core["name"],
             list(core.get("required_env_vars") or []),
             manifest=published_manifest))
         # S8: the just-published manifest's recommendations, one row per
         # (requirement, target) with where it stands; the configurator offers.
-        core["requirement_candidates"] = await asyncio.to_thread(
+        core["requirement_candidates"] = await _to_thread_settled(
             _requirement_candidates_for, core["name"], list(core["targets"]),
             manifest=published_manifest)
         return _result(_after_plugin_change(
@@ -14803,7 +14822,7 @@ async def plugin_update(args: dict) -> dict:
         core, ack, seen = await _plugin_gate_phase(
             "plugin_update", "updated", args, reached)
         if core is None:
-            core = await asyncio.to_thread(
+            core = await _to_thread_settled(
                 _plugin_update_sync, name=args["name"], new_ref=args["new_ref"],
                 expected_revision=args.get("expected_revision"))
         elif core.get("kind") == OPEN_CONVERSATIONS_PENDING:
@@ -14821,7 +14840,7 @@ async def plugin_update(args: dict) -> dict:
             # open-conversation notice for a change that did not happen. Verify
             # still reports the plugin's real state.
             core["activation_committed"] = False
-            core["verify"] = await asyncio.to_thread(
+            core["verify"] = await _to_thread_settled(
                 _tool_verify_plugin_state, plugin_name=core["name"])
             core["runtime_ready"] = core["verify"].get("ready") is True
             return _result(_after_plugin_change(
@@ -14841,7 +14860,7 @@ async def plugin_update(args: dict) -> dict:
             core["name"], manifest=published_manifest))
         # Design 2026-09-15 §2.D: the tool explores the default vault for the
         # unresolved secrets; the configurator decides what to wire.
-        core.update(await asyncio.to_thread(
+        core.update(await _to_thread_settled(
             _secret_candidates, core["name"],
             list(core.get("required_env_vars") or []),
             manifest=published_manifest))
@@ -15112,7 +15131,7 @@ async def specialist_install_request_approval(args: dict) -> dict:
     carrying = origin.get(approval_records.APPROVAL_KEY)
     carrying_rid = str(carrying.get("rid") or "") if isinstance(carrying, dict) else ""
     async with _plugin_tools_guard():
-        if mode == "upgrade" and await asyncio.to_thread(
+        if mode == "upgrade" and await _to_thread_settled(
                 _upgrade_changes_nothing, inspection, slug, effective, secrets):
             return _result({"ok": True, "approval": "not_needed",
                             "detail": (f"already at {inspection.version} with these settings; "
@@ -15488,7 +15507,7 @@ async def _plugin_gate_phase(tool: str, kind: str, args: dict,
         return bad, None, set()
     if not specialist_roles_with_open_engagements():
         return None, ack, set(ack or ())
-    slugs = await asyncio.to_thread(reached)
+    slugs = await _to_thread_settled(reached)
     refusal, seen = _plugin_change_gate(tool, kind, args["name"], slugs, ack)
     return refusal, ack, seen
 
@@ -16380,7 +16399,7 @@ async def persona_apply(args: dict) -> dict:
         except OSError as exc:
             return {"ok": False, "kind": "image_incomplete", "detail": str(exc)}
         try:
-            staged = await asyncio.to_thread(
+            staged = await _to_thread_settled(
                 apply_persona_override, target_role_id=args["target_role_id"],
                 persona=persona, role=role, instance_dir_root=instance_dir_root,
                 candidate_validator=validator, **library_kwargs)
@@ -16930,7 +16949,7 @@ async def plugin_assign(args: dict) -> dict:
         core, ack, seen = await _plugin_gate_phase(
             "plugin_assign", "added", args, reached)
         if core is None:
-            core = await asyncio.to_thread(
+            core = await _to_thread_settled(
                 _plugin_assign_sync, name=args["name"], target=args["target"],
                 profile=args.get("profile"))
         elif core.get("kind") == OPEN_CONVERSATIONS_PENDING:
@@ -16946,9 +16965,9 @@ async def plugin_assign(args: dict) -> dict:
         seq = await _reload_and_verify_targets(
             core["name"], [core["target"]], expect="present")
         core.update(seq)
-        core["requirement_candidates"] = await asyncio.to_thread(
+        core["requirement_candidates"] = await _to_thread_settled(
             _requirement_candidates_for, core["name"], [core["target"]])
-        core["profile_tools_denied_by_config"] = await asyncio.to_thread(
+        core["profile_tools_denied_by_config"] = await _to_thread_settled(
             _profile_tools_denied_by_config, core["name"], core["target"],
             None if core.get("profile") == plugin_registry.FULL_PROFILE
             else core.get("profile"))
@@ -16985,7 +17004,7 @@ async def plugin_unassign(args: dict) -> dict:
         core, ack, seen = await _plugin_gate_phase(
             "plugin_unassign", "removed", args, reached)
         if core is None:
-            core = await asyncio.to_thread(
+            core = await _to_thread_settled(
                 _plugin_unassign_sync, name=args["name"], target=args["target"])
         elif core.get("kind") == OPEN_CONVERSATIONS_PENDING:
             return _result(core)
@@ -17008,7 +17027,7 @@ async def plugin_unassign(args: dict) -> dict:
         core.update(seq)
         # S8: the plugins whose requirements named this one on this target —
         # the consequence is stated once; nothing blocks.
-        core["dependents"] = await asyncio.to_thread(
+        core["dependents"] = await _to_thread_settled(
             _dependents_for, core["name"], [core["target"]])
         return _result(_after_plugin_change(
             core, "removed", core["name"],
@@ -17672,7 +17691,7 @@ async def _plugin_remove_unit(args: dict) -> dict:
     core.update(seq)
     # S8: the plugins whose requirements named this one on its former
     # targets — stated once; the entry is already gone, nothing blocks.
-    core["dependents"] = await asyncio.to_thread(
+    core["dependents"] = await _to_thread_settled(
         _dependents_for, core["name"], list(core.get("targets") or []))
     return _result(core)
 
@@ -17764,7 +17783,7 @@ async def trigger_ack_revoke(args: dict) -> dict:
         # plugin FIRST (synchronous broker cancel — later taps read
         # "expired"), so a stale Approve can never re-ack past the revoke.
         CHALLENGES.cancel_matching(plugin=name)
-        removed = await asyncio.to_thread(
+        removed = await _to_thread_settled(
             trigger_acks.ACKS.revoke_plugin, name)
         runtime = getattr(agent_mod, "active_runtime", None)
         registry = getattr(runtime, "trigger_registry", None)
@@ -17813,7 +17832,7 @@ async def trigger_ack_revoke(args: dict) -> dict:
         # artifact inherit the old credential: a later plugin_update's
         # revoke_artifact would find no records and retire nothing.
         import webhook_auth
-        retired = await asyncio.to_thread(
+        retired = await _to_thread_settled(
             webhook_auth.retire_secrets_with_prefix, prefix,
             secrets_dir=trigger_reconcile.SECRETS_DIR)
         # Sol shipB-r2 P1-1: cancel AGAIN after our reconcile. Prompts fire
@@ -17891,7 +17910,7 @@ async def callback_ack_revoke(args: dict) -> dict:
         # Kill any pending consent keyboard for this plugin FIRST so a stale
         # Approve cannot re-ack past the revoke (mirrors trigger_ack_revoke).
         CHALLENGES.cancel_matching(plugin=plugin)
-        removed = await asyncio.to_thread(
+        removed = await _to_thread_settled(
             callback_acks.ACKS.revoke_effective, plugin, name)
         runtime = getattr(agent_mod, "active_runtime", None)
         # I3: run BOTH reconcilers so a shared round never keeps an open member.
@@ -19494,7 +19513,7 @@ async def persona_remove(args: dict) -> dict:
         # the removal advances before it deletes anything.
         CHALLENGES.cancel_matching(persona=args["persona_id"])
         try:
-            result = await asyncio.to_thread(
+            result = await _to_thread_settled(
                 remove_installed_persona,
                 persona_id=args["persona_id"], version=args["version"])
         except SpecialistInstallError as exc:
@@ -19520,7 +19539,7 @@ async def persona_prune(args: dict) -> dict:
 
     async with _PLUGIN_TOOLS_LOCK:
         try:
-            result = await asyncio.to_thread(prune_installed_personas)
+            result = await _to_thread_settled(prune_installed_personas)
         except SpecialistInstallError as exc:
             return _result({"ok": False, "kind": exc.kind, "detail": exc.detail})
         except OSError as exc:
@@ -19560,7 +19579,7 @@ async def persona_ack_revoke(args: dict) -> dict:
 
     async with _PLUGIN_TOOLS_LOCK:
         CHALLENGES.cancel_matching(persona=persona_id)
-        return _result(await asyncio.to_thread(_sync))
+        return _result(await _to_thread_settled(_sync))
 
 
 # Module-level tool registry — iterated by create_casa_tools() for the SDK

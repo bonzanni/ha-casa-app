@@ -86,6 +86,26 @@ entry points do — they take this lock before dispatching any scope that will r
 (INV-CFG-011) — and the reload handlers that regenerate plugin health from underneath the
 reload lock re-enter it as the same task rather than acquiring it there.
 
+**INV-TOOL-015**: A plugin tool cancelled while it holds the plugin-mutation lock releases the lock only after the worker thread it started under that lock has finished, so no later mutation runs beside a worker that can still write.
+
+`asyncio.to_thread` cancels the await, never the thread. A tool cancelled mid-hop — an
+operator cancel, a run's time limit, shutdown — used to leave its `async with` at once, and
+the next mutation could save the registry and report success before the old worker saved
+the registry it had read earlier, dropping the newer entry. Every thread hop that runs while
+the lock is held, in the tools themselves and in the tools-layer coroutines they await there,
+goes through `_to_thread_settled`, which waits for the thread and only then lets the
+cancellation through; a structural test keeps new hops under the lock off the bare
+`asyncio.to_thread`. A cancelled call therefore still surfaces as cancelled, after its worker
+is done, and whatever that worker committed stays committed.
+
+What it does not cover: thread hops inside coroutines of other modules awaited under the lock
+— the trigger, callback and event reconcilers — which serialize on their own reconcile lock,
+and the specialist bundle transactions, whose child task owns the lock itself
+([`specialist-bundle-transactions.md`](specialist-bundle-transactions.md)). Work after the
+hop is not completed on the cancelled call's behalf: a cancel that lands during the reload
+after a commit still stops the reload, and the next reload or an explicit verify is the
+repair path (INV-TOOL-004).
+
 **INV-TOOL-004**: A reload or verification failure after the registry commit yields committed-but-not-ready; nothing rolls the registry back.
 
 Enforced by the converge step reporting `activation_committed: true, runtime_ready: false`
@@ -299,6 +319,7 @@ verifies and pins the envelope.
 **Source**
 - `casa/rootfs/opt/casa/tools.py::plugin_add`
 - `casa/rootfs/opt/casa/tools.py::_plugin_change_gate`
+- `casa/rootfs/opt/casa/tools.py::_to_thread_settled`
 - `casa/rootfs/opt/casa/consent_denials.py`
 
 **Tests**
@@ -306,6 +327,7 @@ verifies and pins the envelope.
 - `tests/test_assistant_prompts.py`
 - `tests/test_plugin_open_conversations.py`
 - `tests/test_plugin_confirmed_refusal_leaves_artifact.py`
+- `tests/test_plugin_tools_cancel_settles.py`
 
 **Related**
 - [`architecture/tools-interface.md`](../architecture/tools-interface.md)
