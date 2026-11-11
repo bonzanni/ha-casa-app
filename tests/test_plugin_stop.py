@@ -781,6 +781,36 @@ async def test_stop_work_neither_lists_nor_stops_another_operators_request(env):
     assert [c["args"] for c in _calls(rp)] == [{}]          # the listing only, no stop
 
 
+def _admit_on(bot, *, chain, request_key, cid):
+    """A request admitted on *bot* (an agent's own chat), for work *chain*'s
+    root asked for. No card, so a stop marks nothing."""
+    ident = GrantIdentity(operator_id=OPERATOR, chat_id=OPERATOR, enforcement_role="browser",
+                          artifact_id=ARTIFACT, engagement_id="", bot_id=bot,
+                          delivery=TgAddress(bot, OPERATOR))
+    b = plugin_bindings.BINDINGS.for_turn(plugin="browser", turn_key="d-" + cid, identity=ident,
+                                          chain=chain, origin={**ORIGIN, "_tg_bot": bot})
+    run_admission.CONFIRMATIONS.add(run_admission.Confirmation(
+        cid=cid, plugin="browser", bot_id=bot, operator_id=OPERATOR, binding_ref=b.ref,
+        request_key=request_key, status="admitted", admissions=[], created_at=time.time()))
+
+
+async def test_stop_work_reaches_work_she_asked_for_in_another_agents_chat(env):
+    """A delegation to an agent with its own chat runs there, on that agent's
+    bot: Ellen still lists and stops it from her chat. Work the agent's own
+    conversation started stays the agent's — she neither lists nor stops it."""
+    rp = env.use(_plugin(env.tmp / "p", listing={"requests": [
+        {"ref": "request:k1", "tasks": ["invoice: RunPod"], "state": "running"},
+        {"ref": "request:k2", "tasks": ["receipt: Hetzner"], "state": "running"}]}))
+    _admit_on(222, chain=("assistant", "browser"), request_key="k1", cid="conf-" + "1" * 32)
+    _admit_on(222, chain=("browser",), request_key="k2", cid="conf-" + "2" * 32)
+    assert await _stop_work(env, {}) == "- request:k1: Fido — invoice: RunPod (running)"
+    text = await _stop_work(env, {"ref": "request:k2"})
+    assert text.startswith("Error: nothing running has that ref")
+    text = await _stop_work(env, {"ref": "request:k1"})
+    assert text.startswith("Stopped: invoice: get the RunPod invoice.")
+    assert [c["args"] for c in _calls(rp)] == [{}, {"ref": "request:k1"}]
+
+
 async def test_stop_work_by_an_unknown_ref_says_so(env):
     env.use(_plugin(env.tmp / "p", answer={"outcome": "unknown"}))
     text = await _stop_work(env, {"ref": "request:nope"})

@@ -161,6 +161,30 @@ def confirmation_for(seg: str, bot_id: int, operator_id: int, ref: str):
                                               request_key=ref[len(REF_PREFIX):])
 
 
+def visible_confirmation(seg: str, ref: str, *, bot_id: int, operator_id: int,
+                         role: str):
+    """The admission of a ``request:<key>`` ref that *role*, asking on bot
+    *bot_id*, may see and stop: one asked on that bot, else one asked on
+    another bot for work *role* asked for — the root of its binding's chain,
+    as a delegation to an agent with its own chat runs there. ``None`` when
+    there is none."""
+    from plugin_bindings import BINDINGS
+    import run_admission
+    if not ref.startswith(REF_PREFIX):
+        return None
+    found = run_admission.CONFIRMATIONS.by_key_on_any_bot(
+        plugin=seg, operator_id=int(operator_id), request_key=ref[len(REF_PREFIX):])
+    for c in found:
+        if c.bot_id == int(bot_id):
+            return c
+    for c in found:
+        b = BINDINGS.peek(c.binding_ref)
+        chain = list(getattr(b, "chain", None) or ())
+        if role and chain and chain[0] == role:
+            return c
+    return None
+
+
 def _transport():
     from channels.telegram_transport import telegram_transport
     return telegram_transport()

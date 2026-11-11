@@ -378,6 +378,17 @@ class Confirmations:
                     return c
             return None
 
+    def by_key_on_any_bot(self, *, plugin: str, operator_id: int,
+                          request_key: str) -> "list[Confirmation]":
+        """Every request of *plugin* and the operator with this key, whatever
+        bot it was asked on, oldest first."""
+        want = (plugin, int(operator_id), request_key)
+        with self._lock:
+            self._load_locked()
+            return sorted((c for c in self._items.values()
+                           if (c.plugin, c.operator_id, c.request_key) == want),
+                          key=lambda c: c.created_at)
+
     def add(self, c: Confirmation) -> None:
         with self._lock:
             self._load_locked()

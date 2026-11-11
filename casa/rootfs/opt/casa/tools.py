@@ -526,8 +526,9 @@ async def stop_work(args: dict) -> dict:
     chat_id, user_id = origin.get("chat_id"), origin.get("user_id")
     if _is_agent_context(origin) or not is_configured_operator(chat_id, user_id):
         return _text_result(f"Error: {STOP_WORK_ONLY_OPERATOR}", is_error=True)
-    # The requests are those admitted on the bot of this turn: its id is read
-    # from the endpoint the turn's route resolves to, never from the route.
+    # The requests are those admitted on the bot of this turn — its id is read
+    # from the endpoint the turn's route resolves to, never from the route —
+    # and those this turn's agent asked for that run in another agent's chat.
     transport = _transport()
     bot_id = None
     if transport is not None:
@@ -538,6 +539,15 @@ async def stop_work(args: dict) -> dict:
     if bot_id is None:
         return _text_result("Error: the stop cannot be asked right now; try again in a "
                             "moment.", is_error=True)
+    me = str(origin.get("role") or "")
+    operator_id = int(user_id)
+
+    def _visible(seg: str, ref: Any):
+        if not isinstance(ref, str):
+            return None
+        return plugin_stop.visible_confirmation(seg, ref, bot_id=bot_id,
+                                                operator_id=operator_id, role=me)
+
     plugins = await plugin_stop.stop_plugins()
     ref = args.get("ref")
     if not isinstance(ref, str) or not ref.strip():
@@ -548,10 +558,8 @@ async def stop_work(args: dict) -> dict:
             if listing.get("failed"):
                 lines.append(f"- {name}: what it is doing could not be listed right now.")
             for r in listing.get("requests") or []:
-                ref = r.get("ref")
-                if not isinstance(ref, str) or plugin_stop.confirmation_for(
-                        seg, bot_id, int(user_id), ref) is None:
-                    continue            # not his: a request admitted for another operator
+                if _visible(seg, r.get("ref")) is None:
+                    continue            # not his, or not this agent's to see
                 tasks = "; ".join(t for t in (r.get("tasks") or []) if isinstance(t, str))
                 lines.append(f"- {r.get('ref')}: {name} — {tasks} ({r.get('state')})")
         return _text_result("\n".join(lines) if lines else "Nothing is running.")
@@ -559,17 +567,19 @@ async def stop_work(args: dict) -> dict:
     if not ref.startswith(plugin_stop.REF_PREFIX) or len(ref) > plugin_stop.REF_MAX:
         return _text_result("Error: that is not a ref from the list; call stop_work without "
                             "ref to see what is running.", is_error=True)
-    operator_id = int(user_id)
     for role, _cfg, _rp, seg, _tool in plugins:
-        if plugin_stop.confirmation_for(seg, bot_id, operator_id, ref) is None:
-            continue                    # no request of this plugin admitted for him has it
-        async def _tell(outcome: dict, seg=seg) -> None:
+        found = _visible(seg, ref)
+        if found is None:
+            continue                    # no request of this plugin he may stop has it
+        on_bot = found.bot_id           # the bot the request was asked on
+
+        async def _tell(outcome: dict, seg=seg, on_bot=on_bot) -> None:
             mark = plugin_stop.MARKS.get(outcome.get("outcome"))
             if mark is not None:
                 await plugin_stop.settle_run_card(
-                    plugin_stop.confirmation_for(seg, bot_id, operator_id, ref), mark)
+                    plugin_stop.confirmation_for(seg, on_bot, operator_id, ref), mark)
 
-        out = await plugin_stop.stop(role, seg, ref, bot_id=bot_id, operator_id=operator_id,
+        out = await plugin_stop.stop(role, seg, ref, bot_id=on_bot, operator_id=operator_id,
                                      tell=_tell)
         o = out.get("outcome")
         if o in ("unknown", "unavailable"):
