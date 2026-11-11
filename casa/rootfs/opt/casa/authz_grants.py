@@ -621,6 +621,7 @@ class ChallengeCoordinator:
         finish_factory: "Callable[[int, Any], Callable[[dict], Any]] | None" = None,
         kind: str = "authz", meta_extra: "dict | None" = None,
         timeout_s: "float | None" = None,
+        card_request: "approval_card.CardRequest | None" = None,
     ) -> ChallengeHandle:
         """Register ONE operator challenge keyboard for *key* (dedup by key).
 
@@ -637,6 +638,12 @@ class ChallengeCoordinator:
         resolves taps under that scope and fail-closes on the meta's
         bot/chat/operator. *channel* is the endpoint of bot *bot_id*: the
         keyboard is posted, and later edited, through that bot only.
+
+        With a *card_request*, the keyboard carries the approval card written
+        for it (a model's, or the request's own fallback) with Casa's bold
+        entities instead of *challenge_text*. The card is written inside the
+        post driver, after registration, and is never posted once the request
+        has settled. The size check still applies to *challenge_text*.
         """
         existing = self._entries.get(key)
         if existing is not None:
@@ -705,6 +712,8 @@ class ChallengeCoordinator:
         _scope = resolve_scope()
 
         async def _post() -> Any:
+            if card_request is not None:
+                return await _post_card(card_request)
             _body = (_scope.admit(IntentKind.KEYBOARD, challenge_text)
                      if _scope is not None else casa_text(challenge_text))
             mid = await channel.post_dm_keyboard(
@@ -713,6 +722,37 @@ class ChallengeCoordinator:
             )
             # #1079: the admission recorded this body as committed to the
             # operator; only the broker's own "posted" test confirms it.
+            if isinstance(mid, int):
+                _body.mark_delivered()
+            return mid
+
+        async def _post_card(card_req: Any) -> Any:
+            import approval_card
+
+            card = await approval_card.write_card(card_req)
+            display, entities = approval_card.render_card(card)
+            # A tap, a timeout or a cancellation may have settled the request
+            # while the card was being written. Nothing is admitted or posted
+            # for it then: admission opens a send record that only a delivered
+            # post may close. The non-int return is the broker's
+            # nothing-was-posted signal, and unregistering a settled request
+            # changes nothing. From this check to the start of the send there
+            # is no await; a settlement that lands during the send itself is
+            # handled as for any keyboard, by the finish hook installed on the
+            # returned message id.
+            if req._future.done():
+                return None
+            _body = (_scope.admit(IntentKind.KEYBOARD, display)
+                     if _scope is not None else casa_text(display))
+            # Admission only ever prepends lines; the entities move right by
+            # exactly that prefix (measured in UTF-16 units by shift_entities).
+            assert _body.endswith(display)
+            prefix = _body[:len(_body) - len(display)]
+            mid = await channel.post_dm_keyboard(
+                chat_id=chat_id, request_id=rid, text=_body,
+                options=options,
+                entities=approval_card.shift_entities(entities, prefix),
+            )
             if isinstance(mid, int):
                 _body.mark_delivered()
             return mid
