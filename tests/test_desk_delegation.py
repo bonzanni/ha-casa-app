@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import agent_lane
 import result_broker as rb
 import specialist_desk as sd
 import tools as tools_mod
@@ -65,7 +66,10 @@ def env(tmp_path, monkeypatch):
             await env.gate.wait()
         return tools_mod.DelegatedOutput(text=f"answer {len(calls)}")
     monkeypatch.setattr(tools_mod, "_run_delegated_agent_bounded", runner)
-    return env
+    yield env
+    # the lanes and faults are module-wide and keyed by agent: a fault left
+    # standing here would refuse the next file's delegations to finance
+    agent_lane.reset()
 
 
 def _payload(result):

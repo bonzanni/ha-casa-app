@@ -28,6 +28,8 @@ from test_operator_message_delivery import (
 )
 from test_result_broker import _Origin
 from two_endpoints import CASA_BOT as BOT
+from channels.tg_address import TgAddress
+from provenance import task_delivery_marker
 
 
 @pytest.fixture
@@ -156,7 +158,8 @@ async def test_a_withheld_delivery_records_nothing(recorder, names, fresh_ledger
 async def test_a_sync_delegations_identity_carries_the_delegation_id_as_advisory_owner(recorder, names, fresh_ledger):
     delegated = {"role": "assistant", "execution_role": "finance", "channel": "telegram",
                  "chat_id": 42, "user_id": 100, "message_type": "channel_in",
-                 "source": "telegram", "_delegation_id": "d-1", "_tg_bot": BOT}
+                 "source": "telegram", "_delegation_id": "d-1", "_tg_bot": BOT,
+                 **task_delivery_marker(TgAddress(BOT, 42))}
     with _Origin(delegated):
         identity, why = resolve_grant_identity("finance", artifact_id="5" * 64)
     assert why is None and identity.delegation_id == "d-1"

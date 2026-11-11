@@ -22,9 +22,10 @@ import agent as agent_mod
 import result_broker as rb
 import tools as tools_mod
 from authz_grants import GrantIdentity
-from own_voice_fixtures import open_own_chats, with_delivery
+from own_voice_fixtures import delivery_for, open_own_chats, with_delivery
 from channels import DeliveryOutcome
 from plugin_grants import PluginContract, ResultContractMap, ToolContract
+from provenance import task_delivery_marker
 from text_util import utf16_len
 from telegram_channel_double import make_transport
 from two_endpoints import CASA_BOT as BOT
@@ -507,7 +508,8 @@ async def test_a_setup_tool_declared_capability_takes_the_path_through_both_real
         out = await pre(_pre(SETUP_CAP), "s-0", {})
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert store._inflight == {}
-    with _Origin({**DM, "_tg_bot": BOT}):
+    # finance runs as a task whose delivery is the operator's chat
+    with _Origin({**DM, "_tg_bot": BOT, **task_delivery_marker(delivery_for(BOT, 42))}):
         assert await pre(_pre(SETUP_CAP), "s-1", {}) == {}
     assert len(store._inflight) == 1
     ref, err = store.deposit(client_id="c1", slot="auth_url", value=URL,
