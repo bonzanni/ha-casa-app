@@ -63,8 +63,8 @@ async def _resident_turn(update):
     return queued[0]
 
 
-CASA_UNKNOWN = ("an earlier message from Casa with no record of who wrote it (Casa keeps "
-                "none for your own replies, so it is most likely one of yours)")
+CASA_UNKNOWN = ("one of your earlier messages (most likely; it could also be a notice "
+                "from the system)")
 
 
 @pytest.mark.parametrize("case,who", [
@@ -73,7 +73,7 @@ CASA_UNKNOWN = ("an earlier message from Casa with no record of who wrote it (Ca
     ("someone-else", "someone else's message"),
     ("on-behalf-of-chat", "a message sent on behalf of a chat"),
     ("sender-on-behalf-of-chat", "a message sent on behalf of a chat"),
-    ("resident-post", "a message Casa posted on your behalf"),
+    ("resident-post", "one of your own earlier messages"),
     ("not-delegable", None),
 ])
 async def test_a_reply_the_desk_does_not_take_carries_casas_note(routed, monkeypatch, case, who):
@@ -93,7 +93,8 @@ async def test_a_reply_the_desk_does_not_take_carries_casas_note(routed, monkeyp
     elif case == "not-delegable":
         pm.record(TgAddress(BOT, OPERATOR, 12), _record())
         monkeypatch.setattr(sd, "desk_target_ok", lambda resident, role: False)
-        who = f"a message Casa posted for {sd.label_for('finance')}"
+        import tools
+        who = f"an earlier message from {tools._display_name_for_role('finance')}"
     msg = await _resident_turn(update)
     posted = _posted()
     assert spawned.await_count == 0

@@ -128,7 +128,6 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "deliver_operator_question"): "notice", # browser executor: a plugin's operator question, Casa-labelled, its keyboard
     ("channels/telegram.py", "replace_operator_proposal"): "notice", # #1339: that proposal edited in place, as a tap's next card
     ("channels/telegram.py", "deliver_desk_notice"): "notice",       # S4: a desk turn's outcome, Casa-composed
-    ("channels/telegram.py", "send_handoff_line"): "notice",         # #1350: a hand-off record, Casa-composed
     ("channels/telegram.py", "deliver_run_card"): "notice",          # the Stop: a browsing request's status card, Casa-composed
     ("channels/telegram.py", "send_reply_line"): "notice",           # the Stop: its one outcome line, Casa-composed
     ("channels/telegram.py", "notify_operator"): "notice",           # the memory wipe's restart and done lines
@@ -232,7 +231,7 @@ ADMITTED_METHODS = {"send", "send_response", "finalize_stream", "finalize_respon
                     "post_dm_keyboard", "send_media", "post_job_question"}
 DERIVED_METHODS = {"edit_dm_message"}
 NOTICE_METHODS = {"deliver_operator_link", "deliver_operator_message", "deliver_operator_page",
-                  "deliver_operator_file", "deliver_desk_notice", "send_handoff_line", "reply",
+                  "deliver_operator_file", "deliver_desk_notice", "reply",
                   "deliver_operator_proposal", "replace_operator_proposal",
                   "deliver_operator_question", "notify_operator", "deliver_run_card",
                   "send_reply_line", "send_step_line", "post_job_parked"}

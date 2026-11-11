@@ -105,7 +105,7 @@ async def _turns(ch, bus, update):
 
 
 def _note_for(status="completed", *, whose="Finance's", via=""):
-    return (f"a message Casa posted for {whose} background job «Q3 accounting»{via}, "
+    return (f"a message from {whose} background job «Q3 accounting»{via}, "
             f"which ended ({status}) at {_ended_at()}")
 
 
@@ -194,7 +194,8 @@ async def test_a_reply_from_someone_who_did_not_start_the_job_keeps_todays_note(
     assert await _turns(ch, bus, _text_reply(quoted_id=501, quoted_text="row 7")) == []
     assert spawned.await_count == 1
     note = ch._reply_note_for(_text_reply(quoted_id=501, quoted_text="row 7"), str(OPERATOR))
-    assert note == sd.reply_note(f"a message Casa posted for {sd.label_for('finance')}",
+    import tools
+    assert note == sd.reply_note(f"an earlier message from {tools._display_name_for_role('finance')}",
                                  None, "row 7")
 
 

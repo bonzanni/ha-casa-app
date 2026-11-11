@@ -28,6 +28,9 @@ except ImportError:  # pragma: no cover — direct-path collection
 
 pytestmark = pytest.mark.asyncio
 
+ENDED_REPLY_NOTICE = ("The job had just finished, so your message didn't get through. "
+                      "Could you send it again?")
+
 OPERATOR = 100
 #: The bot the rig's channel is: journaled notices name it.
 BOT = 111
@@ -147,7 +150,7 @@ async def test_a_message_the_journal_cannot_take_is_told_once(rig, tmp_path,
     monkeypatch.setattr(job_inbox, "INBOX_ROOT", blocker)
     assert await _reply(rig, "lost?", message_id=41) is False
     assert [(m["reply_to"], m["text"]) for m in rig.bot.sent] == [
-        (41, "Your message could not be delivered — please resend it.")]
+        (41, "Your message didn't get through. Could you send it again?")]
     assert rig.drv.inbound_unread_depth(rig.rec.id) == 0
 
 
@@ -206,8 +209,8 @@ async def test_a_lost_journal_entry_is_told_in_reply_to_its_message(rig, caplog)
         await rig.ch.tell_journal_lost(
             rig.rec, {"uuid": "w", "text": "z", "notice": None})
     assert [(m["reply_to"], m["text"]) for m in rig.bot.sent] == [
-        (31, "The job had just ended — not delivered, please resend."),
-        (40, "The job had already ended; your answer wasn't used.")]
+        (31, ENDED_REPLY_NOTICE),
+        (40, "The job had already finished, so your answer wasn't used.")]
     assert any("no direct chat message to reply to" in r.message
                for r in caplog.records if r.levelname == "WARNING")
 
@@ -232,6 +235,6 @@ async def test_the_finalize_funnel_tells_each_unread_message_once(rig, monkeypat
         next_steps=[], driver=rig.drv)
     replies = [m for m in rig.bot.sent if m["reply_to"] == 55]
     assert [m["text"] for m in replies] == [
-        "The job had just ended — not delivered, please resend."]
+        ENDED_REPLY_NOTICE]
     assert not job_inbox.path_for(rig.rec.id).exists()
     assert rig.drv.inbound_unread_depth(rig.rec.id) == 0

@@ -144,10 +144,11 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(tools, "_display_name_for_role",
                         lambda role: {"finance": "Finance", "assistant": "Ellen"}.get(role, role))
     chat_notes.reset()
-    inputs = types.SimpleNamespace(calls=[], answer="written")
+    inputs = types.SimpleNamespace(calls=[], said=[], answer="written")
 
-    def submit(task_id, text):
+    def submit(task_id, text, *, said=None):
         inputs.calls.append((task_id, text))
+        inputs.said.append(said)
         return inputs.answer
     monkeypatch.setattr(task_input, "submit", submit)
     inboxes: dict = {}
@@ -185,6 +186,7 @@ async def test_a_reply_to_a_delegations_intermediate_plugin_post_goes_into_it(wo
     _land(ch, 640, "d-1", ch.default_agent)
     await _handle(ch, _text("the second one", reply_to=640))
     assert world.inputs.calls == [("d-1", "[replying to «📊 Finance»]\nthe second one")]
+    assert world.inputs.said == ["the second one"]          # the operator's words alone
     assert _turns(bus, ch.default_agent) == []
 
 
@@ -220,7 +222,7 @@ async def test_a_reply_to_an_ended_delegations_post_is_this_chats_agents_turn(wo
     assert world.inputs.calls == []
     [turn] = _turns(bus, ch.default_agent)
     assert turn.content == "and now?"
-    assert "a message Casa posted for your task, which has ended" in turn.context["_reply_note"]
+    assert "a message from your earlier task, which has ended" in turn.context["_reply_note"]
 
 
 @pytest.mark.parametrize("kind", ENDPOINTS)
@@ -308,7 +310,17 @@ async def test_a_file_replying_to_a_live_delegations_post_goes_into_it(world, ki
     assert world.grants == [("d-1", path)]
     assert world.inputs.calls == [
         ("d-1", f"[casa file] statement.pdf at {path} — sent as a reply to your post")]
+    assert world.inputs.said == ["(the file statement.pdf)"]
     assert _turns(bus, ch.default_agent) == [] and ch._app.bot.sent == []
+
+
+async def test_a_captioned_file_into_a_live_delegation_records_the_caption_as_said(world):
+    ch, _bus = _endpoint("own")
+    world.index.delegation("d-1", ch.default_agent)
+    _land(ch, 640, "d-1", ch.default_agent)
+    await ch._on_non_text_message(types.SimpleNamespace(
+        message=_file(reply_to=640, caption="only Lidl")))
+    assert world.inputs.said == ["only Lidl (with the file statement.pdf)"]
 
 
 @pytest.mark.parametrize("kind", ENDPOINTS)
@@ -341,14 +353,68 @@ async def test_a_file_replying_to_an_ended_tasks_post_is_this_chats_agents(world
     assert ch._app.bot.sent and ch._app.bot.sent[0]["text"].startswith("Got statement.pdf")
 
 
-async def test_a_file_whose_task_ended_meanwhile_is_kept_and_told(world):
+def _behind_transport(monkeypatch, ch):
+    """*ch* as an endpoint of the transport, beside Casa's own, the way
+    casa_core registers them."""
+    import tools
+    from telegram_channel_double import make_transport
+    casa = ch if ch.is_casa else _endpoint("casa")[0]
+    others = () if ch is casa else (ch,)
+    monkeypatch.setattr(tools, "_channel_manager", make_transport(casa, *others),
+                        raising=False)
+
+
+async def test_a_file_whose_task_ended_meanwhile_is_kept_and_told_in_the_agents_voice(
+        world, monkeypatch):
     ch, _bus = _endpoint("own")
+    _behind_transport(monkeypatch, ch)
     world.inputs.answer = "ended"
     world.index.delegation("d-1", "finance")
     _land(ch, 640, "d-1", "finance")
     await ch._on_non_text_message(types.SimpleNamespace(message=_file(reply_to=640)))
     assert [m["text"] for m in ch._app.bot.sent] == [
-        "statement.pdf is in Finance's inbox; the task had already ended."]
+        "I've kept statement.pdf, but that task had already finished. "
+        "Tell me what you'd like done with it."]
+
+
+async def test_a_file_whose_task_ended_meanwhile_in_the_residents_chat_names_the_inbox(
+        world, monkeypatch):
+    ch, _bus = _endpoint("casa")
+    _behind_transport(monkeypatch, ch)
+    world.inputs.answer = "ended"
+    world.index.delegation("d-1", "finance")
+    _land(ch, 640, "d-1", "finance")
+    await ch._on_non_text_message(types.SimpleNamespace(message=_file(reply_to=640)))
+    assert [m["text"] for m in ch._app.bot.sent] == [
+        f"statement.pdf is in {sd.label_for('finance')}'s inbox; the task had already ended."]
+
+
+def _ended_job(status="completed"):
+    return types.SimpleNamespace(
+        id="c" * 32, status=status, role_or_type="finance", task="t",
+        started_at=1000.0, completed_at=1060.0,
+        origin={"chat_id": str(OPERATOR), "job": {"title": "Accounting check"}})
+
+
+@pytest.mark.parametrize("status,mark", [("completed", "✅"), ("cancelled", "🛑"),
+                                         ("failed", "❌")])
+async def test_a_jobs_end_in_its_agents_own_chat_does_not_name_the_agent(
+        world, monkeypatch, status, mark):
+    from engagement_registry import JOB_POST_START
+    ch, _bus = _endpoint("own")
+    _behind_transport(monkeypatch, ch)
+    await ch._retire_job_post(_ended_job(status),
+                              (TgAddress(OWN_BOT, OPERATOR, 501), JOB_POST_START))
+    assert [e["text"] for e in ch._app.bot.edited] == [f"{mark} «Accounting check» · 1 min"]
+
+
+async def test_a_jobs_end_in_the_residents_chat_names_the_agent(world, monkeypatch):
+    from engagement_registry import JOB_POST_START
+    ch, _bus = _endpoint("casa")
+    _behind_transport(monkeypatch, ch)
+    await ch._retire_job_post(_ended_job(),
+                              (TgAddress(CASA_BOT, OPERATOR, 501), JOB_POST_START))
+    assert [e["text"] for e in ch._app.bot.edited] == ["✅ Finance «Accounting check» · 1 min"]
 
 
 # ---------------------------------------------------------------------------

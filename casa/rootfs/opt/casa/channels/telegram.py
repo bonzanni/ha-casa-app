@@ -652,10 +652,11 @@ _SETTLED_STATUS_TIMEOUT_S = 5.0
 notice. The registry lock is held across a tombstone write; on timeout the
 plain wording is used."""
 
-_LOST_REPLY_NOTICE = "Your message could not be delivered — please resend it."
-_LOST_REPLY_ENDED_NOTICE = "The job had just ended — not delivered, please resend."
-_LOST_ANSWER_NOTICE = "Your answer could not be passed to the job — please answer again."
-_LOST_ANSWER_ENDED_NOTICE = "The job had already ended; your answer wasn't used."
+_LOST_REPLY_NOTICE = "Your message didn't get through. Could you send it again?"
+_LOST_REPLY_ENDED_NOTICE = ("The job had just finished, so your message didn't get through. "
+                            "Could you send it again?")
+_LOST_ANSWER_NOTICE = "Your answer didn't get through. Could you answer again?"
+_LOST_ANSWER_ENDED_NOTICE = "The job had already finished, so your answer wasn't used."
 """The one notice for an operator's words a job never took up, posted in the
 direct chat as a reply to them: their typed reply, or the question or approval
 card their tap answered. The ended form is chosen when the record's settled
@@ -2318,8 +2319,9 @@ class TelegramChannel(Channel):
             # job's plugin post as that specialist's
             who = self._ended_task_phrase(ended_task)
         elif record is not None:
-            who = ("a message Casa posted on your behalf" if record.role == self.default_agent
-                   else f"a message Casa posted for {specialist_desk.label_for(record.role)}")
+            import tools as tools_mod
+            who = ("one of your own earlier messages" if record.role == self.default_agent
+                   else f"an earlier message from {tools_mod._display_name_for_role(record.role)}")
         elif (getattr(quoted, "sender_chat", None) is not None
               or getattr(message, "sender_chat", None) is not None):
             who = "a message sent on behalf of a chat"
@@ -2327,8 +2329,8 @@ class TelegramChannel(Channel):
             # #1335: the post map never held the resident's own replies, so
             # nothing was lost; nor does its absence prove who wrote it (a
             # specialist's file, Casa's notices, a forgotten post)
-            who = ("an earlier message from Casa with no record of who wrote it (Casa keeps "
-                   "none for your own replies, so it is most likely one of yours)")
+            who = ("one of your earlier messages (most likely; it could also be a notice "
+                   "from the system)")
         elif quoted_from is not None and sender is not None and quoted_from.id == sender.id:
             who = "their own earlier message"
         else:
@@ -2422,7 +2424,9 @@ class TelegramChannel(Channel):
                 user_name=getattr(user, "first_name", None) or "unknown",
                 user_id=user.id)
             return "taken"
-        if task_input.submit(ref.task_id, _replying_to(quoted_text, update.message.text)) == "ended":
+        # ``said``: the operator's own words, kept for whoever asked for the task
+        if task_input.submit(ref.task_id, _replying_to(quoted_text, update.message.text),
+                             said=update.message.text) == "ended":
             return "ended"
         return "taken"
 
@@ -2450,7 +2454,7 @@ class TelegramChannel(Channel):
         whose = ("your" if ref.executor == self.default_agent
                  else f"{tools_mod._display_name_for_role(ref.executor)}'s")
         what = "background job" if ref.kind == "job" else "task"
-        return f"a message Casa posted for {whose} {what}, which has ended"
+        return f"a message from {whose} earlier {what}, which has ended"
 
     def _ended_job_phrase(self, rec) -> str:
         """#1522: who posted a quoted message of an ended job, and how and when
@@ -2470,7 +2474,7 @@ class TelegramChannel(Channel):
                     completed_at, tz=resolve_tz()).strftime("%Y-%m-%d %H:%M")
             except (OverflowError, OSError, ValueError):
                 pass
-        return (f"a message Casa posted for {whose} background job "
+        return (f"a message from {whose} background job "
                 f"«{self._job_title(rec)}»{via}, {ended}")
 
     # ------------------------------------------------------------------
@@ -3067,21 +3071,6 @@ class TelegramChannel(Channel):
             return True
         except Exception as exc:  # noqa: BLE001 — a notice fault is logged
             logger.warning("desk notice failed: %s", type(exc).__name__)
-            return False
-
-    async def send_handoff_line(self, chat_id: int | str, text: str) -> bool:
-        """#1350: Casa's one-line record that the operator's request was
-        passed to a specialist or an executor — a notice, never model text,
-        sent without a notification sound (the answer that follows notifies).
-        A failure is logged and nothing more is attempted."""
-        if self._app is None:
-            return False
-        try:
-            await self._app.bot.send_message(
-                chat_id=chat_id, text=text, disable_notification=True)
-            return True
-        except Exception as exc:  # noqa: BLE001 — a notice fault is logged
-            logger.warning("hand-off line failed: %s", type(exc).__name__)
             return False
 
     async def send_step_line(self, chat_id: int, text: str) -> "int | None":
@@ -3685,11 +3674,14 @@ class TelegramChannel(Channel):
         chat, message_id = address.chat_id, address.message_id
         if kind == JOB_POST_START:
             import background_jobs
+            import result_broker
             mark = {"completed": "✅", "cancelled": "🛑"}.get(rec.status, "❌")
+            # in the agent's own chat the chat is the agent: no name
+            who = (f" {self._job_agent_name(rec)}"
+                   if result_broker.label_at(rec.role_or_type, self) else "")
             await self.edit_dm_message(
                 chat, message_id,
-                f"{mark} {self._job_agent_name(rec)} «{self._job_title(rec)}»"
-                + background_jobs.cost_suffix(rec))
+                f"{mark}{who} «{self._job_title(rec)}»" + background_jobs.cost_suffix(rec))
         else:
             await self.clear_dm_keyboard(chat, message_id)
 
@@ -4235,9 +4227,17 @@ class TelegramChannel(Channel):
                     if quoted is not None else None,
                     user_name=getattr(user, "first_name", None) or "unknown", user_id=user.id)
                 return
-        elif task_input.submit(ref.task_id, text) != "ended":
+        elif task_input.submit(
+                ref.task_id, text,
+                said=f"{caption} (with the file {name})" if caption else f"(the file {name})",
+        ) != "ended":
             return
-        await tell(f"{name} is in {label}'s inbox; the task had already ended.")
+        import result_broker
+        if result_broker.label_at(ref.executor, self):
+            await tell(f"{name} is in {label}'s inbox; the task had already ended.")
+        else:
+            await tell(f"I've kept {name}, but that task had already finished. "
+                       "Tell me what you'd like done with it.")
 
     async def _route_addressed_file(self, chat_id: Any, user: Any, msg: Any, address: tuple) -> None:
         """S6 §2.1 step 2, under the per-(chat, specialist) intake lock (§5): delegable now,

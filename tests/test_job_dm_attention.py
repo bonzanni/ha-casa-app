@@ -29,6 +29,9 @@ except ImportError:  # pragma: no cover — direct-path collection
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
+ENDED_REPLY_NOTICE = ("The job had just finished, so your message didn't get through. "
+                      "Could you send it again?")
+
 OPERATOR = 100
 CHAT = 100
 #: The bot the rig's channel is: every job post is addressed through it.
@@ -371,7 +374,7 @@ class TestOneNoticePerLostMessage:
         await _drain(r)
         assert handed is False
         assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
-            ("The job had just ended — not delivered, please resend.", 7)]
+            (ENDED_REPLY_NOTICE, 7)]
         assert r.drv.inbound_unread_depth(r.rec.id) == 0
 
     async def test_cancel_racing_a_queued_reply_tells_it_exactly_once(
@@ -396,7 +399,7 @@ class TestOneNoticePerLostMessage:
         assert r.delivered == ["stop at row 9"]             # accepted ...
         assert "stop at row 9" not in "".join(r.client.query_prompts)  # ... never written
         notices = [(m["text"], m["reply_to"]) for m in r.bot.replies()]
-        assert notices == [("The job had just ended — not delivered, please resend.", 7)]
+        assert notices == [(ENDED_REPLY_NOTICE, 7)]
         assert not job_inbox.path_for(r.rec.id).exists()
 
     async def test_a_tapped_answer_refused_is_told_once_on_the_question(
@@ -410,7 +413,7 @@ class TestOneNoticePerLostMessage:
         await _drain(r)
         assert handed is False
         assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
-            ("The job had already ended; your answer wasn't used.", 812)]
+            ("The job had already finished, so your answer wasn't used.", 812)]
 
 
 # ---------------------------------------------------------------------------
@@ -706,7 +709,7 @@ class TestQuietRunsEndOnInteraction:
         assert r.bus.notify.await_count == 0
         assert r.delivered == []
         assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
-            ("The job had just ended — not delivered, please resend.", 7)]
+            (ENDED_REPLY_NOTICE, 7)]
 
     async def test_a_reply_racing_a_quiet_completion_that_rolls_back_is_delivered(
             self, tmp_path, monkeypatch):
@@ -896,7 +899,7 @@ class TestSeamEdges:
         assert r.rec.origin["job"]["quiet"] is False
         # the reply whose promotion failed was told once; the question posted
         assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
-            ("Your message could not be delivered — please resend it.", 7)]
+            ("Your message didn't get through. Could you send it again?", 7)]
         questions = [m for m in r.bot.sent if "Which account?" in m["text"]]
         assert len(questions) == 1
         await tools._finalize_engagement(
@@ -980,7 +983,7 @@ class TestApprovalLostToTermination:
         await _drain(r)
         assert r.delivered == []
         assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
-            ("The job had already ended; your answer wasn't used.", card)]
+            ("The job had already finished, so your answer wasn't used.", card)]
         edits = [e["text"] for e in r.bot.edits if e["message_id"] == card]
         assert edits and edits[0].startswith("✅ Approved")
         assert not any("could not be resumed" in e for e in edits), edits
