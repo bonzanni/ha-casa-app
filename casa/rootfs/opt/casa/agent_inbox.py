@@ -625,7 +625,7 @@ def grants_for(role: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     — ``((), ())`` for a role without an inbox. Both the resident builder and
     the delegated builder call this; a specialist's tool permissions are
     derived separately from its hooks, so granting the path alone would let a
-    desk turn reach a file it cannot file (INV-FILE-002)."""
+    delegated turn reach a file it cannot file (INV-FILE-002)."""
     inbox = _inboxes.get(role)
     if inbox is None:
         return (), ()

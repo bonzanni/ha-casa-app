@@ -457,8 +457,7 @@ class SessionConfig:
     strategy: str = "ephemeral"
     idle_timeout: int = 300
     # True for a role whose requests are each one long conversation (a browser
-    # run): its delegated runs compact at a larger window, and a desk use of it
-    # is shown none of the desk's earlier exchanges.
+    # run): its delegated runs compact at a larger window.
     long_runs: bool = False
 
 

@@ -1,5 +1,5 @@
 """S5 §5 — the pinned one-call turn's controller: the one build input a tap
-captured under the desk lock, the watch the hooks resolve with the executed
+captured in the agent's lane, the watch the hooks resolve with the executed
 call's own result, and (``PinnedRun``) the owner of the run — the pin's
 state, the capture, the SDK client and the processes the run started.
 
@@ -9,7 +9,7 @@ imported lazily where the client is entered and where the reaper set lives.
 Why a controller of its own (design §5.2.4, rounds 6–13): the delegated
 runner owns its client through ``async with ClaudeSDKClient`` and the
 bounded wrapper releases after the SDK's teardown bound with the inner task
-possibly alive. A stored call's turn must release its desk only when the
+possibly alive. A stored call's turn must release its lane only when the
 CLI and the plugin servers it started are confirmed gone — so this
 controller depends on NOTHING inside the SDK's teardown: it pins pidfds at
 start, signals them directly, confirms exit by pidfd readability under one
@@ -34,7 +34,7 @@ class BuildInput:
     """What a tap's re-check judged and the pinned builder consumes UNCHANGED
     (design §4.2.3): the role config, the resolution AFTER the session
     builder's own env withholding, the withheld list, the protected map, the
-    contract map and the profile plan — captured ONCE, under the desk lock,
+    contract map and the profile plan — captured ONCE, in the agent's lane,
     in the builder's own order (plan §1.5)."""
     cfg: Any
     resolution: Any
@@ -68,7 +68,7 @@ class Capture:
     post-hook input differed from the stored canonical.
 
     ``next`` (#1302): a ``receipt`` capture whose response also carried a
-    ``next`` object — that object JSON-encoded, judged by the tap's desk use
+    ``next`` object — that object JSON-encoded, judged by the tap's lane use
     exactly as a proposal deposit; ``""`` otherwise.
 
     ``in_place`` (#1339): that response also carried ``"in_place": true`` — the
@@ -215,8 +215,8 @@ class ProcessTree:
     pinned with the parent chain validated while pinned, re-walked when a
     termination begins, signalled through the pinned fds and confirmed gone
     by pidfd readability — never through the SDK's own teardown. ``PinnedRun``
-    (a stored-call tap) is one; the bounded runner (a desk reply, a
-    delegation) owns a bare one for each run."""
+    (a stored-call tap) is one; the bounded runner (a delegation) owns a
+    bare one for each run."""
 
     GRACE_S = 5.0            # (b) SIGTERM → SIGKILL
     EXIT_WAIT_S = 10.0       # (d)+(g) one deadline: pidfd exits and the callback drain
@@ -339,7 +339,7 @@ class ProcessTree:
         a PROVEN pinned process other than the CLI that the run itself never
         signalled and that is found exited — before the walk began, or while
         /proc was being enumerated — may have left a child reparented before
-        any walk could see it, so the run is marked unconfirmed and the desk
+        any walk could see it, so the run is marked unconfirmed and the agent
         is faulted and told rather than released over a silent survivor. Only
         the walks set this, and they run before any signal; a server that
         exits because Casa signalled the CLI never reaches here. (An
@@ -491,8 +491,8 @@ class ProcessTree:
 
 
 class PinnedRun(ProcessTree):
-    """One tap's run (design §5.2.4). ``handle_tap`` creates it under the desk
-    lock, sets it on ``tools._pinned_run`` around the runner's task, and the
+    """One tap's run (design §5.2.4). ``handle_tap`` creates it in the agent's
+    lane, sets it on ``tools._pinned_run`` around the runner's task, and the
     builder, the hooks and the runner read it from there.
 
     The watch is one-shot: the first ``resolve`` wins, later ones are
@@ -562,7 +562,7 @@ class PinnedRun(ProcessTree):
     async def pin_hook(self, input_data: Any, tool_use_id: Any, context: Any) -> dict:
         """The ``HookMatcher(matcher=None)`` callback: for every NON-plugin tool
         a deny in the CLI's shape (built-ins, ToolSearch, Skill, the messaging
-        and desk tools — none of which has a Casa hook with an operator-visible
+        tools — none of which has a Casa hook with an operator-visible
         side effect). A plugin tool is NOT judged here: ``matcher=None`` matches
         it too and the CLI runs both matchers concurrently, so judging it in
         both would consume the one-shot pin in whichever ran first and the
@@ -637,7 +637,7 @@ class PinnedRun(ProcessTree):
 
     async def terminate(self, task: "asyncio.Task | None" = None) -> bool:
         """§5.2.4 (a)–(g). Returns whether EVERY pinned process is confirmed
-        exited and every S5 callback has left — False is the faulted desk."""
+        exited and every S5 callback has left — False faults the agent."""
         loop = asyncio.get_running_loop()
         # #1205 (Astra, diff round 1): walk the tree BEFORE the cancellation
         # wait too — a server can exit while (a) waits, reparenting a child
@@ -678,7 +678,7 @@ class PinnedRun(ProcessTree):
         return await self._confirm(loop.time() + self.EXIT_WAIT_S)
 
     def abandon(self) -> None:
-        """A cancelled desk use: the detached close is started and the fds
+        """A cancelled lane use: the detached close is started and the fds
         are closed when it ends; nothing is waited for."""
         self._start_close()
         if self.close_task is not None:

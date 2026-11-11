@@ -4,8 +4,8 @@ form the pin compares byte for byte (INV-PROP-001/003).
 
 Leaf module: stdlib only, plus the names it needs from ``plugin_grants``
 (the contract shapes) and ``result_broker.is_reference`` at call time. It is
-read by the deposit (``result_broker.deposit``), by the tap's re-check under
-the desk lock (``specialist_desk.handle_tap``) and by the pin
+read by the deposit (``result_broker.deposit``), by the tap's re-check in
+the agent's lane (``stored_call_settler.handle_tap``) and by the pin
 (``pinned_run``), so the rule cannot drift between them.
 
 Why the grammar is this narrow (design §2.6, measured on CLI 2.1.273): the
@@ -182,7 +182,7 @@ def resolve_stored_call(bare_name: Any, *, contract_map: Any, protected: Any,
 
 
 def stored_call_still_ok(runtime_name: str, *, contract_map: Any, protected: Any) -> str | None:
-    """At tap time, under the desk lock, against the LIVE maps: the same
+    """At tap time, in the agent's lane, against the LIVE maps: the same
     entry checks by the recorded runtime name. The reason, or None."""
     entry = contract_map.tools.get(runtime_name)
     return _entry_ok(runtime_name, entry, contract_map=contract_map, protected=protected)

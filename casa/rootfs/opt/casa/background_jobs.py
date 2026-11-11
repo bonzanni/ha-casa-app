@@ -440,8 +440,9 @@ def own_job_hosts(role: str) -> list[JobHost]:
 
 
 def offers_start_job(cfg: Any, resolution: Any, *, engagement: bool) -> bool:
-    """S7a §3.1: a specialist's desk or delegated build (not a job or
-    engagement build — the same condition as S6's inbox grant) is offered
+    """S7a §3.1: a specialist's delegated build (a delegation or a pinned
+    stored-call turn; not a job or engagement build — the same condition as
+    S6's inbox grant) is offered
     ``start_job`` when the plugins it loads declare a job. Visibility only:
     which job may start is decided at the call (``own_job_hosts``)."""
     if engagement or getattr(cfg, "kind", "") != "specialist":
