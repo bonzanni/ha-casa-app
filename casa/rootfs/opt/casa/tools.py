@@ -9468,7 +9468,7 @@ async def share_inbound_file(args: dict) -> dict:
     except casa_handoff.HandoffError as exc:
         return _text_result(f"The file could not be shared: {exc}")
     # #1218: the copy exists — handing the file to a plugin acts on it, so it
-    # discharges the turn's "answered without opening" obligation as a Read does
+    # discharges the turn's "(Ellen hasn't opened …)" line as a Read does
     _scope = _current_scope(_origin)
     if _scope is not None:
         _scope.note_handed_off(match.path)
