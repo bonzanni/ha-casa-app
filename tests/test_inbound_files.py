@@ -521,3 +521,17 @@ async def test_the_tool_gives_other_roles_nothing(wired):
     text = await _call_list("butler")
     assert "no inbound files" in text
     assert wired.ready_dir not in text
+
+
+@pytest.mark.parametrize("age,words", [(5, "received just now"), (125, "received 2 min ago")])
+async def test_a_file_received_seconds_ago_reads_just_now(wired, monkeypatch, age, words):
+    import dataclasses
+    import time
+    await wired.publish(PDF, ".pdf", "statement-q3.pdf")
+    real = wired.list_files
+
+    def aged():
+        return [dataclasses.replace(f, published_at=time.time() - age) for f in real()]
+
+    monkeypatch.setattr(wired, "list_files", aged)
+    assert words in await _call_list("assistant")

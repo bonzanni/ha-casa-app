@@ -236,7 +236,10 @@ characters, at most five lines then a count, and carries only Casa-derived metad
 Casa note follows the lines (`POST_ECHO_SILENCE_NOTE`): the person has already seen these
 posts, so a result that says nothing beyond them is answered with the silence sentinel —
 the resident's doctrine states the rule in words, and the sentinel itself lives only in that
-note. The doctrine also says that a delegate's line above the posts that only announces them,
+note. When the posts went to the person in the delegate's own chat, the lines say so ("posted
+to the person in Alex's chat") and the note under them instead asks the resident, whom the
+person asked, to close the loop in its own words, silent only when nothing at all is worth
+saying (`OWN_CHAT_ECHO_NOTE`, [`own-voice.md`](own-voice.md)). The doctrine also says that a delegate's line above the posts that only announces them,
 points to them or says what they hold ("I'm posting its card now") is part of them, and is not
 passed on, while an answer written above them is. The
 ledger dies with the process, like the broker's references: a restart between the post and

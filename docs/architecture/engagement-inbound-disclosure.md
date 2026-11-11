@@ -34,10 +34,10 @@ notice: they get a bare acceptance boolean for their own bookkeeping, a toast or
 **The notice goes where the message came from.** Every message to a job comes from the
 operator's direct chat — a reply into a job, or the card a tap answered — and is told there,
 as a reply to it: "The job had
-just ended — not delivered, please resend." (or "Your message could not be delivered — please
-resend it." while the job is live) for their words, and "The job had already ended; your answer
-wasn't used." (or "Your answer could not be passed to the job — please answer again.") for a
-tap. The ended form is chosen from the record's settled status. While a memory wipe's restart
+just finished, so your message didn't get through. Could you send it again?" (or "Your message
+didn't get through. Could you send it again?" while the job is live) for their words, and "The
+job had already finished, so your answer wasn't used." (or "Your answer didn't get through.
+Could you answer again?") for a tap. The ended form is chosen from the record's settled status. While a memory wipe's restart
 is pending, a reply is answered with the wipe's courtesy line instead, which is that message's
 one notice. Nothing is forwarded anywhere else, and nothing written in the agent-log group is
 a message to a job (INV-TG-016).

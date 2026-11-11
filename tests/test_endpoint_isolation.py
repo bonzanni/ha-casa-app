@@ -406,8 +406,8 @@ async def test_a_post_filed_on_111_is_not_222s_message_with_the_same_id(pair):
 
     on_222 = await _dm_reply(pair.finance, pair, 5, FINANCE_BOT)
     on_111 = await _dm_reply(pair.casa, pair, 5, CASA_BOT)
-    assert "posted for" not in on_222
-    assert "posted for" in on_111
+    assert "an earlier message from" not in on_222
+    assert "an earlier message from" in on_111
     assert pair.finance._file_address(
         OPERATOR, _user(), NS(reply_to_message=_quoted(5, FINANCE_BOT))) is None
     assert pair.casa._file_address(

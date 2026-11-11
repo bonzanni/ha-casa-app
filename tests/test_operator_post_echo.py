@@ -126,6 +126,24 @@ def test_echo_lines_are_at_most_five_then_a_count_and_each_within_the_bound():
     assert rb.ECHO_MAX_LINES == 5
 
 
+def test_echo_lines_name_where():
+    """*where* says where the posts went; the default is the resident's own
+    chat, word for word."""
+    events = [_event(pages=2), _event(pages=None, media_kind="photo"),
+              _event(pages=None, buttons=3)]
+    assert rb.echo_lines(events, where="to the person in Fido's chat") == [
+        "📊 Finance posted to the person in Fido's chat (2 pages).",
+        "📊 Finance posted a photo to the person in Fido's chat.",
+        "📊 Finance posted a proposal to the person in Fido's chat (3 buttons).",
+    ]
+    assert rb.echo_lines(events) == [
+        "📊 Finance posted to your chat (2 pages).",
+        "📊 Finance posted a photo to your chat.",
+        "📊 Finance posted a proposal to your chat (3 buttons).",
+    ]
+    assert rb.echo_parts(events, where="there")[0] == (LABEL, "posted there (2 pages).")
+
+
 # --- recorded by the hook, keyed by the owner -----------------------------------
 
 @pytest.mark.asyncio

@@ -598,7 +598,7 @@ IDENTITY_SITE_HITS = {
         "_deliver_erasure_outcome": 2, "_dependency_unavailable_message": 1,
         "_episode_sentence": 1, "_erase_gate": 1, "_erase_gate._run": 1,
         "_erased_everything": 1, "_failure_message": 2, "_plugin_conversation_blocks": 1,
-        "_post_handoff_line._post": 1, "_run_delegated_turn": 2,
+        "_run_delegated_turn": 2,
         "_scheduled_operator_target": 1, "_settle_setup_from_delegated_results": 1,
         "_take_complete_erasures": 1, "_tool_set_plugin_env_reference": 1,
         "_tool_verify_plugin_state": 8, "ask_user._finish_factory._finish": 1,

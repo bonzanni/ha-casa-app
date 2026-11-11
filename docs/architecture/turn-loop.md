@@ -70,8 +70,9 @@ in [`delegation-announcements.md`](delegation-announcements.md)). No other calle
 **A specialist with its own chat runs this loop too.** Its conversation is an `Agent` for its
 role, on the same session machinery, but its options come from the specialist builder
 (`Agent._build_specialist_session_options`) with its session extras, never the resident's
-builder; a turn drains Casa's notes for its chat (`chat_notes`) into its notes block, each line
-prefixed `(Casa) ` ([`own-voice.md`](own-voice.md)).
+builder; a turn drains Casa's notes for its chat (`chat_notes`) into its notes block, under
+one frame line that hands them to the agent as its own memory, each line prefixed `(Casa) `
+([`own-voice.md`](own-voice.md)).
 
 ## Contracts & invariants
 

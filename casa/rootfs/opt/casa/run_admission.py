@@ -231,19 +231,31 @@ def _run_lines(runs: list[dict]) -> list[str]:
     return lines
 
 
-def compose_question(runs: list[dict], requester_name: str) -> str:
-    """Casa's own text for the batch tap: one line per run, from the
-    validated fields; the task line is the plugin's, clipped."""
-    head = ("Start this browsing run?" if len(runs) == 1
-            else f"Start these {len(runs)} browsing runs?")
-    return "\n".join([head, *_run_lines(runs), f"Asked for by {requester_name}."])
+def compose_question(runs: list[dict], requester_name: "str | None") -> str:
+    """The batch tap's text, in the browsing agent's own voice: who asked it
+    (*requester_name*, ``None`` when the run is its own), then one line per run
+    from the validated fields; the task line is the plugin's, clipped."""
+    what = ("this browsing run" if len(runs) == 1
+            else f"these {len(runs)} browsing runs")
+    head = (f"OK to start {what}?" if requester_name is None
+            else f"{requester_name} asked me for {what}. OK to start?")
+    return "\n".join([head, *_run_lines(runs)])
 
 
-def compose_status(runs: list[dict], requester_name: str) -> str:
+def compose_status(runs: list[dict], requester_name: "str | None") -> str:
     """The status card's text when his words admitted the runs (no start card exists): the
-    same lines under "Browsing now:"."""
-    head = ("Browsing now:" if len(runs) == 1 else f"Browsing now ({len(runs)} runs):")
-    return "\n".join([head, *_run_lines(runs), f"Asked for by {requester_name}."])
+    same lines under "On it for <requester>:" ("On it:" when the run is the agent's own)."""
+    who = "" if requester_name is None else f" for {requester_name}"
+    count = "" if len(runs) == 1 else f" ({len(runs)} runs)"
+    return "\n".join([f"On it{who}{count}:", *_run_lines(runs)])
+
+
+def _requester_name(binding, role: str) -> "str | None":
+    """Who asked *role* for the runs, by name; ``None`` when it asked itself."""
+    import tools as tools_mod
+    if binding.requester == role:
+        return None
+    return tools_mod._display_name_for_role(binding.requester)
 
 
 #: the Stop button every start or status card carries (``channels.telegram``'s ``run_stop``)
@@ -538,7 +550,6 @@ async def _decide(call, runs: list[dict], request_key: str, binding, endpoint,
                         int((time.monotonic() - started) * 1000))
             _spawn_status_card(call, runs, binding, cid, endpoint, chat_id)
             return _answer(conf)
-    import tools as tools_mod
     conf = Confirmation(cid=cid, plugin=call.plugin, bot_id=bot_id,
                         operator_id=int(call.identity.operator_id),
                         binding_ref=binding.ref, request_key=request_key, status="pending",
@@ -571,7 +582,7 @@ async def _decide(call, runs: list[dict], request_key: str, binding, endpoint,
     start = "Start" if len(runs) == 1 else "Start all"
     landed = await post_question(
         endpoint=endpoint, identity=call.identity, role=call.role,
-        text=compose_question(runs, tools_mod._display_name_for_role(binding.requester)),
+        text=compose_question(runs, _requester_name(binding, call.role)),
         options=[start, "Not now"], timeout_s=CONFIRM_TIMEOUT_S, on_settle=_on_settle,
         after_choice={0: [stop_button(cid)]}, chat_id=chat_id,
         post=_card_post(call, cid))
@@ -603,10 +614,9 @@ def _spawn_status_card(call, runs: list[dict], binding, cid: str, endpoint,
     *chat_id*, the call's delivery. A failed post is logged and nothing else — Ellen's
     ``stop_work`` remains."""
     async def _post() -> None:
-        import tools as tools_mod
         from result_broker import compose_operator_message, label_at
         text = compose_operator_message(
-            compose_status(runs, tools_mod._display_name_for_role(binding.requester)),
+            compose_status(runs, _requester_name(binding, call.role)),
             label_at(call.role, endpoint))
         mid = await endpoint.deliver_run_card(chat_id, text, [stop_button(cid)],
                                               post=_card_post(call, cid))

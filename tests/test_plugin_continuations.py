@@ -143,7 +143,8 @@ def _recording_runner(monkeypatch, seen, gate=None, says=None):
                      tools_mod._delegation_quota_key.get()))
         if gate is not None and cfg.role == "browser":
             await gate.wait()
-        return DelegatedOutput(text=(says or {}).get(cfg.role, f"{cfg.role} says done"))
+        said = (says or {}).get(cfg.role, f"{cfg.role} says done")
+        return said if isinstance(said, DelegatedOutput) else DelegatedOutput(text=said)
     monkeypatch.setattr(tools_mod, "_run_delegated_agent_bounded", _bounded)
 
 
@@ -757,6 +758,51 @@ async def test_a_progress_only_answer_climbs_no_further(roles, desks, announce, 
     out = await announced[0][0]
     assert [x[0] for x in seen] == ["browser"] and out.text == "<silent/>"
     assert reg.quiet[0](out) is True
+
+
+@pytest.mark.asyncio
+async def test_a_closing_silence_after_notes_declares_progress(roles, desks, announce,
+                                                               monkeypatch):
+    """A turn that writes working notes and then closes with ``<silent/>``
+    declared progress: what decides is the message it closed with."""
+    seen: list = []
+    _recording_runner(monkeypatch, seen, says={
+        "browser": DelegatedOutput(text="note\n\n<silent/>", final_message="<silent/>")})
+    reg, announced = announce
+    b = _binding(("assistant", "finance", "browser"))
+    await pc.run_continuation(pc.Pending(b, "r-5", "sweep", 0.0, bot_id=BOT), on_start=lambda: None)
+    out = await announced[0][0]
+    assert [x[0] for x in seen] == ["browser"]
+    assert reg.quiet[0](out) is True
+
+
+@pytest.mark.asyncio
+async def test_a_closing_message_that_only_starts_with_silence_climbs(roles, desks, announce,
+                                                                      monkeypatch):
+    """The closing message is read whole: one that opens with the marker and
+    carries an answer far past the result cap is an answer, and climbs."""
+    seen: list = []
+    closing = "<silent/>" + "\n" * 20000 + "EUR/USD is 1.08."
+    _recording_runner(monkeypatch, seen, says={
+        "browser": DelegatedOutput(text=closing, final_message=closing)})
+    reg, announced = announce
+    b = _binding(("assistant", "finance", "browser"))
+    await pc.run_continuation(pc.Pending(b, "r-4", "sweep", 0.0, bot_id=BOT), on_start=lambda: None)
+    out = await announced[0][0]
+    assert [x[0] for x in seen] == ["browser", "finance"]
+    assert reg.quiet[0](out) is False
+
+
+def test_the_knowledge_line_reads_like_the_agents_own_memory(roles):
+    """The note an agent keeps of a continuation it did not start says who
+    asked, what, and how it went, with no sizes or plumbing."""
+    assert pc._knowledge_line("assistant", "check the rate", DelegatedOutput(text="x" * 400)) \
+        == "Ellen asked you «check the rate»; you answered"
+    assert pc._knowledge_line("assistant", "check the rate", failed="timeout") \
+        == "Ellen asked you «check the rate»; you couldn't finish it (timeout)"
+    aborted = DelegatedOutput(text="", run_subtype="error_max_turns")
+    assert pc._knowledge_line("assistant", "check the rate", aborted) \
+        == "Ellen asked you «check the rate»; you couldn't finish it (error_max_turns)"
 
 
 @pytest.mark.asyncio

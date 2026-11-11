@@ -69,8 +69,8 @@ ends:
 
 **INV-BGJOB-021**: An operator message is admitted for a job only after its journal entry is committed, and the entry stays until the turn that took it up has ended or it has been told as lost; at boot and at recovery from a session death each entry of a live job is checked against the session transcript by uuid — found means dropped, missing means redelivered once, marked as sent before the restart — and when a job ends, each entry its transcript lacks is told as lost once, at the next boot if Casa died before the job's journal was settled.
 
-A journal write that fails before admission refuses the message with the seam's "not delivered,
-please resend" reply, and nothing was accepted: no ticket, no queue entry. A write after
+A journal write that fails before admission refuses the message with the seam's "didn't get through,
+could you send it again" reply, and nothing was accepted: no ticket, no queue entry. A write after
 acceptance (marking take-up, removing entries) that fails keeps the older file, whose extra
 entries the next reconcile settles against the transcript. The journal is what the completion
 gate's ledger cannot be after a restart: memory forgets, the file and the transcript do not.

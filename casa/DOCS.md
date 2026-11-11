@@ -444,10 +444,14 @@ answered once it is ready.
   open, reports, files, its job lines with **Cancel**, and its run cards with
   **Stop**. Its messages there carry no `📊` label: the chat is the
   specialist.
-- **Work the assistant hands over** also appears there: a line "Ellen asked:
-  «…»" when it starts, then the specialist's whole answer when it ends. The
-  assistant still gets the result and tells you in her own chat. The
-  specialist's own conversation learns in one line that it did this work.
+- **Work the assistant hands over** also appears there: a line "Ellen asked
+  me: «…»" when it starts, then the specialist's closing message when it ends
+  (its working notes stay out of the chat, and a specialist with nothing more
+  to say posts nothing). The assistant still gets the result and closes the
+  loop in her own chat, briefly when you have already read the answer. If you
+  reply to the task's messages while it works, your words reach it, and the
+  assistant is told what you wrote. The specialist's own conversation learns
+  in one line that it did this work.
 - **The assistant's chat** keeps your conversation with her, the offer cards,
   and her own plugins' posts. A button on a specialist's card from before its
   chat existed answers "This card belongs to Alex's chat now — open it there."
@@ -488,8 +492,8 @@ or reply to the question in words. To steer a running job, reply in your DM to a
 of its messages there (its start line, a question, something its plugin posted);
 your words reach the job while it works, at its next step. To stop it, tap
 **Cancel**, or ask the assistant to cancel it. If the job ended before it read your
-message, Casa answers it once: "The job had just ended — not delivered, please
-resend." A reply to a message of a job that has already ended goes to the assistant,
+message, Casa answers it once: "The job had just finished, so your message didn't
+get through. Could you send it again?" A reply to a message of a job that has already ended goes to the assistant,
 with a note saying which job it was and how and when it ended.
 
 If a job stops without finishing, Casa nudges it once to carry on. If it stops
@@ -926,9 +930,9 @@ Ask Ellen for a configuration change in 1:1 chat. Examples:
 
 > **Reminders do not need the configurator.** Just ask Ellen directly — "remind me tomorrow before 9am to put the bins out", "remind me every Thursday at 7 to go to the gym" — and she sets it herself. She confirms the exact time, asks whether it should repeat when that is unclear, and can cancel it later.
 
-Ellen passes your request on and says so in one short line (`📊 Passed to Configurator.`).
-The configurator works by itself — a line in your chat shows its steps while it works and
-goes away when it is done — and its answer comes to your chat under its own name.
+Ellen passes your request on. The configurator works by itself — a line in your chat
+shows its steps while it works and goes away when it is done — and its answer comes to
+your chat under its own name.
 
 - **It asks you something?** Reply to its message (swipe to reply), or just tell Ellen.
   Each reply starts a fresh run that sees the conversation so far.

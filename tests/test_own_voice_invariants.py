@@ -311,9 +311,6 @@ def _ellen_sends(world) -> list:
     return world.casa.recorder.sends()
 
 
-HANDOFF_ALEX = "📊 Passed to Alex."
-
-
 def _ellen_texts(world) -> list[str]:
     return world.casa.recorder.texts()
 
@@ -575,11 +572,11 @@ async def test_ellens_tasks_never_enter_alexs_conversation_only_a_note(world, mo
     else:
         assert told == []                      # the sync result was the tool's answer
     [note] = chat_notes.drain(ALEX_BOT, OPERATOR)
-    assert note.startswith(f"Ellen asked you «{BRIEF}»; you answered (")
+    assert note == f"Ellen asked you «{BRIEF}»; you answered"
 
 
 # ---------------------------------------------------------------------------
-# A task in Alex's chat: who asked, the whole answer; Ellen gets her result
+# A task in Alex's chat: who asked, his closing message; Ellen gets her result
 # ---------------------------------------------------------------------------
 
 async def test_a_task_ellen_hands_alex_shows_in_his_chat_and_ellen_gets_her_result(world):
@@ -587,9 +584,9 @@ async def test_a_task_ellen_hands_alex_shows_in_his_chat_and_ellen_gets_her_resu
     await _settled()
     assert payload["status"] == "ok" and payload["text"].startswith(ANSWER)
     texts = world.alex.recorder.texts()
-    assert texts[0] == f"Ellen asked: «{BRIEF}»"
+    assert texts[0] == f"Ellen asked me: «{BRIEF}»"
     assert ANSWER in "".join(texts[1:])
-    assert _ellen_texts(world) == [HANDOFF_ALEX]          # Ellen's own record only
+    assert _ellen_texts(world) == []          # Ellen's own record only
     # every message of the task is filed under it: a reply to it finds the task
     owners = [task_posts.ended_owner(TgAddress(ALEX_BOT, OPERATOR, 500 + i))
               for i in range(len(texts))]
@@ -652,9 +649,9 @@ async def test_alexs_next_turn_carries_the_tasks_note_once(world, conversation):
     await conversation.agent.handle_message(_dm_to_alex("and September?", "8"))
     await conversation.agent.handle_message(_dm_to_alex("and August?", "9"))
     first, second = conversation.client.prompts
-    assert f"(Casa) Ellen asked you «{BRIEF}»; you answered (" in first
+    assert f"(Casa) Ellen asked you «{BRIEF}»; you answered" in first
     assert "Ellen asked you" not in second
-    assert _ellen_texts(world) == [HANDOFF_ALEX]          # his answers stay in his chat
+    assert _ellen_texts(world) == []          # his answers stay in his chat
 
 
 # ---------------------------------------------------------------------------
@@ -668,7 +665,7 @@ async def test_a_reply_to_a_live_delegations_post_reaches_it_and_after_its_end_a
     start_line = 500                                       # the task's first post
     assert task_posts.owner(TgAddress(ALEX_BOT, OPERATOR, start_line)).task_id == did
     await _handle(world.alex, _text("only the market, please", reply_to=start_line,
-                                    quoted_text=f"Ellen asked: «{BRIEF}»"))
+                                    quoted_text=f"Ellen asked me: «{BRIEF}»"))
     assert Held.built.writes[-1].endswith("only the market, please")
     assert _queued(world.bus, "finance") == []
     Held.release.set()
@@ -680,7 +677,25 @@ async def test_a_reply_to_a_live_delegations_post_reaches_it_and_after_its_end_a
     assert turn.content == "and now?"
     assert "which has ended" in turn.context["_reply_note"]
     assert Held.built.writes[-1].endswith("only the market, please")
-    assert _ellen_texts(world) == [HANDOFF_ALEX]
+    assert _ellen_texts(world) == []
+
+
+async def test_what_the_operator_wrote_into_a_live_task_reaches_its_requester(
+        world, monkeypatch):
+    call, did = await _live_delegation(world, monkeypatch)
+    await _handle(world.alex, _text("only Lidl", reply_to=500,
+                                    quoted_text=f"Ellen asked me: «{BRIEF}»"))
+    assert Held.built.writes[-1].endswith("only Lidl")      # the task read it
+    Held.release.set()
+    payload = await call
+    await _settled()
+    assert payload["status"] == "ok"
+    # Ellen's result names the words once, as the operator wrote them
+    assert payload["text"].endswith(
+        "(Casa: the person also wrote to Alex directly while it worked on this: «only Lidl»)")
+    assert payload["text"].count("only Lidl") == 1
+    assert task_input.take_said(did) == []                   # taken once
+    assert _ellen_texts(world) == []
 
 
 async def _reads(options, path) -> bool:
@@ -738,14 +753,14 @@ async def test_every_surface_of_alexs_task_posts_in_his_chat_and_none_in_ellens(
     names = [n for n, _k in world.alex.recorder.sends()]
     assert "send_document" in names and len(names) >= 6       # start line, 3, file, answer
     assert {k.get("chat_id", OPERATOR) for _n, k in world.alex.recorder.sends()} == {OPERATOR}
-    assert _ellen_texts(world) == [HANDOFF_ALEX]
+    assert _ellen_texts(world) == []
 
 
 async def test_every_surface_of_an_agent_behind_ellen_refuses_typed_and_posts_nothing(
         world, outbox):
     """Fido declares a chat but has no bot yet; Tina declares none. Each of
     their surfaces refuses with the line it is told, and neither bot posts
-    any of it — Ellen's chat holds only her own hand-off line."""
+    any of it, and nothing posts in Ellen's chat."""
     for agent, name in (("browser", "Fido"), ("butler", "Tina")):
         seen = await _surfaces_inside(world, agent, outbox)
         for tool, outcome, why in seen[:3]:
@@ -754,7 +769,7 @@ async def test_every_surface_of_an_agent_behind_ellen_refuses_typed_and_posts_no
         media = seen[3][1]
         assert media["status"] == "error" and media["kind_error"].startswith("own_chat_")
     assert world.alex.recorder.sends() == []
-    assert _ellen_texts(world) == ["📊 Passed to Fido.", "📊 Passed to Tina."]
+    assert _ellen_texts(world) == []
 
 
 async def test_a_surface_of_alexs_task_refuses_once_his_chat_has_closed(world, outbox):
@@ -782,7 +797,7 @@ async def test_a_surface_of_alexs_task_refuses_once_his_chat_has_closed(world, o
         assert outcome == "denied" and why == "not executed: Alex's chat is closed right now."
     assert seen[3]["status"] == "error" and seen[3]["kind_error"] == "own_chat_missing"
     assert seen[4] == 0
-    assert _ellen_texts(world) == [HANDOFF_ALEX]
+    assert _ellen_texts(world) == []
 
 
 async def test_a_turn_running_another_agent_in_ellens_chat_never_posts_there(world):
@@ -843,8 +858,7 @@ async def test_ellens_own_chat_is_as_it_was(world, outbox):
     assert payload["status"] == "ok" and payload["text"].startswith(ANSWER)
     sends = world.casa.recorder.sends()
     assert sends[0][1]["text"].startswith("\U0001F4CA Ellen\n")
-    assert [n for n, _k in sends] == ["send_message", "send_document", "send_message"]
-    assert sends[2][1]["text"] == "📊 Passed to Tina."
+    assert [n for n, _k in sends] == ["send_message", "send_document"]
     assert world.alex.recorder.sends() == []
     assert chat_notes.drain(CASA_BOT, OPERATOR) == []
 
@@ -1173,6 +1187,8 @@ async def test_a_jobs_posts_are_in_alexs_chat_its_result_to_who_started_it_the_n
     assert told["finance" if starter == "ellen" else "assistant"] == []
     notes = chat_notes.drain(ALEX_BOT, OPERATOR)
     assert len(notes) == (1 if starter == "ellen" else 0)
+    assert all(n.startswith("Ellen started your job «") and n.endswith("; it finished")
+               for n in notes)
     assert _ellen_texts(world) == []
 
 
@@ -1275,7 +1291,7 @@ async def test_a_continuations_posts_are_in_alexs_chat_its_result_to_its_request
     assert "The invoice is in your downloads." in done.content.text
     assert _queued(world.bus, "finance" if starter == "ellen" else "assistant") == []
     assert len(chat_notes.drain(ALEX_BOT, OPERATOR)) == (1 if starter == "ellen" else 0)
-    assert _ellen_texts(world) == ([HANDOFF_ALEX] if starter == "ellen" else [])
+    assert _ellen_texts(world) == []
 
 
 # ---------------------------------------------------------------------------
@@ -1298,7 +1314,7 @@ async def test_a_delegation_born_without_an_open_chat_posts_nothing_ever(world, 
     assert payload["status"] == "ok" and payload["text"].startswith(ANSWER)
     assert seen[0][0] == "denied" and seen[1]["status"] == "error"
     assert world.alex.recorder.sends() == []
-    assert _ellen_texts(world) == ["📊 Passed to Fido."]
+    assert _ellen_texts(world) == []
     assert tools._TASK_INPUTS == {} and task_posts.delivery_of(payload["delegation_id"]) is None
     assert chat_notes.drain(CASA_BOT, OPERATOR) == []
 
@@ -1320,7 +1336,7 @@ async def test_a_task_born_before_alexs_chat_opened_posts_nothing_even_once_it_i
     [done] = _queued(world.bus, "assistant")
     assert "The invoice is in your downloads." in done.content.text
     assert world.alex.recorder.sends() == []
-    assert _ellen_texts(world) == [HANDOFF_ALEX]
+    assert _ellen_texts(world) == []
     assert chat_notes.drain(ALEX_BOT, OPERATOR) == []
 
 
@@ -1529,7 +1545,7 @@ async def test_a_file_sent_after_tapping_a_live_tasks_paperclip_reaches_that_tas
     assert line.startswith("[casa file] statement.pdf at ") and "a file for your post" in line
     path = line.split(" at ", 1)[1].split(" — ", 1)[0]
     assert await _reads(Held.built.captured_options, path)
-    assert _queued(world.bus, "finance") == [] and _ellen_texts(world) == [HANDOFF_ALEX]
+    assert _queued(world.bus, "finance") == [] and _ellen_texts(world) == []
     Held.release.set()
     await call
     await _settled()
@@ -1772,7 +1788,7 @@ async def test_every_post_a_task_makes_is_filed_under_it(world, monkeypatch, out
     unfiled = {kind: (task, mids, owners) for kind, (task, mids, owners) in found.items()
                if not mids or owners != [task] * len(mids)}
     assert unfiled == {}
-    assert _ellen_texts(world)[:1] == [HANDOFF_ALEX]
+    assert _ellen_texts(world) == []
 
 
 @pytest.mark.parametrize("kind", ["send_media", "run admission question",

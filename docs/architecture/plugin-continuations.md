@@ -91,8 +91,8 @@ message (`RequesterUnavailable`), never with one role's answer passed off as ano
 never captured as the requester's words (INV-MEM-032).
 
 **A turn that only made progress tells nobody** (operator ruling 2026-10-18). The
-specialist declares it itself: a continuation turn whose whole answer is exactly `<silent/>`
-(`output_boundary.SILENCE_SENTINEL`; an empty answer is not a declaration) has nothing for a requester — the browsing
+specialist declares it itself: a continuation turn whose closing message, whole, is exactly `<silent/>`
+(`output_boundary.SILENCE_SENTINEL`; an empty answer is not a declaration, and notes written before that message do not stop it being one) has nothing for a requester — the browsing
 specialist's own progress card already told the operator. No relay turn runs, and the
 record is attached with `quiet_if` naming that turn's own output, so it completes with no
 announcement owed (through the same reconciled terminal write); a relay requester's own

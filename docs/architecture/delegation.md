@@ -37,22 +37,16 @@ no plugin or role change, and a turn that is not a continuation opens that pad w
 task and the operator's words (INV-PAD-007); a stored call, or a role that disallows the tool, has neither that line
 nor the tool (INV-PAD-005).
 
-**The operator sees a hand-off as it happens.** When the operator's own Telegram turn hands
-work on — a `sync` or `async` delegation once the delegate's run has been created — Casa
-posts one silent line in that chat recording it (`📊 Passed to Alex.`).
-Every line states a hand-off that has already happened, so it stays true whatever the work
-then does; the answer or the failure still comes from the assistant. The send is spawned,
-never awaited, so it adds no wait and no cancellation point to the tool. Only a turn the spawn
-cap counts as the operator's own (`_operator_turn`, no bound engagement, depth 0) gets one:
-scheduled, notice, nested and voice turns post nothing. An `async` delegation's `pending`
-result then carries a note telling the assistant the person already
-sees the line and to stay silent when it has nothing else; a `sync` result's answer is the
-reply, which the assistant tells the person herself, in her own words, so it carries none
+**A hand-off has no line of Casa's own.** When the operator's turn hands work on, Casa posts
+nothing in that chat to record it; what the person hears comes from the assistant. A `sync`
+result's answer is the reply, which the assistant tells the person herself, in her own words
 (only, when the delegate closed its turn with `<silent/>`, Casa's note that it has nothing for
 the person, and, when the length cap cut the result text, the delegate's closing message
-beside it as `closing_message`: [`delegate-closing-message.md`](delegate-closing-message.md)). A `sync` delegation that outlives its 60-second wait and goes
-`pending` carries such a note too, worded to override the assistant's usual "still on it"
-line: the person has the hand-off line, and often a card the specialist already posted.
+beside it as `closing_message`: [`delegate-closing-message.md`](delegate-closing-message.md)).
+An `async` delegation's `pending` result carries no note, and a `sync` delegation that outlives
+its 60-second wait and goes `pending` carries only the plain one ("Delegation continues in
+background; you will receive a NOTIFICATION when complete."), so the assistant's own rule for
+pending work applies: one short holding line such as "Alex is still on it."
 
 **Two different limits bound agent-created work, and they deliberately divide the
 territory.** The *depth cap* stops delegation from chaining: an agent reached through
@@ -91,9 +85,11 @@ are [`specialist-desk.md`](specialist-desk.md); the faulted agent is
 **A delegation is a task, and an agent with its own chat shows it there.** Its launcher stamps
 its executor, its delivery and its requester once, at its birth (voice delegations excepted:
 their result is spoken). When the target's own chat is open at that moment, the task's post
-index and input open first, a start line "Ellen asked: «…»" is posted in the target's chat, the
-target's whole answer is posted there when it ends, and the resident still gets the bounded
-result; replies to those posts reach the running task. A target with no open chat posts
+index and input open first, a start line "Ellen asked me: «…»" is posted in the target's chat,
+the message the target closed its turn with is posted there when it ends (nothing when that is
+silence), and the resident still gets the bounded result, with notes that name that chat;
+replies to those posts reach the running task, and what the operator wrote into it reaches
+the resident with the result. A target with no open chat posts
 nothing and its surfaces are refused. A hand-off inside it stamps its target's own delivery
 ([`own-voice.md`](own-voice.md)). A file the operator addresses to the specialist
 starts a use of the same desk; its route is [`inbound-files.md`](inbound-files.md).
@@ -334,10 +330,9 @@ the agent-spawn cap. Never copy the marker into a synthesized or scheduled turn'
 - `casa/rootfs/opt/casa/specialist_limits.py::SpawnToken`
 - `casa/rootfs/opt/casa/tools.py::_reap_bounded_tree`
 - `casa/rootfs/opt/casa/pinned_run.py::ProcessTree`
-- `casa/rootfs/opt/casa/tools.py::_post_handoff_line`
 
 **Tests**
-- `tests/test_delegate_to_agent.py::TestHandoffLine`
+- `tests/test_delegate_to_agent.py::test_no_handoff_line_and_no_note`
 - `tests/test_bounded_run_processes.py`
 - `tests/test_delegation_acl.py`
 - `tests/test_delegates_block_live_names.py`

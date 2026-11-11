@@ -194,8 +194,8 @@ def _transport():
 MARKS = {"stopped": "☑ Stopped", "ended": "☑ Ended", "already_stopped": "☑ Stopped",
          "not_taken": "☑ Stop asked"}
 LINES = {"stopped": "Stopped.", "ended": "It had already ended.",
-         "not_taken": "Casa Browser isn't answering; the browsing stops as soon as it does.",
-         "unavailable": "I couldn't stop it: {name}'s browser isn't set up any more."}
+         "not_taken": "The browser isn't answering yet; I'll stop as soon as it does.",
+         "unavailable": "I couldn't stop it: my browser isn't set up any more."}
 
 
 def line_for(outcome: str, role: str) -> "str | None":

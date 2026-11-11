@@ -79,7 +79,9 @@ answer again — no second reading and no second card — and requests with one 
 one at a time, so a retry that overlaps the first waits for it and gets its answer. Otherwise — no words (a
 continuation, a narration, a tap), a reading that names nothing ("collect them"), a
 failed reading, or one run he did not name — Casa posts ONE question listing every run,
-one line each (`TelegramChannel.deliver_operator_question`, the resident-ask keyboard in
+one line each, in the browsing agent's voice ("Ellen asked me for this browsing run. OK to
+start?", or "OK to start this browsing run?" when the run is the agent's own;
+`compose_question`) (`TelegramChannel.deliver_operator_question`, the resident-ask keyboard in
 the `ask:<bot>:<chat>` scope) and answers `confirmation_pending` with its id. His tap settles it
 — "Start" admits all of them, anything else none — and so does the hour's timeout; either
 way Casa queues a continuation of `admission:<id>`, whose plugin call reads the state with
@@ -99,7 +101,8 @@ for the Start choice (`edit_dm_message`'s `buttons`), and that choice's `on_sett
 before the edit that shows it, so the admission is already `admitted` — with the card's
 address and its settled text (`Confirmation.card`, `[bot, chat, message]`, and `card_text`) — when the
 button appears. When his words admitted the runs there is no start card, so one status card
-(`compose_status`: `Browsing now:` over the same run lines, with the same Stop) is posted
+(`compose_status`: `On it for Ellen:` over the same run lines — `On it:` when the run is
+the agent's own — with the same Stop) is posted
 beside the answer in its own task, never awaited by it (`_spawn_status_card`,
 `TelegramChannel.deliver_run_card`); when it lands its message and text are recorded with
 the admission (`Confirmations.set_card`), and a failed post is only logged. The Stop's tap

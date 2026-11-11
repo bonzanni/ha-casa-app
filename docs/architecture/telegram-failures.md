@@ -57,7 +57,7 @@ delivery-failure outcome rather than hanging.
 
 **A message to a job is not accepted.** A reply into a job or a tap the job does not accept —
 its record is terminal, its journal could not be written, Casa is stopping — draws one bounded
-"not delivered, please resend" notice in reply to the message, and goes no further; a message
+"didn't get through, could you send it again" notice in reply to the message, and goes no further; a message
 the job accepted and never read is told once when the job ends
 ([`engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md), INV-ENG-029).
 

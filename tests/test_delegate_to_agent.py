@@ -2692,22 +2692,31 @@ class TestClusterSVerdictMatrix:
 
 
 # ---------------------------------------------------------------------------
-# #1350: the hand-off line
+# No hand-off line: a delegation posts nothing in the requester's chat
 # ---------------------------------------------------------------------------
 
 
-class _HandoffChannel:
+class _RecordingChannel:
+    """The requester's chat: records every send Casa makes there."""
     name = "telegram"
 
     def __init__(self):
-        self.lines: list[tuple[Any, str]] = []
+        self.lines: list[tuple[str, tuple]] = []
 
-    async def send_handoff_line(self, chat_id, text):
-        self.lines.append((chat_id, text))
-        return True
+    def __getattr__(self, name):
+        if not name.startswith("send"):
+            raise AttributeError(name)
+
+        async def _send(*args, **kwargs):
+            self.lines.append((name, args))
+            return True
+        return _send
 
 
-class TestHandoffLine:
+class _DelegateHarness:
+    """``delegate_to_agent`` from a resident's Telegram turn over the fake
+    specialist; returns the payload and every send made in the turn's chat."""
+
     async def _run(self, tmp_path, monkeypatch, *, mode, origin, delay=0.0):
         from tools import delegate_to_agent, init_tools
         import tools as tools_mod
@@ -2723,7 +2732,7 @@ class TestHandoffLine:
         bus.register("assistant", None)
         from _fixture_d import as_endpoint, endpoint_manager
 
-        ch = as_endpoint(_HandoffChannel())
+        ch = as_endpoint(_RecordingChannel())
         cm = endpoint_manager(ch)
         # The turn carries the route of the bot it was born on.
         origin = {**origin, "_tg_bot": 111}
@@ -2740,86 +2749,27 @@ class TestHandoffLine:
             result = await _with_origin(delegate_to_agent.handler({
                 "agent": "finance", "task": "x", "context": "", "mode": mode,
             }), origin)
-            await asyncio.gather(*list(tools_mod._handoff_line_tasks))
+            for _ in range(5):
+                await asyncio.sleep(0)
         return json.loads(result["content"][0]["text"]), ch.lines
 
-    async def test_an_operator_sync_delegation_shows_the_line(self, tmp_path, monkeypatch):
-        payload, lines = await self._run(
-            tmp_path, monkeypatch, mode="sync",
-            origin={**_origin(chat_id=7), "_operator_turn": True})
-        assert lines == [(7, "📊 Passed to Alex.")]
-        assert payload["status"] == "ok" and "note" not in payload
 
-    async def test_a_sync_delegation_gone_pending_tells_the_resident(
-            self, tmp_path, monkeypatch):
-        """Slice 5f: past the 60 s wait the person has the hand-off line (and maybe a card the
-        specialist posted meanwhile); the pending result says so, as an async one does, so the
-        assistant does not add "Alex is still on it." under them."""
-        payload, lines = await self._run(
-            tmp_path, monkeypatch, mode="sync",
-            origin={**_origin(chat_id=7), "_operator_turn": True}, delay=0.2)
-        assert lines == [(7, "📊 Passed to Alex.")]
-        assert payload["status"] == "pending"
-        assert "NOTIFICATION when complete." in payload["note"]
-        assert "(Casa: the person is shown a line saying this was passed to Alex, so they " \
-            "are not waiting in silence: do not say that it is still running" in payload["note"]
-        assert payload["note"].endswith("reply with exactly <silent/>.)")
-
-    async def test_a_sync_delegation_gone_pending_after_a_failed_line_has_no_such_note(
-            self, tmp_path, monkeypatch):
-        """Astra/Terra r1: the note says the person saw the line, so a send that did not post
-        it (Telegram refused, timed out) leaves the note out."""
-        async def refused(self, chat_id, text):
-            self.lines.append((chat_id, text))
-            return False
-        monkeypatch.setattr(_HandoffChannel, "send_handoff_line", refused)
-        payload, lines = await self._run(
-            tmp_path, monkeypatch, mode="sync",
-            origin={**_origin(chat_id=7), "_operator_turn": True}, delay=0.2)
-        assert lines == [(7, "📊 Passed to Alex.")] and payload["status"] == "pending"
-        assert "<silent/>" not in payload["note"]
-
-    async def test_a_sync_delegation_gone_pending_without_the_line_has_no_such_note(
-            self, tmp_path, monkeypatch):
-        payload, lines = await self._run(tmp_path, monkeypatch, mode="sync",
-                                         origin=_origin(chat_id=7), delay=0.2)
-        assert lines == [] and payload["status"] == "pending"
-        assert "<silent/>" not in payload["note"]
-
-    async def test_an_async_delegation_shows_it_and_tells_the_resident(
-            self, tmp_path, monkeypatch):
-        payload, lines = await self._run(
-            tmp_path, monkeypatch, mode="async",
-            origin={**_origin(chat_id=7), "_operator_turn": True})
-        assert lines == [(7, "📊 Passed to Alex.")]
-        assert payload["status"] == "pending"
-        assert payload["note"].startswith(
-            "(Casa: the person is shown a line saying this was passed to Alex.")
-        assert payload["note"].endswith("reply with exactly <silent/>.)")
-
-    async def test_no_line_from_an_engagement_bound_turn(self, tmp_path, monkeypatch):
-        import tools as tools_mod
-        from unittest.mock import MagicMock
-        eng = MagicMock()
-        eng.origin = {}
-        eng.context_rebuild_pending = False
-        tok = tools_mod.engagement_var.set(eng)
-        try:
-            payload, lines = await self._run(
-                tmp_path, monkeypatch, mode="async",
-                origin={**_origin(chat_id=7), "_operator_turn": True})
-        finally:
-            tools_mod.engagement_var.reset(tok)
-        assert lines == [] and "note" not in payload
-
-    @pytest.mark.parametrize("origin", [
-        _origin(chat_id=7),                                   # no operator ingress
-        {**_origin(chat_id=7), "_operator_turn": True, "delegation_depth": 1},
-        {**_origin(channel="webhook", chat_id=7), "_operator_turn": True},
-    ])
-    async def test_no_line_outside_an_operator_telegram_turn(
-            self, tmp_path, monkeypatch, origin):
-        payload, lines = await self._run(tmp_path, monkeypatch, mode="async",
-                                         origin=origin)
-        assert lines == []
+@pytest.mark.parametrize("mode,delay,status", [
+    ("sync", 0.0, "ok"), ("async", 0.0, "pending"), ("sync", 0.2, "pending")],
+    ids=["sync", "async", "degraded"])
+async def test_no_handoff_line_and_no_note(tmp_path, monkeypatch, mode, delay, status):
+    """The person is shown no line that the work was passed on, and the
+    resident's result says nothing of one: a pending result keeps only the
+    plain notice that the answer comes later."""
+    payload, lines = await _DelegateHarness()._run(
+        tmp_path, monkeypatch, mode=mode, delay=delay,
+        origin={**_origin(chat_id=7), "_operator_turn": True})
+    assert lines == []
+    assert payload["status"] == status
+    if mode == "async":
+        assert "note" not in payload
+    elif delay:
+        assert payload["note"] == ("Delegation continues in background; you will "
+                                   "receive a NOTIFICATION when complete.")
+    else:
         assert "note" not in payload

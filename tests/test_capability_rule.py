@@ -537,7 +537,7 @@ async def test_ellens_tasks_continuation_delivers_to_alexs_chat_and_completes_to
     # the result to the requester, Ellen, on her route; Alex's conversation gets the note
     assert (record.origin["role"], record.origin["_tg_bot"]) == ("assistant", CASA_BOT)
     assert chat_notes.drain(FINANCE_BOT, OPERATOR) == [
-        "Ellen asked you «Continue browsing run r-1.»; you answered (33 chars)"]
+        "Ellen asked you «Continue browsing run r-1.»; you answered"]
 
 
 @pytest.mark.asyncio

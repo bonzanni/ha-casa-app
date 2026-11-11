@@ -11,6 +11,11 @@ The write itself (:func:`write`) is the one a background job's delivery
 worker uses: one stream-json user message, stamped with a uuid, handed to the
 live client, which the CLI takes up at its next tool boundary. A task's
 destination is memory-only: a restart ends it, like the run it belongs to.
+
+What the operator wrote into a task is also kept, apart from its destination,
+so the requester can be told once the task is done: :func:`submit` records
+its ``said`` words, :func:`close` leaves them in place, and :func:`take_said`
+hands them over once. The record is bounded and memory-only too.
 """
 from __future__ import annotations
 
@@ -57,6 +62,28 @@ class _Destination:
 
 _destinations: dict[str, _Destination] = {}
 
+SAID_CHARS = 300          # one entry, whitespace collapsed, clipped with "…"
+SAID_PER_TASK = 5         # the last entries kept per task, oldest first
+SAID_TASKS = 64           # tasks kept; the oldest is forgotten first
+
+_said: collections.OrderedDict[str, collections.deque] = collections.OrderedDict()
+
+
+def _record_said(task_id: str, said: Any) -> None:
+    if not isinstance(said, str):
+        return
+    words = " ".join(said.split())
+    if not words:
+        return
+    if len(words) > SAID_CHARS:
+        words = words[:SAID_CHARS - 1].rstrip() + "…"
+    entries = _said.get(task_id)
+    if entries is None:
+        entries = _said[task_id] = collections.deque(maxlen=SAID_PER_TASK)
+        while len(_said) > SAID_TASKS:
+            _said.popitem(last=False)
+    entries.append(words)
+
 
 def open_pending(task_id: str) -> None:
     """Create the input destination of *task_id*, pending. Opening one that
@@ -89,14 +116,19 @@ def attach(task_id: str, client: Any) -> None:
         dest.wake.set()
 
 
-def submit(task_id: str, text: str) -> Literal["queued", "written", "ended"]:
+def submit(task_id: str, text: str, *, said: str | None = None,
+           ) -> Literal["queued", "written", "ended"]:
     """Deliver the operator's reply *text* to the task *task_id*:
     ``"queued"`` while the task is pending (written once it attaches),
     ``"written"`` when it is handed to the live session's writer, ``"ended"``
-    when the task has no input any more (it ended, or never had one)."""
+    when the task has no input any more (it ended, or never had one).
+
+    *said* is the operator's own words in that reply; unless the result is
+    ``"ended"`` they are kept for :func:`take_said`."""
     dest = _destinations.get(task_id)
     if dest is None:
         return "ended"
+    _record_said(task_id, said)
     dest.queue.append(str(text))
     if dest.state == PENDING:
         return "queued"
@@ -126,6 +158,16 @@ def state(task_id: str) -> Literal["pending", "live", "ended"]:
     return "ended" if dest is None else dest.state
 
 
+def take_said(task_id: str) -> list[str]:
+    """The operator's words recorded for *task_id*, oldest first, and forget
+    them: a second take returns ``[]``. Never raises."""
+    try:
+        entries = _said.pop(task_id, None)
+    except Exception:  # noqa: BLE001 — an unhashable id has nothing recorded
+        return []
+    return list(entries) if entries else []
+
+
 async def _work(task_id: str, dest: _Destination) -> None:
     """The destination's only writer: one reply at a time, in order."""
     while _destinations.get(task_id) is dest:
@@ -142,8 +184,9 @@ async def _work(task_id: str, dest: _Destination) -> None:
 
 
 def reset() -> None:
-    """Forget every destination (tests)."""
+    """Forget every destination and every recorded word (tests)."""
     for dest in _destinations.values():
         if dest.worker is not None and not dest.worker.done():
             dest.worker.cancel()
     _destinations.clear()
+    _said.clear()

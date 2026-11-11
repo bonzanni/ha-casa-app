@@ -210,8 +210,8 @@ async def test_a_context_reply_gets_one_card_for_the_whole_batch(wired, monkeypa
     assert len(channel.posted) == 1
     _chat, text, labels, _ = channel.posted[0]
     assert labels == ["Start all", "Not now"]
-    assert "Start these 3 browsing runs?" in text and "• Bergfreunde — download invoice" in text
-    assert "Asked for by Alex." in text
+    assert "Alex asked me for these 3 browsing runs. OK to start?\n• " in text
+    assert "• Bergfreunde — download invoice" in text and "Asked for by" not in text
     assert run_admission.confirmation_status(call, cid)["status"] == "pending"
     await _tap(channel, 0)
     status = run_admission.confirmation_status(call, cid)
@@ -493,6 +493,41 @@ async def _cards_settle():
         await asyncio.sleep(0)
 
 
+def test_a_run_the_agent_asked_for_itself_names_no_requester():
+    """The cards speak as the browsing agent: who asked it, or nobody when the
+    run is its own."""
+    two = [RUNPOD, _run(("Bergfreunde", "account"), digest="sha256:bb")]
+    assert run_admission.compose_question([RUNPOD], "Ellen").splitlines()[0] \
+        == "Ellen asked me for this browsing run. OK to start?"
+    assert run_admission.compose_question([RUNPOD], None).splitlines()[0] \
+        == "OK to start this browsing run?"
+    assert run_admission.compose_question(two, None).splitlines()[0] \
+        == "OK to start these 2 browsing runs?"
+    assert run_admission.compose_status([RUNPOD], None).splitlines()[0] == "On it:"
+    assert run_admission.compose_status(two, None).splitlines()[0] == "On it (2 runs):"
+    assert run_admission.compose_status(two, "Alex").splitlines()[0] == "On it for Alex (2 runs):"
+    for text in (run_admission.compose_question(two, "Alex"),
+                 run_admission.compose_status(two, None)):
+        assert len(text.splitlines()) == 3          # the head and one line per run
+
+
+@pytest.mark.asyncio
+async def test_a_card_for_the_agents_own_run_asks_without_a_requester(wired, monkeypatch):
+    channel, _continued = wired
+    ask, _ = _model('{"runs": []}')
+    monkeypatch.setattr(run_admission, "_ask_model", ask)
+    out = await run_admission.request_admission(_call(chain=("browser",)), [RUNPOD], "k1")
+    assert out["status"] == "confirmation_pending"
+    (_chat, text, _labels, _), = channel.posted
+    assert "OK to start this browsing run?\n• RunPod — download invoice" in text
+    assert "asked me" not in text
+    await _tap(channel, 1)
+    for _ in range(50):
+        if not run_admission._CARD_TASKS:
+            return
+        await asyncio.sleep(0)
+
+
 @pytest.mark.asyncio
 async def test_runs_his_words_admitted_get_one_status_card_with_its_stop(wired, monkeypatch):
     channel, _continued = wired
@@ -504,7 +539,8 @@ async def test_runs_his_words_admitted_get_one_status_card_with_its_stop(wired, 
     (card,) = channel.cards
     cid = out["confirmation_id"]
     assert card[2] == [("Stop", f"v1|run_stop|{cid}|0")]
-    assert "Browsing now:" in card[1] and "• RunPod — download invoice" in card[1]
+    assert "On it for Ellen:\n• RunPod — download invoice" in card[1]
+    assert "Asked for by" not in card[1]
     c = run_admission.CONFIRMATIONS.peek(cid)
     assert c.card_address() == TgAddress(CASA_BOT, 42, 556) and c.card_text == card[1]
 

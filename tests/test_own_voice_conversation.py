@@ -336,6 +336,9 @@ async def test_casas_notes_for_the_chat_are_drained_once_into_its_agents_turn(wo
 
     first, second = _Client.prompts
     assert "(Casa) Ellen asked you «groceries in October»; you answered (412 chars)" in first
+    assert (f"{agent_mod.CHAT_NOTES_FRAME}\n(Casa) Ellen asked you «groceries in October»"
+            in first)
+    assert agent_mod.CHAT_NOTES_FRAME not in second
     assert "Ellen asked you" not in second
     assert "a note for Ellen's chat" not in first
     assert chat_notes.drain(CASA_BOT, OPERATOR) == ["a note for Ellen's chat"]
