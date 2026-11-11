@@ -110,7 +110,7 @@ def test_a_fault_is_per_agent_until_restart(fresh):
     assert fresh.get_or_create(111, 42, "browser").faulted is None
     (issue,) = agent_lane.FAULTS.issues()
     assert isinstance(issue, PluginIssue)
-    assert (issue.name, issue.target, issue.reason_code) == ("probe", "specialist:finance", "desk_faulted")
+    assert (issue.name, issue.target, issue.reason_code) == ("probe", "specialist:finance", "agent_faulted")
     assert sd.faulted_desk_issues() == [issue]
     agent_lane.reset()                              # a restart clears it
     assert agent_lane.FAULTS.faulted("finance") is None and agent_lane.FAULTS.issues() == []

@@ -15858,14 +15858,14 @@ async def specialist_uninstall(args: dict) -> dict:
         payload.update(_swap_removal_disclosure(txn))
         return payload
 
-    own_bot = _own_chat_bot(slug)
+    own_chat = _own_chat_disclosure(slug)
     outcome = await _run_bundle_transaction(_txn)
     if isinstance(outcome, dict) and outcome.get("ok") is True:
         # the agent's own bot, if it has one, goes dormant; the operator may
         # delete it in BotFather, which the result names so it can be offered
         await _own_chat_hook("on_uninstall_committed", slug)
-        if own_bot is not None:
-            outcome["own_chat"] = {"bot": own_bot, "delete_link": _BOTFATHER_DELETE_LINK}
+        if own_chat is not None:
+            outcome["own_chat"] = own_chat
     if reports and isinstance(outcome, dict) and outcome.get("ok") is True:
         # The reload takes the plugin guard itself, so it runs after the
         # transaction released the lock.
@@ -16302,7 +16302,6 @@ async def offer_own_chat(args: dict) -> dict:
 # boot reconciles the chat against the committed state).
 # ---------------------------------------------------------------------------
 
-_BOTFATHER_DELETE_LINK = "https://t.me/BotFather?start=deletebot"
 
 
 async def _own_chat_hook(name: str, role: str) -> bool:
@@ -16334,15 +16333,17 @@ def _bound_persona(slug: str) -> "str | None":
     return f"{binding.persona_id}@{binding.persona_version}#{binding.persona_checksum}"
 
 
-def _own_chat_bot(role: str) -> "str | None":
-    """``@username`` of the bot *role* speaks through, or ``None``."""
+def _own_chat_disclosure(role: str) -> "dict | None":
+    """The bot *role* speaks through and the BotFather link that deletes
+    it (``{"bot": "@name", "delete_link": ...}``), as the own-chat records
+    hold them, or ``None`` when it has no bot."""
     import own_voice
     try:
-        ep = own_voice.endpoint_for(role)
-        name = ep._app.bot.username if ep is not None and ep._app is not None else None
+        return own_voice.own_chat_disclosure(role)
     except Exception:  # noqa: BLE001 — no bot known
+        logger.warning("own chat of %s could not be read for the uninstall result", role,
+                       exc_info=True)
         return None
-    return f"@{name}" if isinstance(name, str) and name else None
 
 
 async def _after_own_chat_change(out: dict, slug: str, hook: str,

@@ -807,7 +807,7 @@ async def test_a_faulted_desk_is_listed_with_its_plugin_and_lands_in_the_health_
     assert desk is env.desk and desk.fault.plugin == "probe" and desk.fault.since == 1000.0
     assert env.refreshes == [True]                           # the report is regenerated at once
     (issue,) = sd.faulted_desk_issues()
-    assert (issue.name, issue.target, issue.reason_code) == ("probe", "specialist:finance", "desk_faulted")
+    assert (issue.name, issue.target, issue.reason_code) == ("probe", "specialist:finance", "agent_faulted")
     assert "since" in str(issue.detail)
     # the regeneration carries the row, and the operator phrasing never shows the code
     import callback_reconcile
@@ -821,10 +821,10 @@ async def test_a_faulted_desk_is_listed_with_its_plugin_and_lands_in_the_health_
     written = {}
     monkeypatch.setattr(plugin_health, "write_report", lambda **kw: written.update(kw))
     tools_mod._regenerate_plugin_health([])
-    rows = [i for i in written["issues"] if getattr(i, "reason_code", None) == "desk_faulted"]
+    rows = [i for i in written["issues"] if getattr(i, "reason_code", None) == "agent_faulted"]
     assert len(rows) == 1 and rows[0].name == "probe"
-    line = plugin_health.describe_issue({"name": "probe", "reason_code": "desk_faulted", "detail": issue.detail})
-    assert "desk_faulted" not in line and "restart" in line and "probe" in line
+    line = plugin_health.describe_issue({"name": "probe", "reason_code": "agent_faulted", "detail": issue.detail})
+    assert "agent_faulted" not in line and "restart" in line and "probe" in line
 
 
 def test_without_a_fault_nothing_is_listed(env):

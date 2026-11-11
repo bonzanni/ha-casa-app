@@ -146,6 +146,11 @@ async def test_the_uninstall_disclosure(lc, world):
     await _to(lc, world, "not_open")
     assert own_voice.own_chat_disclosure("finance") == {
         "bot": "@HeyAlexTestBot", "delete_link": "https://t.me/BotFather?start=deletebot"}
+    # the uninstall result names the bot from these records, not from an
+    # endpoint that may already be stopped
+    import tools as tools_mod
+    assert tools_mod._own_chat_disclosure("finance") == own_voice.own_chat_disclosure("finance")
+    assert tools_mod._own_chat_disclosure("plain") is None
 
 
 async def test_the_entry_points_reach_the_lifecycle(lc, world):

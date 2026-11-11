@@ -97,7 +97,7 @@ class FaultRegistry:
             when = time.strftime("%Y-%m-%d %H:%M", time.localtime(fault.since))
             rows.append(PluginIssue(
                 name=fault.plugin or "casa", target=f"specialist:{role}", stage="verify",
-                reason_code="desk_faulted", detail=f"since {when}"))
+                reason_code="agent_faulted", detail=f"since {when}"))
         return rows
 
     def clear(self) -> None:
