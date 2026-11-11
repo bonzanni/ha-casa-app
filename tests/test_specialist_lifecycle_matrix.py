@@ -23,9 +23,10 @@ from specialist_install import (
     upgrade_specialist,
     uninstall_specialist,
 )
-# SpecialistInstallAckStore/install_consent_identity live in
+# SpecialistInstallAckStore lives in
 # specialist_install_consent, not specialist_install (controller resolution 1).
-from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+from specialist_install_consent import SpecialistInstallAckStore
+from approval_values import NO_SETTINGS, record_specialist_ack, settings
 from specialist_registry import InstalledSpecialistIndex
 from test_specialist_install import _write_component, _stub_resolve_and_fetch  # shared fixture helpers
 
@@ -64,11 +65,7 @@ def _approved_inspection(
         required_config_names=(), required_secret_names=(), dependencies=deps, staged_dir=root,
     )
     acks = SpecialistInstallAckStore(path=tmp_path / f"acks-{slug}{version_suffix}.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug)
-    acks.record(identity=identity, component_id=inspection.component_id, version=inspection.version,
-                component_checksum=inspection.root_digest, slug=inspection.slug)
+    record_specialist_ack(acks, inspection)
     return inspection, acks
 
 
@@ -79,6 +76,7 @@ def test_fresh_install_with_no_required_config_goes_straight_to_active(tmp_path:
     inspection, acks = _approved_inspection(tmp_path)
     instance = commit_specialist_install(
         inspection=inspection, config={}, secret_names_provided=frozenset(), acks=acks,
+        approved_values=NO_SETTINGS,
         specialists_dir=tmp_path / "specialists", agents_specialists_dir=tmp_path / "agents-specialists")
     assert instance.state == "active"
 
@@ -114,19 +112,18 @@ def test_fresh_install_missing_config_is_pending_configuration_with_no_active_tu
         dependencies=cfg_deps, staged_dir=root,
     )
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug)
-    acks.record(identity=identity, component_id=inspection.component_id, version=inspection.version,
-                component_checksum=inspection.root_digest, slug=inspection.slug)
+    record_specialist_ack(acks, inspection)
 
     instance = commit_specialist_install(
         inspection=inspection, config={}, secret_names_provided=frozenset(), acks=acks,
+        approved_values=NO_SETTINGS,
         specialists_dir=tmp_path / "specialists", agents_specialists_dir=tmp_path / "agents-specialists")
     assert instance.state == "pending-configuration"
     assert instance.active is None
+    with_secret = record_specialist_ack(acks, inspection, settings(secrets=["api_key"]))
     then_satisfied = commit_specialist_install(
         inspection=inspection, config={}, secret_names_provided=frozenset({"api_key"}), acks=acks,
+        approved_values=with_secret,
         specialists_dir=tmp_path / "specialists", agents_specialists_dir=tmp_path / "agents-specialists")
     assert then_satisfied.state == "active"  # configured -> active on re-commit with config supplied
 
@@ -141,6 +138,7 @@ def test_install_never_writes_cas_without_a_recorded_consent(tmp_path: Path) -> 
     with pytest.raises(SpecialistInstallError) as raised:
         commit_specialist_install(
             inspection=inspection, config={}, secret_names_provided=frozenset(), acks=unacked,
+            approved_values=NO_SETTINGS,
             specialists_dir=tmp_path / "specialists", agents_specialists_dir=tmp_path / "agents-specialists")
     assert raised.value.kind == "consent_missing"
     assert not (tmp_path / "specialists" / "store").exists()  # NOTHING persisted
@@ -196,6 +194,7 @@ def test_upgrade_failure_leaves_the_complete_active_tuple_running(tmp_path: Path
     v1, acks1 = _approved_inspection(tmp_path, slug="mtg", version_suffix="-v1")
     specialists_dir, agents_specialists_dir = tmp_path / "specialists", tmp_path / "agents-specialists"
     commit_specialist_install(inspection=v1, config={}, secret_names_provided=frozenset(), acks=acks1,
+                               approved_values=NO_SETTINGS,
                                specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir)
 
     # v2 needs a DIFFERENT root_digest than v1 (see _approved_inspection's
@@ -217,7 +216,7 @@ def test_upgrade_failure_leaves_the_complete_active_tuple_running(tmp_path: Path
     # raised by specialist_install.py's own gates, not role_artifact.py's).
     with pytest.raises(ValueError) as raised:
         upgrade_specialist(slug="mtg", inspection=v2, config={}, secret_names_provided=frozenset(),
-                            acks=acks2, specialists_dir=specialists_dir,
+                            acks=acks2, approved_values=NO_SETTINGS, specialists_dir=specialists_dir,
                             agents_specialists_dir=agents_specialists_dir)
     assert not isinstance(raised.value, SpecialistInstallError)
     assert "doctrine" in str(raised.value) and "empty" in str(raised.value)
@@ -233,7 +232,7 @@ def test_uninstall_then_reinstall_at_the_same_digest_is_allowed(tmp_path: Path) 
     inspection, acks = _approved_inspection(tmp_path)
     specialists_dir, agents_specialists_dir = tmp_path / "specialists", tmp_path / "agents-specialists"
     commit_specialist_install(inspection=inspection, config={}, secret_names_provided=frozenset(),
-                               acks=acks, specialists_dir=specialists_dir,
+                               acks=acks, approved_values=NO_SETTINGS, specialists_dir=specialists_dir,
                                agents_specialists_dir=agents_specialists_dir)
     uninstall_specialist(slug="mtg", specialists_dir=specialists_dir,
                           agents_specialists_dir=agents_specialists_dir)
@@ -241,14 +240,10 @@ def test_uninstall_then_reinstall_at_the_same_digest_is_allowed(tmp_path: Path) 
     assert inspection.root_digest not in pinned_after_uninstall  # no tuple references it anymore
 
     second_acks = SpecialistInstallAckStore(path=tmp_path / "acks-reinstall.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug)
-    second_acks.record(identity=identity, component_id=inspection.component_id,
-                        version=inspection.version, component_checksum=inspection.root_digest,
-                        slug=inspection.slug)
+    record_specialist_ack(second_acks, inspection)
     reinstalled = commit_specialist_install(
         inspection=inspection, config={}, secret_names_provided=frozenset(), acks=second_acks,
+        approved_values=NO_SETTINGS,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir)
     assert reinstalled.state == "active"
 
@@ -293,14 +288,10 @@ def test_second_fresh_install_cannot_replace_a_different_pending_candidate(
         dependencies=deps, staged_dir=root,
     )
     acks = SpecialistInstallAckStore(path=tmp_path / "acks-a.json")
-    identity = install_consent_identity(
-        component_id=inspection_a.component_id, version=inspection_a.version,
-        root_digest=inspection_a.root_digest, slug=inspection_a.slug)
-    acks.record(identity=identity, component_id=inspection_a.component_id,
-                version=inspection_a.version, component_checksum=inspection_a.root_digest,
-                slug=inspection_a.slug)
+    record_specialist_ack(acks, inspection_a)
     pending = commit_specialist_install(
         inspection=inspection_a, config={}, secret_names_provided=frozenset(), acks=acks,
+        approved_values=NO_SETTINGS,
         specialists_dir=tmp_path / "specialists",
         agents_specialists_dir=tmp_path / "agents-specialists")
     assert pending.state == "pending-configuration"
@@ -312,7 +303,7 @@ def test_second_fresh_install_cannot_replace_a_different_pending_candidate(
     with pytest.raises(SpecialistInstallError) as excinfo:
         commit_specialist_install(
             inspection=inspection_b, config={}, secret_names_provided=frozenset(),
-            acks=acks_b, specialists_dir=tmp_path / "specialists",
+            acks=acks_b, approved_values=NO_SETTINGS, specialists_dir=tmp_path / "specialists",
             agents_specialists_dir=tmp_path / "agents-specialists")
     assert excinfo.value.kind == "concurrent_mutation"
 
@@ -322,9 +313,10 @@ def test_second_fresh_install_cannot_replace_a_different_pending_candidate(
     assert desired is not None and "@0.1.0#" in desired.root  # still A's candidate
 
     # ...and A's own configure re-commit (same component) still works.
+    with_secret = record_specialist_ack(acks, inspection_a, settings(secrets=["api_key"]))
     satisfied = commit_specialist_install(
         inspection=inspection_a, config={}, secret_names_provided=frozenset({"api_key"}),
-        acks=acks, specialists_dir=tmp_path / "specialists",
+        acks=acks, approved_values=with_secret, specialists_dir=tmp_path / "specialists",
         agents_specialists_dir=tmp_path / "agents-specialists")
     assert satisfied.state == "active"
 
@@ -364,24 +356,21 @@ def test_pending_retry_merges_already_supplied_config(tmp_path: Path) -> None:
         dependencies=deps, staged_dir=root,
     )
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug)
-    acks.record(identity=identity, component_id=inspection.component_id,
-                version=inspection.version, component_checksum=inspection.root_digest,
-                slug=inspection.slug)
+    first = record_specialist_ack(acks, inspection, settings({"region": "eu"}))
 
     pending = commit_specialist_install(
         inspection=inspection, config={"region": "eu"}, secret_names_provided=frozenset(),
-        acks=acks, specialists_dir=tmp_path / "specialists",
+        acks=acks, approved_values=first, specialists_dir=tmp_path / "specialists",
         agents_specialists_dir=tmp_path / "agents-specialists")
     assert pending.state == "pending-configuration"
     assert pending.desired.config_snapshot == {"region": "eu"}
 
     # Retry supplies ONLY the missing secret; region must carry forward.
+    # The retry's approval names what it stages: the carried region plus the secret.
+    retry = record_specialist_ack(acks, inspection, settings({"region": "eu"}, ["api_key"]))
     satisfied = commit_specialist_install(
         inspection=inspection, config={}, secret_names_provided=frozenset({"api_key"}),
-        acks=acks, specialists_dir=tmp_path / "specialists",
+        acks=acks, approved_values=retry, specialists_dir=tmp_path / "specialists",
         agents_specialists_dir=tmp_path / "agents-specialists")
     assert satisfied.state == "active"
     assert satisfied.active.config_snapshot == {"region": "eu"}
@@ -399,6 +388,6 @@ def test_fresh_install_refuses_an_unreadable_pending_candidate(tmp_path: Path) -
     with pytest.raises(SpecialistInstallError) as excinfo:
         commit_specialist_install(
             inspection=inspection, config={}, secret_names_provided=frozenset(),
-            acks=acks, specialists_dir=tmp_path / "specialists",
+            acks=acks, approved_values=NO_SETTINGS, specialists_dir=tmp_path / "specialists",
             agents_specialists_dir=tmp_path / "agents-specialists")
     assert excinfo.value.kind == "concurrent_mutation"

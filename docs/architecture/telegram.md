@@ -271,9 +271,20 @@ judgement and multi-page loop for a message, the kind's media method for a file 
 three are Casa-composed notices under the output boundary.
 
 **A reply to a live task's post** — a job's or a delegation's, on any bot — is routed first in
-the serialised DM handler, into that task ([`own-voice.md`](own-voice.md)); then, on Casa's bot
-only, **a swipe-reply on a specialist's post** goes (ahead of `/new`, after the rate decision)
-to that specialist's desk: [`specialist-desk.md`](specialist-desk.md).
+the serialised DM handler, into that task ([`own-voice.md`](own-voice.md)). Every other reply is
+the chat's own agent's turn: in the resident's chat a reply on a specialist's post is the
+resident's, and a `/new` sent as a reply resets the resident's conversation as any `/new` there
+does.
+
+**INV-DESK-004**: A Telegram DM text message that replies to another message and does not go into a live task reaches the chat's own agent with its text unchanged and one Casa-composed note on the reserved `_reply_note` context key, naming who posted the quoted message — decided from Telegram's sender ids and the task indexes, never from text — when, and what it read, clipped to 600 characters.
+
+The key is in `provenance.RESERVED_CONTEXT_KEYS`, so no external ingress can set it, and the
+channel stamps it after sanitization; the agent's turn reads it only on a Telegram turn. A
+message from Casa's bot that belongs to no task — the resident's own reply, a Casa card or
+notice, a specialist's post from before an upgrade — is named as one of the chat's earlier
+messages, never by an author Casa cannot know; a reply to an ended task's post names whose task it
+was and that it has ended. What it does not cover: a file sent as a reply without a caption starts no
+turn and so carries no note.
 
 ## Failure behavior
 
@@ -303,9 +314,14 @@ none of which will tell you the others were missed.
 - `casa/rootfs/opt/casa/channels/telegram.py::_InboundReservation`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.engagement_inbound_reservation`
 - `casa/rootfs/opt/casa/channels/telegram.py::_text_filter`
+- `casa/rootfs/opt/casa/result_broker.py::PostRecord`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._record_post`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._reply_note_for`
 
 **Tests**
 - `tests/test_telegram_update_handler.py`
+- `tests/test_reply_note.py`
+- `tests/test_ellen_chat_replies.py`
 - `tests/test_c1_continuation_admission.py`
 - `tests/test_telegram_dm_settle.py`
 - `tests/test_verdict_broker.py`

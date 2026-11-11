@@ -1,9 +1,9 @@
 """#1302: a ``safe`` tap tool's response may carry, beside its ``receipt``, the
 ``next`` card — a proposal deposit Casa posts right after the receipt, in the
-same desk use, through the same deposit predicate and the same register-then-post
+same lane use, through the same deposit predicate and the same register-then-post
 path as any proposal (INV-PROP-006). A receipt-only response is today's.
 
-The desk use is ``test_desk_tap.py``'s fixture (a faked runner resolving the
+The lane use is ``test_stored_call_tap.py``'s fixture (a faked runner resolving the
 owner's watch); the proposal post is the real ``_post_proposal`` against a real
 ``VerdictBroker``, with the channel faked at its send.
 """
@@ -19,7 +19,7 @@ import pinned_run as pr
 import result_broker as rb
 import tools as tools_mod
 import verdict_broker as vb
-from test_desk_tap import APPLY, ART, LABEL, OPERATOR, SEG, _echo, _map, _tap, _tool, env  # noqa: F401
+from test_stored_call_tap import APPLY, ART, LABEL, OPERATOR, SEG, _echo, _map, _tap, _tool, env  # noqa: F401
 from two_endpoints import CASA_BOT as BOT
 
 
@@ -54,7 +54,7 @@ def card_env(env, monkeypatch):
 
     ch.send_response = logged_send
     ch.deliver_operator_proposal = deliver_operator_proposal
-    ch.bot_id = BOT                             # the desk's chat is on Casa's bot
+    ch.bot_id = BOT                             # the tap's chat is on Casa's bot
     monkeypatch.setattr(rb, "_endpoint_for", lambda target: ch)
     monkeypatch.setattr(vb, "BROKER", vb.VerdictBroker())
     env.broker = vb.BROKER
@@ -118,7 +118,7 @@ def test_the_more_no_post_shape_never_carries_a_next_card():
     assert (cap.kind, cap.text, cap.next) == ("no_post", "no more", "")
 
 
-# --- the desk use ------------------------------------------------------------------
+# --- the lane use ------------------------------------------------------------------
 
 async def test_the_next_card_is_posted_after_the_receipt_and_registered_before_its_send(card_env):
     env = card_env
@@ -175,7 +175,7 @@ async def test_a_card_the_deposit_predicate_refuses_is_one_notice_and_the_receip
 
 async def test_a_card_whose_button_is_a_setup_tool_is_refused(card_env):
     env = card_env
-    from test_desk_tap import _build
+    from test_stored_call_tap import _build
     env.build = _build(tools=[_tool("apply"), _tool("connect")])
     env.build.contract_map.plugins[SEG] = env.build.contract_map.plugins[SEG].__class__(
         ART, True, frozenset({"mcp__plugin_probe_probe__connect"}), name="probe")
@@ -219,7 +219,7 @@ async def test_a_card_with_the_same_revision_replaces_the_live_one(card_env):
     assert len(env.proposals) == 2
 
 
-async def test_a_desk_faulted_by_the_run_posts_the_receipt_but_no_card(card_env, monkeypatch):
+async def test_an_agent_faulted_by_the_run_posts_the_receipt_but_no_card(card_env, monkeypatch):
     env = card_env
     monkeypatch.setattr(tools_mod, "_DELEGATION_CEILING_S", 0.05)
     env.confirm = False
@@ -229,7 +229,7 @@ async def test_a_desk_faulted_by_the_run_posts_the_receipt_but_no_card(card_env,
         await asyncio.sleep(30)
     env.respond = respond
     await asyncio.wait_for(_tap(env), 5)
-    assert env.desk.faulted
+    assert env.lane.faulted
     assert [k for k, _ in env.log] == ["receipt"]
     assert env.proposals == [] and _live() == []
 

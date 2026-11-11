@@ -1,11 +1,10 @@
-"""S7a (INV-BGJOB-008): a specialist's desk or delegated turn starts a job its
+"""S7a (INV-BGJOB-008): a specialist's delegated turn starts a job its
 OWN plugins declare, hosted on itself.
 
 Every launch case runs ``start_job`` on the real launch, engagement registry,
 in-casa driver and Telegram channel (``test_start_job.runtime``) with the real
 plugin registry and the real host discovery restored over that fixture's
-seams, from an origin built the way a desk turn and a delegated turn build
-theirs. Each asserts counts — live records, SDK clients,
+seams, from an origin built the way a delegated turn builds its own. Each asserts counts — live records, SDK clients,
 pending start claims — never only a status.
 """
 from __future__ import annotations
@@ -17,7 +16,6 @@ import pytest
 import agent
 import background_jobs as jobs
 import plugin_registry
-import specialist_desk
 import tools
 from plugin_fixtures import entry
 from test_specialist_job_host import (  # noqa: F401  (fixtures and helpers)
@@ -25,17 +23,6 @@ from test_specialist_job_host import (  # noqa: F401  (fixtures and helpers)
 )
 
 pytestmark = pytest.mark.asyncio
-
-
-def _desk_turn_origin():
-    """A desk turn's origin as the specialist's tool handler sees it: the
-    desk's own origin, then the delegated runner's increment and role."""
-    origin = specialist_desk._desk_origin(
-        resident_role="assistant", desk_role="finance", bot_id=111, chat_id=1, user_id=1,
-        user_name="operator", message_id=7, cid="desk-cid", text="run the check",
-        turn_id="desk-turn-1")
-    return {**origin, "delegation_depth": origin["delegation_depth"] + 1,
-            "execution_role": "finance", "_delegation_kind": "specialist"}
 
 
 def _delegated_turn_origin(*, clearance="private", channel="telegram"):
@@ -70,7 +57,7 @@ def _the_live_record(runtime):
 @pytest.fixture
 def finance_is_specialist(runtime):
     runtime.cfg.kind = "specialist"
-    assert specialist_desk.is_specialist(tools._agent_role_map["finance"])
+    assert tools._agent_role_map["finance"].kind == "specialist"
     return runtime
 
 
@@ -80,13 +67,12 @@ def _own_ledger(tmp_path, targets=("specialist:finance",)):
     _load(tmp_path, [e])
 
 
-@pytest.mark.parametrize("origin_of", [_desk_turn_origin, _delegated_turn_origin])
 async def test_a_specialist_turn_starts_its_own_job_hosted_on_itself(
-        finance_is_specialist, tmp_path, monkeypatch, origin_of):
+        finance_is_specialist, tmp_path, monkeypatch):
     runtime = finance_is_specialist
     _real_discovery(monkeypatch, tmp_path)
     _own_ledger(tmp_path)
-    result = await start_as(origin_of())
+    result = await start_as(_delegated_turn_origin())
     assert result["status"] == "pending", result
     assert result["agent"] == "finance" and result["job"] == "ledger:classify"
     await drain_launch_turns()
@@ -99,7 +85,7 @@ async def test_a_specialist_turn_starts_its_own_job_hosted_on_itself(
     assert str(rec.origin["chat_id"]) == "1"
     assert rec.origin["_origin_clearance"] == "private"
     assert rec.origin["delegation_depth"] == 1
-    assert "desk" not in rec.origin and "_delegation_id" not in rec.origin
+    assert "_delegation_id" not in rec.origin
     # a binding the job mints must not name the calling turn's conversation
     assert "_delegated_session_id" not in rec.origin
     assert _counts(runtime) == (1, 1, 0)
@@ -126,7 +112,7 @@ async def test_a_job_the_specialists_own_plugins_do_not_declare_is_not_startable
     runtime = finance_is_specialist
     _real_discovery(monkeypatch, tmp_path)
     _own_ledger(tmp_path, targets)
-    result = await start_as(_desk_turn_origin())
+    result = await start_as(_delegated_turn_origin())
     assert result["kind"] == "job_not_declared", result
     assert result["message"] == "Startable jobs: none"
     assert _counts(runtime) == (0, 0, 0)
@@ -137,25 +123,25 @@ async def test_an_unknown_job_names_only_the_specialists_own_jobs(
     runtime = finance_is_specialist
     _real_discovery(monkeypatch, tmp_path)
     _own_ledger(tmp_path)
-    result = await start_as(_desk_turn_origin(), job="ledger:nope")
+    result = await start_as(_delegated_turn_origin(), job="ledger:nope")
     assert result["kind"] == "job_not_declared"
     assert result["message"] == "Startable jobs: ledger:classify"
     assert _counts(runtime) == (0, 0, 0)
 
 
-async def test_a_start_inside_a_desk_turn_takes_the_engagement_permit_without_waiting(
+async def test_a_start_inside_a_delegated_turn_takes_the_engagement_permit_without_waiting(
         finance_is_specialist, tmp_path, monkeypatch):
     runtime = finance_is_specialist
     _real_discovery(monkeypatch, tmp_path)
     _own_ledger(tmp_path)
-    desk_permit = runtime.limiter.try_acquire(tools._delegation_scope(_desk_turn_origin(), "finance"))
-    assert desk_permit is not None
+    turn_permit = runtime.limiter.try_acquire(tools._delegation_scope(_delegated_turn_origin(), "finance"))
+    assert turn_permit is not None
     try:
-        result = await start_as(_desk_turn_origin())
+        result = await start_as(_delegated_turn_origin())
         assert result["status"] == "pending", result
         assert "finance:engagement" in runtime.limiter._active_scopes
     finally:
-        desk_permit.release()
+        turn_permit.release()
     assert _counts(runtime) == (1, 1, 0)
 
 
@@ -201,7 +187,7 @@ async def test_a_specialist_engagement_turn_is_refused_at_dispatch(finance_is_sp
 
 
 # ---------------------------------------------------------------------------
-# The grant: offered only to a desk or delegated build loading a job plugin
+# The grant: offered only to a pinned or delegated build loading a job plugin
 # ---------------------------------------------------------------------------
 
 START_JOB = "mcp__casa-framework__start_job"
@@ -258,11 +244,11 @@ async def test_own_plugins_are_those_assigned_and_loadable_at_the_call(
     missing = {"ledger": ["LEDGER_TOKEN"]}
     monkeypatch.setattr(plugin_grants, "blocking_unresolved_env_vars_for_resolved",
                         lambda rp, environ=None: missing.get(rp.name, []))
-    withheld = await start_as(_desk_turn_origin())
+    withheld = await start_as(_delegated_turn_origin())
     assert withheld["kind"] == "job_not_declared", withheld
     assert _counts(runtime) == (0, 0, 0)
     missing.clear()
-    wired = await start_as(_desk_turn_origin())
+    wired = await start_as(_delegated_turn_origin())
     assert wired["status"] == "pending", wired
     assert _counts(runtime) == (1, 1, 0)
 
@@ -298,7 +284,7 @@ async def test_a_specialists_own_start_during_its_jobs_pending_terminal_write_is
     try:
         assert await asyncio.to_thread(entered.wait, 10)
         assert reg.active_and_idle() == []
-        result = await start_as(_desk_turn_origin())
+        result = await start_as(_delegated_turn_origin())
     finally:
         release.set()
         with pytest.raises(OSError):

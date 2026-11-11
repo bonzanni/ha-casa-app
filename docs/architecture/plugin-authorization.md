@@ -87,14 +87,12 @@ to retry or re-delegate the action and to say nothing about approvals — the ap
 continuation carries the action out. The record is in-process, capped and advisory: losing
 it costs a confusing reply, never an unapproved call.
 
-**A delegated call raised inside a specialist desk turn is approved back to the desk.** The
-identity's advisory `desk_role` rides the challenge record as its destination, read at
-settle time — so a pending challenge the resident's delegation raised and a desk then raised
-again with the identical call is promoted to that desk — and the continuation is dispatched
-to the desk without the slot wait above (the desk's own queue and permit admit it), after
-re-checking that the approver is the operator and the specialist is still delegable
-([`specialist-desk-reply.md`](specialist-desk-reply.md)); the grant key and its single-use binding are
-unchanged. On a pinned stored-call turn the stored-call pin runs as the admission hook's FIRST
+**A call raised in an agent's own chat is approved back to that agent.** The challenge's
+target is the agent of the chat the call was raised in: a call raised behind the resident —
+in a delegation she started from her chat — is the resident's, and its continuation waits for
+the slot as above; a call raised in an agent's own chat, a pinned stored-call turn there
+included, is that agent's, and its continuation is dispatched to it at once. The grant key
+and its single-use binding are unchanged. On a pinned stored-call turn the stored-call pin runs as the admission hook's FIRST
 check, so a protected tool that is not the stored call is denied before the authorization
 decision — no challenge is posted for it ([`stored-call-buttons.md`](stored-call-buttons.md)).
 
@@ -158,11 +156,11 @@ in an earlier process, whose challenges a restart already dropped with every gra
 (INV-PLUG-005); and challenges not bound to an engagement.
 
 **What the operator sees of a turn whose protected call waits on an approval** (#1252). On a
-resident's DM, button or setup turn and on a specialist desk turn, when the hook leaves a
+resident's DM, button or setup turn, when the hook leaves a
 call waiting — a POSTED deny, or a PENDING deny whose reused challenge's keyboard post
 settled as posted — and no later call in the same attempt consumes that
 grant, the operator sees the keyboard and none of the words the model wrote after the call;
-the words before it are delivered (INV-OUT-006 and INV-TURN-009, INV-DESK-002 on the desk).
+the words before it are delivered (INV-OUT-006 and INV-TURN-009).
 The hook records its decision on the turn's scope before it returns, keyed by the call's
 `tool_use_id` — `pending` at the two returns that leave a keyboard up, `consumed` at a spent grant — and the turn reads the record when that call's
 result arrives, so a hook that ran before the turn's consumer had folded the text written
@@ -238,6 +236,7 @@ retires a waiting scheduled question only once its own keyboard is on screen
 - `tests/test_authz_hook.py`
 - `tests/test_approval_outlives_raiser.py`
 - `tests/test_pending_approval_pins.py`
+- `tests/test_behind_ellen_approval.py`
 
 **Related**
 - [`architecture/plugins.md`](../architecture/plugins.md)

@@ -72,7 +72,7 @@ SEARCHES = {
     "id-fields": r'^\s+(operator_id|chat_id|operator|plugin|seg|subject|role)\s*:\s*',
     "id-tuples": r'\(\s*(self\.)?(plugin|plugin_name|operator|operator_id|chat|chat_id)\s*,',
     "id-collections": r'(_KEY_LOCKS|_FLIGHTS|by_key|_pending|_cache|_seen|_live|_entries|_index'
-              r'|_items|_calls|_rows|_refs|_inflight|_desks|_futures)\b',
+              r'|_items|_calls|_rows|_refs|_inflight|_futures)\b',
     # where a route is read (the key in either quote style)
     "ROUTE": r'["\']_tg_bot["\']|ROUTING_KEYS|route_for\(|casa_route\(',
     # where a bot id is read
@@ -233,10 +233,11 @@ ORIGIN_SITES = {
     ("origin-builders", "own_voice_lifecycle.py", "TelegramHost.post_ask"): (1, PRE_POST, "test_own_voice_invariants.py::test_casas_ask_card_before_casas_bot_has_an_id_registers_and_posts_nothing"),
     ("origin-builders", "result_broker.py", "_post_proposal"): (1, PRE_POST, "test_plugin_identities.py::test_before_casas_bot_has_an_id_nothing_is_keyed_stored_or_posted"),
     ("origin-builders", "scheduled_asks.py", "broker_meta"): (1, DERIVED, "scheduled_ask_meta"),
-    ("origin-builders", "specialist_desk.py", "_desk_origin"): (3, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
-    ("origin-builders", "specialist_desk.py", "handle_reply"): (1, INBOUND, "test_fresh_routes.py::test_a_desk_turn_runs_and_replies_on_the_receiving_bot"),
     ("origin-builders", "specialist_limits.py", "<module>"): (1, NOISE, "a docstring"),
-    ("origin-builders", "stored_call_settler.py", "handle_tap"): (1, INBOUND, "test_fresh_routes.py::test_a_desk_turn_runs_and_replies_on_the_receiving_bot"),
+    ("origin-builders", "stored_call_settler.py", "_pinned_origin"): (2, INBOUND, "test_stored_call_tap.py::test_a_tap_turn_runs_and_replies_on_the_bot_that_received_it"),
+    ("origin-builders", "stored_call_settler.py", "handle_tap"): (1, INBOUND, "test_stored_call_tap.py::test_a_tap_turn_runs_and_replies_on_the_bot_that_received_it"),
+    ("origin-builders", "configurator_continue.py", "_launch_origin"): (2, RULE_C, "test_configurator_continue.py::test_a_started_continuation_is_one_durable_task_with_the_operators_words"),
+    ("whole-copies", "configurator_continue.py", "_continuation"): (2, DERIVED, "delegation_row"),
     ("origin-builders", "specialist_registry.py", "SpecialistRegistry.register_delegation"): (1, DERIVED, "delegation_row"),
     ("origin-builders", "specialist_registry.py", "origin_from_job"): (2, DERIVED, "delegation_row"),
     ("origin-builders", "tools.py", "JobActor"): (1, NOISE, "a job actor's peer kind"),
@@ -383,23 +384,20 @@ IDENTITY_SITE_HITS = {
     "callback_owner.py": {"note_link": 1},
     "canonical_bytes.py": {"assert_json_safe": 6, "deep_freeze": 7},
     "casa_core.py": {"main": 2},
+    "configurator_continue.py": {"_continuation": 1},
     "channels/telegram.py": {
         "TelegramChannel.__init__": 4, "TelegramChannel._clear_typing_loop": 2,
-        "TelegramChannel._dispatch_desk_continuation": 2,
         "TelegramChannel._dispatch_dm_turn": 3,
         "TelegramChannel._dispatch_engagement_continuation": 2,
         "TelegramChannel._dispatch_proposal_tap": 1,
         "TelegramChannel._edit_proposal_message": 4, "TelegramChannel._ended_job_phrase": 2,
         "TelegramChannel._file_address": 5,
-        "TelegramChannel._handle": 2, "TelegramChannel._maybe_route_desk_reply": 3,
-        "TelegramChannel._on_non_text_message": 5,
+        "TelegramChannel._handle": 2,
+        "TelegramChannel._on_non_text_message": 4,
         "TelegramChannel._on_proposal_callback": 1, "TelegramChannel._quoted_address": 1,
         "TelegramChannel._quoted_task": 1, "TelegramChannel._record_post": 1,
-        "TelegramChannel._redirect_from_log_group": 2, "TelegramChannel._reply_note_for": 2,
-        "TelegramChannel._reserve_desk_or_refuse": 2,
-        "TelegramChannel._resolve_file_address": 2, "TelegramChannel._retire_job_post": 1,
-        "TelegramChannel._route_addressed_file": 2,
-        "TelegramChannel._route_addressed_file.tell": 1,
+        "TelegramChannel._redirect_from_log_group": 2, "TelegramChannel._reply_note_for": 1,
+        "TelegramChannel._resolve_file_address": 1, "TelegramChannel._retire_job_post": 1,
         "TelegramChannel._route_task_file": 1, "TelegramChannel._route_task_file.tell": 1,
         "TelegramChannel._run_job_cancel": 1, "TelegramChannel._send_dormant_line": 1,
         "TelegramChannel.address": 2, "TelegramChannel.deliver_operator_file": 1,
@@ -472,7 +470,6 @@ IDENTITY_SITE_HITS = {
     },
     "output_boundary.py": {"TurnScope": 1},
     "own_voice_lifecycle.py": {"TelegramHost.post_ask._finish_factory._finish": 1},
-    "persona_install_consent.py": {"prompt_persona_install_consent._finish_factory._finish": 1},
     "persona_pack.py": {"load_persona_pack": 2},
     "plugin_bindings.py": {
         "<module>": 1, "Binding": 3, "BindingStore.__init__": 1,
@@ -532,8 +529,7 @@ IDENTITY_SITE_HITS = {
     "resident_trigger_secrets.py": {"resolve_rows": 1},
     "result_broker.py": {
         "DeliveryOutcomes.__init__": 1, "DeliveryOutcomes.record": 2,
-        "DeliveryOutcomes.status": 2, "PostEvent": 1, "PostMap.__init__": 1, "PostMap.get": 1,
-        "PostMap.owned": 1, "PostMap.record": 1, "PostRecord": 3, "ReferenceStore.__init__": 2,
+        "DeliveryOutcomes.status": 2, "PostEvent": 1, "PostRecord": 3, "ReferenceStore.__init__": 2,
         "ReferenceStore._sweep_locked": 5, "ReferenceStore.arm": 1,
         "ReferenceStore.close_call": 1, "ReferenceStore.deposit": 2,
         "ReferenceStore.drop_call_deposits": 1, "ReferenceStore.is_escrowed": 1,
@@ -571,11 +567,6 @@ IDENTITY_SITE_HITS = {
         "BundleTxn": 1, "_reconcile_journals": 1, "_valid_payload": 1, "begin": 1,
     },
     "specialist_component.py": {"SpecialistComponent": 1, "load_specialist_component": 3},
-    "specialist_desk.py": {
-        "DeskRegistry.__init__": 1, "DeskRegistry.faulted": 1,
-        "DeskRegistry.get": 1, "DeskRegistry.get_or_create": 2, "_echo_owner": 1,
-        "handle_reply._tell": 1,
-    },
     "specialist_install.py": {
         "_assert_receipt_matches_inspection": 1, "_kept_new_version_error": 1,
         "_removed_artifact_ids": 2, "_removed_owned_names": 5, "commit_specialist_install": 1,
@@ -583,7 +574,8 @@ IDENTITY_SITE_HITS = {
         "sanitize_specialist_snapshots": 4, "uninstall_specialist": 4, "upgrade_specialist": 1,
     },
     "specialist_install_consent.py": {
-        "prompt_specialist_install_consent._finish_factory._finish": 1,
+        "approval_card_hooks._finish_factory._edit": 1,
+        "approval_card_hooks._finish_factory._finish": 1,
     },
     "specialist_materialize.py": {"_reconcile_specialist_operational_files_locked": 1},
     "stored_call_settler.py": {"handle_tap._notice": 1},
@@ -644,7 +636,6 @@ IDENTITY_FILES = {
     "engagement_registry.py": (SAFE, "keyed by the Casa-minted engagement id"),
     "verdict_broker.py": (RULE_K, "test_ask_scopes.py::"
                                   "test_a_pending_question_on_one_bot_does_not_block_the_other"),
-    "specialist_desk.py": (RULE_K, "test_fresh_routes.py::test_desks_and_echo_lines_are_per_bot"),
     "operator_calls.py": (SAFE, "keyed by (client id, tool-use id), both Casa-minted"),
     "action_judgement.py": (RULE_K, _IDS + "test_words_recorded_on_one_bot_are_not_read_"
                                            "for_the_other"),
@@ -659,8 +650,7 @@ IDENTITY_FILES = {
                                   "carries that address"),
     "event_consent.py": (SAFE, "Casa's own consent card: always on Casa's bot, and its key "
                                "carries that address"),
-    "persona_install_consent.py": (NOISE, "a tap outcome field"),
-    "specialist_install_consent.py": (NOISE, "a tap outcome field"),
+    "specialist_install_consent.py": (NOISE, "a tap outcome field and a call's arguments"),
     "plugin_erase_consent.py": (SAFE, "Casa's own erase question: always on Casa's bot, and its "
                                       "key names it"),
     "drivers/in_casa_driver.py": (SAFE, "engagement ids, Casa-minted"),
@@ -710,13 +700,6 @@ IDENTITY_FUNCTIONS = {
     ("tools.py", "_delegation_scope"): (SAFE, "a per-(chat, role) concurrency cap, kept per "
                                                "role by design"),
     ("tools.py", "_erase_gate._run"): (SAFE, "Casa's own erase question: always on Casa's bot"),
-    ("result_broker.py", "PostMap.__init__"): (RULE_K, "test_desk_post_map.py::"
-                                                       "test_the_map_keeps_two_bots_messages_apart"),
-    ("result_broker.py", "PostMap.get"): (RULE_K, "test_desk_post_map.py::"
-                                                  "test_the_map_keeps_two_bots_messages_apart"),
-    ("result_broker.py", "PostMap.record"): (RULE_K, "test_desk_post_map.py::"
-                                                     "test_the_map_keeps_two_bots_messages_apart"),
-    ("result_broker.py", "PostMap.owned"): (SAFE, "lists by owner, a Casa-minted id"),
     ("result_broker.py", "PostRecord"): (NOISE, "a record's fields"),
     ("result_broker.py", "PostEvent"): (NOISE, "an event's fields"),
     ("result_broker.py", "_post_proposal"): (NOISE, "a call's arguments"),
@@ -762,7 +745,8 @@ IDENTITY_FUNCTIONS = {
     ("engagement_registry.py", "EngagementRegistry.record_job_post"): (
         RULE_K, "test_job_addresses.py::TestEqualMessageIdsOnTwoBots::"
                 "test_live_owners_are_distinct_per_bot"),
-    ("specialist_desk.py", "handle_reply._tell"): (NOISE, "a call's arguments"),
+    ("configurator_continue.py", "_continuation"): (SAFE, "the limiter's per-(operator, role) "
+                                                          "permit scope, as a delegation's"),
     ("stored_call_settler.py", "handle_tap._notice"): (NOISE, "a call's arguments"),
     ("agent_lane.py", "Fault"): (NOISE, "a fault's fields"),
     ("callback_owner.py", "note_link"): (SAFE, "the latest sign-in link of a plugin, "
@@ -828,7 +812,7 @@ def test_every_bot_keyed_identity_names_a_test_that_keeps_two_bots_apart():
 #: Every reader of a route: ``(file, function): (hits, classification, note)``.
 ROUTE_READERS = {
     ("agent.py", "<module>"): (2, ROUTE, "the route among the turn markers copied into the turn's origin"),
-    ("agent.py", "Agent._process"): (2, RECEIPT, "test_fresh_routes.py::test_desks_and_echo_lines_are_per_bot"),
+    ("agent.py", "Agent._process"): (1, RECEIPT, "test_fresh_routes.py::test_chat_notes_are_per_bot"),
     ("callback_episodes.py", "_run_nudge"): (1, ROUTE, "stamped where a callback nudge is born: the bot its sign-in link was delivered on"),
     ("agent.py", "_TurnCapture._opening"): (1, RECEIPT, "test_agent_route.py::test_the_opening_key_carries_the_receiving_bot"),
     ("casa_core.py", "_make_invoke_handler.invoke_handler"): (1, ROUTE, "stamped where an /invoke, webhook or setup turn is born"),
@@ -854,9 +838,8 @@ ROUTE_READERS = {
     ("provenance.py", "<module>"): (2, ROUTE, "the route key and the helper that carries it"),
     ("provenance.py", "carry_route"): (2, ROUTE, "the route key and the helper that carries it"),
     ("reminders.py", "_fresh_route"): (2, ROUTE, "stamped where a reminder turn is born"),
-    ("specialist_desk.py", "_desk_origin"): (1, ROUTE, "stamped with the receiving endpoint's bot"),
-    ("specialist_desk.py", "desk_for_delegation"): (1, RECEIPT, "test_fresh_routes.py::test_a_delegation_uses_the_desk_on_the_bot_the_operator_wrote_to"),
-    ("specialist_desk.py", "handle_reply"): (1, ROUTE, "stamped with the receiving endpoint's bot"),
+    ("stored_call_settler.py", "_pinned_origin"): (1, ROUTE, "stamped with the bot that delivered the card and received the tap"),
+    ("configurator_continue.py", "_launch_origin"): (1, ROUTE, "Casa's own route: the continuation is a turn of the resident's chat on Casa's bot"),
     ("stored_call_settler.py", "handle_tap"): (1, ROUTE, "stamped with the receiving endpoint's bot"),
     ("task_model.py", "<module>"): (1, ROUTE, "a requester's stored route is checked against the route keys"),
     ("task_model.py", "Requester.from_json"): (1, ROUTE, "a requester's stored route is checked against the route keys"),
@@ -879,9 +862,8 @@ BOT_ID_READS = {
     ("callback_episodes.py", "_run_nudge"): (1, FIELD, "the sign-in link's delivery's own bot"),
     ("channels/telegram.py", "TelegramChannel._card_agent"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._dispatch_button_continuation"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
-    ("channels/telegram.py", "TelegramChannel._dispatch_desk_continuation"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._dispatch_dm_turn"): (3, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
-    ("channels/telegram.py", "TelegramChannel._dispatch_proposal_tap"): (4, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
+    ("channels/telegram.py", "TelegramChannel._dispatch_proposal_tap"): (3, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._dispatch_scheduled_continuation"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._hand_back"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._handle_serialized"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
@@ -896,11 +878,7 @@ BOT_ID_READS = {
     ("channels/telegram.py", "TelegramChannel._rebuild"): (1, NOISE, "a log line"),
     ("channels/telegram.py", "TelegramChannel._reply_at"): (2, FIELD, "the stored address's own bot"),
     ("channels/telegram.py", "TelegramChannel._reply_note_for"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
-    ("channels/telegram.py", "TelegramChannel._reserve_desk_or_refuse"): (3, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._retire_job_post"): (1, NOISE, "a log line"),
-    ("channels/telegram.py", "TelegramChannel._route_addressed_file"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
-    ("channels/telegram.py", "TelegramChannel._route_addressed_file.tell"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
-    ("channels/telegram.py", "TelegramChannel._spawn_desk_turn"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._stop_tap"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel.address"): (1, POST_TIME, "the endpoint's one address builder, for a message it sent or received"),
     ("channels/telegram_transport.py", "TelegramTransport.add_endpoint"): (1, RESOLUTION, "registration"),
@@ -914,7 +892,6 @@ BOT_ID_READS = {
     ("channels/tg_address.py", "EndpointUnavailable.__init__"): (1, FIELD, "the exception's or address's own field"),
     ("channels/tg_address.py", "TgAddress.__post_init__"): (1, FIELD, "the exception's or address's own field"),
     ("channels/tg_address.py", "TgAddress.to_json"): (1, FIELD, "the exception's or address's own field"),
-    ("delegated_memory.py", "capture_desk_reply"): (1, RECEIPT, "the endpoint that received the reply"),
     ("delegated_memory.py", "capture_job_reply"): (1, RECEIPT, "the endpoint that received the reply"),
     ("drivers/in_casa_driver.py", "_EngagementCapture.operator"): (1, FIELD, "the received message's address"),
     ("engagement_registry.py", "_post_key"): (1, FIELD, "the post address's own bot"),
@@ -937,15 +914,14 @@ BOT_ID_READS = {
     ("result_broker.py", "_post_proposal"): (1, PRE_POST, "test_endpoint_isolation.py::test_a_proposal_naming_bot_111_is_refused_on_222"),
     ("run_admission.py", "Confirmations.by_key"): (1, FIELD, "the confirmation's own bot"),
     ("run_admission.py", "_spawn_status_card._post"): (1, POST_TIME, "the run card, once posted"),
-    ("specialist_desk.py", "Desk.__init__"): (1, FIELD, "the desk's own bot"),
-    ("specialist_desk.py", "handle_reply"): (2, RECEIPT, "the endpoint that received the reply"),
     ("stored_call_settler.py", "handle_tap"): (2, RECEIPT, "the endpoint that received the tap"),
+    ("specialist_install_consent.py", "approval_card_hooks._note_card"): (1, POST_TIME, "the bot that posted the card, read once it is posted"),
     ("task_model.py", "delivery_for"): (2, PRE_POST, "test_task_model.py::test_the_resident_born_before_its_bot_has_an_id_delivers_nothing"),
     ("specialist_install_consent.py", "prompt_specialist_install_consent"): (1, PRE_POST, "test_bot_boundary_invariants.py::test_before_casas_bot_has_an_id_a_card_that_names_it_is_not_posted"),
     ("tools.py", "_erase_gate"): (2, FIELD, "Casa's operator address, read before the question"),
     ("tools.py", "_note_task"): (1, FIELD, "the task's delivery's own bot"),
     ("tools.py", "ask_user"): (1, PRE_POST, "test_tools_route.py::test_a_scheduled_question_before_casas_bot_has_an_id_touches_nothing"),
-    ("tools.py", "start_scheduled_job.tell"): (1, POST_TIME, "the desk echo of a notice, only once Casa's bot has an id"),
+    ("tools.py", "start_scheduled_job.tell"): (1, POST_TIME, "the chat note of a notice, only once Casa's bot has an id"),
     ("tools.py", "send_media"): (1, FIELD, "the task's delivery's own bot, stamped as the send's route"),
     ("tools.py", "stop_work"): (2, RESOLUTION, "the endpoint the turn's route resolves to, and the found request's own bot"),
     ("tools.py", "wipe_memory"): (1, FIELD, "Casa's operator address, read before the card"),
@@ -1148,6 +1124,7 @@ PERSISTED_WRITERS = {
     "reminders.py": "stores reminders; a reminder's route is decided when it fires",
     "specialist_install_consent.py": "stores consent acks; the card's message ids are "
                                      "never stored",
+    "approval_records.py": "test_approval_records.py::test_records_survive_a_reload",
 }
 
 
@@ -1205,7 +1182,8 @@ def test_every_origin_that_reaches_a_durable_job_record_carries_its_route():
     assert "_tg_bot" in agent.COPIED_CONTEXT_MARKERS
     # the sinks
     assert _callers("register_delegation") == {
-        ("tools.py", "delegate_to_agent"), ("plugin_continuations.py", "run_continuation")}
+        ("tools.py", "delegate_to_agent"), ("plugin_continuations.py", "run_continuation"),
+        ("configurator_continue.py", "_continuation")}
     engagement_creates = {
         key for key in _callers("create")
         if key[0] == "tools.py" and any(
@@ -1231,6 +1209,14 @@ def test_every_origin_that_reaches_a_durable_job_record_carries_its_route():
                        "DelegationRecord")
     origin = next(k.value for k in record.keywords if k.arg == "origin")
     assert "**carry_route(binding.origin)" in _source(origin)
+    # a configurator continuation Casa starts: a turn of the resident's chat on
+    # Casa's own bot, its route stamped where the origin is built
+    cc = _functions("configurator_continue.py")
+    assert "'_tg_bot': transport.casa_route()" in _source(cc["_launch_origin"])
+    assert "origin = _launch_origin(" in _source(cc["_continuation"])
+    (record,) = _calls(cc["_continuation"], "DelegationRecord")
+    origin = next(k.value for k in record.keywords if k.arg == "origin")
+    assert _source(origin) == "dict(origin)"
     # the delegation row stores the route of the origin it is registered with
     (row,) = _calls(_functions("specialist_registry.py")["register_delegation"], "VoiceJob")
     assert "route=carry_route(origin)" in _source(row)
@@ -1291,7 +1277,7 @@ INVARIANTS = {
         "test_bot_webhook_routes.py::test_a_caller_cannot_choose_an_invoked_turns_route"],
     "a reply leaves through the bot its turn arrived on": [
         "test_endpoint_isolation.py::test_a_turn_on_222_is_answered_through_222_only"],
-    "a reply on one bot never reaches another bot's job, post or desk": [
+    "a reply on one bot never reaches another bot's job or post": [
         "test_endpoint_isolation.py::test_a_reply_on_222_to_message_5_never_reaches_111s_live_job",
         "test_endpoint_isolation.py::test_a_reply_on_222_to_message_5_is_not_named_as_111s_"
         "ended_job",
@@ -1301,7 +1287,7 @@ INVARIANTS = {
         "not_reach_the_live_job"],
     "equal messages on two bots are two memory events": [
         "test_fresh_routes.py::test_equal_chat_and_message_on_two_bots_are_two_events",
-        "test_fresh_routes.py::test_desk_and_job_replies_on_two_bots_are_two_events_each"],
+        "test_fresh_routes.py::test_job_replies_on_two_bots_are_two_events"],
     "albums and file armings are per bot": [
         "test_endpoint_isolation.py::test_equal_album_ids_on_two_bots_make_two_acknowledgements",
         "test_endpoint_isolation.py::test_an_arming_on_111_does_not_take_a_file_sent_to_222"],

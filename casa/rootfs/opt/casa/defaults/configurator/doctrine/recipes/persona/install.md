@@ -20,19 +20,20 @@ does not apply it to anything by itself; see `recipes/persona/apply.md` for that
 
 1. `persona_install_inspect(repo=..., ref=...)`. On any `ok: false`, report the `kind`/`detail`
    verbatim and stop — do NOT retry with fabricated inputs.
-2. When the result says `consent: "keyboard_posted"`, the approval card is in the operator's DM
-   (posted server-side by `prompt_persona_install_consent`, not by this recipe); it is the actual
-   approval gate. End your run with a short answer: which persona it is (display name, version)
-   and that the card is waiting for his tap. When it says `consent: "pre_authorized"` (he already
-   approved this exact persona), go straight to step 4.
-3. Approve starts a new run by itself, whose task carries the staged values (`persona_id`,
-   `version`, `checksum`, `staged_dir`): continue from step 4 with them. Re-inspect only if you
-   need to (the values are missing, or the commit refuses them): a re-inspect of the same version
-   returns `consent: "pre_authorized"`. Deny or expiry is shown on the card; no run starts for
-   them, and nothing is needed from you. If the commit refuses with `kind: "consent_missing"`, the
-   tap has not landed: say the card is still waiting and end the run (do not loop-retry).
-4. Once approved: `persona_install_commit(persona_id=..., version=..., checksum=..., staged_dir=...)`
-   using the EXACT values `persona_install_inspect` returned.
+2. On `ok: true` with `approval: "requested"`, the approval card is in the operator's DM (posted
+   server-side, not by this recipe); it is the actual approval gate. End your run with a short
+   answer: which persona it is (display name, version) and that the card is waiting for his tap.
+   `approval: "already_approved"` means he already approved exactly this persona: stop — Casa
+   continues you once this run ends. `approval: "in_progress"`: this run is the one Casa started
+   for that approval — go on with step 4.
+3. Casa continues you after Approve: a new run whose task carries the staged values
+   (`persona_id`, `version`, `checksum`, `staged_dir`): continue from step 4 with them. Deny or
+   expiry is shown on the card; no run starts for them, and nothing is needed from you. One
+   approval is one attempt: if the commit fails, or refuses with `approval_used`,
+   `approval_superseded` or `approval_required`, report it and stop — asking again posts a new
+   card.
+4. In the run Casa started: `persona_install_commit(persona_id=..., version=..., checksum=...,
+   staged_dir=...)` using the EXACT values the task names.
 5. Tell the operator the persona is installed but NOT applied to anything yet — installing and
    applying are separate steps (`recipes/persona/apply.md`).
 
@@ -42,8 +43,8 @@ and retry — never by editing `/config/personas`, which the hooks deny.
 
 ## Common mistakes
 
-- Calling `persona_install_commit` before the operator has actually tapped Approve — it will
-  correctly refuse (`kind: "consent_missing"`); this is not a bug to work around, it IS the consent
+- Calling `persona_install_commit` in any run but the one Casa started after Approve — it
+  refuses (`kind: "approval_required"`); this is not a bug to work around, it IS the approval
   gate.
 - Assuming install also applies the persona somewhere — it never does; a separate
   `recipes/persona/apply.md` step targets a resident or specialist explicitly.

@@ -84,7 +84,7 @@ when the id or the digest changed. A write failure is logged and only costs the 
 head start.
 
 **Identities that two bots could produce equal carry the bot.** A chat lane of the verdict
-broker (`dm`, `authz`, `ask`, `proposal`), a desk, a desk's echo lines, the job post indexes, a
+broker (`dm`, `authz`, `ask`, `proposal`), a chat's notes, the job post indexes, a
 scheduled question's record, a plugin request's dedupe key, a stop in flight, a delivery key, a
 run reference, the operator's words recorded for a plugin, the run card and the journal's
 notice address, and the memory key of an operator message (`occurrence.message_key(channel,
@@ -140,7 +140,7 @@ the plugin delivery keys, the stored confirmations, the bindings and the job jou
 What it does not cover: state written by an earlier version without the bot. It is refused
 like any other malformed entry, not converted.
 
-**INV-TG-020**: Two bots never share an identity they could produce equal — equal update ids, message ids, chat lanes, desks, plugin request or delivery keys on two bots are two distinct things, and an action on one bot touches only that bot's.
+**INV-TG-020**: Two bots never share an identity they could produce equal — equal update ids, message ids, chat lanes, chat notes, plugin request or delivery keys on two bots are two distinct things, and an action on one bot touches only that bot's.
 
 Enforced by keying each such identity by the endpoint's `bot_id`, on both its write and its
 read path: a key that gained the bot on one side only would pass every single-bot test.

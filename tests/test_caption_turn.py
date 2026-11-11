@@ -17,8 +17,8 @@ import pytest
 
 import agent_inbox as ai
 from provenance import sanitize_external_context
-from test_desk_echo_prompt import _agent, _turn
-from test_desk_route import OPERATOR, _channel, _FakeBot  # noqa: F401
+from notes_harness import _agent, _turn
+from telegram_reply_harness import OPERATOR, _channel, _FakeBot  # noqa: F401
 from test_inbound_files import PDF, _doc, _msg
 from test_telegram_new_reset import _drain_bus
 
@@ -178,12 +178,11 @@ async def test_no_external_context_can_set_the_received_file():
 async def test_the_turn_carries_casas_note_and_owes_its_own_file(tmp_path, monkeypatch):
     """The agent side: the note rides in the Casa notes block (stripped on
     readback), the operator's words stay raw, and the turn's scope is armed
-    over that one file, as a file desk turn's is."""
-    import result_broker as rb
-    import specialist_desk as sd
+    over that one file."""
+    import chat_notes
     from output_boundary import TurnScope
     from timekeeping import split_time_envelope
-    monkeypatch.setattr(sd, "DESK_ECHO", rb.PostLedger(max_events=64))
+    chat_notes.reset()
     agent = _agent(tmp_path)
     rf = {"files": [{"path": "/data/agent-inbox/assistant/ready/1-ab.pdf",
                      "name": "invoice.pdf"}],

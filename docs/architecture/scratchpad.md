@@ -144,7 +144,7 @@ Enforced by `scratchpad.attach`, whose handler closes over the key, by `SCHEMA`,
 fresh.
 
 What it does not cover: two runs that share one session, one request's turns or a same-CLI
-sub-agent, share its pad by design; the desk serialises the turns.
+sub-agent, share its pad by design; the agent's lane serialises its uses ([`agent-lane.md`](agent-lane.md)).
 
 **INV-PAD-002**: Every `scratchpad` reply stays under 50,000 characters, the size past which the CLI's documentation says a reply goes to a file, whatever the pad holds or the call repeats, and while the pad exists opens with its shape, naming at most 20 sections; a read gives at most 100 lines or 8,000 characters unless asked for more and at most 40,000 characters, cuts a long line at 2,000 with the offset that reads on, says what comes next, and a search gives at most 40 lines cut at 300 with its true total.
 

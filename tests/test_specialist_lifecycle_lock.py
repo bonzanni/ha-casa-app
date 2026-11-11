@@ -32,6 +32,7 @@ import pytest
 import plugin_registry
 import specialist_bundle_journal
 import specialist_install
+from approval_values import record_specialist_ack
 from broker_helpers import wait_until
 from test_specialist_rollback_owned_generation import (
     _SLUG, _install, _override, _prep_bundle, _read_doc, _rollback, _sidecar_paths,
@@ -284,7 +285,7 @@ def _mixed(slug_dir: Path, reg_path: Path, rows_by_root: dict) -> int:
 def _direct_upgrade_kw(tmp_path: Path, monkeypatch, ctx):
     """A plugin-less v3 inspected in upgrade mode, for the DIRECT (receipt-less)
     library arm — a sourced-dependency component would be refused there."""
-    from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+    from specialist_install_consent import SpecialistInstallAckStore
 
     up = _prep_bundle(tmp_path, monkeypatch, [], root="v3", ref="v3", sha="c" * 40,
                       base_ctx=ctx, version="0.3.0")
@@ -292,15 +293,9 @@ def _direct_upgrade_kw(tmp_path: Path, monkeypatch, ctx):
     # every ack of the slug, and B's refusal must then be the missing ACTIVE,
     # not the missing consent.
     acks = SpecialistInstallAckStore(path=tmp_path / "acks-b.json")
-    insp = up.inspection
-    acks.record(identity=install_consent_identity(
-        component_id=insp.component_id, version=insp.version, root_digest=insp.root_digest,
-        slug=insp.slug, receipt_digest=insp.receipt_digest),
-        component_id=insp.component_id, version=insp.version,
-        component_checksum=insp.root_digest, slug=insp.slug,
-        receipt_digest=insp.receipt_digest)
+    values = record_specialist_ack(acks, up.inspection)
     return dict(slug=_SLUG, inspection=up.inspection, receipt=None, config={},
-                secret_names_provided=frozenset(), acks=acks,
+                secret_names_provided=frozenset(), acks=acks, approved_values=values,
                 specialists_dir=ctx.kw["specialists_dir"],
                 agents_specialists_dir=ctx.kw["agents_specialists_dir"])
 

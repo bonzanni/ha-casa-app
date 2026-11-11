@@ -70,7 +70,7 @@ run_harness() {
 #      text.
 #   4. delegate_to_agent(mode=interactive) is refused with
 #      kind=interactive_retired (interactive specialist engagements are
-#      retired in favour of the desk).
+#      retired; a specialist talks to the person in its own chat).
 # ---------------------------------------------------------------------------
 log "DE-1: merged-role-map wiring + sync delegation + retired-interactive refusal"
 

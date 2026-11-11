@@ -164,8 +164,14 @@ _SCHEMA_VERSION = 1
 _LEDGER_LOCK = threading.Lock()
 
 
-def persona_install_consent_identity(*, persona_id: str, version: str, checksum: str) -> str:
-    return checksum_json({"persona_id": persona_id, "version": version, "checksum": checksum})
+def persona_install_consent_identity(*, persona_id: str, version: str, checksum: str,
+                                     values_digest: str) -> str:
+    """The one identity of a persona-install approval: the inspected persona
+    and ``approval_records.values_digest`` of the values its card shows."""
+    if not (isinstance(values_digest, str) and values_digest):
+        raise ValueError("persona_install_consent_identity needs the values digest")
+    return checksum_json({"persona_id": persona_id, "version": version, "checksum": checksum,
+                          "values_digest": values_digest})
 
 
 class PersonaLedgerInvalid(Exception):
@@ -222,7 +228,10 @@ class PersonaInstallAckStore:
         for ident, rec in acks.items():
             if not (isinstance(ident, str) and isinstance(rec, dict)):
                 return {}
-            fields = {k: rec.get(k) for k in ("persona_id", "version", "checksum")}
+            # The values digest is part of the identity: a record without one
+            # fails the whole store closed like any other identity mismatch.
+            fields = {k: rec.get(k) for k in ("persona_id", "version", "checksum",
+                                                "values_digest")}
             if not all(isinstance(v, str) and v for v in fields.values()):
                 return {}
             if persona_install_consent_identity(**fields) != ident:
@@ -338,6 +347,13 @@ class PersonaInstallAckStore:
         with _LEDGER_LOCK:
             return identity in self._load()
 
+    def is_acked_artifact(self, *, persona_id: str, version: str, checksum: str) -> bool:
+        """Whether any recorded approval is for this exact persona, whatever
+        values it was given with."""
+        with _LEDGER_LOCK:
+            return any(rec.get("persona_id") == persona_id and rec.get("version") == version
+                       and rec.get("checksum") == checksum for rec in self._load().values())
+
     def revocation_generations(self, *, persona_id: str, version: str) -> tuple[int, int]:
         """#543: the (WILDCARD, PER-VERSION) generation pair a consent prompt
         captures and ``record`` re-checks.
@@ -354,6 +370,7 @@ class PersonaInstallAckStore:
                 revocations.get(f"{persona_id}@{version}", 0))
 
     def record(self, *, identity: str, persona_id: str, version: str, checksum: str,
+               values_digest: str,
                expect_generations: "tuple[int, int] | None" = None) -> bool:
         """Record an approval. Returns True when it was written.
 
@@ -365,7 +382,7 @@ class PersonaInstallAckStore:
         install". Without the argument the write is unconditional (the
         pre-#543 contract every direct caller still relies on)."""
         rec = {"persona_id": persona_id, "version": version, "checksum": checksum,
-               "ts": int(time.time())}
+               "values_digest": values_digest, "ts": int(time.time())}
         with _LEDGER_LOCK:
             # Sol diff r2: EVERY record validates the document, including the
             # generation-free one. Letting a direct record rewrite a damaged
@@ -431,6 +448,7 @@ class PersonaInstallAckStore:
 
 def commit_persona_install(
     *, inspection: PersonaInspectionResult, acks: "PersonaInstallAckStore",
+    approved_values: dict,
     personas_root: "Path | None" = None,
 ) -> "PersonaPack":
     """#543 (Sol design r1): the publication decision runs under
@@ -444,14 +462,19 @@ def commit_persona_install(
     deletes under the SAME lock, so holding it here makes the two orders both
     correct — remove-first ⇒ this re-check finds no ack and refuses;
     commit-first ⇒ removal's reference scan and revoke run against a
-    published persona, exactly as if the install had finished earlier."""
+    published persona, exactly as if the install had finished earlier.
+
+    *approved_values* are the values the approval froze; the recorded
+    approval must be for this persona with exactly these values."""
     import specialist_materialize
+    from approval_records import values_digest
 
     if personas_root is None:
         personas_root = installed_personas_root()
 
     identity = persona_install_consent_identity(
-        persona_id=inspection.persona_id, version=inspection.version, checksum=inspection.checksum)
+        persona_id=inspection.persona_id, version=inspection.version, checksum=inspection.checksum,
+        values_digest=values_digest(approved_values))
     if not acks.is_acked(identity):
         raise SpecialistInstallError(
             "consent_missing", "no recorded operator approval for this persona install")
@@ -1239,8 +1262,8 @@ def list_installed_personas(
             entry.update(
                 checksum=pack.checksum,
                 display_name=pack.identity.get("display_name", persona_id),
-                acked=acks.is_acked(persona_install_consent_identity(
-                    persona_id=persona_id, version=version, checksum=pack.checksum)),
+                acked=acks.is_acked_artifact(
+                    persona_id=persona_id, version=version, checksum=pack.checksum),
                 invalid=None)
         entry["removable"] = not entry["referenced_by"]
         out.append(entry)

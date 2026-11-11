@@ -17,13 +17,14 @@ RED at the base: both fields say "the new version is active and stays active".
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from approval_values import call_as_approved_run, use_tmp_approval_store
 
 _DOCTRINE = (Path(__file__).resolve().parent.parent
              / "casa/rootfs/opt/casa/defaults/configurator/doctrine")
@@ -37,7 +38,7 @@ REPLACED = "component:fin@1#sha256:" + "a" * 64
 
 
 @pytest.fixture
-def kept(monkeypatch):
+def kept(monkeypatch, tmp_path):
     import agent as agent_mod
     import specialist_bundle_journal
     import specialist_install
@@ -68,7 +69,7 @@ def kept(monkeypatch):
     state = SimpleNamespace(seq=0, finish_fails=False, journal_completions=0)
     monkeypatch.setattr(specialist_install, "validate_resume_inputs", lambda **k: _Checked)
     monkeypatch.setattr(specialist_receipt, "load", lambda rid, **k: object())
-    monkeypatch.setattr(tools_mod, "_PLUGIN_TOOLS_LOCK", asyncio.Lock())
+    use_tmp_approval_store(monkeypatch, tmp_path)
 
     def complete(path):
         state.journal_completions += 1
@@ -100,7 +101,7 @@ def kept(monkeypatch):
 
 async def _upgrade() -> dict:
     import tools as tools_mod
-    r = await tools_mod.specialist_upgrade.handler({
+    r = await call_as_approved_run(tools_mod.specialist_upgrade, {
         "slug": "fin", "component_id": "c", "version": "2", "root_digest": "rd",
         "staged_dir": "/nonexistent", "receipt_id": "r1"})
     return json.loads(r["content"][0]["text"])

@@ -11,6 +11,7 @@ import plugin_registry
 import specialist_bundle_journal as journal
 from plugin_fixtures import owned_entry
 from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+from approval_values import NO_SETTINGS_DIGEST
 
 pytestmark = pytest.mark.unit
 
@@ -1119,7 +1120,8 @@ def test_reconcile_boot_rolls_back_inprogress_journal(tmp_path):
         _honest_tuple_yaml({}), encoding="utf-8")
 
     ack_record = {"component_id": "casa-specialist-mtg", "version": "0.2.0",
-                  "component_checksum": "root-digest", "slug": "mtg", "ts": 1}
+                  "component_checksum": "root-digest", "slug": "mtg",
+                  "values_digest": NO_SETTINGS_DIGEST, "ts": 1}
 
     journal.begin(
         "install", "mtg",
@@ -1146,7 +1148,8 @@ def test_reconcile_boot_rolls_back_inprogress_journal(tmp_path):
 
     identity = install_consent_identity(
         component_id=ack_record["component_id"], version=ack_record["version"],
-        root_digest=ack_record["component_checksum"], slug=ack_record["slug"])
+        root_digest=ack_record["component_checksum"], slug=ack_record["slug"],
+        values_digest=ack_record["values_digest"])
     restored = SpecialistInstallAckStore(acks_path).get(identity)
     assert restored is not None and restored["slug"] == "mtg"
 
@@ -1479,7 +1482,8 @@ def test_bundletxn_rollback_disk_restores_registry_tuple_files_and_acks(tmp_path
 
     before_entry = owned_entry()
     ack_record = {"component_id": "casa-specialist-mtg", "version": "0.2.0",
-                  "component_checksum": "root-digest", "slug": "mtg", "ts": 1}
+                  "component_checksum": "root-digest", "slug": "mtg",
+                  "values_digest": NO_SETTINGS_DIGEST, "ts": 1}
 
     txn = journal.BundleTxn(
         journal_path=tmp_path / "unused.json",
@@ -1500,7 +1504,8 @@ def test_bundletxn_rollback_disk_restores_registry_tuple_files_and_acks(tmp_path
 
     identity = install_consent_identity(
         component_id=ack_record["component_id"], version=ack_record["version"],
-        root_digest=ack_record["component_checksum"], slug=ack_record["slug"])
+        root_digest=ack_record["component_checksum"], slug=ack_record["slug"],
+        values_digest=ack_record["values_digest"])
     assert SpecialistInstallAckStore(acks_path).get(identity) is not None
 
 

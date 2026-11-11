@@ -23,6 +23,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from approval_values import record_specialist_ack, settings, specialist_identity
 from explanation_store import EXPLANATION_MAX_RECORDS, ExplanationRecord, ExplanationStore
 
 # asyncio_mode = auto (pytest.ini) auto-detects the `async def` route tests
@@ -72,6 +73,62 @@ def _reset_active_specialist_index():
     original = specialist_registry_mod._active_index
     yield
     specialist_registry_mod._active_index = original
+
+
+@pytest.fixture
+def approval_store(tmp_path, monkeypatch):
+    """Approval records under tmp_path, never /data."""
+    import asyncio
+
+    import approval_records
+    import tools as tools_mod
+
+    monkeypatch.setattr(approval_records, "PATH", str(tmp_path / "approval-records.json"))
+    monkeypatch.setattr(tools_mod, "_PLUGIN_TOOLS_LOCK", asyncio.Lock())
+    approval_records.reset()
+    yield
+    approval_records.reset()
+
+
+async def _call_as_approved_run(tool, args: dict, acks, *, specialists_dir):
+    """Call the governed *tool* with *args* as the run Casa starts after the
+    operator approved it: the settings it will stage for the inspection those
+    args name, approved on a current approval record that the run's origin
+    names, and recorded in the consent ledger *acks* — what Approve records.
+    The tool's own reads (the receipt, the staged bytes, the instance tree)
+    decide the inspection and the settings, never the fixture. Args the tool
+    would refuse get no approval, so its own refusal is what comes back."""
+    import agent as agent_mod
+    import approval_records
+    import specialist_install
+    import tools as tools_mod
+    from specialist_install import validate_resume_inputs
+
+    kind = "specialist_upgrade" if tool is tools_mod.specialist_upgrade else "specialist_install"
+    checked = validate_resume_inputs(
+        staged_dir=args["staged_dir"], receipt_id=args.get("receipt_id"),
+        root_digest=args["root_digest"])
+    if not checked.ok:
+        return await tool.handler(args)
+    inspection = tools_mod._inspection_from_checked(checked, Path(args["staged_dir"]))
+    secrets = args.get("secret_names_provided") or ()
+    values = record_specialist_ack(acks, inspection, settings(
+        specialist_install.preview_effective_config(
+            kind, inspection, slug=args["slug"], config=args.get("config") or {},
+            secret_names_provided=secrets, specialists_dir=specialists_dir),
+        secrets))
+    async with tools_mod._plugin_tools_guard():
+        record, _, _ = approval_records.request(
+            kind, f"{inspection.component_id}:{inspection.slug}",
+            specialist_identity(inspection, values=values), values)
+    record = approval_records.approve(record.rid)
+    token = agent_mod.origin_var.set({
+        "role": "assistant", "user_text": "install it",
+        approval_records.APPROVAL_KEY: {"rid": record.rid, "generation": record.generation}})
+    try:
+        return await tool.handler(args)
+    finally:
+        agent_mod.origin_var.reset(token)
 
 
 # ---------------------------------------------------------------------------
@@ -1200,7 +1257,7 @@ def _install(tmp_path, monkeypatch, *, home, slug="mtg", version=None,
     import specialist_install
     import specialist_receipt
     from specialist_fixtures import write_minimal_component
-    from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+    from specialist_install_consent import SpecialistInstallAckStore
     from specialist_registry import InstalledSpecialistIndex
 
     comp, mpath = write_minimal_component(home, slug=slug,
@@ -1232,16 +1289,14 @@ def _install(tmp_path, monkeypatch, *, home, slug="mtg", version=None,
     assert receipt is not None
 
     acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug,
-        receipt_digest=inspection.receipt_digest)
-    acks.record(identity=identity, component_id=inspection.component_id,
-                version=inspection.version, component_checksum=inspection.root_digest,
-                slug=inspection.slug, receipt_digest=inspection.receipt_digest)
+    values = record_specialist_ack(acks, inspection, settings(
+        specialist_install.preview_effective_config(
+            "specialist_upgrade" if upgrade else "specialist_install", inspection,
+            slug=slug, config=dict(config or {}), secret_names_provided=(),
+            specialists_dir=specialists_dir)))
 
     kw = dict(inspection=inspection, receipt=receipt, config=dict(config or {}),
-              secret_names_provided=frozenset(), acks=acks,
+              secret_names_provided=frozenset(), acks=acks, approved_values=values,
               specialists_dir=specialists_dir,
               agents_specialists_dir=tmp_path / "agents",
               registry_path=tmp_path / "registry.json",
@@ -1469,7 +1524,7 @@ def test_specialist_status_reports_a_pending_slug_it_cannot_fully_resume(
 
 @pytest.mark.asyncio
 async def test_the_disclosed_inputs_are_what_completes_the_pending_install(
-        tmp_path, monkeypatch, restore_installed_index) -> None:
+        tmp_path, monkeypatch, restore_installed_index, approval_store) -> None:
     """Usability, not plausibility: the five strings the payload disclosed —
     and nothing held over from the fixture — are handed straight back to the
     PUBLIC re-commit tool, which reaches `active`. Five convincing-looking
@@ -1518,8 +1573,9 @@ async def test_the_disclosed_inputs_are_what_completes_the_pending_install(
     monkeypatch.setattr(specialist_install, "reclaim_staging_tree", lambda d: None)
     _stub_bundle_sequencer(monkeypatch)
 
-    result = await specialist_install_commit.handler(
-        {"slug": "mtg", **disclosed, "config": {"region": "EU"}})
+    result = await _call_as_approved_run(
+        specialist_install_commit, {"slug": "mtg", **disclosed, "config": {"region": "EU"}},
+        ctx.acks, specialists_dir=ctx.specialists_dir)
     payload = json.loads(result["content"][0]["text"])
 
     assert len(core_calls) == 1
@@ -1623,7 +1679,7 @@ def test_a_receipt_whose_staged_path_is_not_a_usable_string_discloses_none(
 
 @pytest.mark.asyncio
 async def test_the_disclosed_inputs_never_pair_a_stale_root_with_a_newer_receipt(
-        tmp_path, monkeypatch, restore_installed_index) -> None:
+        tmp_path, monkeypatch, restore_installed_index, approval_store) -> None:
     """Two inspected roots, one slug: candidate A is what the PUBLISHED INDEX
     holds, candidate B is what the tree holds — B's commit wrote B's marker,
     and the index is a snapshot nothing republished (a pending candidate is
@@ -1694,8 +1750,9 @@ async def test_the_disclosed_inputs_never_pair_a_stale_root_with_a_newer_receipt
     monkeypatch.setattr(specialist_install, "reclaim_staging_tree", lambda d: None)
     _stub_bundle_sequencer(monkeypatch)
 
-    result = await specialist_install_commit.handler(
-        {"slug": "mtg", **disclosed, "config": {"region": "EU"}})
+    result = await _call_as_approved_run(
+        specialist_install_commit, {"slug": "mtg", **disclosed, "config": {"region": "EU"}},
+        second.acks, specialists_dir=second.specialists_dir)
     payload = json.loads(result["content"][0]["text"])
 
     assert payload.get("kind") is None       # pre-fix: "checksum_changed"
@@ -1840,14 +1897,15 @@ async def _resume_with_disclosed(ctx, disclosed, monkeypatch, *, upgrade=False):
     _stub_bundle_sequencer(monkeypatch)
 
     tool = specialist_upgrade if upgrade else specialist_install_commit
-    result = await tool.handler(
-        {"slug": ctx.slug, **disclosed, "config": {"region": "EU"}})
+    result = await _call_as_approved_run(
+        tool, {"slug": ctx.slug, **disclosed, "config": {"region": "EU"}},
+        ctx.acks, specialists_dir=ctx.specialists_dir)
     return core_calls, json.loads(result["content"][0]["text"])
 
 
 @pytest.mark.asyncio
 async def test_a_pending_install_the_index_never_saw_still_names_its_resume_inputs(
-        tmp_path, monkeypatch, restore_installed_index) -> None:
+        tmp_path, monkeypatch, restore_installed_index, approval_store) -> None:
     """The ordinary first install that lands pending-configuration, in the
     order a running process actually sees it: the index was published BEFORE
     the install and no reload followed it, because a pending candidate is not
@@ -1903,7 +1961,7 @@ async def test_a_pending_install_the_index_never_saw_still_names_its_resume_inpu
 
 @pytest.mark.asyncio
 async def test_a_pending_upgrade_the_index_predates_still_names_its_resume_inputs(
-        tmp_path, monkeypatch, restore_installed_index) -> None:
+        tmp_path, monkeypatch, restore_installed_index, approval_store) -> None:
     """The same mechanism one step on: the index holds the slug's ACTIVE
     generation, published before the upgrade staged a candidate beside it, so
     its instance has `desired = None`. Presence taken from that instance
@@ -2397,7 +2455,7 @@ def _real_lifecycle_counter(monkeypatch, name, ctx):
         merged = dict(kw)
         merged.update({k: v for k, v in ctx.kw.items()
                        if k not in ("inspection", "receipt", "config",
-                                    "secret_names_provided", "acks")})
+                                    "secret_names_provided", "acks", "approved_values")})
         return real(**merged)
 
     monkeypatch.setattr(specialist_install, name, _wrapper)
@@ -2406,7 +2464,7 @@ def _real_lifecycle_counter(monkeypatch, name, ctx):
 
 @pytest.mark.asyncio
 async def test_verified_pending_upgrade_names_and_uses_its_admitting_tool(
-        tmp_path, monkeypatch, restore_installed_index) -> None:
+        tmp_path, monkeypatch, restore_installed_index, approval_store) -> None:
     """A pending upgrade's disclosed resume set names the tool that admits it,
     and that tool — selected from the payload, never from the fixture —
     activates the candidate."""
@@ -2456,8 +2514,8 @@ async def test_verified_pending_upgrade_names_and_uses_its_admitting_tool(
     commits = _real_lifecycle_counter(monkeypatch, "commit_specialist_install", pending)
     upgrades = _real_lifecycle_counter(monkeypatch, "upgrade_specialist", pending)
 
-    handler = getattr(tools_mod, disclosed["tool"]).handler
-    result = _payload(await handler({
+    tool = getattr(tools_mod, disclosed["tool"])
+    result = _payload(await _call_as_approved_run(tool, {
         "slug": "mtg",
         "component_id": disclosed["component_id"],
         "version": disclosed["version"],
@@ -2465,7 +2523,7 @@ async def test_verified_pending_upgrade_names_and_uses_its_admitting_tool(
         "staged_dir": disclosed["staged_dir"],
         "receipt_id": disclosed["receipt_id"],
         "config": {"region": "EU"},
-    }))
+    }, pending.acks, specialists_dir=pending.specialists_dir))
 
     # 5. Counts, then the disk.
     assert (len(upgrades), len(commits)) == (1, 0)

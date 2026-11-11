@@ -13,7 +13,7 @@ Obligations are a closed, Casa-owned set; the model can never add one.
 
 * :class:`ReadBeforeDescribe` — armed by ``list_inbound_files`` (the tool that
   shows the model inbound paths) or by a ``Read`` attempt on an inbox path; on
-  a turn that RECEIVED a file (an S6 file desk turn) armed at the start over
+  a turn that RECEIVED a file (a caption turn) armed at the start over
   that file alone, and nothing else widens it (#1218). Discharged when any
   armed file was read successfully or handed to a plugin by
   ``share_inbound_file`` (#1036 ruling, operator 2026-09-22: any-one-read;
@@ -50,11 +50,8 @@ on the record too.
 
 Nothing is held or withheld: the model's words are never suppressed here
 (operator ruling, #1036) — beyond closing silence, whose cases that drop
-earlier words are the #1075 ruling above and its desk twin (#1433: a
-specialist desk turn that proved an outcome, its card posted, and closes in
-``<silent/>`` is silent — applied in ``specialist_desk.handle_reply`` on the
-desk's own outcome record), and one more ruled case (#1252): on an
-``Agent.handle_message`` turn or a specialist desk turn whose protected call is
+earlier words are the #1075 ruling above, and one more ruled case (#1252): on an
+``Agent.handle_message`` turn whose protected call is
 waiting on the operator's approval, the words the model wrote after that call
 are withheld from the operator, while those written before it are kept
 (:class:`ApprovalCut`). The same cut applies to a resident's words after a
@@ -207,7 +204,7 @@ def may_still_be_silence(text: str | None) -> bool:
 
 def without_sentinels(text: str) -> str:
     """#1342: *text* without a run of ``<silent/>`` markers at its start or at
-    its end — how a desk reply that holds words as well as the marker is
+    its end — how a reply that holds words as well as the marker is
     shown: the tag never reaches the operator, the words still do. Only the
     markers and the whitespace between them and the words go; nothing else is
     touched (no other whitespace, no line endings, no indentation), and a
@@ -435,9 +432,6 @@ class TurnScope:
     # ("pending" | "consumed", GrantKey)), read at the call's result by an
     # ApprovalCut. Never shared with a child scope.
     approvals: dict[str, tuple[str, Any]] = field(default_factory=dict)
-    # #1252: the words a desk run kept, published by the delegated runner
-    # when its run ended with an approval pending; None otherwise.
-    approval_kept: str | None = None
     # #1207: the grants a delegated run left waiting on the operator (its
     # ApprovalCut's standing keys), published by the runner whatever the run's
     # outcome.
@@ -470,8 +464,7 @@ class TurnScope:
         note = ctx.get("_inherited_note")
         if isinstance(note, str) and note.strip():
             scope.arm(InheritedNote(note))
-        # #1378: a caption turn received its files (#1379: an album's), as a
-        # file desk turn does
+        # #1378: a caption turn received its files (#1379: an album's)
         received = ctx.get("_received_file")
         if isinstance(received, dict):
             files = tuple((str(f["path"]), str(f.get("name") or ""))
@@ -516,12 +509,11 @@ class TurnScope:
         return child
 
     @classmethod
-    def for_desk(cls, origin: dict, *, display_name: str) -> "TurnScope":
-        """S4 §5.2: the scope a specialist desk turn runs under — a fresh
-        scope with the DM's reserved markers and no inherited obligations
-        (there is no launcher turn whose brief could be unread); the
-        specialist's display name, the resident's role (the desk acts on the
-        resident's behalf in the resident's chat)."""
+    def for_pinned(cls, origin: dict, *, display_name: str) -> "TurnScope":
+        """The scope a pinned stored-call turn runs under — a fresh scope with
+        the origin's reserved markers and no inherited obligations (there is
+        no launcher turn whose brief could be unread); the executing agent's
+        display name, and the role of the agent whose chat the tap arrived in."""
         from provenance import RESERVED_CONTEXT_KEYS
         ctx = dict(origin or {})
         return cls(
@@ -577,7 +569,7 @@ class TurnScope:
         self.obligations.append(obligation)
 
     def receive_files(self, files: tuple[tuple[str, str], ...]) -> None:
-        """#1218: the files this turn RECEIVED (an S6 file desk turn), armed
+        """#1218: the files this turn RECEIVED (a caption turn), armed
         before the turn runs: the obligation covers them alone."""
         self.arm(ReadBeforeDescribe(
             files=tuple((_norm(p), n) for p, n in files), source="own"))

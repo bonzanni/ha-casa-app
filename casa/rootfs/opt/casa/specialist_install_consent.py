@@ -2,7 +2,14 @@
 SAME shape as trigger_consent.py's plugin-trigger consent: a DM
 Approve/Deny keyboard whose Approve synchronously persists a fail-closed,
 atomically-written ack BEFORE any CAS write or activation. Never a checksum
-string an LLM tool call could echo back itself."""
+string an LLM tool call could echo back itself.
+
+Each card asks about one approval record (``approval_records``): it shows the
+record's effective settings, binds the record's consent identity, and on
+Approve moves the record to approved and has Casa carry the configurator on
+(``configurator_continue.start``). One tap is one attempt: the run's governed
+call uses the approval up. A newer request for the same component replaces the
+card (:func:`supersede_card`)."""
 from __future__ import annotations
 
 import json
@@ -32,12 +39,13 @@ _LEDGER_LOCK = threading.Lock()
 
 
 def install_consent_identity(*, component_id: str, version: str, root_digest: str,
-                              slug: str, receipt_digest: str = "") -> str:
+                              slug: str, values_digest: str, receipt_digest: str = "") -> str:
     """The ONE identity-derivation function for a specialist-install consent
     decision (mirrors plugin_triggers.ack_identity). Binds the approval to
-    the EXACT inspected component — a re-fetch that changes any of these
-    fields yields a different identity, so a stale approval can never
-    ack a different artifact.
+    the EXACT inspected component AND the exact settings it will stage — a
+    re-fetch that changes any of these fields, or other effective settings,
+    yields a different identity, so a stale approval can never ack a
+    different artifact or other values.
 
     The bound digest is `inspection.root_digest` — compute_install_root_digest's
     full-closure digest (role+doctrine+config-schema+manifest+persona+
@@ -45,28 +53,37 @@ def install_consent_identity(*, component_id: str, version: str, root_digest: st
     digest, which is still a separate field on InspectionResult for
     CAS-neutral display/logging only). Binding consent to the narrow digest
     would let a persona/corpus/plugin substitution slip past an operator's
-    approval unnoticed.
+    approval unnoticed. The persisted ack-store field and the hashed input key
+    keep their historical name, ``"component_checksum"``.
 
-    Minor Ma (whole-branch review): the PARAMETER is now honestly named
-    `root_digest` to match what every caller actually passes. The persisted
-    ack-store JSON field and the identity-hash INPUT KEY both stay
-    `"component_checksum"` for backward compatibility — an existing ack file's
-    recomputed identity must remain byte-stable — so the value is mapped onto
-    that historical key here rather than renamed through the hash.
-
-    Task 7: `receipt_digest` binds a bundled-plugin receipt (Task 8) into the
-    consent identity so re-approval is required whenever the bundled-plugin
-    closure changes. It joins the hashed payload ONLY when non-empty — the
-    default `receipt_digest=""` MUST hash byte-identically to the pre-Task-7
-    four-key payload, so every legacy ack file recorded before this change
-    keeps recomputing to the same identity on load."""
+    `receipt_digest` binds a bundled-plugin receipt into the identity, so
+    re-approval is required whenever the bundled-plugin closure changes; it
+    joins the hashed payload only when non-empty. `values_digest` is
+    ``approval_records.values_digest`` of the effective settings
+    (``{"config": <the merged non-secret config the library will stage>,
+    "secrets": <the sorted secret names provided>}``) and is required."""
+    if not (isinstance(values_digest, str) and values_digest):
+        raise ValueError("install_consent_identity needs the values digest")
     payload = {
         "component_id": component_id, "version": version,
         "component_checksum": root_digest, "slug": slug,
+        "values_digest": values_digest,
     }
     if receipt_digest:
         payload["receipt_digest"] = receipt_digest
     return checksum_json(payload)
+
+
+def identity_for_inspection(inspection: Any, *, values: dict) -> str:
+    """The consent identity of *inspection* with the effective settings *values*
+    (``{"config", "secrets"}``): the one builder every caller holding an
+    inspection uses."""
+    from approval_records import values_digest
+    return install_consent_identity(
+        component_id=inspection.component_id, version=inspection.version,
+        root_digest=inspection.root_digest, slug=inspection.slug,
+        receipt_digest=inspection.receipt_digest,
+        values_digest=values_digest(values))
 
 
 @dataclass(frozen=True)
@@ -82,6 +99,9 @@ class SpecialistInstallConsentKey:
     # engagement ends is a different change. The approval identity above
     # never sees it.
     requester: str = ""
+    # The approval record the card asks about: a newer request for the same
+    # artifact and values gets a card of its own rather than this one.
+    approval_rid: str = ""
 
 
 class SpecialistInstallAckStore:
@@ -135,16 +155,16 @@ class SpecialistInstallAckStore:
             receipt_digest = rec.get("receipt_digest", "")
             if not isinstance(receipt_digest, str):
                 return {}
-            # Ma: the persisted field stays "component_checksum" (backward
-            # compat); map it onto the honestly-named `root_digest` parameter.
-            # A legacy record has no "receipt_digest" key at all, so
-            # `rec.get("receipt_digest", "")` defaults to "" — the SAME
-            # default `install_consent_identity` uses — recomputing the
-            # exact byte-stable legacy identity.
+            # The values digest is part of the identity: a record without one
+            # cannot recompute to its key, so it fails the whole store closed
+            # like any other identity mismatch.
+            values_digest = rec.get("values_digest")
+            if not (isinstance(values_digest, str) and values_digest):
+                return {}
             if install_consent_identity(
                 component_id=fields["component_id"], version=fields["version"],
                 root_digest=fields["component_checksum"], slug=fields["slug"],
-                receipt_digest=receipt_digest,
+                receipt_digest=receipt_digest, values_digest=values_digest,
             ) != ident:
                 return {}
             out[ident] = rec
@@ -171,10 +191,11 @@ class SpecialistInstallAckStore:
             return dict(rec) if rec is not None else None
 
     def record(self, *, identity: str, component_id: str, version: str,
-               component_checksum: str, slug: str, receipt_digest: str = "") -> None:
+               component_checksum: str, slug: str, values_digest: str,
+               receipt_digest: str = "") -> None:
         rec = {"component_id": component_id, "version": version,
                "component_checksum": component_checksum, "slug": slug,
-               "ts": int(time.time())}
+               "values_digest": values_digest, "ts": int(time.time())}
         if receipt_digest:
             rec["receipt_digest"] = receipt_digest
         with _LEDGER_LOCK:
@@ -214,7 +235,7 @@ class SpecialistInstallAckStore:
     def restore_records(self, records: list[dict]) -> None:
         """Slug-scoped delta re-insert used by journal rollback/boot
         reconciliation: each record's identity is recomputed from its OWN
-        fields (including its own `receipt_digest`, defaulting to "" for
+        fields (its own `values_digest`, and its `receipt_digest`, "" for
         records without the key) rather than trusted verbatim, and the
         result is merged into the current ledger under the lock — never a
         whole-map rewrite that could clobber a concurrent unrelated write."""
@@ -229,6 +250,7 @@ class SpecialistInstallAckStore:
                     component_id=rec["component_id"], version=rec["version"],
                     root_digest=rec["component_checksum"], slug=rec["slug"],
                     receipt_digest=rec.get("receipt_digest", ""),
+                    values_digest=rec["values_digest"],
                 )
                 candidate[identity] = rec
             self._persist_locked(candidate)
@@ -248,7 +270,53 @@ def _short_digest(digest: str) -> str:
     return f"{algo}{sep}{hexpart[:SHORT_DIGEST_HEX]}…"
 
 
-def render_install_consent_message(inspection: Any, *, mode: str = "install") -> str:
+#: the marker on a setting the request did not submit: the install keeps it
+KEPT_MARK = "(kept from the current settings)"
+
+
+def _shown_value(value: Any) -> str:
+    # Settings are text, so a value reads as it is typed. It is quoted as JSON
+    # only where bare text would hide what it is: an empty value, one with
+    # leading or trailing spaces, or one with a line break or another
+    # unprintable character. Unsafe codepoints are spelled out either way, so
+    # what the operator reads is what the approval binds.
+    from text_util import escape_unsafe_text
+    if isinstance(value, str) and value and value == value.strip() and value.isprintable():
+        return escape_unsafe_text(value)
+    return escape_unsafe_text(json.dumps(value, ensure_ascii=False, sort_keys=True))
+
+
+def render_settings_lines(values: dict, submitted_config: "Any" = None) -> "list[str]":
+    """The settings an approval binds, as card lines: each effective config key
+    with its value, a key the request did not submit marked as kept from the
+    current settings, and the secret names provided (never their values).
+    *submitted_config* is the request's own config; ``None`` marks nothing."""
+    config = values.get("config") or {}
+    secrets = list(values.get("secrets") or [])
+    submitted = None if submitted_config is None else set(submitted_config)
+    if not config and not secrets:
+        return ["Settings: none"]
+    lines: list[str] = []
+    if config:
+        lines.append("Settings:")
+        for name in sorted(config):
+            line = f"  {_shown_name(name)} = {_shown_value(config[name])}"
+            if submitted is not None and name not in submitted:
+                line += f" {KEPT_MARK}"
+            lines.append(line)
+    if secrets:
+        lines.append(f"Secrets provided (names only): {', '.join(_shown_name(n) for n in secrets)}")
+    return lines
+
+
+def _shown_name(name: Any) -> str:
+    from text_util import escape_unsafe_text
+    return escape_unsafe_text(str(name))
+
+
+def render_install_consent_message(inspection: Any, *, mode: str = "install",
+                                   values: "dict | None" = None,
+                                   submitted_config: Any = None) -> str:
     """The consent DM, in the order the operator decides by: one line saying what is asked
     (install or update, which component at which version, as which specialist) and the
     mission; then what it comes with — the Casa tools its role grants, its persona, its
@@ -270,14 +338,23 @@ def render_install_consent_message(inspection: Any, *, mode: str = "install") ->
     #1225: an upgrade, and a settings change at the installed version, use this same keyboard
     and are worded as an update; only the Casa-authored first and action lines vary, and
     neither is longer than its install counterpart, so a closure that fits the challenge
-    limit as an install fits as an update. The identity never sees the mode."""
+    limit as an install fits as an update. The identity never sees the mode.
+
+    *values*, when given, are the effective settings the approval binds
+    (``{"config", "secrets"}``), shown after what the component comes with
+    (:func:`render_settings_lines`); *submitted_config* names the keys the
+    request itself supplied."""
     target = f"{inspection.component_id}@{inspection.version}"
     if mode == "upgrade":
         question = f"\U0001F510 Update specialist:{inspection.slug} to {target}?"
-        action = "Approve to update; Deny to discard the staged fetch."
+        action = ("Approve to update with these settings; Deny to discard the staged fetch."
+                  if values is not None else
+                  "Approve to update; Deny to discard the staged fetch.")
     else:
         question = f"\U0001F510 Install {target} as specialist:{inspection.slug}?"
-        action = "Approve to install; Deny to discard the staged fetch."
+        action = ("Approve to install with these settings; Deny to discard the staged fetch."
+                  if values is not None else
+                  "Approve to install; Deny to discard the staged fetch.")
     items: list[str] = []
     role_grants = getattr(inspection, "role_tool_grants", ()) or ()
     if role_grants:
@@ -312,6 +389,7 @@ def render_install_consent_message(inspection: Any, *, mode: str = "install") ->
         f"Mission: {inspection.mission}",
         "",
         *items,
+        *([""] + render_settings_lines(values, submitted_config) if values is not None else []),
         "",
         action,
         "",
@@ -320,125 +398,244 @@ def render_install_consent_message(inspection: Any, *, mode: str = "install") ->
     ])
 
 
+
+
+# --- the approval card, shared by the specialist and persona cards -------------
+
+#: the broker cancellation reason of a card a newer request replaced
+SUPERSEDED_REASON = "approval_superseded"
+
+NOT_STARTED_LINE = ("⚠️ Approved and saved — but the configurator could not be started. "
+                    "Ask Ellen again; the approval is kept.")
+
+_DONE_WORD = {"specialist_install": "installed", "specialist_upgrade": "updated",
+              "persona_install": "installed"}
+
+
+def replaced_line(record: Any) -> str:
+    """What a card a newer request replaced says."""
+    return (f"Replaced by a newer request; nothing was "
+            f"{_DONE_WORD.get(getattr(record, 'kind', ''), 'installed')}.")
+
+
+def _cancel_open_card(rid: str) -> bool:
+    """Settle the open question of the card asking about *rid*, if there is
+    one: its finish hook then edits the card. Synchronous."""
+    import verdict_broker
+    return bool(verdict_broker.BROKER.cancel_where(
+        namespace="resident_ask", reason=SUPERSEDED_REASON,
+        predicate=lambda req: isinstance(req.meta, dict)
+        and req.meta.get("approval_rid") == rid))
+
+
+def _card_endpoint(card: Any) -> Any:
+    try:
+        import tools
+        transport = tools._transport()
+        return transport.endpoint(card) if transport is not None else None
+    except Exception:  # noqa: BLE001 — no endpoint, no edit
+        logger.warning("no Telegram endpoint for the approval card %s", card, exc_info=True)
+        return None
+
+
+_EDITS: "set[Any]" = set()
+
+
+def supersede_card(record: Any, *, channel: Any = None) -> "Awaitable[None]":
+    """Replace the card of *record*, a record a newer request superseded.
+
+    A card whose question is still open is settled now (synchronously), and its
+    own finish hook edits it to say it was replaced, so a later tap finds
+    nothing to answer; a card answered already (approved, its run not started)
+    is edited directly through *channel*, or the endpoint of the card's bot.
+    The edit runs as its own task; the returned awaitable waits for it, and
+    awaiting it is optional."""
+    import asyncio
+    loop = asyncio.get_running_loop()
+    done = loop.create_future()
+    done.set_result(None)
+    if _cancel_open_card(record.rid):
+        return done
+    card = getattr(record, "card", None)
+    if card is None or card.message_id is None:
+        return done
+    endpoint = channel if channel is not None else _card_endpoint(card)
+    if endpoint is None:
+        return done
+
+    async def _edit() -> None:
+        try:
+            await endpoint.edit_dm_message(card.chat_id, card.message_id, replaced_line(record))
+        except Exception:  # noqa: BLE001 — a failed edit leaves the card as it was
+            logger.warning("could not edit the replaced approval card %s", card, exc_info=True)
+
+    task = loop.create_task(_edit())
+    _EDITS.add(task)
+    task.add_done_callback(_EDITS.discard)
+    return task
+
+
+def _store_step(step: "Callable[[str], Any]", rid: str) -> None:
+    import approval_records
+    try:
+        step(rid)
+    except approval_records.ApprovalStoreError:
+        logger.exception("approval record %s could not be saved", rid)
+
+
+def approval_card_hooks(
+    *, record: Any, channel: Any, chat_id: int, continuation: str, name: str,
+    noun: str, record_ack: "Callable[[], bool]", not_recorded_text: str,
+) -> "tuple[Callable[[int, dict], None], Callable[[int, Any], Callable[[dict], Any]]]":
+    """The tap and finish hooks of an approval card about *record*.
+
+    Approve records the consent ack in the tap's synchronous step
+    (*record_ack*), then the finish moves the record to approved and starts the
+    configurator's continuation (*continuation*) with it; the card is edited
+    when the continuation tells whether it started. Deny and an unanswered
+    card close the record. When the card is posted its address is set on the
+    record, and a record already superseded by then has its question settled
+    at once, so the card says it was replaced."""
+    import approval_records
+    from channels.tg_address import TgAddress
+
+    rid = record.rid
+    done = _DONE_WORD.get(record.kind, "installed")
+    replaced = replaced_line(record)
+
+    def _on_commit_sync(idx: int, meta: dict) -> None:
+        if idx == 0:
+            try:
+                meta["acked"] = bool(record_ack())
+            except Exception:  # noqa: BLE001 — an unrecorded ack is the finish's error line
+                logger.exception("could not record the consent ack of approval %s", rid)
+
+    def _note_card(message_id: int, req: Any) -> None:
+        try:
+            noted = approval_records.set_card(
+                rid, TgAddress(int(channel.bot_id), int(chat_id), int(message_id)))
+        except Exception:  # noqa: BLE001 — the card works without its address
+            logger.exception("could not record the card of approval %s", rid)
+            return
+        if noted.state == "superseded" and getattr(req, "request_id", None):
+            # A newer request replaced this one while its card was being
+            # posted: settle the question now; the finish hook says so.
+            import verdict_broker
+            verdict_broker.BROKER.cancel(
+                namespace=req.namespace, scope=req.scope, request_id=req.request_id,
+                reason=SUPERSEDED_REASON)
+
+    def _finish_factory(message_id: int, req: Any) -> Callable[[dict], Any]:
+        async def _edit(text: str) -> None:
+            await channel.edit_dm_message(chat_id, message_id, text)
+
+        async def _on_outcome(outcome: str) -> None:
+            if outcome == "started":
+                await _edit(f"✅ Approved — the Configurator is carrying on with {name!r}.")
+            elif outcome in ("busy", "failed"):
+                await _edit(NOT_STARTED_LINE)
+
+        async def _finish(outcome: dict) -> None:
+            o = outcome.get("outcome") if isinstance(outcome, dict) else None
+            if o != "answered":
+                reason = outcome.get("reason") if isinstance(outcome, dict) else None
+                if reason == SUPERSEDED_REASON:
+                    await _edit(replaced)
+                    return
+                _store_step(approval_records.expire, rid)
+                import ask_retirement
+                # #933: the reason the broker delivered names the cause; a
+                # withdrawal is not an expiry.
+                await _edit(ask_retirement.retirement_headline(
+                    f"{noun} consent for {name!r}", o, reason,
+                    consequence=f"nothing was {done}"))
+                return
+            if outcome.get("option_index") != 0:
+                _store_step(approval_records.deny, rid)
+                await _edit(f"❌ Denied — {name!r} was not {done}")
+                return
+            if not req.meta.get("acked"):
+                await _edit(not_recorded_text)
+                return
+            try:
+                approved = approval_records.approve(rid)
+            except approval_records.ApprovalStoreError:
+                logger.exception("approval record %s could not be saved", rid)
+                await _edit(not_recorded_text)
+                return
+            if approved is None:
+                await _edit(replaced)
+                return
+            import configurator_continue
+            try:
+                started = configurator_continue.start(
+                    continuation, key=rid, approval=approved, asked=approved.asked,
+                    on_outcome=_on_outcome)
+            except Exception:  # noqa: BLE001 — a tap hook never raises
+                logger.exception("the configurator continuation for approval %s "
+                                 "could not be started", rid)
+                await _edit(NOT_STARTED_LINE)
+                return
+            if started == "superseded":
+                await _edit(replaced)
+
+        _note_card(message_id, req)
+        return _finish
+
+    return _on_commit_sync, _finish_factory
+
+
 def prompt_specialist_install_consent(
-    *, coordinator: Any, channel: Any, chat_id: int, operator_id: int, inspection: Any,
-    acks: "SpecialistInstallAckStore",
-    reconcile_cb: "Callable[[], Awaitable[bool]] | None" = None,
-    mode: str = "install",
+    *, coordinator: Any, channel: Any, chat_id: int, operator_id: int,
+    record: Any, inspection_facts: Any, continuation: str,
+    submitted_config: Any = None,
+    acks: "SpecialistInstallAckStore | None" = None,
     requester: str = "",
 ) -> Any:
-    # #1445: ``requester`` keys the card to the run that asked (see
-    # SpecialistInstallConsentKey).
-    # #1225: ``mode`` is the inspect's own ("install" | "upgrade") and changes
-    # wording only — it never enters the identity or the key below.
-    # Task 7: thread `receipt_digest` (Task 8's bundled-plugin receipt digest)
-    # into the identity so a bundled-plugin closure change forces
-    # re-approval.
+    """Post the card asking the operator to approve *record*, a
+    ``specialist_install`` or ``specialist_upgrade`` approval record, for the
+    staged component *inspection_facts* (an ``InspectionResult``).
+
+    The card shows the record's effective settings, marking those the request
+    did not submit (*submitted_config*, the request's own config) as kept from
+    the current settings. Approve records the consent ack for the record's
+    identity, approves the record and has Casa carry the configurator on with
+    *continuation*. Raises ``ValueError`` when the record's identity is not the
+    identity of *inspection_facts* with the record's values."""
+    inspection = inspection_facts
+    mode = "upgrade" if record.kind == "specialist_upgrade" else "install"
     receipt_digest = inspection.receipt_digest
     identity = install_consent_identity(
         component_id=inspection.component_id, version=inspection.version,
         root_digest=inspection.root_digest, slug=inspection.slug,
-        receipt_digest=receipt_digest,
+        receipt_digest=receipt_digest, values_digest=record.values_digest,
     )
+    if identity != record.consent_identity:
+        # The ack store recomputes every identity from its fields at load; an
+        # ack whose fields do not give its key would fail the whole store.
+        raise ValueError("the approval record is not for this staged component")
+    acks = acks if acks is not None else SpecialistInstallAckStore()
+    # #1445: ``requester`` keys the card to the run that asked; the record's
+    # id keeps a newer request's card apart from the one it replaces.
     key = SpecialistInstallConsentKey(
         component_id=inspection.component_id, slug=inspection.slug, identity=identity,
-        requester=requester)
-    text = render_install_consent_message(inspection, mode=mode)
-    # #1225: the operation each finish edit names.
-    noun, done = (("update", "updated") if mode == "upgrade"
-                  else ("install", "installed"))
+        requester=requester, approval_rid=record.rid)
+    text = render_install_consent_message(
+        inspection, mode=mode, values=record.values, submitted_config=submitted_config)
+    noun = "update" if mode == "upgrade" else "install"
 
-    def _on_commit_sync(idx: int, meta: dict) -> None:
-        if idx == 0:
-            acks.record(identity=identity, component_id=inspection.component_id,
-                        version=inspection.version,
-                        component_checksum=inspection.root_digest, slug=inspection.slug,
-                        receipt_digest=receipt_digest)
-            meta["acked"] = True
+    def _record_ack() -> bool:
+        acks.record(identity=identity, component_id=inspection.component_id,
+                    version=inspection.version,
+                    component_checksum=inspection.root_digest, slug=inspection.slug,
+                    receipt_digest=receipt_digest, values_digest=record.values_digest)
+        return True
 
-    def _finish_factory(message_id: int, req: Any) -> Callable[[dict], Any]:
-        async def _finish(outcome: dict) -> None:
-            o = outcome.get("outcome") if isinstance(outcome, dict) else None
-            if o != "answered":
-                import ask_retirement
-
-                reason = outcome.get("reason") if isinstance(outcome, dict) else None
-                # #933: the reason the broker delivered names the cause; a
-                # withdrawal is not an expiry.
-                await channel.edit_dm_message(
-                    chat_id, message_id,
-                    ask_retirement.retirement_headline(
-                        f"{noun} consent for {inspection.slug!r}",
-                        o, reason, consequence=f"nothing was {done}"),
-                )
-                return
-            if outcome.get("option_index") == 0:
-                if not req.meta.get("acked"):
-                    await channel.edit_dm_message(
-                        chat_id, message_id,
-                        f"internal error recording {noun} consent — re-run the {noun} to "
-                        "be prompted again",
-                    )
-                    return
-                # #662: the outcome decides the wording, so the edit happens
-                # AFTER reconciliation, never before it, and only a literal
-                # True selects the success text — a truthiness test would
-                # accept any truthy value a future callback returned in place
-                # of the contract's bool.
-                #
-                # What True does and does not establish is stated once, in
-                # INV-SPEC-010 (docs/architecture/specialist-lifecycle.md).
-                # Three review rounds were spent on restatements of it that
-                # each overclaimed; this comment deliberately does not add a
-                # fourth.
-                outcome: object = False
-                raised = False
-                if reconcile_cb is not None:
-                    try:
-                        outcome = await reconcile_cb()
-                    except Exception:  # noqa: BLE001 — the callback contract is
-                        # never-raise; this is defence in depth, and it leaves
-                        # CancelledError as control flow.
-                        logger.exception(
-                            "post-consent specialist install reconcile raised "
-                            "(slug=%s)", inspection.slug)
-                        outcome, raised = False, True
-                if outcome is True:
-                    await channel.edit_dm_message(
-                        chat_id, message_id,
-                        f"✅ Approved — the Configurator is carrying on with "
-                        f"{inspection.slug!r}.",
-                    )
-                elif raised:
-                    # A raise is a CONTRACT VIOLATION (no production callback
-                    # can produce one), and it is the single branch where the
-                    # outcome is genuinely unknown rather than known-negative:
-                    # the callback may have handed the turn off before it blew
-                    # up. Say uncertain, not "not started".
-                    await channel.edit_dm_message(
-                        chat_id, message_id,
-                        f"⚠️ Approved and saved — but the {noun} of "
-                        f"{inspection.slug!r} hit an internal error and its "
-                        "automatic start could not be confirmed. Ask the "
-                        f"Configurator how it went; re-running the {noun} is safe "
-                        "either way, and the approval recorded for this exact "
-                        "version is reused if it still applies.",
-                    )
-                else:
-                    await channel.edit_dm_message(
-                        chat_id, message_id,
-                        f"⚠️ Approved and saved — but the {noun} of "
-                        f"{inspection.slug!r} was not started automatically. "
-                        "Ask the Configurator to re-run the "
-                        f"{noun}; the approval recorded for this exact version "
-                        "is reused if it still applies.",
-                    )
-            else:
-                await channel.edit_dm_message(
-                    chat_id, message_id, f"❌ Denied — {inspection.slug!r} was not {done}",
-                )
-
-        return _finish
+    on_commit_sync, finish_factory = approval_card_hooks(
+        record=record, channel=channel, chat_id=chat_id, continuation=continuation,
+        name=inspection.slug, noun=noun, record_ack=_record_ack,
+        not_recorded_text=(f"internal error recording {noun} consent — re-run the {noun} "
+                           "to be prompted again"))
 
     # The card is Casa's own: *channel* is Casa's endpoint, and the card's
     # broker scope carries that bot.
@@ -446,8 +643,10 @@ def prompt_specialist_install_consent(
         key, bot_id=channel.bot_id, chat_id=chat_id, operator_id=operator_id,
         channel=channel,
         challenge_text=text, options=["Approve", "Deny"],
-        on_commit_sync=_on_commit_sync, finish_factory=_finish_factory,
+        on_commit_sync=on_commit_sync, finish_factory=finish_factory,
         kind="specialist_install_consent",
-        meta_extra={"install_slug": inspection.slug, "install_component_id": inspection.component_id},
+        meta_extra={"install_slug": inspection.slug,
+                    "install_component_id": inspection.component_id,
+                    "approval_rid": record.rid},
         timeout_s=INSTALL_CONSENT_TTL_S,
     )

@@ -1,8 +1,7 @@
-"""#1314: a reply the specialist desk does not take still tells the resident
-what it answered — one Casa note on the reserved ``_reply_note`` context key,
-naming who posted the quoted message from Casa's post map and Telegram's
-sender ids (never from its text), when, and what it read, clipped. The
-message's own text reaches the bus unchanged.
+"""#1314: a reply tells the resident what it answered — one Casa note on the
+reserved ``_reply_note`` context key, naming who posted the quoted message from
+Telegram's sender ids and the task indexes (never from its text), when, and
+what it read, clipped. The message's own text reaches the bus unchanged.
 """
 from __future__ import annotations
 
@@ -11,11 +10,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-import result_broker as rb
-import specialist_desk as sd
+import chat_notes
+from channels.telegram import REPLY_QUOTE_CHARS, reply_note
 from provenance import sanitize_external_context
-from channels.tg_address import TgAddress
-from test_desk_route import BOT, OPERATOR, _channel, _record, _settle, routed  # noqa: F401
+from telegram_reply_harness import BOT, OPERATOR, _channel, _settle
 from test_telegram_new_reset import _drain_bus
 from timekeeping import resolve_tz
 
@@ -73,11 +71,8 @@ CASA_UNKNOWN = ("one of your earlier messages (most likely; it could also be a n
     ("someone-else", "someone else's message"),
     ("on-behalf-of-chat", "a message sent on behalf of a chat"),
     ("sender-on-behalf-of-chat", "a message sent on behalf of a chat"),
-    ("resident-post", "one of your own earlier messages"),
-    ("not-delegable", None),
 ])
-async def test_a_reply_the_desk_does_not_take_carries_casas_note(routed, monkeypatch, case, who):
-    pm, spawned = routed
+async def test_a_reply_carries_casas_note(case, who):
     update = _update()
     if case == "own-message":
         update = _update(quoted_from=OPERATOR)
@@ -88,45 +83,38 @@ async def test_a_reply_the_desk_does_not_take_carries_casas_note(routed, monkeyp
         update = _update(quoted_from=OPERATOR, quoted_chat=types.SimpleNamespace(id=-100))
     elif case == "sender-on-behalf-of-chat":
         update = _update(quoted_from=OPERATOR, sender_chat=types.SimpleNamespace(id=-100))
-    elif case == "resident-post":
-        pm.record(TgAddress(BOT, OPERATOR, 12), _record(role="assistant"))
-    elif case == "not-delegable":
-        pm.record(TgAddress(BOT, OPERATOR, 12), _record())
-        monkeypatch.setattr(sd, "desk_target_ok", lambda resident, role: False)
-        import tools
-        who = f"an earlier message from {tools._display_name_for_role('finance')}"
     msg = await _resident_turn(update)
     posted = _posted()
-    assert spawned.await_count == 0
     assert msg.content == "start from Q2 2026"                     # the words untouched
-    assert msg.context["_reply_note"] == sd.reply_note(who, posted, "Which quarter?")
+    assert msg.context["_reply_note"] == reply_note(who, posted, "Which quarter?")
     assert f"reply to {who}, posted {posted}, which read:\n«Which quarter?»" in msg.context["_reply_note"]
 
 
-async def test_a_message_that_is_not_a_reply_carries_no_note(routed):
+async def test_a_message_that_is_not_a_reply_carries_no_note():
     update = _update()
     update.message.reply_to_message = None
     msg = await _resident_turn(update)
     assert "_reply_note" not in msg.context
 
 
-async def test_the_quote_is_clipped_and_a_caption_or_nothing_stands_in(routed):
+async def test_the_quote_is_clipped_and_a_caption_or_nothing_stands_in():
     long = "x" * 2000
     note = (await _resident_turn(_update(quoted_text=long))).context["_reply_note"]
-    assert "«" + sd.clip(long, sd.REPLY_QUOTE_CHARS) + "»" in note and long not in note
+    assert "«" + chat_notes.clip(long, REPLY_QUOTE_CHARS) + "»" in note and long not in note
     note = (await _resident_turn(_update(quoted_text=None, caption="statement.pdf"))).context["_reply_note"]
     assert "«statement.pdf»" in note
     note = (await _resident_turn(_update(quoted_text=None, date=None))).context["_reply_note"]
-    assert note == sd.reply_note(CASA_UNKNOWN, None, None) and "«(no text)»" in note
+    assert note == reply_note(CASA_UNKNOWN, None, None) and "«(no text)»" in note
     assert ", posted" not in note
 
 
-async def test_a_routed_reply_is_unchanged_and_carries_no_note(routed):
-    pm, spawned = routed
-    ch, bus = _bot_channel()
-    await ch._handle(_update(quoted_id=11), None)                 # the retained finance post
-    await _settle(ch)
-    assert spawned.await_count == 1 and await _drain_bus(bus) == []
+async def test_a_reply_to_a_specialists_post_is_the_residents_turn_with_the_note():
+    """A specialist's post that belongs to no live task (one posted before an
+    upgrade, say) is just a message from this bot: the reply is the
+    resident's, with the note, and names no author it cannot know."""
+    msg = await _resident_turn(_update(quoted_id=11, quoted_text="📊 Finance\nQ3 report"))
+    assert msg.content == "start from Q2 2026"
+    assert msg.context["_reply_note"] == reply_note(CASA_UNKNOWN, _posted(), "📊 Finance\nQ3 report")
 
 
 async def test_no_external_context_can_set_the_note():
@@ -134,7 +122,7 @@ async def test_no_external_context_can_set_the_note():
 
 
 
-async def test_an_unrecorded_casa_message_claims_no_lost_record_and_no_author(routed):
+async def test_an_unrecorded_casa_message_claims_no_lost_record_and_no_author():
     """#1335: a reply to the resident's own fresh message — never recorded, so
     nothing was lost — is not told "no longer has a record"; and since a
     missing record proves no author (a specialist's file, Casa's notices), the

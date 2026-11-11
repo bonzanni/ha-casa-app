@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from approval_values import PERSONA_DIGEST, PERSONA_VALUES, persona_identity
 from specialist_install import SpecialistInstallError
 from test_persona_install import _write_persona_repo
 
@@ -306,15 +307,15 @@ def test_a_traversal_bearing_ref_never_reaches_a_path_join(tree, tmp_path) -> No
 
 
 def test_removal_revokes_the_install_approval(tree, tmp_path) -> None:
-    from persona_install import PersonaInstallAckStore, persona_install_consent_identity
+    from persona_install import PersonaInstallAckStore
 
     checksum = _install_persona(tree["personas"], tmp_path,
                                 persona_id="casa/newton", version="0.1.0")
     acks = PersonaInstallAckStore(path=tmp_path / "acks.json")
-    identity = persona_install_consent_identity(
+    identity = persona_identity(
         persona_id="casa/newton", version="0.1.0", checksum=checksum)
     acks.record(identity=identity, persona_id="casa/newton", version="0.1.0",
-                checksum=checksum)
+                checksum=checksum, values_digest=PERSONA_DIGEST)
 
     result = _remove(tree, tmp_path, persona_id="casa/newton", version="0.1.0", acks=acks)
 
@@ -325,15 +326,15 @@ def test_removal_revokes_the_install_approval(tree, tmp_path) -> None:
 def test_a_refused_removal_leaves_the_approval_intact(tree, tmp_path) -> None:
     """Revoke-before-delete must not fire on a path that refuses: a pinned
     persona keeps both its bytes AND its approval."""
-    from persona_install import PersonaInstallAckStore, persona_install_consent_identity
+    from persona_install import PersonaInstallAckStore
 
     checksum = _install_persona(tree["personas"], tmp_path,
                                 persona_id="casa/newton", version="0.1.0")
     acks = PersonaInstallAckStore(path=tmp_path / "acks.json")
-    identity = persona_install_consent_identity(
+    identity = persona_identity(
         persona_id="casa/newton", version="0.1.0", checksum=checksum)
     acks.record(identity=identity, persona_id="casa/newton", version="0.1.0",
-                checksum=checksum)
+                checksum=checksum, values_digest=PERSONA_DIGEST)
     _write_tuple(tree["bindings"] / "resident-assistant" / "active.yaml",
                  personas_root=tree["personas"], persona_id="casa/newton", version="0.1.0")
 
@@ -425,17 +426,18 @@ def test_a_tap_that_lands_after_a_revoke_records_nothing(tmp_path) -> None:
     removal worker is another thread and can revoke in that window, and an
     already-answered challenge can no longer be cancelled. The generation is
     what makes the revoke authoritative."""
-    from persona_install import PersonaInstallAckStore, persona_install_consent_identity
+    from persona_install import PersonaInstallAckStore
 
     acks = PersonaInstallAckStore(path=tmp_path / "acks.json")
-    identity = persona_install_consent_identity(
+    identity = persona_identity(
         persona_id="casa/newton", version="0.1.0", checksum="deadbeef")
     generations = acks.revocation_generations(persona_id="casa/newton", version="0.1.0")
 
     acks.revoke(persona_id="casa/newton", version="0.1.0")
 
     wrote = acks.record(identity=identity, persona_id="casa/newton", version="0.1.0",
-                        checksum="deadbeef", expect_generations=generations)
+                        checksum="deadbeef", expect_generations=generations,
+                        values_digest=PERSONA_DIGEST)
     assert wrote is False
     assert acks.is_acked(identity) is False
 
@@ -445,32 +447,34 @@ def test_a_wildcard_revoke_invalidates_a_pending_prompt_with_no_ack(tmp_path) ->
     PENDING appears in neither map, so a per-version generation alone leaves
     exactly that prompt able to re-create the approval a wildcard revoke just
     removed. The wildcard generation is what closes it."""
-    from persona_install import PersonaInstallAckStore, persona_install_consent_identity
+    from persona_install import PersonaInstallAckStore
 
     acks = PersonaInstallAckStore(path=tmp_path / "acks.json")
-    identity = persona_install_consent_identity(
+    identity = persona_identity(
         persona_id="casa/newton", version="0.1.0", checksum="deadbeef")
     generations = acks.revocation_generations(persona_id="casa/newton", version="0.1.0")
 
     acks.revoke(persona_id="casa/newton")          # no version, and no ack exists yet
 
     assert acks.record(identity=identity, persona_id="casa/newton", version="0.1.0",
-                       checksum="deadbeef", expect_generations=generations) is False
+                       checksum="deadbeef", expect_generations=generations,
+                       values_digest=PERSONA_DIGEST) is False
 
 
 def test_a_prompt_posted_after_a_revoke_can_still_be_approved(tmp_path) -> None:
     """The generation must not strand the operator: removing a persona and
     immediately re-installing it is a normal thing to do."""
-    from persona_install import PersonaInstallAckStore, persona_install_consent_identity
+    from persona_install import PersonaInstallAckStore
 
     acks = PersonaInstallAckStore(path=tmp_path / "acks.json")
-    identity = persona_install_consent_identity(
+    identity = persona_identity(
         persona_id="casa/newton", version="0.1.0", checksum="deadbeef")
     acks.revoke(persona_id="casa/newton")
 
     generations = acks.revocation_generations(persona_id="casa/newton", version="0.1.0")
     assert acks.record(identity=identity, persona_id="casa/newton", version="0.1.0",
-                       checksum="deadbeef", expect_generations=generations) is True
+                       checksum="deadbeef", expect_generations=generations,
+                       values_digest=PERSONA_DIGEST) is True
     assert acks.is_acked(identity) is True
 
 
@@ -501,21 +505,21 @@ def test_a_malformed_revocations_map_refuses_both_mutations(tmp_path) -> None:
         acks.revoke(persona_id="casa/newton")
     with pytest.raises(PersonaLedgerInvalid):
         acks.record(identity="ident-unused", persona_id="casa/newton", version="0.1.0",
-                    checksum="deadbeef")
+                    checksum="deadbeef", values_digest=PERSONA_DIGEST)
 
 
 def test_an_existing_ledger_without_revocations_keeps_its_acks(tmp_path) -> None:
     """The map is additive under the UNCHANGED schema_version: bumping the
     version would make `_load`'s version check discard every recorded ack on
     the upgrading boot."""
-    from persona_install import PersonaInstallAckStore, persona_install_consent_identity
+    from persona_install import PersonaInstallAckStore
 
-    identity = persona_install_consent_identity(
+    identity = persona_identity(
         persona_id="casa/newton", version="0.1.0", checksum="deadbeef")
     path = tmp_path / "acks.json"
     path.write_text(json.dumps({"schema_version": 1, "acks": {identity: {
         "persona_id": "casa/newton", "version": "0.1.0", "checksum": "deadbeef",
-        "ts": 1}}}), encoding="utf-8")
+        "values_digest": PERSONA_DIGEST, "ts": 1}}}), encoding="utf-8")
 
     acks = PersonaInstallAckStore(path=path)
     assert acks.is_acked(identity) is True
@@ -569,12 +573,12 @@ def test_a_damaged_ledger_document_refuses_a_generation_checked_record(tmp_path)
     reports generation 0, so a tap that captured 0 before a completed revoke
     would match and re-record the approval that revoke removed."""
     from persona_install import (
-        PersonaInstallAckStore, PersonaLedgerInvalid, persona_install_consent_identity,
+        PersonaInstallAckStore, PersonaLedgerInvalid,
     )
 
     path = tmp_path / "acks.json"
     acks = PersonaInstallAckStore(path=path)
-    identity = persona_install_consent_identity(
+    identity = persona_identity(
         persona_id="casa/newton", version="0.1.0", checksum="deadbeef")
     generations = acks.revocation_generations(persona_id="casa/newton", version="0.1.0")
     acks.revoke(persona_id="casa/newton", version="0.1.0")
@@ -583,7 +587,8 @@ def test_a_damaged_ledger_document_refuses_a_generation_checked_record(tmp_path)
 
     with pytest.raises(PersonaLedgerInvalid):
         acks.record(identity=identity, persona_id="casa/newton", version="0.1.0",
-                    checksum="deadbeef", expect_generations=generations)
+                    checksum="deadbeef", expect_generations=generations,
+                    values_digest=PERSONA_DIGEST)
 
 
 def test_a_damaged_ledger_document_refuses_a_revoke(tmp_path) -> None:
@@ -602,15 +607,17 @@ def test_a_damaged_ledger_document_refuses_a_revoke(tmp_path) -> None:
 def test_a_revoke_keeps_every_unrelated_approval(tmp_path) -> None:
     """The other half of the same finding: a revoke must remove exactly what it
     matched, never everything the ledger held."""
-    from persona_install import PersonaInstallAckStore, persona_install_consent_identity
+    from persona_install import PersonaInstallAckStore
 
     acks = PersonaInstallAckStore(path=tmp_path / "acks.json")
-    keep = persona_install_consent_identity(
+    keep = persona_identity(
         persona_id="casa/ellen", version="0.1.0", checksum="cafe")
-    drop = persona_install_consent_identity(
+    drop = persona_identity(
         persona_id="casa/newton", version="0.1.0", checksum="deadbeef")
-    acks.record(identity=keep, persona_id="casa/ellen", version="0.1.0", checksum="cafe")
-    acks.record(identity=drop, persona_id="casa/newton", version="0.1.0", checksum="deadbeef")
+    acks.record(identity=keep, persona_id="casa/ellen", version="0.1.0", checksum="cafe",
+                values_digest=PERSONA_DIGEST)
+    acks.record(identity=drop, persona_id="casa/newton", version="0.1.0", checksum="deadbeef",
+                values_digest=PERSONA_DIGEST)
 
     removed = acks.revoke(persona_id="casa/newton")
 
@@ -687,7 +694,7 @@ def test_a_direct_record_cannot_reset_the_revocation_fence(tmp_path) -> None:
     completed revoke matched again and could republish the removed persona.
     Every record validates the document now — the generation-free one too."""
     from persona_install import (
-        PersonaInstallAckStore, PersonaLedgerInvalid, persona_install_consent_identity,
+        PersonaInstallAckStore, PersonaLedgerInvalid,
     )
 
     path = tmp_path / "acks.json"
@@ -696,11 +703,11 @@ def test_a_direct_record_cannot_reset_the_revocation_fence(tmp_path) -> None:
     acks.revoke(persona_id="casa/newton", version="0.1.0")
     path.write_text("{ truncated", encoding="utf-8")
 
-    identity = persona_install_consent_identity(
+    identity = persona_identity(
         persona_id="casa/other", version="0.1.0", checksum="cafe")
     with pytest.raises(PersonaLedgerInvalid):
         acks.record(identity=identity, persona_id="casa/other", version="0.1.0",
-                    checksum="cafe")
+                    checksum="cafe", values_digest=PERSONA_DIGEST)
 
     # Nothing was rewritten, so the fence the revoke established is still the
     # last thing written to the file — a repair is the operator deleting it,

@@ -22,7 +22,8 @@ import plugin_registry
 import specialist_bundle_journal
 import specialist_install
 
-from test_specialist_bundle_commit import _UpgradeFixture
+from approval_values import record_specialist_ack
+from test_specialist_bundle_commit import _UpgradeFixture, _staged_values
 
 SENTINEL = personality_binding.PRE_GUARD_SENTINEL
 
@@ -143,7 +144,7 @@ def test_a_failure_after_activation_keeps_the_new_version_and_the_retry_finishes
 
     fx = _UpgradeFixture(tmp_path, monkeypatch, v2_required=(), v2_secret_names=("k",),
                          value="plain-8e4b")
-    fx.approve_v2()
+    fx.approve_v2(secret_names_provided=frozenset({"k"}))
     rollbacks = []
     real_rollback = specialist_bundle_journal.BundleTxn.rollback_disk
     monkeypatch.setattr(specialist_bundle_journal.BundleTxn, "rollback_disk",
@@ -172,7 +173,7 @@ def test_a_failure_after_activation_keeps_the_new_version_and_the_retry_finishes
     prior = yaml.safe_load((fx.slug_dir / "active.prior.yaml").read_text(encoding="utf-8"))
     assert "k" not in prior["config_snapshot"] and prior["config_digest"] == SENTINEL
 
-    fx.approve_v2()
+    fx.approve_v2(secret_names_provided=frozenset({"k"}))
     inst, txn = fx.upgrade(config={}, secret_names_provided=frozenset({"k"}))
     assert inst.state == "active"
     assert len(swaps) == 2
@@ -199,7 +200,7 @@ def test_boot_finishes_the_prior_after_a_crash_between_the_swap_and_its_rotation
     value = "plain-41f0"
     fx = _UpgradeFixture(tmp_path, monkeypatch, v2_required=(), v2_secret_names=("k",),
                          value=value)
-    fx.approve_v2()
+    fx.approve_v2(secret_names_provided=frozenset({"k"}))
     a_root = yaml.safe_load((fx.slug_dir / "active.yaml").read_text(encoding="utf-8"))["root"]
     real_replace = os.replace
 
@@ -246,7 +247,7 @@ def test_a_successful_upgrade_whose_prior_rename_failed_leaves_no_plain_copy(
     value = "plain-5b77"
     fx = _UpgradeFixture(tmp_path, monkeypatch, v2_required=(), v2_secret_names=("k",),
                          value=value)
-    fx.approve_v2()
+    fx.approve_v2(secret_names_provided=frozenset({"k"}))
     real_replace = os.replace
     faults = []
 
@@ -274,7 +275,8 @@ def test_an_install_over_any_active_version_refuses_before_its_journal(
     """The occupant refusal does not depend on a lossy capture: an install
     handed another version of an ACTIVE slug is refused before `begin`."""
     fx = _UpgradeFixture(tmp_path, monkeypatch, v2_required=("k",))
-    fx.approve_v2()
+    values = record_specialist_ack(fx.acks, fx.insp2, _staged_values(
+        "specialist_install", fx.insp2, specialists_dir=fx.common["specialists_dir"]))
     begins = []
     real_begin = specialist_bundle_journal.begin
     monkeypatch.setattr(specialist_bundle_journal, "begin",
@@ -283,7 +285,8 @@ def test_an_install_over_any_active_version_refuses_before_its_journal(
 
     with pytest.raises(specialist_install.SpecialistInstallError) as ei:
         specialist_install.commit_specialist_install(
-            inspection=fx.insp2, receipt=fx.receipt2, config={}, **fx.common)
+            inspection=fx.insp2, receipt=fx.receipt2, config={},
+            approved_values=values, **fx.common)
 
     assert ei.value.kind == "active_present"
     assert begins == []
@@ -312,9 +315,13 @@ def test_an_outstanding_prior_rotation_does_not_block_the_one_step_upgrade(
             faults.append(1)
             raise OSError(5, "Input/output error")
         return real_replace(src, dst, *a, **kw)
+    a_values = record_specialist_ack(fx.acks, fx.insp1, _staged_values(
+        "specialist_upgrade", fx.insp1, config={"k": "v"},
+        specialists_dir=fx.common["specialists_dir"]))
     monkeypatch.setattr(os, "replace", _rename_fails_once)
     inst, txn = specialist_install.upgrade_specialist(
-        slug="mtg", inspection=fx.insp1, receipt=receipt1, config={"k": "v"}, **fx.common)
+        slug="mtg", inspection=fx.insp1, receipt=receipt1, config={"k": "v"},
+        approved_values=a_values, **fx.common)
     monkeypatch.setattr(os, "replace", real_replace)
     specialist_bundle_journal.complete(txn.journal_path)
     assert faults == [1] and inst.state == "active"
@@ -330,7 +337,7 @@ def test_an_outstanding_prior_rotation_does_not_block_the_one_step_upgrade(
     active = yaml.safe_load((fx.slug_dir / "active.yaml").read_text(encoding="utf-8"))
     assert active["config_snapshot"] == {"k": "v"}
 
-    fx.approve_v2()
+    fx.approve_v2(secret_names_provided=frozenset({"k"}))
     inst, txn = fx.upgrade(config={}, secret_names_provided=frozenset({"k"}))
     assert inst.state == "active"
     specialist_bundle_journal.complete(txn.journal_path)
@@ -374,7 +381,7 @@ def test_an_unreadable_active_tuple_at_replay_restores_nothing(tmp_path, monkeyp
     the restore, which removes the prior the capture recorded as absent; so
     nothing is restored, the journal stands, and the next boot keeps B."""
     fx = _UpgradeFixture(tmp_path, monkeypatch, v2_required=(), v2_secret_names=("k",))
-    fx.approve_v2()
+    fx.approve_v2(secret_names_provided=frozenset({"k"}))
     active_path = fx.slug_dir / "active.yaml"
     assert not (fx.slug_dir / "active.prior.yaml").exists()
     # The upgrade returns with its journal still in progress: the process is

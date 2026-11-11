@@ -1,5 +1,5 @@
 """S5 §1.7 (plan): the tools wiring of a pinned one-call turn — the options
-builder consumes the build input the tap CAPTURED under the desk lock (no
+builder consumes the build input the tap CAPTURED under the agent's lane (no
 second resolve, no filter, no rebuild, no plan) and puts the pin matcher
 FIRST; the capture withholds exactly what the builder withholds; the
 delegated runner obtains its client from the controller and never exits it,

@@ -16,6 +16,54 @@ def _payload(result: dict) -> dict:
     return json.loads(result["content"][0]["text"])
 
 
+@pytest.fixture(autouse=True)
+def _approval_store(tmp_path, monkeypatch):
+    """Approval records under tmp_path, never /data."""
+    import asyncio as _asyncio
+    import approval_records
+    import tools as tools_mod
+    monkeypatch.setattr(approval_records, "PATH", str(tmp_path / "approval-records.json"))
+    approval_records.reset()
+    monkeypatch.setattr(tools_mod, "_PLUGIN_TOOLS_LOCK", _asyncio.Lock())
+    yield
+    approval_records.reset()
+
+
+async def _approved_call(tool, args: dict, *, values: "dict | None" = None):
+    """Call the governed *tool* as the run Casa started after the operator
+    approved *args* (their config and secret names, unless *values* says
+    otherwise): an approved, current record for the identity the tool
+    computes from the staged bytes, named on the run's origin."""
+    from pathlib import Path as _Path
+    import agent as agent_mod
+    import approval_records
+    import tools as tools_mod
+    from specialist_install import validate_resume_inputs
+    from specialist_install_consent import identity_for_inspection
+    kind = "specialist_upgrade" if tool is tools_mod.specialist_upgrade else "specialist_install"
+    origin = {"role": "assistant", "execution_role": "configurator", "channel": "telegram",
+              "chat_id": 42, "cid": "c", "user_text": "install it"}
+    checked = validate_resume_inputs(
+        staged_dir=args.get("staged_dir", ""), receipt_id=args.get("receipt_id"),
+        root_digest=args.get("root_digest"))
+    if checked.ok:
+        inspection = tools_mod._inspection_from_checked(checked, _Path(args["staged_dir"]))
+        if values is None:
+            values = {"config": dict(args.get("config") or {}),
+                      "secrets": sorted(args.get("secret_names_provided") or [])}
+        async with tools_mod._plugin_tools_guard():
+            rec, _, _ = approval_records.request(
+                kind, f"{inspection.component_id}:{inspection.slug}",
+                identity_for_inspection(inspection, values=values), values)
+        rec = approval_records.approve(rec.rid)
+        origin[approval_records.APPROVAL_KEY] = {"rid": rec.rid, "generation": rec.generation}
+    token = agent_mod.origin_var.set(origin)
+    try:
+        return await tool.handler(args)
+    finally:
+        agent_mod.origin_var.reset(token)
+
+
 def _inject_fake_receipt(monkeypatch, *, plugins=(), slug="mtg"):
     """Task 10: the commit/upgrade tools require a loadable receipt (by opaque
     id) before anything else. Inject a fake so tests exercising the LATER gates
@@ -84,7 +132,7 @@ async def test_specialist_install_commit_rejects_a_changed_root_digest(
     monkeypatch.setattr(specialist_install, "commit_specialist_install", _must_not_be_called)
     _inject_fake_receipt(monkeypatch)
 
-    result = await specialist_install_commit.handler({
+    result = await _approved_call(specialist_install_commit, {
         "component_id": component.component_id, "version": component.version,
         "slug": component.slug, "staged_dir": str(staged), "receipt_id": "a" * 32,
         "root_digest": "sha256:" + "f" * 64,  # deliberately wrong — never the real digest
@@ -127,7 +175,7 @@ async def test_specialist_install_commit_rejects_without_a_recorded_consent_ack(
     monkeypatch.setattr(specialist_install_consent, "SpecialistInstallAckStore", _TmpAckStore)
     _inject_fake_receipt(monkeypatch)
 
-    result = await specialist_install_commit.handler({
+    result = await _approved_call(specialist_install_commit, {
         "component_id": component.component_id, "version": component.version,
         "slug": component.slug, "staged_dir": str(staged), "root_digest": root_digest,
         "receipt_id": "a" * 32,
@@ -172,7 +220,7 @@ async def test_specialist_install_commit_requires_a_receipt_id(monkeypatch, tmp_
     a missing/unloadable id fails closed BEFORE any staged bytes are read."""
     from tools import specialist_install_commit
 
-    result = await specialist_install_commit.handler({
+    result = await _approved_call(specialist_install_commit, {
         "component_id": "x/y", "version": "0.1.0", "slug": "mtg",
         "staged_dir": str(tmp_path / "staged"), "root_digest": "sha256:" + "a" * 64,
         # no receipt_id
@@ -231,7 +279,7 @@ async def test_commit_sequencer_failure_compensates_with_new_artifact_ids(
     monkeypatch.setattr(tools_mod, "_bundle_reload_and_verify", _seq)
 
     with pytest.raises(RuntimeError):
-        await specialist_install_commit.handler({
+        await _approved_call(specialist_install_commit, {
             "component_id": component.component_id, "version": component.version,
             "slug": "mtg", "staged_dir": str(staged), "root_digest": root_digest,
             "receipt_id": "a" * 32,
@@ -289,7 +337,7 @@ async def test_commit_seq_not_ready_compensates_and_reports_ok_false(
 
     monkeypatch.setattr(tools_mod, "_bundle_reload_and_verify", _seq)
 
-    result = await specialist_install_commit.handler({
+    result = await _approved_call(specialist_install_commit, {
         "component_id": component.component_id, "version": component.version,
         "slug": "mtg", "staged_dir": str(staged), "root_digest": root_digest,
         "receipt_id": "a" * 32,
@@ -410,7 +458,7 @@ async def test_seq_failure_with_failed_rollback_tags_compensation_failed(
 
     monkeypatch.setattr(tools_mod, "_bundle_reload_and_verify", _seq)
 
-    payload = _payload(await specialist_install_commit.handler({
+    payload = _payload(await _approved_call(specialist_install_commit, {
         "component_id": component.component_id, "version": component.version,
         "slug": "mtg", "staged_dir": str(staged), "root_digest": root_digest,
         "receipt_id": "a" * 32,
@@ -568,7 +616,7 @@ async def test_upgrade_tool_maps_bad_staged_dir(monkeypatch, tmp_path) -> None:
     # (mirrors specialist_install_commit's guard), never a raw OSError.
     from tools import specialist_upgrade
     _inject_fake_receipt(monkeypatch)
-    result = await specialist_upgrade.handler({
+    result = await _approved_call(specialist_upgrade, {
         "slug": "mtg", "component_id": "c/x", "version": "1.0.0",
         "root_digest": "sha256:" + "a" * 64,
         "staged_dir": str(tmp_path / "does-not-exist"), "receipt_id": "a" * 32,
@@ -600,7 +648,7 @@ async def test_specialist_upgrade_rejects_a_changed_root_digest(monkeypatch, tmp
     monkeypatch.setattr(specialist_install, "upgrade_specialist", _must_not_be_called)
     _inject_fake_receipt(monkeypatch)
 
-    result = await specialist_upgrade.handler({
+    result = await _approved_call(specialist_upgrade, {
         "slug": component.slug, "component_id": component.component_id,
         "version": component.version, "staged_dir": str(staged), "receipt_id": "a" * 32,
         "root_digest": "sha256:" + "f" * 64,  # deliberately wrong
@@ -659,10 +707,8 @@ async def test_specialist_uninstall_tool_calls_uninstall_specialist_and_reports_
 
 
 # ---------------------------------------------------------------------------
-# Round-5b (Sol P1): specialist_install_inspect must verify the consent
-# keyboard can actually post — or skip it entirely when the ack ledger
-# already holds this exact install identity — instead of returning ok:true
-# into a flow that strands forever at commit's consent_missing.
+# specialist_install_inspect stages and reports; it posts nothing. The card
+# is the request tool's (specialist_install_request_approval, at the end).
 # ---------------------------------------------------------------------------
 
 import asyncio
@@ -751,180 +797,6 @@ class _Handle:
 
 
 @pytest.mark.asyncio
-async def test_inspect_without_channel_returns_consent_channel_unavailable(
-    monkeypatch, tmp_path,
-) -> None:
-    from tools import specialist_install_inspect
-    _wire_inspect(monkeypatch, tmp_path, channel=None)
-
-    payload = _payload(await specialist_install_inspect.handler(
-        {"repo": "owner/repo", "ref": "main"}))
-    assert payload["ok"] is False
-    assert payload["kind"] == "consent_channel_unavailable"
-    assert "no telegram channel" in payload["detail"]
-
-
-@pytest.mark.asyncio
-async def test_inspect_with_preacked_ledger_skips_keyboard(
-    monkeypatch, tmp_path,
-) -> None:
-    """Pre-authorized path: valid ledger consent for this EXACT identity
-    (the same install_consent_identity binding commit validates) -> ok:true
-    with NO keyboard attempt — works with no Telegram at all."""
-    import specialist_install_consent
-    from specialist_install_consent import install_consent_identity
-    from tools import specialist_install_inspect
-
-    fake, tmp_store_cls = _wire_inspect(monkeypatch, tmp_path, channel=None)
-    identity = install_consent_identity(
-        component_id=fake.component_id, version=fake.version,
-        root_digest=fake.root_digest, slug=fake.slug)
-    tmp_store_cls().record(
-        identity=identity, component_id=fake.component_id, version=fake.version,
-        component_checksum=fake.root_digest, slug=fake.slug)
-
-    def _must_not_post(**kwargs):
-        raise AssertionError("keyboard must not be attempted on a pre-acked install")
-
-    monkeypatch.setattr(
-        specialist_install_consent, "prompt_specialist_install_consent", _must_not_post)
-
-    payload = _payload(await specialist_install_inspect.handler(
-        {"repo": "owner/repo", "ref": "main"}))
-    assert payload["ok"] is True
-    assert payload["consent"] == "pre_authorized"
-    assert payload["root_digest"] == fake.root_digest
-
-
-@pytest.mark.asyncio
-async def test_inspect_preacked_with_receipt_digest_is_pre_authorized(
-    monkeypatch, tmp_path,
-) -> None:
-    """Fix round 1 (task-13 e2e finding): a REAL inspect_specialist_repo call
-    ALWAYS issues a non-empty receipt_digest (specialist_receipt.compute_
-    receipt_digest — plugins or not), and the consent-record path
-    (prompt_specialist_install_consent's _on_commit_sync) and the commit/
-    upgrade consent gates (specialist_install.py) all bind receipt_digest
-    into the identity. Before this fix, specialist_install_inspect's own
-    pre-auth check computed the identity WITHOUT receipt_digest, so an ack
-    recorded (the normal way, with the digest) was never recognized here —
-    the keyboard re-posted, and in a Telegram-less container this fell all
-    the way to consent_channel_unavailable. Record the ack exactly the way
-    _on_commit_sync does (WITH receipt_digest) and assert inspect now
-    recognizes it as pre-authorized with no keyboard attempt."""
-    import specialist_install_consent
-    from specialist_install_consent import install_consent_identity
-    from tools import specialist_install_inspect
-
-    receipt_digest = "sha256:" + "f" * 64
-    fake, tmp_store_cls = _wire_inspect(
-        monkeypatch, tmp_path, channel=None, receipt_digest=receipt_digest)
-    identity = install_consent_identity(
-        component_id=fake.component_id, version=fake.version,
-        root_digest=fake.root_digest, slug=fake.slug, receipt_digest=receipt_digest)
-    tmp_store_cls().record(
-        identity=identity, component_id=fake.component_id, version=fake.version,
-        component_checksum=fake.root_digest, slug=fake.slug, receipt_digest=receipt_digest)
-
-    def _must_not_post(**kwargs):
-        raise AssertionError("keyboard must not be attempted on a pre-acked install")
-
-    monkeypatch.setattr(
-        specialist_install_consent, "prompt_specialist_install_consent", _must_not_post)
-
-    payload = _payload(await specialist_install_inspect.handler(
-        {"repo": "owner/repo", "ref": "main"}))
-    assert payload["ok"] is True
-    assert payload["consent"] == "pre_authorized"
-    assert payload["receipt_digest"] == receipt_digest
-
-
-@pytest.mark.asyncio
-async def test_inspect_legacy_ack_without_receipt_digest_fails_closed(
-    monkeypatch, tmp_path,
-) -> None:
-    """Converse of the fix above: an ack recorded the OLD/legacy way — its
-    identity computed WITHOUT receipt_digest, e.g. by the pre-fix buggy
-    inspect code, or a genuinely pre-Task-7 ack — must NOT satisfy a fresh
-    inspection that carries a real (non-empty) receipt_digest. Fail-closed:
-    the ledger lookup misses, so the tool falls through past the
-    pre-authorized branch to the keyboard-post attempt; with no telegram
-    channel wired that surfaces as consent_channel_unavailable rather than
-    silently treating a digest-less legacy ack as covering the bundled
-    closure."""
-    from specialist_install_consent import install_consent_identity
-    from tools import specialist_install_inspect
-
-    receipt_digest = "sha256:" + "f" * 64
-    fake, tmp_store_cls = _wire_inspect(
-        monkeypatch, tmp_path, channel=None, receipt_digest=receipt_digest)
-    legacy_identity = install_consent_identity(
-        component_id=fake.component_id, version=fake.version,
-        root_digest=fake.root_digest, slug=fake.slug)  # no receipt_digest — legacy shape
-    tmp_store_cls().record(
-        identity=legacy_identity, component_id=fake.component_id, version=fake.version,
-        component_checksum=fake.root_digest, slug=fake.slug)  # no receipt_digest recorded either
-
-    payload = _payload(await specialist_install_inspect.handler(
-        {"repo": "owner/repo", "ref": "main"}))
-    assert payload["ok"] is False
-    assert payload["kind"] == "consent_channel_unavailable"
-    assert "consent" not in payload
-
-
-@pytest.mark.asyncio
-async def test_preacked_receipt_digest_identity_also_satisfies_real_commit(
-    tmp_path,
-) -> None:
-    """Round-trips the fix: the SAME ack (identity computed WITH
-    receipt_digest, exactly as inspect now records/checks it) also satisfies
-    the real commit_specialist_install consent gate — proving the
-    follow-on commit succeeds once inspect's pre-auth check stops rejecting
-    a receipt-digest-bound ack. Uses a hand-built InspectionResult (receipt=
-    None keeps commit_specialist_install on its legacy, non-bundle-journal
-    path) since only the consent-identity gate is under test here."""
-    from test_specialist_install import _write_component
-    from specialist_component import load_specialist_component
-    from specialist_install import (
-        InspectionResult, commit_specialist_install, compute_install_root_digest,
-        resolve_dependency_closure,
-    )
-    from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
-
-    staged = _write_component(tmp_path / "staged", slug="mtg")
-    component = load_specialist_component(staged, staged / "manifest.json")
-    deps = resolve_dependency_closure(component, staged)
-    root_digest = compute_install_root_digest(
-        component, deps, manifest_bytes=(staged / "manifest.json").read_bytes())
-    receipt_digest = "sha256:" + "f" * 64
-
-    inspection = InspectionResult(
-        component_id=component.component_id, version=component.version, slug=component.slug,
-        component_checksum=component.checksum, root_digest=root_digest,
-        mission=str(component.role.role["mission"]),
-        default_persona_ref=component.default_persona_ref,
-        default_persona_checksum=component.default_persona_checksum,
-        required_config_names=(), required_secret_names=(), dependencies=deps,
-        staged_dir=staged, receipt_digest=receipt_digest,
-    )
-    acks = SpecialistInstallAckStore(path=tmp_path / "acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug,
-        receipt_digest=inspection.receipt_digest)
-    acks.record(identity=identity, component_id=inspection.component_id,
-                version=inspection.version, component_checksum=inspection.root_digest,
-                slug=inspection.slug, receipt_digest=inspection.receipt_digest)
-
-    instance = commit_specialist_install(
-        inspection=inspection, receipt=None, config={}, secret_names_provided=frozenset(),
-        acks=acks, specialists_dir=tmp_path / "specialists",
-        agents_specialists_dir=tmp_path / "agents-specialists",
-    )
-    assert instance.state == "active"
-
-
-@pytest.mark.asyncio
 async def test_inspect_ok_payload_surfaces_receipt_and_plugins(monkeypatch, tmp_path) -> None:
     """Fix round 1 (task-12): specialist_install_commit/specialist_upgrade
     REQUIRE args["receipt_id"] (their MCP schemas mark it "required") — an
@@ -932,7 +804,6 @@ async def test_inspect_ok_payload_surfaces_receipt_and_plugins(monkeypatch, tmp_
     receipt_required. Also asserts the "plugins" tool-payload mirror of what
     the consent DM already enumerates (render_install_consent_message)."""
     from specialist_receipt import PluginReceiptRow
-    from specialist_install_consent import install_consent_identity
     from tools import specialist_install_inspect
 
     row = PluginReceiptRow(
@@ -945,12 +816,6 @@ async def test_inspect_ok_payload_surfaces_receipt_and_plugins(monkeypatch, tmp_
     )
     fake, tmp_store_cls = _wire_inspect(
         monkeypatch, tmp_path, channel=None, plugin_resolutions=(row,))
-    identity = install_consent_identity(
-        component_id=fake.component_id, version=fake.version,
-        root_digest=fake.root_digest, slug=fake.slug)
-    tmp_store_cls().record(
-        identity=identity, component_id=fake.component_id, version=fake.version,
-        component_checksum=fake.root_digest, slug=fake.slug)
 
     payload = _payload(await specialist_install_inspect.handler(
         {"repo": "owner/repo", "ref": "main"}))
@@ -984,7 +849,7 @@ async def test_inspect_receipt_id_round_trips_into_commit(monkeypatch, tmp_path)
     import specialist_receipt
     import tools as tools_mod
     from specialist_install_consent import (
-        SpecialistInstallAckStore, install_consent_identity,
+        SpecialistInstallAckStore,
     )
     from tools import specialist_install_commit, specialist_install_inspect
 
@@ -1016,12 +881,6 @@ async def test_inspect_receipt_id_round_trips_into_commit(monkeypatch, tmp_path)
         specialist_install_consent, "SpecialistInstallAckStore", _TmpAckStore)
     monkeypatch.setattr(
         tools_mod, "_channel_manager", SimpleNamespace(get=lambda name: None))
-    identity = install_consent_identity(
-        component_id=component.component_id, version=component.version,
-        root_digest=root_digest, slug=component.slug)
-    _TmpAckStore().record(
-        identity=identity, component_id=component.component_id, version=component.version,
-        component_checksum=root_digest, slug=component.slug)
 
     inspect_payload = _payload(await specialist_install_inspect.handler(
         {"repo": "owner/repo", "ref": "main"}))
@@ -1044,7 +903,7 @@ async def test_inspect_receipt_id_round_trips_into_commit(monkeypatch, tmp_path)
         specialist_install, "commit_specialist_install", lambda *a, **k: (instance, txn))
     _stub_bundle_sequencer(monkeypatch)
 
-    commit_payload = _payload(await specialist_install_commit.handler({
+    commit_payload = _payload(await _approved_call(specialist_install_commit, {
         "component_id": inspect_payload["component_id"], "version": inspect_payload["version"],
         "slug": inspect_payload["slug"], "staged_dir": inspect_payload["staged_dir"],
         "root_digest": inspect_payload["root_digest"],
@@ -1055,7 +914,8 @@ async def test_inspect_receipt_id_round_trips_into_commit(monkeypatch, tmp_path)
     # round trip works — and the commit reaches success, never dead-ending
     # at receipt_required. Two loads since #346: the pre-lock load plus the
     # in-lock re-check (a concurrent bundle may prune it while we wait).
-    assert load_calls == [real_receipt_id, real_receipt_id]
+    # (the first load is the test's own approval of this exact inspection)
+    assert load_calls == [real_receipt_id] * 3
     assert commit_payload["ok"] is True
     assert commit_payload["slug"] == "mtg"
 
@@ -1111,7 +971,7 @@ async def test_commit_prunes_receipt_only_on_active(
     # caller can assert a different identity and still reach the core. Passing
     # divergent strings here is what separates "the values this call validated"
     # from "the values the caller sent".
-    payload = _payload(await specialist_install_commit.handler({
+    payload = _payload(await _approved_call(specialist_install_commit, {
         "component_id": "wrong-id", "version": "9.9",
         "slug": component.slug, "staged_dir": str(staged),
         "root_digest": root_digest, "receipt_id": receipt_id,
@@ -1123,171 +983,7 @@ async def test_commit_prunes_receipt_only_on_active(
     assert staged.exists() is (not expect_pruned)
 
 
-@pytest.mark.asyncio
-async def test_inspect_happy_path_posts_keyboard(monkeypatch, tmp_path) -> None:
-    import specialist_install_consent
-    from tools import specialist_install_inspect
-
-    calls: list[dict] = []
-
-    def _prompt(**kwargs):
-        calls.append(kwargs)
-        return _Handle(settled="posted")
-
-    _wire_inspect(monkeypatch, tmp_path, channel=SimpleNamespace(chat_id="123"))
-    monkeypatch.setattr(
-        specialist_install_consent, "prompt_specialist_install_consent", _prompt)
-
-    payload = _payload(await specialist_install_inspect.handler(
-        {"repo": "owner/repo", "ref": "main"}))
-    assert payload["ok"] is True
-    assert payload["consent"] == "keyboard_posted"
-    assert len(calls) == 1
-    assert calls[0]["chat_id"] == 123 and calls[0]["operator_id"] == 123
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("handle,expected_kind", [
-    (_Handle(refused="args_too_large"), "consent_prompt_refused"),
-    (_Handle(settled="delivery_failed"), "consent_delivery_failed"),
-    (_Handle(settled="inactive"), "consent_prompt_inactive"),
-    (_Handle(hang=True), "consent_post_unsettled"),
-])
-async def test_inspect_post_failures_are_structured(
-    monkeypatch, tmp_path, handle, expected_kind,
-) -> None:
-    import specialist_install_consent
-    import tools as tools_mod
-    from tools import specialist_install_inspect
-
-    _wire_inspect(monkeypatch, tmp_path, channel=SimpleNamespace(chat_id="123"))
-    monkeypatch.setattr(
-        specialist_install_consent, "prompt_specialist_install_consent",
-        lambda **kwargs: handle)
-    # Bounded: shrink the settle bound instead of waiting 30s (and never
-    # patch <module>.asyncio.sleep — memory-cage rule).
-    monkeypatch.setattr(tools_mod, "_INSTALL_CONSENT_POST_TIMEOUT_S", 0.05)
-
-    payload = _payload(await specialist_install_inspect.handler(
-        {"repo": "owner/repo", "ref": "main"}))
-    assert payload["ok"] is False
-    assert payload["kind"] == expected_kind
-
-
-@pytest.mark.asyncio
-async def test_inspect_prompt_exception_is_structured(monkeypatch, tmp_path) -> None:
-    import specialist_install_consent
-    from tools import specialist_install_inspect
-
-    def _boom(**kwargs):
-        raise RuntimeError("registration blew up")
-
-    _wire_inspect(monkeypatch, tmp_path, channel=SimpleNamespace(chat_id="123"))
-    monkeypatch.setattr(
-        specialist_install_consent, "prompt_specialist_install_consent", _boom)
-
-    payload = _payload(await specialist_install_inspect.handler(
-        {"repo": "owner/repo", "ref": "main"}))
-    assert payload["ok"] is False
-    assert payload["kind"] == "consent_prompt_failed"
-    assert "registration blew up" in payload["detail"]
-
-
 # ---------------------------------------------------------------------------
-# v0.102.0 (#217), reworked in v0.351.0: on Approve+ack
-# the reconcile_cb the inspect tool built continues the configurator by
-# itself, as one turn on its desk in the operator's DM
-# (``_dispatch_desk_continuation``), so the install proceeds without a manual
-# operator nudge. reconcile_cb runs from the tap-callback finish hook — it
-# must NEVER raise into it. These tests drive reconcile_cb directly (captured
-# off the prompt kwargs), so they never depend on Telegram delivery mechanics.
-# ---------------------------------------------------------------------------
-
-
-def _capture_reconcile(monkeypatch):
-    """Patch prompt_specialist_install_consent to a posting stub that records
-    the reconcile_cb the inspect tool built, and return the capture dict."""
-    import specialist_install_consent
-
-    cap: dict = {}
-
-    def _prompt(**kwargs):
-        cap["reconcile_cb"] = kwargs["reconcile_cb"]
-        return _Handle(settled="posted")
-
-    monkeypatch.setattr(
-        specialist_install_consent, "prompt_specialist_install_consent", _prompt)
-    return cap
-
-
-def _desk_channel(dispatch):
-    """An operator-DM channel whose desk route is *dispatch*."""
-    return SimpleNamespace(chat_id="123", _dispatch_desk_continuation=dispatch)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["upgrade", "install", None])
-@pytest.mark.parametrize("delivery_result", [1, 0])
-async def test_reconcile_cb_continuation_matches_inspect_mode(
-    monkeypatch, tmp_path, mode, delivery_result,
-) -> None:
-    # #1150/#1163: the post-Approve continuation follows the inspect's mode.
-    # An upgrade continues with upgrade.md step 3 (specialist_upgrade) --
-    # specialist_install_commit refuses an installed slug (active_present) and
-    # the upgrade recipe wires no delegation. An install continues with
-    # specialist_install_commit and wires the delegation. The callback reports
-    # the desk route's own answer as a bool.
-    from tools import specialist_install_inspect
-
-    delivered = []
-
-    async def _dispatch(*, chat_id, user_id, desk_role, request_id, text):
-        delivered.append((desk_role, text))
-        return delivery_result
-
-    _wire_inspect(monkeypatch, tmp_path, channel=_desk_channel(_dispatch))
-    cap = _capture_reconcile(monkeypatch)
-    args = {"repo": "owner/repo", "ref": "main"}
-    if mode is not None:
-        args["mode"] = mode
-    if mode == "upgrade":
-        args["target_slug"] = "mtg"
-
-    payload = _payload(await specialist_install_inspect.handler(args))
-
-    assert payload["consent"] == "keyboard_posted", "CONSENT_POSTED"
-    outcome = await cap["reconcile_cb"]()
-    assert len(delivered) == 1, "ONE_CONTINUATION"
-    assert delivered[0][0] == "configurator", "CONFIGURATOR_DESK"
-    assert outcome is bool(delivery_result), "DELIVERY_BOOL"
-
-    text = delivered[0][1]
-    assert "specialist:mtg" in text, "NAMES_THE_SLUG"
-    if mode == "upgrade":
-        assert "specialist_upgrade" in text, "UPGRADE_TOOL_REQUIRED"
-        assert text.count("specialist_install_commit") == 0, "NO_INSTALL_COMMIT"
-        assert text.count("wire delegation") == 0, "NO_DELEGATION_WIRING"
-    else:
-        assert "specialist_install_commit" in text, "INSTALL_COMMIT_REQUIRED"
-        assert "wire delegation" in text, "DELEGATION_WIRING"
-    assert "emit_completion" not in text, "NO_ENGAGEMENT_COMPLETION"
-
-
-@pytest.mark.asyncio
-async def test_reconcile_cb_swallows_a_delivery_failure(monkeypatch, tmp_path) -> None:
-    from tools import specialist_install_inspect
-
-    async def _dispatch(**kwargs):
-        raise RuntimeError("delivery blew up")
-
-    _wire_inspect(monkeypatch, tmp_path, channel=_desk_channel(_dispatch))
-    cap = _capture_reconcile(monkeypatch)
-
-    await specialist_install_inspect.handler({"repo": "owner/repo", "ref": "main"})
-
-    # Fail-safe: reconcile_cb never propagates into the tap-callback path —
-    # and #662: it reports the swallowed failure instead of a bare None.
-    assert await cap["reconcile_cb"]() is False  # must not raise
 
 
 @pytest.mark.asyncio
@@ -1329,7 +1025,7 @@ async def test_second_commit_on_an_active_slug_is_a_clean_typed_error(
     # Consent must be present so the flow reaches commit_specialist_install.
     import specialist_install_consent
     from specialist_install_consent import (
-        SpecialistInstallAckStore, install_consent_identity,
+        SpecialistInstallAckStore,
     )
     tmp_acks = tmp_path / "acks.json"
 
@@ -1339,14 +1035,8 @@ async def test_second_commit_on_an_active_slug_is_a_clean_typed_error(
 
     monkeypatch.setattr(
         specialist_install_consent, "SpecialistInstallAckStore", _TmpAckStore)
-    identity = install_consent_identity(
-        component_id=component.component_id, version=component.version,
-        root_digest=root_digest, slug=component.slug)
-    _TmpAckStore().record(
-        identity=identity, component_id=component.component_id, version=component.version,
-        component_checksum=root_digest, slug=component.slug)
 
-    payload = _payload(await specialist_install_commit.handler({
+    payload = _payload(await _approved_call(specialist_install_commit, {
         "component_id": component.component_id, "version": component.version,
         "slug": component.slug, "staged_dir": str(staged), "root_digest": root_digest,
         "receipt_id": "a" * 32,
@@ -1398,7 +1088,7 @@ async def test_specialist_upgrade_rechecks_the_receipt_under_the_lock(
 
     monkeypatch.setattr(specialist_install, "upgrade_specialist", _must_not_be_called)
 
-    result = await specialist_upgrade.handler({
+    result = await _approved_call(specialist_upgrade, {
         "slug": "mtg", "component_id": component.component_id,
         "version": component.version, "root_digest": root_digest,
         "staged_dir": str(staged), "receipt_id": "a" * 32,
@@ -1671,7 +1361,7 @@ async def test_commit_success_surfaces_bundled_plugins_required_env_vars(
     monkeypatch.setattr(specialist_install, "reclaim_staging_tree",
                         lambda p: None)
 
-    result = await specialist_install_commit.handler({
+    result = await _approved_call(specialist_install_commit, {
         "component_id": component.component_id, "version": component.version,
         "slug": "mtg", "staged_dir": str(staged), "root_digest": root_digest,
         "receipt_id": "a" * 32,
@@ -1684,137 +1374,6 @@ async def test_commit_success_surfaces_bundled_plugins_required_env_vars(
     # plugins omitted.
     assert payload["required_env_vars"] == {
         "mtg.bankfeed": ["BANKFEED_OP_VAULT"]}
-
-
-# ---------------------------------------------------------------------------
-# #662 red case (specified by the red-case reviewer at 1c8033bb; frozen once
-# accepted; re-pointed in v0.351.0). A tap whose continuation
-# the configurator's desk route does not take must not leave the DM claiming
-# an install. These run the PRODUCTION reconcile_cb the inspect tool builds —
-# not a stub — through the REAL consent finish hook, so a fix that merely
-# tightens the finish hook while the production callback still exits `None`
-# cannot pass.
-# ---------------------------------------------------------------------------
-
-_662_CORRECTIVE = (
-    "⚠️ Approved and saved — but the install of 'mtg' was not "
-    "started automatically. Ask the Configurator to re-run "
-    "the install; the approval recorded for this exact version is reused "
-    "if it still applies."
-)
-
-
-def _capture_real_consent(monkeypatch):
-    """Wrap prompt_specialist_install_consent, keeping the REAL prompt (hence
-    the real _on_commit_sync/_finish) and the production reconcile_cb, and
-    swapping in only a capturing coordinator."""
-    import specialist_install_consent as sic
-
-    real = sic.prompt_specialist_install_consent
-    cap: dict = {}
-
-    class _Coordinator:
-        def register_challenge(self, key, **kwargs):
-            cap["registrations"] = cap.get("registrations", 0) + 1
-            cap["key"] = key
-            cap["challenge_text"] = kwargs["challenge_text"]
-            cap["on_commit_sync"] = kwargs["on_commit_sync"]
-            cap["finish_factory"] = kwargs["finish_factory"]
-            return _Handle(settled="posted")
-
-    def _prompt(**kwargs):
-        cap["reconcile_cb"] = kwargs["reconcile_cb"]
-        if "reconcile_override" in cap:
-            kwargs["reconcile_cb"] = cap["reconcile_override"]
-        kwargs["coordinator"] = _Coordinator()
-        return real(**kwargs)
-
-    monkeypatch.setattr(sic, "prompt_specialist_install_consent", _prompt)
-    return cap
-
-
-def _662_channel(edits, ack_path, observations, *, desk_route=True):
-    """A DM channel whose desk route REFUSES the continuation (returns False),
-    recording (DM edits so far, acks so far) at the moment it is asked — the
-    ordering proof: the ack must precede reconciliation, and the sole DM edit
-    must follow it. ``desk_route=False`` is a channel with no desk route."""
-    from specialist_install_consent import SpecialistInstallAckStore
-
-    chan = SimpleNamespace(chat_id="701")
-
-    async def _edit_dm_message(chat_id, message_id, text):
-        edits.append((chat_id, message_id, text))
-
-    chan.edit_dm_message = _edit_dm_message
-    if desk_route:
-        async def _dispatch(**kwargs):
-            acked = len(SpecialistInstallAckStore(path=ack_path)._load()) \
-                if ack_path.exists() else 0
-            observations.append((len(edits), acked))
-            return False
-
-        chan._dispatch_desk_continuation = _dispatch
-    return chan
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("tap_state", ["refused", "no_desk_route"])
-async def test_662_terminal_or_gone_engagement_uses_the_production_outcome(
-    monkeypatch, tmp_path, tap_state,
-) -> None:
-    """Since v0.351.0 the requester is no longer an engagement; the
-    continuation the tap owes is a configurator desk turn. When the desk route
-    does not take it (refuses, or the channel has none), the approval stays
-    recorded and the single DM edit is the corrective one."""
-    from tools import specialist_install_inspect
-
-    edits: list = []
-    observations: list = []
-    ack_path = tmp_path / "acks.json"
-    _wire_inspect(monkeypatch, tmp_path, channel=_662_channel(
-        edits, ack_path, observations, desk_route=tap_state == "refused"))
-    cap = _capture_real_consent(monkeypatch)
-
-    payload = _payload(await specialist_install_inspect.handler(
-        {"repo": "owner/repo", "ref": "main"}))
-    assert payload["consent"] == "keyboard_posted"
-
-    req = SimpleNamespace(meta={})
-    cap["on_commit_sync"](0, req.meta)
-    finish = cap["finish_factory"](88, req)
-    await finish({"outcome": "answered", "option_index": 0})
-
-    from specialist_install_consent import SpecialistInstallAckStore
-    ack_count = len(SpecialistInstallAckStore(path=ack_path)._load())
-    expected_obs = [(0, 1)] if tap_state == "refused" else []
-    actual = (ack_count, observations, len(edits), edits)
-    assert actual == (1, expected_obs, 1, [(701, 88, _662_CORRECTIVE)]), (
-        f"approval facts: {actual!r}")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("tap_state", ["refused", "no_desk_route"])
-async def test_662_production_reconcile_cb_reports_a_literal_false(
-    monkeypatch, tmp_path, tap_state,
-) -> None:
-    """The half a finish-hook truthiness patch cannot fake: the PRODUCTION
-    callback must return the literal `False`, not a bare `None`."""
-    from tools import specialist_install_inspect
-
-    edits: list = []
-    observations: list = []
-    ack_path = tmp_path / "acks.json"
-    _wire_inspect(monkeypatch, tmp_path, channel=_662_channel(
-        edits, ack_path, observations, desk_route=tap_state == "refused"))
-    cap = _capture_real_consent(monkeypatch)
-
-    await specialist_install_inspect.handler(
-        {"repo": "owner/repo", "ref": "main"})
-
-    result = await cap["reconcile_cb"]()
-    actual = (len(observations), [result])
-    assert actual == (1 if tap_state == "refused" else 0, [False]), (
-        f"reconciliation facts: {actual!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -2179,7 +1738,7 @@ async def _run_upgrade(monkeypatch, tmp_path, txn):
     _inject_fake_receipt(monkeypatch)
     _stub_bundle_sequencer(monkeypatch)
 
-    return _payload(await specialist_upgrade.handler({
+    return _payload(await _approved_call(specialist_upgrade, {
         "slug": "mtg", "component_id": component.component_id,
         "version": component.version, "staged_dir": str(staged),
         "receipt_id": "a" * 32, "root_digest": digest}))
@@ -2289,7 +1848,7 @@ async def test_a_successful_install_commit_discloses_a_stale_entry_its_swap_drop
     _inject_fake_receipt(monkeypatch)
     _stub_bundle_sequencer(monkeypatch)
 
-    payload = _payload(await specialist_install_commit.handler({
+    payload = _payload(await _approved_call(specialist_install_commit, {
         "component_id": component.component_id, "version": component.version,
         "slug": "mtg", "staged_dir": str(staged), "root_digest": root_digest,
         "receipt_id": "a" * 32}))
@@ -2411,7 +1970,7 @@ async def test_a_pending_install_commit_names_its_resume_inputs(
     # caller can assert a different identity and still reach the core. Passing
     # divergent strings here is what separates "the values this call validated"
     # from "the values the caller sent".
-    payload = _payload(await specialist_install_commit.handler({
+    payload = _payload(await _approved_call(specialist_install_commit, {
         "component_id": "wrong-id", "version": "9.9",
         "slug": component.slug, "staged_dir": str(staged),
         "root_digest": root_digest, "receipt_id": receipt_id,
@@ -2469,7 +2028,7 @@ async def test_a_pending_upgrade_names_its_resume_inputs(
     _stub_bundle_sequencer(monkeypatch)
 
     # Divergent caller identity, for the same reason as the install arm.
-    payload = _payload(await specialist_upgrade.handler({
+    payload = _payload(await _approved_call(specialist_upgrade, {
         "slug": component.slug, "component_id": "wrong-id",
         "version": "9.9", "staged_dir": str(staged),
         "root_digest": root_digest, "receipt_id": receipt_id,
@@ -2506,333 +2065,16 @@ async def test_inspect_ok_payload_reports_the_resolved_ref(monkeypatch, tmp_path
     """INV-SPEC-018 (#1007): the configurator names the installed version in
     its commit message and completion from the ref the tool resolved — for
     ``latest`` that is the release tag, so the payload must carry it."""
-    from specialist_install_consent import install_consent_identity
     from tools import specialist_install_inspect
 
     fake, tmp_store_cls = _wire_inspect(monkeypatch, tmp_path, channel=None)
     fake.resolved_ref = "v1.2.0"
-    identity = install_consent_identity(
-        component_id=fake.component_id, version=fake.version,
-        root_digest=fake.root_digest, slug=fake.slug)
-    tmp_store_cls().record(
-        identity=identity, component_id=fake.component_id, version=fake.version,
-        component_checksum=fake.root_digest, slug=fake.slug)
 
     payload = _payload(await specialist_install_inspect.handler(
         {"repo": "owner/repo", "ref": "latest"}))
 
     assert payload["ok"] is True
     assert payload["resolved_ref"] == "v1.2.0"
-
-
-# ---------------------------------------------------------------------------
-# #1225: the consent keyboard and its finish edits name an upgrade or a
-# same-version settings change as an UPDATE, never an install. Through the
-# REAL inspect tool and the REAL consent prompt; only the coordinator is a
-# capture.
-# ---------------------------------------------------------------------------
-
-_C_INSTALL_KEYBOARD = (
-    "\U0001F510 Install casa.spec.mtg@1.0.0 as specialist:mtg?\n"
-    "Mission: Answer MTG rules questions.\n\n"
-    "Default persona: mtg-judge@1.0.0\n"
-    "Dependencies: (none)\n\n"
-    "Approve to install; Deny to discard the staged fetch.\n\n"
-    "Digests:\n"
-    "Root digest (approved — component + dependencies): sha256:" + "b" * 64 + "\n"
-    "Component checksum: sha256:" + "a" * 16 + "…"
-)
-_C_UPDATE_KEYBOARD = (
-    "\U0001F510 Update specialist:mtg to casa.spec.mtg@1.0.0?\n"
-    "Mission: Answer MTG rules questions.\n\n"
-    "Default persona: mtg-judge@1.0.0\n"
-    "Dependencies: (none)\n\n"
-    "Approve to update; Deny to discard the staged fetch.\n\n"
-    "Digests:\n"
-    "Root digest (approved — component + dependencies): sha256:" + "b" * 64 + "\n"
-    "Component checksum: sha256:" + "a" * 16 + "…"
-)
-
-# The five non-success finish edits (plus the two other retirement causes),
-# per mode. The install column is the base tree's bytes, frozen here.
-_C_FINISH = {
-    "install": {
-        "no_answer": "⌛ Expired — install consent for 'mtg' was not answered; "
-                     "nothing was installed",
-        "withdrawn": "🚫 Withdrawn — install consent for 'mtg' was withdrawn "
-                     "before it was answered; nothing was installed",
-        "new_session": "🚫 Cancelled — install consent for 'mtg' was cancelled "
-                       "by /new; nothing was installed",
-        "unrecorded": "internal error recording install consent — re-run the "
-                      "install to be prompted again",
-        "raised": "⚠️ Approved and saved — but the install of 'mtg' hit an "
-                  "internal error and its automatic start could not be "
-                  "confirmed. Ask the Configurator how it went; re-running the "
-                  "install is safe either way, and the approval recorded for "
-                  "this exact version is reused if it still applies.",
-        "false": "⚠️ Approved and saved — but the install of 'mtg' was not "
-                 "started automatically. Ask the Configurator to re-run "
-                 "the install; the approval recorded for this exact "
-                 "version is reused if it still applies.",
-        "deny": "❌ Denied — 'mtg' was not installed",
-    },
-    "upgrade": {
-        "no_answer": "⌛ Expired — update consent for 'mtg' was not answered; "
-                     "nothing was updated",
-        "withdrawn": "🚫 Withdrawn — update consent for 'mtg' was withdrawn "
-                     "before it was answered; nothing was updated",
-        "new_session": "🚫 Cancelled — update consent for 'mtg' was cancelled "
-                       "by /new; nothing was updated",
-        "unrecorded": "internal error recording update consent — re-run the "
-                      "update to be prompted again",
-        "raised": "⚠️ Approved and saved — but the update of 'mtg' hit an "
-                  "internal error and its automatic start could not be "
-                  "confirmed. Ask the Configurator how it went; re-running the "
-                  "update is safe either way, and the approval recorded for "
-                  "this exact version is reused if it still applies.",
-        "false": "⚠️ Approved and saved — but the update of 'mtg' was not "
-                 "started automatically. Ask the Configurator to re-run "
-                 "the update; the approval recorded for this exact "
-                 "version is reused if it still applies.",
-        "deny": "❌ Denied — 'mtg' was not updated",
-    },
-}
-
-
-def _c_channel(*, deliver_result=True):
-    """An operator-DM channel whose configurator desk route answers
-    *deliver_result*; returns it, its card edits and its desk dispatches."""
-    from unittest.mock import AsyncMock
-
-    edits: list = []
-    chan = SimpleNamespace(
-        chat_id="701",
-        _dispatch_desk_continuation=AsyncMock(return_value=deliver_result),
-    )
-
-    async def _edit(chat_id, message_id, text):
-        edits.append((chat_id, message_id, text))
-
-    chan.edit_dm_message = _edit
-    return chan, edits, chan._dispatch_desk_continuation
-
-
-def _c_args(mode):
-    args = {"repo": "owner/repo", "ref": "main"}
-    if mode is not None:
-        args["mode"] = mode
-        args["target_slug"] = "mtg"
-    return args
-
-
-def _c_acks(tmp_path) -> int:
-    from specialist_install_consent import SpecialistInstallAckStore
-    path = tmp_path / "acks.json"
-    return len(SpecialistInstallAckStore(path=path)._load()) if path.exists() else 0
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("mode", [None, "install", "upgrade"])
-async def test_inspect_consent_copy_matches_mode(monkeypatch, tmp_path, mode) -> None:
-    """#1225: the keyboard the real inspect posts names an update on
-    ``mode="upgrade"``; with the mode omitted or ``install`` it is the base
-    tree's bytes exactly."""
-    from tools import specialist_install_inspect
-
-    chan, _edits, _ = _c_channel()
-    _wire_inspect(monkeypatch, tmp_path, channel=chan)
-    cap = _capture_real_consent(monkeypatch)
-
-    payload = _payload(await specialist_install_inspect.handler(_c_args(mode)))
-
-    expected = _C_UPDATE_KEYBOARD if mode == "upgrade" else _C_INSTALL_KEYBOARD
-    facts = (payload["consent"], cap.get("registrations"), cap.get("challenge_text"))
-    assert facts == ("keyboard_posted", 1, expected), f"keyboard facts: {facts!r}"
-
-
-@pytest.mark.asyncio
-async def test_update_keyboard_keeps_inspection_data_and_is_no_longer(
-    monkeypatch, tmp_path,
-) -> None:
-    """#1225: only the Casa-authored lines change (since v0.347.6 two: the
-    question line and the action line). Inspection data that
-    itself says "install" renders untouched, and the update keyboard is never
-    longer than the install keyboard for the same inspection, so a closure that
-    registers under the challenge limit as an install also registers as an
-    update."""
-    from tools import specialist_install_inspect
-
-    chan, _edits, _ = _c_channel()
-    fake, _ = _wire_inspect(monkeypatch, tmp_path, channel=chan)
-    fake.mission = "Install guides; reinstall the installed bits."
-    fake.default_persona_ref = "install-judge@1.0.0"
-    cap = _capture_real_consent(monkeypatch)
-
-    await specialist_install_inspect.handler(_c_args("install"))
-    install_text = cap["challenge_text"]
-    await specialist_install_inspect.handler(_c_args("upgrade"))
-    update_text = cap["challenge_text"]
-
-    install_lines = install_text.split("\n")
-    authored = {0, install_lines.index(
-        "Approve to install; Deny to discard the staged fetch.")}
-    update_lines = update_text.split("\n")
-    kept = [(i, a, b) for i, (a, b) in enumerate(zip(install_lines, update_lines))
-            if i not in authored and a != b]
-    facts = (len(install_lines) == len(update_lines), kept,
-             "Mission: Install guides; reinstall the installed bits." in update_lines,
-             len(update_text) <= len(install_text),
-             len(update_text.encode()) <= len(install_text.encode()))
-    assert facts == (True, [], True, True, True), f"update render facts: {facts!r}"
-
-
-async def _c_finish_edit(monkeypatch, tmp_path, mode, branch):
-    from tools import specialist_install_inspect
-
-    chan, edits, _ = _c_channel(deliver_result=False)
-    _wire_inspect(monkeypatch, tmp_path, channel=chan)
-    cap = _capture_real_consent(monkeypatch)
-    if branch == "raised":
-        async def _raising():
-            raise RuntimeError("contract violation")
-        cap["reconcile_override"] = _raising
-
-    await specialist_install_inspect.handler(_c_args(mode))
-
-    req = SimpleNamespace(meta={})
-    outcome = {
-        "no_answer": {"outcome": "no_answer"},
-        "withdrawn": {"outcome": "cancelled", "reason": "challenge_cancelled"},
-        "new_session": {"outcome": "cancelled", "reason": "new_session"},
-        "unrecorded": {"outcome": "answered", "option_index": 0},
-        "raised": {"outcome": "answered", "option_index": 0},
-        "false": {"outcome": "answered", "option_index": 0},
-        "deny": {"outcome": "answered", "option_index": 1},
-    }[branch]
-    if branch in ("raised", "false"):
-        cap["on_commit_sync"](0, req.meta)
-    elif branch == "deny":
-        cap["on_commit_sync"](1, req.meta)
-    await cap["finish_factory"](88, req)(outcome)
-    return edits
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("branch", [
-    "no_answer", "withdrawn", "new_session", "unrecorded", "raised", "false", "deny"])
-@pytest.mark.parametrize("mode", [None, "install", "upgrade"])
-async def test_inspect_consent_finish_copy_matches_mode(
-    monkeypatch, tmp_path, mode, branch,
-) -> None:
-    """#1225: every non-success finish edit of a keyboard posted with
-    ``mode="upgrade"`` names the update; install mode keeps the base bytes."""
-    edits = await _c_finish_edit(monkeypatch, tmp_path, mode, branch)
-    expected = _C_FINISH["upgrade" if mode == "upgrade" else "install"][branch]
-    assert edits == [(701, 88, expected)], f"{branch} edit: {edits!r}"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("receipt_digest, identity", [
-    ("", "sha256:030b4de3ac30aa9802c914919a845ae6fa0d519ec04476d78779c85424222edb"),
-    ("sha256:" + "e" * 64,
-     "sha256:4387855d9cca0e9c97cd7946178da57b7780ed837fb61bc2f23e2abcd352f1c3"),
-])
-async def test_upgrade_inspect_reuses_install_consent_identity(
-    monkeypatch, tmp_path, receipt_digest, identity,
-) -> None:
-    """#1225 control (green at base): the mode is wording only. Both modes bind
-    the base tree's identity, and an approval recorded through the install
-    keyboard short-circuits an upgrade inspect as ``pre_authorized``."""
-    from tools import specialist_install_inspect
-
-    chan, _edits, _ = _c_channel()
-    _wire_inspect(monkeypatch, tmp_path, channel=chan, receipt_digest=receipt_digest)
-    cap = _capture_real_consent(monkeypatch)
-
-    await specialist_install_inspect.handler(_c_args("install"))
-    install_key = cap["key"]
-    await specialist_install_inspect.handler(_c_args("upgrade"))
-    update_key = cap["key"]
-    cap["on_commit_sync"](0, {})
-    payload = _payload(await specialist_install_inspect.handler(_c_args("upgrade")))
-
-    facts = (install_key.identity, update_key == install_key, payload["consent"],
-             cap["registrations"], _c_acks(tmp_path))
-    assert facts == (identity, True, "pre_authorized", 2, 1), (
-        f"identity facts: {facts!r}")
-
-
-# ---------------------------------------------------------------------------
-# Since v0.351.0 only an Approve continues the configurator.
-# Deny, expiry, withdrawal and cancellation show on the card only. Through the
-# REAL inspect tool and the REAL consent prompt.
-# ---------------------------------------------------------------------------
-
-async def _c_retire(monkeypatch, tmp_path, mode, outcome, *, commit_index=None):
-    from tools import specialist_install_inspect
-
-    chan, edits, dispatch = _c_channel()
-    _wire_inspect(monkeypatch, tmp_path, channel=chan)
-    cap = _capture_real_consent(monkeypatch)
-
-    payload = _payload(await specialist_install_inspect.handler(_c_args(mode)))
-    assert payload["consent"] == "keyboard_posted"
-
-    req = SimpleNamespace(meta={})
-    if commit_index is not None:
-        cap["on_commit_sync"](commit_index, req.meta)
-    await cap["finish_factory"](88, req)(outcome)
-    return dispatch, edits
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", [
-    {"outcome": "no_answer"},
-    {"outcome": "cancelled", "reason": "challenge_cancelled"},
-    {"outcome": "cancelled", "reason": "engagement_ended"},
-    {"outcome": "cancelled", "reason": "new_session"},
-    {"outcome": "cancelled", "reason": "casa_shutdown"},
-    {"outcome": "answered", "option_index": 1},
-])
-async def test_inspect_withdrawal_tells_the_engagement_nothing(
-    monkeypatch, tmp_path, outcome,
-) -> None:
-    """An expiry, a Deny, a withdrawal or a cancellation edits the card
-    and continues nobody — the configurator's desk is not dispatched and no
-    approval is recorded."""
-    commit_index = outcome.get("option_index")
-    dispatch, edits = await _c_retire(
-        monkeypatch, tmp_path, "upgrade", outcome, commit_index=commit_index)
-    facts = (dispatch.await_count, len(edits), _c_acks(tmp_path))
-    assert facts == (0, 1, 0), f"withdrawal facts: {facts!r}"
-
-
-@pytest.mark.asyncio
-async def test_each_requesting_engagement_gets_its_own_card(monkeypatch, tmp_path) -> None:
-    """#1445 (design round d1): the coordinator dedups by key, so a key without
-    the requester let a second run's inspect share the first one's card and
-    its callbacks. The key names the requesting configurator run (its
-    delegation id, since v0.351.0); the approval identity does not."""
-    import agent as agent_mod
-    from tools import specialist_install_inspect
-
-    chan, _edits, _ = _c_channel()
-    _wire_inspect(monkeypatch, tmp_path, channel=chan)
-    cap = _capture_real_consent(monkeypatch)
-
-    keys = []
-    for run in ("deleg-a", "deleg-b", "deleg-b"):
-        token = agent_mod.origin_var.set(
-            {"execution_role": "configurator", "_delegation_id": run})
-        try:
-            await specialist_install_inspect.handler(_c_args("upgrade"))
-        finally:
-            agent_mod.origin_var.reset(token)
-        keys.append(cap["key"])
-
-    facts = (keys[0] == keys[1], keys[1] == keys[2],
-             len({k.identity for k in keys}), keys[0].requester, keys[1].requester)
-    assert facts == (False, True, 1, "deleg-a", "deleg-b"), f"key facts: {facts!r}"
 
 
 def test_consent_reprompt_names_the_retry_for_an_expired_install_consent() -> None:
@@ -2879,7 +2121,7 @@ async def test_the_librarys_activation_error_reaches_the_payload(
     monkeypatch.setattr(specialist_install, "reclaim_staging_tree", _Counter())
     _stub_bundle_sequencer(monkeypatch)
 
-    payload = _payload(await getattr(tools_mod, tool_name).handler({
+    payload = _payload(await _approved_call(getattr(tools_mod, tool_name), {
         "slug": component.slug, "component_id": component.component_id,
         "version": component.version, "staged_dir": str(staged),
         "root_digest": root_digest, "receipt_id": "5" * 32,
@@ -2893,52 +2135,145 @@ async def test_the_librarys_activation_error_reaches_the_payload(
 
 
 # ---------------------------------------------------------------------------
-# Since v0.351.0 the configurator is a delegated run, not an
-# engagement. An Approve tap continues it by itself through its desk in the
-# operator's DM: one desk turn whose text carries the staged values, because
-# the continuation starts a fresh session. Deny and expiry show on the card
-# only.
+# specialist_install_request_approval: the approval card for an inspected
+# install or upgrade, with the settings it will end up with.
 # ---------------------------------------------------------------------------
+
+def _request_world(monkeypatch, tmp_path, *, handle=None, raises=None, target=True):
+    import specialist_install
+    import specialist_install_consent
+    import specialist_receipt
+    import tools as tools_mod
+    staged, component, root_digest = _stage_real_component(tmp_path, name="req")
+    monkeypatch.setattr(
+        specialist_receipt, "load",
+        lambda rid, *a, **k: SimpleNamespace(receipt_id=rid, receipt_digest="", plugins=(),
+                                             slug="mtg"))
+    monkeypatch.setattr(tools_mod, "_SPECIALISTS_DIR", tmp_path / "specialists")
+    monkeypatch.setattr(specialist_install, "preview_effective_config",
+                        lambda kind, insp, *, slug, config, secret_names_provided, **k:
+                        dict(config))
+    posted: list = []
+
+    def _card(**kw):
+        posted.append(kw)
+        if raises is not None:
+            raise raises
+        return handle if handle is not None else _Handle(settled="posted")
+    monkeypatch.setattr(specialist_install_consent, "prompt_specialist_install_consent", _card,
+                        raising=False)
+    monkeypatch.setattr(specialist_install_consent, "supersede_card", lambda r, **k: None,
+                        raising=False)
+    monkeypatch.setattr(tools_mod, "_casa_card_target", (lambda: (
+        SimpleNamespace(bot_id=111), SimpleNamespace(bot_id=111, chat_id=123), None))
+        if target else (lambda: (None, None, "no_channel")))
+    args = {"slug": "mtg", "root_digest": root_digest, "staged_dir": str(staged),
+            "receipt_id": "4" * 32, "mode": "install", "config": {"REGION": "eu"},
+            "secret_names_provided": []}
+    return posted, args, component
+
+
+async def _request(args, origin=None):
+    import agent as agent_mod
+    from tools import specialist_install_request_approval
+    token = agent_mod.origin_var.set(origin or {"role": "assistant", "user_text": "add mtg",
+                                                "_delegation_id": "deleg-7"})
+    try:
+        return _payload(await specialist_install_request_approval.handler(dict(args)))
+    finally:
+        agent_mod.origin_var.reset(token)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["install", "upgrade"])
-async def test_approve_continues_the_configurator_through_its_desk(
-    monkeypatch, tmp_path, mode,
-) -> None:
+async def test_inspect_posts_nothing_and_names_the_request_tool(monkeypatch, tmp_path) -> None:
     import specialist_install_consent
     from tools import specialist_install_inspect
+    _wire_inspect(monkeypatch, tmp_path, channel=None)
+    monkeypatch.setattr(specialist_install_consent, "prompt_specialist_install_consent",
+                        lambda **kw: pytest.fail("inspect posts no card"))
+    payload = _payload(await specialist_install_inspect.handler({"repo": "o/r", "ref": "main"}))
+    assert payload["ok"] is True and "consent" not in payload
+    assert "specialist_install_request_approval" in payload["next"]
 
-    dispatched: list = []
 
-    async def _dispatch(*, chat_id, user_id, desk_role, request_id, text):
-        dispatched.append({"chat_id": chat_id, "user_id": user_id,
-                           "desk_role": desk_role, "text": text})
-        return True
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode, tool", [("install", "specialist_install_commit"),
+                                        ("upgrade", "specialist_upgrade")])
+async def test_the_request_posts_one_card_with_the_continuation_of_its_mode(
+        monkeypatch, tmp_path, mode, tool) -> None:
+    import approval_records
+    posted, args, component = _request_world(monkeypatch, tmp_path)
+    payload = await _request({**args, "mode": mode})
+    assert payload == {"ok": True, "approval": "requested",
+                       "next": "stop; Casa continues you after the operator approves"}
+    (card,) = posted
+    record = card["record"]
+    assert record.kind == ("specialist_upgrade" if mode == "upgrade" else "specialist_install")
+    assert record.values == {"config": {"REGION": "eu"}, "secrets": []}
+    assert record.asked == "add mtg" and record.state == "pending"
+    assert card["submitted_config"] == {"REGION": "eu"}
+    assert card["inspection_facts"].root_digest == args["root_digest"]
+    assert card["requester"] == "deleg-7"           # each run gets its own card
+    assert f"Call {tool} with" in card["continuation"]
+    assert approval_records.current(record.component_key).rid == record.rid
 
-    channel = SimpleNamespace(chat_id="123", _dispatch_desk_continuation=_dispatch)
-    fake, _ = _wire_inspect(monkeypatch, tmp_path, channel=channel)
-    cap: dict = {}
 
-    def _prompt(**kwargs):
-        cap.update(kwargs)
-        return _Handle(settled="posted")
+@pytest.mark.asyncio
+async def test_a_request_without_a_card_target_is_structured(monkeypatch, tmp_path) -> None:
+    posted, args, _ = _request_world(monkeypatch, tmp_path, target=False)
+    payload = await _request(args)
+    assert payload["ok"] is False and payload["kind"] == "consent_channel_unavailable"
+    assert posted == []
 
-    monkeypatch.setattr(
-        specialist_install_consent, "prompt_specialist_install_consent", _prompt)
-    payload = _payload(await specialist_install_inspect.handler(
-        {"repo": "owner/repo", "ref": "main", "mode": mode}))
-    assert payload["consent"] == "keyboard_posted"
-    assert cap.get("deny_cb") is None and cap.get("expire_cb") is None
 
-    assert await cap["reconcile_cb"]() is True
-    assert len(dispatched) == 1
-    call = dispatched[0]
-    assert call["desk_role"] == "configurator"
-    assert call["chat_id"] == 123 and call["user_id"] == 123
-    text = call["text"]
-    for value in (fake.slug, fake.component_id, fake.version, fake.root_digest,
-                  str(fake.staged_dir), fake.receipt_id):
-        assert value in text
-    assert ("specialist_upgrade" if mode == "upgrade" else "specialist_install_commit") in text
-    assert "emit_completion" not in text
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handle,expected_kind", [
+    (_Handle(refused="args_too_large"), "consent_prompt_refused"),
+    (_Handle(settled="delivery_failed"), "consent_delivery_failed"),
+    (_Handle(settled="inactive"), "consent_prompt_inactive"),
+])
+async def test_a_card_that_did_not_post_is_structured(monkeypatch, tmp_path, handle,
+                                                      expected_kind) -> None:
+    _, args, _ = _request_world(monkeypatch, tmp_path, handle=handle)
+    payload = await _request(args)
+    assert payload["ok"] is False and payload["kind"] == expected_kind
+
+
+@pytest.mark.asyncio
+async def test_a_card_that_raised_is_structured(monkeypatch, tmp_path) -> None:
+    _, args, _ = _request_world(monkeypatch, tmp_path, raises=RuntimeError("boom"))
+    payload = await _request(args)
+    assert payload == {"ok": False, "kind": "consent_prompt_failed",
+                       "detail": "RuntimeError: boom"}
+
+
+@pytest.mark.asyncio
+async def test_an_approved_request_asked_again_continues_without_a_card(
+        monkeypatch, tmp_path) -> None:
+    import approval_records
+    import configurator_continue
+    posted, args, _ = _request_world(monkeypatch, tmp_path)
+    await _request(args)
+    (card,) = posted
+    approval_records.approve(card["record"].rid)
+    started: list = []
+    monkeypatch.setattr(configurator_continue, "start",
+                        lambda text, **kw: started.append((text, kw)) or "started")
+    payload = await _request(args)
+    assert payload["approval"] == "already_approved" and len(posted) == 1
+    ((text, kw),) = started
+    assert kw["key"] == card["record"].rid and kw["approval"].rid == card["record"].rid
+    assert "Call specialist_install_commit with" in text
+    # the run Casa started for it, asking again, is told to make the call
+    record = card["record"]
+    payload = await _request(args, {"role": "assistant", approval_records.APPROVAL_KEY: {
+        "rid": record.rid, "generation": record.generation}})
+    assert payload["approval"] == "in_progress" and len(started) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_request_refused_by_the_staged_bytes_asks_nothing(monkeypatch, tmp_path) -> None:
+    posted, args, _ = _request_world(monkeypatch, tmp_path)
+    payload = await _request({**args, "root_digest": "sha256:" + "f" * 64})
+    assert payload["ok"] is False and payload["kind"] == "checksum_changed"
+    assert posted == []

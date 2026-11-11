@@ -17,7 +17,7 @@ from error_kinds import ApiErrorTurn
 from scratchpad import GRANT, IDLE_S, PROMPT_LINE, SERVER
 from test_memory_capture import mem  # noqa: F401 — fixture
 from test_plugin_continuations import (  # noqa: F401 — fixtures
-    ORIGIN, SID, _binding, _continue, _kept, announce, conv, desks, roles)
+    ORIGIN, SID, _binding, _continue, _kept, announce, conv, lanes, roles)
 from test_plugin_stop import CARD_MID, _calls, _cq, _plugin, _quiet, _tap, env  # noqa: F401
 from test_scratchpad import _body, _call, _client, pads  # noqa: F401
 

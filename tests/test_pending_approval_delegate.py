@@ -39,7 +39,7 @@ from test_chosen_silence_announcements import (
     _Factory, _Hook, _ScriptedClient, _make_agent, _patch_retry_sleep,
 )
 from test_delegate_to_agent import _caller_cfg, _specialist_cfg
-from test_pending_approval_desk import _Scripted, _Step
+from scripted_delegate import _Scripted, _Step
 from telegram_channel_double import make_transport
 from test_pending_approval_output import (
     ARGS, CASA_BOT, PROTECTED, TOOL, _Channel, _call, _msg, _result, _text,

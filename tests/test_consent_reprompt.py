@@ -532,13 +532,17 @@ async def test_tool_nothing_pending(monkeypatch):
     assert payload["rows"] == []
 
 
-async def test_tool_reports_live_specialist_consent(monkeypatch):
+async def test_tool_reports_live_specialist_consent(monkeypatch, tmp_path):
     """#1164 red case: a live specialist install/upgrade keyboard is not
     "no consent is pending" — the tool names its kind and how it is
     re-asked, and posts, re-issues and resolves nothing."""
+    import approval_records
     import authz_grants
+    import tools as tools_mod
+    from approval_values import NO_SETTINGS, specialist_identity, use_tmp_approval_store
     from specialist_install_consent import prompt_specialist_install_consent
 
+    use_tmp_approval_store(monkeypatch, tmp_path)
     telegram = _FakeTelegram()
     tools = _tool_env(monkeypatch, telegram)
     for mod in ("trigger_reconcile", "callback_reconcile", "event_reconcile"):
@@ -555,10 +559,14 @@ async def test_tool_reports_live_specialist_consent(monkeypatch):
     def unexpected_record(**kwargs):
         raise AssertionError("consent_reprompt must not commit consent")
 
+    async with tools_mod._plugin_tools_guard():
+        record, _, _ = approval_records.request(
+            "specialist_install", "example:example",
+            specialist_identity(inspection, values=NO_SETTINGS), NO_SETTINGS)
     handle = prompt_specialist_install_consent(
         coordinator=authz_grants.CHALLENGES,
         channel=telegram, chat_id=100, operator_id=100,
-        inspection=inspection,
+        record=record, inspection_facts=inspection, continuation="carry on",
         acks=SimpleNamespace(record=unexpected_record),
     )
     challenge = handle._challenge
@@ -581,7 +589,7 @@ async def test_tool_reports_live_specialist_consent(monkeypatch):
             "no consent is pending — nothing to re-issue"
         )
         assert "specialist install/upgrade consent" in payload["message"]
-        assert "specialist_install_inspect" in payload["message"]
+        assert "specialist_install_request_approval" in payload["message"]
     finally:
         challenge.broker.cancel(
             namespace="resident_ask",

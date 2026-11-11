@@ -1,27 +1,33 @@
 """Task 7: consent identity tuple + ledger concurrency (spec §4, §3.5)."""
 import json
 
+from approval_values import NO_SETTINGS_DIGEST
 from specialist_install_consent import (
     SpecialistInstallAckStore, install_consent_identity)
 
 
 def test_legacy_identity_byte_stable():
-    # receipt_digest="" MUST hash identically to the pre-receipt formula.
+    # receipt_digest="" MUST hash identically to the formula without a receipt
+    # field: an empty receipt joins nothing to the hashed payload.
     from canonical_bytes import checksum_json
     legacy = checksum_json({
         "component_id": "casa/mtg", "version": "0.2.0",
-        "component_checksum": "sha256:" + "b" * 64, "slug": "mtg"})
+        "component_checksum": "sha256:" + "b" * 64, "slug": "mtg",
+        "values_digest": NO_SETTINGS_DIGEST})
     assert install_consent_identity(
         component_id="casa/mtg", version="0.2.0",
-        root_digest="sha256:" + "b" * 64, slug="mtg") == legacy
+        root_digest="sha256:" + "b" * 64, slug="mtg",
+        values_digest=NO_SETTINGS_DIGEST) == legacy
 
 
 def test_receipt_digest_changes_identity():
     a = install_consent_identity(component_id="c/x", version="1.0.0",
-                                 root_digest="sha256:" + "b" * 64, slug="x")
+                                 root_digest="sha256:" + "b" * 64, slug="x",
+                                 values_digest=NO_SETTINGS_DIGEST)
     b = install_consent_identity(component_id="c/x", version="1.0.0",
                                  root_digest="sha256:" + "b" * 64, slug="x",
-                                 receipt_digest="sha256:" + "c" * 64)
+                                 receipt_digest="sha256:" + "c" * 64,
+                                 values_digest=NO_SETTINGS_DIGEST)
     assert a != b
 
 
@@ -30,10 +36,12 @@ def test_record_and_reload_with_receipt(tmp_path):
     s = SpecialistInstallAckStore(p)
     ident = install_consent_identity(
         component_id="c/x", version="1.0.0", root_digest="sha256:" + "b" * 64,
-        slug="x", receipt_digest="sha256:" + "c" * 64)
+        slug="x", receipt_digest="sha256:" + "c" * 64,
+        values_digest=NO_SETTINGS_DIGEST)
     s.record(identity=ident, component_id="c/x", version="1.0.0",
              component_checksum="sha256:" + "b" * 64, slug="x",
-             receipt_digest="sha256:" + "c" * 64)
+             receipt_digest="sha256:" + "c" * 64,
+             values_digest=NO_SETTINGS_DIGEST)
     assert SpecialistInstallAckStore(p).is_acked(ident)
 
 
@@ -43,14 +51,18 @@ def test_retire_slug_removes_all_and_returns_records(tmp_path):
     for ver in ("1.0.0", "2.0.0"):
         ident = install_consent_identity(
             component_id="c/x", version=ver,
-            root_digest="sha256:" + "b" * 64, slug="x")
+            root_digest="sha256:" + "b" * 64, slug="x",
+            values_digest=NO_SETTINGS_DIGEST)
         s.record(identity=ident, component_id="c/x", version=ver,
-                 component_checksum="sha256:" + "b" * 64, slug="x")
+                 component_checksum="sha256:" + "b" * 64, slug="x",
+                 values_digest=NO_SETTINGS_DIGEST)
     other = install_consent_identity(
         component_id="c/y", version="1.0.0",
-        root_digest="sha256:" + "d" * 64, slug="y")
+        root_digest="sha256:" + "d" * 64, slug="y",
+        values_digest=NO_SETTINGS_DIGEST)
     s.record(identity=other, component_id="c/y", version="1.0.0",
-             component_checksum="sha256:" + "d" * 64, slug="y")
+             component_checksum="sha256:" + "d" * 64, slug="y",
+             values_digest=NO_SETTINGS_DIGEST)
     removed = s.retire_slug("x")
     assert len(removed) == 2
     fresh = SpecialistInstallAckStore(p)
@@ -65,13 +77,17 @@ def test_concurrent_instances_do_not_clobber(tmp_path):
     a = SpecialistInstallAckStore(p)
     b = SpecialistInstallAckStore(p)
     ib = install_consent_identity(component_id="c/b", version="1.0.0",
-                                  root_digest="sha256:" + "b" * 64, slug="b")
+                                  root_digest="sha256:" + "b" * 64, slug="b",
+                                  values_digest=NO_SETTINGS_DIGEST)
     b.record(identity=ib, component_id="c/b", version="1.0.0",
-             component_checksum="sha256:" + "b" * 64, slug="b")
+             component_checksum="sha256:" + "b" * 64, slug="b",
+             values_digest=NO_SETTINGS_DIGEST)
     ia = install_consent_identity(component_id="c/a", version="1.0.0",
-                                  root_digest="sha256:" + "a" * 64, slug="a")
+                                  root_digest="sha256:" + "a" * 64, slug="a",
+                                  values_digest=NO_SETTINGS_DIGEST)
     a.record(identity=ia, component_id="c/a", version="1.0.0",
-             component_checksum="sha256:" + "a" * 64, slug="a")
+             component_checksum="sha256:" + "a" * 64, slug="a",
+             values_digest=NO_SETTINGS_DIGEST)
     fresh = SpecialistInstallAckStore(p)
     assert fresh.is_acked(ia) and fresh.is_acked(ib)
 
@@ -80,9 +96,11 @@ def test_snapshot_slug_returns_copies_and_does_not_mutate(tmp_path):
     p = tmp_path / "acks.json"
     s = SpecialistInstallAckStore(p)
     ident = install_consent_identity(component_id="c/x", version="1.0.0",
-                                      root_digest="sha256:" + "b" * 64, slug="x")
+                                      root_digest="sha256:" + "b" * 64, slug="x",
+                                      values_digest=NO_SETTINGS_DIGEST)
     s.record(identity=ident, component_id="c/x", version="1.0.0",
-             component_checksum="sha256:" + "b" * 64, slug="x")
+             component_checksum="sha256:" + "b" * 64, slug="x",
+             values_digest=NO_SETTINGS_DIGEST)
     snap = s.snapshot_slug("x")
     assert len(snap) == 1 and snap[0]["slug"] == "x"
     snap[0]["slug"] = "mutated"
@@ -96,10 +114,12 @@ def test_restore_records_reinserts_by_recomputed_identity(tmp_path):
     s = SpecialistInstallAckStore(p)
     ident = install_consent_identity(
         component_id="c/x", version="1.0.0", root_digest="sha256:" + "b" * 64,
-        slug="x", receipt_digest="sha256:" + "c" * 64)
+        slug="x", receipt_digest="sha256:" + "c" * 64,
+        values_digest=NO_SETTINGS_DIGEST)
     s.record(identity=ident, component_id="c/x", version="1.0.0",
              component_checksum="sha256:" + "b" * 64, slug="x",
-             receipt_digest="sha256:" + "c" * 64)
+             receipt_digest="sha256:" + "c" * 64,
+             values_digest=NO_SETTINGS_DIGEST)
     removed = s.retire_slug("x")
     assert removed and not s.is_acked(ident)
     s.restore_records(removed)
@@ -110,9 +130,11 @@ def test_restore_records_defaults_missing_receipt_digest_to_empty(tmp_path):
     p = tmp_path / "acks.json"
     s = SpecialistInstallAckStore(p)
     legacy_ident = install_consent_identity(
-        component_id="c/x", version="1.0.0", root_digest="sha256:" + "b" * 64, slug="x")
+        component_id="c/x", version="1.0.0", root_digest="sha256:" + "b" * 64, slug="x",
+        values_digest=NO_SETTINGS_DIGEST)
     legacy_record = {"component_id": "c/x", "version": "1.0.0",
-                     "component_checksum": "sha256:" + "b" * 64, "slug": "x", "ts": 0}
+                     "component_checksum": "sha256:" + "b" * 64, "slug": "x",
+                     "values_digest": NO_SETTINGS_DIGEST, "ts": 0}
     s.restore_records([legacy_record])
     assert s.is_acked(legacy_ident)
 
@@ -121,13 +143,17 @@ def test_restore_records_is_slug_scoped_delta_not_whole_map_rewrite(tmp_path):
     p = tmp_path / "acks.json"
     s = SpecialistInstallAckStore(p)
     other = install_consent_identity(component_id="c/y", version="1.0.0",
-                                      root_digest="sha256:" + "d" * 64, slug="y")
+                                      root_digest="sha256:" + "d" * 64, slug="y",
+                                      values_digest=NO_SETTINGS_DIGEST)
     s.record(identity=other, component_id="c/y", version="1.0.0",
-             component_checksum="sha256:" + "d" * 64, slug="y")
+             component_checksum="sha256:" + "d" * 64, slug="y",
+             values_digest=NO_SETTINGS_DIGEST)
     ident = install_consent_identity(component_id="c/x", version="1.0.0",
-                                      root_digest="sha256:" + "b" * 64, slug="x")
+                                      root_digest="sha256:" + "b" * 64, slug="x",
+                                      values_digest=NO_SETTINGS_DIGEST)
     s.restore_records([{"component_id": "c/x", "version": "1.0.0",
-                        "component_checksum": "sha256:" + "b" * 64, "slug": "x", "ts": 0}])
+                        "component_checksum": "sha256:" + "b" * 64, "slug": "x",
+                        "values_digest": NO_SETTINGS_DIGEST, "ts": 0}])
     # Restoring slug "x" must not disturb the pre-existing unrelated "y" ack.
     assert s.is_acked(other) and s.is_acked(ident)
 

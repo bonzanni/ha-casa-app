@@ -1,8 +1,8 @@
 """#1207 under ruling #1252: the turns the withholding must NOT touch, and the
 hook builds whose answers it must not change.
 
-Regression pins beside the accepted red cases (``test_pending_approval_output``
-and ``test_pending_approval_desk``), through the same real paths: a deny that
+Regression pins beside the accepted red case (``test_pending_approval_output``),
+through the same real paths: a deny that
 leaves no keyboard pending keeps the words; a consume of the same grant, read
 at its OWN call's result even when its hook ran before the consumer reached
 the denied call's result, releases them (critique r3, R3-1); an attempt that
@@ -17,7 +17,6 @@ from types import SimpleNamespace
 
 import pytest
 
-import specialist_desk as sd
 from authz_grants import (
     AuthzDeps, ChallengeCoordinator, GrantStore, make_resident_authz_hook,
     _DENY_DELIVERY_FAILED, _DENY_INACTIVE, _DENY_NOT_OPERATOR, _DENY_PENDING,
@@ -28,11 +27,6 @@ from output_boundary import TurnScope
 from test_authz_hook import (
     _FakeChannel, _OriginCtx, _deny_reason, _engagement, _origin,
 )
-from test_pending_approval_desk import (  # noqa: F401 — the desk harness
-    _Scripted, _ask as _desk_ask, _call as _desk_call, _result as _desk_result,
-    _text as _desk_text, desk, env,
-)
-from test_pending_approval_desk import BOT as DESK_BOT, LABEL, OPERATOR as DESK_OPERATOR, _reply
 from test_pending_approval_output import (  # noqa: F401 — the resident harness
     ARGS, CASA_BOT, PROTECTED, TAIL, TOOL, _Factory, _Gate, _ask, _call, _drive,
     _key, _msg, _result, _text, turn,
@@ -147,38 +141,6 @@ async def test_withheld_words_stay_in_the_turn_report(turn, monkeypatch):
     assert tuple(report["reply_messages"]) == ("BEFORE", TAIL)
     assert report["approval_cut"] == 1
     assert channel.final_texts() == ["BEFORE"]
-
-
-# --- the desk: a consume of the same grant releases the specialist's words ---------
-
-async def test_desk_deny_then_consume_then_prose_is_posted_whole(desk):
-    async def _consume():
-        desk.grants.mint(_desk_key())
-        desk.answers.append(await desk.hook(
-            {"tool_name": TOOL, "tool_input": dict(ARGS)}, "retry-1", {}))
-
-    from test_pending_approval_desk import _Step
-    _Scripted.load(_desk_text("BEFORE"), _desk_call("deny-1"), _desk_ask(desk, "deny-1"),
-                   _Step(_consume), _desk_result("deny-1"), _desk_call("retry-1"),
-                   _desk_result("retry-1", error=False), _desk_text("Filed it."))
-    task = asyncio.create_task(_reply(desk, text="file the March invoice"))
-    await asyncio.wait_for(desk.hook_returned.wait(), 10)
-    desk.release_result.set()
-    await asyncio.wait_for(task, 10)
-
-    assert _deny_reason(desk.answers[0]) == _DENY_POSTED and desk.answers[1] == {}
-    assert [str(m) for m, _ in desk.channel.replies] == [LABEL + "\nBEFORE\n\nFiled it."]
-    assert sd.prompt_prefix(DESK_BOT, DESK_OPERATOR) == (
-        "(front desk) " + LABEL + " answered your reply (1 page).\n\n")
-
-
-def _desk_key():
-    from authz_grants import GrantKey, canonical_args_hash
-    return GrantKey(operator_id=DESK_OPERATOR, bot_id=CASA_BOT,
-                    chat_id=DESK_OPERATOR,
-                    enforcement_role="finance", artifact_id="artifact-1",
-                    tool_name=TOOL, args_hash=canonical_args_hash(ARGS),
-                    engagement_id="")
 
 
 # --- F4: the hook's answers on every build, and a record that cannot raise --------

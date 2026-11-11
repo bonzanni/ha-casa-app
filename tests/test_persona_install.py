@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from approval_values import PERSONA_DIGEST, PERSONA_VALUES, persona_identity, record_specialist_ack
 from canonical_bytes import canonical_json_bytes, canonical_text, checksum_bytes
 from persona_install import PersonaInspectionResult, inspect_persona_repo
 from specialist_install import SpecialistInstallError
@@ -139,7 +140,7 @@ def test_default_roots_resolve_through_casa_config_dir(tmp_path: Path, monkeypat
     directory while persona_apply and the loaders read another
     (persona_unavailable for a pack the operator just installed)."""
     from persona_install import (
-        PersonaInstallAckStore, commit_persona_install, persona_install_consent_identity,
+        PersonaInstallAckStore, commit_persona_install,
     )
 
     custom = tmp_path / "custom"
@@ -158,13 +159,14 @@ def test_default_roots_resolve_through_casa_config_dir(tmp_path: Path, monkeypat
         str(custom / "personas" / ".staging"))
 
     acks = PersonaInstallAckStore(path=tmp_path / "acks.json")
-    identity = persona_install_consent_identity(
+    identity = persona_identity(
         persona_id=inspection.persona_id, version=inspection.version,
         checksum=inspection.checksum)
     acks.record(identity=identity, persona_id=inspection.persona_id,
-                version=inspection.version, checksum=inspection.checksum)
+                version=inspection.version, checksum=inspection.checksum,
+                values_digest=PERSONA_DIGEST)
 
-    pack = commit_persona_install(inspection=inspection, acks=acks)
+    pack = commit_persona_install(inspection=inspection, acks=acks, approved_values=PERSONA_VALUES)
     assert pack.checksum == inspection.checksum
     dest = custom / "personas" / "casa/newton" / "0.1.0"
     assert (dest / "manifest.json").is_file()
@@ -177,7 +179,7 @@ def test_commit_persona_install_reclaims_staging_tree(tmp_path: Path) -> None:
     import dataclasses
 
     from persona_install import (
-        PersonaInstallAckStore, commit_persona_install, persona_install_consent_identity,
+        PersonaInstallAckStore, commit_persona_install,
     )
 
     inspection = _inspection_from_repo(tmp_path)
@@ -189,13 +191,15 @@ def test_commit_persona_install_reclaims_staging_tree(tmp_path: Path) -> None:
     inspection = dataclasses.replace(inspection, staged_dir=staged)
 
     acks = PersonaInstallAckStore(path=tmp_path / "acks.json")
-    identity = persona_install_consent_identity(
+    identity = persona_identity(
         persona_id=inspection.persona_id, version=inspection.version, checksum=inspection.checksum)
     acks.record(identity=identity, persona_id=inspection.persona_id,
-                version=inspection.version, checksum=inspection.checksum)
+                version=inspection.version, checksum=inspection.checksum,
+                values_digest=PERSONA_DIGEST)
 
     pack = commit_persona_install(
-        inspection=inspection, acks=acks, personas_root=tmp_path / "personas")
+        inspection=inspection, acks=acks, personas_root=tmp_path / "personas",
+        approved_values=PERSONA_VALUES)
     assert pack.checksum == inspection.checksum
     assert not staged.exists()
 
@@ -210,19 +214,19 @@ def test_ack_store_record_does_not_clobber_sibling_instance_acks(tmp_path: Path)
     approve callback records through its own prompt-time instance. Recording
     through instance B must MERGE with (not clobber) an ack instance A already
     persisted after B was constructed."""
-    from persona_install import PersonaInstallAckStore, persona_install_consent_identity
+    from persona_install import PersonaInstallAckStore
 
     path = tmp_path / "acks.json"
     store_a = PersonaInstallAckStore(path=path)
     store_b = PersonaInstallAckStore(path=path)  # sibling prompt, pre-A state
-    ident_a = persona_install_consent_identity(
+    ident_a = persona_identity(
         persona_id="casa/alpha", version="0.1.0", checksum="a" * 8)
-    ident_b = persona_install_consent_identity(
+    ident_b = persona_identity(
         persona_id="casa/beta", version="0.1.0", checksum="b" * 8)
     store_a.record(identity=ident_a, persona_id="casa/alpha", version="0.1.0",
-                   checksum="a" * 8)
+                   checksum="a" * 8, values_digest=PERSONA_DIGEST)
     store_b.record(identity=ident_b, persona_id="casa/beta", version="0.1.0",
-                   checksum="b" * 8)
+                   checksum="b" * 8, values_digest=PERSONA_DIGEST)
     # A commit constructs a fresh store and reads the ledger from disk — both
     # acks must be there.
     fresh = PersonaInstallAckStore(path=path)
@@ -237,16 +241,16 @@ def test_record_aborts_rather_than_wiping_on_transient_read_failure(
     file-missing) during record's read-modify-write must abort the mutation —
     persisting the fail-closed empty view would erase every previously
     recorded ack. Only a genuinely absent file starts a fresh ledger."""
-    from persona_install import PersonaInstallAckStore, persona_install_consent_identity
+    from persona_install import PersonaInstallAckStore
 
     path = tmp_path / "acks.json"
     store = PersonaInstallAckStore(path=path)
-    ident_a = persona_install_consent_identity(
+    ident_a = persona_identity(
         persona_id="casa/alpha", version="0.1.0", checksum="a" * 8)
-    ident_b = persona_install_consent_identity(
+    ident_b = persona_identity(
         persona_id="casa/beta", version="0.1.0", checksum="b" * 8)
     store.record(identity=ident_a, persona_id="casa/alpha", version="0.1.0",
-                 checksum="a" * 8)
+                 checksum="a" * 8, values_digest=PERSONA_DIGEST)
 
     real_read_text = Path.read_text
 
@@ -259,7 +263,7 @@ def test_record_aborts_rather_than_wiping_on_transient_read_failure(
         mp.setattr(Path, "read_text", _flaky)
         with pytest.raises(OSError):
             store.record(identity=ident_b, persona_id="casa/beta",
-                         version="0.1.0", checksum="b" * 8)
+                         version="0.1.0", checksum="b" * 8, values_digest=PERSONA_DIGEST)
 
     assert PersonaInstallAckStore(path=path).is_acked(ident_a)
 
@@ -291,25 +295,28 @@ def test_commit_persona_install_requires_consent(tmp_path: Path) -> None:
 
     with pytest.raises(SpecialistInstallError) as raised:
         commit_persona_install(
-            inspection=inspection, acks=acks, personas_root=tmp_path / "personas")
+            inspection=inspection, acks=acks, personas_root=tmp_path / "personas",
+            approved_values=PERSONA_VALUES)
     assert raised.value.kind == "consent_missing"
     assert not (tmp_path / "personas").exists()
 
 
 def test_commit_persona_install_persists_the_verified_pack(tmp_path: Path) -> None:
     from persona_install import (
-        PersonaInstallAckStore, commit_persona_install, persona_install_consent_identity,
+        PersonaInstallAckStore, commit_persona_install,
     )
 
     inspection = _inspection_from_repo(tmp_path)
     acks = PersonaInstallAckStore(path=tmp_path / "acks.json")
-    identity = persona_install_consent_identity(
+    identity = persona_identity(
         persona_id=inspection.persona_id, version=inspection.version, checksum=inspection.checksum)
     acks.record(identity=identity, persona_id=inspection.persona_id,
-                version=inspection.version, checksum=inspection.checksum)
+                version=inspection.version, checksum=inspection.checksum,
+                values_digest=PERSONA_DIGEST)
 
     personas_root = tmp_path / "personas"
-    pack = commit_persona_install(inspection=inspection, acks=acks, personas_root=personas_root)
+    pack = commit_persona_install(inspection=inspection, acks=acks, personas_root=personas_root,
+                                  approved_values=PERSONA_VALUES)
 
     assert pack.persona_id == "casa/newton"
     assert pack.checksum == inspection.checksum
@@ -329,33 +336,38 @@ def test_commit_persona_install_is_idempotent_once_already_committed(tmp_path: P
     directory (mirrors the CAS "already exists" short-circuit the specialist
     pipeline uses)."""
     from persona_install import (
-        PersonaInstallAckStore, commit_persona_install, persona_install_consent_identity,
+        PersonaInstallAckStore, commit_persona_install,
     )
 
     inspection = _inspection_from_repo(tmp_path)
     acks = PersonaInstallAckStore(path=tmp_path / "acks.json")
-    identity = persona_install_consent_identity(
+    identity = persona_identity(
         persona_id=inspection.persona_id, version=inspection.version, checksum=inspection.checksum)
     acks.record(identity=identity, persona_id=inspection.persona_id,
-                version=inspection.version, checksum=inspection.checksum)
+                version=inspection.version, checksum=inspection.checksum,
+                values_digest=PERSONA_DIGEST)
     personas_root = tmp_path / "personas"
-    commit_persona_install(inspection=inspection, acks=acks, personas_root=personas_root)
+    commit_persona_install(inspection=inspection, acks=acks, personas_root=personas_root,
+                           approved_values=PERSONA_VALUES)
 
-    pack_again = commit_persona_install(inspection=inspection, acks=acks, personas_root=personas_root)
+    pack_again = commit_persona_install(inspection=inspection, acks=acks, personas_root=personas_root,
+                                        approved_values=PERSONA_VALUES)
     assert pack_again.checksum == inspection.checksum
 
 
 def _ack_and_commit(tmp_path: Path, acks_path: Path, personas_root: Path, inspection):
     from persona_install import (
-        PersonaInstallAckStore, commit_persona_install, persona_install_consent_identity,
+        PersonaInstallAckStore, commit_persona_install,
     )
 
     acks = PersonaInstallAckStore(path=acks_path)
-    identity = persona_install_consent_identity(
+    identity = persona_identity(
         persona_id=inspection.persona_id, version=inspection.version, checksum=inspection.checksum)
     acks.record(identity=identity, persona_id=inspection.persona_id,
-                version=inspection.version, checksum=inspection.checksum)
-    return commit_persona_install(inspection=inspection, acks=acks, personas_root=personas_root)
+                version=inspection.version, checksum=inspection.checksum,
+                values_digest=PERSONA_DIGEST)
+    return commit_persona_install(inspection=inspection, acks=acks, personas_root=personas_root,
+                                  approved_values=PERSONA_VALUES)
 
 
 def test_commit_persona_install_same_version_different_content_raises_version_content_conflict(
@@ -551,7 +563,7 @@ def _installed_specialist(tmp_path: Path, *, slug: str = "mtg-n1d"):
         InspectionResult, commit_specialist_install, compute_install_root_digest,
         resolve_dependency_closure,
     )
-    from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+    from specialist_install_consent import SpecialistInstallAckStore
     from specialist_component import load_specialist_component
 
     staged = _write_specialist_component(tmp_path / "staged", slug=slug)
@@ -567,15 +579,12 @@ def _installed_specialist(tmp_path: Path, *, slug: str = "mtg-n1d"):
         required_config_names=(), required_secret_names=(), dependencies=deps, staged_dir=staged,
     )
     acks = SpecialistInstallAckStore(path=tmp_path / "specialist-acks.json")
-    identity = install_consent_identity(
-        component_id=inspection.component_id, version=inspection.version,
-        root_digest=inspection.root_digest, slug=inspection.slug)
-    acks.record(identity=identity, component_id=inspection.component_id, version=inspection.version,
-                component_checksum=inspection.root_digest, slug=inspection.slug)
+    values = record_specialist_ack(acks, inspection)
     specialists_dir = tmp_path / "specialists"
     agents_specialists_dir = tmp_path / "agents-specialists"
     commit_specialist_install(
         inspection=inspection, config={}, secret_names_provided=frozenset(), acks=acks,
+        approved_values=values,
         specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir,
     )
     return specialists_dir, agents_specialists_dir

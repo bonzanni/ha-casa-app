@@ -5,8 +5,8 @@ Task first: a reply or a file to a post of a live task (a job or a
 delegation) goes into that task, ahead of everything else — whichever of the
 task's posts it answers (an intermediate plugin post, its second page), and
 while the task is still pending. A reply to an ended task's post is this
-chat's agent's turn with the task's end in its note. The desk is the
-resident's chat's only. Everything else is this chat's agent's conversation.
+chat's agent's turn with the task's end in its note. Everything else is this
+chat's agent's conversation, whoever posted the message it replies to.
 
 A file for a live task is stored in the task's executor's own inbox, granted
 to that task, and handed to it as a Casa line naming its path; 📎 records its
@@ -29,7 +29,6 @@ import agent_inbox
 import chat_notes
 import own_voice
 import result_broker as rb
-import specialist_desk as sd
 import task_input
 from bus import BusMessage, MessageBus
 from channels.telegram import TelegramChannel, _IntakeQueue
@@ -138,9 +137,6 @@ def world(monkeypatch, tmp_path):
     import task_posts_double
     import tools
     index = task_posts_double.install(monkeypatch)
-    monkeypatch.setattr(rb, "POST_MAP", rb.PostMap())
-    monkeypatch.setattr(sd, "DESKS", sd.DeskRegistry())
-    monkeypatch.setattr(sd, "DESK_ECHO", rb.PostLedger(max_events=64))
     monkeypatch.setattr(tools, "_display_name_for_role",
                         lambda role: {"finance": "Finance", "assistant": "Ellen"}.get(role, role))
     chat_notes.reset()
@@ -267,7 +263,7 @@ async def test_a_reply_from_someone_else_never_reaches_the_task(world):
 
 
 # ---------------------------------------------------------------------------
-# text: a job's posts, and the desk
+# text: a job's posts, and a post of no task
 # ---------------------------------------------------------------------------
 
 def _job(ch, world, executor, mid):
@@ -291,22 +287,16 @@ async def test_a_reply_to_a_live_jobs_post_goes_into_the_job(world, kind):
     assert _turns(bus, ch.default_agent) == []
 
 
-async def test_the_desk_is_the_residents_chats_only(world, monkeypatch):
-    spawned = AsyncMock(return_value=None)
-    monkeypatch.setattr(sd, "handle_reply", spawned)
-    monkeypatch.setattr(sd, "desk_target_ok", lambda resident, role: True)
-    for kind in ENDPOINTS:
-        ch, bus = _endpoint(kind)
-        rb.POST_MAP.record(TgAddress(ch.bot_id, OPERATOR, 11),
-                           rb.PostRecord(role="travel", operator_id=OPERATOR, plugin="p",
-                                         slot="s", tool_use_id="t", owner="", posted_at=1.0))
-        await _handle(ch, _text("more please", reply_to=11))
-        if kind == "casa":
-            assert spawned.await_count == 1 and _turns(bus, "assistant") == []
-        else:
-            assert spawned.await_count == 1                 # unchanged: no desk here
-            [turn] = _turns(bus, "finance")
-            assert turn.content == "more please"
+@pytest.mark.parametrize("kind", ENDPOINTS)
+async def test_a_reply_to_a_post_of_no_task_is_this_chats_agents_turn(world, kind):
+    ch, bus = _endpoint(kind)
+    ch._record_post(OPERATOR, types.SimpleNamespace(message_id=11),
+                    rb.PostRecord(role="travel", operator_id=OPERATOR, plugin="p",
+                                  slot="s", tool_use_id="t", owner="", posted_at=1.0))
+    await _handle(ch, _text("more please", reply_to=11))
+    [turn] = _turns(bus, ch.default_agent)
+    assert turn.content == "more please" and "_reply_note" in turn.context
+    assert _turns(bus, "travel") == [] and world.inputs.calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -400,7 +390,7 @@ async def test_a_file_whose_task_ended_meanwhile_in_the_residents_chat_names_the
     _land(ch, 640, "d-1", "finance")
     await ch._on_non_text_message(types.SimpleNamespace(message=_file(reply_to=640)))
     assert [m["text"] for m in ch._app.bot.sent] == [
-        f"statement.pdf is in {sd.label_for('finance')}'s inbox; the task had already ended."]
+        f"statement.pdf is in {rb.post_label('finance')}'s inbox; the task had already ended."]
 
 
 def _ended_job(status="completed"):
@@ -461,10 +451,11 @@ async def test_an_arming_for_the_agents_conversation_in_its_own_chat_is_the_defa
     assert OPERATOR not in ch._armings
 
 
-async def test_an_arming_for_a_specialists_card_in_the_residents_chat_is_its_desk(world):
+async def test_an_arming_for_a_specialists_card_in_the_residents_chat_is_the_default_path(world):
     ch, _bus = _endpoint("casa")
     _arm(ch, ("conversation", "finance"))
-    assert ch._file_address(OPERATOR, _user(), _file()) == ("armed", None, "finance")
+    assert ch._file_address(OPERATOR, _user(), _file()) is None
+    assert OPERATOR not in ch._armings
 
 
 @pytest.mark.parametrize("kind", ENDPOINTS)

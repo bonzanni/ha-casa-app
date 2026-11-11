@@ -1,6 +1,6 @@
 """#1377: an ``operator_proposal`` deposit may carry ``pages`` — one to six plain
-texts posted in order, each its own labelled message filed in the post map as it
-lands, then the card, under one delivery, one key and one receipt. A page that
+texts posted in order, each its own labelled message filed under the card's
+task as it lands, then the card, under one delivery, one key and one receipt. A page that
 does not land sends no card; a card with pages is never placed in place
 (INV-PROP-012).
 
@@ -23,10 +23,9 @@ import verdict_broker as vb
 from channels import DeliveryOutcome
 from test_proposal_slot import (LABEL, SLOT, _identity, _map, _open, _post,  # noqa: F401
                                 _proposal, _Manager, open_chats)
-from test_desk_tap import LABEL as DESK_LABEL, OPERATOR, _tap, env  # noqa: F401
+from test_stored_call_tap import LABEL as TAP_LABEL, OPERATOR, _tap, env  # noqa: F401
 from test_tap_in_place_card import _respond, edit_env  # noqa: F401
 from test_tap_next_card import _card, _live, card_env  # noqa: F401
-from channels.tg_address import TgAddress
 from two_endpoints import CASA_BOT as BOT
 
 
@@ -37,6 +36,7 @@ class _PagesRecorder:
     def __init__(self):
         self.log: list[tuple[str, str]] = []
         self.posts: list = []
+        self.card_posts: list = []
         self.fail_page: int | None = None      # 1-based page that does not land
         self.raise_page: int | None = None     # 1-based page whose send raises
         self.card_lands = True
@@ -50,7 +50,6 @@ class _PagesRecorder:
             return DeliveryOutcome.NOT_DELIVERED
         self.log.append(("page", text))
         self.next_mid += 1
-        rb.POST_MAP.record(TgAddress(BOT, chat_id, self.next_mid), post)
         self.posts.append(post)
         return DeliveryOutcome.DELIVERED
 
@@ -59,7 +58,7 @@ class _PagesRecorder:
         if not self.card_lands:
             return None
         self.next_mid += 1
-        rb.POST_MAP.record(TgAddress(BOT, chat_id, self.next_mid), post)
+        self.card_posts.append(post)
         return self.next_mid
 
 
@@ -72,7 +71,6 @@ def penv(monkeypatch):
     monkeypatch.setattr(vb, "BROKER", vb.VerdictBroker())
     monkeypatch.setattr(rb, "POSTS", rb.PostLedger())
     open_chats(monkeypatch, "finance")
-    monkeypatch.setattr(rb, "POST_MAP", rb.PostMap())
     store = rb.ReferenceStore(now=lambda: 1000.0)
     return SimpleNamespace(rec=rec, store=store)
 
@@ -134,9 +132,9 @@ async def test_the_pages_land_in_order_then_the_card_under_one_receipt(penv):
     receipt = json.loads(out["hookSpecificOutput"]["updatedToolOutput"])
     assert receipt["casa_delivery"] == {"slot": SLOT, "status": "delivered", "to": "operator_chat",
                                         "proposal_id": rid, "buttons": 2, "pages": 3}
-    # every page is filed under the card's own post record: a swipe-reply routes
-    card_post = rb.POST_MAP.get(TgAddress(BOT, 42, 704))
-    assert [rb.POST_MAP.get(TgAddress(BOT, 42, mid)) for mid in (701, 702, 703)] == [card_post] * 3
+    # every page goes out under the card's own post record: a reply to it routes
+    (card_post,) = penv.rec.card_posts
+    assert penv.rec.posts == [card_post] * 3
     assert (card_post.role, card_post.kind) == ("finance", rb.OPERATOR_PROPOSAL)
     assert rb.echo_lines(rb.POSTS.drain("d-1")) == [
         LABEL + " posted 3 pages and a proposal to your chat (2 buttons)."]
@@ -240,8 +238,8 @@ async def test_a_next_card_with_pages_is_never_an_edit_and_falls_back_to_receipt
     await _tap(env)
     assert env.edits == []
     assert [k for k, _ in env.log] == ["receipt", "page", "page", "card"]
-    assert [t for k, t in env.log if k == "page"] == [f"{DESK_LABEL}\n(1/2) Adobe",
-                                                      f"{DESK_LABEL}\n(2/2) Figma"]
+    assert [t for k, t in env.log if k == "page"] == [f"{TAP_LABEL}\n(1/2) Adobe",
+                                                      f"{TAP_LABEL}\n(2/2) Figma"]
     (card,) = env.proposals
     assert _live() == [card.rid]
 
@@ -264,21 +262,29 @@ def _channel_with_bot():
     return ch, bot
 
 
+def _task_post():
+    return rb.PostRecord(role="finance", operator_id=42, plugin="probe", slot=SLOT,
+                         tool_use_id="call-1", owner="d-1", posted_at=1.0,
+                         kind=rb.OPERATOR_PROPOSAL)
+
+
 async def test_a_page_is_one_rich_message_filed_under_its_post(monkeypatch):
-    monkeypatch.setattr(rb, "POST_MAP", rb.PostMap())
+    import task_posts_double
+    filed = task_posts_double.install(monkeypatch)
     ch, bot = _channel_with_bot()
     bot.send_message.return_value = SimpleNamespace(message_id=77)
-    post = object()
+    post = _task_post()
     page = f"{LABEL}\n**Adobe** · [invoice](https://example.com/i/17)\n" + "\n".join(
         f"| row {i} | €{i} |" for i in range(20))
     assert await ch.deliver_operator_page(42, page, post=post) is DeliveryOutcome.DELIVERED
     assert bot.send_message.await_count == 1 and bot.send_message.await_args.kwargs["entities"]
-    assert rb.POST_MAP.get(ch.address(42, 77)) is post
+    assert filed.filed == [("d-1", ch.address(42, 77))]
 
 
 async def test_a_page_whose_entities_are_refused_is_resent_whole_as_one_plain_message(monkeypatch):
     from telegram.error import BadRequest
-    monkeypatch.setattr(rb, "POST_MAP", rb.PostMap())
+    import task_posts_double
+    filed = task_posts_double.install(monkeypatch)
     ch, bot = _channel_with_bot()
     landed = SimpleNamespace(message_id=78)
 
@@ -287,10 +293,10 @@ async def test_a_page_whose_entities_are_refused_is_resent_whole_as_one_plain_me
             raise BadRequest("Can't parse entities")
         return landed
     bot.send_message.side_effect = send
-    post = object()
+    post = _task_post()
     page = f"{LABEL}\n**Adobe** · [invoice](https://example.com/i/17)\n" + "\n".join(
         f"| row {i} | €{i} |" for i in range(20))
     assert await ch.deliver_operator_page(42, page, post=post) is DeliveryOutcome.DELIVERED
     assert bot.send_message.await_count == 2                 # the rich try, then ONE plain message
     assert bot.send_message.await_args.kwargs["text"] == page
-    assert rb.POST_MAP.get(ch.address(42, 78)) is post
+    assert filed.filed == [("d-1", ch.address(42, 78))]

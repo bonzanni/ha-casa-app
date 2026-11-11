@@ -109,6 +109,7 @@ import specialist_receipt
 import plugin_registry
 from specialist_install import commit_specialist_install, inspect_specialist_repo
 from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+from approval_records import values_digest
 
 FIXTURE = Path("/tmp/fixtures/bundletest")
 
@@ -137,23 +138,25 @@ receipt = specialist_receipt.load(res.receipt_id)
 assert receipt is not None, "receipt failed to load back by its opaque id"
 
 # Consent identity tuple = (component_id, version, slug, root_digest,
-# receipt_digest) — specialist_install_consent.install_consent_identity.
-# Recorded AFTER inspect (receipt_digest is only known once inspect
-# resolves the bundled-plugin closure), mirroring
-# test_specialist_bundle_commit.py's _prep helper.
+# receipt_digest, values_digest) — specialist_install_consent.
+# install_consent_identity. Recorded AFTER inspect (receipt_digest is only
+# known once inspect resolves the bundled-plugin closure), mirroring
+# test_specialist_bundle_commit.py's _prep helper. A fresh install with no
+# settings supplied stages exactly these approved values.
+approved = {"config": {}, "secrets": []}
 acks = SpecialistInstallAckStore()
 identity = install_consent_identity(
     component_id=res.component_id, version=res.version,
     root_digest=res.root_digest, slug=res.slug,
-    receipt_digest=res.receipt_digest,
+    receipt_digest=res.receipt_digest, values_digest=values_digest(approved),
 )
 acks.record(identity=identity, component_id=res.component_id, version=res.version,
             component_checksum=res.root_digest, slug=res.slug,
-            receipt_digest=res.receipt_digest)
+            receipt_digest=res.receipt_digest, values_digest=values_digest(approved))
 
 instance, txn = commit_specialist_install(
     inspection=res, receipt=receipt, config={}, secret_names_provided=frozenset(),
-    acks=acks,
+    acks=acks, approved_values=approved,
 )
 assert instance.state == "active", f"state={instance.state} err={instance.last_activation_error}"
 

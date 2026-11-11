@@ -14,10 +14,10 @@ import pytest
 
 import pinned_run as pr
 import result_broker as rb
-import specialist_desk as sd
+import stored_call_settler as settler
 import stored_calls as sc
 import tools as tools_mod
-from test_desk_tap import ART, LABEL, OPERATOR, _build, _echo, _tap, _tool, env  # noqa: F401
+from test_stored_call_tap import ART, LABEL, OPERATOR, _build, _echo, _tap, _tool, env  # noqa: F401
 from test_operator_file_delivery import (DATA, EXPORT, SLOT, _identity, _map, _open, _put,  # noqa: F401
                                          names, outbox, recorder)
 from channels.tg_address import TgAddress
@@ -99,7 +99,7 @@ async def test_a_failed_call_with_its_stored_arguments_is_not_told():
     assert owner.captured == pr.Capture("error", "tool_error", rewritten=False)
 
 
-# --- the desk ----------------------------------------------------------------------
+# --- the lane use ----------------------------------------------------------------------
 
 @pytest.fixture
 def file_env(env):
@@ -127,8 +127,6 @@ async def test_a_landed_file_is_the_sole_receipt(file_env):
     env.respond = _respond(pr.Capture("delivered", "operator_file"))
     await _tap(env, meta=_file_meta())
     assert env.channel.replies == [] and env.channel.notices == [] and env.channel.marks == ["☑ Get package"]
-    assert [(e.who, e.text) for e in env.desk.log] == [("operator", "[tapped: Get package]"),
-                                                       ("specialist", sd.POSTED_FILE)]
     assert _echo() == [f"{LABEL} applied your tap (Get package)."]
     (call,) = env.calls
     assert call.owner.runtime_name == FILE
@@ -138,7 +136,7 @@ async def test_a_landed_file_with_rewritten_arguments_is_followed_by_one_tell(fi
     env = file_env
     env.respond = _respond(pr.Capture("delivered", "operator_file", rewritten=True))
     await _tap(env, meta=_file_meta())
-    assert env.channel.notices == [(OPERATOR, f"{LABEL} {sd.TELL_LINE}")]
+    assert env.channel.notices == [(OPERATOR, f"{LABEL} {settler.TELL_LINE}")]
     assert _echo() == [f"{LABEL} applied your tap (Get package) — the CLI reported arguments "
                        "changed by an installed hook."]
 
@@ -155,7 +153,7 @@ async def test_a_refused_call_with_rewritten_arguments_tells_before_the_refusal(
     env = file_env
     env.respond = _respond(pr.Capture("withheld", "not delivered", rewritten=True))
     await _tap(env, meta=_file_meta())
-    assert env.channel.notices == [(OPERATOR, f"{LABEL} {sd.TELL_LINE}"),
+    assert env.channel.notices == [(OPERATOR, f"{LABEL} {settler.TELL_LINE}"),
                                    (OPERATOR, f"{LABEL} could not apply your tap (not delivered).")]
 
 
@@ -163,12 +161,13 @@ async def test_a_more_proposal_with_rewritten_arguments_still_tells_only_in_its_
     env.respond = _respond(pr.Capture("delivered", "operator_proposal", rewritten=True))
     await _tap(env, idx=1)
     assert env.channel.notices == []
-    assert [(e.who, e.text) for e in env.desk.log][-1] == ("specialist", sd.POSTED_PROPOSAL)
+    assert _echo() == [f"{LABEL} applied your tap (More) — the CLI reported arguments "
+                       "changed by an installed hook."]
 
 
-async def test_a_failed_call_with_rewritten_arguments_tells_before_the_refusal_at_the_desk(file_env):
-    """Diff r1 (Terra): the failure hook's own capture, driven through the
-    desk — the operator sees the tell, then the refusal."""
+async def test_a_failed_call_with_rewritten_arguments_tells_before_the_refusal_on_a_tap(file_env):
+    """The failure hook's own capture, driven through the tap — the operator
+    sees the tell, then the refusal."""
     env = file_env
 
     async def respond(call):
@@ -179,5 +178,5 @@ async def test_a_failed_call_with_rewritten_arguments_tells_before_the_refusal_a
         return tools_mod.DelegatedOutput(text="")
     env.respond = respond
     await _tap(env, meta=_file_meta())
-    assert env.channel.notices == [(OPERATOR, f"{LABEL} {sd.TELL_LINE}"),
+    assert env.channel.notices == [(OPERATOR, f"{LABEL} {settler.TELL_LINE}"),
                                    (OPERATOR, f"{LABEL} could not apply your tap (tool_error).")]

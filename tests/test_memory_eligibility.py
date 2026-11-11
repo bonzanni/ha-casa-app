@@ -15,7 +15,6 @@ T, R = Source.TURN, Source.RESIDENT_MESSAGE
 DQ, DA = Source.DELEGATED_REQUEST, Source.DELEGATED_ANSWER
 ET, EA = Source.ENGAGEMENT_TURN, Source.ENGAGEMENT_ANSWER
 SP = Source.SPECIALIST_POST
-DR = Source.DESK_REPLY
 TM = Source.JOB_REPLY
 
 MATRIX = [
@@ -62,13 +61,6 @@ MATRIX = [
     ("post line of a specialist that keeps memory", SP, "telegram", {},
      None),
     ("post line on voice", SP, "voice", {"role_writes_memory": False}, None),
-    ("desk reply to a no-memory specialist", DR, "telegram",
-     {"role_writes_memory": False}, "desk_reply"),
-    ("desk reply to a specialist that keeps memory", DR, "telegram", {},
-     None),
-    ("blank desk reply", DR, "telegram",
-     {"role_writes_memory": False, "text": " "}, None),
-    ("desk reply on voice", DR, "voice", {"role_writes_memory": False}, None),
     ("job reply to a no-memory specialist", TM, "telegram",
      {"role_writes_memory": False}, "topic_message"),
     ("job reply to a specialist that keeps memory", TM, "telegram", {},

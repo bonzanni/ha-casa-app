@@ -1,9 +1,9 @@
 """#1282 red case: a tap's pinned one-call turn is given Casa's instruction
-only — no desk exchange, no recalled memory, no frame calling the task a
+only — no earlier exchange, no recalled memory, no frame calling the task a
 message from the operator — and its instruction names the plugin as the judge
 of whether the tap still applies.
 
-Driven through the REAL ``specialist_desk.handle_tap`` (the only setter of the
+Driven through the REAL ``stored_call_settler.handle_tap`` (the only setter of the
 ``stored_call`` marker and of ``tools._pinned_run``) over the REAL
 ``tools._run_delegated_agent`` and the real ``PinnedRun`` controller, with the
 recording SDK client of ``test_pinned_wiring.py``. Each absence is its own
@@ -19,13 +19,12 @@ import pytest
 
 import agent as agent_mod
 import pinned_run as pr
-import specialist_desk as sd
 import tools as tools_mod
 from plugin_grants import ProfilePlan
 from plugin_registry import ResolutionResult, ResolvedPlugin
 from test_delegate_to_agent import _specialist_cfg
 from test_delegated_transcript_retention import _Harness
-from test_desk_tap import APPLY, ART, CANON, _map, _tap, _tool, env  # noqa: F401
+from test_stored_call_tap import APPLY, ART, CANON, _map, _tap, _tool, env  # noqa: F401
 from test_pinned_wiring import _install, bound  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
@@ -33,7 +32,6 @@ pytestmark = pytest.mark.asyncio
 # captured at import, before any fixture replaces it with the tap tests' fake
 REAL_RUNNER = tools_mod._run_delegated_agent
 
-DESK_SENTINEL = "DESK-LOG-SENTINEL unpaired 3 payments"
 MEMORY_SENTINEL = "MEMORY-DIGEST-SENTINEL"
 OPERATOR_FRAME = "is a message from the operator"
 
@@ -57,10 +55,6 @@ async def _pinned_prompt(env, tmp_path, monkeypatch):
         cfg=cfg, resolution=ResolutionResult(registry_valid=True, plugins=[rp]), withheld=(),
         protected={}, contract_map=_map([_tool("apply")]), plan=ProfilePlan(loaded=("probe",)),
         target="specialist:finance")
-    # the desk already holds an applied exchange on this proposal family
-    env.desk.append("operator", "[tapped: Apply]", now=990.0)
-    env.desk.append("specialist", DESK_SENTINEL, now=990.0)
-
     recalls: list[dict] = []
 
     async def fake_memory(cfg, parent):
@@ -92,10 +86,9 @@ async def _pinned_prompt(env, tmp_path, monkeypatch):
     return prompts[0], recalls
 
 
-async def test_the_pinned_prompt_carries_no_desk_exchange(env, bound, tmp_path, monkeypatch):
+async def test_the_pinned_prompt_carries_no_earlier_exchange(env, bound, tmp_path, monkeypatch):
     prompt, _ = await _pinned_prompt(env, tmp_path, monkeypatch)
-    assert DESK_SENTINEL not in prompt, prompt
-    assert "[tapped: Apply]" not in prompt, prompt
+    assert "[tapped:" not in prompt, prompt
     assert "<desk>" not in prompt, prompt
 
 

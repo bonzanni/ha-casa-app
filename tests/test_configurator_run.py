@@ -102,7 +102,7 @@ async def test_privileged_tool_admits_the_configurator_executing_role(name, monk
     assert seen == [(name, "configurator")]
 
 
-# -- the configurator is a delegate with a desk --------------------------------
+# -- the configurator is a delegate with a lane --------------------------------
 
 async def test_the_image_owned_configurator_loads_with_its_guards():
     cfg = _configurator_cfg()
@@ -151,18 +151,12 @@ async def test_the_boot_role_map_holds_the_configurator_with_no_reload(monkeypat
     assert tools._agent_role_map.get("configurator") is boot_map["configurator"]
 
 
-async def test_a_swipe_reply_on_a_configurator_post_reaches_its_desk(monkeypatch):
-    """The desk route admits the configurator (an executor) as it admits a
-    specialist, and a resident's DM delegation to it uses that same desk."""
-    import specialist_desk
-    import tools
-    cfg = _configurator_cfg()
-    monkeypatch.setattr(tools, "_agent_role_map", {"configurator": cfg})
-    monkeypatch.setattr(tools, "declares_delegate", lambda res, role: role == "configurator")
-    assert specialist_desk.desk_target_ok("assistant", "configurator") is True
-    origin = _origin(_operator_turn=True, chat_id=123, _tg_bot=BOT)
-    desk = specialist_desk.desk_for_delegation(origin, cfg, "configurator")
-    assert desk is not None
+async def test_a_delegation_to_the_configurator_is_a_use_of_its_lane():
+    """The configurator (an executor) has a lane, as a specialist does; a
+    resident has none."""
+    import agent_lane
+    assert agent_lane.has_lane(_configurator_cfg()) is True
+    assert agent_lane.has_lane(SimpleNamespace(kind="resident")) is False
 
 
 async def test_delegation_to_the_configurator_always_runs_detached(monkeypatch):
@@ -211,8 +205,7 @@ async def test_a_second_run_from_another_origin_waits_for_the_lease(lease_file, 
     assert json.loads(lease_file.read_text())["task"] == "add plugin x"
     started.clear()
     tok = agent_mod.origin_var.set(_origin(execution_role="configurator",
-                                           _delegation_id="turn-2",
-                                           desk={"role": "configurator", "chat_id": 123}))
+                                           _delegation_id="turn-2"))
     try:
         second = asyncio.create_task(tools._run_delegated_agent_bounded(cfg, "yes", ""))
     finally:
@@ -223,7 +216,7 @@ async def test_a_second_run_from_another_origin_waits_for_the_lease(lease_file, 
     await asyncio.wait_for(first, 5)
     await asyncio.wait_for(started.wait(), 5)
     rec = json.loads(lease_file.read_text())
-    assert rec["run_key"] == "turn-2" and rec["via"] == "desk"
+    assert rec["run_key"] == "turn-2" and rec["via"] == "delegation"
     release_second.set()
     await asyncio.wait_for(second, 5)
     assert not lease_file.exists()
@@ -231,8 +224,8 @@ async def test_a_second_run_from_another_origin_waits_for_the_lease(lease_file, 
 
 async def test_past_the_bound_a_second_run_is_refused_with_the_busy_text(lease_file, monkeypatch):
     import agent as agent_mod
+    import agent_lane
     import configurator_run
-    import specialist_desk
     import tools
     monkeypatch.setattr(configurator_run, "LEASE_WAIT_S", 0.05)
     started, release = asyncio.Event(), asyncio.Event()
@@ -255,7 +248,7 @@ async def test_past_the_bound_a_second_run_is_refused_with_the_busy_text(lease_f
             await tools._run_delegated_agent_bounded(cfg, "apply persona Ada", "")
     finally:
         agent_mod.origin_var.reset(tok)
-    assert isinstance(exc.value, specialist_desk.DeskBusy)
+    assert isinstance(exc.value, agent_lane.LaneBusy)
     assert "install the weather plugin" in str(exc.value)
     assert "try again shortly" in str(exc.value)
     assert calls == ["install the weather plugin"]
@@ -263,29 +256,27 @@ async def test_past_the_bound_a_second_run_is_refused_with_the_busy_text(lease_f
     await asyncio.wait_for(first, 5)
 
 
-async def test_a_second_same_chat_delegation_is_refused_at_the_bound(lease_file, monkeypatch):
-    """Two requests from the operator's DM share one configurator desk. The
-    second's whole wait, for the desk and then the lease, ends at the bound
-    in the busy result naming what is running, never an unbounded queue."""
+async def test_a_second_delegation_is_refused_at_the_bound(lease_file, monkeypatch):
+    """Two requests share the configurator's lane. The second's whole wait,
+    for the lane and then the lease, ends at the bound in the busy result
+    naming what is running, never an unbounded queue."""
     import agent as agent_mod
+    import agent_lane
     import configurator_run
-    import specialist_desk
     import tools
     monkeypatch.setattr(configurator_run, "LEASE_WAIT_S", 0.1)
-    monkeypatch.setattr(specialist_desk, "DESKS", specialist_desk.DeskRegistry())
+    agent_lane.reset()
     monkeypatch.setattr(tools, "_specialist_limiter", None)
     started, release = asyncio.Event(), asyncio.Event()
     monkeypatch.setattr(tools, "_run_delegated_agent",
                         await _blocking_runner(started, release))
     cfg = _configurator_cfg()
-    desk = specialist_desk.DESKS.get_or_create(BOT, 123, "configurator")
+    lane = agent_lane.LANES.get("configurator")
 
     async def _use(task, key):
         tok = agent_mod.origin_var.set(_origin(_delegation_id=key))
         try:
-            return await specialist_desk.delegation_use(
-                desk, reservation=desk.reserve(), run=tools._run_delegated_agent_bounded,
-                cfg=cfg, task_text=task, context_text="")
+            return await tools._delegation_in_lane(lane, lane.reserve(), cfg, task, "")
         finally:
             agent_mod.origin_var.reset(tok)
 
@@ -299,7 +290,8 @@ async def test_a_second_same_chat_delegation_is_refused_at_the_bound(lease_file,
     finally:
         release.set()
         await asyncio.wait_for(first, 5)
-    assert desk.waiting == 0 and not desk.lock.locked()
+    assert lane.waiting == 0 and not lane.lock.locked()
+    agent_lane.reset()
 
 
 async def test_a_new_run_waits_for_running_plugin_erasures(lease_file, monkeypatch):
@@ -393,8 +385,7 @@ async def test_a_shutdown_cancel_keeps_the_lease_file_and_boot_announces_it_once
     monkeypatch.setattr(agent_mod, "process_stopping", lambda: True)
     cfg = _configurator_cfg()
     tok = agent_mod.origin_var.set(_origin(execution_role="configurator",
-                                           _delegation_id="turn-9",
-                                           desk={"role": "configurator", "chat_id": 123}))
+                                           _delegation_id="turn-9"))
     try:
         run = asyncio.create_task(tools._run_delegated_agent_bounded(cfg, "apply persona Ada", ""))
     finally:
@@ -501,7 +492,7 @@ async def test_an_interrupted_runs_step_line_is_deleted_at_boot(lease_file, monk
 
     dm = _DM()
     monkeypatch.setattr(tools, "_channel_manager", make_transport(dm))
-    lease = await configurator_run.acquire(run_key="turn-9", via="desk", task="full audit")
+    lease = await configurator_run.acquire(run_key="turn-9", via="delegation", task="full audit")
     line = tools._configurator_step_line(_configurator_cfg(), {})
     line.step("reading files")
     for _ in range(10):
@@ -528,7 +519,7 @@ async def test_the_step_line_is_kept_and_deleted_by_its_address(lease_file):
     """The lease names the step line by the bot that posted it; the boot deletes it at that
     address. A line stored without its bot is not deleted (the interruption is still told)."""
     import configurator_run
-    lease = await configurator_run.acquire(run_key="turn-3", via="desk", task="t")
+    lease = await configurator_run.acquire(run_key="turn-3", via="delegation", task="t")
     configurator_run.record_step_line(TgAddress(BOT, 123, 77))
     assert json.loads(lease_file.read_text())["step_line"] == [BOT, 123, 77]
     lease.release(keep_file=True)
@@ -706,7 +697,9 @@ async def test_a_restart_outside_a_delegated_run_posts_inline(monkeypatch):
 # -- Install time does not count toward the ceiling ----------------------------
 
 @pytest.mark.parametrize("name", ["plugin_add", "plugin_update",
-                                  "specialist_install_inspect", "specialist_install_commit",
+                                  "specialist_install_inspect",
+                                  "specialist_install_request_approval",
+                                  "specialist_install_commit",
                                   "specialist_upgrade", "persona_install_inspect",
                                   "persona_install_commit"])
 async def test_install_tools_pause_the_ceiling(name, monkeypatch):

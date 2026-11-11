@@ -147,6 +147,15 @@ def _spec(name="probe", artifact=ART):
                         summary=None)
 
 
+@pytest.fixture(autouse=True)
+def _no_launch_slots():
+    """Casa's continuation launch slots are module state: none survives a test."""
+    import configurator_continue
+    configurator_continue._SLOTS.clear()
+    yield
+    configurator_continue._SLOTS.clear()
+
+
 @pytest.fixture
 def flow(monkeypatch, tmp_path):
     from test_plugin_tools import _State, _entry, _pr, _wire
@@ -290,20 +299,30 @@ async def test_an_incomplete_erasure_never_removes(flow):
 async def test_the_episode_outcome_is_delivered_to_the_configurator(flow, monkeypatch):
     """The background episode's outcome continues the configurator:
     complete → finish with erase_data=true; otherwise relay verbatim, nothing
-    removed."""
+    removed. When it cannot be taken, the operator is told directly."""
     tm = flow.tm
     sent = []
 
-    async def deliver(text):
-        sent.append(text)
+    def deliver(text, fallback):
+        sent.append((text, fallback))
         return True
     for outs, needle in (
         ([pe.ErasureOutcome("probe", ART, "complete", "gone")], "erase_data=true"),
         ([pe.ErasureOutcome("probe", ART, "incomplete", "BANK KEPT IT")], "BANK KEPT IT"),
     ):
         await tm._deliver_erasure_outcome("plugin_remove", "probe", outs, deliver)
-        assert needle in sent[-1]
-    assert "Nothing was removed" in sent[-1]
+        assert needle in sent[-1][0]
+    assert "Nothing was removed" in sent[-1][0]
+    assert "BANK KEPT IT" not in sent[-1][1]                # Casa's own words only
+    told = []
+
+    async def _notify(manager, text):
+        told.append(text)
+    import casa_core
+    monkeypatch.setattr(casa_core, "operator_notify", _notify)
+    await tm._deliver_erasure_outcome("plugin_remove", "probe", outs,
+                                      lambda text, fallback: False)
+    assert told == [sent[-1][1]]
 
 
 # --- specialist uninstall ------------------------------------------------------------
@@ -547,70 +566,127 @@ async def test_a_keep_tap_closes_the_question_at_once(flow):
     assert pe.QUESTIONS.current("plugin:probe") is None
 
 
-# --- every continuation reaches the configurator's desk --
+# --- every continuation is Casa continuing the configurator --------------------
 
-class _DeskChannel:
-    """A Telegram channel with the operator-DM desk route: an AsyncMock
-    ``_dispatch_desk_continuation``."""
+def _record_starts(monkeypatch, outcome="started"):
+    import configurator_continue
+    starts: list = []
 
-    def __init__(self):
-        from unittest.mock import AsyncMock
-        self.chat_id = "42"
-        self.default_agent = "assistant"
-        self.bot_id = CASA_BOT
-        self.has_bot_id = True
-        self.on_identity = None
-        self._dispatch_desk_continuation = AsyncMock(return_value=True)
+    def _start(text, **kw):
+        starts.append(SimpleNamespace(text=text, **kw))
+        return outcome
+    monkeypatch.setattr(configurator_continue, "start", _start)
+    return starts
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("choice", [pec.KEEP, pec.ERASE, pec.ERASE_DATA_ONLY,
                                     pec.CANCEL])
 @pytest.mark.parametrize("caller", ["plugin_remove", "specialist_uninstall"])
-async def test_an_erase_choice_continuation_hands_off_the_question_lease(
+async def test_an_erase_choice_continues_the_configurator_once(
         request, monkeypatch, caller, choice):
-    """#1261, re-pointed in v0.351.0: every erase choice's
-    continuation — Keep, Erase, Erase data only, Cancel — continues the
-    configurator exactly once, as a turn on its desk in the operator's DM
-    (``_dispatch_desk_continuation`` with ``desk_role="configurator"``). The
-    question is posted without an inbound reservation: there is no engagement
-    to hold. Both callers of the shared gate."""
+    """Every erase choice — Keep, Erase, Erase data only, Cancel — continues
+    the configurator exactly once: Casa starts it, keyed by the question, with
+    the operator's own words that led to the uninstall. Both callers of the
+    shared gate."""
+    import agent as agent_mod
     state = request.getfixturevalue("sflow" if caller == "specialist_uninstall"
                                     else "flow")
     tm = state.tm
-    ch = _DeskChannel()
-    monkeypatch.setattr(tm, "_channel_manager", make_transport(ch),
-                        raising=False)
-    out = await (_uninstall(tm) if caller == "specialist_uninstall" else _remove(tm))
+    starts = _record_starts(monkeypatch)
+    token = agent_mod.origin_var.set({"role": "assistant", "user_text": "remove probe"})
+    try:
+        out = await (_uninstall(tm) if caller == "specialist_uninstall" else _remove(tm))
+    finally:
+        agent_mod.origin_var.reset(token)
     assert out["kind"] == "erase_choice_pending", out
     [prompt] = state.prompts
     assert "inbound_reservation" not in prompt
     assert await prompt["continue_cb"](choice) is True
-    dispatch = ch._dispatch_desk_continuation
-    call = dispatch.await_args
-    facts = (dispatch.await_count, call.kwargs["desk_role"], call.kwargs["chat_id"],
-             call.kwargs["user_id"])
-    assert facts == (1, "configurator", 42, 42), f"erase hand-off facts: {facts!r}"
+    (start,) = starts
+    assert start.key == f"erase:{prompt['key'].question}" and start.asked == "remove probe"
+    assert start.on_outcome is not None and getattr(start, "approval", None) is None
     if choice != pec.CANCEL:
-        assert "erase_data=" in call.kwargs["text"]
+        assert "erase_data=" in start.text
 
 
 @pytest.mark.asyncio
-async def test_the_erasure_outcome_delivery_carries_no_reservation(flow, monkeypatch):
-    """#1261 companion, re-pointed in v0.351.0: after an Erase
-    tap's continuation, the background erasure's outcome continues the
-    configurator through its desk too — a second, separate desk turn."""
+async def test_a_continuation_that_could_not_start_tells_the_operator_once(flow, monkeypatch):
+    starts = _record_starts(monkeypatch)
+    out = await _remove(flow.tm)
+    assert out["kind"] == "erase_choice_pending"
+    [prompt] = flow.prompts
+    await prompt["continue_cb"](pec.KEEP)
+    told = []
+
+    async def _notify(manager, text):
+        told.append(text)
+    import casa_core
+    monkeypatch.setattr(casa_core, "operator_notify", _notify)
+    await starts[0].on_outcome("started")
+    await starts[0].on_outcome("busy")
+    assert len(told) == 1 and "probe" in told[0]
+
+
+@pytest.mark.asyncio
+async def test_the_erasure_outcome_continues_the_configurator_on_the_same_question(
+        flow, monkeypatch):
+    """After an Erase tap's continuation, the background erasure's outcome
+    continues the configurator too, under the same question's key."""
     tm = flow.tm
-    ch = _DeskChannel()
-    monkeypatch.setattr(tm, "_channel_manager", make_transport(ch),
-                        raising=False)
+    starts = _record_starts(monkeypatch)
     assert (await _remove(tm))["kind"] == "erase_choice_pending"
     [prompt] = flow.prompts
     await prompt["continue_cb"](pec.ERASE)
     pec.CHOICES.mint(prompt["key"], pec.ERASE)
     assert (await _remove(tm, erase_data=True))["kind"] == "erasure_running"
     await asyncio.wait_for(asyncio.gather(*list(tm._ERASE_TASKS)), 5)
-    calls = ch._dispatch_desk_continuation.await_args_list
-    facts = (len(calls), {c.kwargs["desk_role"] for c in calls},
-             "did not complete" in calls[-1].kwargs["text"])
-    assert facts == (2, {"configurator"}, True), f"outcome delivery facts: {facts!r}"
+    assert len(starts) == 2
+    assert {s.key for s in starts} == {f"erase:{prompt['key'].question}"}
+    assert "did not complete" in starts[-1].text
+
+
+@pytest.mark.asyncio
+async def test_a_fast_eraser_waits_behind_the_choice_run_as_its_one_follower(
+        flow, monkeypatch):
+    """The eraser finishes while the choice run is still going: its result is
+    queued behind that run (the erase task itself ends at once), and exactly
+    one finishing run starts when the choice run ends."""
+    import configurator_continue as cc
+    tm = flow.tm
+    gates: list = []
+    ran: list = []
+
+    async def _run(key, slot, continuation, approval, asked, on_outcome):
+        gate = asyncio.Event()
+        gates.append(gate)
+        ran.append(continuation)
+        try:
+            await gate.wait()
+        finally:
+            if cc._SLOTS.get(key) is slot:
+                del cc._SLOTS[key]
+            if slot.follower is not None:
+                text, f_asked, f_on = slot.follower
+                cc.start(text, key=key, asked=f_asked, on_outcome=f_on)
+    monkeypatch.setattr(cc, "_continuation", _run)
+
+    async def complete_episode(specs, operator, question, subject, kind="everything"):
+        return [pe.ErasureOutcome("probe", ART, "complete", "gone")]
+    monkeypatch.setattr(pe, "run_erase_episode", complete_episode)
+    assert (await _remove(tm))["kind"] == "erase_choice_pending"
+    [prompt] = flow.prompts
+    assert await prompt["continue_cb"](pec.ERASE) is True       # X1, the choice run
+    await asyncio.sleep(0)
+    pec.CHOICES.mint(prompt["key"], pec.ERASE)
+    assert (await _remove(tm, erase_data=True))["kind"] == "erasure_running"
+    await asyncio.wait_for(asyncio.gather(*list(tm._ERASE_TASKS)), 5)
+    assert not tm._ERASE_TASKS and len(ran) == 1                # queued, not launched
+    gates[0].set()                                               # X1 ends
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert len(ran) == 2 and "erase_data=true" in ran[1]
+    gates[1].set()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert cc._SLOTS == {}

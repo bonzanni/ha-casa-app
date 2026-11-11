@@ -218,29 +218,24 @@ over a surface's persona ceiling is still refused. Nor where a pack came from: a
 `demo/` id. Nor a specialist, whose own role decides. Nor the install, which consults no role, so
 a pack no role admits can still be installed, consent tap included, and only refused at apply.
 
-**INV-PERS-011**: A persona install approval that was recorded at tap-commit, but whose continuation of the configurator the desk route does not report as taken, does not leave the DM claiming an install: the recorded approval is not revoked by the failed continuation, and the single approval edit is selected from the continuation's report rather than written before it.
+**INV-PERS-011**: A persona install approval recorded at the tap, whose configurator run Casa could not start, does not leave the card claiming the configurator is carrying on: the approval stays recorded and approved, the card says the run could not be started and that the approval is kept, and the one edit is chosen from the launch's report rather than written before it.
 
-The persona and specialist consent finish hooks are separately written copies of one
-shape, so this is the sibling of INV-SPEC-010 and holds for the same reasons — and it
-carries the same condition, which bites harder here: the acknowledgement is written at
-tap-commit only if the revocation-generation check passes, so a tap that lands after a
-`persona_ack_revoke` records nothing and takes the earlier "this approval was not
-recorded" branch, which reconciliation never reaches. When it IS recorded, the hook awaits
-the continuation callback before it edits, and only a literal `True` selects the success
-wording. The corrective wording names a recovery — re-run the install — and says the
-recorded approval is
-reused *if it still applies*, because an explicit revocation legitimately makes a fresh
-prompt correct. A contained callback raise takes the same third, weaker wording as the
-specialist sibling.
-
-What it does not cover: `True` is not a delivery receipt, and the report can be wrong in
-both directions. See INV-SPEC-010 in `architecture/specialist-lifecycle.md` for exactly
-what a positive report establishes, what remains outside it, and why the absence of a
-positive report is not a guarantee that the operator learned anything.
-
-A Deny records nothing and edits the card, and an expiry edits it too; neither continues the
-configurator, and the card is keyed to the configurator run that asked — both as the
+The persona and specialist cards share one finish hook
+(`specialist_install_consent.approval_card_hooks`), so this is the sibling of INV-SPEC-010
+and holds for the same reasons — and it carries the same condition, which bites harder here:
+the acknowledgement is written in the tap's commit step only if the revocation-generation
+check passes, so a tap that lands after a `persona_ack_revoke` records nothing and takes the
+earlier "this approval was not recorded" branch, which names the recovery — re-run the
+install to be prompted again. When it IS recorded, the record is approved and the
+configurator's run started, and the card is edited once from the launch's report, as the
 specialist sibling describes.
+
+What it does not cover: a run that started is not an install that succeeded. See INV-SPEC-010
+in `architecture/specialist-lifecycle.md` for exactly what a positive report establishes.
+
+A Deny closes the record and edits the card, and an expiry edits it too; neither continues the
+configurator, and a newer request for the same persona replaces the older card — both as the
+specialist sibling describes. Applying a persona override asks for no approval.
 
 **INV-PERS-013**: A persona ref that arrives through a persona tool — a swap, a reset, an apply, an install commit, a removal or the sweep — has its id and version segments validated against the shared canonical patterns before any path join under the approved roots, and where the tool loads a pack to bind it — a swap, a reset, an apply — the pack must declare the identity the ref names; so a traversal-bearing ref never reaches a caller-facing persona path join and a mis-parked pack is never bound under a ref it does not declare.
 

@@ -1849,8 +1849,8 @@ def manifest_driver_sweep(manifest: dict) -> "str | None":
 
 
 def manifest_stop_tool(manifest: dict) -> "str | None":
-    """``casa.stopTool`` — the tool Casa calls directly, with no model, no session and no
-    desk, to list the work the plugin carries on by itself and to stop one request of it
+    """``casa.stopTool`` — the tool Casa calls directly, with no model and no session,
+    to list the work the plugin carries on by itself and to stop one request of it
     (``plugin_stop``). Validated exactly as ``casa.driverSweep``: ABSENT → ``None``; present,
     it must name a ``safe`` tool of the result contract that consumes nothing and calls
     nothing, else ``StoreError(reason_code="stop_tool_invalid")``."""

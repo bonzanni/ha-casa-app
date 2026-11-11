@@ -16,8 +16,8 @@ token changes, dormancy, release) is [`own-voice-lifecycle.md`](own-voice-lifecy
 per-bot transport these bots run on is [`telegram-bots.md`](telegram-bots.md); a plugin's delivered posts are
 [`plugin-delivered-slots.md`](plugin-delivered-slots.md); the run card and its admission
 are [`plugin-operator-calls.md`](plugin-operator-calls.md); the stored-call settler and the
-agent's lane are [`stored-call-buttons.md`](stored-call-buttons.md) and
-[`specialist-desk.md`](specialist-desk.md); a job's own reply route is
+agent's lane are [`stored-call-tap.md`](stored-call-tap.md) and
+[`agent-lane.md`](agent-lane.md); a job's own reply route is
 [`background-job-direct-chat.md`](background-job-direct-chat.md).
 
 ## Mental model
@@ -133,8 +133,7 @@ frame line that hands those notes to it as its own memory (`agent.CHAT_NOTES_FRA
   in the executor's inbox, granted to that task alone (`agent_inbox.grant_task_file`,
   asked at each Read), and handed to the task as a `[casa file] <name> at <path>` line;
 - a reply to an ended task's post, or anything else, is this chat's agent's turn — the
-  ended task named in its reply note;
-- the specialist desk's reply route runs only on the resident's bot.
+  ended task named in its reply note — in the resident's chat as in an agent's own.
 
 The files of one album share the destination its first file resolved. Every landed post
 of a task — each page, proposal, link and file of a plugin, a `send_media` file, a run
@@ -249,7 +248,6 @@ derives an origin from another task's.
 - [`architecture/plugin-delivered-slots.md`](../architecture/plugin-delivered-slots.md)
 - [`architecture/plugin-operator-calls.md`](../architecture/plugin-operator-calls.md)
 - [`architecture/stored-call-buttons.md`](../architecture/stored-call-buttons.md)
-- [`architecture/specialist-desk.md`](../architecture/specialist-desk.md)
 - [`architecture/background-job-direct-chat.md`](../architecture/background-job-direct-chat.md)
 - [`architecture/inbound-files.md`](../architecture/inbound-files.md)
 - [`architecture/delegation.md`](../architecture/delegation.md)

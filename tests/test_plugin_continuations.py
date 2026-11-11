@@ -12,9 +12,9 @@ from types import SimpleNamespace
 import pytest
 
 import agent as agent_mod
+import agent_lane
 import plugin_bindings
 import plugin_continuations as pc
-import specialist_desk
 import tools as tools_mod
 from authz_grants import GrantIdentity
 from config import AgentConfig, CharacterConfig, MemoryConfig
@@ -102,13 +102,13 @@ async def test_one_pending_continuation_per_run_until_it_starts(roles, monkeypat
 
 
 @pytest.fixture
-def desks(monkeypatch):
+def lanes(monkeypatch):
     import authz_grants
     monkeypatch.setattr(authz_grants, "_live_operator_identity", lambda: (42, 100))
-    monkeypatch.setattr(specialist_desk, "DESKS", specialist_desk.DeskRegistry())
+    agent_lane.reset()
     monkeypatch.setattr(tools_mod, "_specialist_limiter", None, raising=False)
     monkeypatch.setattr(pc, "RETRY_EVERY_S", 0.01)
-    return specialist_desk.DESKS
+    return agent_lane.LANES
 
 
 class _Reg:
@@ -171,7 +171,7 @@ async def test_a_request_queued_while_a_worker_finishes_is_not_lost(roles, monke
 
 
 @pytest.mark.asyncio
-async def test_the_answer_climbs_the_chain_one_requester_at_a_time(roles, desks, announce,
+async def test_the_answer_climbs_the_chain_one_requester_at_a_time(roles, lanes, announce,
                                                                    monkeypatch):
     seen: list = []
     _recording_runner(monkeypatch, seen)
@@ -191,7 +191,7 @@ async def test_the_answer_climbs_the_chain_one_requester_at_a_time(roles, desks,
 
 @pytest.mark.asyncio
 async def test_a_run_started_in_an_engagement_is_continued_as_its_specialist(
-        roles, desks, announce, monkeypatch):
+        roles, lanes, announce, monkeypatch):
     """Phone round 7: the call made inside an interactive engagement runs under
     the launching resident's turn origin; the sweep's continuation of its run
     must be a turn of the specialist that runs it, never of the resident."""
@@ -217,7 +217,7 @@ async def test_a_run_started_in_an_engagement_is_continued_as_its_specialist(
 
 
 @pytest.mark.asyncio
-async def test_a_continuation_addressed_to_a_resident_runs_nothing(roles, desks, announce,
+async def test_a_continuation_addressed_to_a_resident_runs_nothing(roles, lanes, announce,
                                                                   monkeypatch, caplog):
     """A binding whose chain ends with a resident (one minted before the chain
     fix, still on disk) is dropped with one warning: a resident has no plugin
@@ -235,7 +235,7 @@ async def test_a_continuation_addressed_to_a_resident_runs_nothing(roles, desks,
 
 @pytest.mark.asyncio
 async def test_an_unloaded_requester_fails_the_relay_instead_of_passing_the_answer_on(
-        roles, desks, announce, monkeypatch):
+        roles, lanes, announce, monkeypatch):
     seen: list = []
     _recording_runner(monkeypatch, seen)
     del roles["finance"]
@@ -247,56 +247,56 @@ async def test_an_unloaded_requester_fails_the_relay_instead_of_passing_the_answ
 
 
 @pytest.mark.asyncio
-async def test_a_continuation_waits_for_the_desk_and_lets_it_go_after_its_own_turn(
-        roles, desks, announce, monkeypatch):
+async def test_a_continuation_waits_for_the_lane_and_lets_it_go_after_its_own_turn(
+        roles, lanes, announce, monkeypatch):
     seen: list = []
     gate = asyncio.Event()
     _recording_runner(monkeypatch, seen, gate=gate)
     reg, announced = announce
-    fido_desk = desks.get_or_create(BOT, 42, "browser")
-    finance_desk = desks.get_or_create(BOT, 42, "finance")
+    fido_lane = lanes.get("browser")
+    finance_lane = lanes.get("finance")
     b = _binding(("assistant", "finance", "browser"))
     starts: list = []
-    async with fido_desk.use(fido_desk.reserve()):           # a Fido turn still drives the run
+    async with fido_lane.use(fido_lane.reserve()):           # a Fido turn still drives the run
         worker = asyncio.create_task(pc.run_continuation(
             pc.Pending(b, "r-1", "operator_answer", 0.0, bot_id=BOT), on_start=lambda: starts.append(1)))
         for _ in range(20):
             await asyncio.sleep(0)
         assert starts == [] and reg.records == []
-    async with finance_desk.use(finance_desk.reserve()):     # a finance turn holds its desk
+    async with finance_lane.use(finance_lane.reserve()):     # a finance turn holds its lane
         for _ in range(50):
             await asyncio.sleep(0)
         gate.set()                                            # Fido's turn ends
         for _ in range(200):
             await asyncio.sleep(0)
-            if not fido_desk.lock.locked():
+            if not fido_lane.lock.locked():
                 break
-        assert not fido_desk.lock.locked()                    # Fido's desk is free again
-        assert [x[0] for x in seen] == ["browser"]            # the relay waits for finance's desk
+        assert not fido_lane.lock.locked()                    # Fido's lane is free again
+        assert [x[0] for x in seen] == ["browser"]            # the relay waits for finance's lane
     await worker
     await announced[0][0]
     assert [x[0] for x in seen] == ["browser", "finance"] and starts == [1]
 
 
 @pytest.mark.asyncio
-async def test_a_desk_that_faults_while_the_continuation_waits_runs_nothing(
-        roles, desks, announce, monkeypatch):
+async def test_an_agent_that_faults_while_the_continuation_waits_runs_nothing(
+        roles, lanes, announce, monkeypatch):
     seen: list = []
     _recording_runner(monkeypatch, seen)
     reg, _ = announce
-    desk = desks.get_or_create(BOT, 42, "browser")
-    async with desk.use(desk.reserve()):
+    lane = lanes.get("browser")
+    async with lane.use(lane.reserve()):
         worker = asyncio.create_task(pc.run_continuation(
             pc.Pending(_binding(), "r-1", "sweep", 0.0, bot_id=BOT), on_start=lambda: None))
         for _ in range(20):
             await asyncio.sleep(0)
-        desk.faulted = "unconfirmed"
+        agent_lane.FAULTS.mark("browser", "r-0", "browser", reason="unconfirmed")
     await worker
     assert seen == [] and reg.records == []
 
 
 @pytest.mark.asyncio
-async def test_a_binding_of_a_former_operator_is_never_continued(roles, desks, announce,
+async def test_a_binding_of_a_former_operator_is_never_continued(roles, lanes, announce,
                                                                  monkeypatch):
     import authz_grants
     monkeypatch.setattr(authz_grants, "_live_operator_identity", lambda: (42, 999))
@@ -308,7 +308,7 @@ async def test_a_binding_of_a_former_operator_is_never_continued(roles, desks, a
 
 
 @pytest.mark.asyncio
-async def test_shutdown_cancels_a_running_continuation_turn(roles, desks, announce, monkeypatch):
+async def test_shutdown_cancels_a_running_continuation_turn(roles, lanes, announce, monkeypatch):
     cancelled = asyncio.Event()
     entered = asyncio.Event()
 
@@ -326,7 +326,7 @@ async def test_shutdown_cancels_a_running_continuation_turn(roles, desks, announ
     await asyncio.wait_for(entered.wait(), 2)
     await q.drain()
     assert cancelled.is_set()
-    assert not desks.get_or_create(BOT, 42, "browser").lock.locked()
+    assert not lanes.get("browser").lock.locked()
 
 
 @pytest.mark.asyncio
@@ -655,38 +655,38 @@ async def test_a_pass_never_overlaps_another(roles, monkeypatch, tmp_path, extra
 
 
 @pytest.mark.asyncio
-async def test_a_turn_still_unwinding_keeps_the_desk_refused(roles, desks, announce, monkeypatch):
-    """p3r3c: #1197's guard — a run the bounded runner gave up on refuses the
-    desk until it ends, for a continuation as for any desk use."""
+async def test_a_turn_still_unwinding_keeps_the_lane_refused(roles, lanes, announce, monkeypatch):
+    """#1197's guard — a run the bounded runner gave up on refuses the lane
+    until it ends, for a continuation as for any lane use."""
     leftover = asyncio.Event()
 
     async def _bounded(cfg, task_text, context_text, resolution=None, output_format=None):
-        sink = tools_mod._desk_run_sink.get()
+        sink = tools_mod._lane_run_sink.get()
         assert sink is not None
         sink.append(asyncio.ensure_future(leftover.wait()))
         return DelegatedOutput(text="done")
 
     monkeypatch.setattr(tools_mod, "_run_delegated_agent_bounded", _bounded)
     await pc.run_continuation(pc.Pending(_binding(), "r-1", "sweep", 0.0, bot_id=BOT), on_start=lambda: None)
-    desk = desks.get_or_create(BOT, 42, "browser")
-    assert desk.faulted is not None
+    lane = lanes.get("browser")
+    assert lane.faulted is not None
     leftover.set()
     for _ in range(10):
         await asyncio.sleep(0)
-    assert desk.faulted is None
+    assert lane.faulted is None
 
 
 @pytest.mark.asyncio
 async def test_a_stop_during_the_relay_tells_the_resident_instead_of_going_silent(
-        roles, desks, announce, monkeypatch):
-    """p3r3c: Casa stops while the answer waits for finance's desk — the chain
+        roles, lanes, announce, monkeypatch):
+    """Casa stops while the answer waits for finance's lane — the chain
     task fails with Casa's own message, so the resident is told durably."""
     seen: list = []
     _recording_runner(monkeypatch, seen)
     reg, announced = announce
-    finance_desk = desks.get_or_create(BOT, 42, "finance")
+    finance_lane = lanes.get("finance")
     q = pc.Continuations()
-    async with finance_desk.use(finance_desk.reserve()):
+    async with finance_lane.use(finance_lane.reserve()):
         q.request(_binding(("assistant", "finance", "browser")), "r-9", "operator_answer")
         for _ in range(200):
             await asyncio.sleep(0)
@@ -746,7 +746,7 @@ async def test_no_task_inside_a_relay_is_banked_however_deep(roles, monkeypatch,
 
 
 @pytest.mark.asyncio
-async def test_a_progress_only_answer_climbs_no_further(roles, desks, announce, monkeypatch):
+async def test_a_progress_only_answer_climbs_no_further(roles, lanes, announce, monkeypatch):
     """Operator ruling Q3 (C4a): a continuation turn that answers only
     ``<silent/>`` declared progress — no relay turn, and its record is attached
     quietly, so the resident hears only results and questions."""
@@ -761,7 +761,7 @@ async def test_a_progress_only_answer_climbs_no_further(roles, desks, announce, 
 
 
 @pytest.mark.asyncio
-async def test_a_closing_silence_after_notes_declares_progress(roles, desks, announce,
+async def test_a_closing_silence_after_notes_declares_progress(roles, lanes, announce,
                                                                monkeypatch):
     """A turn that writes working notes and then closes with ``<silent/>``
     declared progress: what decides is the message it closed with."""
@@ -777,7 +777,7 @@ async def test_a_closing_silence_after_notes_declares_progress(roles, desks, ann
 
 
 @pytest.mark.asyncio
-async def test_a_closing_message_that_only_starts_with_silence_climbs(roles, desks, announce,
+async def test_a_closing_message_that_only_starts_with_silence_climbs(roles, lanes, announce,
                                                                       monkeypatch):
     """The closing message is read whole: one that opens with the marker and
     carries an answer far past the result cap is an answer, and climbs."""
@@ -807,7 +807,7 @@ def test_the_knowledge_line_reads_like_the_agents_own_memory(roles):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("said", ["", "   ", "<silent/><silent/>"])
-async def test_only_the_exact_sentinel_declares_progress(roles, desks, announce, monkeypatch,
+async def test_only_the_exact_sentinel_declares_progress(roles, lanes, announce, monkeypatch,
                                                          said):
     """p3r5x: an empty answer is not a declaration — it climbs and is announced."""
     seen: list = []
@@ -821,7 +821,7 @@ async def test_only_the_exact_sentinel_declares_progress(roles, desks, announce,
 
 
 @pytest.mark.asyncio
-async def test_a_requesters_own_silence_never_hides_the_result(roles, desks, announce,
+async def test_a_requesters_own_silence_never_hides_the_result(roles, lanes, announce,
                                                                monkeypatch):
     """p3r5c: quiet is the continuation turn's own declaration only — a relay
     requester answering ``<silent/>`` to a real result is still announced."""
@@ -938,7 +938,7 @@ SID = "44444444-4444-4444-8444-444444444444"
 
 
 @pytest.fixture
-def conv(roles, desks, announce, monkeypatch, tmp_path, mem):  # noqa: F811 — the fixture
+def conv(roles, lanes, announce, monkeypatch, tmp_path, mem):  # noqa: F811 — the fixture
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-home"))
     for role, cfg in roles.items():
         cfg.cwd = str(tmp_path / "home" / role)

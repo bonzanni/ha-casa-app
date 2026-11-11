@@ -2,7 +2,7 @@
 ``{"label": ..., "close": true}``, which stores no call. Its tap is admitted by the same
 chain and the same single claim and commit as any settling tap; the finish hook then
 removes the card's keyboard by one markup-only edit, leaving the text as posted, and runs
-no desk use, no plugin call and no model turn; any later tap on the card answers "already
+no lane use, no plugin call and no model turn; any later tap on the card answers "already
 answered" (INV-PROP-011)."""
 from __future__ import annotations
 
@@ -11,8 +11,9 @@ import types
 
 import pytest
 
+import agent_lane
+import chat_notes
 import result_broker as rb
-import specialist_desk as sd
 from test_proposal_tap import OPERATOR, RID, _cq, _settle, _tap, env as tap_env  # noqa: F401
 from test_tap_keep_card import CONFIRM, SEE, _call, _deposit, _identity, labels  # noqa: F401
 from test_tap_keep_card import APPLY, SEG
@@ -90,19 +91,19 @@ def _close_meta():
                       None]}
 
 
-def _no_desk(monkeypatch):
+def _no_lane(monkeypatch):
     reserved = []
-    real = sd.DeskRegistry.get_or_create
+    real = agent_lane.LaneRegistry.get
 
     def spy(self, *a, **k):
         reserved.append(a)
         return real(self, *a, **k)
-    monkeypatch.setattr(sd.DeskRegistry, "get_or_create", spy)
+    monkeypatch.setattr(agent_lane.LaneRegistry, "get", spy)
     return reserved
 
 
 async def test_a_close_tap_removes_the_keyboard_and_leaves_the_text(tap_env, monkeypatch):
-    reserved = _no_desk(monkeypatch)
+    reserved = _no_lane(monkeypatch)
     tap_env.register(meta=_close_meta())
     assert await _tap(tap_env, _cq(data=f"v1|proposal|{RID}|1")) == "✔"
     await _settle()
@@ -110,10 +111,10 @@ async def test_a_close_tap_removes_the_keyboard_and_leaves_the_text(tap_env, mon
     assert markup["chat_id"] == OPERATOR and markup["message_id"] == 501
     assert list(markup["reply_markup"].inline_keyboard) == []      # explicitly empty
     assert tap_env.bot.edited == []                                  # the text is never re-sent
-    assert tap_env.taps == [] and reserved == []                     # no desk use, no pinned turn
+    assert tap_env.taps == [] and reserved == []                     # no lane use, no pinned turn
     assert tap_env.bot.sent == []                                    # no notice
     assert OPERATOR not in tap_env.ch._armings
-    assert sd.drain_echo_lines(BOT, OPERATOR) == []                     # the resident learns nothing
+    assert chat_notes.drain(BOT, OPERATOR) == []                        # the chat's agent learns nothing
 
 
 async def test_any_later_tap_on_a_closed_card_is_already_answered_and_runs_nothing(tap_env):

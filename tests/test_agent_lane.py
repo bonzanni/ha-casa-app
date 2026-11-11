@@ -1,6 +1,6 @@
 """One lane and one fault per executing agent: the lane is the agent's, shared by
-every chat and every desk of it; a fault refuses every later use until restart;
-a configurator use shares one wait deadline with the configurator lease."""
+every chat and every bot; a fault refuses every later use until restart; a
+configurator delegation shares one wait deadline with the configurator lease."""
 from __future__ import annotations
 
 import asyncio
@@ -10,14 +10,14 @@ import pytest
 
 import agent_lane
 import configurator_run
-import specialist_desk as sd
+import tools
 from plugin_registry import PluginIssue
 
 
 @pytest.fixture(autouse=True)
 def fresh():
-    sd_registry = sd.DeskRegistry(now=lambda: 1000.0)       # a fresh world: no lanes, no faults
-    yield sd_registry
+    agent_lane.reset(now=lambda: 1000.0)       # a fresh world: no lanes, no faults
+    yield
     agent_lane.reset()
 
 
@@ -32,42 +32,34 @@ def test_one_lane_per_agent_created_once():
         agent_lane.LANES.get("")
 
 
-async def test_the_lane_is_shared_across_two_chat_ids_and_two_bots(fresh):
-    """The operator's private chat id is the same on every bot: two desks of one
-    agent — another chat, another bot — are one lane."""
-    d1 = fresh.get_or_create(111, 42, "finance")
-    d2 = fresh.get_or_create(111, 43, "finance")
-    d3 = fresh.get_or_create(222, 42, "finance")
-    other = fresh.get_or_create(111, 42, "browser")
-    assert d1 is not d2 and d1.lane is d2.lane is d3.lane is agent_lane.LANES.get("finance")
-    assert d1.lock is d2.lock is d3.lock
-    assert other.lock is not d1.lock
-    # a use held through one chat's desk keeps the other chat's waiting
+async def test_one_agents_uses_wait_on_each_other_and_another_agent_runs_meanwhile():
+    """The lane is keyed by the agent alone: whichever chat or bot a use comes
+    from, a second use of the same agent waits for the first, and another
+    agent's lane is free meanwhile."""
+    finance = agent_lane.LANES.get("finance")
+    other = agent_lane.LANES.get("browser")
+    assert other.lock is not finance.lock
     order: list = []
-    async with d1.use(d1.reserve()):
-        waiter = asyncio.create_task(_use(d2, order))
+    async with finance.use(finance.reserve()):
+        waiter = asyncio.create_task(_use(finance, order))
         for _ in range(5):
             await asyncio.sleep(0)
-        assert order == [] and d2.waiting == 1 == d1.waiting and d2.lock.locked()
-        # another agent's lane is free meanwhile
+        assert order == [] and finance.waiting == 1 and finance.lock.locked()
         async with other.use(other.reserve()) as admitted:
             assert admitted is True
     await waiter
     assert order == ["second"]
-    # the logs stay per desk
-    d1.append("operator", "q", 1.0)
-    assert d2.log == [] and d3.log == []
 
 
-async def _use(desk, order):
-    async with desk.use(desk.reserve()):
+async def _use(lane, order):
+    async with lane.use(lane.reserve()):
         order.append("second")
 
 
 def test_the_queue_is_the_agents_and_holds_three():
     lane = agent_lane.LANES.get("finance")
     places = [lane.reserve() for _ in range(agent_lane.QUEUE_MAX)]
-    assert all(places) and lane.waiting == 3 == sd.DESK_QUEUE_MAX
+    assert all(places) and lane.waiting == 3 == agent_lane.QUEUE_MAX
     assert lane.reserve() is None
     places[0].release()
     places[0].release()                       # idempotent
@@ -99,66 +91,53 @@ async def test_an_unwinding_run_refuses_the_lane_only_until_it_ends():
 
 # --- the fault is the agent's ------------------------------------------------------------
 
-def test_a_fault_is_per_agent_until_restart(fresh):
+def test_a_fault_is_per_agent_until_restart():
     fault = agent_lane.FAULTS.mark("finance", "run-1", "probe", reason="run run-1: unconfirmed")
     assert agent_lane.FAULTS.faulted("finance") is fault
     assert (fault.run_id, fault.plugin, fault.since) == ("run-1", "probe", 1000.0)
     assert agent_lane.FAULTS.faulted("browser") is None
-    # every desk of the agent, in every chat, refuses
-    for desk in (fresh.get_or_create(111, 42, "finance"), fresh.get_or_create(222, 7, "finance")):
-        assert desk.faulted == "run run-1: unconfirmed" and desk.fault is fault
-    assert fresh.get_or_create(111, 42, "browser").faulted is None
+    # the agent's lane refuses, another agent's does not
+    lane = agent_lane.LANES.get("finance")
+    assert lane.faulted == "run run-1: unconfirmed" and lane.fault is fault
+    assert agent_lane.LANES.get("browser").faulted is None
     (issue,) = agent_lane.FAULTS.issues()
     assert isinstance(issue, PluginIssue)
     assert (issue.name, issue.target, issue.reason_code) == ("probe", "specialist:finance", "agent_faulted")
-    assert sd.faulted_desk_issues() == [issue]
     agent_lane.reset()                              # a restart clears it
     assert agent_lane.FAULTS.faulted("finance") is None and agent_lane.FAULTS.issues() == []
 
 
-def test_the_faulted_line_names_no_desk():
+def test_the_faulted_line_names_the_agent():
     line = agent_lane.faulted_line("📊 Finance")
     assert line == "📊 Finance is out of service until Casa restarts."
-    assert "desk" not in line and sd.faulted_line is agent_lane.faulted_line
 
 
-def test_the_desk_names_are_the_lanes():
-    assert sd.DeskBusy is agent_lane.LaneBusy and sd.DeskFaulted is agent_lane.LaneFaulted
-    assert sd.DeskFault is agent_lane.Fault and sd.Reservation is agent_lane.Reservation
-    assert sd.UNWINDING == agent_lane.UNWINDING
+def test_the_configurators_busy_is_a_lane_busy():
     assert issubclass(configurator_run.ConfiguratorBusy, agent_lane.LaneBusy)
-
-
-def test_the_modules_own_registry_keeps_the_lanes_it_finds():
-    agent_lane.FAULTS.mark("finance", "run-1", "probe")
-    sd.DeskRegistry(adopt_lanes=True)
-    assert agent_lane.FAULTS.faulted("finance") is not None
-    sd.DeskRegistry()
-    assert agent_lane.FAULTS.faulted("finance") is None
 
 
 # --- the configurator's lane and its lease share one deadline -------------------------------
 
-async def test_the_configurator_lane_wait_and_the_lease_wait_share_one_deadline(fresh, monkeypatch):
+async def test_the_configurator_lane_wait_and_the_lease_wait_share_one_deadline(monkeypatch):
     """A configurator delegation waiting for its lane spends the same
     ``LEASE_WAIT_S`` its lease wait would: past it, the use holds nothing and the
     refusal is the configurator's typed busy result."""
     from types import SimpleNamespace
     monkeypatch.setattr(configurator_run, "LEASE_WAIT_S", 0.05)
     cfg = SimpleNamespace(role="configurator", kind="executor", session=None)
-    desk = fresh.get_or_create(111, 42, "configurator")
-    await desk.lock.acquire()                         # another use of the configurator's lane
-    place = desk.reserve()
+    lane = agent_lane.LANES.get("configurator")
+    await lane.lock.acquire()                         # another use of the configurator's lane
+    place = lane.reserve()
 
     async def run(*a, **k):
         raise AssertionError("nothing runs past the deadline")
+    monkeypatch.setattr(tools, "_run_delegated_agent_bounded", run)
     started = time.monotonic()
     with pytest.raises(configurator_run.ConfiguratorBusy):
-        await sd.delegation_use(desk, reservation=place, run=run, cfg=cfg,
-                                task_text="t", context_text="")
+        await tools._delegation_in_lane(lane, place, cfg, "t", "")
     assert time.monotonic() - started < 1.0
-    assert desk.waiting == 0
-    desk.lock.release()
+    assert lane.waiting == 0
+    lane.lock.release()
     # the deadline the lane wait used is the one a lease acquire inside would read
     deadline = configurator_run.wait_deadline()
     with configurator_run.waiting_until(deadline):

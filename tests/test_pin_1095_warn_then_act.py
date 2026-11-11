@@ -27,6 +27,7 @@ from types import SimpleNamespace
 import pytest
 
 import plugin_erasure as pe
+from approval_values import approved_run, use_tmp_approval_store
 from test_plugin_erase_flow import _spec, flow, sflow  # noqa: F401 — fixtures
 
 pytestmark = pytest.mark.asyncio
@@ -214,9 +215,10 @@ async def test_rc8_an_engagement_opened_during_an_acknowledged_rollback_is_named
 # --- upgrade --------------------------------------------------------------------------
 
 @pytest.fixture
-def upgrade(monkeypatch):
+def upgrade(monkeypatch, tmp_path):
     """`specialist_upgrade` past `validate_resume_inputs` (the run's q11 probe
-    setup), the library commit counted and its instance state chosen per call."""
+    setup), the library commit counted and its instance state chosen per call;
+    calls run inside an :func:`approved_run`."""
     import specialist_bundle_journal
     import specialist_install
     import specialist_receipt
@@ -246,7 +248,7 @@ def upgrade(monkeypatch):
     state = SimpleNamespace(calls=0, entries=0, prunes=0, states=[])
     monkeypatch.setattr(specialist_install, "validate_resume_inputs", lambda **k: _Checked)
     monkeypatch.setattr(specialist_receipt, "load", lambda rid, **k: object())
-    monkeypatch.setattr(tools_mod, "_PLUGIN_TOOLS_LOCK", asyncio.Lock())
+    use_tmp_approval_store(monkeypatch, tmp_path)
 
     def lib(**kw):
         state.calls += 1
@@ -287,12 +289,15 @@ async def test_rc3_upgrade_warns_before_the_transaction(reg, upgrade, version):
     (settings) upgrade warns exactly like a version change."""
     import tools as tools_mod
     a = await _open(reg)
-    out = _out(await tools_mod.specialist_upgrade.handler(_upgrade_args(version)))
-    _assert_pending(out, a.id)
-    assert RULED in out.get("warning", ""), out
-    assert upgrade.entries == 0 and upgrade.calls == 0 and upgrade.prunes == 0
-    out = _out(await tools_mod.specialist_upgrade.handler(
-        _upgrade_args(version, acknowledged_conversations=[a.id])))
+    async with approved_run(tools_mod.specialist_upgrade, _upgrade_args(version)):
+        # the warning changes nothing, so the approval is still there for the
+        # confirmed call
+        out = _out(await tools_mod.specialist_upgrade.handler(_upgrade_args(version)))
+        _assert_pending(out, a.id)
+        assert RULED in out.get("warning", ""), out
+        assert upgrade.entries == 0 and upgrade.calls == 0 and upgrade.prunes == 0
+        out = _out(await tools_mod.specialist_upgrade.handler(
+            _upgrade_args(version, acknowledged_conversations=[a.id])))
     assert out.get("ok") is True, out
     assert upgrade.calls == 1
 
@@ -304,13 +309,16 @@ async def test_rc9_the_pending_configuration_follow_up_carries_the_acknowledgeme
     import tools as tools_mod
     a = await _open(reg)
     upgrade.states = ["pending-configuration", "active"]
-    first = _out(await tools_mod.specialist_upgrade.handler(
-        _upgrade_args(acknowledged_conversations=[a.id])))
+    args = _upgrade_args(acknowledged_conversations=[a.id])
+    async with approved_run(tools_mod.specialist_upgrade, args):
+        first = _out(await tools_mod.specialist_upgrade.handler(args))
     assert first.get("ok") is True and first.get("state") == "pending-configuration", first
     assert first.get("acknowledged_conversations") == [a.id], first
     b = await _open(reg, topic=102, task="Plan the holiday budget")
-    second = _out(await tools_mod.specialist_upgrade.handler(
-        _upgrade_args(acknowledged_conversations=first["acknowledged_conversations"])))
+    # the follow-up is a new approval: one approval covers one attempt
+    args = _upgrade_args(acknowledged_conversations=first["acknowledged_conversations"])
+    async with approved_run(tools_mod.specialist_upgrade, args):
+        second = _out(await tools_mod.specialist_upgrade.handler(args))
     assert second.get("kind") != PENDING and second.get("ok") is True, second
     assert upgrade.calls == 2
     named = second.get("opened_after_confirmation", [])

@@ -68,7 +68,7 @@ trigger is caught up; see [`triggers.md`](triggers.md)); what the job does once 
 ## Failure behavior
 
 A fire that cannot start the job sends one labelled line to the operator and records the
-same line in the resident's echo. The label is the hosting specialist's, or the resident's
+same line as a note for the agent of that chat on Casa's bot, read at its next turn. The label is the hosting specialist's, or the resident's
 when no host was found. Each line is a past event at that occurrence, bounded to the echo
 line limit with the job's title clipped first:
 

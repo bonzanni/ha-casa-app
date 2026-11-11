@@ -1,5 +1,5 @@
 """#1218 — the "hasn't opened" line counts only the files the turn
-received (an S6 file desk turn's own file), a hand-off of a file to a plugin
+received, a hand-off of a file to a plugin
 (``share_inbound_file``) acts on it, and every count names how its files were
 armed: a turn with no file of its own never says "files you sent"
 (coordinator ruling (A), 2026-10-03)."""
@@ -14,10 +14,8 @@ import agent_inbox as ai
 import casa_handoff
 import output_boundary as ob
 import plugin_handoff as ph
-import specialist_desk as sd
 import tools
 from output_boundary import IntentKind as K
-from test_desk_turn import LABEL, OPERATOR, _reply, env  # noqa: F401 — the real desk harness
 
 pytestmark = [pytest.mark.unit]
 
@@ -267,39 +265,3 @@ async def test_a_share_with_no_handoff_folder_records_no_hand_off(inbox, monkeyp
     await _call(tools.list_inbound_files, {}, s)
     await _call(tools.share_inbound_file, {"path": f.path}, s)
     assert s.evidence.handed_off == set()
-
-
-# --- the desk turn carries its own file (T7) ------------------------------------------------------
-
-async def test_a_file_desk_turn_owes_only_its_own_file_and_its_hand_off_clears_it(env):
-    async def respond(call):
-        scope = call.origin["turn_scope"]
-        _listed(scope, (OWN, *OLD))                          # list_inbound_files: 17 files
-        return tools.DelegatedOutput(text="Filed it.")
-    env.respond = respond
-    await _reply(env, text="[casa file] B", file_name="B.pdf", file_path=OWN[0])
-    [(sent, _ctx)] = env.channel.replies
-    assert "(Finance hasn't opened “B.pdf”.)" in str(sent)
-    assert "17" not in str(sent) and SENT not in str(sent)
-
-    async def respond_shared(call):
-        scope = call.origin["turn_scope"]
-        _listed(scope, (OWN, *OLD))
-        scope.note_handed_off(OWN[0])
-        return tools.DelegatedOutput(text="Filed it.")
-    env.respond = respond_shared
-    env.channel.replies.clear()
-    await _reply(env, text="[casa file] B", file_name="B.pdf", file_path=OWN[0])
-    [(sent, _ctx)] = env.channel.replies
-    assert "hasn't opened" not in str(sent)
-
-
-async def test_a_reply_turn_without_a_file_has_no_own_obligation(env):
-    seen = []
-
-    async def respond(call):
-        seen.append(call.origin["turn_scope"]._read_before_describe())
-        return tools.DelegatedOutput(text="ok")
-    env.respond = respond
-    await _reply(env)
-    assert seen == [None]

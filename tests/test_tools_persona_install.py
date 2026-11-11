@@ -5,10 +5,45 @@ network/disk-touching pieces only, never touch the real /data or /config
 paths."""
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _approval_store(tmp_path, monkeypatch):
+    """Approval records under tmp_path, never /data."""
+    import approval_records
+    import tools as tools_mod
+    monkeypatch.setattr(approval_records, "PATH", str(tmp_path / "approval-records.json"))
+    approval_records.reset()
+    monkeypatch.setattr(tools_mod, "_PLUGIN_TOOLS_LOCK", asyncio.Lock())
+    yield
+    approval_records.reset()
+
+
+async def _approved_commit(args: dict) -> dict:
+    """persona_install_commit as the run Casa started after the operator
+    approved this persona (an approved, current record named on its origin)."""
+    import agent as agent_mod
+    import approval_records
+    import tools as tools_mod
+    from persona_install import persona_install_consent_identity
+    identity = persona_install_consent_identity(
+        persona_id=args["persona_id"], version=args["version"], checksum=args["checksum"],
+        values_digest=approval_records.values_digest({}))
+    async with tools_mod._plugin_tools_guard():
+        rec, _, _ = approval_records.request("persona_install", args["persona_id"], identity, {})
+    rec = approval_records.approve(rec.rid)
+    token = agent_mod.origin_var.set({
+        "role": "assistant", "execution_role": "configurator",
+        approval_records.APPROVAL_KEY: {"rid": rec.rid, "generation": rec.generation}})
+    try:
+        return await tools_mod.persona_install_commit.handler(args)
+    finally:
+        agent_mod.origin_var.reset(token)
 
 
 def _payload(result: dict) -> dict:
@@ -21,7 +56,6 @@ async def test_persona_install_commit_rejects_a_changed_checksum(monkeypatch, tm
     checksum_changed, WITHOUT ever calling commit_persona_install."""
     from test_persona_install import _write_persona_repo
     import persona_install
-    from tools import persona_install_commit
 
     staged = tmp_path / "staged"
     _write_persona_repo(staged)
@@ -31,7 +65,7 @@ async def test_persona_install_commit_rejects_a_changed_checksum(monkeypatch, tm
 
     monkeypatch.setattr(persona_install, "commit_persona_install", _must_not_be_called)
 
-    result = await persona_install_commit.handler({
+    result = await _approved_commit({
         "persona_id": "casa/newton", "version": "0.1.0",
         "checksum": "sha256:" + "f" * 64,  # deliberately wrong
         "staged_dir": str(staged),
@@ -50,7 +84,6 @@ async def test_persona_install_commit_rejects_without_a_recorded_consent_ack(mon
     from persona_pack import load_persona_pack
     import persona_install
     from persona_install import PersonaInstallAckStore
-    from tools import persona_install_commit
 
     staged = tmp_path / "staged"
     _write_persona_repo(staged)
@@ -71,7 +104,7 @@ async def test_persona_install_commit_rejects_without_a_recorded_consent_ack(mon
 
     monkeypatch.setattr(persona_install, "PersonaInstallAckStore", _TmpAckStore)
 
-    result = await persona_install_commit.handler({
+    result = await _approved_commit({
         "persona_id": pack.persona_id, "version": pack.version, "checksum": pack.checksum,
         "staged_dir": str(staged),
     })
@@ -285,7 +318,6 @@ async def test_persona_install_commit_returns_version_content_conflict_kind(
     from persona_pack import load_persona_pack
     import persona_install
     from persona_install import PersonaInstallAckStore
-    from tools import persona_install_commit
 
     tmp_acks_path = tmp_path / "acks.json"
 
@@ -303,18 +335,21 @@ async def test_persona_install_commit_returns_version_content_conflict_kind(
     real_commit = persona_install.commit_persona_install
     personas_root = tmp_path / "personas"
 
-    def _commit_with_tmp_root(*, inspection, acks):
-        return real_commit(inspection=inspection, acks=acks, personas_root=personas_root)
+    def _commit_with_tmp_root(*, inspection, acks, approved_values):
+        return real_commit(inspection=inspection, acks=acks, approved_values=approved_values,
+                           personas_root=personas_root)
 
     monkeypatch.setattr(persona_install, "commit_persona_install", _commit_with_tmp_root)
 
     async def _ack_and_commit_via_tool(staged: Path, pack) -> dict:
         acks = _TmpAckStore()
+        from approval_records import values_digest
         identity = persona_install.persona_install_consent_identity(
-            persona_id=pack.persona_id, version=pack.version, checksum=pack.checksum)
+            persona_id=pack.persona_id, version=pack.version, checksum=pack.checksum,
+            values_digest=values_digest({}))
         acks.record(identity=identity, persona_id=pack.persona_id, version=pack.version,
-                     checksum=pack.checksum)
-        result = await persona_install_commit.handler({
+                     checksum=pack.checksum, values_digest=values_digest({}))
+        result = await _approved_commit({
             "persona_id": pack.persona_id, "version": pack.version, "checksum": pack.checksum,
             "staged_dir": str(staged),
         })
@@ -395,12 +430,10 @@ async def test_persona_apply_on_a_pending_configuration_specialist_reports_no_ac
 
 
 # ---------------------------------------------------------------------------
-# Round-5b (Sol P1): persona_install_inspect — same ledger-precedence +
-# verified-keyboard-post contract as specialist_install_inspect (see
-# tests/test_tools_specialist_install.py for the specialist variant).
+# persona_install_inspect asks for the approval on Casa's card: a structured
+# result whenever the card cannot be posted.
 # ---------------------------------------------------------------------------
 
-import asyncio
 from types import SimpleNamespace
 
 
@@ -462,15 +495,13 @@ class _Handle:
 async def test_inspect_ok_payload_reports_the_resolved_ref(monkeypatch, tmp_path) -> None:
     """INV-PERS-020: the configurator names the installed version from the ref
     the tool resolved. For ``latest`` that is the release tag, never the literal."""
-    from persona_install import persona_install_consent_identity
     from tools import persona_install_inspect
 
-    fake, tmp_store_cls = _wire_persona_inspect(monkeypatch, tmp_path, channel=None)
+    import persona_install_consent
+    fake, _ = _wire_persona_inspect(monkeypatch, tmp_path, channel=SimpleNamespace(chat_id="123"))
     fake.resolved_ref = "v1.2.0"
-    tmp_store_cls().record(
-        identity=persona_install_consent_identity(
-            persona_id=fake.persona_id, version=fake.version, checksum=fake.checksum),
-        persona_id=fake.persona_id, version=fake.version, checksum=fake.checksum)
+    monkeypatch.setattr(persona_install_consent, "prompt_persona_install_consent",
+                        lambda **kw: _Handle(settled="posted"))
 
     payload = _payload(await persona_install_inspect.handler(
         {"repo": "owner/repo", "ref": "latest"}))
@@ -524,34 +555,6 @@ async def test_persona_inspect_without_channel_returns_consent_channel_unavailab
 
 
 @pytest.mark.asyncio
-async def test_persona_inspect_with_preacked_ledger_skips_keyboard(
-    monkeypatch, tmp_path,
-) -> None:
-    import persona_install_consent
-    from persona_install import persona_install_consent_identity
-    from tools import persona_install_inspect
-
-    fake, tmp_store_cls = _wire_persona_inspect(monkeypatch, tmp_path, channel=None)
-    identity = persona_install_consent_identity(
-        persona_id=fake.persona_id, version=fake.version, checksum=fake.checksum)
-    tmp_store_cls().record(
-        identity=identity, persona_id=fake.persona_id, version=fake.version,
-        checksum=fake.checksum)
-
-    def _must_not_post(**kwargs):
-        raise AssertionError("keyboard must not be attempted on a pre-acked install")
-
-    monkeypatch.setattr(
-        persona_install_consent, "prompt_persona_install_consent", _must_not_post)
-
-    payload = _payload(await persona_install_inspect.handler(
-        {"repo": "owner/repo", "ref": "main"}))
-    assert payload["ok"] is True
-    assert payload["consent"] == "pre_authorized"
-    assert payload["checksum"] == fake.checksum
-
-
-@pytest.mark.asyncio
 async def test_persona_inspect_happy_path_posts_keyboard(monkeypatch, tmp_path) -> None:
     import persona_install_consent
     from tools import persona_install_inspect
@@ -566,12 +569,24 @@ async def test_persona_inspect_happy_path_posts_keyboard(monkeypatch, tmp_path) 
     monkeypatch.setattr(
         persona_install_consent, "prompt_persona_install_consent", _prompt)
 
-    payload = _payload(await persona_install_inspect.handler(
-        {"repo": "owner/repo", "ref": "main"}))
+    import agent as agent_mod
+    token = agent_mod.origin_var.set({"execution_role": "configurator",
+                                      "_delegation_id": "deleg-p", "user_text": "add Ada"})
+    try:
+        payload = _payload(await persona_install_inspect.handler(
+            {"repo": "owner/repo", "ref": "main"}))
+    finally:
+        agent_mod.origin_var.reset(token)
     assert payload["ok"] is True
-    assert payload["consent"] == "keyboard_posted"
+    assert payload["approval"] == "requested"
     assert len(calls) == 1
-    assert calls[0]["chat_id"] == 123 and calls[0]["operator_id"] == 123
+    (card,) = calls
+    assert card["chat_id"] == 123 and card["operator_id"] == 123
+    assert card["requester"] == "deleg-p"               # each run gets its own card
+    record = card["record"]
+    assert (record.kind, record.values, record.asked) == ("persona_install", {}, "add Ada")
+    assert card["inspection"].persona_id == "warm-helper"
+    assert "Call persona_install_commit with persona_id 'warm-helper'" in card["continuation"]
 
 
 @pytest.mark.asyncio
@@ -623,111 +638,6 @@ async def test_persona_inspect_prompt_exception_is_structured(
     assert "registration blew up" in payload["detail"]
 
 
-# ---------------------------------------------------------------------------
-# v0.102.0 (#217), reworked in v0.351.0:
-# persona_install_inspect mirrors specialist_install_inspect — on
-# Approve+ack, reconcile_cb continues the configurator as one turn on its desk
-# in the operator's DM (``_dispatch_desk_continuation``) so the persona recipe
-# finishes without a manual nudge. reconcile_cb runs from the tap-callback
-# finish hook and must never raise.
-# ---------------------------------------------------------------------------
-
-
-def _capture_persona_reconcile(monkeypatch):
-    import persona_install_consent
-
-    cap: dict = {}
-
-    def _prompt(**kwargs):
-        cap["reconcile_cb"] = kwargs["reconcile_cb"]
-        return _Handle(settled="posted")
-
-    monkeypatch.setattr(
-        persona_install_consent, "prompt_persona_install_consent", _prompt)
-    return cap
-
-
-@pytest.mark.asyncio
-async def test_persona_reconcile_cb_resumes_the_captured_engagement(
-    monkeypatch, tmp_path,
-) -> None:
-    from tools import persona_install_inspect
-
-    delivered: list = []
-
-    async def _dispatch(*, chat_id, user_id, desk_role, request_id, text):
-        delivered.append((chat_id, user_id, desk_role, text))
-        return True
-
-    channel = SimpleNamespace(chat_id="123", _dispatch_desk_continuation=_dispatch)
-    fake, _ = _wire_persona_inspect(monkeypatch, tmp_path, channel=channel)
-    cap = _capture_persona_reconcile(monkeypatch)
-
-    payload = _payload(await persona_install_inspect.handler(
-        {"repo": "owner/repo", "ref": "main"}))
-    assert payload["consent"] == "keyboard_posted"
-
-    # #662: the callback REPORTS its outcome (see the specialist sibling).
-    assert await cap["reconcile_cb"]() is True
-    assert len(delivered) == 1
-    chat_id, user_id, desk_role, text = delivered[0]
-    assert (chat_id, user_id, desk_role) == (123, 123, "configurator")
-    assert "persona_install_commit" in text
-    # The desk turn starts a fresh session: the text carries every staged value.
-    for value in (fake.persona_id, fake.version, fake.checksum, str(fake.staged_dir)):
-        assert value in text
-    assert "emit_completion" not in text
-
-
-@pytest.mark.asyncio
-async def test_persona_reconcile_cb_swallows_a_delivery_failure(
-    monkeypatch, tmp_path,
-) -> None:
-    from tools import persona_install_inspect
-
-    async def _dispatch(**kwargs):
-        raise RuntimeError("delivery blew up")
-
-    channel = SimpleNamespace(chat_id="123", _dispatch_desk_continuation=_dispatch)
-    _wire_persona_inspect(monkeypatch, tmp_path, channel=channel)
-    cap = _capture_persona_reconcile(monkeypatch)
-
-    await persona_install_inspect.handler({"repo": "owner/repo", "ref": "main"})
-
-    # fail-safe: must not raise — and #662: it reports the swallowed failure.
-    assert await cap["reconcile_cb"]() is False
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("tap_state", ["refused", "no_desk_route"])
-async def test_662_persona_reconcile_cb_reports_false_for_a_dead_engagement(
-    monkeypatch, tmp_path, tap_state,
-) -> None:
-    """#662, persona surface: a tap whose configurator continuation the desk
-    route does not take (it refuses, or the channel has none) must report
-    False, so the finish hook writes the corrective DM instead of claiming an
-    install. The specialist sibling is pinned end-to-end in
-    test_tools_specialist_install.py; this pins that the persona callback — a
-    separately written copy — agrees."""
-    from tools import persona_install_inspect
-
-    delivered: list = []
-    channel = SimpleNamespace(chat_id="123")
-    if tap_state == "refused":
-        async def _dispatch(**kwargs):
-            delivered.append(kwargs)
-            return False
-
-        channel._dispatch_desk_continuation = _dispatch
-    _wire_persona_inspect(monkeypatch, tmp_path, channel=channel)
-    cap = _capture_persona_reconcile(monkeypatch)
-
-    await persona_install_inspect.handler({"repo": "owner/repo", "ref": "main"})
-
-    result = await cap["reconcile_cb"]()
-    actual = (result, len(delivered))
-    assert actual == (False, 1 if tap_state == "refused" else 0), (
-        f"persona reconciliation facts: {actual!r}")
 
 
 @pytest.mark.asyncio
@@ -775,96 +685,34 @@ async def test_persona_apply_refuses_a_pack_that_does_not_declare_the_requested_
     assert len(list((bindings_root / "resident-assistant").glob("*.yaml"))) == 0
 
 
-async def _persona_expiry(monkeypatch, tmp_path, *, outcome, run="deleg-p",
-                          commit_index=None):
-    from unittest.mock import AsyncMock
 
+
+@pytest.mark.asyncio
+async def test_an_approved_persona_asked_again_continues_without_a_card(
+        monkeypatch, tmp_path) -> None:
     import agent as agent_mod
+    import approval_records
+    import configurator_continue
     import persona_install_consent
     from tools import persona_install_inspect
-
-    # The REAL prompt, even when an earlier call in this test wrapped it.
-    real = getattr(persona_install_consent.prompt_persona_install_consent,
-                   "_real", persona_install_consent.prompt_persona_install_consent)
-    cap: dict = {}
-
-    class _Coordinator:
-        def register_challenge(self, key, **kwargs):
-            cap["key"] = key
-            cap["on_commit_sync"] = kwargs["on_commit_sync"]
-            cap["finish_factory"] = kwargs["finish_factory"]
-            return _Handle(settled="posted")
-
-    def _prompt(**kwargs):
-        kwargs["coordinator"] = _Coordinator()
-        return real(**kwargs)
-
-    _prompt._real = real
-    edits: list = []
-
-    async def _edit(chat_id, message_id, text):
-        edits.append(text)
-
-    channel = SimpleNamespace(
-        chat_id="123",
-        _dispatch_desk_continuation=AsyncMock(return_value=True),
-        edit_dm_message=_edit)
-    _wire_persona_inspect(monkeypatch, tmp_path, channel=channel)
-    monkeypatch.setattr(
-        persona_install_consent, "prompt_persona_install_consent", _prompt)
-
-    token = agent_mod.origin_var.set(
-        {"execution_role": "configurator", "_delegation_id": run})
+    calls: list = []
+    monkeypatch.setattr(persona_install_consent, "prompt_persona_install_consent",
+                        lambda **kw: calls.append(kw) or _Handle(settled="posted"))
+    _wire_persona_inspect(monkeypatch, tmp_path, channel=SimpleNamespace(chat_id="123"))
+    await persona_install_inspect.handler({"repo": "owner/repo", "ref": "main"})
+    record = approval_records.approve(calls[0]["record"].rid)
+    started: list = []
+    monkeypatch.setattr(configurator_continue, "start",
+                        lambda text, **kw: started.append((text, kw)) or "started")
+    payload = _payload(await persona_install_inspect.handler({"repo": "owner/repo",
+                                                              "ref": "main"}))
+    assert payload["approval"] == "already_approved" and len(calls) == 1
+    assert started[0][1]["key"] == record.rid
+    token = agent_mod.origin_var.set({approval_records.APPROVAL_KEY: {
+        "rid": record.rid, "generation": record.generation}})
     try:
         payload = _payload(await persona_install_inspect.handler(
             {"repo": "owner/repo", "ref": "main"}))
     finally:
         agent_mod.origin_var.reset(token)
-    assert payload["consent"] == "keyboard_posted"
-    if outcome is not None:
-        req = SimpleNamespace(meta={})
-        if commit_index is not None:
-            cap["on_commit_sync"](commit_index, req.meta)
-        await cap["finish_factory"](88, req)(outcome)
-    return channel, edits, cap
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("outcome, edit", [
-    ({"outcome": "no_answer"},
-     "⌛ Expired — persona install consent for 'warm-helper' was not answered; "
-     "nothing was installed"),
-    ({"outcome": "cancelled", "reason": "challenge_cancelled"}, None),
-    ({"outcome": "answered", "option_index": 1},
-     "❌ Denied — 'warm-helper' was not installed"),
-])
-async def test_inspect_withdrawal_tells_the_engagement_nothing(
-    monkeypatch, tmp_path, outcome, edit,
-) -> None:
-    """An expiry, a Deny or a withdrawal edits
-    the card and continues nobody — the configurator's desk is not dispatched
-    and no approval is recorded."""
-    from persona_install import PersonaInstallAckStore
-
-    channel, edits, _ = await _persona_expiry(
-        monkeypatch, tmp_path, outcome=outcome,
-        commit_index=outcome.get("option_index"))
-    ack_path = tmp_path / "persona_acks.json"
-    acks = len(PersonaInstallAckStore(path=ack_path)._load()) if ack_path.exists() else 0
-    assert (channel._dispatch_desk_continuation.await_count, len(edits), acks) == (0, 1, 0)
-    if edit is not None:
-        assert edits == [edit]
-
-
-@pytest.mark.asyncio
-async def test_the_persona_card_key_names_its_requester(monkeypatch, tmp_path) -> None:
-    """#1445 (design round d1): one card per requesting configurator run (its
-    delegation id, since v0.351.0); the approval identity is
-    unchanged."""
-    _c, _e, cap_a = await _persona_expiry(
-        monkeypatch, tmp_path, outcome=None, run="deleg-a")
-    _c, _e, cap_b = await _persona_expiry(
-        monkeypatch, tmp_path, outcome=None, run="deleg-b")
-    ka, kb = cap_a["key"], cap_b["key"]
-    facts = (ka == kb, ka.identity == kb.identity, ka.requester, kb.requester)
-    assert facts == (False, True, "deleg-a", "deleg-b"), f"key facts: {facts!r}"
+    assert payload["approval"] == "in_progress" and len(started) == 1

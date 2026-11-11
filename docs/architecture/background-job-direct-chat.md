@@ -18,7 +18,7 @@ the job never took up draws is
 [`engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md); what a quiet scheduled
 run changes, and how interacting with one ends its quietness, is
 [`background-job-quiet-runs.md`](background-job-quiet-runs.md); how a reply to a post that is
-no job's reaches a desk is [`specialist-desk.md`](specialist-desk.md); the optional agent log,
+no task's carries Casa's reply note is [`telegram.md`](telegram.md); the optional agent log,
 where a job can be watched, is [`agent-logs.md`](agent-logs.md).
 
 ## Mental model
@@ -46,8 +46,7 @@ no label (`Started «<title>».`). The reply route described here is one case of
 route every endpoint runs: a delegation's posts in an agent's chat are filed and routed the same
 way, and a file replying to a job's post reaches the job (INV-OWN-004, INV-OWN-005).
 
-**Ownership lives on the engagement record.** The post map is memory-only and bounded, so it
-cannot say which live job owns a DM message. The record does: `dm_posts` lists the job's start
+**Ownership lives on the engagement record.** The record says which job owns a DM message: `dm_posts` lists the job's start
 line, questions and plugin posts (newest last, unbounded while the job lives, and kept with the
 tombstone after it ends), `ui_posts` the ones carrying a keyboard (start line, questions,
 parking lines), and `questions` the asked questions by a random id. The channel files
@@ -81,9 +80,9 @@ but landed); either copy answers while the job lives.
 
 **A reply to an ended job's post goes to the chat's own agent, told how the job ended.** Once the job
 has ended, a reply quoting one of its posts — its start line, a question, a plugin post, a post
-that landed after the end — is not the desk's: the desk cannot see the job, and a specialist-hosted
-job's plugin post sits in the post map under that specialist. The channel checks the ended
-index before the post map (`EngagementRegistry.ended_job_post_owner`), with the live route's
+that landed after the end — goes to no other agent, a specialist-hosted job's plugin post
+included. The channel checks the ended index after the live route
+(`EngagementRegistry.ended_job_post_owner`), with the live route's
 own checks — the authenticated operator who started the job, in its chat — and the message
 becomes the ordinary turn of that chat's own agent (the resident, in the resident's chat), whose reply note names the job's agent, its title, how it
 ended and when (`TelegramChannel._ended_job_phrase`), as in "a message from
@@ -109,18 +108,17 @@ terminal record and gets "already finished".
 
 **INV-BGJOB-026**: A job's direct-chat posts — its start line, its questions and its plugin's delivered posts — are filed on its engagement record as they land, without a cap while the record counts as live, persisted, and indexed by address (bot, chat and message id) again at load; a record counts as live while active or idle and while its strict terminal write is pending; the write that settles the terminal transition stores the record's questions empty and keeps its posts, which then leave the live index for the ended-post index keyed by the same address — rebuilt at load from terminal job records, joined by any post of the job that lands after the end, and left by a record pruned from the tombstone.
 
-**INV-BGJOB-012**: An authenticated operator's reply quoting a post the job record holds, while that record counts as live and is their job in that chat, is delivered into that job as an operator message — ahead of the desk route — journaled and admitted synchronously at the seam's entry; it is never sent to another route, and if the job does not take it up its one notice comes from the ticket's holder (INV-ENG-029).
+**INV-BGJOB-012**: An authenticated operator's reply quoting a post the job record holds, while that record counts as live and is their job in that chat, is delivered into that job as an operator message — ahead of every other route — journaled and admitted synchronously at the seam's entry; it is never sent to another route, and if the job does not take it up its one notice comes from the ticket's holder (INV-ENG-029).
 
 A reply to a post of a job that has ended is INV-BGJOB-024's; a reply to a post no record
-holds takes the desk ([`specialist-desk.md`](specialist-desk.md), INV-DESK-005), or the
-resident with its reply note (INV-DESK-004). The reply's words are admitted as they typed them —
+holds is the chat's own agent's turn with its reply note (INV-DESK-004). The reply's words are admitted as they typed them —
 what the completion gate counts and what memory keeps (INV-MEM-044) — and the turn the job
 receives carries Casa's `[replying to «…»]` line before them. It is written into the running
 session as it arrives, never held for a turn to end (INV-BGJOB-016).
 
-**INV-BGJOB-024**: An authenticated operator's reply in their direct chat — text, or a file with a caption — quoting a post filed in that chat by a job they started that no longer counts as live, including a post that landed after the job ended, never reaches a specialist's desk while the tombstone holds the record: it is the turn of that chat's own agent — the resident in the resident's chat — whose reply note names the job's agent, title, outcome and end time from its record; a reply from anyone else, or in another chat, keeps the routes and the note it would have had.
+**INV-BGJOB-024**: An authenticated operator's reply in their direct chat — text, or a file with a caption — quoting a post filed in that chat by a job they started that no longer counts as live, including a post that landed after the job ended, is, while the tombstone holds the record, the turn of that chat's own agent — the resident in the resident's chat — whose reply note names the job's agent, title, outcome and end time from its record; a reply from anyone else, or in another chat, is that chat's own agent's turn with the ordinary reply note.
 
-Checked ahead of the post map in both the text path (`_handle_serialized`, through
+Checked in both the text path (`_handle_serialized`, through
 `_quoted_task` after the live route `_route_task_reply`, so a live or pending-terminal job still
 takes its reply) and the file path (`_file_address`).
 What it does not cover: a file without a caption, which is stored in the chat's agent's inbox and
@@ -203,6 +201,5 @@ parser.
 - [`architecture/background-job-session.md`](../architecture/background-job-session.md)
 - [`architecture/engagement-inbound-disclosure.md`](../architecture/engagement-inbound-disclosure.md)
 - [`architecture/background-job-quiet-runs.md`](../architecture/background-job-quiet-runs.md)
-- [`architecture/specialist-desk.md`](../architecture/specialist-desk.md)
 - [`architecture/telegram.md`](../architecture/telegram.md)
 <!-- END SOURCEMAP -->

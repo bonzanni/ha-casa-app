@@ -1,9 +1,9 @@
-"""S5 §4.3/§5.2/§7/§10: the tap's desk use — the re-checks under the desk
-lock on ONE captured build input, the permit after the lock, the pinned
-run created directly (never the bounded wrapper), the receipt authoritative
-over an aborted turn, the refusal notices, the tell line, the ``More``
-cases, the exchange ``[tapped: <label>]`` and the body-free echo; a faulted
-desk refusing every later use (INV-PROP-001, INV-PROP-002).
+"""A tap on a stored-call button, settled as one use of the executing agent's
+lane: the re-checks under the lane's lock on ONE captured build input, the
+permit after the lock, the pinned run created directly (never the bounded
+wrapper), the receipt authoritative over an aborted turn, the refusal
+notices, the tell line, the ``More`` cases and the body-free chat note; a
+faulted agent refusing every later use (INV-PROP-001, INV-PROP-002).
 
 The runner is faked (the pin itself is ``test_pinned_run.py``'s): it records
 what it was given — the captured resolution, the ``PinnedRun`` owner on its
@@ -23,7 +23,9 @@ import agent as agent_mod
 import pinned_run as pr
 import plugin_erasure
 import result_broker as rb
-import specialist_desk as sd
+import agent_lane
+import chat_notes
+import stored_call_settler as settler
 import tools as tools_mod
 from channels import DeliveryOutcome
 from output_boundary import Admitted
@@ -42,15 +44,15 @@ CANON = '{"choice":"yes"}'
 # --- fakes ------------------------------------------------------------------------
 
 class _Permit:
-    def __init__(self, desk_holder):
+    def __init__(self, lane_holder):
         self.released = False
         self.released_under_lock = None
-        self._desk = desk_holder
+        self._lane = lane_holder
 
     def release(self):
         if not self.released:
             self.released = True
-            self.released_under_lock = self._desk[0].lock.locked() if self._desk else None
+            self.released_under_lock = self._lane[0].lock.locked() if self._lane else None
 
 
 class _Limiter:
@@ -58,13 +60,13 @@ class _Limiter:
         self.refuse = refuse
         self.permits = []
         self.scopes = []
-        self.desk_holder = []
+        self.lane_holder = []
 
     def try_acquire(self, scope):
         self.scopes.append(scope)
         if self.refuse:
             return None
-        p = _Permit(self.desk_holder)
+        p = _Permit(self.lane_holder)
         self.permits.append(p)
         return p
 
@@ -85,7 +87,7 @@ class _Channel:
             raise RuntimeError("send failed")
         return DeliveryOutcome.DELIVERED
 
-    async def deliver_desk_notice(self, chat_id, text):
+    async def deliver_casa_notice(self, chat_id, text):
         self.notices.append((chat_id, text))
         return True
 
@@ -147,10 +149,9 @@ def _meta(**over):
 @pytest.fixture
 def env(monkeypatch):
     clock = {"t": 1000.0}
-    monkeypatch.setattr(sd, "DESKS", sd.DeskRegistry(now=lambda: clock["t"]))
-    monkeypatch.setattr(sd, "DESK_ECHO", rb.PostLedger(max_events=64))
+    agent_lane.reset(now=lambda: clock["t"])
+    chat_notes.reset()
     monkeypatch.setattr(rb, "POSTS", rb.PostLedger())
-    monkeypatch.setattr(rb, "POST_MAP", rb.PostMap())
     finance = SimpleNamespace(role="finance", kind="specialist", delegates=(),
                               character=SimpleNamespace(name="Finance"))
     assistant = SimpleNamespace(role="assistant", kind="resident",
@@ -177,7 +178,7 @@ def env(monkeypatch):
                                owner=tools_mod._pinned_run.get(),
                                origin=dict(agent_mod.origin_var.get(None) or {}),
                                turn_id=tools_mod._delegation_quota_key.get(),
-                               lock_held=sd.DESKS.get(BOT, OPERATOR, "finance").lock.locked())
+                               lock_held=agent_lane.LANES.get("finance").lock.locked())
         calls.append(call)
         return await env.respond(call)
 
@@ -205,8 +206,8 @@ def env(monkeypatch):
         env.refreshes.append(True)
     monkeypatch.setattr(tools_mod, "_refresh_plugin_health_live", refresh, raising=False)
     env.channel = _Channel()
-    env.desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
-    limiter.desk_holder.append(env.desk)
+    env.lane = agent_lane.LANES.get("finance")
+    limiter.lane_holder.append(env.lane)
     return env
 
 
@@ -215,21 +216,23 @@ async def _tap(env, idx=0, meta=None, reservation=None, **over):
     if "deadline" not in (meta or {}):
         m["deadline"] = asyncio.get_running_loop().time() + 3600
     kw = dict(channel=env.channel, resident_role="finance", chat_id=OPERATOR, user_id=OPERATOR,
-              cid="cid-1", desk_role="finance", meta=m, idx=idx, request_id=RID,
-              reservation=reservation if reservation is not None else env.desk.reserve())
+              cid="cid-1", executing_role="finance", meta=m, idx=idx, request_id=RID,
+              reservation=reservation if reservation is not None else env.lane.reserve())
     kw.update(over)
-    await sd.handle_tap(**kw)
+    await settler.handle_tap(**kw)
 
 
 def _echo():
-    return sd.drain_echo_lines(BOT, OPERATOR)
+    return chat_notes.drain(BOT, OPERATOR)
+
+
+def _fault(reason="unconfirmed termination of run abc"):
+    agent_lane.FAULTS.mark("finance", "abc", "probe", reason=reason)
 
 
 async def test_a_tap_on_a_slash_labelled_button_context_is_the_base_context(env):
     """#1198: the slash statement is a swipe-reply's; a tap's context is the
-    base one — since #1282 empty: no frame, no desk block, no slash line."""
-    env.desk.append("operator", "earlier question", now=990.0)
-    env.desk.append("specialist", "earlier answer", now=990.0)
+    base one — since #1282 empty: no frame, no earlier exchanges, no slash line."""
     await _tap(env, meta={"options": ["/new", "More"]})
     (call,) = env.calls
     assert call.context == ""
@@ -246,12 +249,13 @@ async def test_a_tap_runs_one_pinned_turn_on_the_captured_build_input_and_posts_
     assert call.owner is not None and call.owner.build_input is env.build
     assert (call.owner.runtime_name, call.owner.canonical, call.owner.label) == (APPLY, CANON, "Yes")
     assert call.lock_held is True
-    # the prompt (§5.2.3), and no context: no desk block, no frame (#1282)
+    # the prompt, and no context: no earlier exchanges, no frame (#1282)
     assert call.task.startswith('[casa stored call] The operator tapped "Yes" on your proposal.')
     assert f"`{APPLY}`" in call.task and CANON in call.task and "Then stop." in call.task
     assert call.context == ""
-    # the origin: a desk turn's plus the reserved stored_call marker keyed on the run id
-    assert call.origin["desk"] == {"role": "finance", "chat_id": OPERATOR}
+    # the origin: the chat's own, the executing agent, and the reserved
+    # stored_call marker keyed on the run id; no other marker names a route back
+    assert "desk" not in call.origin
     assert call.origin["execution_role"] == "finance" and call.origin["_operator_turn"] is True
     sc = call.origin["stored_call"]
     assert sc == {"run_id": call.turn_id, "runtime_name": APPLY, "canonical": CANON, "label": "Yes"}
@@ -264,30 +268,41 @@ async def test_a_tap_runs_one_pinned_turn_on_the_captured_build_input_and_posts_
     assert (post.role, post.operator_id, post.kind, post.owner) == ("finance", OPERATOR, "receipt", call.turn_id)
     # #1341: the card's working line becomes ☑ once the call answered, before the receipt
     assert env.channel.notices == [] and env.channel.order == ["☑ Yes", "receipt"]
-    assert [(e.who, e.text) for e in env.desk.log] == [("operator", "[tapped: Yes]"),
-                                                       ("specialist", "applied match 17")]
-    assert env.desk.last_used == 1000.0 and env.desk.waiting == 0
+    assert env.lane.waiting == 0
     assert _echo() == [f"{LABEL} applied your tap (Yes)."]
     assert env.channel.released == [(str(OPERATOR), "cid-1")]
-    assert not env.desk.lock.locked()
+    assert not env.lane.lock.locked()
     # the permit: taken after the lock, released inside it
     assert env.limiter.scopes == [f"{OPERATOR}:finance"]
     (permit,) = env.limiter.permits
     assert permit.released and permit.released_under_lock is True
 
 
-async def test_the_models_own_text_never_reaches_the_operator_the_desk_or_the_resident(env):
+async def test_a_tap_turn_runs_and_replies_on_the_bot_that_received_it(env):
+    """The pinned turn's origin and its receipt's delivery context carry the
+    bot that delivered the card and received the tap, never another bot."""
+    other = 222
+    env.channel.bot_id = other
+    await _tap(env, meta={"bot_id": other, "_scope": f"proposal:{other}:{OPERATOR}"})
+    (call,) = env.calls
+    assert call.origin["_tg_bot"] == other
+    ((_message, context),) = env.channel.replies
+    assert context["_tg_bot"] == other
+    assert chat_notes.drain(BOT, OPERATOR) == [] and chat_notes.drain(other, OPERATOR)
+
+
+async def test_the_models_own_text_never_reaches_the_operator_or_the_chats_agent(env):
     async def respond(call):
         call.owner.resolve(pr.Capture("receipt", "applied"))
         return tools_mod.DelegatedOutput(text="SECRET-MODEL-TEXT")
     env.respond = respond
     await _tap(env)
     everything = ([str(m) for m, _ in env.channel.replies] + [t for _, t in env.channel.notices]
-                  + [e.text for e in env.desk.log] + _echo())
+                  + _echo())
     assert everything and not any("SECRET" in s for s in everything)
 
 
-async def test_the_receipt_is_bounded_and_its_first_line_is_the_exchange(env):
+async def test_the_receipt_is_bounded(env):
     async def respond(call):
         call.owner.resolve(pr.Capture("receipt", "line one\n" + "x" * 5000))
         return tools_mod.DelegatedOutput(text="")
@@ -295,8 +310,8 @@ async def test_the_receipt_is_bounded_and_its_first_line_is_the_exchange(env):
     await _tap(env)
     (message, _), = env.channel.replies
     body = str(message).split("\n", 1)[1]
-    assert len(body) <= sd.STORED_CALL_RECEIPT_CHARS + len(sd.CLIP)
-    assert env.desk.log[-1].text.startswith("line one")
+    assert body.startswith("line one")
+    assert len(body) <= settler.STORED_CALL_RECEIPT_CHARS + len(chat_notes.CLIP)
 
 
 # --- the re-checks, under the lock, each its own refusal ------------------------------
@@ -305,21 +320,20 @@ def _refused(env, reason):
     assert env.calls == [], "no turn runs on a refusal"
     assert env.channel.marks == [f"✖ {reason}"]
     assert env.channel.notices == [(OPERATOR, f"{LABEL} could not apply your tap ({reason}).")]
-    assert env.desk.log == [] and env.desk.last_used is None       # a refused tap is not a use
     assert _echo() == [f"{LABEL} refused your tap (Yes): {reason}."]
     assert env.limiter.permits == []                                # refused BEFORE the permit
-    assert env.desk.waiting == 0 and not env.desk.lock.locked()
+    assert env.lane.waiting == 0 and not env.lane.lock.locked()
     assert env.channel.released == [(str(OPERATOR), "cid-1")]
 
 
 async def test_a_tap_whose_executing_agent_is_no_longer_loaded_is_refused(env):
     del tools_mod._agent_role_map["finance"]
     await _tap(env)
-    label = sd.label_for("finance")             # no display name once the agent is gone
+    label = rb.post_label("finance")             # no display name once the agent is gone
     assert env.calls == [] and env.channel.marks == ["✖ agent unavailable"]
     assert env.channel.notices == [(OPERATOR, f"{label} could not apply your tap (agent unavailable).")]
-    assert env.desk.log == [] and env.limiter.permits == []
-    assert env.desk.waiting == 0 and not env.desk.lock.locked()
+    assert env.limiter.permits == []
+    assert env.lane.waiting == 0 and not env.lane.lock.locked()
 
 
 async def test_a_card_of_another_agent_in_an_agents_own_chat_is_refused(env):
@@ -348,9 +362,8 @@ async def test_the_card_is_the_executing_agents_whatever_the_resident_declares(e
 
 async def test_a_residents_own_card_is_settled_in_its_own_chat(env):
     """Residents included: a card the resident itself posted is its to settle."""
-    sd.DESKS.get_or_create(BOT, OPERATOR, "assistant")
-    await _tap(env, resident_role="assistant", desk_role="assistant", meta={"role": "assistant"},
-               reservation=sd.DESKS.get(BOT, OPERATOR, "assistant").reserve())
+    await _tap(env, resident_role="assistant", executing_role="assistant", meta={"role": "assistant"},
+               reservation=agent_lane.LANES.get("assistant").reserve())
     (call,) = env.calls
     assert call.origin["execution_role"] == "assistant" and call.cfg is env.assistant
 
@@ -414,21 +427,21 @@ async def test_a_stored_call_the_live_maps_no_longer_admit_is_refused_with_its_r
 
 async def test_a_deadline_passed_while_waiting_executes_nothing_with_no_notice_and_no_exchange(env):
     await _tap(env, meta={"deadline": asyncio.get_running_loop().time() - 1})
-    assert env.calls == [] and env.channel.notices == [] and env.desk.log == []
+    assert env.calls == [] and env.channel.notices == []
     assert env.channel.marks == ["⌛ expired"]
     assert _echo() == []
     assert env.channel.released == [(str(OPERATOR), "cid-1")]
 
 
-async def test_the_re_checks_read_the_world_after_the_desk_wait_not_before_it(env):
-    await env.desk.lock.acquire()                     # a desk turn is running
-    reservation = env.desk.reserve()
+async def test_the_re_checks_read_the_world_after_the_lane_wait_not_before_it(env):
+    await env.lane.lock.acquire()                     # another use of the agent is running
+    reservation = env.lane.reserve()
     task = asyncio.create_task(_tap(env, reservation=reservation))
     for _ in range(5):
         await asyncio.sleep(0)
     assert env.captures == []                         # nothing captured while waiting
     env.build = _build(plugins=[])                    # the assignment is removed meanwhile
-    env.desk.lock.release()
+    env.lane.lock.release()
     await task
     _refused(env, "plugin unassigned")
 
@@ -442,7 +455,6 @@ async def test_a_refused_permit_is_the_busy_line_and_notice_with_no_turn(env):
     assert env.channel.marks == ["✖ busy"]
     assert env.channel.notices == [
         (OPERATOR, f"{LABEL} is busy; the specialist will propose again, or type your verdict.")]
-    assert env.desk.log == []
     assert _echo() == [f"{LABEL} refused your tap (Yes): busy."]
     assert env.channel.released == [(str(OPERATOR), "cid-1")]
 
@@ -458,7 +470,6 @@ async def test_a_validated_capture_is_authoritative_over_an_aborted_turn(env):
     (message, _), = env.channel.replies
     assert str(message) == f"{LABEL}\napplied"
     assert env.channel.notices == [] and env.channel.marks == ["☑ Yes"]
-    assert env.desk.log[-1].text == "applied"
     assert _echo() == [f"{LABEL} applied your tap (Yes)."]
 
 
@@ -476,11 +487,9 @@ def _failed(env, kind):
     assert env.channel.replies == []
     assert env.channel.marks == ["✖ failed"]
     assert env.channel.notices == [(OPERATOR, f"{LABEL} could not apply your tap ({kind}).")]
-    assert [(e.who, e.text) for e in env.desk.log] == [("operator", "[tapped: Yes]"),
-                                                       ("specialist", sd.NO_RECEIPT)]
     assert _echo() == [f"{LABEL} refused your tap (Yes): {kind}."]
     (permit,) = env.limiter.permits
-    assert permit.released and not env.desk.lock.locked() and env.desk.waiting == 0
+    assert permit.released and not env.lane.lock.locked() and env.lane.waiting == 0
 
 
 async def test_a_turn_that_executed_no_call_is_the_refusal_notice_with_no_retry(env):
@@ -524,7 +533,7 @@ async def test_the_tell_line_rides_above_the_receipt_and_in_the_echo(env):
     env.respond = respond
     await _tap(env)
     (message, _), = env.channel.replies
-    assert str(message) == f"{LABEL}\n{sd.TELL_LINE}\napplied"
+    assert str(message) == f"{LABEL}\n{settler.TELL_LINE}\napplied"
     assert _echo() == [f"{LABEL} applied your tap (Yes) — the CLI reported arguments "
                        "changed by an installed hook."]
 
@@ -536,8 +545,6 @@ async def test_a_more_proposal_that_landed_is_the_sole_receipt(env):
     env.respond = respond
     await _tap(env, idx=1)
     assert env.channel.replies == [] and env.channel.notices == [] and env.channel.marks == ["☑ More"]
-    assert [(e.who, e.text) for e in env.desk.log] == [("operator", "[tapped: More]"),
-                                                       ("specialist", sd.POSTED_PROPOSAL)]
     assert _echo() == [f"{LABEL} applied your tap (More)."]
     (call,) = env.calls
     assert call.owner.runtime_name == "mcp__plugin_probe_probe__more"
@@ -563,7 +570,6 @@ async def test_a_more_proposal_withheld_or_not_delivered_is_the_refusal_notice(e
     assert env.channel.replies == []
     assert env.channel.marks == ["✖ failed"]
     assert env.channel.notices == [(OPERATOR, f"{LABEL} could not apply your tap (not delivered).")]
-    assert env.desk.log[-1].text == sd.NO_RECEIPT
     assert _echo() == [f"{LABEL} refused your tap (More): not delivered."]
 
 
@@ -592,11 +598,10 @@ async def test_a_receipt_whose_send_fails_is_told_as_applied_without_the_receipt
     assert len(env.channel.replies) == 1
     assert env.channel.notices == [(OPERATOR, f"{LABEL} applied your tap; the receipt did not go out.")]
     assert env.channel.marks == ["☑ Yes"]
-    assert env.desk.log[-1].text == "applied match 17"
     assert _echo() == [f"{LABEL} applied your tap (Yes)."]
 
 
-# --- the ceiling, the termination path, the faulted desk ---------------------------------
+# --- the ceiling, the termination path, the faulted agent ---------------------------------
 
 async def test_the_ceiling_sends_the_notice_at_once_terminates_and_settles_timed_out(env, monkeypatch):
     monkeypatch.setattr(tools_mod, "_DELEGATION_CEILING_S", 0.05)
@@ -608,7 +613,7 @@ async def test_the_ceiling_sends_the_notice_at_once_terminates_and_settles_timed
     (owner,) = env.terminated
     assert owner is env.calls[0].owner
     _failed(env, "timed out")
-    assert env.desk.faulted is None
+    assert env.lane.faulted is None
 
 
 async def test_a_capture_landing_during_the_hold_is_still_the_receipt(env, monkeypatch):
@@ -626,11 +631,10 @@ async def test_a_capture_landing_during_the_hold_is_still_the_receipt(env, monke
     # the ceiling notice went out at once; the receipt is posted when the hold ends
     assert env.channel.notices == [(OPERATOR, f"{LABEL} could not apply your tap (timed out).")]
     assert [str(m) for m, _ in env.channel.replies] == [f"{LABEL}\napplied late"]
-    assert env.desk.log[-1].text == "applied late"
     assert _echo() == [f"{LABEL} refused your tap (Yes): timed out.", f"{LABEL} applied your tap (Yes)."]
 
 
-async def test_an_unconfirmed_termination_faults_the_desk_releases_the_permit_and_tells(env, monkeypatch, caplog):
+async def test_an_unconfirmed_termination_faults_the_agent_releases_the_permit_and_tells(env, monkeypatch, caplog):
     monkeypatch.setattr(tools_mod, "_DELEGATION_CEILING_S", 0.05)
     env.confirm = False
 
@@ -639,7 +643,7 @@ async def test_an_unconfirmed_termination_faults_the_desk_releases_the_permit_an
     env.respond = respond
     with caplog.at_level(logging.ERROR, logger="stored_call_settler"):
         await asyncio.wait_for(_tap(env), 5)
-    assert env.desk.faulted
+    assert env.lane.faulted
     assert any(r.levelno == logging.ERROR and "faulted" in r.getMessage() for r in caplog.records)
     faulted_line = f"{LABEL} is out of service until Casa restarts."
     assert env.channel.notices == [(OPERATOR, f"{LABEL} could not apply your tap (timed out)."),
@@ -647,58 +651,30 @@ async def test_an_unconfirmed_termination_faults_the_desk_releases_the_permit_an
     assert faulted_line in _echo()
     (permit,) = env.limiter.permits
     assert permit.released                              # a process that cannot be killed holds no capacity
-    assert not env.desk.lock.locked() and env.desk.waiting == 0
+    assert not env.lane.lock.locked() and env.lane.waiting == 0
 
 
-async def test_a_faulted_desk_refuses_a_tap_a_reply_and_a_queued_reply_at_once(env):
-    env.desk.faulted = "unconfirmed termination of run abc"
+async def test_a_faulted_agent_refuses_a_tap_and_a_queued_tap_at_once(env):
+    _fault()
     faulted_line = f"{LABEL} is out of service until Casa restarts."
     await _tap(env)
     assert env.calls == [] and env.channel.marks == ["✖ faulted"]
     assert env.channel.notices == [(OPERATOR, faulted_line)]
-    assert env.desk.log == []
-    # a reply that takes its own queue place
+    assert _echo() == [faulted_line]
+    # a tap QUEUED before the fault: it finds the fault after the lock
     env.channel = _Channel()
-    await sd.handle_reply(channel=env.channel, resident_role="assistant", chat_id=OPERATOR,
-                          user_id=OPERATOR, user_name="N", message_id=70, cid="cid-2", text="hi",
-                          quoted_text=None, record=None, desk_role="finance")
-    assert env.channel.notices == [(OPERATOR, faulted_line)]
-    assert env.calls == [] and env.channel.released == [(str(OPERATOR), "cid-2")]
-    # a reply QUEUED before the fault: it finds the fault after the lock
-    env.channel = _Channel()
-    env.desk.faulted = None
-    await env.desk.lock.acquire()
-    reservation = env.desk.reserve()
-    task = asyncio.create_task(sd.handle_reply(
-        channel=env.channel, resident_role="assistant", chat_id=OPERATOR, user_id=OPERATOR,
-        user_name="N", message_id=71, cid="cid-3", text="hi", quoted_text=None, record=None,
-        desk_role="finance", reservation=reservation))
+    agent_lane.FAULTS.set("finance", None)
+    await env.lane.lock.acquire()
+    reservation = env.lane.reserve()
+    task = asyncio.create_task(_tap(env, reservation=reservation))
     for _ in range(5):
         await asyncio.sleep(0)
-    env.desk.faulted = "unconfirmed termination of run abc"
-    env.desk.lock.release()
+    _fault()
+    env.lane.lock.release()
     await task
     assert env.channel.notices == [(OPERATOR, faulted_line)]
-    assert env.calls == [] and env.desk.log == [] and env.limiter.permits == []
-    assert env.desk.waiting == 0 and not env.desk.lock.locked()
-
-
-async def test_a_delegation_queued_before_the_fault_is_refused_under_the_lock(env):
-    async def run(cfg, task_text, context_text, resolution=None, output_format=None):
-        raise AssertionError("a faulted desk runs nothing")
-    await env.desk.lock.acquire()
-    reservation = env.desk.reserve()
-    task = asyncio.create_task(sd.delegation_use(
-        env.desk, reservation=reservation, run=run, cfg=tools_mod._agent_role_map["finance"],
-        task_text="t", context_text="c", scope=f"{OPERATOR}:finance"))
-    for _ in range(5):
-        await asyncio.sleep(0)
-    env.desk.faulted = "unconfirmed termination of run abc"
-    env.desk.lock.release()
-    with pytest.raises(sd.DeskFaulted):
-        await task
-    assert env.limiter.permits == [] and env.desk.log == []
-    assert env.desk.waiting == 0 and not env.desk.lock.locked()
+    assert env.calls == [] and env.limiter.permits == []
+    assert env.lane.waiting == 0 and not env.lane.lock.locked()
 
 
 # --- cleanup on cancel ----------------------------------------------------------------------
@@ -716,22 +692,22 @@ async def test_a_cancel_while_the_run_is_in_flight_releases_everything(env):
     with pytest.raises(asyncio.CancelledError):
         await task
     (permit,) = env.limiter.permits
-    assert permit.released and env.desk.waiting == 0 and not env.desk.lock.locked()
+    assert permit.released and env.lane.waiting == 0 and not env.lane.lock.locked()
     assert env.channel.released == [(str(OPERATOR), "cid-1")]
 
 
-async def test_a_cancel_while_waiting_for_the_desk_releases_the_place(env):
-    await env.desk.lock.acquire()
-    reservation = env.desk.reserve()
+async def test_a_cancel_while_waiting_for_the_lane_releases_the_place(env):
+    await env.lane.lock.acquire()
+    reservation = env.lane.reserve()
     task = asyncio.create_task(_tap(env, reservation=reservation))
     for _ in range(3):
         await asyncio.sleep(0)
-    assert env.desk.waiting == 1
+    assert env.lane.waiting == 1
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    env.desk.lock.release()
-    assert env.desk.waiting == 0 and env.calls == []
+    env.lane.lock.release()
+    assert env.lane.waiting == 0 and env.calls == []
     assert env.channel.released == [(str(OPERATOR), "cid-1")]
 
 
@@ -739,7 +715,7 @@ async def test_a_cancel_while_waiting_for_the_desk_releases_the_place(env):
 
 @pytest.fixture
 def deleter(monkeypatch):
-    """Records every SDK transcript delete. The desk makes none: a pinned
+    """Records every SDK transcript delete. The tap makes none: a pinned
     run's transcript, like every delegated run's, is kept for the retention
     pass (INV-ENG-028)."""
     import claude_agent_sdk
@@ -749,7 +725,7 @@ def deleter(monkeypatch):
     return SimpleNamespace(deletes=deletes)
 
 
-async def test_the_desk_keeps_the_pinned_runs_transcript_after_the_controller_finished(env, deleter):
+async def test_the_tap_keeps_the_pinned_runs_transcript_after_the_controller_finished(env, deleter):
     async def respond(call):
         call.owner.resolve(pr.Capture("receipt", "applied"))
         return tools_mod.DelegatedOutput(text="")
@@ -788,12 +764,12 @@ async def test_processes_still_alive_after_an_orderly_close_enter_the_terminatio
     (owner,) = env.terminated
     assert owner is env.calls[0].owner
     _failed(env, "processes alive")
-    assert env.desk.faulted is None
+    assert env.lane.faulted is None
 
 
-# --- the health surface: a faulted desk is reported until restart ---------------------------
+# --- the health surface: a faulted agent is reported until restart ---------------------------
 
-async def test_a_faulted_desk_is_listed_with_its_plugin_and_lands_in_the_health_report(env, monkeypatch, tmp_path):
+async def test_a_faulted_agent_is_listed_with_its_plugin_and_lands_in_the_health_report(env, monkeypatch, tmp_path):
     import plugin_health
     import plugin_registry
     monkeypatch.setattr(tools_mod, "_DELEGATION_CEILING_S", 0.05)
@@ -803,10 +779,11 @@ async def test_a_faulted_desk_is_listed_with_its_plugin_and_lands_in_the_health_
         await asyncio.sleep(30)
     env.respond = respond
     await asyncio.wait_for(_tap(env), 5)
-    (desk,) = sd.DESKS.faulted()
-    assert desk is env.desk and desk.fault.plugin == "probe" and desk.fault.since == 1000.0
+    assert agent_lane.FAULTS.roles() == ["finance"]
+    fault = env.lane.fault
+    assert fault.plugin == "probe" and fault.since == 1000.0
     assert env.refreshes == [True]                           # the report is regenerated at once
-    (issue,) = sd.faulted_desk_issues()
+    (issue,) = agent_lane.FAULTS.issues()
     assert (issue.name, issue.target, issue.reason_code) == ("probe", "specialist:finance", "agent_faulted")
     assert "since" in str(issue.detail)
     # the regeneration carries the row, and the operator phrasing never shows the code
@@ -828,13 +805,13 @@ async def test_a_faulted_desk_is_listed_with_its_plugin_and_lands_in_the_health_
 
 
 def test_without_a_fault_nothing_is_listed(env):
-    assert sd.DESKS.faulted() == [] and sd.faulted_desk_issues() == []
+    assert agent_lane.FAULTS.roles() == [] and agent_lane.FAULTS.issues() == []
 
 
 async def test_a_slow_but_normal_cli_exit_within_the_deadline_produces_no_notice(env, monkeypatch):
-    """BRAIN 2026-10-03: the normal-end path (PinnedRun.finish) is new code the
-    design never reviewed — a CLI that takes a moment to leave after the SDK's
-    close must not be told as a failure, nor enter the termination path."""
+    """The normal-end path (PinnedRun.finish): a CLI that takes a moment to leave
+    after the SDK's close must not be told as a failure, nor enter the
+    termination path."""
     import subprocess
     import sys
     cli = subprocess.Popen([sys.executable, "-c", "import time\nwhile True: time.sleep(1)"])
@@ -857,7 +834,7 @@ async def test_a_slow_but_normal_cli_exit_within_the_deadline_produces_no_notice
         assert env.terminated == [] and env.channel.notices == [] and env.channel.marks == ["☑ Yes"]
         assert [str(m) for m, _ in env.channel.replies] == [f"{LABEL}\napplied"]
         owner = env.calls[0].owner
-        assert owner.alive() is False and owner.sealed is True and env.desk.faulted is None
+        assert owner.alive() is False and owner.sealed is True and env.lane.faulted is None
         assert _echo() == [f"{LABEL} applied your tap (Yes)."]
     finally:
         try:
@@ -867,7 +844,7 @@ async def test_a_slow_but_normal_cli_exit_within_the_deadline_produces_no_notice
         cli.wait(timeout=5)
 
 
-# --- diff round 1 (Astra A2 / Astra B S1): the release condition holds on cancellation too ----
+# --- the release condition holds on cancellation too ----------------------------------------
 
 async def _cancel_in_flight(env):
     started = asyncio.Event()
@@ -883,27 +860,27 @@ async def _cancel_in_flight(env):
         await asyncio.wait_for(task, 5)
 
 
-async def test_a_cancel_in_flight_runs_the_bounded_termination_before_the_desk_is_released(env):
+async def test_a_cancel_in_flight_runs_the_bounded_termination_before_the_lane_is_released(env):
     await _cancel_in_flight(env)
     (owner,) = env.terminated                               # a channel stop still terminates, bounded
     assert owner is env.calls[0].owner and owner.sealed
     (permit,) = env.limiter.permits
-    assert permit.released and env.desk.waiting == 0 and not env.desk.lock.locked()
-    assert env.desk.faulted is None
+    assert permit.released and env.lane.waiting == 0 and not env.lane.lock.locked()
+    assert env.lane.faulted is None
 
 
-async def test_a_cancel_whose_termination_is_unconfirmed_faults_the_desk(env, caplog):
+async def test_a_cancel_whose_termination_is_unconfirmed_faults_the_agent(env, caplog):
     env.confirm = False
     with caplog.at_level(logging.ERROR, logger="stored_call_settler"):
         await _cancel_in_flight(env)
-    assert env.terminated and env.desk.faulted
+    assert env.terminated and env.lane.faulted
     assert any("faulted" in r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
     (permit,) = env.limiter.permits
-    assert permit.released and not env.desk.lock.locked()
+    assert permit.released and not env.lane.lock.locked()
 
 
 async def test_a_second_cancellation_as_the_termination_completes_still_runs_the_cleanup(env, monkeypatch, deleter):
-    """Terra diff r2 S2: a cancellation arriving exactly when the shielded
+    """A cancellation arriving exactly when the shielded
     termination finishes must not skip the fault decision and the fd
     close."""
     closed = []
@@ -931,13 +908,13 @@ async def test_a_second_cancellation_as_the_termination_completes_still_runs_the
     holder["tap"].cancel()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(holder["tap"], 5)
-    assert env.desk.faulted                                  # the fault decision ran
+    assert env.lane.faulted                                  # the fault decision ran
     assert deleter.deletes == []
     assert closed == [env.calls[0].owner]
-    assert not env.desk.lock.locked() and env.desk.waiting == 0
+    assert not env.lane.lock.locked() and env.lane.waiting == 0
 
 
-# --- the one release path (BRAIN, diff round 2: "same shape twice: cut the mechanism") -------
+# --- the one release path ----------------------------------------------------------------------
 
 def _calls_in(node):
     """Every call as ``receiver.attr`` (``owner.finish``) or a bare name."""
@@ -977,17 +954,18 @@ def test_the_pinned_runs_release_is_reachable_only_through_the_one_settle_functi
                     and isinstance(n.func, ast.Name) and n.func.id == "_settle_pinned_run"]
     assert settle_calls and all(any(c is a for a in shielded_args) for c in settle_calls)
     # the fault decision is settle's alone
-    faults = [n for n in ast.walk(tap) if isinstance(n, ast.Attribute) and n.attr == "fault"
-              and isinstance(n.ctx, ast.Store)]
-    assert faults == []
-    assert any(isinstance(n, ast.Attribute) and n.attr == "fault" and isinstance(n.ctx, ast.Store)
-               for n in ast.walk(settle))
+    def _marks_a_fault(fn):
+        return [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute) and n.func.attr == "mark"
+                and isinstance(n.func.value, ast.Attribute) and n.func.value.attr == "FAULTS"]
+    assert _marks_a_fault(tap) == []
+    assert len(_marks_a_fault(settle)) == 1
 
 
 async def test_a_termination_cancelled_by_the_loops_shutdown_still_faults_and_cleans_up(env, monkeypatch, deleter):
-    """Astra B diff r2 S1: when the teardown task is itself cancelled (every
+    """When the teardown task is itself cancelled (every
     task cancelled, as a loop shutdown does), the run is conservatively
-    unconfirmed: the desk is faulted and the fds and permit still released."""
+    unconfirmed: the agent is faulted and the fds and permit still released."""
     closed = []
     monkeypatch.setattr(pr.PinnedRun, "close_fds", lambda self: closed.append(self))
 
@@ -998,13 +976,13 @@ async def test_a_termination_cancelled_by_the_loops_shutdown_still_faults_and_cl
         raise asyncio.CancelledError()                       # the teardown task was cancelled too
     monkeypatch.setattr(pr.PinnedRun, "terminate", terminate)
     await _cancel_in_flight(env)
-    assert env.desk.faulted and closed == [env.calls[0].owner]
+    assert env.lane.faulted and closed == [env.calls[0].owner]
     (permit,) = env.limiter.permits
-    assert permit.released and not env.desk.lock.locked() and env.desk.waiting == 0
+    assert permit.released and not env.lane.lock.locked() and env.lane.waiting == 0
 
 
 async def test_a_cancellation_during_the_receipts_send_is_disclosed_not_silent(env, caplog):
-    """Astra B diff r2 S1: a captured receipt whose send is cancelled is still
+    """A captured receipt whose send is cancelled is still
     an executed call — the exchange is logged, the resident's line records the
     applied tap, and an ERROR names the run."""
     gate = asyncio.Event()
@@ -1021,11 +999,9 @@ async def test_a_cancellation_during_the_receipts_send_is_disclosed_not_silent(e
             await asyncio.wait_for(task, 5)
     assert any("receipt" in r.getMessage() and "cancel" in r.getMessage().lower()
                for r in caplog.records if r.levelno == logging.ERROR)
-    assert [(e.who, e.text) for e in env.desk.log] == [("operator", "[tapped: Yes]"),
-                                                       ("specialist", "applied match 17")]
     assert _echo() == [f"{LABEL} applied your tap (Yes)."]
     (permit,) = env.limiter.permits
-    assert permit.released and not env.desk.lock.locked() and env.desk.waiting == 0
+    assert permit.released and not env.lane.lock.locked() and env.lane.waiting == 0
 
 
 async def test_the_shield_hands_back_the_works_own_cancellation_without_spinning():
@@ -1035,14 +1011,14 @@ async def test_the_shield_hands_back_the_works_own_cancellation_without_spinning
     async def work():
         asyncio.current_task().cancel()
         await asyncio.sleep(0)
-    t = asyncio.create_task(sd._shielded(work()))
+    t = asyncio.create_task(settler._shielded(work()))
     done, _ = await asyncio.wait({t}, timeout=1)
     assert t in done and t.cancelled()
 
     async def late():
         await asyncio.sleep(0.05)
         return "settled"
-    t2 = asyncio.create_task(sd._shielded(late()))
+    t2 = asyncio.create_task(settler._shielded(late()))
     await asyncio.sleep(0)
     t2.cancel()                                           # the caller is cancelled mid-wait…
     assert await asyncio.wait_for(t2, 1) == ("settled", True)   # …still gets the result, and knows it was cancelled
@@ -1050,7 +1026,7 @@ async def test_the_shield_hands_back_the_works_own_cancellation_without_spinning
 
 async def test_an_unconfirmed_teardown_closes_the_fds_and_deletes_no_transcript(env, monkeypatch, deleter):
     """A CLI whose exit is unconfirmed may still flush its transcript; the
-    desk deletes none (the retention pass owns it), so the fds are closed
+    tap deletes none (the retention pass owns it), so the fds are closed
     with the settle."""
     monkeypatch.setattr(tools_mod, "_DELEGATION_CEILING_S", 0.05)
     env.confirm = False
@@ -1061,13 +1037,13 @@ async def test_an_unconfirmed_teardown_closes_the_fds_and_deletes_no_transcript(
         await asyncio.sleep(30)
     env.respond = respond
     await asyncio.wait_for(_tap(env), 5)
-    assert env.desk.faulted and env.terminated
+    assert env.lane.faulted and env.terminated
     assert deleter.deletes == []
     assert closed == [env.calls[0].owner]
 
 
 async def test_a_cancellation_during_the_settlement_still_propagates_after_it(env, monkeypatch):
-    """Terra diff r4 S2: a cancellation that lands while the settle function
+    """A cancellation that lands while the settle function
     runs (the normal-end path) must not be swallowed — the settle completes,
     the captured receipt is disclosed, and the cancellation propagates; no
     receipt is posted as if the tap had not been cancelled."""
@@ -1090,7 +1066,6 @@ async def test_a_cancellation_during_the_settlement_still_propagates_after_it(en
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(holder["tap"], 5)
     assert env.channel.replies == []                        # nothing posted after a cancellation
-    assert [(e.who, e.text) for e in env.desk.log] == [("operator", "[tapped: Yes]"), ("specialist", "applied")]
     assert _echo() == [f"{LABEL} applied your tap (Yes)."]
     (permit,) = env.limiter.permits
-    assert permit.released and not env.desk.lock.locked() and env.desk.waiting == 0
+    assert permit.released and not env.lane.lock.locked() and env.lane.waiting == 0

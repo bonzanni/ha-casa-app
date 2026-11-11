@@ -253,14 +253,14 @@ async def test_internal_retry_output_is_captured(mem, tmp_path):
 async def test_casas_notes_never_reach_the_captured_text(mem, tmp_path,
                                                        monkeypatch):
     """INV-MEM-022 at the capture boundary: a turn whose sent query carries
-    Casa's notes block (a front-desk line and a reply note) captures only the
+    Casa's notes block (a chat note and a reply note) captures only the
     operator's own words, never a note."""
-    import result_broker as rb
-    import specialist_desk as sd
-    monkeypatch.setattr(sd, "DESK_ECHO", rb.PostLedger(max_events=64))
-    sd.record_echo(BOT, int(CHAT), "📊 Finance answered your reply (1 page).")
-    note = sd.reply_note("a message Casa posted for 📊 Finance",
-                         "2026-10-06 21:40", "📊 Finance\nWhich quarter?")
+    import chat_notes
+    chat_notes.reset()
+    chat_notes.record(BOT, int(CHAT), "📊 Finance answered your reply (1 page).")
+    note = ("The person sent this as a reply to a message Casa posted for 📊 Finance, "
+            "posted 2026-10-06 21:40, which read:\n«📊 Finance\nWhich quarter?»\n"
+            "Their words answer that message, which may not be your latest one.")
     FakeClient.reset()
     agent = _make_agent(tmp_path)
     sent: list[str] = []
@@ -276,11 +276,12 @@ async def test_casas_notes_never_reach_the_captured_text(mem, tmp_path,
                                            _reply_note=note))
     # The precondition: the notes really were in what the model was sent.
     assert len(sent) == 1
-    assert "<casa_notes>" in sent[0] and "(front desk)" in sent[0]
+    assert "<casa_notes>" in sent[0] and "(Casa) 📊 Finance answered" in sent[0]
+    assert "Which quarter" in sent[0]
     operator = [e["text"] for e in events(mem)
                 if e["speaker_kind"] == "operator"]
     assert operator == ["start from Q2 2026"]
-    assert not any("front desk" in e["text"] or "Which quarter" in e["text"]
+    assert not any("(Casa)" in e["text"] or "Which quarter" in e["text"]
                    for e in events(mem))
 
 

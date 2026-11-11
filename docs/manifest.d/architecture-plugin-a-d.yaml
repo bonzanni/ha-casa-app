@@ -18,6 +18,7 @@
     - tests/test_authz_hook.py
     - tests/test_approval_outlives_raiser.py
     - tests/test_pending_approval_pins.py
+    - tests/test_behind_ellen_approval.py
   related: [architecture/plugins.md, architecture/engagement-finalization.md, architecture/scheduled-asks.md, architecture/delegation-announcements.md]
   defines_invariants: [INV-PLUG-004, INV-PLUG-005, INV-PLUG-007, INV-PLUG-033]
   invariant_tests:

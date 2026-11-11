@@ -118,6 +118,7 @@ from specialist_install import (
     inspect_specialist_repo,
 )
 from specialist_install_consent import SpecialistInstallAckStore, install_consent_identity
+from approval_records import values_digest
 
 FIXTURE = Path("/tmp/fixtures/mtg-test")
 
@@ -140,16 +141,19 @@ acks = SpecialistInstallAckStore()
 # components included), so res.receipt_digest is non-empty and the real commit
 # folds it into the consent identity. The recorded ack MUST carry the same
 # receipt_digest or commit's recomputed identity mismatches -> consent_missing.
+# A fresh install with no settings supplied stages exactly these approved values.
+approved = {"config": {}, "secrets": []}
 identity = install_consent_identity(
     component_id=res.component_id, version=res.version,
     root_digest=res.root_digest, slug=res.slug,
-    receipt_digest=res.receipt_digest)
+    receipt_digest=res.receipt_digest, values_digest=values_digest(approved))
 acks.record(identity=identity, component_id=res.component_id, version=res.version,
             component_checksum=res.root_digest, slug=res.slug,
-            receipt_digest=res.receipt_digest)
+            receipt_digest=res.receipt_digest, values_digest=values_digest(approved))
 
 instance = commit_specialist_install(
-    inspection=res, config={}, secret_names_provided=frozenset(), acks=acks)
+    inspection=res, config={}, secret_names_provided=frozenset(), acks=acks,
+    approved_values=approved)
 assert instance.state == "active", f"state={instance.state} err={instance.last_activation_error}"
 print("COMMIT_STATE", instance.state)
 print("DRIVER_C_OK")
@@ -217,6 +221,7 @@ import agent_loader
 import persona_install
 from agent_loader import load_all_agents
 from policies import load_policies
+from approval_records import values_digest
 from persona_install import (
     PersonaInstallAckStore,
     apply_persona_override,
@@ -256,10 +261,13 @@ res = inspect_persona_repo("casa-test/alt-butler", "main")
 assert res.persona_id == "casa/tina" and res.version == "0.2.0", (res.persona_id, res.version)
 
 acks = PersonaInstallAckStore()
+# A persona install has no settings: its approved values are empty.
 ident = persona_install_consent_identity(
-    persona_id=res.persona_id, version=res.version, checksum=res.checksum)
-acks.record(identity=ident, persona_id=res.persona_id, version=res.version, checksum=res.checksum)
-pack = commit_persona_install(inspection=res, acks=acks)
+    persona_id=res.persona_id, version=res.version, checksum=res.checksum,
+    values_digest=values_digest({}))
+acks.record(identity=ident, persona_id=res.persona_id, version=res.version, checksum=res.checksum,
+            values_digest=values_digest({}))
+pack = commit_persona_install(inspection=res, acks=acks, approved_values={})
 
 role_dir = Path(agent_loader.DEFAULT_ROLES_DIR) / "resident" / "butler"
 role = materialize_role(source=load_role_artifact(role_dir), options={})

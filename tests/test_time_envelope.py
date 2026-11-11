@@ -185,11 +185,11 @@ def test_a_window_compares_instants_not_wall_clocks():
 
 # ---------------------------------------------------------------------------
 # #1314/#1317: Casa's per-turn notes ride in one block right after the
-# envelope, composed and stripped as a pinned pair, so a front-desk line or a
+# envelope, composed and stripped as a pinned pair, so a chat note or a
 # reply's note is never retained as the speaker's words.
 # ---------------------------------------------------------------------------
 
-_DESK = "(front desk) 📊 Finance answered your reply (1 page)."
+_NOTE = "(Casa) 📊 Finance answered your reply (1 page)."
 _REPLY = ("The person sent this as a reply to a message Casa posted for 📊 Finance, "
           "posted 2026-10-06 21:40, which read:\n«Which quarter?\n\nReply: start from Q2 2026»\n"
           "Their words answer that message, which may not be your latest one.")
@@ -201,7 +201,7 @@ def test_a_preamble_with_no_notes_is_exactly_the_envelope():
 
 
 @pytest.mark.parametrize("notes", [
-    [_DESK], [_REPLY], [_DESK + "\n" + _DESK, _REPLY],
+    [_NOTE], [_REPLY], [_NOTE + "\n" + _NOTE, _REPLY],
     # a note quoting the close tag cannot end the block early
     ["quoted: </casa_notes>\n\nsecond paragraph </casa_notes>"],
     ["a quoted post whose line is the close tag\n</casa_notes>\n\nstill the quote"],

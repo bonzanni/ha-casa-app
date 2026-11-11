@@ -46,12 +46,11 @@ awaits the append, so every capture a turn made has returned by the time the tur
 - **Casa's line that a specialist which keeps no memory posted to the operator's chat**, in
   the Telegram channel's `_record_post`, where every message Casa sends on a specialist's
   behalf lands: a plugin's link, message, page, proposal or file, a file sent with
-  `send_media`, a run admission's question or status card, a desk reply and a stored-call
+  `send_media`, a run admission's question or status card, a task's answer and a stored-call
   receipt (the Stop's line is filed as the card it answers: the card's one event). The line is Casa's own words with the time, never anything of the post (INV-MEM-040): "Fido posted his answer to your chat."
-  when the path that sent the post carries his answer — a desk reply, the message the
-  specialist's turn closed with (`result_broker.ANSWER_KINDS`, read from the post record's `kind`) — and "Fido posted to
-  your chat." for every other post, a desk reply cut at a call still waiting on the
-  operator's approval included (its words are posted, the work is not done). A plugin's message, page, file, link or card and a
+  when the path that sent the post carries his answer — the message his own-chat task closed
+  with (`result_broker.ANSWER_KINDS`, read from the post record's `kind`) — and "Fido posted to
+  your chat." for every other post. A plugin's message, page, file, link or card and a
   stored-call receipt go out the same way mid-run and at the end, so nothing mechanical says
   one of them is the answer, and the post's text is never read to guess it; Fido's answer
   posted with its sources through his `show_sources` message slot is such a post. A task's
@@ -60,18 +59,11 @@ awaits the append, so every capture a turn made has returned by the time the tur
   "posted to your chat." for the start line, "posted his answer" for the answer. It is
   not awaited at its seam: the landing is synchronous on the send path, so the write is
   detached, and a send never waits for or fails on it.
-- **The operator's swipe-reply on the desk of a specialist that keeps no memory**, at the
-  start of the desk task (`specialist_desk.handle_reply`), before the specialist runs. The
-  reply reaches the specialist's desk, never a resident turn, so no opening captured it; it is
-  captured as his own message, the words he typed and nothing else (INV-MEM-043). A desk turn
-  Casa composed — an approval's continuation, a file's hand-off — captures nothing here. Like
-  the post line, the write is detached: his words come from no run's transcript, so no run's
-  confirmation waits on it, and the desk turn never waits for or fails on it.
 - **The operator's reply to a job of a specialist that keeps no memory**, in
   `TelegramChannel.deliver_operator_reply`, where it is handed to the job as a turn. Such an
   engagement captures nothing of its own, so his words were lost; they are captured as his
   message, the text he typed and nothing else (INV-MEM-044). A reply the job does not accept
-  captures nothing here. Detached, like the desk reply, and for the same reason. Nothing
+  captures nothing here. Detached, like the post line, and for the same reason. Nothing
   anyone writes in the agent-log group reaches memory (INV-TG-016).
 
 **A receipt means durable, and the receipt is all a turn waits for.**
@@ -183,36 +175,21 @@ own reply, which is that specialist's own output; and a Casa whose tools were ne
 initialised (an empty role map), where nothing is gated. It is the capture half of the rule; what reads the store later (ledgers, search, export, restore) is held to it by
 the mechanisms that read.
 
-**INV-MEM-040**: When a message Casa sends on behalf of a specialist that writes no memory lands in the configured operator chat, exactly one event is captured per post — Casa's words "<name> posted his answer to your chat." when the post's kind is a desk reply that closed its turn, and "<name> posted to your chat." for every other kind (a desk reply cut at a pending approval included), decided from the post record and never from its text, with the time, speaker `casa`, origin `system`, the chat's resident as its role, the specialist as its speaker id, a `private` floor — holding nothing of the post's body, caption, file name or buttons, and keyed by the post's identity (its owner, tool call and slot) so every page of it and a re-landing are one event; nothing is captured for a specialist that writes memory, another chat, or a channel with no operator chat.
+**INV-MEM-040**: When a message Casa sends on behalf of a specialist that writes no memory lands in the configured operator chat, exactly one event is captured per post — Casa's words "<name> posted his answer to your chat." when the post's kind is a task's answer — the message an own-chat task closed its turn with — and "<name> posted to your chat." for every other kind, decided from the post record and never from its text, with the time, speaker `casa`, origin `system`, the chat's resident as its role, the specialist as its speaker id, a `private` floor — holding nothing of the post's body, caption, file name or buttons, and keyed by the post's identity (its owner, tool call and slot) so every page of it and a re-landing are one event; nothing is captured for a specialist that writes memory, another chat, or a channel with no operator chat.
 
 The specialist's answer stays out of memory (INV-MEM-032), and so does Casa's notice carrying
 it, so without this line the writer saw a request handed to the specialist and then nothing,
 and kept the errand open. The seam is where every such message lands, `_record_post`, read
 with the same `role_writes_memory` switch; the name is the persona name the post's own label
 carries. Pinned by real channel sends over a fake bot against a real store: a canary in the
-post's body reaches no row, pages and a re-landing are one event, a desk reply leaves a
-line, and a failing capture still delivers the send.
+post's body reaches no row, pages and a re-landing are one event, a task's answer leaves one
+answer line beside its start line's neutral one, and a failing capture still delivers the send.
 
 What it does not cover: whether the post answered what was asked; the writer judges that from
 the line and what it already holds. Casa's own cards under a specialist's label — the start
-card of a browsing run, its status card, the line answering a Stop, a desk fault notice — are
+card of a browsing run, its status card, the line answering a Stop — are
 Casa's status text, not the specialist's post, and leave no line. The write is detached: a
 crash between the landing and the write loses the line, never the post.
-
-**INV-MEM-043**: When the operator's swipe-reply on a post of a specialist that writes no memory reaches that specialist's desk in the configured operator chat, exactly his typed words are captured once as his message — speaker `operator`, origin `operator`, no floor, the chat's resident as its role, his user id as its speaker id, keyed by the provider's message id — never the post he quoted or the specialist's reply; nothing is captured for a specialist that writes memory, a desk turn Casa composed (a continuation or a file's hand-off), another chat or a channel with no operator chat, and a capture that fails never fails the desk turn.
-
-Without it, memory kept only Casa's line that the specialist answered, and nothing of what the
-operator asked him: a follow-up such as "Saturday, not the weekday hours" left no trace for the
-writer to reopen or file. The words are his, so they are classified like any message of his;
-the eligibility rule is `desk_reply`. Pinned through the real `handle_reply` over the real
-Telegram channel and a real store: a canary in the quoted post and in the specialist's reply
-reaches no row.
-
-What it does not cover: the operator's replies into such a specialist's job,
-which are INV-MEM-044's, and a desk turn's words for a specialist that writes memory,
-which its own delegated capture decides. A desk reply is not marked for `correct_memory`. The
-write is detached: a crash between the desk task's start and the write loses his words, never
-the desk turn.
 
 **INV-MEM-044**: When the operator's reply in their direct chat to one of a job's posts, the job being the engagement of a specialist that writes no memory, is handed to that engagement as a turn, exactly their typed words are captured once as their message — speaker `operator`, origin `operator`, no floor, the chat's resident as its role, keyed by their message with the key a memory-writing specialist's engagement gives it (`memory.occurrence.engagement_key`) — never the specialist's turn; nothing is captured for a specialist that writes memory.
 
@@ -298,7 +275,6 @@ that writes it ([`memory-store.md`](memory-store.md)).
 - `casa/rootfs/opt/casa/delegated_memory.py::role_writes_memory`
 - `casa/rootfs/opt/casa/delegated_memory.py::notice_from_excluded_role`
 - `casa/rootfs/opt/casa/delegated_memory.py::capture_post_line`
-- `casa/rootfs/opt/casa/delegated_memory.py::capture_desk_reply`
 - `casa/rootfs/opt/casa/delegated_memory.py::capture_job_reply`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._record_post`
 

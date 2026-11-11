@@ -19,10 +19,8 @@ boot replay tells the resident, is [`delegation-announcements.md`](delegation-an
 **The resident tells the person the answer itself.** A delegate's answer comes back to the
 resident as the delegation result — in-band for a `sync` delegation, in a notice for an
 `async` one or a `sync` wait that went `pending` — and she passes it on in her own words.
-Casa posts nothing of the answer under the delegate's name in the resident's chat; the
-delegate's own posts there (cards, links, files, desk replies) still carry its `📊 <name>` label
-([`specialist-desk.md`](specialist-desk.md)). A delegate with its own open chat also gets its
-closing message, whole and before any cut, posted in that chat (nothing when it is silence),
+Casa posts nothing of the answer under the delegate's name in the resident's chat. A delegate
+with its own open chat gets its closing message, whole and before any cut, posted in that chat (nothing when it is silence),
 while the resident still receives the bounded result described here
 ([`own-voice.md`](own-voice.md)).
 
@@ -34,7 +32,7 @@ whether it was cut. Casa's post-echo lines follow it.
 **The closing message is the turn's last text-bearing message.** A delegate's turn often
 writes text before or between its tool calls and then ends with its answer. The runner
 records that last message (`DelegatedOutput.final_message`) beside the joined text, whole,
-before any cut shortens `reply_messages` for the desk. `_closing_text` reads it whole, and
+before any cut. `_closing_text` reads it whole, and
 `_closing_words` bounds that at the same cap from its start; a producer that reports no
 messages is a single-message turn, whose closing message is its whole text. The whole
 message is what is judged: whether the delegate closed silent, for both things below; what
@@ -113,5 +111,4 @@ it, so a closing silence and a cut answer are told the same way on every path.
 **Related**
 - [`architecture/delegation.md`](../architecture/delegation.md)
 - [`architecture/delegation-announcements.md`](../architecture/delegation-announcements.md)
-- [`architecture/specialist-desk.md`](../architecture/specialist-desk.md)
 <!-- END SOURCEMAP -->

@@ -10,7 +10,7 @@ instances over fake bots, both serving operator 100, fed the same update ids,
 chat, message ids and album ids.
 
 Each test asserts what a bot sent, what a turn received, or which record a
-reply reached; never a key. The registry, post map and desk stores are small
+reply reached; never a key. The registry and the task-post index are small
 stand-ins keyed by the full address, as their own modules key them; the
 endpoint's part — which address it builds and which bot it names — is what
 is pinned here.
@@ -84,20 +84,6 @@ class _Bus:
         return "accepted"
 
 
-class _PostMap:
-    """``POST_MAP`` keyed by the message's full address, as the result
-    broker keys it."""
-
-    def __init__(self) -> None:
-        self.entries: dict = {}
-
-    def record(self, address: TgAddress, record) -> None:
-        self.entries[address] = record
-
-    def get(self, address: TgAddress):
-        return self.entries.get(address)
-
-
 class _Registry:
     """The engagement registry's post indexes, keyed by full address."""
 
@@ -147,13 +133,11 @@ def _endpoint(bot_id: int, bus: _Bus, *, known: "int | None" = None):
 
 @pytest.fixture(autouse=True)
 def _isolated(monkeypatch):
-    """Fresh broker, post map and desk-store stand-ins; the per-chat lanes
-    and memory side effects recorded rather than run."""
+    """A fresh broker; the per-chat lanes and memory side effects recorded
+    rather than run."""
     import delegated_memory
-    import result_broker
     import scheduled_asks
     monkeypatch.setattr(verdict_broker, "BROKER", VerdictBroker())
-    monkeypatch.setattr(result_broker, "POST_MAP", _PostMap())
     lanes: list = []
     monkeypatch.setattr(scheduled_asks, "cancel_non_scheduled_for_chat",
                         lambda bot, chat, reason: lanes.append((bot, chat)) or 0)
@@ -245,37 +229,6 @@ async def _scheduled(ep, h):
     return _turns(h.bus)[-1].context
 
 
-async def _desk(ep, h):
-    """The desk turn is built by the desk from the endpoint's bot, handed
-    over at the spawn."""
-    import specialist_desk
-    seen: dict = {}
-
-    class _Desk:
-        faulted = False
-
-        def reserve(self):
-            return NS(release=lambda *a: None)
-
-    class _Desks:
-        def get_or_create(self, bot, chat, role):
-            seen["desk_key"] = (bot, chat, role)
-            return _Desk()
-
-    async def handle_reply(**kw):
-        seen.update(kw)
-
-    h.monkeypatch.setattr(specialist_desk, "DESKS", _Desks())
-    h.monkeypatch.setattr(specialist_desk, "desk_target_ok", lambda *a: True)
-    h.monkeypatch.setattr(specialist_desk, "handle_reply", handle_reply)
-    assert await ep._dispatch_desk_continuation(
-        chat_id=OPERATOR, user_id=OPERATOR, desk_role="finance",
-        request_id="rid", text="[approved]")
-    await asyncio.gather(*ep._turn_tasks)
-    assert seen["desk_key"] == (ep.bot_id, OPERATOR, "finance")
-    return {"_tg_bot": seen["bot_id"]}
-
-
 async def _job_reply(ep, h):
     """A reply into a job: the job's memory key and its notice name the bot
     that received the message."""
@@ -293,7 +246,7 @@ async def _job_reply(ep, h):
 
 
 _BUILDERS = {"dm": _dm, "caption": _caption, "button": _button,
-             "scheduled_ask": _scheduled, "desk": _desk, "job_reply": _job_reply}
+             "scheduled_ask": _scheduled, "job_reply": _job_reply}
 
 
 @pytest.mark.parametrize("builder", sorted(_BUILDERS))
@@ -394,25 +347,20 @@ async def _dm_reply(ep, h, mid: int, poster: int) -> str:
     return _turns(h.bus)[-1].context["_reply_note"]
 
 
-async def test_a_post_filed_on_111_is_not_222s_message_with_the_same_id(pair):
+async def test_a_post_filed_on_111_is_not_222s_message_with_the_same_id(pair, monkeypatch):
     import result_broker
-    # a specialist neither endpoint's chat belongs to: either bot would name it
+    from task_posts_double import install
+    index = install(monkeypatch)
+    ref = index.delegation("d-1", "tax")
     post = result_broker.PostRecord(
         role="tax", operator_id=OPERATOR, plugin="p", slot="s",
-        tool_use_id="t", owner="", posted_at=0.0)
+        tool_use_id="t", owner="d-1", posted_at=0.0)
     pair.casa._record_post(OPERATOR, NS(message_id=5), post)
-    assert result_broker.POST_MAP.entries == {
-        TgAddress(CASA_BOT, OPERATOR, 5): post}
-
-    on_222 = await _dm_reply(pair.finance, pair, 5, FINANCE_BOT)
-    on_111 = await _dm_reply(pair.casa, pair, 5, CASA_BOT)
-    assert "an earlier message from" not in on_222
-    assert "an earlier message from" in on_111
+    assert index.filed == [("d-1", TgAddress(CASA_BOT, OPERATOR, 5))]
     assert pair.finance._file_address(
         OPERATOR, _user(), NS(reply_to_message=_quoted(5, FINANCE_BOT))) is None
     assert pair.casa._file_address(
-        OPERATOR, _user(), NS(reply_to_message=_quoted(5, CASA_BOT))) == (
-        "reply", post, "tax")
+        OPERATOR, _user(), NS(reply_to_message=_quoted(5, CASA_BOT))) == ("task", ref, "reply")
 
 
 # ---------------------------------------------------------------------------
@@ -444,14 +392,16 @@ async def test_equal_album_ids_on_two_bots_make_two_acknowledgements(pair, monke
         assert [name for name, _ in calls(ep)] == ["send_message"]
 
 
-async def test_an_arming_on_111_does_not_take_a_file_sent_to_222(pair):
+async def test_an_arming_on_111_does_not_take_a_file_sent_to_222(pair, monkeypatch):
     import time
+    from task_posts_double import install
+    ref = install(monkeypatch).delegation("d-1", "finance")
     pair.casa._armings[OPERATOR] = {
         "chat_id": OPERATOR, "operator_id": OPERATOR, "role": "finance",
-        "artifact_id": "a", "expires_at": time.monotonic() + 60}
+        "artifact_id": "a", "expires_at": time.monotonic() + 60, "dest": ("task", ref)}
     msg = NS(reply_to_message=None)
     assert pair.finance._file_address(OPERATOR, _user(), msg) is None
-    assert pair.casa._file_address(OPERATOR, _user(), msg) == ("armed", None, "finance")
+    assert pair.casa._file_address(OPERATOR, _user(), msg) == ("task", ref, "armed")
 
 
 # ---------------------------------------------------------------------------

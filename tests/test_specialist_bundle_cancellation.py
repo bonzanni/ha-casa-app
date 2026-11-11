@@ -51,6 +51,16 @@ def _fresh_registry_snapshot(tmp_path):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _approval_store(tmp_path, monkeypatch):
+    """Approval records under tmp_path, never /data."""
+    import approval_records
+    monkeypatch.setattr(approval_records, "PATH", str(tmp_path / "approval-records.json"))
+    approval_records.reset()
+    yield
+    approval_records.reset()
+
+
 async def _drain_loop(turns: int = 12) -> None:
     """Give the loop enough turns to DELIVER a requested cancellation before the
     test releases whatever the handler is parked on. `Task.cancel()` only
@@ -270,13 +280,45 @@ async def _settle(predicate, timeout: float = _NEGATIVE_WINDOW) -> None:
 
 
 class _Case:
-    def __init__(self, ctx, tool, args, target, prunes: int, reclaims: int) -> None:
+    def __init__(self, ctx, tool, args, target, prunes: int, reclaims: int,
+                 approval_kind: "str | None" = None) -> None:
         self.ctx = ctx
         self.tool = tool
         self.args = args
         self.target = target
         self.prunes = prunes
         self.reclaims = reclaims
+        self.approval_kind = approval_kind
+
+
+async def _approve(case) -> dict:
+    """The origin of the run Casa starts after the operator approved *case*'s
+    install or upgrade with the settings it stages: an approved, current
+    record named on the origin. Rollback and uninstall need no approval."""
+    import approval_records
+    from specialist_install_consent import identity_for_inspection
+    origin = {"role": "assistant", "execution_role": "configurator", "channel": "telegram",
+              "chat_id": 42, "cid": "c", "user_text": "install it"}
+    if case.approval_kind is None:
+        return origin
+    insp, values = case.ctx.inspection, case.ctx.kw["approved_values"]
+    async with tools_mod._plugin_tools_guard():
+        rec, _, _ = approval_records.request(
+            case.approval_kind, f"{insp.component_id}:{insp.slug}",
+            identity_for_inspection(insp, values=values), values)
+    rec = approval_records.approve(rec.rid)
+    origin[approval_records.APPROVAL_KEY] = {"rid": rec.rid, "generation": rec.generation}
+    return origin
+
+
+def _spawn(case, origin: dict) -> "asyncio.Task":
+    """Start *case*'s handler as a task running under *origin*."""
+    import agent as agent_mod
+    token = agent_mod.origin_var.set(origin)
+    try:
+        return asyncio.create_task(case.tool.handler(case.args))
+    finally:
+        agent_mod.origin_var.reset(token)
 
 
 def _bundle_args(ctx, *, slug: bool = False) -> dict:
@@ -298,13 +340,14 @@ def _setup(op: str, tmp_path: Path, monkeypatch) -> _Case:
     if op == "install":
         ctx = _prep_bundle(tmp_path, monkeypatch, ["mtg"])
         return _Case(ctx, tools_mod.specialist_install_commit, _bundle_args(ctx),
-                     lambda g: g[0] is not None and len(g[2]) == 1, 1, 1)
+                     lambda g: g[0] is not None and len(g[2]) == 1, 1, 1,
+                     approval_kind="specialist_install")
     if op == "upgrade":
         base = _install(tmp_path, monkeypatch, ["mtg"])
         up = _prep_bundle(tmp_path, monkeypatch, ["mtg", "extra"], root="v2",
                           ref="v2", sha="b" * 40, base_ctx=base, version="0.2.0")
         return _Case(up, tools_mod.specialist_upgrade, _bundle_args(up, slug=True),
-                     lambda g: len(g[2]) == 2, 1, 1)
+                     lambda g: len(g[2]) == 2, 1, 1, approval_kind="specialist_upgrade")
     if op == "rollback":
         base = _install(tmp_path, monkeypatch, ["mtg"])
         g1 = _generation(base)
@@ -350,7 +393,7 @@ async def test_cancel_after_commit_finishes_each_handler_transaction(
     bound = _Bound(monkeypatch, case.ctx, tmp_path / "receipts",
                    worker_gate=hs.pause)
 
-    task = asyncio.create_task(case.tool.handler(case.args))
+    task = _spawn(case, await _approve(case))
     await wait_until(lambda: hs.entered.is_set() or task.done(), timeout=_TIMEOUT)
     assert hs.entered_count == 1, "the library worker never reached the gate"
     committed = 1 if case.target(_generation(case.ctx)) else 0
@@ -407,7 +450,7 @@ async def test_cancel_during_failed_sequence_compensates_each_handler(
     bound.seq.results = [{"ok": False, "kind": "postcondition_failed",
                           "not_ready": ["mtg.mtg"]}, {"ok": True}]
 
-    task = asyncio.create_task(case.tool.handler(case.args))
+    task = _spawn(case, await _approve(case))
     await wait_until(lambda: len(bound.seq.calls) == 1 or task.done(),
                      timeout=_TIMEOUT)
     assert len(bound.seq.calls) == 1, "the forward sequencer was never entered"
@@ -466,7 +509,7 @@ async def test_failed_disk_compensation_leaves_exactly_one_replayable_journal(
     monkeypatch.setattr(specialist_bundle_journal.BundleTxn, "rollback_disk",
                         _raising_rollback)
 
-    task = asyncio.create_task(case.tool.handler(case.args))
+    task = _spawn(case, await _approve(case))
     await wait_until(lambda: len(bound.seq.calls) == 1 or task.done(),
                      timeout=_TIMEOUT)
     assert len(bound.seq.calls) == 1
@@ -512,8 +555,9 @@ async def test_cancel_before_lock_starts_nothing_for_each_handler(
     lock = _fresh_plugin_tools_lock(monkeypatch)
     bound = _Bound(monkeypatch, case.ctx, tmp_path / "receipts")
 
+    origin = await _approve(case)
     await lock.acquire()
-    task = asyncio.create_task(case.tool.handler(case.args))
+    task = _spawn(case, origin)
     await wait_until(lambda: bool(getattr(lock, "_waiters", None)) or task.done(),
                      timeout=_TIMEOUT)
     assert not task.done(), "the handler finished before reaching the lock"

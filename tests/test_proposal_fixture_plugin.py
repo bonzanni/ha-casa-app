@@ -116,7 +116,6 @@ def _open(store, cmap, tool, call_id):
 
 
 async def test_the_server_offers_applies_and_pages_through_the_real_deposit_route(broker, tmp_path, monkeypatch):
-    monkeypatch.setattr(rb, "POST_MAP", rb.PostMap())
     store, sock = broker
     cmap = result_contract_map(_resolution())
     data = tmp_path / "plugin-data"

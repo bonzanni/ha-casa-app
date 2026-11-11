@@ -2,7 +2,7 @@
 button may carry ``"keep_card": true`` only when its stored call is #1303's file sibling
 (a capability whose one slot delivers ``operator_file``). Its tap runs the whole admission
 chain but claims and commits nothing: the card keeps its text and every button, the file
-goes out through the same pinned one-call desk use, and no line is ever written over the
+goes out through the same pinned one-call lane use, and no line is ever written over the
 card by that tap (INV-PROP-010)."""
 from __future__ import annotations
 
@@ -12,13 +12,13 @@ import types
 
 import pytest
 
+import agent_lane
 import pinned_run as pr
 import result_broker as rb
-import specialist_desk as sd
 import tools as tools_mod
 from plugin_grants import PluginContract, ResultContractMap
-from test_desk_tap import LABEL, OPERATOR as DESK_OPERATOR, _echo, _tool, env as desk_env  # noqa: F401
-from test_desk_tap import _tap as _desk_tap
+from test_stored_call_tap import LABEL, OPERATOR as LANE_OPERATOR, _echo, _tool, env as lane_env  # noqa: F401
+from test_stored_call_tap import _tap as _lane_tap
 from test_proposal_slot import ARTIFACT, SEG, SRV, _identity
 from test_proposal_slot import _tool as _slot_tool
 from test_proposal_tap import OPERATOR, RID, _cq, _settle, _tap, env as tap_env  # noqa: F401
@@ -149,10 +149,10 @@ async def test_a_keep_tap_on_an_expired_card_runs_nothing(tap_env):
     assert tap_env.taps == []
 
 
-async def test_a_keep_tap_on_a_full_desk_is_told_and_leaves_the_card(tap_env):
+async def test_a_keep_tap_on_a_full_lane_is_told_and_leaves_the_card(tap_env):
     tap_env.register(meta=_keep_meta())
-    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
-    held = [desk.reserve() for _ in range(64)]
+    lane = agent_lane.LANES.get("finance")
+    held = [lane.reserve() for _ in range(64)]
     held = [h for h in held if h is not None]
     assert await _tap(tap_env, _cq(data=f"v1|proposal|{RID}|1")) == "✔"
     await _settle()
@@ -163,19 +163,19 @@ async def test_a_keep_tap_on_a_full_desk_is_told_and_leaves_the_card(tap_env):
         h.release()
 
 
-# --- the desk ----------------------------------------------------------------------
+# --- the lane use ----------------------------------------------------------------------
 
 @pytest.fixture
-def keep_env(desk_env):
-    desk_env.build = dataclasses.replace(desk_env.build, contract_map=ResultContractMap(
+def keep_env(lane_env):
+    lane_env.build = dataclasses.replace(lane_env.build, contract_map=ResultContractMap(
         tools={"mcp__plugin_probe_probe__apply": _tool("apply"),
                FILE: _tool("package", "capability", provides=("package",),
                            delivers={"package": "operator_file"})},
-        plugins=desk_env.build.contract_map.plugins))
-    return desk_env
+        plugins=lane_env.build.contract_map.plugins))
+    return lane_env
 
 
-def _desk_meta(**over):
+def _card_meta(**over):
     base = {"options": ["Confirm", "See PDF"], "kinds": ["call", "keep_card"], "calls": [
         {"server": "probe", "wire_name": "apply", "runtime_name": "mcp__plugin_probe_probe__apply",
          "proposal": False, "arguments": {}, "canonical": "{}"},
@@ -188,50 +188,48 @@ def _desk_meta(**over):
 async def test_a_landed_file_from_a_keep_tap_writes_no_line_over_the_card(keep_env):
     env = keep_env
     env.respond = _respond(pr.Capture("delivered", "operator_file"))
-    await _desk_tap(env, idx=1, meta=_desk_meta())
+    await _lane_tap(env, idx=1, meta=_card_meta())
     assert env.channel.marks == [] and env.channel.notices == [] and env.channel.replies == []
-    assert [(e.who, e.text) for e in env.desk.log] == [("operator", "[tapped: See PDF]"),
-                                                       ("specialist", sd.POSTED_FILE)]
     assert _echo() == [f"{LABEL} applied your tap (See PDF)."]
 
 
 async def test_a_failed_keep_tap_is_told_without_marking_the_card(keep_env):
     env = keep_env
     env.respond = _respond(pr.Capture("withheld", "not delivered"))
-    await _desk_tap(env, idx=1, meta=_desk_meta())
+    await _lane_tap(env, idx=1, meta=_card_meta())
     assert env.channel.marks == []
-    assert env.channel.notices == [(DESK_OPERATOR, f"{LABEL} could not apply your tap (not delivered).")]
+    assert env.channel.notices == [(LANE_OPERATOR, f"{LABEL} could not apply your tap (not delivered).")]
     assert _echo() == [f"{LABEL} refused your tap (See PDF): not delivered."]
 
 
 async def test_a_refused_keep_tap_is_told_without_marking_the_card(keep_env):
     env = keep_env
     env.fence.names.add("probe")
-    await _desk_tap(env, idx=1, meta=_desk_meta())
+    await _lane_tap(env, idx=1, meta=_card_meta())
     assert env.calls == [] and env.channel.marks == []
-    assert env.channel.notices == [(DESK_OPERATOR, f"{LABEL} could not apply your tap (plugin erasing).")]
+    assert env.channel.notices == [(LANE_OPERATOR, f"{LABEL} could not apply your tap (plugin erasing).")]
 
 
 async def test_an_admitted_keep_tap_past_the_deadline_still_sends_the_file(keep_env):
-    """d1 (both reviewers): a keep tap that waited on the desk past the card's TTL is
+    """A keep tap that waited on the lane past the card's TTL is
     not dropped in silence — it was admitted while the card was live, so the file goes out."""
     env = keep_env
     env.respond = _respond(pr.Capture("delivered", "operator_file"))
-    await _desk_tap(env, idx=1, meta=_desk_meta(deadline=0.0))
+    await _lane_tap(env, idx=1, meta=_card_meta(deadline=0.0))
     assert len(env.calls) == 1 and env.channel.marks == []
     assert _echo() == [f"{LABEL} applied your tap (See PDF)."]
 
 
 async def test_a_settling_tap_past_the_deadline_still_executes_nothing(keep_env):
     env = keep_env
-    await _desk_tap(env, idx=0, meta=_desk_meta(deadline=0.0))
+    await _lane_tap(env, idx=0, meta=_card_meta(deadline=0.0))
     assert env.calls == [] and env.channel.marks == ["⌛ expired"]
 
 
 async def test_a_refused_permit_on_a_keep_tap_is_told_without_marking(keep_env):
     env = keep_env
     env.limiter.refuse = True
-    await _desk_tap(env, idx=1, meta=_desk_meta())
+    await _lane_tap(env, idx=1, meta=_card_meta())
     assert env.calls == [] and env.channel.marks == []
     assert any("busy" in text for _, text in env.channel.notices)
 

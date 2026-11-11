@@ -161,7 +161,7 @@ def _route_ok(entry: Any) -> bool:
 
 def requester_kind(chain: tuple | list) -> str:
     """``operator_resident`` when the run serves the chain's root resident
-    directly (the operator's own request to the resident, or his desk reply),
+    directly (the resident's own delegation, or a pinned stored-call turn),
     else ``specialist``."""
     return "operator_resident" if len(chain) <= 2 else "specialist"
 

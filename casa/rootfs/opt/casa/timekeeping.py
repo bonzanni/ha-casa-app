@@ -42,7 +42,7 @@ _FALLBACK_TZ = "UTC"
 _TIME_ENVELOPE_RE = re.compile(
     r"\A<current_time>\n(\S+)[^\n]*\n</current_time>(?:\n\n|\s*\Z)")
 
-# #1314/#1317: Casa's own per-turn notes (the front-desk lines, a reply's note)
+# #1314/#1317: Casa's own per-turn notes (the chat notes, a reply's note)
 # ride in ONE block directly after the envelope, so the readback strips them
 # with it and nothing Casa wrote is retained as the speaker's words. The block
 # is recognised only right after an envelope, and its close only as the

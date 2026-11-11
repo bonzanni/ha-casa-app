@@ -8,7 +8,7 @@ hand-edited.
 
 A component may declare bundled or repo-sourced plugin dependencies (e.g. a weather specialist's `weather` plugin).
 These are NEVER installed separately: `specialist_install_inspect` resolves and validates the whole
-dependency closure (persona, corpus, plugins) in one pass, ONE consent DM covers the specialist AND
+dependency closure (persona, corpus, plugins) in one pass, ONE approval card covers the specialist AND
 every dependency together, and `specialist_install_commit` activates all of it atomically. Do not
 call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add.md`.
 
@@ -30,28 +30,33 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
 ## Steps
 
 1. `specialist_install_inspect(repo=..., ref=...)`. On any `ok: false`, report the `kind`/`detail`
-   verbatim and stop — do NOT retry with fabricated inputs. On `ok: true` the result carries a
-   `receipt_id` for this exact inspected closure — hold onto it verbatim; `specialist_install_commit`
-   requires it back unchanged.
-2. When the result says `consent: "keyboard_posted"`, the approval card is in the operator's DM
-   (posted server-side by `prompt_specialist_install_consent`, not by this recipe). It is the
-   actual approval gate, and it already covers the WHOLE install (the specialist AND every
-   dependency) in ONE consent. There is no separate consent, and no separate `plugin_add`, for a
-   dependency plugin — ever. End your run with a short answer: what the specialist is (mission,
-   default persona, dependencies — including what any bundled plugin needs), any required
-   config/secret names you need from him, and that the card is waiting for his tap. When it says
-   `consent: "pre_authorized"` (he already approved this exact install), go straight to step 4.
-3. Approve starts a new run by itself, whose task carries the staged values (`component_id`,
-   `version`, `root_digest`, `slug`, `staged_dir`, `receipt_id`): continue from step 4 with them
-   and any config values agreed in the exchanges it brings. Re-inspect only if you need to (the
-   values are missing, or the commit refuses them): a re-inspect of the same version returns
-   `consent: "pre_authorized"`, with a fresh `receipt_id` to use. Deny or expiry is shown on the
-   card; no run starts for them, and nothing is needed from you. If the commit refuses with
-   `kind: "consent_missing"`, the tap has not landed: say the card is still waiting and end the run
-   (do not loop-retry).
-4. Once approved: `specialist_install_commit(component_id=..., version=..., root_digest=...,
-   slug=..., staged_dir=..., receipt_id=..., config={...}, secret_names_provided=[...])` using the
-   EXACT values `specialist_install_inspect` returned, `receipt_id` included. Omitting it (or
+   verbatim and stop — do NOT retry with fabricated inputs. On `ok: true` the result carries the
+   staged facts (`slug`, `root_digest`, `staged_dir`, `receipt_id`) for this exact inspected
+   closure — hold onto them verbatim. Inspect posts nothing.
+2. Agree the values with the operator: tell him what the specialist is (mission, default persona,
+   dependencies — including what any bundled plugin needs) and ask for the required non-secret config
+   values and which secret names he provides. Then call
+   `specialist_install_request_approval(slug=..., root_digest=..., staged_dir=..., receipt_id=...,
+   mode="install", config={...}, secret_names_provided=[...])`. Casa works out the settings the
+   install will end up with and posts ONE approval card to the operator, covering the WHOLE
+   install (the specialist AND every dependency, with those settings). There is no separate
+   consent, and no separate `plugin_add`, for a dependency plugin — ever.
+   - `approval: "requested"`: stop. End your run with a short answer saying the card is waiting
+     for his tap.
+   - `approval: "already_approved"`: he already approved exactly this; stop — Casa continues you
+     once this run ends.
+   - `approval: "in_progress"`: this run is the one Casa started for that approval — go on with
+     step 4.
+   - any `ok: false`: report the `kind`/`detail` verbatim and stop.
+3. Casa continues you after Approve: a new run whose task names the staged values and ends with
+   the approved values. Commit exactly those values — the config and the secret names the card
+   showed; the commit refuses anything else (`kind: "approval_values_differ"`). Deny or expiry is
+   shown on the card; no run starts for them, and nothing is needed from you. One approval is one
+   attempt: if the commit fails, or refuses with `approval_used`, `approval_superseded` or
+   `approval_required`, report it and stop — asking again posts a new card.
+4. In the run Casa started: `specialist_install_commit(component_id=..., version=..., root_digest=...,
+   slug=..., staged_dir=..., receipt_id=..., config={...}, secret_names_provided=[...])` with the
+   EXACT staged values the task names, `receipt_id` included, and exactly the approved values. Omitting it (or
    passing a stale one from an earlier inspect) refuses with `kind: "receipt_required"` — re-run
    inspect and retry with the fresh id; never fabricate one. If the result carries
    `plugin_data_note` — the commit's owned-set swap replaced a stale owned entry, which
@@ -120,7 +125,7 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    "required env unresolved", costing the operator a second configurator run (#499).
    A plugin with empty `env_names` needs nothing here.
    `env_names` is exactly what Casa withholds the plugin on. The inspection's
-   `exempt_env_names` (and the consent's "Env referenced, not required" line) are the other
+   `exempt_env_names` (and the approval card's "Env referenced, not required" line) are the other
    names the plugin's `.mcp.json` mentions — a `${VAR:-default}` the CLI satisfies from its own
    default, or a `casa.setupProvides` name the plugin's own setup tool creates. **Never ask the
    operator for one of those** (#994): nothing is withheld on them, `verify_plugin_state` never
@@ -138,9 +143,9 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
 
 ## Common mistakes
 
-- Calling `specialist_install_commit` before the operator has actually tapped Approve — it will
-  correctly refuse (`kind: "consent_missing"`); this is not a bug to work around, it IS the consent
-  gate.
+- Calling `specialist_install_commit` in any run but the one Casa started after Approve — it
+  refuses (`kind: "approval_required"`); this is not a bug to work around, it IS the approval
+  gate. Ask with `specialist_install_request_approval` and stop.
 - Calling `specialist_install_commit` without `receipt_id`, or with one carried over from an
   EARLIER inspect — it refuses with `kind: "receipt_required"`; always use the id the LATEST
   `specialist_install_inspect` call returned.
@@ -172,6 +177,5 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
   was missed, call `consent_reprompt` and relay its result.
 - Re-approving a DIFFERENT re-fetch under the same slug: a second `specialist_install_inspect` call
   yields a NEW `root_digest` (and a NEW `receipt_id`) if the repo moved (or any bundled
-  persona/corpus/plugin dependency changed), which requires a NEW consent DM — the old approval
-  never carries over (see `install_consent_identity`'s four-field binding, now keyed on
-  `root_digest`).
+  persona/corpus/plugin dependency changed), and other settings are other values: either needs a
+  NEW approval card — an old approval never carries over.

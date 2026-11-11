@@ -26,7 +26,7 @@ must be the client's only recorded one (the deposit route's rule):
 The record is forgotten at the call's PostToolUse / PostToolUseFailure, or
 after ``OPERATOR_CALL_CAP_S``. The operator question Casa itself posts for run
 admission (``post_question``) is Casa's keyboard, answered by a tap that runs no
-turn and uses no desk."""
+turn."""
 from __future__ import annotations
 
 import dataclasses

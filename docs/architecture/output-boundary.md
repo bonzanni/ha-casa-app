@@ -56,8 +56,7 @@ its words and gains a note beside them.
 ever held.** `ReadBeforeDescribe` is armed by `list_inbound_files`, from the records it
 lists rather than from the rendered text, and by a `Read` attempt on an inbox path the turn
 never listed (a path copied from an earlier listing makes this a file turn too). A turn that
-received a file of its own — a file desk turn, or the default agent's turn for a captioned
-file or album, armed from the reserved `_received_file` key when the scope is minted
+received a file of its own — the default agent's turn for a captioned file or album, armed from the reserved `_received_file` key when the scope is minted
 ([`inbound-files.md`](inbound-files.md)) — is armed over those files alone before it runs
 (`TurnScope.receive_files`), and neither a listing
 nor a `Read` attempt widens it. It is discharged by a successful `Read` of any one armed file
@@ -74,11 +73,9 @@ is never discharged. The model's words are never suppressed or withheld by any o
 `<silent/>` convention is judged inside final-reply admission, on the unannotated text and
 before any line is added, so a silent turn is never turned into a visible line. Admission
 withholds words in exactly two ruled cases, both scope properties in
-[`output-scope-properties.md`](output-scope-properties.md): the #1075 closing silence (on a
-specialist desk turn after a proven post too, #1433, applied by the desk —
-[`specialist-desk-reply.md`](specialist-desk-reply.md)), and
+[`output-scope-properties.md`](output-scope-properties.md): the #1075 closing silence, and
 (#1252) the words written after a protected call that is waiting on the operator's approval,
-on a resident's DM, button or setup turn and on a specialist desk turn — on a resident's turn
+on a resident's DM, button or setup turn — on a resident's turn
 also after a synchronous delegate whose specialist left such a call waiting (#1207), whatever
 the CLI did to that delegate's result (#1274). The
 agent log withholds the same words in its producers, not in admission (INV-TG-014).
@@ -135,8 +132,7 @@ records it and, in doing so, answers who authored the words.
 
 What it does not cover: the agent log, which is no channel method and carries no scope ([`agent-logs.md`](agent-logs.md)); the arrival replies and a plugin's delivered posts — the link
 message, a message and a file, each Casa-composed from plugin-authored bytes — which the
-recorded lists class as notices (a desk's notice too; its reply is admitted,
-[`specialist-desk-reply.md`](specialist-desk-reply.md)); and the voice channel, which has not adopted the contract. The recorded lists
+recorded lists class as notices; and the voice channel, which has not adopted the contract. The recorded lists
 catch an accidental bypass; they are not a sandbox against Casa deliberately fabricating an
 admission.
 

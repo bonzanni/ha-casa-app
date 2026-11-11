@@ -288,11 +288,11 @@ async def _lane_turn(chat_id: int, role: str, *, deadline: float):
                     await asyncio.sleep(RETRY_EVERY_S)
             # #1197's guard, as every use of the lane has it: a run the bounded
             # runner gave up waiting for keeps the lane refused until it ends
-            sink_tok = tools_mod._desk_run_sink.set(runs)
+            sink_tok = tools_mod._lane_run_sink.set(runs)
             try:
                 yield lane
             finally:
-                tools_mod._desk_run_sink.reset(sink_tok)
+                tools_mod._lane_run_sink.reset(sink_tok)
                 lane.hold_unwinding(runs)
     finally:
         if permit is not None:

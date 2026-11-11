@@ -194,8 +194,8 @@ COPIED_CONTEXT_MARKERS = (
     "_webhook_deliver",
     # #1277: read only by ``background_jobs.job_started_by``.
     ANSWERED_BY_OPERATOR,
-    # Browser executor §5.5: the operator's own typed words (Telegram ingress,
-    # or his reply on a specialist's desk); read only by handoff.operator_words.
+    # Browser executor §5.5: the operator's own typed words (Telegram
+    # ingress); read only by handoff.operator_words.
     "_operator_words",
     # The turn's route: the bot its replies go out through, decided where the
     # turn was born and carried by every turn derived from it.
@@ -2321,13 +2321,11 @@ class Agent:
             # itself stays raw (it also feeds origin_var + the recall query).
             # Composed via timekeeping so retention's strip_time_envelope
             # (#471) can never drift from what is actually prepended here.
-            # S4 §6: what the specialist desks of this chat did since the
-            # resident's last turn — Casa's own body-free lines, drained once —
-            # then (#1314) the channel's note of the message this one replied
-            # to. Both ride in the Casa notes block right after the envelope,
-            # which the readback strips with it (#1317); the origin's
-            # user_text stays raw.
-            import specialist_desk
+            # Casa's notes for this turn — what Casa noted for the chat's
+            # agent since its last turn, then (#1314) the channel's note of
+            # the message this one replied to — ride in the Casa notes block
+            # right after the envelope, which the readback strips with it
+            # (#1317); the origin's user_text stays raw.
             notes: list[str] = []
             # On every turn of a memory role, whatever its
             # channel, every correction the session's frozen view does not
@@ -2335,10 +2333,6 @@ class Agent:
             memory_note = await self._memory_note(
                 channel=msg.channel, channel_key=channel_key)
             if msg.channel == "telegram":
-                desk_lines = specialist_desk.prompt_lines(
-                    msg.context.get("_tg_bot"), msg.context.get("chat_id"))
-                if desk_lines:
-                    notes.append("\n".join(desk_lines))
                 # The turn that opens an agent's own chat (stamped only by the
                 # channel), on a line of its own.
                 if msg.context.get("_chat_opening") is True:

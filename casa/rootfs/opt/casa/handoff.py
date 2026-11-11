@@ -31,9 +31,10 @@ def handoff_chain(origin: dict | None) -> tuple[str, ...]:
     the agent executing it.
 
     A delegated run's origin carries the stamped chain. Any other origin is a
-    turn of its own agent: a resident's direct turn is ``(role,)``; a desk
-    turn (``role`` the resident, ``execution_role`` the specialist the
-    operator replied to) is ``(role, execution_role)``."""
+    turn of its own agent: a resident's direct turn is ``(role,)``; a pinned
+    stored-call turn (``role`` the agent whose chat the card is in,
+    ``execution_role`` the agent that runs the call) is
+    ``(role, execution_role)``."""
     origin = origin or {}
     stamped = origin.get("_handoff_chain")
     if isinstance(stamped, (tuple, list)) and stamped and all(
@@ -48,7 +49,7 @@ def handoff_chain(origin: dict | None) -> tuple[str, ...]:
 
 def child_chain(parent: dict | None, role: str) -> tuple[str, ...]:
     """The chain a run of *role* launched from *parent* belongs to — *role*
-    appended unless the parent already ends with it (a desk turn's own run)."""
+    appended unless the parent already ends with it (a pinned turn's own run)."""
     chain = handoff_chain(parent)
     if chain and chain[-1] == role:
         return chain
@@ -66,10 +67,10 @@ def requester_of(chain: tuple[str, ...]) -> str:
 def operator_words(origin: dict | None) -> str | None:
     """The operator's own current words for this turn, or ``None``.
 
-    Read only from the reserved ``_operator_words`` key, which exactly two
-    places stamp: the Telegram channel for a message (or a file's caption) the
-    configured operator typed, and the specialist desk for a reply he typed — a
-    tapped suggested reply's dispatch is the third, when that feature lands
+    Read only from the reserved ``_operator_words`` key, which exactly one
+    place stamps: the Telegram channel for a message (or a file's caption) the
+    configured operator typed — a tapped suggested reply's dispatch is the
+    second, when that feature lands
     (``SUGGESTED_REPLY``). Absent on every other turn: a button or approval
     continuation, a stored-call tap, a setup turn, a narration, a continuation,
     a scheduled, webhook, voice or engagement turn. The key is reserved

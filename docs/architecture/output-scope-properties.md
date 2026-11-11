@@ -70,9 +70,7 @@ before. Rule 1 drops all the earlier text, and the operator accepted two residua
 narration still arrives, untagged, and a real message written as plain text after a
 confirmed send is dropped. The verdict is taken at
 admission: a synchronous delegate that timed out and sends later belongs to its own
-completion notice. A specialist desk turn applies rule 1 itself, on its own record of what
-the turn proved (a post that landed, a send confirmed delivered), not through this admission
-(#1433, [`specialist-desk-reply.md`](specialist-desk-reply.md)).
+completion notice.
 
 The second exception is the operator's ruling on #1252: on a turn whose protected call is
 waiting on the operator's approval, the operator sees the approval keyboard and nothing the
@@ -96,8 +94,7 @@ a count of text-bearing messages, kept per attempt; `_process` puts the winning 
 on the report as `approval_cut`, beside `reply_messages`, which keeps every message. Admission
 reads the report, never the scope: it keeps the messages before the cut — suppressed, not
 chosen, when they strip to silence, so the turn ends with the channel's `turn_finished` and
-discharges no announcement — and a streamed message is re-edited to exactly that prefix. A
-specialist desk turn applies the same reading to its run ([`specialist-desk-reply.md`](specialist-desk-reply.md)).
+discharges no announcement — and a streamed message is re-edited to exactly that prefix.
 A synchronous `delegate_to_agent` call is read the same way (#1207): its child's view never
 shares these records, so before the handler returns it copies the child's outcome onto this
 scope by delegation id — every grant the child's hook consumed, then each grant the child's

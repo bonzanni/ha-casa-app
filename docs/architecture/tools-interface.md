@@ -49,7 +49,7 @@ argument or a bad enum before the handler runs — code and tests rely on it.
 
 **A grant can be narrower inside the tool.** Some tools check the caller's role
 themselves, past the grant, and read the EXECUTING role (`tools.py::_effective_caller_role`):
-the role Casa stamps on a delegated run or a desk turn, else a bound engagement's, else the
+the role Casa stamps on a delegated run, else a bound engagement's, else the
 origin. The configurator's privileged tools are [`configurator.md`](configurator.md)'s
 INV-CFG-017, so an agent the configurator delegated to does not pass as it.
 

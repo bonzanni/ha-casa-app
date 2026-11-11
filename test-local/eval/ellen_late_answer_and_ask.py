@@ -104,7 +104,7 @@ DATA = "September groceries came to €412.30 over 9 payments, most of it at Ess
 GMAIL = ("The Gmail connection returned no messages for Q3. Is the invoices label "
          "still where your supplier invoices land, or did they move?")
 # The live #1348 run on casa-test (2026-10-08): a late answer carrying a
-# connection report and a question, with a card the desk posted meanwhile —
+# connection report and a question, with a card the specialist posted meanwhile —
 # Casa's echo line and silence note follow the answer, as
 # ``tools._with_post_echo`` appends them.
 LIVE_ASK = ("Ask Alex what he needs me to decide before he can close Q3 — I want "

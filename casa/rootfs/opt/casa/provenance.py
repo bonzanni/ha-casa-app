@@ -70,16 +70,16 @@ ROUTING_KEYS: tuple[str, ...] = ("_tg_bot",)
 TASK_DELIVERY_KEY = "_task_delivery"
 TASK_KEYS: tuple[str, ...] = (TASK_DELIVERY_KEY,)
 
+# The approval a configurator run carries: ``{"rid": str, "generation": int}``,
+# naming the approval record (:mod:`approval_records`) the run commits under.
+APPROVAL_KEY = "_approval"
+
 RESERVED_CONTEXT_KEYS = frozenset({
     "synthetic",
     "button_answer",
-    # S4: the specialist-desk marker a desk turn's origin carries (the role
-    # and chat the approval continuation returns to); stamped only by the
-    # desk itself, never by an ingress.
-    "desk",
-    # S5: the stored-call marker a pinned one-call turn's origin carries
-    # (the run id, the runtime name, the canonical arguments, the label);
-    # stamped only by the desk's tap handler, never by an ingress.
+    # The stored-call marker a pinned one-call turn's origin carries (the
+    # run id, the runtime name, the canonical arguments, the label); stamped
+    # only by the stored-call settler, never by an ingress.
     "stored_call",
     "execution_role",
     "message_type",
@@ -169,6 +169,10 @@ RESERVED_CONTEXT_KEYS = frozenset({
     # the Telegram channel's mark that this turn opens an agent's own chat;
     # stamped only by the channel
     "_chat_opening",
+    # stamped only by Casa when it continues the configurator after an
+    # approval; a caller who could set it would commit under an approval the
+    # operator gave for another run
+    APPROVAL_KEY,
     # #1378: the file a Telegram caption was written on — Casa's note of it and
     # the turn's own file. Stamped only by the channel; a caller who could set
     # it would put Casa's words in the turn and arm it over a file of its choice.

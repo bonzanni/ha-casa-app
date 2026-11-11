@@ -64,3 +64,60 @@ def reset() -> None:
     """Drop every note."""
     global _LEDGER
     _LEDGER = None
+
+
+# -- composing a notice and its note ------------------------------------------------
+
+FIELD_MIN_CHARS = 8          # the least a label or a display field keeps (then CLIP)
+
+
+def clip(text: str, limit: int) -> str:
+    """*text* within *limit* characters, a visible marker when it was cut."""
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    keep = max(limit - len(CLIP), 0)
+    return text[:keep] + CLIP
+
+
+def bounded_line(template: str, *, label: str, fields: "dict[str, Any] | None" = None,
+                 limit: "int | None" = None) -> str:
+    """ONE string for a notice and the agent's note of it, within the echo cap
+    (``result_broker.ECHO_LINE_MAX`` unless *limit* says otherwise): the
+    literal text of *template* (the outcome clause and its connectives) is
+    reserved first, then the label and the display fields — ``{label}`` and
+    ``{<field>}`` placeholders — share what remains, each keeping at least
+    ``FIELD_MIN_CHARS`` and clipped with the marker. Composed any other way, a
+    long label or file name could push the outcome itself past the cap."""
+    import result_broker as rb
+    cap = rb.ECHO_LINE_MAX if limit is None else int(limit)
+    values = {"label": str(label or "")}
+    for key, value in (fields or {}).items():
+        values[str(key)] = str(value if value is not None else "")
+    literal = template
+    for key in values:
+        literal = literal.replace("{" + key + "}", "")
+    budget = max(0, cap - len(literal))
+    keys = list(values)
+    floor = min(FIELD_MIN_CHARS, budget // max(1, len(keys)))
+    alloc = {k: min(len(values[k]), floor) for k in keys}
+    remaining = budget - sum(alloc.values())
+    need = [k for k in keys if len(values[k]) > alloc[k]]
+    while need and remaining > 0:
+        share = max(1, remaining // len(need))
+        progressed = False
+        for key in list(need):
+            extra = min(share, len(values[key]) - alloc[key], remaining)
+            if extra > 0:
+                alloc[key] += extra
+                remaining -= extra
+                progressed = True
+            if alloc[key] >= len(values[key]):
+                need.remove(key)
+        if not progressed:
+            break
+    out = template
+    for key in keys:
+        value = values[key]
+        out = out.replace("{" + key + "}", value if alloc[key] >= len(value) else clip(value, alloc[key]))
+    return out

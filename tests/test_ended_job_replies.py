@@ -1,14 +1,12 @@
 """#1522: a reply in the direct chat to a post of a background job that has
 ended — its start line, a question, a plugin post, one that landed after the
 end — is the resident's turn, carrying a Casa note that names the job, its
-agent, how it ended and when. It never reaches the specialist desk, which
-cannot see the job. A file sent as such a reply is the resident's file. A reply
-from anyone but the operator who started the job, or in another chat, keeps
-today's routes and note.
+agent, how it ended and when. A file sent as such a reply is the resident's
+file. A reply from anyone but the operator who started the job, or in another
+chat, is the resident's turn with the ordinary note.
 
 REAL ``EngagementRegistry`` on a tmp tombstone, REAL ``TelegramChannel`` text
-and file handlers, REAL post map and desk route (only its delegability and the
-desk turn itself are stubbed), REAL bus queue.
+and file handlers, REAL bus queue.
 """
 from __future__ import annotations
 
@@ -21,12 +19,11 @@ from types import SimpleNamespace as NS
 import pytest
 
 import agent_inbox as ai
-import result_broker as rb
-import specialist_desk as sd
-from test_desk_route import OPERATOR, _channel, _record, _settle, routed  # noqa: F401
+from channels.telegram import reply_note
+from telegram_reply_harness import OPERATOR, _channel, _record, _settle
 from channels.tg_address import TgAddress
 from task_model import Requester
-from test_desk_route import BOT
+from telegram_reply_harness import BOT
 from test_inbound_files import PDF, _doc, _msg
 from test_telegram_new_reset import _drain_bus
 from timekeeping import resolve_tz
@@ -115,101 +112,84 @@ def _note_for(status="completed", *, whose="Finance's", via=""):
 
 
 async def test_a_reply_to_an_ended_jobs_start_line_is_the_residents_turn_with_its_end(
-        routed, tmp_path):
+        tmp_path):
     from engagement_registry import JOB_POST_START
-    pm, spawned = routed
     reg, rec = await _ended_job(tmp_path, posts=[(501, JOB_POST_START)])
     ch, bus = _channel()
     ch._engagement_registry = reg
     [turn] = await _turns(ch, bus, _text_reply(quoted_id=501))
-    assert spawned.await_count == 0
     assert turn.target == "assistant" and turn.content == "did it tag row 7?"
-    assert turn.context["_reply_note"] == sd.reply_note(
+    assert turn.context["_reply_note"] == reply_note(
         _note_for(), None, "📊 Finance started «Q3 accounting».")
 
 
-async def test_a_reply_to_an_ended_jobs_plugin_post_never_reaches_the_desk(routed, tmp_path):
-    """The plugin post sits in the post map as Finance's, which the desk route
-    would take: the ended job's own record decides first."""
-    pm, spawned = routed
-    # the post landed while the job lived: filed on the record and in the map
+async def test_a_reply_to_an_ended_jobs_plugin_post_is_the_residents_turn(tmp_path):
+    """A plugin post of the job, filed on its record while the job lived."""
     reg, rec = await _ended_job(tmp_path, posts=[(640, None)])
-    pm.record(TgAddress(BOT, OPERATOR, 640), _record(owner=rec.id))
     ch, bus = _channel()
     ch._engagement_registry = reg
     [turn] = await _turns(ch, bus, _text_reply(quoted_id=640, quoted_text="📊 Finance\nrow 7"))
-    assert spawned.await_count == 0
-    assert turn.context["_reply_note"] == sd.reply_note(_note_for(), None, "📊 Finance\nrow 7")
+    assert turn.context["_reply_note"] == reply_note(_note_for(), None, "📊 Finance\nrow 7")
 
 
-async def test_a_plugin_post_landing_after_the_end_is_the_ended_jobs(routed, tmp_path):
+async def test_a_plugin_post_landing_after_the_end_is_the_ended_jobs(tmp_path):
     """A job can end while one of its plugin's posts is still being sent: the
     post is filed as the ended job's as it lands, so a reply to it is told the
-    end and is not the desk's."""
-    pm, spawned = routed
+    end."""
     reg, rec = await _ended_job(tmp_path)
     ch, bus = _channel()
     ch._engagement_registry = reg
     ch._record_post(OPERATOR, NS(message_id=650), _record(owner=rec.id))
     assert reg.ended_job_post_owner(TgAddress(BOT, OPERATOR, 650)) is rec
     [turn] = await _turns(ch, bus, _text_reply(quoted_id=650, quoted_text="📊 Finance\nrow 9"))
-    assert spawned.await_count == 0
-    assert turn.context["_reply_note"] == sd.reply_note(_note_for(), None, "📊 Finance\nrow 9")
+    assert turn.context["_reply_note"] == reply_note(_note_for(), None, "📊 Finance\nrow 9")
 
 
-async def test_a_reply_to_an_ended_jobs_question_names_how_it_ended(routed, tmp_path):
+async def test_a_reply_to_an_ended_jobs_question_names_how_it_ended(tmp_path):
     from engagement_registry import JOB_POST_QUESTION
-    pm, spawned = routed
     reg, rec = await _ended_job(tmp_path, posts=[(520, JOB_POST_QUESTION)],
                                 outcome="cancelled")
     ch, bus = _channel()
     ch._engagement_registry = reg
     [turn] = await _turns(ch, bus, _text_reply("the savings one", quoted_id=520,
                                                quoted_text="Which account?"))
-    assert spawned.await_count == 0
-    assert turn.context["_reply_note"] == sd.reply_note(
+    assert turn.context["_reply_note"] == reply_note(
         _note_for("cancelled"), None, "Which account?")
 
 
-async def test_a_residents_plugin_job_is_named_as_its_own(routed, tmp_path):
-    pm, spawned = routed
+async def test_a_residents_plugin_job_is_named_as_its_own(tmp_path):
     reg, rec = await _ended_job(tmp_path, role="assistant", plugin="ledger",
                                 posts=[(530, None)], outcome="error")
     ch, bus = _channel()
     ch._engagement_registry = reg
     [turn] = await _turns(ch, bus, _text_reply(quoted_id=530, quoted_text="row 7 tagged"))
-    assert turn.context["_reply_note"] == sd.reply_note(
+    assert turn.context["_reply_note"] == reply_note(
         _note_for("error", whose="your", via=" (run by the plugin ledger)"), None,
         "row 7 tagged")
 
 
-async def test_a_reply_from_someone_who_did_not_start_the_job_keeps_todays_note(
-        routed, tmp_path):
-    pm, spawned = routed
+async def test_a_reply_from_someone_who_did_not_start_the_job_gets_the_ordinary_note(
+        tmp_path):
+    """Not this operator's job: the resident's turn, and the note does not
+    name the job."""
     reg, rec = await _ended_job(tmp_path, user=777, posts=[(501, None)])
     ch, bus = _channel()
     ch._engagement_registry = reg
-    pm.record(TgAddress(BOT, OPERATOR, 501), _record(owner=rec.id))
-    # not this operator's job: the post map's desk route, exactly as before
-    assert await _turns(ch, bus, _text_reply(quoted_id=501, quoted_text="row 7")) == []
-    assert spawned.await_count == 1
-    note = ch._reply_note_for(_text_reply(quoted_id=501, quoted_text="row 7"), str(OPERATOR))
-    import tools
-    assert note == sd.reply_note(f"an earlier message from {tools._display_name_for_role('finance')}",
-                                 None, "row 7")
+    [turn] = await _turns(ch, bus, _text_reply(quoted_id=501, quoted_text="row 7"))
+    assert turn.target == "assistant"
+    assert turn.context["_reply_note"] == reply_note("someone else's message", None, "row 7")
 
 
-async def test_a_reply_to_an_ended_job_of_another_chat_keeps_todays_routes(routed, tmp_path):
-    pm, spawned = routed
+async def test_a_reply_to_an_ended_job_of_another_chat_is_the_residents_turn(tmp_path):
     reg, rec = await _ended_job(tmp_path, chat=OPERATOR + 1, posts=[(501, None)])
     ch, bus = _channel()
     ch._engagement_registry = reg
-    pm.record(TgAddress(BOT, OPERATOR, 501), _record(owner=rec.id))
-    assert await _turns(ch, bus, _text_reply(quoted_id=501, quoted_text="row 7")) == []
-    assert spawned.await_count == 1                      # the desk, as before
+    [turn] = await _turns(ch, bus, _text_reply(quoted_id=501, quoted_text="row 7"))
+    assert turn.target == "assistant"
+    assert "background job" not in turn.context["_reply_note"]
 
 
-async def test_a_non_operators_reply_gets_todays_note(routed, tmp_path):
+async def test_a_non_operators_reply_gets_todays_note(tmp_path):
     """Even on a job whose record names that very sender: only the
     authenticated operator's reply is told the job's end."""
     reg, rec = await _ended_job(tmp_path, user=555, posts=[(501, None)])
@@ -261,37 +241,34 @@ def _file_reply(caption, quoted_id):
     return m
 
 
-async def _file_rig(routed, tmp_path):
-    pm, spawned = routed
+async def _file_rig(tmp_path):
     reg, rec = await _ended_job(tmp_path)
     ch, bus = _channel()
     ch._app = types.SimpleNamespace(bot=_Bot())
     ch._engagement_registry = reg
     ch._record_post(OPERATOR, NS(message_id=640), _record(owner=rec.id))
-    return ch, bus, spawned
+    return ch, bus
 
 
 async def test_a_captioned_file_replying_to_an_ended_jobs_post_is_the_residents(
-        routed, tmp_path, inbox):
-    ch, bus, spawned = await _file_rig(routed, tmp_path)
+        tmp_path, inbox):
+    ch, bus = await _file_rig(tmp_path)
     await ch._on_non_text_message(NS(message=_file_reply("file this one too", 640)))
     await _settle(ch)
-    assert spawned.await_count == 0
     assert ai.get_inbox("finance").list_files() == []
     [stored] = inbox.list_files()
     [turn] = await _drain_bus(bus)
     assert turn.target == "assistant" and turn.content == "file this one too"
     assert turn.context["_received_file"]["files"] == [
         {"path": os.path.join(inbox.ready_dir, stored.name), "name": "invoice-0912.pdf"}]
-    assert turn.context["_reply_note"] == sd.reply_note(_note_for(), None, "📊 Finance\nrow 7")
+    assert turn.context["_reply_note"] == reply_note(_note_for(), None, "📊 Finance\nrow 7")
 
 
 async def test_a_file_without_a_caption_replying_to_an_ended_jobs_post_is_stored_and_acknowledged(
-        routed, tmp_path, inbox):
-    ch, bus, spawned = await _file_rig(routed, tmp_path)
+        tmp_path, inbox):
+    ch, bus = await _file_rig(tmp_path)
     await ch._on_non_text_message(NS(message=_file_reply(None, 640)))
     await _settle(ch)
-    assert spawned.await_count == 0
     assert ai.get_inbox("finance").list_files() == []
     assert len(inbox.list_files()) == 1
     assert await _drain_bus(bus) == []
@@ -299,7 +276,7 @@ async def test_a_file_without_a_caption_replying_to_an_ended_jobs_post_is_stored
     assert ack.startswith("Got invoice-0912.pdf")
 
 
-async def test_the_ended_route_never_outranks_a_live_job(routed, tmp_path):
+async def test_the_ended_route_never_outranks_a_live_job(tmp_path):
     """While the terminal write is pending the record still counts as live:
     no ended owner, so the live route (which runs first) keeps the reply."""
     import threading
@@ -342,14 +319,12 @@ async def test_a_pending_terminal_reply_goes_into_the_job_through_the_handler(
     """The whole text handler, not the lookups: a reply arriving while the
     job's terminal write is pending is the job's (the live route runs first),
     and when the write fails and the job is live again it is delivered once —
-    no desk turn and no resident turn."""
+    no resident turn."""
     from unittest.mock import AsyncMock
     from test_job_dm_attention import CHAT, _drain, _HeldWrite, _reply_update, _rig, _wait
     r = await _rig(tmp_path, monkeypatch)
     r.reg.record_job_post(r.rec.id, TgAddress(r.ch.bot_id, CHAT, 501))
     await _drain(r)
-    desk = AsyncMock(return_value=True)
-    monkeypatch.setattr(r.ch, "_maybe_route_desk_reply", desk)
     resident = AsyncMock(return_value=True)
     monkeypatch.setattr(r.ch, "_dispatch_dm_turn", resident)
     held = _HeldWrite(r.reg)
@@ -368,16 +343,14 @@ async def test_a_pending_terminal_reply_goes_into_the_job_through_the_handler(
     await _drain(r)
     assert r.rec.status == "active"
     assert len(r.delivered) == 1 and r.delivered[0].endswith("wait")
-    assert desk.await_count == 0
     assert resident.await_count == 0
 
 
-async def test_ended_jobs_of_two_chats_sharing_a_message_id_stay_apart(routed, tmp_path):
+async def test_ended_jobs_of_two_chats_sharing_a_message_id_stay_apart(tmp_path):
     """Telegram numbers messages per chat: two ended jobs, in two chats, each
     filed a post 501. After a restart, a reply in the first chat names that
-    chat's job and reaches the resident — never the desk."""
+    chat's job and reaches the resident."""
     from engagement_registry import EngagementRegistry
-    pm, spawned = routed
     path = str(tmp_path / "e.json")
     reg = EngagementRegistry(tombstone_path=path)
     recs = {}
@@ -389,7 +362,6 @@ async def test_ended_jobs_of_two_chats_sharing_a_message_id_stay_apart(routed, t
         assert reg.record_job_post(recs[chat].id, TgAddress(BOT, chat, 501)) is True
         assert await reg.try_transition_terminal(
             recs[chat].id, "completed", completed_at=ENDED_AT, strict=True)
-    pm.record(TgAddress(BOT, OPERATOR, 501), _record(owner=recs[OPERATOR].id))
     again = EngagementRegistry(tombstone_path=path)
     await again.load()
     assert again.ended_job_post_owner(TgAddress(BOT, OPERATOR, 501)).id == recs[OPERATOR].id
@@ -397,5 +369,4 @@ async def test_ended_jobs_of_two_chats_sharing_a_message_id_stay_apart(routed, t
     ch, bus = _channel()
     ch._engagement_registry = again
     [turn] = await _turns(ch, bus, _text_reply(quoted_id=501, quoted_text="row 7"))
-    assert spawned.await_count == 0
-    assert turn.context["_reply_note"] == sd.reply_note(_note_for(), None, "row 7")
+    assert turn.context["_reply_note"] == reply_note(_note_for(), None, "row 7")

@@ -309,15 +309,15 @@ class TestReplyRoute:
             self, tmp_path, monkeypatch):
         r = await _rig(tmp_path, monkeypatch)
         r.reg.record_job_post(r.rec.id, A(501))
-        desk = AsyncMock(return_value=True)
-        monkeypatch.setattr(r.ch, "_maybe_route_desk_reply", desk)
+        resident = AsyncMock(return_value=True)
+        monkeypatch.setattr(r.ch, "_dispatch_dm_turn", resident)
         await r.ch._handle_serialized(_reply_update("use the second account", 501),
                                       str(CHAT))
         await _drain(r)
         assert r.delivered == [
             "[replying to «📊 Finance started «Process rows».»]\nuse the second account"]
         assert r.client.query_prompts == r.delivered
-        assert desk.await_count == 0
+        assert resident.await_count == 0
         assert r.bot.replies() == []
         assert r.drv.inbound_unread_depth(r.rec.id) == 0
 
@@ -326,13 +326,10 @@ class TestReplyRoute:
         r = await _rig(tmp_path, monkeypatch)
         r.reg.record_job_post(r.rec.id, A(501))
         await r.reg.try_transition_terminal(r.rec.id, "completed", strict=True)
-        desk = AsyncMock(return_value=True)
-        monkeypatch.setattr(r.ch, "_maybe_route_desk_reply", desk)
         resident = AsyncMock(return_value=True)
         monkeypatch.setattr(r.ch, "_dispatch_dm_turn", resident)
         await r.ch._handle_serialized(_reply_update("hello", 501), str(CHAT))
-        # #1522: past the job, to the resident's turn — never the desk
-        assert desk.await_count == 0
+        # #1522: past the job, to the resident's turn
         assert resident.await_count == 1
         assert r.delivered == []
 

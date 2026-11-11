@@ -12,19 +12,18 @@ How a specialist starts a background job its own plugins declare, from its own t
 turns are offered `start_job`, which jobs a specialist's call can resolve, which launch gates
 apply to it, and the origin the job runs with. The job itself — its declaration, its one long
 session, its one-per-manifest-name rule and the resident's own `start_job` — is
-[`background-jobs.md`](background-jobs.md); the desk a swipe-reply turn runs in is
-[`specialist-desk.md`](specialist-desk.md); the ACL and the depth cap a delegation passes are
+[`background-jobs.md`](background-jobs.md); the ACL and the depth cap a delegation passes are
 [`delegation.md`](delegation.md).
 
 ## Mental model
 
 **A specialist owns its plugins' work.** When the operator asks a specialist for something
-its plugin does as a job — in a desk turn, or in a turn the resident delegated to it — the
+its plugin does as a job — in a turn the resident delegated to it — the
 specialist starts the job itself, on itself, with `start_job(job, task, context)`. The job is
 exactly the job the resident would have started on that specialist: the same session, direct
 chat posts, log, refusals and end notice.
 
-**Offered by the build, decided at the call.** A specialist's desk, delegated or tap build is
+**Offered by the build, decided at the call.** A specialist's delegated or tap build is
 offered `start_job` when the plugins it loads (after env withholding) declare at least one job;
 any other build of that specialist is unchanged. That is visibility only. The call itself
 resolves the job among the jobs declared by the plugins assigned to that specialist and
@@ -41,8 +40,8 @@ resident-started job is. Every other gate applies: the input bounds, the voice a
 mode gates, the requires gate, `engagement_busy`, the permit (the `<role>:engagement` scope
 and the global cap, never waited for), the agent-spawn cap (a specialist's turn is agent
 context, never operator-exempt), and the one-job-per-manifest-name claim. A start from inside
-a desk turn takes a scope different from the desk's own permit and never touches the desk's
-lock.
+a delegated turn takes the `<role>:engagement` scope, different from the delegation's own
+permit, without waiting.
 
 **The resident is pointed at the delegate (#1228).** The resident keeps `start_job` for
 every job it lists; what changes is what it is shown and told. Its `<jobs>` block marks a
@@ -58,8 +57,8 @@ Its voice doctrine says no job starts on a call. The
 `start_job` description names the delegation route.
 
 **The work's origin is the turn's.** The job records the calling turn's origin, without the
-two markers that identify the calling turn rather than the work: the desk use and the turn's
-quota and echo key, and the calling task's delivery (the job is a task of its own, born at its
+markers that identify the calling turn rather than the work: the turn's quota and echo key,
+its conversation, and the calling task's delivery (the job is a task of its own, born at its
 launch). It keeps the turn's clearance, chat and operator, and its `role` stays the role of the
 turn that asked — the chat's resident, or the specialist's own conversation in its own chat —
 which is the job's requester: its end notice, with its post echoes, goes there. Where the job
@@ -68,13 +67,12 @@ no open chat `start_job` is refused ([`own-voice.md`](own-voice.md)).
 
 ## Contracts & invariants
 
-**INV-BGJOB-008**: A specialist's `start_job` starts only a job declared by a plugin assigned to that specialist and loadable when it is called, hosted by that specialist; it is offered only to a desk or delegated turn whose session loads a job-declaring plugin (a tap's pin refuses it, a job or engagement session never holds it), and the job launches with the calling turn's origin — its clearance, chat and resident — at depth 1, under every launch gate a resident's start of that job applies except the delegation ACL and the depth cap.
+**INV-BGJOB-008**: A specialist's `start_job` starts only a job declared by a plugin assigned to that specialist and loadable when it is called, hosted by that specialist; it is offered only to a delegated turn whose session loads a job-declaring plugin (a tap's pin refuses it, a job or engagement session never holds it), and the job launches with the calling turn's origin — its clearance, chat and resident — at depth 1, under every launch gate a resident's start of that job applies except the delegation ACL and the depth cap.
 
 The two exceptions travel to the one prelaunch call through a context variable set and reset
 around that call only, so nothing the launch later spawns inherits them.
 Because the job keeps the calling turn's origin, its starter line
-([`background-job-session.md`](background-job-session.md)) is read from that origin too: a desk turn's
-start reads `operator`, and a delegated turn's start reads the token of the resident's turn that
+([`background-job-session.md`](background-job-session.md)) is read from that origin too: a delegated turn's start reads the token of the resident's turn that
 delegated (`operator` when that turn was the operator's own or answered by them, `agent` for a
 scheduled or webhook turn), whether the resident waited for the delegation or not. The specialist
 branch is chosen only when no engagement is bound and the calling role's loaded `kind` is
@@ -130,7 +128,6 @@ job, and `job_not_declared` lists the startable ones.
 
 **Related**
 - [`architecture/background-jobs.md`](../architecture/background-jobs.md)
-- [`architecture/specialist-desk.md`](../architecture/specialist-desk.md)
 - [`architecture/delegation.md`](../architecture/delegation.md)
 - [`architecture/stored-call-buttons.md`](../architecture/stored-call-buttons.md)
 <!-- END SOURCEMAP -->

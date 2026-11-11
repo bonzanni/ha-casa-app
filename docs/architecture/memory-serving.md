@@ -26,8 +26,7 @@ ledger of the highest maintained clearance at or below its own: `private` always
 while a reader at `friends` is served a view — the butler, on voice — so a voice session is
 served the `friends` ledger and its note, and a stranger on Telegram (`public`) is served no
 view and no note. Which ledgers are maintained is
-[`architecture/memory-scoping.md`](memory-scoping.md)'s. A desk turn is the operator's own and
-reads at `private`.
+[`architecture/memory-scoping.md`](memory-scoping.md)'s.
 
 **The reader is part of the session.** A session's prompt is written for one reader: its
 view, its channel context. So the turn's read clearance joins the structural surface digest a

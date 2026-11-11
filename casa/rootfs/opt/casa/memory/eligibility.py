@@ -48,9 +48,6 @@ class Source(str, enum.Enum):
     #: only for a specialist that keeps no memory (INV-MEM-040): its post is
     #: kept out, so the line is all memory learns of it.
     SPECIALIST_POST = "specialist_post"
-    #: The operator's own words replying on the desk of a specialist that
-    #: keeps no memory (INV-MEM-043): his message, never the specialist's.
-    DESK_REPLY = "desk_reply"
     #: The operator's own words replying to a job's post, when the job is a
     #: specialist's that keeps no memory (INV-MEM-044): his message, never the
     #: specialist's. The value is stored as the item's admitting rule, so it
@@ -89,7 +86,6 @@ def admit(
         return "delegated_answer"
     if source in (Source.ENGAGEMENT_TURN, Source.ENGAGEMENT_ANSWER):
         return source.value if role_writes_memory else None
-    if source in (Source.SPECIALIST_POST, Source.DESK_REPLY,
-                  Source.JOB_REPLY):
+    if source in (Source.SPECIALIST_POST, Source.JOB_REPLY):
         return None if role_writes_memory else source.value
     raise ValueError(f"unknown capture source {source!r}")

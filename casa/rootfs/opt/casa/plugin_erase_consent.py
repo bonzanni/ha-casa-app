@@ -8,8 +8,9 @@ The tap IS the authorization: an Erase tap records a single-use choice grant,
 of the kind tapped, that ``plugin_remove`` / ``specialist_uninstall`` consume
 before any eraser runs, so the model can never assert "erase" — or pick which
 eraser — on the operator's behalf. Keep and Cancel record nothing (keeping
-the data is today's removal). Every tap continues the configurator, on its
-desk in the operator's DM, through the caller's callback."""
+the data is today's removal). The question carries no approval record: the
+choice grant is its one-shot authority. Every tap continues the configurator,
+Casa starting it through the caller's callback."""
 from __future__ import annotations
 
 import logging

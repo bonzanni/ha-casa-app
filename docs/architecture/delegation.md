@@ -28,8 +28,7 @@ configurator, which always runs `async` ([`configurator.md`](configurator.md)); 
 background job creates an engagement. The retired `mode='interactive'` is refused
 (`interactive_retired`) before any gate, with a message naming a `sync` delegation whose
 answer the resident tells the person in her own words, after which the person carries on by
-writing to her; a reply to one of the specialist's own posts still reaches it
-([`specialist-desk.md`](specialist-desk.md)).
+writing to her.
 
 **A delegated specialist's system prompt is its role prompt plus one line of Casa's.** The runner
 appends a sentence telling it about its [scratchpad](scratchpad.md), so every specialist knows with
@@ -68,18 +67,16 @@ within the caller's declared delegates, by role id first and display name second
 `<delegates>` block is rendered from the same live map the ACL resolves against.
 
 **Every delegation to a specialist or the configurator is one use of that agent's lane.**
-The lane (`agent_lane`) is the agent's alone, shared with its taps, its continuations and every
+The lane ([`agent-lane.md`](agent-lane.md)) is the agent's alone, shared with its taps, its continuations and every
 other delegation to it from any chat or bot; the place in its queue is reserved before any task
 exists (sync, degraded or async alike — an async launch still returns `pending` at once while
 its task waits). A full queue is the tool's typed `busy` result with no task, and a faulted
 agent — one a stored-call turn's processes could not be confirmed to have left, or one whose
 earlier use's run is still unwinding past its teardown bound — is the typed `agent_faulted`
 result ("Finance is out of service until Casa restarts."), refused before any queue place and
-for sync, degraded and async alike. A delegation from the operator's DM to a specialist also
-uses the specialist's desk in that chat: the desk's bounded dialogue block is fitted into its
-context after the resident's own validated arguments, and its brief and the bounded answer
-are committed as an exchange. The desk, its bounds and the swipe-reply route that shares it
-are [`specialist-desk.md`](specialist-desk.md); the faulted agent is
+for sync, degraded and async alike. A delegation carries only the resident's brief and
+context: no earlier exchange with the specialist rides along, so the brief carries what the
+specialist needs to know. The faulted agent is
 [`stored-call-termination.md`](stored-call-termination.md).
 
 **A delegation is a task, and an agent with its own chat shows it there.** Its launcher stamps
@@ -92,8 +89,8 @@ silence), and the resident still gets the bounded result, with notes that name t
 replies to those posts reach the running task, and what the operator wrote into it reaches
 the resident with the result. A target with no open chat posts
 nothing and its surfaces are refused. A hand-off inside it stamps its target's own delivery
-([`own-voice.md`](own-voice.md)). A file the operator addresses to the specialist
-starts a use of the same desk; its route is [`inbound-files.md`](inbound-files.md).
+([`own-voice.md`](own-voice.md)). A file the operator sends replying to one of its posts
+goes into the running task; its route is [`inbound-files.md`](inbound-files.md).
 
 **A brief is text stored for a later turn to narrate, and its disclosure resolves at
 launch.** Every `delegate_to_agent` launch — synchronous ones included, since a synchronous
@@ -249,7 +246,7 @@ its record exists — answers `job_busy` (INV-BGJOB-006). A resident-hosted job 
 
 **INV-ENG-024**: A delegated run that the wall-clock ceiling ends, or that is cancelled from outside, leaves no proven descendant of its CLI running once the runner has raised — a process a plugin server started after the session began included — and a process it cannot confirm gone is logged at ERROR with the role and the pids.
 
-Desk replies and every delegation go through `_run_delegated_agent_bounded`, which owns a
+Every delegation, and every run Casa carries on for the configurator, goes through `_run_delegated_agent_bounded`, which owns a
 `pinned_run.ProcessTree` for the run, the same process owner a stored-call tap's `PinnedRun`
 is ([`stored-call-termination.md`](stored-call-termination.md)). The run pins its CLI by pidfd, and
 the descendants it finds with their parent chain validated, the moment its session exists;
@@ -267,8 +264,8 @@ and a caller that stops waiting leaves it running to its end.
 What it does not cover: a run that ends normally, whose servers' background helpers are not
 walked; the timing windows around the walks and a helper that leaves the process tree
 (`setsid`, a double fork), which [`stored-call-termination.md`](stored-call-termination.md) states
-for taps; and an unconfirmed run, which is logged but neither faults the desk nor changes
-the reply's or the delegation's outcome.
+for taps; and an unconfirmed run, which is logged but neither faults the agent nor changes
+the delegation's outcome.
 
 ## Failure behavior
 

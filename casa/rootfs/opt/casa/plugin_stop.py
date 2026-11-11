@@ -2,7 +2,7 @@
 
 A plugin that declares ``casa.stopTool`` (``plugin_store.manifest_stop_tool``) is
 called by Casa **directly**, exactly as its ``casa.driverSweep`` is: Casa starts
-the plugin's stdio server itself, with no model, no session and no desk
+the plugin's stdio server itself, with no model, no session and no model turn
 (``plugin_continuations.sweep_server`` / ``call_plugin_tool``), so the stop never
 waits for the turn that is driving the work and costs no model turn. The tool
 answers one JSON object: with no arguments, ``{"requests": [{"ref", "tasks",
@@ -254,24 +254,30 @@ async def settle_ended(seg: str, bot_id: int, operator_id: int, ref: str) -> boo
 async def tell_line(bot_id: int, chat_id: int, role: str, outcome: str, *,
                     reply_to: "int | None") -> None:
     """The one line, Casa's fixed text under the specialist's label (none in the agent's own
-    chat), as a reply to the card, through the bot *bot_id* that holds it; the resident hears
-    it at its next turn, as every Casa line. The line is filed as the card it answers (the
-    card's post record), so a reply to it reaches whatever a reply to the card reaches."""
-    import specialist_desk
+    chat), as a reply to the card, through the bot *bot_id* that holds it; the chat's agent
+    hears it at its next turn, as every Casa line. The line is filed under the card's task,
+    live or ended, so a reply to it reaches whatever a reply to the card reaches."""
+    import time
+
+    import chat_notes
+    import task_posts
     from channels.tg_address import TgAddress
-    from result_broker import POST_MAP, compose_operator_message, label_at
+    from result_broker import PostRecord, compose_operator_message, label_at, post_label
     line = line_for(outcome, role)
     transport = _transport()
     if line is None or transport is None:
         return
     endpoint = transport.endpoint(int(bot_id))
-    card = (POST_MAP.get(TgAddress(int(bot_id), int(chat_id), reply_to))
-            if isinstance(reply_to, int) and not isinstance(reply_to, bool) else None)
+    card_at = (TgAddress(int(bot_id), int(chat_id), reply_to)
+               if isinstance(reply_to, int) and not isinstance(reply_to, bool) else None)
+    ref = (task_posts.owner(card_at) or task_posts.ended_owner(card_at)) if card_at else None
+    post = (PostRecord(role="", operator_id=int(chat_id), plugin="", slot="stop_line",
+                       tool_use_id="", owner=ref.task_id, posted_at=time.time())
+            if ref is not None else None)
     await endpoint.send_reply_line(
         int(chat_id), compose_operator_message(line, label_at(role, endpoint)), reply_to,
-        post=card)
-    specialist_desk.record_echo(int(bot_id), int(chat_id),
-                                f"{specialist_desk.label_for(role)}: {line}")
+        post=post)
+    chat_notes.record(int(bot_id), int(chat_id), f"{post_label(role)}: {line}")
 
 
 async def drain() -> None:

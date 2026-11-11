@@ -154,7 +154,7 @@ async def test_a_bindings_chain_ends_with_the_agent_that_made_the_call():
     """Phone round 7: in an engagement the binding's chain was ("assistant",),
     so every sweep continued the run as a turn of the resident, once a
     minute. Whatever the origin, the chain ends with the calling role, and a
-    sync delegation's, a desk turn's and a resident's own facts are unchanged."""
+    sync delegation's, a stored-call tap's and a resident's own facts are unchanged."""
     hook = rb.make_plugin_admission_hook("browser", _map(), client_id="c1",
                                          store=rb.ReferenceStore())
     engagement = SimpleNamespace(id="e-1", kind="specialist", status="active",
@@ -180,7 +180,7 @@ async def test_a_bindings_chain_ends_with_the_agent_that_made_the_call():
             ({**FIDO_RUN, "_handoff_chain": ("assistant", "finance", "browser")},
              "browser", ("assistant", "finance", "browser")),                # hand-off
             ({**ENGAGEMENT_TURN, "execution_role": "browser"},
-             "browser", ("assistant", "browser")),                           # desk turn
+             "browser", ("assistant", "browser")),                           # tap turn
             (ENGAGEMENT_TURN, "assistant", ("assistant",))):                  # resident
         call = operator_calls.OperatorCalls().open(
             client_id="cx", tool_use_id="t", tool_name=START, role=role,

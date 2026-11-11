@@ -15,7 +15,7 @@ import pytest
 import agent_inbox as ai
 import channels.telegram as tg
 from test_caption_turn import _clean_inbox, _file_msg, wired  # noqa: F401
-from test_desk_route import OPERATOR, _channel
+from telegram_reply_harness import OPERATOR, _channel
 from test_inbound_files import _doc
 from test_telegram_new_reset import _drain_bus
 

@@ -229,7 +229,7 @@ async def test_token_budget_zero_captures_nothing(monkeypatch, mem):
     # what suppresses both calls here.
     assert output == tools.DelegatedOutput(
         text="ok", structured_output=None,
-        run_subtype="success", result_message_seen=True, reply_messages=("ok",),
+        run_subtype="success", result_message_seen=True,
     )
     assert await _captured(mem) == []
 
@@ -256,7 +256,7 @@ async def test_write_capture_telegram(monkeypatch, mem):
     # this was an aborted run asserting the successful path's behaviour.
     assert out == tools.DelegatedOutput(
         text="Q1 is on track", structured_output=None,
-        run_subtype="success", result_message_seen=True, reply_messages=("Q1 is on track",),
+        run_subtype="success", result_message_seen=True,
     )
     assert out.run_aborted is False
 
@@ -288,7 +288,7 @@ async def test_voice_writes_nothing(monkeypatch, mem):
     # keeps voice out of memory.
     assert out == tools.DelegatedOutput(
         text="voice answer", structured_output=None,
-        run_subtype="success", result_message_seen=True, reply_messages=("voice answer",),
+        run_subtype="success", result_message_seen=True,
     )
     assert await _captured(mem) == []
     # Voice reads at ``friends``, where no ledger is maintained: no memory.
@@ -486,7 +486,6 @@ async def test_pin_inv_mem_016_aborted_run_captures_only_caller_task(
         run_subtype=result_subtype,
         result_message_seen=emit_result,
         run_is_error=result_is_error,
-        reply_messages=("partial answer",),
     )
     assert out.run_aborted is True
 

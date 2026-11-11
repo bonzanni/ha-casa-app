@@ -38,7 +38,7 @@ are kept thirty days, and at most five hundred per plugin and operator.
 
 A repeat still owes what is not the post: a file deposit's staged file is consumed (and a
 proposal's staged photo), and a
-`More` call's rewritten-input tell goes out as one labelled desk notice, because no card
+`More` call's rewritten-input tell goes out as one labelled notice, because no card
 carries it this time. Both await. A proposal's repeat is therefore decided again afterwards, with no await before
 its receipt: one whose original was superseded, claimed or expired meanwhile is posted fresh,
 without a second tell. A file's repeat keeps its first decision, since its staged copy is

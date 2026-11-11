@@ -47,10 +47,9 @@ friend's Telegram turn and the resident's answer to it carry the friend's cleara
 floor; a delegated run's request and answer carry the delegating turn's. A turn Casa's own schedule fired is recorded `scheduled`.
 
 **What is captured is the turn's own text, never the query Casa composed.** Every sent user
-turn carries a per-turn time envelope, and a turn that carries Casa's notes — a Telegram
-resident turn's drained front-desk lines
-([`architecture/specialist-desk-reply.md`](specialist-desk-reply.md)) and a reply's note
-([`architecture/specialist-desk.md`](specialist-desk.md)) — carries them in one `<casa_notes>`
+turn carries a per-turn time envelope, and a turn that carries Casa's notes — a turn's drained
+chat notes ([`architecture/own-voice.md`](own-voice.md)) and a reply's note
+([`architecture/telegram.md`](telegram.md)) — carries them in one `<casa_notes>`
 block directly after the envelope (`compose_turn_preamble`; with no notes the preamble is
 exactly the envelope). Capture records the operator's text as it arrived, so neither the
 envelope nor a note reaches an event. The composer and the splitter
@@ -81,7 +80,7 @@ an SDK transcript.
 
 **INV-MEM-022**: Casa's per-turn notes block, composed directly after the time envelope, never reaches a captured item: a turn captures the operator's own text, and the splitter strips the block with the envelope only where the composer puts it.
 
-Pinned at the capture boundary by a turn whose sent query carries a front-desk line and a
+Pinned at the capture boundary by a turn whose sent query carries a chat note and a
 reply note and whose captured operator event is the operator's words alone, and by the
 composer–splitter pair: the block's close is recognised only as the composer writes it,
 followed by a blank line or by whitespace to the end. What it does not cover: a block the
