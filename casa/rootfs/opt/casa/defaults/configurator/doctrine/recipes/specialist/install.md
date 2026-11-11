@@ -34,8 +34,8 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    staged facts (`slug`, `root_digest`, `staged_dir`, `receipt_id`) for this exact inspected
    closure — hold onto them verbatim. Inspect posts nothing.
 2. Agree the values with the operator: tell him what the specialist is (mission, default persona,
-   dependencies — including what any bundled plugin needs) and ask for the required config values
-   and which secret names he provides. Then call
+   dependencies — including what any bundled plugin needs) and ask for the required non-secret config
+   values and which secret names he provides. Then call
    `specialist_install_request_approval(slug=..., root_digest=..., staged_dir=..., receipt_id=...,
    mode="install", config={...}, secret_names_provided=[...])`. Casa works out the settings the
    install will end up with and posts ONE approval card to the operator, covering the WHOLE

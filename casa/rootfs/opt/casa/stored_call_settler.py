@@ -34,9 +34,6 @@ from stored_calls import OPERATOR_FILE, TELL_LINE   # the one tell line, shared 
 logger = logging.getLogger(__name__)
 
 STORED_CALL_RECEIPT_CHARS = 4000
-NO_RECEIPT = "[no receipt]"
-POSTED_PROPOSAL = "[posted a proposal]"
-POSTED_FILE = "[posted a file]"
 # _post_next_card's word for an in-place edit that may have landed (#1341)
 UNCONFIRMED = "not confirmed"
 TELL_ECHO = " — the CLI reported arguments changed by an installed hook"
@@ -469,11 +466,6 @@ async def handle_tap(
         if reservation is not None:
             reservation.release()             # idempotent: a cancel while waiting
         channel._release_typing(context, str(chat_id))
-
-
-def _posted(capture: Any) -> str:
-    """The word for a landed ``delivered`` capture: a file or a proposal."""
-    return POSTED_FILE if capture.text == OPERATOR_FILE else POSTED_PROPOSAL
 
 
 async def _post_next_card(value: str, *, meta: dict, build: Any, runtime: str, seg: str,
