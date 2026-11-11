@@ -599,6 +599,46 @@ async def test_a_callback_for_alexs_sign_in_goes_to_alex_in_his_chat(world, ingr
 
 
 @pytest.mark.asyncio
+async def test_alexs_callback_turn_is_born_on_alexs_bot_through_casas_dispatcher(
+        world, ingress, monkeypatch):
+    """Through the dispatcher Casa really wires (``main``'s setup dispatch):
+    the nudge answering Alex's sign-in is a turn of Alex's, born on Alex's
+    bot in the operator's chat — never on Casa's bot. A nudge with no owner
+    stays Casa's."""
+    from test_bot_boundary_invariants import _c_main_closure
+    sent: list = []
+
+    class _Bus:
+        async def send_checked(self, msg):
+            sent.append(msg)
+            return "accepted"
+
+    dispatch = _c_main_closure("_setup_dispatch", "    async def _setup_notify(",
+                               channel_manager=tools_mod._channel_manager, bus=_Bus())
+    monkeypatch.setattr(ce, "_dispatch", dispatch)
+    assert (await call_tool("finance", ellen_delegates("finance", ALEX_CHAT), LINK))[0] == \
+        "delivered"
+    ingress.seed()
+    await ce._worker_pass()
+    (turn,) = sent
+    assert turn.target == "finance"
+    assert turn.context["_tg_bot"] == FINANCE_BOT
+    assert (turn.context["chat_id"], turn.context["synthetic"]) == (OPERATOR, "callback_nudge")
+    assert world.transport.endpoint_for_route(turn.context, site="test") is world.alex
+
+    # with no sign-in link the nudge keeps today's order, on Casa's bot
+    callback_owner.reset()
+    sent.clear()
+    import casa_core
+    ctx = casa_core._setup_turn_context(world.transport, {"synthetic": "callback_nudge"})
+    assert ctx["_tg_bot"] == CASA_BOT
+    # a setup turn never takes a bot from its caller
+    ctx = casa_core._setup_turn_context(world.transport,
+                                        {"_plugin_setup": "x", "_tg_bot": FINANCE_BOT})
+    assert ctx["_tg_bot"] == CASA_BOT
+
+
+@pytest.mark.asyncio
 async def test_a_callback_for_ellens_sign_in_goes_where_it_went_before(world, ingress):
     assert (await call_tool("assistant", own_turn("assistant", CASA_BOT), LINK))[0] == \
         "delivered"

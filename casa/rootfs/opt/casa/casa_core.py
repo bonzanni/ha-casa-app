@@ -31,6 +31,7 @@ from bus import BusMessage, BusShutdownError, MessageBus, MessageType
 from channel_authz import agent_allowed_on
 from channels import (ChannelManager, DeliveryOutcome,
                       OperatorNotifyBeforeStart)
+from channels.tg_address import is_route
 from claude_runtime import (
     CLAUDE_CLI_PATH,
     CLAUDE_CLI_VERSION,
@@ -927,15 +928,21 @@ def _setup_turn_context(transport: Any, context: Mapping[str, Any]) -> dict | No
 
     A setup turn is Casa's own conversation with the operator: it is born on
     Casa's bot, whatever endpoint the role is bound to, and every reply and
-    post of it stays there."""
+    post of it stays there. One turn is not: a callback nudge that answers an
+    agent's own sign-in (``callback_episodes``) carries the bot of the chat
+    that sign-in was delivered in, and is born there."""
     operator = transport.operator_user_id() if transport is not None else None
     if operator is None:
         return None
+    route = transport.casa_route()
+    if (context.get("synthetic") == "callback_nudge"
+            and is_route(context.get("_tg_bot"))):
+        route = context["_tg_bot"]
     return {
         "chat_id": operator, "user_id": operator, "cid": new_cid(),
         **context,  # reserved synthetic/plugin_setup markers —
                     # Casa-composed internal, never external ingress
-        "_tg_bot": transport.casa_route(),
+        "_tg_bot": route,
     }
 
 
