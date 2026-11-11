@@ -15,7 +15,8 @@ import result_broker as rb
 from plugin_grants import PluginContract, ResultContractMap, ToolContract
 from test_operator_link_delivery import (ARTIFACT, LINK, FETCH, PLUGIN, SETUP_CAP,
                                          SLOT, URL, _map, _post, _pre,
-                                         _replacement, _store, recorder)  # noqa: F401
+                                         _replacement, _store, recorder,
+                                         finance_chat_open)  # noqa: F401
 from test_result_broker import DM, _Origin
 
 MULTI = "mcp__plugin_probe_api__multi"      # provides [a, b], delivers {a}

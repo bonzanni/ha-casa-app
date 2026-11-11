@@ -24,7 +24,7 @@ from authz_grants import GrantIdentity, resolve_grant_identity
 from channels import DeliveryOutcome
 from test_operator_message_delivery import (
     BODY, LABEL, REPORT, SLOT, _Manager, _Recorder, _identity, _map, _open,
-    _post, _replacement, _store,
+    _post, _replacement, _store, finance_chat_open,  # noqa: F401  (autouse)
 )
 from test_result_broker import _Origin
 from two_endpoints import CASA_BOT as BOT

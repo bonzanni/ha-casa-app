@@ -23,7 +23,8 @@ import result_broker as rb
 import test_operator_message_delivery as msg
 import test_proposal_slot as prop
 from channels import DeliveryOutcome
-from test_operator_message_delivery import names, recorder  # noqa: F401
+from own_voice_fixtures import with_delivery
+from test_operator_message_delivery import finance_chat_open, names, recorder  # noqa: F401
 from test_proposal_slot import env  # noqa: F401
 
 KEY = "r1042"
@@ -211,8 +212,13 @@ def test_entries_expire_and_are_bounded_per_plugin_and_operator(tmp_path, monkey
 
 # --- proposals --------------------------------------------------------------------
 
+def _prop_identity(**over):
+    """The proposal suite's identity, posting to its own chat through its own bot."""
+    return with_delivery(prop._identity(**over))
+
+
 async def _deliver_proposal(env, *, call, identity=None, warning=None, revision="r-9"):
-    prop._open(env.store, call=call, identity=identity)
+    prop._open(env.store, call=call, identity=identity or _prop_identity())
     ref, err = env.store.deposit(client_id="c1", slot=prop.SLOT,
                                  value=json.dumps(prop._proposal(revision=revision)), key=KEY)
     assert err is None
@@ -229,7 +235,7 @@ async def test_a_proposal_repeats_only_while_its_keyboard_is_live(env):
     assert again["casa_delivery"] == {**first["casa_delivery"], "repeat": True}
     # superseded by a newer card of the same revision (its record retired, its
     # meta still readable): the key's next delivery is a fresh card
-    prop._open(env.store, call="call-3")
+    prop._open(env.store, call="call-3", identity=_prop_identity())
     ref, _ = env.store.deposit(client_id="c1", slot=prop.SLOT,
                                value=json.dumps(prop._proposal()), key="r2000")
     c = env.store.close_call("c1", "call-3")
@@ -243,7 +249,7 @@ async def test_a_proposal_repeats_only_while_its_keyboard_is_live(env):
 @pytest.mark.asyncio
 async def test_a_proposal_of_another_artifact_posts_a_fresh_card(env):
     await _deliver_proposal(env, call="call-1")
-    fresh = await _deliver_proposal(env, call="call-2", identity=prop._identity(artifact_id="7" * 64))
+    fresh = await _deliver_proposal(env, call="call-2", identity=_prop_identity(artifact_id="7" * 64))
     assert len(env.rec.proposals) == 2 and "repeat" not in fresh["casa_delivery"]
 
 
@@ -332,7 +338,7 @@ async def test_a_proposal_superseded_during_the_repeat_tell_is_posted_fresh(env)
     await _deliver_proposal(env, call="call-1")
     task = asyncio.create_task(_deliver_proposal(env, call="call-2", warning="⚠ rewritten"))
     await started.wait()
-    prop._open(env.store, call="call-3")
+    prop._open(env.store, call="call-3", identity=_prop_identity())
     ref, _ = env.store.deposit(client_id="c1", slot=prop.SLOT,
                                value=json.dumps(prop._proposal()), key="r2000")
     c = env.store.close_call("c1", "call-3")
@@ -358,7 +364,7 @@ async def test_a_cancelled_proposal_keeps_its_echo_and_its_repeat_adds_none(env,
         await task
     env.rec.deliver_desk_notice = None
     await _deliver_proposal(env, call="call-2")
-    owner = rb._post_owner(prop._identity())
+    owner = rb._post_owner(_prop_identity())
     assert len(rb.POSTS.drain(owner)) == 1
 
 

@@ -38,6 +38,7 @@ import verdict_broker as vb
 from authz_grants import GrantIdentity
 from channels import DeliveryOutcome
 from channels.tg_address import CASA, TgAddress
+from own_voice_fixtures import open_own_chats, with_delivery
 from plugin_grants import PluginContract, ResultContractMap, ToolContract
 from telegram_channel_double import MemoryBotIdStore
 from two_endpoints import (CASA_BOT, FINANCE_BOT, OPERATOR, FakeEndpoint,
@@ -97,6 +98,9 @@ def stores(monkeypatch, tmp_path):
         "assistant": SimpleNamespace(character=SimpleNamespace(name="Ellen"), kind="resident"),
         "browser": SimpleNamespace(character=SimpleNamespace(name="Fido"), kind="specialist"),
     }, raising=False)
+    # Fido's own chat is open: these tests are about which bot a post keys
+    # on, not about whether Fido may post at all
+    open_own_chats(monkeypatch, "browser")
     held = asyncio.Event()
 
     async def _held_turn(pending, *, on_start):
@@ -127,8 +131,10 @@ def window(stores, monkeypatch):
 
 
 def _identity(bot):
-    return GrantIdentity(operator_id=OPERATOR, chat_id=OPERATOR, enforcement_role="browser",
-                         artifact_id=ARTIFACT, engagement_id="", bot_id=bot)
+    """Fido's call on *bot*: its posts go to the operator's chat on that bot."""
+    return with_delivery(GrantIdentity(
+        operator_id=OPERATOR, chat_id=OPERATOR, enforcement_role="browser",
+        artifact_id=ARTIFACT, engagement_id="", bot_id=bot))
 
 
 def _call(route, *, client, words=None, bot=None):
@@ -353,7 +359,7 @@ def test_a_stored_binding_without_a_route_is_refused(stores, caplog):
     entry = {"ref": "casa-bind-" + "a" * 32, "plugin": PLUGIN, "operator_id": OPERATOR,
              "chat_id": OPERATOR, "requester": "assistant", "requester_kind": "operator_resident",
              "chain": ["assistant", "browser"], "origin": {"chat_id": OPERATOR},
-             "turn_key": "t", "created_at": 1e12, "last_used": 1e12}
+             "turn_key": "t", "created_at": 1e12, "last_used": 1e12, "delivery": None}
     good = {**entry, "ref": "casa-bind-" + "b" * 32, "origin": {"_tg_bot": CASA_BOT}}
     path.write_text(json.dumps([entry, good]))
     with caplog.at_level(logging.ERROR, logger="plugin_bindings"):
