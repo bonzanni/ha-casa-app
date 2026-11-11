@@ -279,7 +279,7 @@ class TestSystemSeamAdmission:
         assert job_inbox.load(rec.id) == []
         assert client.query_prompts == []
         notices = _notices(ch)
-        assert len(notices) == 1 and "resend" in notices[0]
+        assert len(notices) == 1 and "send it again" in notices[0]
 
     async def test_a_journal_failure_applies_visibility_law(
             self, tmp_path, fake_telegram_bot, monkeypatch):
@@ -299,7 +299,7 @@ class TestSystemSeamAdmission:
         assert accepted is False
         assert drv.inbound_unread_depth(rec.id) == 0
         notices = _notices(ch)
-        assert len(notices) == 1 and "resend" in notices[0]
+        assert len(notices) == 1 and "send it again" in notices[0]
 
     async def test_stop_gate_refuses_new_delivery(
             self, tmp_path, fake_telegram_bot):
@@ -316,7 +316,7 @@ class TestSystemSeamAdmission:
         assert client.query_prompts == []
         assert drv.inbound_unread_depth(rec.id) == 0
         notices = _notices(ch)
-        assert len(notices) == 1 and "resend" in notices[0]
+        assert len(notices) == 1 and "send it again" in notices[0]
 
 
 # ===========================================================================
