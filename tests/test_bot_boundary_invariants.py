@@ -812,8 +812,10 @@ def _b_job(eid: str = "j" * 32, *, route=FINANCE_BOT):
               "user_id": OPERATOR, "job": {"title": "Accounting check"}}
     if route is not None:
         origin["_tg_bot"] = route
+    # a job posts at its delivery, decided at its birth: here the chat on 222
+    delivery = TgAddress(route, OPERATOR) if isinstance(route, int) and route != CASA else None
     return NS(id=eid, origin=origin, status="active", role_or_type="finance",
-                 completed_at=None, ui_posts=[], questions={})
+                 completed_at=None, ui_posts=[], questions={}, delivery=delivery)
 
 
 async def _b_job_question(h, mode):
@@ -1161,9 +1163,8 @@ async def test_a_token_that_turns_out_to_be_another_endpoints_bot_stays_stopped(
 
 def _b_route_bound(transport, ctx):
     """Each route-bound method of the transport, called with *ctx* as its
-    delivery context (a job method: as the job's origin)."""
-    rec = _b_job(route=None)
-    rec.origin = {**{k: v for k, v in rec.origin.items() if k != "chat_id"}, **ctx}
+    delivery context. A job's lines are not route-bound: they post at the
+    job's delivery (``test_telegram_transport``)."""
     return {
         "send": lambda: transport.send("hi", ctx),
         "send_media": lambda: transport.send_media(b"x", "document", "a.pdf", ctx),
@@ -1173,10 +1174,6 @@ def _b_route_bound(transport, ctx):
         "turn_finished": lambda: transport.turn_finished(ctx),
         "create_on_token": lambda: transport.create_on_token(ctx),
         "finalize_stream": lambda: transport.finalize_stream("hi", ctx, None),
-        "post_job_start_line": lambda: transport.post_job_start_line(rec),
-        "post_job_parked": lambda: transport.post_job_parked(rec, "parked"),
-        "post_job_question": lambda: transport.post_job_question(
-            rec, "q1", admitted("Which?"), ["A"], ["A"]),
     }
 
 
