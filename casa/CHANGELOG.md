@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.360.0] - 2026-11-11
+
+Not backward compatible. Update the browser specialist (0.1.32) and the finance specialist (0.29.0) right after Casa: a specialist role that still sets `session.desk_context` is refused at startup and stays unavailable until it is updated (the setting is now `session.long_runs`, with the opposite meaning). Jobs, delegations and plugin follow-ups that were in flight or recorded by an older version are not carried over: Casa skips them at startup and logs each one.
+
+### Added
+
+- **An agent can have its own Telegram chat.** A specialist that declares one (the browser and finance specialists do) talks to you from its own bot. After the update the assistant posts an offer card for each; tap it, create the bot in Telegram, then open the new chat and press Start. Casa sets the bot up itself: name, description, commands, profile picture, and who may talk to it. Turn on "Bot Management" for your assistant's bot in BotFather once first.
+- **In an agent's own chat you talk to that agent directly**, in one ongoing conversation. Work the assistant hands it shows there as a task: a line saying what was asked, then the full answer. The assistant gives you a short result in its own chat, and the agent remembers what it did when you next write to it.
+- **Reply to a task's message to steer it** while it runs; a file sent as a reply reaches that task. Once the task has ended, a reply goes to the agent's conversation.
+- A persona can carry a profile picture (`avatar.jpg`); an agent's bot shows its persona's picture.
+
+### Changed
+
+- **An agent's cards, buttons, files and job messages appear only in its own chat.** Agents without one stay behind the assistant and post nothing in your chat; when one of them would need to show you something, it is told its chat isn't set up and puts what matters in its answer instead.
+- Cards a specialist left in the assistant's chat before this update answer a tap with one line pointing to the agent's own chat.
+- A failing plugin now takes only its own agent out of service until Casa restarts, whichever chat the work came from.
+- To retire an agent's chat, delete its bot in BotFather; Casa notices and stops using it. Uninstalling a specialist tells you which bot to delete.
+
 ## [0.359.0] - 2026-11-11
 
 Not backward compatible. Casa now records which Telegram bot every message, button and job belongs to, so that it can later run more than one bot (one per agent that speaks for itself). Records an older version wrote without that are refused at startup and skipped; an existing installation is converted once with an upgrade step before this version first starts. Approvals that were waiting at the upgrade are asked again.
