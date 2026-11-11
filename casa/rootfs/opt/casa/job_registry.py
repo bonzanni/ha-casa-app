@@ -191,10 +191,6 @@ def _post_key(addr: TgAddress) -> tuple[int, int, int]:
     return (addr.bot_id, addr.chat_id, addr.message_id)
 
 
-class _WrittenBeforeTasks(ValueError):
-    """A stored row from before rows carried their task fields."""
-
-
 def _decode_delivery(value: Any) -> TgAddress | None:
     """A stored ``delivery``: ``null``, or ``[bot, chat, null]`` — a chat,
     never a message. Anything else raises ``ValueError``."""
@@ -1642,19 +1638,11 @@ class JobRegistry:
         if not isinstance(raw, list):
             raise JobRegistryError(f"job snapshot {self._path!r} is not a JSON array")
         jobs: dict[str, VoiceJob] = {}
-        older = 0
         for row in raw:
             job = self._decode_job(row)
-            written_before_tasks = False
             try:
                 job = replace(job, **self._decode_task_fields(
                     row, required=job.creator_peer == "telegram"))
-            except _WrittenBeforeTasks:
-                # Expected after an upgrade, and the same for every such
-                # row: counted into one line below rather than one each —
-                # but only once every other check on the row has passed,
-                # so a malformed row is never counted as merely old.
-                written_before_tasks = True
             except ValueError as exc:
                 # A delegation's delivery and requester are decided at its
                 # birth; a row that does not carry them has nothing to post
@@ -1670,16 +1658,9 @@ class JobRegistry:
                     "Skipping job %s: Telegram row without a valid route "
                     "(%r)", job.id[:8], job.route.get("_tg_bot"))
                 continue
-            if written_before_tasks:
-                older += 1
-                continue
             if job.id in jobs:
                 raise JobRegistryError(f"duplicate job id {job.id!r} in snapshot")
             jobs[job.id] = job
-        if older:
-            logger.warning(
-                "Skipped %d job row(s) written before rows carried their "
-                "executor, requester and delivery", older)
         return jobs
 
     @staticmethod
@@ -1759,12 +1740,12 @@ class JobRegistry:
         """A stored row's ``executor``, ``requester`` and ``delivery``.
         ``required`` (a Telegram row): all three keys must be present —
         ``delivery`` may be ``null``. Otherwise an absent key decodes to
-        nothing. A value present but malformed raises ``ValueError``; that
-        is checked first, so a row that only lacks keys — one written before
-        rows carried them — is the one that raises ``_WrittenBeforeTasks``."""
+        nothing. A value present but malformed raises ``ValueError``."""
         out: dict[str, Any] = {}
         missing = [k for k in ("executor", "requester", "delivery")
                    if k not in row]
+        if required and missing:
+            raise ValueError(f"task row without {', '.join(missing)}")
         if "executor" in row:
             executor = row["executor"]
             if not isinstance(executor, str) or (required and not executor):
@@ -1778,8 +1759,6 @@ class JobRegistry:
                                 else Requester.from_json(value))
         if "delivery" in row:
             out["delivery"] = _decode_delivery(row["delivery"])
-        if required and missing:
-            raise _WrittenBeforeTasks(f"task row without {', '.join(missing)}")
         return out
 
     def _decode_task_posts(self, raw: list,

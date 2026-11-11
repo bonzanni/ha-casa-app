@@ -106,49 +106,6 @@ class TestRegistryInitAndLoad:
         assert any("corrupt" in r.message.lower() for r in caplog.records)
 
 
-    async def test_old_task_records_are_skipped_with_one_warning(
-            self, tmp_path, caplog):
-        """A Telegram job record written before records carried their
-        executor, requester and delivery is skipped and counted into one
-        WARNING for the whole load. A value that is present but malformed is
-        still an ERROR of its own, even on a row that also lacks keys."""
-        import logging
-
-        from engagement_registry import EngagementRegistry
-
-        def row(i, **fields):
-            base = {
-                "id": f"e{i}", "kind": "specialist", "role_or_type": "finance",
-                "driver": "in_casa", "status": "idle", "started_at": 1000.0,
-                "last_user_turn_ts": 1000.0,
-                "origin": {"channel": "telegram", "_tg_bot": 111,
-                           "job": {"id": f"j{i}"}},
-                "task": "x",
-            }
-            base.update(fields)
-            return base
-
-        tombstone = tmp_path / "engagements.json"
-        tombstone.write_text(json.dumps([
-            row(1), row(2), row(3),
-            row(4, executor="finance",
-                requester={"role": "assistant", "route": {"_tg_bot": 111}},
-                delivery="broken"),
-            row(5, delivery="broken"),
-        ]))
-        reg = EngagementRegistry(tombstone_path=str(tombstone))
-        with caplog.at_level(logging.INFO, logger="engagement_registry"):
-            await reg.load()
-        assert reg.active_and_idle() == []
-        mine = [r for r in caplog.records if r.name == "engagement_registry"]
-        errors = [r for r in mine if r.levelno == logging.ERROR]
-        warnings = [r for r in mine if r.levelno == logging.WARNING]
-        assert sorted(r.getMessage().split(":")[0] for r in errors) == [
-            "Skipping engagement e4", "Skipping engagement e5"]
-        assert len(warnings) == 1
-        assert "Skipped 3 engagement record(s)" in warnings[0].getMessage()
-
-
 class TestRegistryCreate:
     async def test_create_assigns_uuid_and_writes_tombstone(self, tmp_path):
         from engagement_registry import EngagementRegistry

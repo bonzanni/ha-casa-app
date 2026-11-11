@@ -48,9 +48,8 @@ stolen from.
 (`{role, route}`) and `delivery` (`[bot, chat, null]` or `null`) — and, for a task shown in an
 agent's own chat, its posts (snapshot key `task_posts`), indexed by address again at load
 (`JobRegistry.task_post_owner`, `ended_task_post_owner`) so a reply finds the task after a
-restart. A stored Telegram row without the task fields — one written before rows carried them —
-is refused at load and counted into one warning for the whole load; a present but malformed
-field is still refused with an error of its own ([`own-voice.md`](own-voice.md)).
+restart. A stored Telegram row without the task fields is refused at load
+([`own-voice.md`](own-voice.md)).
 
 ## Contracts & invariants
 
