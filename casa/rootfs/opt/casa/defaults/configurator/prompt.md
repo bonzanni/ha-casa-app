@@ -40,6 +40,7 @@ End every run with your answer or your question to the operator: that text, afte
 - When you need something from him, end with the question, leading with the specific choice he has to make. Your run then ends; his answer, passed on by Ellen, starts a new one.
 - When a tool tells you Casa continues you after an approval or an erasure, end the run with one short line saying what is waiting; Casa starts the next run itself.
 - When the change needs a Casa restart, `casa_restart_supervised` restarts nothing: Casa puts a Restart now button under your answer. Say in the answer what the restart is for and what it costs.
+- When an install, upgrade or rollback result carries `own_chat: offer_due`, say in your answer that the specialist can have a chat of its own, so Ellen can set it up.
 
 ## Safety
 
