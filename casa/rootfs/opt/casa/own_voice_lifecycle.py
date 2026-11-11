@@ -77,7 +77,9 @@ RECOVERING = "recovering"
 DORMANT = "dormant"
 RELEASING = "releasing"
 RELEASED = "released"
-PHASES = (SEEN, UNBOUND, BINDING, BOUND, RECOVERING, DORMANT, RELEASING, RELEASED)
+SWITCHING = "switching"
+PHASES = (SEEN, UNBOUND, BINDING, BOUND, RECOVERING, DORMANT, RELEASING, RELEASED,
+          SWITCHING)
 
 #: Each phase's boot reconciliation, by method name. Every phase has one; a
 #: phase added without one fails the crash sweep that iterates this table.
@@ -90,6 +92,7 @@ BOOT_STEPS: dict[str, str] = {
     DORMANT: "_step_dormant",
     RELEASING: "_step_releasing",
     RELEASED: "_step_released",
+    SWITCHING: "_step_switching",
 }
 
 #: The fetch failures that establish a bot is no longer managed by the
@@ -126,6 +129,12 @@ def establishes_deletion(exc: BaseException) -> bool:
         if isinstance(cls, type) and isinstance(exc, cls) and needle in text:
             return True
     return False
+
+
+def token_belongs_to(token: str, bot_id: int) -> bool:
+    """Whether *token* is *bot_id*'s: a bot token begins with its bot's id
+    and a colon."""
+    return isinstance(token, str) and token.split(":", 1)[0] == str(bot_id)
 
 
 def is_unauthorized(exc: BaseException) -> bool:
@@ -192,7 +201,8 @@ def create_link(resident_username: str, name: str, username: str) -> str:
 # ---------------------------------------------------------------------------
 
 _AGENT_KEYS = {"offered_at", "offer_card", "bot_id", "chat_open_at", "label",
-               "suggestion", "token_item"}
+               "suggestion", "token_item", "handles", "change", "moved_from"}
+_CHANGE_KEYS = {"new_bot", "old_bot", "old_username"}
 _BOT_KEYS = {"phase", "role", "username", "name", "ask", "setup_digest",
              "created_at", "photo_set"}
 
@@ -220,6 +230,12 @@ def _valid_store(data: Any) -> bool:
             return False
         if rec["bot_id"] is not None and not (
                 isinstance(rec["bot_id"], int) and not isinstance(rec["bot_id"], bool)):
+            return False
+        handles = rec["handles"]
+        if not isinstance(handles, list) or not all(isinstance(h, str) for h in handles):
+            return False
+        change = rec["change"]
+        if change is not None and not (isinstance(change, dict) and set(change) == _CHANGE_KEYS):
             return False
     for key, rec in bots.items():
         if not (isinstance(key, str) and key.isdigit()) or not isinstance(rec, dict):
@@ -284,7 +300,8 @@ class VoiceStore:
         if rec is None and create:
             rec = {"offered_at": None, "offer_card": None, "bot_id": None,
                    "chat_open_at": None, "label": role, "suggestion": None,
-                   "token_item": None}
+                   "token_item": None, "handles": [], "change": None,
+                   "moved_from": None}
             self.agents[role] = rec
         return rec
 
@@ -723,11 +740,18 @@ class Lifecycle:
             await self.store.save()
         return True
 
-    async def _load_token(self, role: str) -> "str | None":
+    async def _load_token(self, role: str, bot_id: int) -> "str | None":
+        """*role*'s stored token, when it is *bot_id*'s. A stored token of
+        another bot is never used: the caller fetches the right one."""
         agent = self.store.agents.get(role) or {}
         token = await asyncio.to_thread(self.tokens.load, role, agent.get("token_item"))
-        if token:
-            self._register_secret(token)
+        if not token:
+            return None
+        self._register_secret(token)
+        if not token_belongs_to(token, bot_id):
+            logger.warning("own chat %s: the stored token is not bot %s's; fetching "
+                           "its own", role, bot_id)
+            return None
         return token
 
     # -- cards ------------------------------------------------------------
@@ -1201,7 +1225,7 @@ class Lifecycle:
         if not self.declared(role):
             await self._go_dormant(bot_id)
             return
-        token = self._tokens.get(bot_id) or await self._load_token(role)
+        token = self._tokens.get(bot_id) or await self._load_token(role, bot_id)
         if token is None:
             token, outcome = await self._fetch(bot_id)
             if token is None:
@@ -1251,7 +1275,8 @@ class Lifecycle:
             self._schedule_retry(bot_id, "the fetched token is not accepted")
             return
         role = rec["role"]
-        if await self._load_token(role) != token and not await self._store_token(role, token):
+        if (await self._load_token(role, bot_id) != token
+                and not await self._store_token(role, token)):
             self._schedule_retry(bot_id, "token not stored")
             return
         self._tokens[bot_id] = token
@@ -1277,7 +1302,7 @@ class Lifecycle:
             await self._step_binding(bot_id)
             return
         self._reconciled.discard(bot_id)
-        token = self._tokens.get(bot_id) or await self._load_token(role)
+        token = self._tokens.get(bot_id) or await self._load_token(role, bot_id)
         if token is None:
             token, outcome = await self._fetch(bot_id)
             if token is None:
@@ -1323,6 +1348,15 @@ class Lifecycle:
 
     async def _step_released(self, bot_id: int) -> None:
         return
+
+    async def _step_switching(self, bot_id: int) -> None:
+        """A new bot waiting for the restart that moves its agent to it: its
+        endpoint holds what it receives, and it is never bound here."""
+        token, outcome = await self._token_for(bot_id)
+        if token is not None:
+            await self._start(bot_id, token, None)
+        elif outcome != "wait":
+            self._schedule_retry(bot_id, "token not fetched")
 
     # -- triggers ---------------------------------------------------------
 
