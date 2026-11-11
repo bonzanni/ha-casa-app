@@ -275,9 +275,14 @@ KEPT_MARK = "(kept from the current settings)"
 
 
 def _shown_value(value: Any) -> str:
-    # JSON, so a string and a number never look alike, and unsafe codepoints
-    # spelled out, so what the operator reads is what the approval binds.
+    # Settings are text, so a value reads as it is typed. It is quoted as JSON
+    # only where bare text would hide what it is: an empty value, one with
+    # leading or trailing spaces, or one with a line break or another
+    # unprintable character. Unsafe codepoints are spelled out either way, so
+    # what the operator reads is what the approval binds.
     from text_util import escape_unsafe_text
+    if isinstance(value, str) and value and value == value.strip() and value.isprintable():
+        return escape_unsafe_text(value)
     return escape_unsafe_text(json.dumps(value, ensure_ascii=False, sort_keys=True))
 
 

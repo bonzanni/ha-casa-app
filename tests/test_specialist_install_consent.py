@@ -327,9 +327,22 @@ def test_the_card_shows_the_effective_settings_and_marks_those_kept():
     text = render_install_consent_message(
         _inspection(), values=VALUES, submitted_config={"API_URL": "x"})
     lines = text.splitlines()
-    assert sum(ln.strip() == 'API_URL = "https://example.test"' for ln in lines) == 1
+    assert sum(ln.strip() == "API_URL = https://example.test" for ln in lines) == 1
     assert sum(ln.strip() == "LIMIT = 5 (kept from the current settings)" for ln in lines) == 1
     assert sum(ln.strip() == "Secrets provided (names only): TOKEN" for ln in lines) == 1
+
+
+def test_a_setting_shows_bare_unless_bare_would_hide_what_it_is():
+    from specialist_install_consent import render_settings_lines
+    lines = render_settings_lines({"config": {
+        "PLAIN": "1", "EMPTY": "", "PADDED": " x ", "TWO_LINES": "a\nb", "NUMBER": 1,
+    }, "secrets": []})
+    shown = {ln.strip() for ln in lines}
+    assert "PLAIN = 1" in shown
+    assert 'EMPTY = ""' in shown
+    assert 'PADDED = " x "' in shown
+    assert 'TWO_LINES = "a\\nb"' in shown
+    assert "NUMBER = 1" in shown
 
 
 def test_the_card_says_when_it_approves_no_settings():
@@ -346,7 +359,7 @@ async def test_the_card_binds_the_records_identity_and_acks_its_values(env):
     await handle.settled_post()
     [(chat, _rid, text, options)] = env.channel.posts
     assert (chat, options) == (100, ("Approve", "Deny"))
-    assert 'API_URL = "https://example.test"' in text and "TOKEN" in text
+    assert "API_URL = https://example.test" in text and "TOKEN" in text
     [key] = [k for k in env.coord._entries]
     assert key.identity == record.consent_identity
     assert ar.get(record.rid).card == TgAddress(111, 100, 55)
