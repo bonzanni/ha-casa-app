@@ -777,6 +777,22 @@ class Lifecycle:
         await self.store.save()
         await self._edit(agent.get("offer_card"), f"{self._label(role)}'s chat is open.")
 
+    def chat_opening(self, bot_id: int) -> bool:
+        """Whether a turn delivered on *bot_id* now is the one that opens its
+        agent's chat: the bot is its agent's and that chat has not opened yet.
+        Read from the records, not :meth:`state`, which says ``no_bot`` while a
+        binding releases what was held for it."""
+        role = (self.store.bots.get(bot_id) or {}).get("role")
+        return bool(role) and not (self.store.agents.get(role) or {}).get("chat_open_at")
+
+    async def mark_open(self, bot_id: int) -> None:
+        """The agent's queue took the turn that opened *bot_id*'s chat: the
+        chat is open. Takes no lock: the endpoint calls it while a release
+        may hold this bot's."""
+        role = (self.store.bots.get(bot_id) or {}).get("role")
+        if role:
+            await self._mark_open(role)
+
     async def post_offer(self, role: str) -> dict:
         """Post a new offer for *role* (the previous card, if any, is marked
         replaced). ``offered_at`` and the suggestion are persisted before
@@ -1053,9 +1069,8 @@ class Lifecycle:
 
     async def _release_locked(self, bot_id: int) -> None:
         """Hand the bot's held updates, in order, to its endpoint's normal
-        intake. A refused one keeps itself and every later one held."""
-        rec = self.store.bots.get(bot_id)
-        role = (rec or {}).get("role")
+        intake. A refused one keeps itself and every later one held. The
+        endpoint's turn opens the chat (:meth:`mark_open`), never the release."""
         for update in await asyncio.to_thread(self.journal.pending, bot_id):
             try:
                 outcome = await self.host.release_update(bot_id, update)
@@ -1066,8 +1081,6 @@ class Lifecycle:
             if outcome != "accepted":
                 return
             await asyncio.to_thread(self.journal.mark_released, bot_id, update["update_id"])
-            if role and self._is_operator_message(update):
-                await self._mark_open(role)
 
     async def _dormant_replies(self, bot_id: int) -> None:
         for update in await asyncio.to_thread(self.journal.pending, bot_id):
@@ -1113,8 +1126,6 @@ class Lifecycle:
                 if deliverable:
                     await self._release_locked(bot_id)
                 return "held"
-            if self._is_operator_message(update):
-                await self._mark_open(role)
             return "deliver"
 
     # -- the phases -------------------------------------------------------

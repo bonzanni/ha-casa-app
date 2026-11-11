@@ -106,6 +106,17 @@ async def intake(bot_id: int, update_json: dict) -> Literal["deliver", "held", "
     return await _lifecycle().intake(bot_id, update_json)
 
 
+def chat_opening(bot_id: int) -> bool:
+    """Whether a turn delivered on own bot *bot_id* now is the one that opens
+    its agent's chat (the chat has not opened yet)."""
+    return _lifecycle().chat_opening(bot_id)
+
+
+async def mark_open(bot_id: int) -> None:
+    """The agent's queue took the turn that opened *bot_id*'s chat: it is open."""
+    await _lifecycle().mark_open(bot_id)
+
+
 async def on_install_committed(role: str) -> None:
     await _lifecycle().on_install(role)
 

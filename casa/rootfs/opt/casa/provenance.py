@@ -166,6 +166,9 @@ RESERVED_CONTEXT_KEYS = frozenset({
     # only by the channel; a caller who could set it would put words in the
     # turn that read as Casa's own.
     "_reply_note",
+    # the Telegram channel's mark that this turn opens an agent's own chat;
+    # stamped only by the channel
+    "_chat_opening",
     # #1378: the file a Telegram caption was written on — Casa's note of it and
     # the turn's own file. Stamped only by the channel; a caller who could set
     # it would put Casa's words in the turn and arm it over a file of its choice.
