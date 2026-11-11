@@ -96,7 +96,7 @@ def _committing_run(env, config_from_task=True, override=None):
     return results
 
 
-# -- D4-2: what the card showed is what is committed ----------------------------------------
+# -- what the card showed is what is committed ----------------------------------------
 
 @pytest.mark.parametrize("override, ok", [(None, True), ({"A": "2"}, False)],
                          ids=["the-frozen-values", "other-values"])
@@ -119,7 +119,7 @@ async def test_approve_commits_exactly_the_frozen_values(env, comparing, cards, 
         assert payload["kind"] == "approval_values_differ" and "(A)" in payload["detail"]
 
 
-# -- D4-3: a newer request replaces the older one ------------------------------------------
+# -- a newer request replaces the older one ------------------------------------------
 
 async def test_a_tap_on_a_replaced_card_starts_nothing(env, cards):
     await _ask(config={"A": "1"})
@@ -177,7 +177,7 @@ async def test_a_newer_request_inside_the_approved_run_before_its_attempt_writes
     assert comparing.calls == []
 
 
-# -- D4-4: one tap starts one run, and is one attempt ---------------------------------------
+# -- one tap starts one run, and is one attempt ---------------------------------------
 
 async def test_approve_starts_exactly_one_delegation(env, cards):
     await _ask()
