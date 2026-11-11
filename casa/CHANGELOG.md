@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.362.1] - 2026-11-11
+
+### Fixed
+
+- The assistant no longer insists she cannot give a specialist a new bot handle when your conversation with her began before 0.362.0; ask her and she offers one.
+
 ## [0.362.0] - 2026-11-11
 
 Not backward compatible. On an existing install, a one-off script must add the new fields to `/data/agent-voices.json`, with Casa stopped, before the update; without it Casa sets the file aside and forgets every specialist's bot. Discard any offer card, or Telegram "Create" form, for a specialist's bot left from before the update and ask the assistant for a new offer: bots created from them are not supported.
