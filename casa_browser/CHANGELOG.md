@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.15] - 2026-11-11
+
+### Fixed
+
+- A long list pasted into a text area now reports that it went in. A list of a few thousand lines takes the browser several seconds to put in, and past five seconds Casa Browser stopped waiting: the list went in whole, but the step was reported as one that "may have run", so Casa's browsing specialist could not be sure the text was there. The paste now has up to a minute.
+
 ## [0.1.14] - 2026-11-10
 
 ### Fixed
