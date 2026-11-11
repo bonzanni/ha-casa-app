@@ -110,11 +110,14 @@ class ScheduledAskStore:
 
     # -- reads (synchronous, in-memory) ------------------------------------
     #
-    # Deliberately only `get` and `all`, and `all` has ONE caller: the boot
-    # reconciler. There is no by-role / by-chat query, because a live decision
-    # must never be answered from here — the store is written after an await
-    # and lags the broker, which is the authority for what is live. A query
-    # method is the invitation to forget that, so there isn't one.
+    # Deliberately only `get` and `all`, and `all` has two callers: the boot
+    # reconciler, and `own_voice.open_on_bot`, which asks whether a stored
+    # question still names an agent's bot (a durable fact, read beside the
+    # broker's live requests, never instead of them). There is no by-role /
+    # by-chat query, because a live decision must never be answered from here
+    # alone — the store is written after an await and lags the broker, which
+    # is the authority for what is live. A query method is the invitation to
+    # forget that, so there isn't one.
 
     def get(self, rid: str) -> dict[str, Any] | None:
         rec = self._data.get(rid)
