@@ -294,6 +294,20 @@ async def _reconcile_own_chats() -> None:
         logger.exception("own chats not reconciled at boot")
 
 
+async def _apply_own_chat_switches() -> None:
+    """Apply every agent's pending switch to a new bot: the old bot is
+    retired and the new one enters binding. Run once the durable stores and
+    the tools are loaded, since those say whether anything still waits on
+    the old bot, and before anything can start a bot, a worker, the HTTP
+    server, the channels or the scheduler. A failure is logged, never
+    fatal."""
+    import own_voice
+    try:
+        await own_voice.apply_switches_at_boot()
+    except Exception:  # noqa: BLE001 — never fatal at boot
+        logger.exception("own chats' bot switches not applied at boot")
+
+
 async def _drain_broker_before_channel_shutdown(channel_manager: Any) -> None:
     """Graceful-shutdown barrier (r4-B1/B3): resolve every live
     ``verdict_broker`` request as ``cancelled`` and let its keyboard-edit
@@ -2941,6 +2955,12 @@ async def main() -> None:
         lambda _role, grants: create_casa_tools(grants),
     )
     logger.info("Registered casa-framework MCP tools")
+
+    # An agent's pending switch to a new bot is applied here: the durable
+    # stores are loaded and the tools are wired, and nothing that starts a
+    # bot or creates work (outbox, agents, Telegram, workers, HTTP, channels,
+    # scheduler) has run yet.
+    await _apply_own_chat_switches()
 
     # Plugin media outbox (v0.73.0 §3.4): init FDs + boot-reap + register the
     # hourly sweep — all BEFORE channels/HTTP go live (steps 12–13) so send_media
