@@ -3,7 +3,8 @@ labelled text with one button per stored call and files the message; a tap
 is admitted only in the design's order (presence, the live meta, the chat,
 the MESSAGE, the index, the operator — then and now —, S5's own deadline),
 claimed and committed once, never dispatched from the handler; the finish
-hook edits the keyboard away first and then hands the tap to the desk
+hook edits the keyboard away first and then hands the tap to the executing
+agent's lane
 (INV-PROP-001). Everything else about a callback is today's path.
 """
 from __future__ import annotations
@@ -15,7 +16,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 import result_broker as rb
-import specialist_desk as sd
+import agent_lane
+import chat_notes
+import stored_call_settler
 import verdict_broker as vb
 from channels.telegram import TelegramChannel, _parse_callback_data
 from bus import MessageBus
@@ -88,9 +91,8 @@ def _meta(**over):
 def env(monkeypatch):
     broker = vb.VerdictBroker()
     monkeypatch.setattr(vb, "BROKER", broker)
-    monkeypatch.setattr(rb, "POST_MAP", rb.PostMap())
-    monkeypatch.setattr(sd, "DESKS", sd.DeskRegistry())
-    monkeypatch.setattr(sd, "DESK_ECHO", rb.PostLedger(max_events=64))
+    agent_lane.reset()
+    chat_notes.reset()
     from test_proposal_slot import open_chats
     open_chats(monkeypatch, "finance")      # the card's agent may post: its chat is open
     ch = _channel()
@@ -101,7 +103,7 @@ def env(monkeypatch):
         res = kwargs.get("reservation")
         if res is not None:
             res.release()
-    monkeypatch.setattr(sd, "handle_tap", fake_handle_tap, raising=False)
+    monkeypatch.setattr(stored_call_settler, "handle_tap", fake_handle_tap)
     hooks = []
 
     def register(meta=None, deadline=None, chat=OPERATOR):
@@ -131,7 +133,10 @@ def test_the_parser_accepts_the_proposal_namespace():
     assert _parse_callback_data(f"v1|proposal|{RID}|x") == (None, None, None, None)
 
 
-async def test_the_keyboard_is_posted_with_one_button_per_label_and_the_message_is_filed(env):
+async def test_the_keyboard_is_posted_with_one_button_per_label_and_the_message_is_filed(
+        env, monkeypatch):
+    import task_posts_double
+    filed = task_posts_double.install(monkeypatch)
     rec = rb.PostRecord(role="finance", operator_id=OPERATOR, plugin="probe", slot="proposal",
                         tool_use_id="call-1", owner="d-1", posted_at=1.0, kind="operator_proposal")
     mid = await env.ch.deliver_operator_proposal(OPERATOR, "📊 Finance\nPair **17**?", ["Yes", "No"], RID,
@@ -141,7 +146,7 @@ async def test_the_keyboard_is_posted_with_one_button_per_label_and_the_message_
     rows = sent["reply_markup"].inline_keyboard
     assert [b.text for row in rows for b in row] == ["Yes", "No"]
     assert [b.callback_data for row in rows for b in row] == [f"v1|proposal|{RID}|0", f"v1|proposal|{RID}|1"]
-    assert rb.POST_MAP.get(TgAddress(BOT, OPERATOR, 501)) is rec
+    assert filed.filed == [("d-1", TgAddress(BOT, OPERATOR, 501))]     # under its task
 
 
 # --- the tap's admission, in the design's order --------------------------------------
@@ -201,13 +206,13 @@ async def test_a_valid_tap_commits_once_and_the_handler_dispatches_nothing_itsel
     assert await _tap(env, _cq(data=f"v1|proposal|{RID}|0")) == "already answered"
     await _settle()
     # the finish hook: the keyboard edited away FIRST (the chosen label, working:
-    # #1341 — the call's answer decides the final line), then the desk
+    # #1341 — the call's answer decides the final line), then the agent's lane
     assert len(env.bot.edited) == 1
     edited = env.bot.edited[0]
     assert edited["message_id"] == 501 and edited["text"].endswith("\n⏳ No")
     assert len(env.taps) == 1
     tap = env.taps[0]
-    assert tap["desk_role"] == "finance" and tap["idx"] == 1 and tap["request_id"] == RID
+    assert tap["executing_role"] == "finance" and tap["idx"] == 1 and tap["request_id"] == RID
     assert tap["meta"]["calls"][1]["canonical"] == '{"choice":"no"}'
 
 
@@ -323,20 +328,20 @@ async def test_a_proposal_superseded_during_its_send_answers_replaced_on_the_lan
     assert env.taps == []
 
 
-async def test_a_full_desk_queue_refuses_the_tap_with_the_busy_line_and_no_task(env):
+async def test_a_full_lane_queue_refuses_the_tap_with_the_busy_line_and_no_task(env):
     env.register()
-    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
-    places = [desk.reserve() for _ in range(sd.DESK_QUEUE_MAX)]
+    lane = agent_lane.LANES.get("finance")
+    places = [lane.reserve() for _ in range(agent_lane.QUEUE_MAX)]
     assert all(places)
     assert await _tap(env, _cq()) == "✔"
     await _settle()
     assert env.taps == []
     assert any("✖ busy" in e["text"] for e in env.bot.edited)
     assert any("busy" in s.get("text", "") for s in env.bot.sent)
-    assert desk.waiting == sd.DESK_QUEUE_MAX
-    # the resident's line records WHICH tap was refused and why (Astra B, diff round 4),
+    assert lane.waiting == agent_lane.QUEUE_MAX
+    # the chat's note records WHICH tap was refused and why,
     # as the permit-refusal path does — never the operator's notice text
-    assert sd.drain_echo_lines(BOT, OPERATOR) == [f"{sd.label_for('finance')} refused your tap (Yes): busy."]
+    assert chat_notes.drain(BOT, OPERATOR) == [f"{rb.post_label('finance')} refused your tap (Yes): busy."]
 
 
 # --- diff round 1 (Astra B S2): a supersede during a pending send -------------------------
@@ -409,14 +414,14 @@ async def test_a_maximal_proposals_settlement_edit_fits_telegrams_limit(env, mon
     await _settle()
     (edit,) = env.bot.edited
     assert edit["text"].endswith(f"\n⏳ {label32}") and utf16_len(edit["text"]) <= 4096
-    # #1341: the line the desk settles it to afterwards is the same length
+    # #1341: the line the tap settles it to afterwards is the same length
     assert utf16_len(edit["text"].replace("\n⏳ ", "\n☑ ")) == utf16_len(edit["text"])
 
 
 # --- diff round 5 (Terra S2): the keyboard edit fails -------------------------------------
 
 async def test_a_failed_keyboard_edit_tells_which_button_won_before_the_dispatch(env, monkeypatch):
-    """The design's order is "the keyboard edited away FIRST, then the desk":
+    """The order is "the keyboard edited away FIRST, then the agent's lane":
     when Telegram refuses the edit, the operator must still see which button
     won before any effect — one labelled notice names it — and the tap is
     still applied (the broker's commit already excludes a second execution)."""
@@ -427,12 +432,12 @@ async def test_a_failed_keyboard_edit_tells_which_button_won_before_the_dispatch
         order.append(("edit", text))
         return False
     monkeypatch.setattr(env.ch, "edit_dm_message", failing_edit)
-    real_notice = env.ch.deliver_desk_notice
+    real_notice = env.ch.deliver_casa_notice
 
     async def notice(chat_id, text):
         order.append(("notice", text))
         return await real_notice(chat_id, text)
-    monkeypatch.setattr(env.ch, "deliver_desk_notice", notice)
+    monkeypatch.setattr(env.ch, "deliver_casa_notice", notice)
     assert await _tap(env, _cq(data=f"v1|proposal|{RID}|1")) == "✔"
     await _settle()
     assert len(env.taps) == 1 and env.taps[0]["idx"] == 1          # still applied

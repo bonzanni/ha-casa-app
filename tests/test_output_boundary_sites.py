@@ -91,9 +91,8 @@ EDIT_DM_MESSAGE_CALLERS = {
     ("channels/telegram.py", "_edit_proposal_message"): {"status"},
     ("callback_consent.py", "_finish"): {"plugin"},                # consent bodies are plugin-authored
     ("event_consent.py", "_finish"): {"plugin"},
-    ("persona_install_consent.py", "_finish"): {"plugin"},
     ("plugin_erase_consent.py", "_finish"): {"status"},      # #1046: fixed Keep/Erase/Cancel/expired statuses
-    ("specialist_install_consent.py", "_finish"): {"plugin"},
+    ("specialist_install_consent.py", "_edit"): {"plugin"},   # install / upgrade / persona cards: decided and replaced lines
     ("trigger_consent.py", "_finish"): {"plugin"},
     ("own_voice_lifecycle.py", "edit_card"): {"status"},           # an own-chat card's fixed Casa lines (asked again, bound, released)
     ("operator_calls.py", "_finish"): {"plugin"},                  # browser executor: a plugin's question, ☑ label / retired
@@ -127,7 +126,7 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "deliver_operator_proposal"): "notice", # S5: a plugin's proposal, Casa-labelled, one page with its keyboard
     ("channels/telegram.py", "deliver_operator_question"): "notice", # browser executor: a plugin's operator question, Casa-labelled, its keyboard
     ("channels/telegram.py", "replace_operator_proposal"): "notice", # #1339: that proposal edited in place, as a tap's next card
-    ("channels/telegram.py", "deliver_desk_notice"): "notice",       # S4: a desk turn's outcome, Casa-composed
+    ("channels/telegram.py", "deliver_casa_notice"): "notice",       # a tap's or a task's outcome line, Casa-composed
     ("channels/telegram.py", "deliver_run_card"): "notice",          # the Stop: a browsing request's status card, Casa-composed
     ("channels/telegram.py", "send_reply_line"): "notice",           # the Stop: its one outcome line, Casa-composed
     ("channels/telegram.py", "notify_operator"): "notice",           # the memory wipe's restart and done lines
@@ -167,7 +166,6 @@ CHANNEL_METHOD_CALLERS = {
     ("tools.py", "_classify_send"): "admitted",                 # the caption, admitted by send_media
     ("tools.py", "_post"): "admitted",                          # ask_user (both arms) and wipe_memory (casa_text)
     ("tools.py", "ask_operator"): "admitted",                   # a job's question, admitted on the job's scope
-    ("specialist_desk.py", "handle_reply"): "admitted",         # S4: the desk reply, the specialist's admitted text
     ("stored_call_settler.py", "handle_tap"): "admitted",       # the stored call's receipt, the plugin's admitted text
     ("tools.py", "_post_task_text"): "admitted",                # a task's start line and answer, admitted on the task's scope
     ("own_voice_lifecycle.py", "post_card"): "casa_text",       # an own-chat card in the resident's chat
@@ -231,7 +229,7 @@ ADMITTED_METHODS = {"send", "send_response", "finalize_stream", "finalize_respon
                     "post_dm_keyboard", "send_media", "post_job_question"}
 DERIVED_METHODS = {"edit_dm_message"}
 NOTICE_METHODS = {"deliver_operator_link", "deliver_operator_message", "deliver_operator_page",
-                  "deliver_operator_file", "deliver_desk_notice", "reply",
+                  "deliver_operator_file", "deliver_casa_notice", "reply",
                   "deliver_operator_proposal", "replace_operator_proposal",
                   "deliver_operator_question", "notify_operator", "deliver_run_card",
                   "send_reply_line", "send_step_line", "post_job_parked"}

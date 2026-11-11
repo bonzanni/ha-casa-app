@@ -1,5 +1,5 @@
 """The Stop: a browsing request stopped at once, by a mechanical tap or by the resident's own
-tool, with no model turn and no desk (``plugin_stop``). Every test runs the plugin's stop tool
+tool, with no model turn and no use of the agent's lane (``plugin_stop``). Every test runs the plugin's stop tool
 as a real stdio server that records the calls it receives (the driver sweep's pattern), and
 asserts counts."""
 from __future__ import annotations
@@ -15,13 +15,15 @@ from unittest.mock import AsyncMock
 import pytest
 
 import agent as agent_mod
+import agent_lane
+import chat_notes
 import plugin_bindings
 import plugin_continuations as pc
 import plugin_stop
 import plugin_store
 import result_broker as rb
 import run_admission
-import specialist_desk as sd
+import stored_call_settler
 import tools as tools_mod
 import verdict_broker as vb
 from authz_grants import GrantIdentity
@@ -155,9 +157,8 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(run_admission, "CONFIRMATIONS",
                         run_admission.Confirmations(str(tmp_path / "admissions.json")))
     monkeypatch.setattr(vb, "BROKER", vb.VerdictBroker())
-    monkeypatch.setattr(rb, "POST_MAP", rb.PostMap())
-    monkeypatch.setattr(sd, "DESKS", sd.DeskRegistry())
-    monkeypatch.setattr(sd, "DESK_ECHO", rb.PostLedger(max_events=64))
+    agent_lane.reset()
+    chat_notes.reset()
     monkeypatch.setattr(pc, "CONTINUATIONS", pc.Continuations())
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg"))
     plugins: dict[str, list] = {"browser": []}
@@ -165,13 +166,13 @@ def env(monkeypatch, tmp_path):
         registry_valid=True, plugins=list(plugins.get(cfg.role, []))))
     ch = _channel()
     monkeypatch.setattr(tools_mod, "_channel_manager", make_transport(ch), raising=False)
-    desk_uses: list = []
-    real_get = sd.DESKS.get_or_create
+    lane_uses: list = []
+    real_get = agent_lane.LANES.get
 
-    def _get_or_create(*key):
-        desk_uses.append(key[-2:])          # (chat, role); the bot is asserted elsewhere
-        return real_get(*key)
-    monkeypatch.setattr(sd.DESKS, "get_or_create", _get_or_create)
+    def _get(role):
+        lane_uses.append(role)
+        return real_get(role)
+    monkeypatch.setattr(agent_lane.LANES, "get", _get)
     turns: list = []
 
     async def _turn(*a, **k):
@@ -183,7 +184,7 @@ def env(monkeypatch, tmp_path):
         taps.append(kwargs)
         if kwargs.get("reservation") is not None:
             kwargs["reservation"].release()
-    monkeypatch.setattr(sd, "handle_tap", _handle_tap, raising=False)
+    monkeypatch.setattr(stored_call_settler, "handle_tap", _handle_tap)
 
     def use(rp, role="browser"):
         plugins.setdefault(role, []).append(rp)
@@ -205,7 +206,7 @@ def env(monkeypatch, tmp_path):
         return c, b
 
     return types.SimpleNamespace(ch=ch, bot=ch._app.bot, use=use, admit=admit, tmp=tmp_path,
-                                 desk_uses=desk_uses, turns=turns, taps=taps, plugins=plugins)
+                                 lane_uses=lane_uses, turns=turns, taps=taps, plugins=plugins)
 
 
 def _cq(*, cid=CID, chat_id=OPERATOR, user_id=OPERATOR, message_id=CARD_MID):
@@ -335,7 +336,7 @@ async def test_the_operators_stop_tap_stops_it_directly_and_tells_him_once(env):
     await _quiet(env)
     cq.answer.assert_awaited_once_with("stopping…")
     assert [c["args"] for c in _calls(rp)] == [{"ref": "request:k1"}]
-    assert env.desk_uses == [] and env.turns == [] and env.taps == []
+    assert env.lane_uses == [] and env.turns == [] and env.taps == []
     (edit,) = _card_edits(env)
     assert edit["text"].endswith("☑ Stopped") and _buttons(edit) == []
     (line,) = _lines(env)
@@ -485,44 +486,44 @@ async def test_a_stop_tap_after_a_restart_still_stops(env, monkeypatch):
     assert len(_calls(rp)) == 1 and len(_lines(env)) == 1
 
 
-# -- 10. no desk ---------------------------------------------------------------------------
+# -- 10. no lane use ---------------------------------------------------------------------------
 
 @pytest.fixture
-async def held_desk(env):
-    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "browser")
-    env.desk_uses.clear()
-    reservation = desk.reserve()
+async def held_lane(env):
+    lane = agent_lane.LANES.get("browser")
+    env.lane_uses.clear()
+    reservation = lane.reserve()
     release = asyncio.Event()
     entered = asyncio.Event()
 
     async def _hold():
-        async with desk.use(reservation):
+        async with lane.use(reservation):
             entered.set()
             await release.wait()
     task = asyncio.create_task(_hold())
     await entered.wait()
-    yield types.SimpleNamespace(desk=desk, release=release.set)
+    yield types.SimpleNamespace(lane=lane, release=release.set)
     release.set()
     await task
 
 
-async def test_the_stop_tap_does_not_wait_for_the_running_desk_use(env, held_desk):
+async def test_the_stop_tap_does_not_wait_for_the_running_lane_use(env, held_lane):
     rp = env.use(_plugin(env.tmp / "p"))
     env.admit()
     t0 = time.time()
     await _tap(env)
     await _quiet(env, seconds=5)
     (call,) = _calls(rp)
-    assert call["at"] - t0 < 1.0 and env.desk_uses == []
+    assert call["at"] - t0 < 1.0 and env.lane_uses == []
 
 
-async def test_stop_work_does_not_wait_for_the_running_desk_use(env, held_desk):
+async def test_stop_work_does_not_wait_for_the_running_lane_use(env, held_lane):
     rp = env.use(_plugin(env.tmp / "p"))
     env.admit()
     t0 = time.time()
     await asyncio.wait_for(_stop_work(env, {"ref": "request:k1"}), 5)
     (call,) = _calls(rp)
-    assert call["at"] - t0 < 1.0 and env.desk_uses == []
+    assert call["at"] - t0 < 1.0 and env.lane_uses == []
 
 
 # -- 11. the drop ---------------------------------------------------------------------------
@@ -537,7 +538,7 @@ def _binding():
 
 @pytest.fixture
 def held_queue(env, monkeypatch):
-    """Continuations waiting for Fido's held desk; each turn that starts is recorded."""
+    """Continuations waiting for Fido's held lane; each turn that starts is recorded."""
     monkeypatch.setattr(pc, "RETRY_EVERY_S", 0.01)
     monkeypatch.setattr(tools_mod, "_specialist_limiter", None, raising=False)
     started: list = []
@@ -555,17 +556,17 @@ def held_queue(env, monkeypatch):
     return started
 
 
-async def test_a_dropped_continuation_runs_no_turn(env, held_desk, held_queue):
+async def test_a_dropped_continuation_runs_no_turn(env, held_lane, held_queue):
     b = _binding()
     assert pc.CONTINUATIONS.request(b, "run_abc", "sweep") == "queued"
     await asyncio.sleep(0.05)
     assert pc.CONTINUATIONS.drop("browser", BOT, OPERATOR, ["run_abc"]) == 1
-    held_desk.release()
+    held_lane.release()
     await _drain_queue()
     assert held_queue == []
 
 
-async def test_a_stopped_requests_queued_continuations_are_dropped(env, held_desk, held_queue):
+async def test_a_stopped_requests_queued_continuations_are_dropped(env, held_lane, held_queue):
     """A Stop that answers ``stopped`` drops every continuation still queued for the refs it
     names, and the start card's own ``admission:<cid>``: none of them runs a turn."""
     env.use(_plugin(env.tmp / "p"))
@@ -576,14 +577,14 @@ async def test_a_stopped_requests_queued_continuations_are_dropped(env, held_des
     await asyncio.sleep(0.05)
     await _tap(env)
     await _quiet(env)
-    held_desk.release()
+    held_lane.release()
     await _drain_queue()
     assert held_queue == []
 
 
 @pytest.mark.parametrize("outcome", ["not_taken", "already_stopped"])
 async def test_a_stop_that_keeps_the_seal_drops_the_queued_continuations(
-        env, held_desk, held_queue, outcome):
+        env, held_lane, held_queue, outcome):
     """Astra r1 (diff): a Stop that did not reach the app yet (the plugin retries it) or found it
     already stopped still keeps the plugin from driving the request, so the continuations queued
     before it are dropped too: none starts a turn."""
@@ -596,18 +597,18 @@ async def test_a_stop_that_keeps_the_seal_drops_the_queued_continuations(
     await asyncio.sleep(0.05)
     await _tap(env)
     await _quiet(env)
-    held_desk.release()
+    held_lane.release()
     await _drain_queue()
     assert held_queue == []
 
 
-async def test_a_continuation_for_another_ref_still_runs(env, held_desk, held_queue):
+async def test_a_continuation_for_another_ref_still_runs(env, held_lane, held_queue):
     b = _binding()
     pc.CONTINUATIONS.request(b, "run_abc", "sweep")
     pc.CONTINUATIONS.request(b, "run_other", "sweep")
     await asyncio.sleep(0.05)
     assert pc.CONTINUATIONS.drop("browser", BOT, OPERATOR, ["run_abc"]) == 1
-    held_desk.release()
+    held_lane.release()
     await _drain_queue()
     assert held_queue == ["Continue browsing run run_other."]
 
@@ -662,7 +663,7 @@ async def test_the_twenty_minute_cards_stop_is_called_directly(env):
     assert await env.ch._dispatch_proposal_tap(meta=_proposal_meta(), idx=1, request_id="r" * 32)
     await _quiet(env)
     assert [c["args"] for c in _calls(rp)] == [{"ref": "request:k1"}]
-    assert env.desk_uses == [] and env.taps == [] and env.turns == []
+    assert env.lane_uses == [] and env.taps == [] and env.turns == []
     marks = [e for e in env.bot.edited if e.get("message_id") == 601]
     assert [e["text"] for e in marks] == ["📊 Fido\nStill going.\n☑ Stopped"]
     assert len(_card_edits(env)) == 1               # the start card is marked too
@@ -696,19 +697,19 @@ async def test_the_twenty_minute_cards_stop_starts_before_any_card_edit(env):
     await _quiet(env)
     marks = [e["text"] for e in env.bot.edited if e.get("message_id") == 601]
     assert marks == ["📊 Fido\nStill going.\n☑ Stopped"]                   # no ⏳ line
-    assert env.desk_uses == [] and env.taps == []
+    assert env.lane_uses == [] and env.taps == []
 
 
 @pytest.mark.parametrize("wire_name, arguments", [
     ("apply_tap", {"t": "tok"}),
     ("continue_run", {"ref": "request:k1"}),       # a ref-shaped call of another tool
 ])
-async def test_a_stored_call_of_another_tool_still_goes_to_the_desk(env, wire_name, arguments):
+async def test_a_stored_call_of_another_tool_still_goes_to_the_agents_lane(env, wire_name, arguments):
     rp = env.use(_plugin(env.tmp / "p"))
     meta = _proposal_meta(wire_name=wire_name, arguments=arguments)
     assert await env.ch._dispatch_proposal_tap(meta=meta, idx=1, request_id="r" * 32)
     await _quiet(env)
-    assert _calls(rp) == [] and len(env.taps) == 1 and env.desk_uses == [(OPERATOR, "browser")]
+    assert _calls(rp) == [] and len(env.taps) == 1 and set(env.lane_uses) == {"browser"}
 
 
 # -- 13. Ellen's stop_work ---------------------------------------------------------------------
@@ -896,7 +897,7 @@ async def test_a_request_that_ended_on_its_own_marks_its_card_once(env, monkeypa
     edits = _card_edits(env)
     assert len(edits) == 1 and edits[0]["text"] == f"{CARD_TEXT}\n☑ Ended"
     assert _buttons(edits[0]) == []                      # no Stop left on it
-    assert _lines(env) == [] and env.turns == [] and env.desk_uses == []
+    assert _lines(env) == [] and env.turns == [] and env.lane_uses == []
     await pc.sweep_once()                                # named again on the next pass
     assert len(passes) == 2 and len(_card_edits(env)) == 1
     reloaded = run_admission.Confirmations(str(env.tmp / "admissions.json"))
@@ -1008,3 +1009,52 @@ async def test_a_stop_tap_after_the_natural_end_still_says_it_had_ended(env, mon
     assert len(_card_edits(env)) == 1
     assert [m["text"] for m in _lines(env)] == ["📊 Fido\nIt had already ended."]
 
+
+
+# -- the Stop line is filed under the card's task, after a restart too ------------------------
+
+async def test_a_stop_line_after_a_restart_is_filed_under_the_cards_task(env, tmp_path, monkeypatch):
+    """The Stop line answering a delegation's run card is filed under that delegation, read
+    from the durable task index, so a reply to it reaches the task even after a restart
+    emptied every in-memory map; it is one note for the chat's agent and no memory line."""
+    import dataclasses
+
+    import task_posts
+    from job_registry import JobRegistry
+    from memory import capture
+    from test_task_posts import _delegation
+
+    path = tmp_path / "jobs.json"
+    jobs = JobRegistry(path)
+    await jobs.load()
+    monkeypatch.setattr(tools_mod, "_engagement_registry", None, raising=False)
+    monkeypatch.setattr(tools_mod, "_specialist_registry",
+                        types.SimpleNamespace(job_registry=jobs), raising=False)
+    await jobs.create(dataclasses.replace(_delegation("d-1"), specialist_role="browser",
+                                          executor="browser", delivery=TgAddress(BOT, OPERATOR)))
+    card = TgAddress(BOT, OPERATOR, CARD_MID)
+    task_posts.record("d-1", card)                 # the run card, filed under its delegation
+    while jobs._deferred_writes:
+        await asyncio.gather(*list(jobs._deferred_writes), return_exceptions=True)
+    await jobs.close()
+    # a restart: every in-memory map empty, the job registry reloaded from disk
+    task_posts.reset()
+    chat_notes.reset()
+    again = JobRegistry(path)
+    await again.load()
+    monkeypatch.setattr(tools_mod, "_specialist_registry",
+                        types.SimpleNamespace(job_registry=again), raising=False)
+    captured: list = []
+    monkeypatch.setattr(capture, "record_detached", lambda item: captured.append(item))
+    try:
+        await plugin_stop.tell_line(BOT, OPERATOR, "browser", "stopped", reply_to=CARD_MID)
+        (line,) = _lines(env)
+        assert line["reply_to_message_id"] == CARD_MID
+        stop_line = TgAddress(BOT, OPERATOR, 900 + len(env.bot.sent))
+        ref = task_posts.owner(stop_line)
+        assert ref is not None and ref.task_id == "d-1"
+        assert chat_notes.drain(BOT, OPERATOR) == [f"{rb.post_label('browser')}: Stopped."]
+        assert captured == []
+    finally:
+        await again.close()
+        task_posts.reset()

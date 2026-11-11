@@ -77,13 +77,9 @@ APPROVAL_KEY = "_approval"
 RESERVED_CONTEXT_KEYS = frozenset({
     "synthetic",
     "button_answer",
-    # S4: the specialist-desk marker a desk turn's origin carries (the role
-    # and chat the approval continuation returns to); stamped only by the
-    # desk itself, never by an ingress.
-    "desk",
-    # S5: the stored-call marker a pinned one-call turn's origin carries
-    # (the run id, the runtime name, the canonical arguments, the label);
-    # stamped only by the desk's tap handler, never by an ingress.
+    # The stored-call marker a pinned one-call turn's origin carries (the
+    # run id, the runtime name, the canonical arguments, the label); stamped
+    # only by the stored-call settler, never by an ingress.
     "stored_call",
     "execution_role",
     "message_type",

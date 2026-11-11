@@ -430,7 +430,7 @@ class _NoticeRecorder:
     def __getattr__(self, name):
         return getattr(self._rec, name)
 
-    async def deliver_desk_notice(self, chat_id, text):
+    async def deliver_casa_notice(self, chat_id, text):
         self.notices.append((chat_id, text))
         return True
 
@@ -438,7 +438,7 @@ class _NoticeRecorder:
 async def test_a_more_rewrite_tells_inside_the_next_proposal_when_it_fits_else_in_one_notice_after_it(env, monkeypatch):
     rec = _NoticeRecorder(env.rec)
     monkeypatch.setattr(tools_mod, "_channel_manager", make_transport(rec))
-    import specialist_desk as sd
+    import stored_call_settler as settler
     # fits one page: the tell line rides above the label, no separate notice
     owner = _owner(runtime_name=MORE, canonical='{"page":2}')
     hook = rb.make_result_hook(_map(), client_id="c1", store=env.store, owner=owner)
@@ -447,7 +447,7 @@ async def test_a_more_rewrite_tells_inside_the_next_proposal_when_it_fits_else_i
     await hook(_post(MORE, {"page": 2, "__consentNonce": "n"}, json.dumps({SLOT: ref})), "c-fit", {})
     assert owner.captured == pr.Capture("delivered", "operator_proposal", rewritten=True)
     (_, text, _, _, _), = env.rec.proposals
-    assert text.startswith(sd.TELL_LINE + "\n" + LABEL + "\n")
+    assert text.startswith(settler.TELL_LINE + "\n" + LABEL + "\n")
     assert rec.notices == []
     # no longer fits: the proposal lands WITHOUT it and one labelled notice follows
     env.rec.proposals.clear()
@@ -456,14 +456,14 @@ async def test_a_more_rewrite_tells_inside_the_next_proposal_when_it_fits_else_i
     _open(env.store, call="c-full", tool=MORE)
     from text_util import utf16_len
     cap = 4096 - rb.PROPOSAL_SETTLE_RESERVE
-    head_units, tell_units = utf16_len(LABEL + "\n"), utf16_len(sd.TELL_LINE + "\n")
+    head_units, tell_units = utf16_len(LABEL + "\n"), utf16_len(settler.TELL_LINE + "\n")
     full = _proposal(text="🙂" * ((cap - head_units) // 2))   # the largest the deposit admits; not with the tell above it
     ref, err = env.store.deposit(client_id="c1", slot=SLOT, value=json.dumps(full))
     assert err is None
     await hook(_post(MORE, {"page": 2, "__consentNonce": "n"}, json.dumps({SLOT: ref})), "c-full", {})
     (_, text, _, _, _), = env.rec.proposals
-    assert sd.TELL_LINE not in text and text.startswith(LABEL + "\n")
-    assert rec.notices == [(42, f"{LABEL} {sd.TELL_LINE}")]
+    assert settler.TELL_LINE not in text and text.startswith(LABEL + "\n")
+    assert rec.notices == [(42, f"{LABEL} {settler.TELL_LINE}")]
     assert owner.captured == pr.Capture("delivered", "operator_proposal", rewritten=True)
     # a proposal whose body plus the tell would fit Telegram's limit but NOT the
     # settlement reserve: the tell goes out as the notice, the message stays settleable
@@ -475,12 +475,12 @@ async def test_a_more_rewrite_tells_inside_the_next_proposal_when_it_fits_else_i
     edge = (cap - head_units - tell_units) // 2 + 1           # with the tell: over the reserve, under 4,096
     ref, err = env.store.deposit(client_id="c1", slot=SLOT, value=json.dumps(_proposal(text="🙂" * edge)))
     assert err is None
-    assert cap < utf16_len(f"{sd.TELL_LINE}\n{LABEL}\n" + "🙂" * edge) <= 4096
+    assert cap < utf16_len(f"{settler.TELL_LINE}\n{LABEL}\n" + "🙂" * edge) <= 4096
     await hook(_post(MORE, {"page": 2, "__consentNonce": "n"}, json.dumps({SLOT: ref})), "c-edge", {})
     (_, text, _, _, _), = env.rec.proposals
     from text_util import utf16_len
-    assert sd.TELL_LINE not in text and utf16_len(text) <= 4096 - rb.PROPOSAL_SETTLE_RESERVE
-    assert rec.notices == [(42, f"{LABEL} {sd.TELL_LINE}")]
+    assert settler.TELL_LINE not in text and utf16_len(text) <= 4096 - rb.PROPOSAL_SETTLE_RESERVE
+    assert rec.notices == [(42, f"{LABEL} {settler.TELL_LINE}")]
 
 
 async def test_a_sealed_result_callback_has_no_effect(env):
@@ -985,8 +985,8 @@ async def test_a_server_that_dies_during_the_second_walks_enumeration_leaves_the
     assert await owner.terminate() is False
 
 
-async def test_a_server_stopped_by_casas_own_sdk_close_does_not_fault_the_terminated_desk(tree_with_server, monkeypatch):
-    """Astra, diff round 3: the normal end starts the SDK close, which stops the servers while
+async def test_a_server_stopped_by_casas_own_sdk_close_does_not_fault_the_terminated_run(tree_with_server, monkeypatch):
+    """The normal end starts the SDK close, which stops the servers while
     the CLI lingers; the fallback terminate() must not read those deaths as an anomaly."""
     owner = _owner()
     client = await _enter(owner, tree_with_server, hang_exit=True)

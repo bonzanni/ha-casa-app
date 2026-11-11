@@ -8,7 +8,7 @@ a caption edit, and a caption edit Telegram refuses still removes the keyboard. 
 response may ask for its receipt as the card's last line (``on_card``) instead of a message.
 
 The deposit and the post are driven like ``test_proposal_slot.py``; the channel like
-``test_proposal_tap.py``; the tap like ``test_desk_tap.py``.
+``test_proposal_tap.py``; the tap like ``test_stored_call_tap.py``.
 """
 from __future__ import annotations
 
@@ -21,13 +21,13 @@ from telegram.error import BadRequest
 
 import pinned_run as pr
 import result_broker as rb
-import specialist_desk as sd
+import stored_call_settler as settler
 import tools as tools_mod
 import verdict_broker as vb
 from text_util import utf16_len
 from test_proposal_slot import (LABEL, SLOT, _Manager, _map, _open, _post,  # noqa: F401
                                 _proposal)
-from test_desk_tap import _tap as _desk_tap, env as desk_env  # noqa: F401
+from test_stored_call_tap import _tap as _lane_tap, env as lane_env  # noqa: F401
 from test_proposal_tap import OPERATOR, RID, _channel, _meta
 from two_endpoints import CASA_BOT as BOT
 
@@ -66,7 +66,7 @@ class _PhotoRecorder:
         self.cards.append({"text": text, "labels": list(labels), "photo": photo})
         return 601
 
-    async def deliver_desk_notice(self, chat_id, text):
+    async def deliver_casa_notice(self, chat_id, text):
         self.cards.append({"notice": text})
         return True
 
@@ -82,7 +82,6 @@ def penv(monkeypatch):
     monkeypatch.setattr(vb, "BROKER", vb.VerdictBroker())
     monkeypatch.setattr(rb, "POSTS", rb.PostLedger())
     __import__("test_proposal_slot").open_chats(monkeypatch, "finance")
-    monkeypatch.setattr(rb, "POST_MAP", rb.PostMap())
     return SimpleNamespace(rec=rec, outbox=outbox, store=rb.ReferenceStore(now=lambda: 1000.0))
 
 
@@ -205,7 +204,6 @@ class _PhotoBot:
 @pytest.fixture
 def tg(monkeypatch):
     monkeypatch.setattr(vb, "BROKER", vb.VerdictBroker())
-    monkeypatch.setattr(rb, "POST_MAP", rb.PostMap())
     ch = _channel()
     ch._app = types.SimpleNamespace(bot=_PhotoBot())
     return SimpleNamespace(ch=ch, bot=ch._app.bot)
@@ -257,49 +255,48 @@ async def test_a_refused_caption_edit_still_removes_the_keyboard(tg_bot):
 async def test_a_photo_card_is_never_replaced_in_place(monkeypatch):
     monkeypatch.setattr(rb, "proposal_ok", lambda value, call: (_proposal(), None))
     build = SimpleNamespace(contract_map=_map(), protected={})
-    why = await sd._post_next_card("{}", meta=_meta(photo=True), build=build,
-                                   runtime="mcp__plugin_probe_api__apply", seg="probe",
-                                   run_id="r1", edit_message_id=501)
+    why = await settler._post_next_card("{}", meta=_meta(photo=True), build=build,
+                                        runtime="mcp__plugin_probe_api__apply", seg="probe",
+                                        run_id="r1", edit_message_id=501)
     assert why == "photo"
 
 
-async def test_an_on_card_receipt_is_the_cards_last_line_and_no_message(desk_env):
+async def test_an_on_card_receipt_is_the_cards_last_line_and_no_message(lane_env):
     async def respond(call):
         call.owner.resolve(pr.Capture("receipt", "Done: pay €84.20.", on_card=True))
         return tools_mod.DelegatedOutput(text="")
-    desk_env.respond = respond
-    await _desk_tap(desk_env)
-    assert desk_env.channel.marks == ["☑ Done: pay €84.20."]
-    assert desk_env.channel.replies == []                    # no receipt message
-    assert desk_env.desk.log[-1].text == "Done: pay €84.20."
+    lane_env.respond = respond
+    await _lane_tap(lane_env)
+    assert lane_env.channel.marks == ["☑ Done: pay €84.20."]
+    assert lane_env.channel.replies == []                    # no receipt message
 
 
-async def test_an_on_card_receipt_whose_line_did_not_land_is_posted(desk_env):
+async def test_an_on_card_receipt_whose_line_did_not_land_is_posted(lane_env):
     async def respond(call):
         call.owner.resolve(pr.Capture("receipt", "Done: pay €84.20.", on_card=True))
         return tools_mod.DelegatedOutput(text="")
-    desk_env.respond = respond
+    lane_env.respond = respond
     marks = []
 
     async def failing(meta, line):
         marks.append(line)
         return False
-    desk_env.channel.mark_proposal = failing
-    await _desk_tap(desk_env)
+    lane_env.channel.mark_proposal = failing
+    await _lane_tap(lane_env)
     assert marks[0] == "☑ Done: pay €84.20."
-    (message, _), = desk_env.channel.replies
+    (message, _), = lane_env.channel.replies
     assert str(message).endswith("Done: pay €84.20.")
 
 
-async def test_a_tap_that_did_not_do_its_button_is_never_marked_a_success(desk_env):
+async def test_a_tap_that_did_not_do_its_button_is_never_marked_a_success(lane_env):
     async def respond(call):
         call.owner.resolve(pr.Capture("receipt", "Nothing was pressed.", not_done=True))
         return tools_mod.DelegatedOutput(text="")
-    desk_env.respond = respond
-    await _desk_tap(desk_env)
-    assert len(desk_env.channel.marks) == 1
-    assert desk_env.channel.marks[0].startswith("✖ ")
-    (message, _), = desk_env.channel.replies                 # the receipt still says why
+    lane_env.respond = respond
+    await _lane_tap(lane_env)
+    assert len(lane_env.channel.marks) == 1
+    assert lane_env.channel.marks[0].startswith("✖ ")
+    (message, _), = lane_env.channel.replies                 # the receipt still says why
     assert str(message).endswith("Nothing was pressed.")
 
 

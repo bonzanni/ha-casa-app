@@ -5,7 +5,7 @@ receipt is not posted. The card is judged and registered exactly as a #1302
 next card; a card that cannot replace the tapped one falls back to today's
 sequence — the receipt, then the card as a new message.
 
-The desk use is ``test_desk_tap.py``'s fixture, extended by
+The lane use is ``test_stored_call_tap.py``'s fixture, extended by
 ``test_tap_next_card.py``'s ``card_env`` (a real ``_post_proposal`` against a
 real ``VerdictBroker``, the channel faked at its send) with the edit.
 """
@@ -23,10 +23,8 @@ import result_broker as rb
 import tools as tools_mod
 import verdict_broker as vb
 from channels import UnconfirmedDelivery
-from test_desk_tap import LABEL, OPERATOR, _echo, _tap, env  # noqa: F401
+from test_stored_call_tap import LABEL, OPERATOR, _echo, _tap, env  # noqa: F401
 from test_tap_next_card import _captured, _card, _live, _meta_of, card_env  # noqa: F401
-from channels.tg_address import TgAddress
-from two_endpoints import CASA_BOT as BOT
 
 TAPPED = 501                                   # the fixture's tapped message id
 
@@ -95,7 +93,7 @@ def test_the_more_no_post_shape_never_carries_in_place():
     assert (cap.kind, cap.in_place) == ("no_post", False)
 
 
-# --- the desk use: in place ---------------------------------------------------------
+# --- the lane use: in place ---------------------------------------------------------
 
 async def test_the_tapped_card_is_edited_in_place_and_nothing_is_sent(edit_env):
     env = edit_env
@@ -103,9 +101,9 @@ async def test_the_tapped_card_is_edited_in_place_and_nothing_is_sent(edit_env):
     inner = env.channel.replace_operator_proposal
 
     async def checking(chat_id, message_id, text, labels, rid, *, post=None):
-        # bound and filed BEFORE the edit goes out (d1, both reviewers)
+        # bound BEFORE the edit goes out, and the edit carries the card's post record
         registered_at_edit.append((_live() == [rid], _meta_of(rid)["message_id"],
-                                   rb.POST_MAP.get(TgAddress(BOT, OPERATOR, TAPPED)) is post))
+                                   post is not None))
         return await inner(chat_id, message_id, text, labels, rid, post=post)
     env.channel.replace_operator_proposal = checking
     env.respond = _respond(nxt=_card())
@@ -122,11 +120,9 @@ async def test_the_tapped_card_is_edited_in_place_and_nothing_is_sent(edit_env):
     meta = _meta_of(rid)
     assert meta["message_id"] == TAPPED and meta["revision"] == "walk-1"
     assert (meta["chat_id"], meta["operator_id"], meta["role"]) == (OPERATOR, OPERATOR, "finance")
-    post = rb.POST_MAP.get(TgAddress(BOT, OPERATOR, TAPPED))
+    post = edit.post
     assert (post.role, post.kind) == ("finance", rb.OPERATOR_PROPOSAL)
-    # the desk exchange and the echo are today's
-    assert [(e.who, e.text) for e in env.desk.log] == [("operator", "[tapped: Yes]"),
-                                                      ("specialist", "All quarters on.")]
+    # the chat's note is today's
     assert any("applied your tap (Yes)" in line for line in _echo())
     assert env.channel.notices == []
     assert env.channel.marks == []          # #1341: the new card is the answer; never ☑ first
@@ -221,7 +217,7 @@ async def test_an_unconfirmed_edit_without_a_revision_leaves_both_cards_working(
     (card,) = env.proposals
     assert sorted(_live()) == sorted([edit.rid, card.rid])
     assert _meta_of(edit.rid)["message_id"] == TAPPED
-    assert rb.POST_MAP.get(TgAddress(BOT, OPERATOR, TAPPED)) is not None      # swipe-replies still route
+    assert edit.post is not None                       # a reply to it still reaches its task
     # #1341: the message may now show the live new card — it is not marked over
     assert env.channel.marks == []
 

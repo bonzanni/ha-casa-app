@@ -59,11 +59,7 @@ def test_reserved_context_keys_are_exactly_the_spec_set():
         "_operator_turn",
         # browser executor §5.5: the operator's own typed words
         "_operator_words",
-        # S4: the specialist-desk marker a desk turn's origin carries — an
-        # external caller who could set it would route an approval
-        # continuation to a desk of its choosing.
-        "desk",
-        # S5: the stored-call marker a pinned one-call turn's origin carries —
+        # The stored-call marker a pinned one-call turn's origin carries —
         # an external caller who could set it would pin a turn to a call of
         # its choosing and suppress its retention.
         "stored_call",
@@ -100,6 +96,9 @@ def test_reserved_context_keys_are_exactly_the_spec_set():
         # the chat a task's surface posts in, or pose as a task to post in
         # none.
         "_task_delivery",
+        # The approval a configurator run commits under: a caller who could
+        # set it would commit under an approval the operator gave elsewhere.
+        "_approval",
     })
 
 

@@ -16,7 +16,7 @@ import pytest
 import tools as tools_mod
 from plugin_registry import ResolutionResult
 from test_delegate_to_agent import _specialist_cfg
-from test_desk_tap import env  # noqa: F401
+from test_stored_call_tap import env  # noqa: F401
 from test_pinned_wiring import _build_input, _owner, _pinned, bound  # noqa: F401
 from test_redcase_1282 import _pinned_prompt
 
