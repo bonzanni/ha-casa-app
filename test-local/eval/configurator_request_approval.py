@@ -25,8 +25,9 @@ session; the task arrives as ``Task:`` under a ``<delegation_context>``):
      configurator asked. The run must call
      ``specialist_install_request_approval`` with exactly the agreed values and
      the staged identity, then STOP: no commit, no further Casa tool call.
-  C. Casa continues the configurator after Approve, with the frozen values
-     appended as Casa appends them. The run must call
+  C. Casa continues the configurator after Approve; the task is Casa's own
+     continuation text and values line, composed as
+     ``configurator_continue.start`` composes it. The run must call
      ``specialist_install_commit`` with exactly those values and the staged
      identity. The run is cut off once that call is seen.
 
@@ -35,7 +36,8 @@ the counts are reported per check.
 
 ``--check`` runs offline: it verifies the tree carries the approval-request
 flow (the tool, its grant in the configurator's role, the install recipe that
-names it, the approved-values line Casa's continuation appends), builds the
+names it, the continuation text and values line Casa starts the run with),
+builds the
 fakes and the three task prompts, and exits without calling the model. The
 live run makes the same preflight first and stops at once when it fails.
 
@@ -72,11 +74,6 @@ REQUEST_TOOL = "specialist_install_request_approval"
 COMMIT_TOOL = "specialist_install_commit"
 SERVER = "casa-framework"
 BUILTINS = ["Read", "Glob", "Grep"]
-
-# The line Casa's continuation appends to its task text before the frozen
-# values (configurator_continue). The preflight requires it verbatim in the
-# tree, so the continuation this eval serves cannot drift from the real one.
-APPROVED_VALUES_LINE = "\n\nThe approved values (commit exactly these): "
 
 # The scripted inspection: one required config value, no secrets, no plugins.
 REPO = "acme/casa-weather"
@@ -151,16 +148,11 @@ def _preflight(root: str) -> list[str]:
     else:
         if REQUEST_TOOL not in text:
             missing.append(f"the install recipe ({recipe}) does not name {REQUEST_TOOL}")
-    try:
-        source = inspect.getsource(configurator_continue)
-    except OSError as exc:
-        missing.append(f"configurator_continue source unreadable: {exc}")
-    else:
-        if APPROVED_VALUES_LINE.strip() not in source:
-            missing.append("configurator_continue does not append the approved values with "
-                           f"{APPROVED_VALUES_LINE.strip()!r}")
-        if "raise NotImplementedError" in inspect.getsource(configurator_continue.start):
-            missing.append("configurator_continue.start is still a stub")
+    for name in ("continuation_text", "values_line", "APPROVED_VALUES_LINE"):
+        if not hasattr(configurator_continue, name):
+            missing.append(f"configurator_continue.{name} is not defined")
+    if "raise NotImplementedError" in inspect.getsource(configurator_continue.start):
+        missing.append("configurator_continue.start is still a stub")
     return missing
 
 
@@ -198,17 +190,12 @@ def _envelope(task: str, context: str = "") -> str:
 
 
 def _continuation(values: dict) -> str:
-    """Casa's task text for the run it starts after Approve: the continuation
-    the request tool hands to configurator_continue, then the frozen values as
-    configurator_continue appends them."""
-    s = STAGED
-    text = (f"The operator approved installing specialist:{s['slug']}. "
-            f"Call {COMMIT_TOOL} with component_id {s['component_id']!r}, version "
-            f"{s['version']!r}, root_digest {s['root_digest']!r}, slug {s['slug']!r}, "
-            f"staged_dir {s['staged_dir']!r}, receipt_id {s['receipt_id']!r}, and exactly "
-            "the approved values below, then finish the recipe (wire delegation, "
-            "config_git_commit) and end with your answer.")
-    return text + APPROVED_VALUES_LINE + json.dumps(values, sort_keys=True)
+    """Casa's task text for the run it starts after Approve, composed as
+    ``configurator_continue.start`` composes an approval's task: the
+    continuation the request tool hands it, then the frozen values."""
+    import configurator_continue
+    text = configurator_continue.continuation_text("specialist_install", **STAGED)
+    return text + configurator_continue.values_line(values)
 
 
 def _replies(phase: str) -> dict:
@@ -221,9 +208,12 @@ def _replies(phase: str) -> dict:
     return {
         "specialist_install_inspect": INSPECT_RESULT,
         REQUEST_TOOL: request,
-        COMMIT_TOOL: {"ok": True, "state": "active", "slug": STAGED["slug"],
-                      "version": STAGED["version"], "component_id": STAGED["component_id"]},
-        "config_git_commit": {"ok": True, "committed": True},
+        COMMIT_TOOL: {"ok": True, "slug": STAGED["slug"], "state": "active",
+                      "activation_committed": True,
+                      "reloaded": [f"specialist:{STAGED['slug']}"], "verify": {},
+                      "required_env_vars": {}},
+        "config_git_commit": {"sha": "3f9c2e1", "message": "install specialist weather",
+                              "reloads": [{"scope": "full", "status": "ok"}]},
     }
 
 
