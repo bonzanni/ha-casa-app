@@ -1742,9 +1742,22 @@ class TelegramChannel(Channel):
             return
         if decision == "dormant_reply":
             await self._send_dormant_line(update)
-        elif decision == "deliver" and await self._bus.send_checked(msg) != "accepted":
+        elif decision == "deliver" and await self._send_turn(msg) != "accepted":
             logger.error("role %r has no queue; update %s not delivered",
                          self.default_agent, getattr(update, "update_id", None))
+
+    async def _send_turn(self, msg: BusMessage) -> str:
+        """Hand a direct-chat turn to its agent's queue (``send_checked``). A
+        turn that opens the agent's own chat marks it open once it was taken,
+        on its first send or on a retry after a hand-back alike."""
+        outcome = await self._bus.send_checked(msg)
+        if outcome == "accepted" and msg.context.get("_chat_opening") is True:
+            import own_voice
+            try:
+                await own_voice.mark_open(self.bot_id)
+            except Exception:  # noqa: BLE001 — the next turn opens it again
+                logger.warning("own chat not marked open", exc_info=True)
+        return outcome
 
     async def release_update(self, update_json: dict) -> str:
         """Deliver one update the chat's lifecycle held for this agent's bot,
@@ -2118,16 +2131,6 @@ class TelegramChannel(Channel):
                 await reset_channel(channel_key, self._session_registry)
             return  # do NOT feed /new to the agent
 
-        if (not self.is_casa and _first.split("@", 1)[0] == "/start"
-                and len(text.split()) == 1
-                and self._sender_is_operator(update.effective_user)):
-            # A bare /start opens an agent's own chat: an ordinary turn, with
-            # Casa's note so the agent introduces itself in its own words.
-            chat = strict_positive_id(chat_id)
-            if chat is not None:
-                import chat_notes
-                chat_notes.record(self.bot_id, chat, "The operator just opened your chat.")
-
         await self._dispatch_dm_turn(update, chat_id, update.message.text,
                                      user=update.effective_user, ended_task=ended_task)
 
@@ -2250,6 +2253,20 @@ class TelegramChannel(Channel):
         context["_origin_clearance"] = trusted_origin.server_origin.clearance
         # The route is reserved, so it is stamped after sanitization too.
         context["_tg_bot"] = route
+        # The operator's first turn in an agent's own chat, whatever it says,
+        # is the one that opens it: the agent is told so and says hello. The
+        # chat is marked open only once its queue takes the turn
+        # (:meth:`_send_turn`); a turn refused here decides again when it is
+        # delivered.
+        if not self.is_casa and self._sender_is_operator(user):
+            import own_voice
+            try:
+                opening = own_voice.chat_opening(self.bot_id)
+            except Exception:  # noqa: BLE001 — the turn goes on without the opening
+                logger.warning("own chat opening not read", exc_info=True)
+                opening = False
+            if opening:
+                context["_chat_opening"] = True
         # #283: live-operator marker — reserved (sanitize strips it from
         # every external context), stamped ONLY for the authenticated
         # operator sender. The agent-spawn cap exempts exactly these turns;
@@ -2284,7 +2301,7 @@ class TelegramChannel(Channel):
             return True
         # #1378: a caption turn reports whether the agent's queue took it, so a
         # dropped turn falls back to the acknowledgement rather than to silence
-        if await self._bus.send_checked(msg) == "accepted":
+        if await self._send_turn(msg) == "accepted":
             return True
         self._stop_typing(chat_id, cid)
         if received_file is None:

@@ -17,8 +17,8 @@ pytestmark = [pytest.mark.unit]
 INVOICE = ("/data/agent-inbox/assistant/ready/1758500000000-a1b2.pdf", "invoice.pdf")
 STATEMENT = ("/data/agent-inbox/assistant/ready/1758500001000-c3d4.pdf", "statement.pdf")
 
-ANSWERED = "Casa: Ellen answered without opening “invoice.pdf” in this turn."
-WROTE = "Casa: Ellen wrote this without opening “invoice.pdf”."
+ANSWERED = "(Ellen hasn't opened “invoice.pdf”.)"
+WROTE = "(Ellen wrote this without opening “invoice.pdf”.)"
 
 
 def _scope(**over) -> ob.TurnScope:
@@ -118,9 +118,9 @@ def test_several_listed_files_none_read_names_the_count_not_the_files():
     s = _scope()
     s.arm(ob.ReadBeforeDescribe(files=(INVOICE, STATEMENT)))
     a = s.admit(K.FINAL_REPLY, "Both are fine.")
-    # #1218 (ruling A): listed files are counted as listed, never as "sent in this turn"
-    assert a.text == ("Casa: Ellen answered without opening any of the 2 files Ellen "
-                      "listed.\n\nBoth are fine.")
+    # #1218 (ruling A): listed files are counted as listed, never as "files you sent"
+    assert a.text == ("(Ellen hasn't opened any of the 2 files Ellen "
+                      "listed.)\n\nBoth are fine.")
 
 
 def test_a_read_attempt_on_an_unlisted_inbox_file_arms_the_obligation():
@@ -183,12 +183,12 @@ def test_inherited_and_todays_lines_both_appear_and_a_stored_note_concatenates()
     s = _scope(id="turn-2")
     s.arm(ob.InheritedNote(WROTE))
     s.arm(ob.ReadBeforeDescribe(files=(STATEMENT,)))
-    today = "Casa: Ellen answered without opening “statement.pdf” in this turn."
+    today = "(Ellen hasn't opened “statement.pdf”.)"
     a = s.admit(K.DISCRETE, "Both are due.")
     assert a.text == WROTE + "\n\n" + today + "\n\nBoth are due."
     stored = s.admit(K.STORED, "Pay both")
     assert stored.note == (WROTE + "\n\n"
-                           "Casa: Ellen wrote this without opening “statement.pdf”.")
+                           "(Ellen wrote this without opening “statement.pdf”.)")
 
 
 # ---------------------------------------------------------------------------

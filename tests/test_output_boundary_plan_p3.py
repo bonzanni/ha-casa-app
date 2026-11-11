@@ -20,7 +20,7 @@ from text_util import utf16_len
 
 pytestmark = [pytest.mark.unit]
 
-LINE = "Casa: Ellen answered without opening “invoice.pdf” in this turn."
+LINE = "(Ellen hasn't opened “invoice.pdf”.)"
 
 
 def _admitted(text: str, *lines: str) -> Admitted:

@@ -37,7 +37,7 @@ three rules, and then calls that endpoint's own method:
   install and erase cards, Casa's operator notices, the limit line of a turn that did not come
   from a chat), which always go through Casa's bot whatever bot the triggering turn came from.
 
-An agent's own bot ([`own-voice.md`](own-voice.md)) is an endpoint the own-chat lifecycle adds
+An agent's own bot ([`own-voice-lifecycle.md`](own-voice-lifecycle.md)) is an endpoint the own-chat lifecycle adds
 and removes while Casa runs: `add_agent_endpoint` registers it by bot id before its role is
 known, `set_endpoint_role` binds or releases the role (Casa's endpoint keeps its own), and
 `remove_endpoint` forgets a stopped one. A job's posts are address-bound to the job's

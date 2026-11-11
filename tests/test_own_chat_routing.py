@@ -157,7 +157,21 @@ def world(monkeypatch, tmp_path):
     grants = []
     monkeypatch.setattr(agent_inbox, "grant_task_file",
                         lambda task_id, path: grants.append((task_id, path)))
-    yield types.SimpleNamespace(index=index, inputs=inputs, inboxes=inboxes, grants=grants)
+    # the own chat's lifecycle, as far as a turn asks it: whether the chat has
+    # opened yet (a flag only ``mark_open`` flips), and every mark
+    opening = types.SimpleNamespace(unopened=False, asked=[], marks=[])
+
+    def chat_opening(bot_id):
+        opening.asked.append(bot_id)
+        return opening.unopened
+
+    async def mark_open(bot_id):
+        opening.marks.append(bot_id)
+        opening.unopened = False
+    monkeypatch.setattr(own_voice, "chat_opening", chat_opening, raising=False)
+    monkeypatch.setattr(own_voice, "mark_open", mark_open, raising=False)
+    yield types.SimpleNamespace(index=index, inputs=inputs, inboxes=inboxes, grants=grants,
+                                opening=opening)
     chat_notes.reset()
 
 
@@ -590,20 +604,109 @@ async def test_a_released_update_whose_agent_has_no_queue_stays_held(world, inta
     assert intake.calls == []                           # the release keeps it, not a new hold
 
 
-async def test_a_bare_start_opens_the_chat_with_casas_note(world):
+# ---------------------------------------------------------------------------
+# the operator's first turn in an agent's own chat opens it
+# ---------------------------------------------------------------------------
+
+async def _first_turn(ch, how):
+    if how == "caption":
+        await ch._on_non_text_message(types.SimpleNamespace(
+            message=_file("a.pdf", caption="what is this?")))
+    else:
+        await _handle(ch, _text(how))
+
+
+@pytest.mark.parametrize("how", ["hi", "/start", "caption"])
+async def test_the_first_turn_of_an_unopened_chat_carries_the_opening(world, how):
     ch, bus = _endpoint("own")
-    await _handle(ch, _text("/start"))
+    world.opening.unopened = True
+    await _first_turn(ch, how)
     [turn] = _turns(bus, "finance")
-    assert turn.content == "/start"
-    assert chat_notes.drain(OWN_BOT, OPERATOR) == ["The operator just opened your chat."]
+    assert turn.context["_chat_opening"] is True
+    assert world.opening.marks == [OWN_BOT]
 
 
-@pytest.mark.parametrize("kind,text", [("casa", "/start"), ("own", "/start now"),
+async def test_an_open_chat_carries_no_opening(world):
+    ch, bus = _endpoint("own")
+    await _handle(ch, _text("hi"))
+    [turn] = _turns(bus, "finance")
+    assert "_chat_opening" not in turn.context
+    assert world.opening.asked == [OWN_BOT] and world.opening.marks == []
+
+
+async def test_a_turn_its_queue_refuses_opens_nothing(world, intake):
+    ch, bus = _endpoint("own", register=False)
+    world.opening.unopened = True
+    intake.answer = "held"
+    await _handle(ch, _text("hi"))
+    assert "finance" not in bus.queues
+    assert world.opening.marks == [] and world.opening.unopened is True
+
+
+async def test_a_turn_handed_back_and_taken_on_retry_opens_the_chat(world, monkeypatch):
+    ch, bus = _endpoint("own", register=False)
+    world.opening.unopened = True
+
+    async def registered(bot_id, update_json):
+        bus.register("finance", _noop)                  # the agent came back meanwhile
+        return "deliver"
+    monkeypatch.setattr(own_voice, "intake", registered)
+    await _handle(ch, _text("hi"))
+    await _handle(ch, _text("still there?", mid=71))
+    first, second = _turns(bus, "finance")
+    assert first.context["_chat_opening"] is True
+    assert "_chat_opening" not in second.context
+    assert world.opening.marks == [OWN_BOT]
+
+
+async def test_the_residents_bot_never_asks(world):
+    ch, bus = _endpoint("casa")
+    world.opening.unopened = True
+    await _handle(ch, _text("/start"))
+    [turn] = _turns(bus, "assistant")
+    assert "_chat_opening" not in turn.context
+    assert world.opening.asked == [] and world.opening.marks == []
+
+
+async def test_someone_elses_message_never_asks(world):
+    ch, _bus = _endpoint("own")
+    world.opening.unopened = True
+    await _handle(ch, _text("hi", uid=555))
+    assert world.opening.asked == [] and world.opening.marks == []
+
+
+@pytest.mark.parametrize("kind,text", [("own", "/start"), ("casa", "/start"),
                                        ("own", "hello")])
-async def test_anything_else_carries_no_opening_note(world, kind, text):
+async def test_the_channel_leaves_no_opening_note_itself(world, kind, text):
     ch, _bus = _endpoint(kind)
+    world.opening.unopened = kind == "own"
     await _handle(ch, _text(text))
     assert chat_notes.drain(ch.bot_id, OPERATOR) == []
+
+
+async def test_the_opening_mark_is_casas_alone():
+    import provenance
+    assert "_chat_opening" in provenance.RESERVED_CONTEXT_KEYS
+    assert "_chat_opening" not in provenance.sanitize_external_context({"_chat_opening": True})
+
+
+async def test_a_released_captionless_document_opens_nothing_and_the_next_text_greets(
+        world, monkeypatch):
+    import channels.telegram as tg_mod
+    ch, bus = _endpoint("own")
+    world.opening.unopened = True
+    doc = types.SimpleNamespace(message=_file("a.pdf"), callback_query=None)
+    doc.message.text = None
+    monkeypatch.setattr(tg_mod.Update, "de_json", lambda data, bot: doc, raising=False)
+    assert await ch.release_update({"update_id": 1}) == "accepted"
+    assert world.inboxes["finance"].received == ["a.pdf"]          # stored
+    assert len(ch._app.bot.sent) == 1                               # and acknowledged
+    assert _turns(bus, "finance") == []
+    assert world.opening.marks == []
+    await _handle(ch, _text("hi"))
+    [turn] = _turns(bus, "finance")
+    assert turn.context["_chat_opening"] is True
+    assert world.opening.marks == [OWN_BOT]
 
 
 # ---------------------------------------------------------------------------

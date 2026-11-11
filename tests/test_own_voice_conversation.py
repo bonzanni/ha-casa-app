@@ -344,6 +344,71 @@ async def test_casas_notes_for_the_chat_are_drained_once_into_its_agents_turn(wo
     assert chat_notes.drain(CASA_BOT, OPERATOR) == ["a note for Ellen's chat"]
 
 
+async def test_a_turn_that_opens_the_chat_says_so_in_its_notes(world):
+    """The turn that opens Alex's chat carries Casa's line that the operator
+    just opened it, on a line of its own — not among what Alex did for others
+    — and only that turn does."""
+    chat_notes.record(FINANCE_BOT, OPERATOR, "Ellen asked you: groceries — you answered")
+    await world.alex.handle_message(_dm("hi", _chat_opening=True))
+    await world.alex.handle_message(_dm("and September?", mid="8"))
+
+    first, second = _Client.prompts
+    assert first.count(agent_mod.CHAT_OPENING_NOTE) == 1
+    framed = first[first.index(agent_mod.CHAT_NOTES_FRAME):]
+    assert agent_mod.CHAT_OPENING_NOTE not in framed
+    assert agent_mod.CHAT_OPENING_NOTE not in second
+
+
+async def test_a_first_message_handed_back_and_taken_on_retry_greets_once(
+        world, tmp_path, monkeypatch):
+    """Alex's chat is bound but his conversation is not on the bus yet: the
+    operator's first message is handed back to the chat's lifecycle, which is
+    busy; meanwhile the conversation registers, the lifecycle lets the message
+    through and the retry is taken. That turn opens the chat; the next one
+    carries no second greeting."""
+    import asyncio
+
+    import own_voice_lifecycle as ovl
+    from own_voice_world import World, created, make_lifecycle, specialist
+    from test_own_chat_routing import _endpoint, _handle, _noop, _text, _turns
+
+    voices = World(configs={"finance": specialist("Alex")}, queues=set(),
+                   tokens={FINANCE_BOT: "222222:alex-token-aaaaaaaaaaaaaaaa"})
+    lc, host = make_lifecycle(voices, tmp_path / "voices", channel=False)
+    monkeypatch.setattr(host, "operator_id", lambda: OPERATOR)
+    await lc.post_offer("finance")
+    await lc.on_created(created(FINANCE_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR)
+    assert lc.state("finance") == "not_open"
+    ovl.install(lc)
+    try:
+        ch, bus = _endpoint("own", register=False)
+        asked = asyncio.Event()
+        inner = lc.intake
+
+        async def intake(bot_id, update_json):
+            asked.set()
+            return await inner(bot_id, update_json)
+        lc.intake = intake
+        busy = lc._lock(FINANCE_BOT)
+        await busy.acquire()
+        first = asyncio.create_task(_handle(ch, _text("hi")))
+        await asyncio.wait_for(asked.wait(), 5)      # handed back, waiting on the lifecycle
+        bus.register("finance", _noop)
+        voices.queues.add("finance")
+        busy.release()
+        await asyncio.wait_for(first, 5)
+        await _handle(ch, _text("are you there?", mid=71))
+
+        turns = _turns(bus, "finance")
+        assert [t.content for t in turns] == ["hi", "are you there?"]
+        for turn in turns:
+            await world.alex.handle_message(turn)
+        assert [p.count(agent_mod.CHAT_OPENING_NOTE) for p in _Client.prompts] == [1, 0]
+        assert lc.state("finance") == "open"
+    finally:
+        ovl.install(None)
+
+
 async def test_a_job_started_in_the_agents_chat_narrates_its_result_there(world):
     """A job Alex's conversation started has Alex's conversation as its
     requester: its completion is a turn of that conversation, on Alex's

@@ -51,6 +51,7 @@ class World:
     queues: set = field(default_factory=set)
     configs: dict = field(default_factory=dict)
     released: list = field(default_factory=list)      # (bot_id, update_id)
+    openings: list = field(default_factory=list)      # each operator turn: did it open the chat
     notices: list = field(default_factory=list)       # (bot_id, text)
     setup: list = field(default_factory=list)         # (what, token, value)
     fetches: list = field(default_factory=list)
@@ -82,12 +83,37 @@ class FakeEndpoint:
 
 
 class FakeHost:
-    """One process's view of :class:`World`."""
+    """One process's view of :class:`World`. Its endpoints act on an update
+    the way the Telegram channel does: an operator's message is a turn, which
+    is asked whether it opens the agent's chat when it is built, and marks the
+    chat open once its agent's queue took it."""
 
     def __init__(self, world: World) -> None:
         self.w = world
         self.endpoints: dict[int, FakeEndpoint] = {}
         self.asks: dict[str, Any] = {}
+        self.lifecycle: "ovl.Lifecycle | None" = None   # set by make_lifecycle
+
+    def _operator_turn(self, update: dict) -> bool:
+        """Whether *update* is a turn the channel builds for the operator: his
+        text, or a file's caption (a captionless file starts no turn)."""
+        msg = update.get("message") if isinstance(update, dict) else None
+        if not msg or (msg.get("from") or {}).get("id") != self.operator_id():
+            return False
+        return bool(msg.get("text") or msg.get("caption"))
+
+    def turn_opening(self, bot_id: int, update: dict) -> bool:
+        """The channel building *update*'s turn: whether it opens the chat."""
+        if not self._operator_turn(update):
+            return False
+        opening = self.lifecycle.chat_opening(bot_id)
+        self.w.openings.append(opening)
+        return opening
+
+    async def turn_accepted(self, bot_id: int, opening: bool) -> None:
+        """The agent's queue took the turn: one that opened the chat marks it."""
+        if opening:
+            await self.lifecycle.mark_open(bot_id)
 
     def operator_id(self):
         return OPERATOR
@@ -176,11 +202,13 @@ class FakeHost:
         return True
 
     async def release_update(self, bot_id, update):
+        opening = self.turn_opening(bot_id, update)
         role = self.endpoints[bot_id].default_agent if bot_id in self.endpoints else ""
         if role not in self.w.queues:
             return "no_target"
         self.w.released.append((bot_id, update["update_id"]))
         self.w.tick(f"release:{update['update_id']}")
+        await self.turn_accepted(bot_id, opening)
         return "accepted"
 
     def _new_card(self, text, buttons):
@@ -264,12 +292,28 @@ OP_ENV = {"ONEPASSWORD_DEFAULT_VAULT": "Casa", "OP_SERVICE_ACCOUNT_TOKEN": "ops_
 
 
 def make_lifecycle(world: World, root: Path, *, onepassword: bool = True,
-                   counting: bool = True) -> tuple[ovl.Lifecycle, FakeHost]:
-    """A fresh process over *root*: a new host, a new lifecycle, the same world."""
+                   counting: bool = True, channel: bool = True,
+                   ) -> tuple[ovl.Lifecycle, FakeHost]:
+    """A fresh process over *root*: a new host, a new lifecycle, the same world.
+
+    With *channel*, an update the lifecycle's intake lets through is then the
+    endpoint's turn, as on the Telegram channel (an intake that delivers has
+    found the agent's queue registered, so the turn is taken); without it,
+    ``intake`` is the lifecycle's alone."""
     host = FakeHost(world)
     tokens = ovl.TokenStore(root / "agent-voices" / "tokens",
                             env=OP_ENV if onepassword else {}, run=FakeOp(world))
     lc = ovl.Lifecycle(root=root, host=host, tokens=tokens, retry_delays=None)
+    host.lifecycle = lc
+    if channel:
+        intake = lc.intake
+
+        async def _intake(bot_id, update):
+            decision = await intake(bot_id, update)
+            if decision == "deliver":
+                await host.turn_accepted(bot_id, host.turn_opening(bot_id, update))
+            return decision
+        lc.intake = _intake
     if counting:
         save = lc.store.save
 

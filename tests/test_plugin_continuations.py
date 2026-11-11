@@ -797,12 +797,12 @@ def test_the_knowledge_line_reads_like_the_agents_own_memory(roles):
     """The note an agent keeps of a continuation it did not start says who
     asked, what, and how it went, with no sizes or plumbing."""
     assert pc._knowledge_line("assistant", "check the rate", DelegatedOutput(text="x" * 400)) \
-        == "Ellen asked you «check the rate»; you answered"
+        == "Ellen asked you: check the rate — you answered"
     assert pc._knowledge_line("assistant", "check the rate", failed="timeout") \
-        == "Ellen asked you «check the rate»; you couldn't finish it (timeout)"
+        == "Ellen asked you: check the rate — you couldn't finish it (timeout)"
     aborted = DelegatedOutput(text="", run_subtype="error_max_turns")
     assert pc._knowledge_line("assistant", "check the rate", aborted) \
-        == "Ellen asked you «check the rate»; you couldn't finish it (error_max_turns)"
+        == "Ellen asked you: check the rate — you couldn't finish it (error_max_turns)"
 
 
 @pytest.mark.asyncio

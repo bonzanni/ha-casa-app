@@ -569,7 +569,7 @@ class TriggerSpec:
     # reconciliation and the post-fire cleanup.
     managed_by: str = ""
     # #1038: the resolved disclosure a reminder owes the turn that sends it —
-    # "Casa: Ellen wrote this without opening “invoice.pdf”." — stored beside
+    # "(Ellen wrote this without opening “invoice.pdf”.)" — stored beside
     # the entry as ``output_note`` when the authoring turn had listed a file
     # and opened none. Stamped into the firing turn's context as the reserved
     # ``_inherited_note`` marker (``provenance.scheduled_delivery_markers``),

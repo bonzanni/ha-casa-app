@@ -572,7 +572,7 @@ async def test_ellens_tasks_never_enter_alexs_conversation_only_a_note(world, mo
     else:
         assert told == []                      # the sync result was the tool's answer
     [note] = chat_notes.drain(ALEX_BOT, OPERATOR)
-    assert note == f"Ellen asked you «{BRIEF}»; you answered"
+    assert note == f"Ellen asked you: {BRIEF} — you answered"
 
 
 # ---------------------------------------------------------------------------
@@ -584,7 +584,7 @@ async def test_a_task_ellen_hands_alex_shows_in_his_chat_and_ellen_gets_her_resu
     await _settled()
     assert payload["status"] == "ok" and payload["text"].startswith(ANSWER)
     texts = world.alex.recorder.texts()
-    assert texts[0] == f"Ellen asked me: «{BRIEF}»"
+    assert texts[0] == f"Ellen asked me: {BRIEF}"
     assert ANSWER in "".join(texts[1:])
     assert _ellen_texts(world) == []          # Ellen's own record only
     # every message of the task is filed under it: a reply to it finds the task
@@ -649,7 +649,7 @@ async def test_alexs_next_turn_carries_the_tasks_note_once(world, conversation):
     await conversation.agent.handle_message(_dm_to_alex("and September?", "8"))
     await conversation.agent.handle_message(_dm_to_alex("and August?", "9"))
     first, second = conversation.client.prompts
-    assert f"(Casa) Ellen asked you «{BRIEF}»; you answered" in first
+    assert f"(Casa) Ellen asked you: {BRIEF} — you answered" in first
     assert "Ellen asked you" not in second
     assert _ellen_texts(world) == []          # his answers stay in his chat
 
@@ -665,7 +665,7 @@ async def test_a_reply_to_a_live_delegations_post_reaches_it_and_after_its_end_a
     start_line = 500                                       # the task's first post
     assert task_posts.owner(TgAddress(ALEX_BOT, OPERATOR, start_line)).task_id == did
     await _handle(world.alex, _text("only the market, please", reply_to=start_line,
-                                    quoted_text=f"Ellen asked me: «{BRIEF}»"))
+                                    quoted_text=f"Ellen asked me: {BRIEF}"))
     assert Held.built.writes[-1].endswith("only the market, please")
     assert _queued(world.bus, "finance") == []
     Held.release.set()
@@ -684,7 +684,7 @@ async def test_what_the_operator_wrote_into_a_live_task_reaches_its_requester(
         world, monkeypatch):
     call, did = await _live_delegation(world, monkeypatch)
     await _handle(world.alex, _text("only Lidl", reply_to=500,
-                                    quoted_text=f"Ellen asked me: «{BRIEF}»"))
+                                    quoted_text=f"Ellen asked me: {BRIEF}"))
     assert Held.built.writes[-1].endswith("only Lidl")      # the task read it
     Held.release.set()
     payload = await call
@@ -692,7 +692,9 @@ async def test_what_the_operator_wrote_into_a_live_task_reaches_its_requester(
     assert payload["status"] == "ok"
     # Ellen's result names the words once, as the operator wrote them
     assert payload["text"].endswith(
-        "(Casa: the person also wrote to Alex directly while it worked on this: «only Lidl»)")
+        "(Casa: the person also wrote to Alex directly while it worked on this: «only Lidl». "
+        "Alex got those words in the task itself and worked with them, so they are not yours "
+        "to pass on or to start again as a new task.)")
     assert payload["text"].count("only Lidl") == 1
     assert task_input.take_said(did) == []                   # taken once
     assert _ellen_texts(world) == []
@@ -1187,7 +1189,7 @@ async def test_a_jobs_posts_are_in_alexs_chat_its_result_to_who_started_it_the_n
     assert told["finance" if starter == "ellen" else "assistant"] == []
     notes = chat_notes.drain(ALEX_BOT, OPERATOR)
     assert len(notes) == (1 if starter == "ellen" else 0)
-    assert all(n.startswith("Ellen started your job «") and n.endswith("; it finished")
+    assert all(n.startswith("Ellen started your job: ") and n.endswith(" — it finished")
                for n in notes)
     assert _ellen_texts(world) == []
 

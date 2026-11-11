@@ -166,6 +166,7 @@
     - casa/rootfs/opt/casa/specialist_install.py::commit_specialist_install
     - casa/rootfs/opt/casa/specialist_install.py::compute_install_root_digest
     - casa/rootfs/opt/casa/specialist_install.py::inspect_specialist_repo
+    - casa/rootfs/opt/casa/specialist_install.py::_other_version_spelling
     - casa/rootfs/opt/casa/specialist_install.py::resolve_release_ref
     - casa/rootfs/opt/casa/specialist_install.py::sweep_staging_aged
     - casa/rootfs/opt/casa/specialist_materialize.py::current_specialist_roles_dir

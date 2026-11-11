@@ -360,7 +360,8 @@ async def test_every_effect_finds_its_phase_on_disk(world, root):
 
 
 # ---------------------------------------------------------------------------
-# open is the first operator message, released or live, edited once
+# open is the first operator turn its agent's queue took, released or live,
+# edited once; the turn that opens it is told so when it is built
 # ---------------------------------------------------------------------------
 
 async def test_a_released_held_start_opens_the_chat_once(world, root):
@@ -378,11 +379,13 @@ async def test_a_released_held_start_opens_the_chat_once(world, root):
     host.edit_card = count
     await host.answer("Alex")
     assert lc.state("finance") == "open"
+    assert world.openings == [True]
     card = lc.store.agents["finance"]["offer_card"]
     assert world.card_text(card) == "Alex's chat is open."
     n = edits.count("Alex's chat is open.")
     assert await lc.intake(ALEX_BOT, update(2)) == "deliver"
     assert edits.count("Alex's chat is open.") == n
+    assert world.openings == [True, False]
 
 
 async def test_a_live_first_message_opens_the_chat_and_a_bot_message_does_not(world, root):
@@ -393,9 +396,72 @@ async def test_a_live_first_message_opens_the_chat_and_a_bot_message_does_not(wo
     assert world.card_text(card).startswith("Alex's chat is ready: @HeyAlexTestBot")
     await lc.intake(ALEX_BOT, {"update_id": 1, "callback_query": {"id": "x"}})
     assert lc.state("finance") == "not_open"
+    assert world.openings == []
     assert await lc.intake(ALEX_BOT, update(2, "/start")) == "deliver"
     assert lc.state("finance") == "open"
     assert world.card_text(card) == "Alex's chat is open."
+    assert world.openings == [True]
+
+
+async def test_a_refused_release_leaves_the_chat_unopened_across_a_restart(world, root):
+    """A held first message whose release its agent's queue refused opens
+    nothing: after a restart its release is still the turn that opens."""
+    world.queues.discard("finance")
+    lc, host = make_lifecycle(world, root)
+    await _bind_alex(lc, host)
+    assert await lc.intake(ALEX_BOT, update(1, "/start")) == "held"
+    await lc.on_queue("finance")                # the release finds no queue
+    assert world.released == []
+    assert world.openings == [True]
+    assert _disk(root)["agents"]["finance"]["chat_open_at"] is None
+    await lc.close()
+    lc, host = make_lifecycle(world, root)      # a restart
+    world.queues.add("finance")
+    await lc.boot()
+    assert world.released == [(ALEX_BOT, 1)]
+    assert world.openings == [True, True]       # refused, then taken
+    assert lc.state("finance") == "open"
+    assert await lc.intake(ALEX_BOT, update(2)) == "deliver"
+    assert world.openings == [True, True, False]
+
+
+async def test_an_interrupted_release_still_opens_with_the_greeting_after_a_restart(
+        world, root):
+    """The process dies inside the release of the first held message: the
+    next boot releases it as the turn that opens the chat."""
+    world.queues.discard("finance")
+    lc, host = make_lifecycle(world, root)
+    await _bind_alex(lc, host)
+    await lc.intake(ALEX_BOT, update(1, "/start"))
+    world.queues.add("finance")
+
+    async def crash(bot_id, upd):
+        raise Crash("release")
+    host.release_update = crash
+    with pytest.raises(Crash):
+        await lc.on_queue("finance")
+    assert _disk(root)["agents"]["finance"]["chat_open_at"] is None
+    lc, host = make_lifecycle(world, root)      # a restart
+    await lc.boot()
+    assert world.openings == [True]
+    assert world.released == [(ALEX_BOT, 1)]
+    assert lc.journal.pending(ALEX_BOT) == []
+    assert lc.state("finance") == "open"
+
+
+async def test_intake_never_opens_the_chat_itself(world, root):
+    """The lifecycle's intake only lets a first message through: the chat
+    opens when the turn built from it is taken."""
+    lc, host = make_lifecycle(world, root, channel=False)
+    await _bind_alex(lc, host)
+    assert lc.chat_opening(ALEX_BOT)
+    assert await lc.intake(ALEX_BOT, update(1, "/start")) == "deliver"
+    assert lc.state("finance") == "not_open"
+    assert lc.chat_opening(ALEX_BOT)
+    await lc.mark_open(ALEX_BOT)
+    assert lc.state("finance") == "open"
+    assert not lc.chat_opening(ALEX_BOT)
+    assert not lc.chat_opening(FIDO_BOT)        # no bot of any agent's
 
 
 # ---------------------------------------------------------------------------

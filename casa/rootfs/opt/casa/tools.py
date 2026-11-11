@@ -716,22 +716,6 @@ def _clip_line(text: str, limit: int) -> str:
     return one if len(one) <= limit else one[:limit - 1].rstrip() + "…"
 
 
-_QUOTE_PAIRS = {'"': '"', "'": "'", "“": "”", "‘": "’", "«": "»", "„": "“"}
-
-
-def _unquoted(text: str) -> str:
-    """*text*, whitespace-collapsed, without one pair of quote marks enclosing
-    all of it when neither mark occurs inside: how a brief its requester
-    quoted is shown."""
-    one = " ".join(str(text or "").split())
-    close = _QUOTE_PAIRS.get(one[:1])
-    if close and len(one) >= 2 and one.endswith(close):
-        inner = one[1:-1]
-        if one[0] not in inner and close not in inner:
-            return inner.strip()
-    return one
-
-
 # Delegations whose input destination is open: task id → executing role. The
 # run attaches its client under that id; the task's end closes it.
 _TASK_INPUTS: dict[str, str] = {}
@@ -830,11 +814,13 @@ def _answer_posts(birth: "TaskBirth | None", answer: str) -> bool:
 
 
 async def _post_task_text(birth: TaskBirth, text: str, *, intent: IntentKind,
-                          kind: str = "") -> bool:
+                          slot: str, kind: str = "") -> bool:
     """Post *text* at the task's delivery, through its executor's endpoint,
     every page filed under the task (its post record's owner is the task), so
-    a reply to any page reaches the task. Bounded; a failure is logged and
-    reported as ``False``."""
+    a reply to any page reaches the task. *slot* names which of the task's
+    posts this is (its start line or its answer): the two share owner and
+    tool-use id, so the slot alone keeps them two posts, each with its own
+    memory line. Bounded; a failure is logged and reported as ``False``."""
     import result_broker as rb
     ep = _task_endpoint(birth)
     if ep is None:
@@ -844,7 +830,7 @@ async def _post_task_text(birth: TaskBirth, text: str, *, intent: IntentKind,
     if admitted is None:
         return False
     post = rb.PostRecord(role=birth.executor, operator_id=delivery.chat_id, plugin="",
-                         slot="task", tool_use_id=birth.task_id, owner=birth.task_id,
+                         slot=slot, tool_use_id=birth.task_id, owner=birth.task_id,
                          posted_at=time.time(), kind=kind)
     try:
         outcome = await asyncio.wait_for(
@@ -862,8 +848,8 @@ async def _post_task_start(birth: TaskBirth) -> None:
     who = _display_name_for_role(birth.requester.role)
     await _post_task_text(
         birth,
-        f"{who} asked me: «{_clip_line(_unquoted(birth.brief), _TASK_START_BRIEF_CHARS)}»",
-        intent=IntentKind.DISCRETE)
+        f"{who} asked me: {_clip_line(birth.brief, _TASK_START_BRIEF_CHARS)}",
+        intent=IntentKind.DISCRETE, slot="task-start")
 
 
 async def _settle_task(birth: "TaskBirth | None", *, answer: "str | None" = None,
@@ -878,7 +864,7 @@ async def _settle_task(birth: "TaskBirth | None", *, answer: "str | None" = None
         if answer is not None:
             import result_broker as rb
             await _post_task_text(birth, answer, intent=IntentKind.FINAL_REPLY,
-                                  kind=rb.DESK_REPLY)
+                                  slot="task-answer", kind=rb.DESK_REPLY)
         _note_task(birth, "asked you",
                    "you answered" if answer is not None
                    else f"you couldn't finish it ({failure or 'unknown'})")
@@ -896,7 +882,7 @@ def _note_task(birth: TaskBirth, asked: str, outcome: str) -> None:
     who = _display_name_for_role(birth.requester.role)
     chat_notes.record(
         birth.delivery.bot_id, birth.delivery.chat_id,
-        f"{who} {asked} «{_clip_line(_unquoted(birth.brief), _TASK_NOTE_BRIEF_CHARS)}»; {outcome}")
+        f"{who} {asked}: {_clip_line(birth.brief, _TASK_NOTE_BRIEF_CHARS)} — {outcome}")
 
 
 def _record_birth(rec: Any) -> "TaskBirth | None":
@@ -1003,7 +989,9 @@ OWN_CHAT_ANSWER_NOTE = (
 # The line that tells the requester what the person wrote straight into the
 # task while it ran (a reply in the delegate's own chat).
 OPERATOR_WORDS_NOTE = ("(Casa: the person also wrote to {name} directly while it worked "
-                       "on this: {words})")
+                       "on this: {words}. {name} got those words in the task itself and worked "
+                       "with them, so they are not yours to pass on or to start again as a "
+                       "new task.)")
 
 
 def _with_silent_close_note(text: str, output: "DelegatedOutput", role: str, *,
@@ -8328,7 +8316,11 @@ async def delegate_to_agent(args: dict) -> dict:
             _task_input_open = delegation_id
             # this run's closing message is posted to the person
             _ANSWER_IN_CHAT.add(delegation_id)
-            await _post_task_start(_birth)
+            # a task Casa started (a plugin's setup or erase turn) has no asker to name:
+            # only its answer shows
+            from provenance import CASA_PLUGIN_TURN_TARGETS
+            if origin.get("synthetic") not in CASA_PLUGIN_TURN_TARGETS:
+                await _post_task_start(_birth)
 
         # Task 6 (spec §4.6): create the task, then ATOMICALLY (no await between)
         # attach the unconditional permit-release done-callback and transfer
@@ -9476,7 +9468,7 @@ async def share_inbound_file(args: dict) -> dict:
     except casa_handoff.HandoffError as exc:
         return _text_result(f"The file could not be shared: {exc}")
     # #1218: the copy exists — handing the file to a plugin acts on it, so it
-    # discharges the turn's "answered without opening" obligation as a Read does
+    # discharges the turn's "(Ellen hasn't opened …)" line as a Read does
     _scope = _current_scope(_origin)
     if _scope is not None:
         _scope.note_handed_off(match.path)

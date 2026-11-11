@@ -245,3 +245,173 @@ def test_upgrade_mode_resolves_latest_the_same_way(
     assert result.slug == target_slug
     assert result.resolved_ref == TAG
     assert calls == [("org/repo", TAG, PEELED)]
+
+
+# ---------------------------------------------------------------------------
+# A version written with or without its leading "v"
+# ---------------------------------------------------------------------------
+#
+# Release tags are usually published as ``v0.1.33``; a caller that writes the
+# bare ``0.1.33`` (or the reverse) names no ref, and the commits lookup answers
+# ``ref_not_found``. A ref shaped like a version is then tried once more with
+# the other spelling, and the spelling that resolved is the ref from there on:
+# the receipt records it, the result reports it, and commit/upgrade re-stage
+# from it.
+
+
+def _fetch_only(component_root: Path, existing: set[str]):
+    """resolve_and_fetch stub that knows only the refs in *existing*: any other
+    ref raises ``ref_not_found`` exactly as the real seam maps a 422/404."""
+    stub, calls = _recording_fetch(component_root)
+
+    def _stub(repo: str, ref: str, subdir: str, dest: Path, *,
+              expected_revision: str | None = None) -> str:
+        if ref not in existing:
+            calls.append((repo, ref, expected_revision))
+            raise SpecialistInstallError("ref_not_found", f"{repo}@{ref}: no commit for ref")
+        return stub(repo, ref, subdir, dest, expected_revision=expected_revision)
+
+    return _stub, calls
+
+
+def test_a_bare_version_falls_back_to_its_v_tag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _write_component(tmp_path / "component", slug="fresh-specialist")
+    stub, calls = _fetch_only(root, {"v0.1.33"})
+    monkeypatch.setattr(specialist_install, "resolve_and_fetch", stub)
+
+    result = specialist_install.inspect_specialist_repo(
+        "org/repo", "0.1.33", staging_root=tmp_path / "staging",
+        installed_index=_index(tmp_path), receipts_dir=tmp_path / "receipts",
+    )
+
+    assert [ref for _repo, ref, _rev in calls] == ["0.1.33", "v0.1.33"]
+    assert result.resolved_ref == "v0.1.33"
+    receipt = specialist_receipt.load(result.receipt_id, receipts_dir=tmp_path / "receipts")
+    assert receipt is not None
+    assert receipt.component_ref == "v0.1.33"
+
+    # commit/upgrade re-stage from the receipt: the resolved spelling, once.
+    calls.clear()
+    specialist_install._recover_component_staging(receipt, workspace=tmp_path / "recover")
+    assert [ref for _repo, ref, _rev in calls] == ["v0.1.33"]
+
+
+def test_a_v_tag_falls_back_to_the_bare_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _write_component(tmp_path / "component", slug="fresh-specialist")
+    stub, calls = _fetch_only(root, {"0.29.1"})
+    monkeypatch.setattr(specialist_install, "resolve_and_fetch", stub)
+
+    result = specialist_install.inspect_specialist_repo(
+        "org/repo", "v0.29.1", staging_root=tmp_path / "staging",
+        installed_index=_index(tmp_path), receipts_dir=tmp_path / "receipts",
+    )
+
+    assert [ref for _repo, ref, _rev in calls] == ["v0.29.1", "0.29.1"]
+    assert result.resolved_ref == "0.29.1"
+    receipt = specialist_receipt.load(result.receipt_id, receipts_dir=tmp_path / "receipts")
+    assert receipt is not None
+    assert receipt.component_ref == "0.29.1"
+
+
+@pytest.mark.parametrize("ref", ["main", "V0.1.33", "v1", "release-0.1.33"])
+def test_a_ref_that_is_no_version_is_tried_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ref: str,
+) -> None:
+    root = _write_component(tmp_path / "component", slug="fresh-specialist")
+    stub, calls = _fetch_only(root, set())
+    monkeypatch.setattr(specialist_install, "resolve_and_fetch", stub)
+
+    staging = tmp_path / "staging"
+    with pytest.raises(SpecialistInstallError) as exc_info:
+        specialist_install.inspect_specialist_repo(
+            "org/repo", ref, staging_root=staging,
+            installed_index=_index(tmp_path), receipts_dir=tmp_path / "receipts",
+        )
+    assert exc_info.value.kind == "ref_not_found"
+    assert [r for _repo, r, _rev in calls] == [ref]
+    assert list(staging.iterdir()) == []
+
+
+def test_only_ref_not_found_tries_the_other_spelling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def _auth_failed(repo: str, ref: str, subdir: str, dest: Path, *,
+                     expected_revision: str | None = None) -> str:
+        calls.append(ref)
+        raise SpecialistInstallError("resolve_auth_failed", "401")
+
+    monkeypatch.setattr(specialist_install, "resolve_and_fetch", _auth_failed)
+
+    with pytest.raises(SpecialistInstallError) as exc_info:
+        specialist_install.inspect_specialist_repo(
+            "org/repo", "0.1.33", staging_root=tmp_path / "staging",
+            installed_index=_index(tmp_path), receipts_dir=tmp_path / "receipts",
+        )
+    assert exc_info.value.kind == "resolve_auth_failed"
+    assert calls == ["0.1.33"]
+
+
+def test_neither_spelling_found_names_both(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _write_component(tmp_path / "component", slug="fresh-specialist")
+    stub, calls = _fetch_only(root, set())
+    monkeypatch.setattr(specialist_install, "resolve_and_fetch", stub)
+
+    staging = tmp_path / "staging"
+    receipts = tmp_path / "receipts"
+    with pytest.raises(SpecialistInstallError) as exc_info:
+        specialist_install.inspect_specialist_repo(
+            "org/repo", "0.1.33", staging_root=staging,
+            installed_index=_index(tmp_path), receipts_dir=receipts,
+        )
+    assert exc_info.value.kind == "ref_not_found"
+    assert "0.1.33" in exc_info.value.detail
+    assert "'v0.1.33'" in exc_info.value.detail
+    assert [r for _repo, r, _rev in calls] == ["0.1.33", "v0.1.33"]
+    assert list(staging.iterdir()) == []
+    assert not receipts.exists()
+
+
+def test_the_other_spelling_keeps_the_expected_revision_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The REAL resolve_and_fetch runs: the commits lookup knows only the
+    v-tag, which resolves to a commit other than the caller's expected
+    revision. The retry is guarded exactly like the first try."""
+    fetched: list[str] = []
+
+    def _commits_lookup(repo: str, ref: str, **_kw) -> str:
+        if ref != "v0.1.33":
+            raise plugin_store.RefNotFound(f"{repo}@{ref}: no commit (HTTP 422)")
+        return "c" * 40
+
+    monkeypatch.setattr(plugin_store, "resolve_ref", _commits_lookup)
+    monkeypatch.setattr(
+        plugin_store, "fetch_commit_tree",
+        lambda repo, commit, subdir, dest, **_k: fetched.append(commit))
+
+    receipts = tmp_path / "receipts"
+    with pytest.raises(SpecialistInstallError) as exc_info:
+        specialist_install.inspect_specialist_repo(
+            "org/repo", "0.1.33", expected_revision=PEELED,
+            staging_root=tmp_path / "staging",
+            installed_index=_index(tmp_path), receipts_dir=receipts,
+        )
+    assert exc_info.value.kind == "revision_mismatch"
+    assert "v0.1.33" in exc_info.value.detail
+    assert fetched == []
+    assert not receipts.exists()
+
+
+def test_the_upgrade_recipe_says_to_pass_the_tag() -> None:
+    recipe = (Path(specialist_install.__file__).parent / "defaults" / "configurator"
+              / "doctrine" / "recipes" / "specialist" / "upgrade.md").read_text(encoding="utf-8")
+    assert "`v0.1.33`" in recipe
+    assert "resolved_ref" in recipe

@@ -9,11 +9,11 @@ last_reviewed: 2026-11-11
 ## Scope
 
 How a specialist that declares its own chat talks to the operator from its own Telegram
-bot: the bot's lifecycle (offer, creation, binding, self-setup, opening, token changes,
-dormancy, release), the capability rule that keeps every agent's surface in its own chat,
-the agent's conversation there, the tasks it runs for others, and how a message in an
-agent's chat finds its destination. The per-bot transport these bots run on is
-[`telegram-bots.md`](telegram-bots.md); a plugin's delivered posts are
+bot: the capability rule that keeps every agent's surface in its own chat, the agent's
+conversation there, the tasks it runs for others, and how a message in an agent's chat
+finds its destination. The bot's lifecycle (offer, creation, binding, self-setup, opening,
+token changes, dormancy, release) is [`own-voice-lifecycle.md`](own-voice-lifecycle.md). The
+per-bot transport these bots run on is [`telegram-bots.md`](telegram-bots.md); a plugin's delivered posts are
 [`plugin-delivered-slots.md`](plugin-delivered-slots.md); the run card and its admission
 are [`plugin-operator-calls.md`](plugin-operator-calls.md); the stored-call settler and the
 agent's lane are [`stored-call-buttons.md`](stored-call-buttons.md) and
@@ -36,79 +36,9 @@ optional persona image is the pack's `avatar.jpg` ([`persona-lifecycle.md`](pers
 A role is eligible for its own chat while it is installed and its committed active
 component declares one (`own_voice.declared`): the committed declaration is truth.
 
-**The lifecycle is a record per agent and per bot, driven through phases.**
-`own_voice_lifecycle.Lifecycle` keeps `agent-voices.json` under `/data` (one record per
-agent: its offer card, its bot, when its chat opened; one per bot: its phase, role,
-username, name, the open question about it, the digest of its last self-setup). A bot's
-phases are `seen → unbound → binding → bound`, with `recovering`, `dormant`, `releasing`
-and `released` beside them. Every transition persists the phase that names its effect
-before the effect, every effect is idempotent or reconciled by lookup, and every phase has
-a boot step (`BOOT_STEPS`) that completes or rolls it back. A per-bot lock covers intake,
-every phase change and the journal's release; a registry lock covers what spans bots, taken
-after the per-bot one.
-
-**Offer and creation.** Casa offers an eligible agent its chat once — after a committed
-install, after an upgrade or rollback that newly declares one, at a boot that finds an
-eligible agent with no record — and on demand when the resident calls `offer_own_chat`.
-The offer is an ordinary Casa card in the resident's chat: "Alex can get a separate chat
-with you. Tap below, check the name, then Create." with one URL button opening Telegram's
-pre-filled "Create Bot" form (`https://t.me/newbot/<resident bot>/<suggested username>?name=…`).
-The suggestion is a string operation on the resident's own bot: its name and username
-with the resident's name replaced by the agent's (`suggest`), a clash between two waiting
-agents broken with `_<role>`. The operator confirms the form; Telegram then sends the
-`managed_bot_created` service message to the resident's bot and a `managed_bot` update.
-Only the first registers a bot, and only when it comes from the operator in his chat with
-Casa's bot; the update alone registers nothing and is read only as a token change of a
-known bot. Casa's bot must have bot management turned on in BotFather once; Casa never
-gates on `getMe.can_manage_bots`, which lags that switch.
-
-**Binding: match or ask, one bot per agent.** A new bot binds to the waiting agent whose
-persisted suggestion it matches exactly (name and username); with no single match Casa
-asks in the resident's chat ("A new bot @… was just created. Which agent is it for?"),
-offering the waiting agents and "None — I'll delete it". An agent never holds two bots and
-a bot is never rebound to another agent. The token is fetched with `getManagedBotToken`
-through the resident's bot's request layer, never the library's Bot method, whose DEBUG
-trace logs the return value; it is registered for log redaction before the bot's own first
-call logs its URL. It is stored per role — in its own 1Password item
-(`Telegram <Role>`, tag `casa-agent-bot`, created once then edited in place), or without
-1Password in `agent-voices/tokens/<role>`; before binding it is kept in memory and fetched
-again at boot. Binding then runs the bot's **self-setup** — description, short
-description, the one `/new` command, access restricted to its owner, the persona's picture
-(set, changed or removed) — each call idempotent, re-run whenever the digest of the
-declared values changes (a persona apply included). A refused picture never fails the
-binding.
-
-**Open only once the operator has written.** A bound bot cannot speak first, so the card
-becomes "Alex's chat is ready: @…. Open it and press Start." with an "Open Alex's chat"
-URL button. The chat counts as **open** from the operator's first message there (a held
-one released counts); a bare `/start` also leaves the agent Casa's note that the operator
-just opened the chat, so it introduces itself. Once open it stays open: a later failed send
-is that send's failure. `own_chat_state` reads one of `not_declared`, `no_bot`,
-`not_open`, `open`, `dormant`.
-
-**Held updates leave the journal only through intake.** An agent bot's update queue is
-`_IntakeQueue`: every update is offered to `own_voice.intake` before it is queued, which is
-before the webhook answers. It is delivered only when the bot is `bound`, reconciled in
-this process, its role declared and its agent's queue registered, and nothing older is
-held; otherwise it is appended to `agent-voices/held/<bot>.jsonl` (fsynced) and
-acknowledged. A release hands the held records, in arrival order, to the endpoint's normal
-intake (`TelegramChannel.release_update`); a record is marked released once accepted, and a
-refused one keeps itself and every later record held. A text the agent's queue cannot take
-after delivery goes back to the lifecycle (`_hand_back`), never dropped. An unbound bot
-answers the operator once per boot that the chat is being set up.
-
-**Dormancy, recovery, release.** A bound bot whose role stops being eligible (uninstalled,
-or an upgrade that drops the declaration) holds its intake and goes `dormant`: each
-operator message gets one line — "Alex no longer has a separate chat — talk to Ellen." or
-"Alex isn't installed right now." — and the journal is dropped; eligible again, it is bound
-again. A `managed_bot` update for a known bot, or a token Telegram no longer accepts, puts
-it in `recovering`: any successful fetch is authoritative, and the bot returns to `bound`
-or `dormant`. Only `getManagedBotToken` failing with 403 Forbidden "user is deactivated"
-(`RELEASE_ON`, what Telegram answers for a bot deleted in BotFather) releases a bot: its
-endpoint stops, its journal goes, the agent waits for a new bot and its card says so. Every
-other failure is retried with backoff (30 s to one hour). While the resident's own bot is
-not authorized no fetch is tried and the log says so once. An uninstall's result carries
-`own_chat: {bot, delete_link}` so the operator can delete the bot in BotFather.
+**The bot's lifecycle** — the records and phases that drive it, the offer, creation,
+binding and self-setup, the chat's opening, the held journal, dormancy, recovery and
+release — is [`own-voice-lifecycle.md`](own-voice-lifecycle.md).
 
 **A task's two destinations, decided once.** A task is work that is not a conversation's:
 a delegation, a plugin job, a plugin continuation. Its launcher stamps, at its birth:
@@ -147,10 +77,12 @@ its posts carry no `📊` label (`result_broker.label_at`): the chat is the agen
 
 **A task in an agent's chat.** A delegation to an agent whose chat is open at its birth
 opens its post index (`task_posts.open`) and its input destination
-(`task_input.open_pending`) first, then posts its start line there — "Ellen asked me: «…»",
-the brief shown without one pair of quote marks enclosing all of it (`tools._unquoted`) —
+(`task_input.open_pending`) first, then posts its start line there — "Ellen asked me: …",
+the brief as written; a task born on a Casa-started plugin setup or erase turn posts none —
 then runs in its own session, whose delegation context says that its closing message is
-posted to the operator (`answer_shown`). The message it closed its turn with
+posted to the operator (`answer_shown`). The start line and the answer are filed under
+slots of their own (`task-start`, `task-answer`), so each is its own post. The message it
+closed its turn with
 (`tools._closing_text`), whole, is posted there in pages — never its working notes before
 it, never the requester's bounded copy, and nothing when it closes with `<silent/>` — and
 the requester gets today's bounded result. That result's Casa notes name the agent's chat:
@@ -163,10 +95,13 @@ the task's delivery (`tools._task_endpoint`, the lookup the post makes, so an an
 bot was released meanwhile is not called read), and the whole closing message is no
 silence — the same text both silence notes judge, so the notes never contradict each other
 or the chat. What the operator wrote into the task while it ran reaches the
-requester as one more line after them (`OPERATOR_WORDS_NOTE`, from `task_input.take_said`);
+requester as one more line after them, saying the agent already had those words and worked
+with them, so they are not the requester's to pass on or to start again as a new task
+(`OPERATOR_WORDS_NOTE`, from `task_input.take_said`);
 a continuation that declares progress only is announced for those words alone.
 When the requester is not the executor's conversation, the conversation gets a body-free
-note (`chat_notes`) at its next turn: who asked what, and how it ended. Jobs and
+note (`chat_notes`) at its next turn: who asked what, and how it ended ("Ellen asked you:
+… — you answered"). Jobs and
 continuations leave the same note. A continuation of a run in the agent's chat opens its
 index and its input the same way, right after its record is registered and before its
 turn runs; its session attaches the input after its first message, and the input closes
@@ -240,26 +175,11 @@ the operator started in this chat (INV-BGJOB-012).
 
 **INV-OWN-005**: A file sent to a live task is stored in the executor's own inbox and readable by that task alone — the grant is one exact path, asked at each Read, so a file granted while the task runs is readable at once — and a file whose task ended meanwhile stays in the inbox and the operator is told.
 
-**INV-OWN-006**: An update that reaches an agent's own bot passes the lifecycle's intake before it is queued; it is delivered only to a bound, reconciled, declared agent whose queue is registered and with nothing older held, otherwise journaled before Telegram is acknowledged, and held records are released in arrival order, a refused one holding itself and every later one.
-
-**INV-OWN-007**: A bot is registered only from the `managed_bot_created` message the operator's own creation sends to Casa's bot in his chat, and bound only to the one waiting agent whose suggestion it matches exactly or the agent the operator names; an agent never holds two bots and a bot is never rebound.
-
-**INV-OWN-008**: Every lifecycle effect finds its phase on disk, every phase has a boot reconciliation, and a bot is released only on the token fetch failure that establishes its deletion; every other failure keeps it recovering.
-
 **INV-OWN-009**: A tap on the resident's bot on a card whose agent now declares its own chat is answered with one line naming that chat and runs, edits, claims and reserves nothing; a Casa card, the resident's own card and any tap on an agent's own bot are untouched.
 
 **INV-OWN-010**: An agent that declares its own chat keeps one conversation, on the bus under its role, built with the specialist's surface and session extras — never the resident's builder — fed by the operator's direct messages in its chat; `/new` there ends only that conversation's session and its pad.
 
 ## Failure behavior
-
-**A lifecycle failure at intake.** Logged; the update goes no further. Delivering it
-could hand the agent a message before its chat is ready.
-
-**Casa restarts mid-transition.** Boot runs each bot's step: a bot reconciles against the
-committed declaration before its endpoint delivers, an unbound bot is asked about again, a
-token is fetched again, and a held journal is released once the conversation's queue is
-registered (`_reconcile_own_chats`, after the channels start and before replays and job
-resumes). The graceful stop cancels pending retries before the channels stop.
 
 **A task's input after a restart.** `task_input` and `chat_notes` are memory-only: a
 restart ends the run they belong to, and a note not yet drained is lost.
@@ -281,7 +201,6 @@ derives an origin from another task's.
 
 **Source**
 - `casa/rootfs/opt/casa/own_voice.py`
-- `casa/rootfs/opt/casa/own_voice_lifecycle.py`
 - `casa/rootfs/opt/casa/task_model.py`
 - `casa/rootfs/opt/casa/task_posts.py`
 - `casa/rootfs/opt/casa/task_input.py`
@@ -295,7 +214,6 @@ derives an origin from another task's.
 - `casa/rootfs/opt/casa/tools.py::TaskBirth`
 - `casa/rootfs/opt/casa/tools.py::_task_birth`
 - `casa/rootfs/opt/casa/tools.py::_settle_task`
-- `casa/rootfs/opt/casa/tools.py::_unquoted`
 - `casa/rootfs/opt/casa/tools.py::_with_operator_words`
 - `casa/rootfs/opt/casa/task_input.py::take_said`
 - `casa/rootfs/opt/casa/tools.py::_media_delivery`
@@ -304,23 +222,18 @@ derives an origin from another task's.
 - `casa/rootfs/opt/casa/agent_registry.py::keeps_own_conversation`
 - `casa/rootfs/opt/casa/agent.py::Agent._build_specialist_session_options`
 - `casa/rootfs/opt/casa/casa_core.py::_own_conversation_agents`
-- `casa/rootfs/opt/casa/casa_core.py::_reconcile_own_chats`
-- `casa/rootfs/opt/casa/channels/telegram.py::_IntakeQueue`
-- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.release_update`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._quoted_task`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._route_task_reply`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._route_task_file`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._refuse_moved_card`
 
 **Tests**
-- `tests/test_own_voice_lifecycle.py`
 - `tests/test_own_voice_state.py`
 - `tests/test_capability_rule.py`
 - `tests/test_own_voice_tasks.py`
 - `tests/test_own_voice_conversation.py`
 - `tests/test_own_chat_routing.py`
 - `tests/test_callback_ingress_q7.py`
-- `tests/test_managed_bot_signals.py`
 - `tests/test_task_posts.py`
 - `tests/test_task_input.py`
 - `tests/test_task_file_grant.py`
@@ -330,6 +243,7 @@ derives an origin from another task's.
 - `tests/test_own_voice_invariants.py`
 
 **Related**
+- [`architecture/own-voice-lifecycle.md`](../architecture/own-voice-lifecycle.md)
 - [`architecture/telegram-bots.md`](../architecture/telegram-bots.md)
 - [`architecture/telegram.md`](../architecture/telegram.md)
 - [`architecture/plugin-delivered-slots.md`](../architecture/plugin-delivered-slots.md)

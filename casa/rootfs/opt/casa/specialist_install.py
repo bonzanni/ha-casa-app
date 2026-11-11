@@ -517,6 +517,18 @@ def resolve_and_fetch(
     return commit
 
 
+# A version written with or without its leading "v": a ref's shape, not its meaning.
+_VERSION_REF = re.compile(r"[0-9]+(?:\.[0-9]+){1,3}(?:[-+][0-9A-Za-z.+-]+)?")
+
+
+def _other_version_spelling(ref: str) -> "str | None":
+    """*ref* as the same version with or without its leading ``v`` (``0.1.33`` <->
+    ``v0.1.33``), or ``None`` when *ref* is no version."""
+    if ref[:1] == "v" and _VERSION_REF.fullmatch(ref[1:]):
+        return ref[1:]
+    return "v" + ref if _VERSION_REF.fullmatch(ref) else None
+
+
 @dataclass(frozen=True, slots=True)
 class ResumeValidation:
     """The verdict of `validate_resume_inputs`. `ok` carries the loaded
@@ -1408,8 +1420,29 @@ def inspect_specialist_repo(
     # failures, slug collisions, ...) must not leave the fetched staging
     # tree behind; a SUCCESSFUL inspection retains it for commit reuse.
     try:
-        component_revision = resolve_and_fetch(
-            repo, ref, subdir, component_dir, expected_revision=expected_revision)
+        try:
+            component_revision = resolve_and_fetch(
+                repo, ref, subdir, component_dir, expected_revision=expected_revision)
+        except SpecialistInstallError as exc:
+            # A release tagged ``v0.1.33`` asked for as ``0.1.33`` (or the
+            # reverse) names no ref: try the other spelling once, under the same
+            # expected_revision guard. A ref_not_found raises before anything is
+            # written to component_dir.
+            other = _other_version_spelling(ref) if exc.kind == "ref_not_found" else None
+            if other is None:
+                raise
+            try:
+                component_revision = resolve_and_fetch(
+                    repo, other, subdir, component_dir, expected_revision=expected_revision)
+            except SpecialistInstallError as again:
+                if again.kind == "ref_not_found":
+                    raise SpecialistInstallError(
+                        "ref_not_found", f"{exc.detail}; also tried {other!r}") from again
+                raise
+            # The spelling that resolved is the ref from here on: the receipt
+            # records it (commit and upgrade re-stage from it) and the result
+            # reports it as resolved_ref.
+            ref = other
 
         manifest_path = component_dir / "manifest.json"
         if not manifest_path.is_file():

@@ -39,10 +39,10 @@ def test_a_persona_name_over_the_bound_names_the_role_instead():
     over = _scope(role="assistant", name="E" * 65)
     over.arm(ob.ReadBeforeDescribe(files=(INVOICE,)))
     assert over.admit(K.FINAL_REPLY, "hi").annotations == (
-        "Casa: assistant answered without opening “invoice.pdf” in this turn.",)
+        "(assistant hasn't opened “invoice.pdf”.)",)
     at = _scope(role="assistant", name="E" * 64)
     at.arm(ob.ReadBeforeDescribe(files=(INVOICE,)))
-    assert at.admit(K.FINAL_REPLY, "hi").annotations[0].startswith("Casa: " + "E" * 64 + " answered")
+    assert at.admit(K.FINAL_REPLY, "hi").annotations[0].startswith("(" + "E" * 64 + " hasn't opened")
     # a scope minted from an agent config, and the stored form, follow the same rule
     cfg = SimpleNamespace(role="assistant", character=SimpleNamespace(name="E" * 4100))
     msg = SimpleNamespace(id="t1", channel="telegram",
@@ -50,7 +50,7 @@ def test_a_persona_name_over_the_bound_names_the_role_instead():
     minted = ob.TurnScope.mint(msg, cfg)
     minted.arm(ob.ReadBeforeDescribe(files=(INVOICE,)))
     assert minted.admit(K.STORED, "brief").note == (
-        "Casa: assistant wrote this without opening “invoice.pdf”.")
+        "(assistant wrote this without opening “invoice.pdf”.)")
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +72,7 @@ async def test_the_caption_cap_falls_on_the_body_never_on_the_line(tmp_path):
     # three notes inherited down a delegation chain plus today's line: a head
     # longer than the caption cap, which must fall on the body and never here
     for i in range(3):
-        s.arm(ob.InheritedNote(f"Casa: Test wrote this without opening “{'x' * 300}{i}.pdf”."))
+        s.arm(ob.InheritedNote(f"(Test wrote this without opening “{'x' * 300}{i}.pdf”.)"))
     s.arm(ob.ReadBeforeDescribe(files=(INVOICE,)))
     path = os.path.join(outbox._root_realpath, "invoice.pdf")
     with open(path, "wb") as fh:

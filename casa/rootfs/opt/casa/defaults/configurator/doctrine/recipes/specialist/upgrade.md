@@ -24,7 +24,9 @@ apply unchanged, step 3's open-conversation warning included.
    the SAME repo, a newer ref (for a settings change, the installed ref — see above) —
    `ref="latest"` is accepted here too and resolves to the newest published release tag (reported
    as `resolved_ref`; `no_release_found` when the repo has none — see
-   `recipes/specialist/install.md`). **Always pass `mode="upgrade"` + `target_slug`** — plain
+   `recipes/specialist/install.md`). Releases are tagged as published, usually with a leading `v`
+   (`v0.1.33`): pass the tag. A bare version that names no tag is tried with the other spelling
+   too, and `resolved_ref` says which ref was used — use that one from then on. **Always pass `mode="upgrade"` + `target_slug`** — plain
    `specialist_install_inspect(repo=..., ref=...)` with no `mode` will refuse with `kind:
    "slug_collision"` because the slug is already installed (that refusal is correct for a FRESH
    install; upgrade mode is the only sanctioned way past it for the SAME slug). The result carries a

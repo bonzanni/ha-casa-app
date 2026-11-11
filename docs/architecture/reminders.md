@@ -38,8 +38,8 @@ calling is the only place the guarantee can be made.
 
 **A reminder set without opening the file it is about carries that fact to the turn that
 sends it.** When the setting turn had listed inbound files and neither opened nor shared any, `set_reminder`
-resolves the disclosure at creation into the entry's `output_note` — `Casa: <persona> wrote
-this without opening “<file>”.` — beside the unchanged prompt, and reports it in its result.
+resolves the disclosure at creation into the entry's `output_note` — `(<persona> wrote
+this without opening “<file>”.)` — beside the unchanged prompt, and reports it in its result.
 Every route that builds the entry's `TriggerSpec` — the boot loader, the immediate
 registration, the sweep's re-registration — goes through the one constructor
 `reminders.spec_from_entry`, so no route can drop the field, and both firing sites stamp it

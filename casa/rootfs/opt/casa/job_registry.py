@@ -151,8 +151,8 @@ class VoiceJob:
     # before the feature).
     scheduled_delivery: bool = False
     # #1038: the resolved disclosure the delegation's brief owes the turn that
-    # narrates its result — "Casa: Ellen wrote this without opening
-    # “invoice.pdf”." The live completion carries it on the record's origin,
+    # narrates its result — "(Ellen wrote this without opening
+    # “invoice.pdf”.)" The live completion carries it on the record's origin,
     # but a restart resumes through THIS row, whose origin is rebuilt field by
     # field — so, like ``scheduled_delivery`` above, it is a field or it is
     # silently gone. Empty when nothing was owed; a row written before the

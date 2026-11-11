@@ -76,7 +76,7 @@ async def test_a_failed_read_is_recorded_as_failed_not_ok(_inbox, scope):
                 "tool_input": {"file_path": path}, "error": "File does not exist"},
                "toolu_2", {})
     assert scope.admit(K.FINAL_REPLY, "€412").annotations == (
-        "Casa: Ellen answered without opening “invoice.pdf” in this turn.",)
+        "(Ellen hasn't opened “invoice.pdf”.)",)
 
 
 async def test_a_read_outside_the_inbox_records_nothing_and_arms_nothing(_inbox, scope, tmp_path):
@@ -95,7 +95,7 @@ async def test_a_read_of_an_unlisted_inbox_file_arms_the_obligation_with_its_nam
     await fail({"hook_event_name": "PostToolUseFailure", "tool_name": "Read",
                 "tool_input": {"file_path": path}, "error": "boom"}, "toolu_4", {})
     assert scope.admit(K.FINAL_REPLY, "€412").annotations == (
-        "Casa: Ellen answered without opening “1758500000000-a1b2.pdf” in this turn.",)
+        "(Ellen hasn't opened “1758500000000-a1b2.pdf”.)",)
 
 
 async def test_the_hook_is_inert_when_no_scope_is_bound(_inbox):

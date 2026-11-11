@@ -236,6 +236,10 @@ _session_extras_var: ContextVar[Any] = ContextVar(
 #: (:mod:`chat_notes`), in the turn's notes block.
 CHAT_NOTE_PREFIX = "(Casa) "
 
+#: Casa's line on the turn that opens an agent's own chat: the operator's
+#: first message there, whatever it says, so the agent says hello.
+CHAT_OPENING_NOTE = "(Casa) The operator just opened your chat."
+
 #: The line above those notes: they are the agent's own record of what it did
 #: in this chat for others, to recall as its own memory.
 CHAT_NOTES_FRAME = ("What you did in this chat for others since you last spoke here — "
@@ -2335,6 +2339,10 @@ class Agent:
                     msg.context.get("_tg_bot"), msg.context.get("chat_id"))
                 if desk_lines:
                     notes.append("\n".join(desk_lines))
+                # The turn that opens an agent's own chat (stamped only by the
+                # channel), on a line of its own.
+                if msg.context.get("_chat_opening") is True:
+                    notes.append(CHAT_OPENING_NOTE)
                 # What Casa noted for the agent that owns this chat since its
                 # last turn (a task it ran for someone else, and how it
                 # ended), drained once, under one frame line that hands them

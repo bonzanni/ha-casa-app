@@ -118,9 +118,12 @@ operator in his chat it is handed to the own-chat lifecycle and is never a turn;
 is logged and ignored. The `managed_bot` update is handed over the same way. An agent's own bot
 queues every update through `_IntakeQueue`, which asks `own_voice.intake` before the update is
 queued: an update held or answered there reaches no handler; the lifecycle later replays held
-ones through `release_update`. On such a bot a bare `/start` from the operator is an ordinary
-turn with Casa's note that he just opened the chat, `/new` resets that agent's own
-conversation, and Casa's lines name the agent plainly, without the `📊` label. All of it is
+ones through `release_update`. On such a bot `/start` is an ordinary turn; the operator's first
+turn there, whatever it says, carries the reserved `_chat_opening` key that has the agent
+say hello, and marks the chat open once its queue takes it (`TelegramChannel._send_turn`,
+a retry after a hand-back included); `/new` resets that agent's own
+conversation, and Casa's lines name the agent plainly, without the `📊` label. The bot's
+lifecycle is [`own-voice-lifecycle.md`](own-voice-lifecycle.md), the rest
 [`own-voice.md`](own-voice.md).
 
 **A tap is authorised against the request it answers.** Callback data is versioned and
