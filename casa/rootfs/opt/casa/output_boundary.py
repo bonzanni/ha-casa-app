@@ -205,6 +205,18 @@ def may_still_be_silence(text: str | None) -> bool:
     return SILENCE_SENTINEL.startswith(rest)
 
 
+def without_unfinished_sentinel(text: str) -> str:
+    """*text* without a trailing piece that could still become a
+    ``<silent/>`` marker (``"Sure. <sil"`` → ``"Sure. "``): an in-flight
+    cumulative holds that piece back until the next delta shows whether it
+    completes a marker — then admission drops it — or is ordinary text, which
+    is released whole with that delta (#1512)."""
+    for k in range(len(SILENCE_SENTINEL) - 1, 0, -1):
+        if text.endswith(SILENCE_SENTINEL[:k]):
+            return text[:-k]
+    return text
+
+
 def without_sentinels(text: str) -> str:
     """#1342: *text* without a run of ``<silent/>`` markers at its start or at
     its end — how a reply that holds words as well as the marker is

@@ -626,6 +626,69 @@ async def test_a_dropped_closing_sentinel_never_takes_back_streamed_words(
     assert seen == ["Sure. "]
 
 
+def _spoken(cumulatives: list[str]) -> list[str]:
+    """What the voice channel speaks from *cumulatives*: its own splitter and
+    adapter, fed the way its token callback feeds them (a cumulative that does
+    not extend the last one restarts the splitter)."""
+    from channels.voice.prosodic import ProsodicSplitter
+    from channels.voice.tts_adapter import TagDialectAdapter
+    adapter = TagDialectAdapter("none")
+    splitter, last, blocks = ProsodicSplitter(), "", []
+    for acc in cumulatives:
+        if not acc.startswith(last):
+            splitter, last = ProsodicSplitter(), ""
+        blocks += [b.text for b in splitter.feed(acc[len(last):])]
+        last = acc
+    tail = splitter.flush_tail()
+    if tail is not None:
+        blocks.append(tail.text)
+    return [t for t in (adapter.render(b) for b in blocks) if t.strip()]
+
+
+async def _voice_turn(agent, monkeypatch, script):
+    factory = QueuedScriptFactory([script])
+    monkeypatch.setattr("sdk_client_pool._default_make_client", factory)
+    seen: list[str] = []
+
+    async def on_token(text: str) -> None:
+        seen.append(str(text))
+
+    await agent._process(_msg("voice", "lr", "hi"), on_token=on_token)
+    return seen
+
+
+async def test_a_closing_sentinel_split_across_deltas_is_never_spoken(
+    agent_fixture, monkeypatch,
+):
+    """A closing marker arriving in pieces: the unfinished piece at the end of
+    a partial cumulative is held, so no fragment of it reaches the device —
+    and once it completes, admission drops it."""
+    seen = await _voice_turn(agent_fixture, monkeypatch, [
+        _mk_stream_event("Sure. "),
+        _mk_stream_event("<sil"),
+        _mk_stream_event("ent/>"),
+        _mk_assistant("Sure. <silent/>"),
+    ])
+    assert not any("<" in text for text in seen), seen
+    assert _spoken(seen) == ["Sure."]
+
+
+@pytest.mark.parametrize("deltas", [
+    ["Sure. ", "<si", "de note."],
+    ["<si", "de note."],
+])
+async def test_a_held_piece_that_is_no_sentinel_is_released_whole(
+    agent_fixture, monkeypatch, deltas,
+):
+    """What looked like the start of a marker and turned out not to be one is
+    handed over with the next delta: the words arrive, none lost."""
+    text = "".join(deltas)
+    seen = await _voice_turn(agent_fixture, monkeypatch, [
+        *(_mk_stream_event(d) for d in deltas), _mk_assistant(text)])
+    assert seen[-1] == text
+    assert " ".join(_spoken(seen)) == text
+
+
 async def test_held_sentinel_does_not_survive_into_the_next_attempt(
     agent_fixture, monkeypatch,
 ):
