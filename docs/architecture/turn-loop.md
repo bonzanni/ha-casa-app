@@ -71,7 +71,8 @@ in [`delegation-announcements.md`](delegation-announcements.md)). No other calle
 role, on the same session machinery, but its options come from the specialist builder
 (`Agent._build_specialist_session_options`) with its session extras, never the resident's
 builder; a turn drains Casa's notes for its chat (`chat_notes`) into its notes block, under
-one frame line that hands them to the agent as its own memory, each line prefixed `(Casa) `
+one frame line that hands them to the agent as its own memory, each line prefixed `(Casa) `;
+the turn that opens its chat is told so on its own line (`agent.CHAT_OPENING_NOTE`)
 ([`own-voice.md`](own-voice.md)).
 
 ## Contracts & invariants

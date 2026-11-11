@@ -54,7 +54,10 @@ awaits the append, so every capture a turn made has returned by the time the tur
   operator's approval included (its words are posted, the work is not done). A plugin's message, page, file, link or card and a
   stored-call receipt go out the same way mid-run and at the end, so nothing mechanical says
   one of them is the answer, and the post's text is never read to guess it; Fido's answer
-  posted with its sources through his `show_sources` message slot is such a post. It is
+  posted with its sources through his `show_sources` message slot is such a post. A task's
+  start line and its answer in the agent's own chat share their owner and tool call, so
+  each is posted under a slot of its own (`task-start`, `task-answer`) and is its own event:
+  "posted to your chat." for the start line, "posted his answer" for the answer. It is
   not awaited at its seam: the landing is synchronous on the send path, so the write is
   detached, and a send never waits for or fails on it.
 - **The operator's swipe-reply on the desk of a specialist that keeps no memory**, at the

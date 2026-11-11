@@ -432,8 +432,10 @@ assistant's chat asks which specialist the new bot is for; answer
 the specialist's picture when its persona has one, and access limited to you)
 and the card changes to "Alex's chat is ready: @…. Open it and press Start."
 Tap **Open Alex's chat** and press **Start**: a bot cannot write first, so the
-chat opens with your first message. Until then the specialist cannot show you
-anything. Messages you send while the chat is being set up are kept and
+chat opens with your first message, and whatever you write first, the
+specialist says hello as it answers. A file sent on its own, without a
+caption, is kept and acknowledged but does not open the chat yet. Until then
+the specialist cannot show you anything. Messages you send while the chat is being set up are kept and
 answered once it is ready.
 
 **What lives where.**
@@ -445,13 +447,14 @@ answered once it is ready.
   **Stop**. Its messages there carry no `📊` label: the chat is the
   specialist.
 - **Work the assistant hands over** also appears there: a line "Ellen asked
-  me: «…»" when it starts, then the specialist's closing message when it ends
-  (its working notes stay out of the chat, and a specialist with nothing more
-  to say posts nothing). The assistant still gets the result and closes the
+  me: …" when it starts (her request as she wrote it; work Casa itself starts,
+  such as a plugin's setup after an update, shows no such line), then the
+  specialist's closing message when it ends (its working notes stay out of
+  the chat, and a specialist with nothing more to say posts nothing). The assistant still gets the result and closes the
   loop in her own chat, briefly when you have already read the answer. If you
   reply to the task's messages while it works, your words reach it, and the
-  assistant is told what you wrote. The specialist's own conversation learns
-  in one line that it did this work.
+  assistant is told what you wrote and that the specialist already has it.
+  The specialist's own conversation learns in one line that it did this work.
 - **The assistant's chat** keeps your conversation with her, the offer cards,
   and her own plugins' posts. A button on a specialist's card from before its
   chat existed answers "This card belongs to Alex's chat now — open it there."
@@ -630,15 +633,15 @@ read than a short one — roughly a few thousand tokens per page.
 
 **She says so when she answered without opening a file (v0.327.0).** If she lists the
 files you sent and opens none, everything she sends in that turn — the reply, a message
-she posts, a question with buttons — starts with a line from Casa, *Casa: Ellen answered
-without opening “invoice.pdf” in this turn.* (with your assistant's name). The line is on
+she posts, a question with buttons — starts with a line from Casa, *(Ellen hasn't opened
+“invoice.pdf”.)* (with your assistant's name). The line is on
 the text as it streams and goes away if she opens the file before finishing. A reminder
 she sets, or a task she hands to another agent, without opening the file carries the line
-with it, so the message that fires later is prefixed *Casa: Ellen wrote this without
-opening “invoice.pdf”.* Opening any one of the listed files — or handing one to a plugin,
+with it, so the message that fires later is prefixed *(Ellen wrote this without
+opening “invoice.pdf”.)* Opening any one of the listed files — or handing one to a plugin,
 for example to file it — clears it for the rest of the turn. With several files listed and
-none opened, the line counts them: *Casa: Ellen answered without opening any of the 3
-files Ellen listed.* A file you send with a caption, or to a specialist by replying to its
+none opened, the line counts them: *(Ellen hasn't opened any of the 3
+files Ellen listed.)* A file you send with a caption, or to a specialist by replying to its
 post, is that turn's own file, and the line names only it; a captioned album makes every
 kept file of the album the turn's own, and the line counts those. The line never holds back or changes her own words — it
 is added, nothing is taken away. A reply about a file she neither listed nor tried to open carries no line;

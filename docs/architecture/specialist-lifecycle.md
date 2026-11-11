@@ -86,7 +86,13 @@ Enforced at the top of the inspection, which shares the plugin store's release r
 and its failure taxonomy; a caller-supplied expected revision must be the release's peeled
 commit, or the inspection refuses with `revision_mismatch`. The configurator's specialist
 recipes tell it to pass the literal when the operator asks for the latest version or names
-none, and to name the resolved tag in its commit message and completion.
+none, and to name the resolved tag in its commit message and completion. An exact ref the
+repository does not have (`ref_not_found`) that is a version is fetched once more in its
+other spelling —
+`0.1.33` as `v0.1.33`, or the reverse (`_other_version_spelling`), under the same expected
+revision — and the spelling that resolved is the ref the receipt records and the result
+reports as `resolved_ref`; with neither found the refusal names both, and any other failure,
+or a ref that is no version, is not retried.
 
 What it does not cover: a plugin dependency a component manifest declares — its ref is
 resolved as an exact ref against the manifest's own pinned revision, and a manifest that
@@ -282,6 +288,7 @@ inspection time, or consent will not cover it.
 - `casa/rootfs/opt/casa/specialist_install.py::commit_specialist_install`
 - `casa/rootfs/opt/casa/specialist_install.py::compute_install_root_digest`
 - `casa/rootfs/opt/casa/specialist_install.py::inspect_specialist_repo`
+- `casa/rootfs/opt/casa/specialist_install.py::_other_version_spelling`
 - `casa/rootfs/opt/casa/specialist_install.py::resolve_release_ref`
 - `casa/rootfs/opt/casa/specialist_install.py::sweep_staging_aged`
 - `casa/rootfs/opt/casa/specialist_materialize.py::current_specialist_roles_dir`

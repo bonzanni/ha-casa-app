@@ -83,7 +83,9 @@ only once its transcripts are reaped, per `architecture/engagement-transcript-re
 **A job's record carries its task fields.** `EngagementRecord.executor`, `requester` and
 `delivery` are stamped by the job launch owner at the job's birth and persisted: the delivery
 is the chat every post of the job goes to (`None`: it posts nothing), the requester who is told
-its outcome ([`own-voice.md`](own-voice.md)).
+its outcome ([`own-voice.md`](own-voice.md)). A stored Telegram job record without them — one
+written before records carried them — is skipped at load and counted into one warning for the
+whole load; a present but malformed field is refused with an error of its own.
 
 ## Contracts & invariants
 

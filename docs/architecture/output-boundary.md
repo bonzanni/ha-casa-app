@@ -63,10 +63,10 @@ file or album, armed from the reserved `_received_file` key when the scope is mi
 nor a `Read` attempt widens it. It is discharged by a successful `Read` of any one armed file
 or by handing one to a plugin (`share_inbound_file` published the copy:
 `TurnScope.note_handed_off`) — per-file disclosure is not built — and its remedy is one Casa
-line at the head of every emission: `Casa: <persona> answered without opening “<file>” in
-this turn.`, or with several unread, a count that says how they were armed: `…any of the N
-files you sent in this turn.` for the turn's own files, `…any of the N files <persona> listed.`,
-`…<persona> tried to open.` or `…<persona> listed or tried to open.` otherwise (#1218), naming
+line at the head of every emission: `(<persona> hasn't opened “<file>”.)`, or with several
+unread, a count that says how they were armed: `…any of the N files you sent.)` for the
+turn's own files, `…any of the N files <persona> listed.)`,
+`…<persona> tried to open.)` or `…<persona> listed or tried to open.)` otherwise (#1218), naming
 the persona again rather than a pronoun Casa does not know (#1247). `InheritedNote` is the resolved note of a payload an earlier turn
 authored — a reminder's `output_note`, a delegation or engagement brief's launch note —
 re-registered on the turn that sends it so that turn's model cannot paraphrase it away; it
@@ -140,7 +140,7 @@ recorded lists class as notices (a desk's notice too; its reply is admitted,
 catch an accidental bypass; they are not a sandbox against Casa deliberately fabricating an
 admission.
 
-**INV-OUT-002**: In a turn where inbound files were listed and none read or handed off, every model-text emission committed after the listing carries the disclosure line at its head — streamed cumulatives included — and when a streamed reply's page-1 unit did not land, the line goes out once as its own message before the overflow pages; after a successful `Read` or hand-off of any armed file none does; a turn that received a file of its own owes that file alone; a turn with no file of its own is never told it was sent files in that turn; and a silent turn stays silent.
+**INV-OUT-002**: In a turn where inbound files were listed and none read or handed off, every model-text emission committed after the listing carries the disclosure line at its head — streamed cumulatives included — and when a streamed reply's page-1 unit did not land, the line goes out once as its own message before the overflow pages; after a successful `Read` or hand-off of any armed file none does; a turn that received a file of its own owes that file alone; a turn with no file of its own is never told the person sent it files; and a silent turn stays silent.
 
 The final reply passes through `scope.admit(FINAL_REPLY, …)` in `handle_message`, which
 judges closing silence itself before annotating; a classified-error reply is Casa's text and is never annotated; the

@@ -93,7 +93,7 @@ that no slot defaults to has no reachable consumer at all.
 **A pack may carry the agent's picture**, `avatar.jpg` (`persona_pack.AVATAR_FILE`): a JPEG of
 at most 1 MiB, read as raw bytes and part of the pack's checksum, refused when it is not a
 JPEG, too large, a symlink or executable. An install copies it; an agent with its own chat
-shows it as its bot's picture, set again at each persona apply ([`own-voice.md`](own-voice.md)).
+shows it as its bot's picture, set again at each persona apply ([`own-voice-lifecycle.md`](own-voice-lifecycle.md)).
 
 **Removing a persona is decided by who still refers to it, not by who is using it.** A
 persona's bytes are needed for as long as any binding tuple that a later load — or a later

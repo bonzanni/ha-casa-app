@@ -123,7 +123,7 @@ without it as owing nothing. Their contract is [`output-boundary.md`](output-bou
 **Agents' own bots** keep their state under `/data`: `agent-voices.json` (one record per agent
 and per bot, set aside when corrupt or foreign, owner-only), the held journals
 `agent-voices/held/<bot>.jsonl`, and, without 1Password, each agent's token in
-`agent-voices/tokens/<role>` ([`own-voice.md`](own-voice.md)).
+`agent-voices/tokens/<role>` ([`own-voice-lifecycle.md`](own-voice-lifecycle.md)).
 
 ## Contracts & invariants
 
