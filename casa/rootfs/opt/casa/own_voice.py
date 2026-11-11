@@ -10,7 +10,7 @@ This module answers two questions for the rest of Casa: what state an agent's
 own chat is in (:func:`own_chat_state`), and whether one of its surfaces may
 post now (:func:`require_open_chat`, the capability rule's one function). The
 entry points below drive the chat's lifecycle: offer, creation, binding,
-self-setup, recovery and dormancy.
+self-setup, a move to a new bot, recovery and dormancy.
 """
 from __future__ import annotations
 
@@ -285,9 +285,43 @@ def open_on_bot(role: str, bot_id: int, *, durable_only: bool = False) -> list[s
     return found
 
 
-async def offer_own_chat(role: str) -> dict:
-    """The resident's tool: offer *role* its own chat."""
-    return await _lifecycle().offer(role)
+#: what :func:`offer_own_chat` can be asked to do
+OFFER_MODES = ("check", "offer", "replace", "drop")
+
+
+async def offer_own_chat(role: str, *, mode: str = "offer", username: "str | None" = None,
+                         candidates: "list[str] | None" = None) -> dict:
+    """The resident's tool, for *role*'s own chat. *mode*:
+
+    ``"check"`` reports on the *candidates* handles and what the resident
+    needs to choose one; ``"offer"`` posts the card that creates the chat
+    with the handle *username* (or, once created, the card that opens it);
+    ``"replace"`` offers a new bot with the handle *username* in place of the
+    current one; ``"drop"`` keeps the current bot after all."""
+    lc = _lifecycle()
+    if mode == "check":
+        return await lc.check_handles(role, list(candidates or []))
+    if mode == "offer":
+        return await lc.offer(role, username or "")
+    if mode == "replace":
+        return await lc.replace(role, username or "")
+    if mode == "drop":
+        return await lc.drop_change(role)
+    return {"status": "error", "kind": "bad_mode",
+            "message": f"mode must be one of {', '.join(OFFER_MODES)}"}
+
+
+async def apply_switches_at_boot() -> None:
+    """Early at boot, before any bot is started: move each agent whose new
+    bot exists to it, unless something durable still waits on the old one.
+    Needs only Casa's records and the token store."""
+    await _lifecycle().apply_switches()
+
+
+def chat_moved(bot_id: int) -> bool:
+    """Whether a turn on own bot *bot_id* opens an agent's new chat after a
+    handle change, rather than its first one."""
+    return _lifecycle().chat_moved(bot_id)
 
 
 def own_chat_disclosure(role: str) -> "dict | None":

@@ -378,3 +378,151 @@ async def test_continuations_count_pending_by_bot(world):
     _continuation(OTHER, "run-3")
     assert q.pending_on_bot(BOT) == 2
     assert q.pending_on_bot(OTHER) == 1
+
+
+# ---------------------------------------------------------------------------
+# The facade: the resident's tool and the boot step
+#
+# Driven through the own-chat fake world (``own_voice_world``), with its
+# lifecycle installed as the process's.
+# ---------------------------------------------------------------------------
+
+from own_voice_world import (  # noqa: E402
+    ALEX_BOT, FIDO_BOT, OPERATOR as TG_OPERATOR, World, created, make_lifecycle, specialist,
+)
+
+ALEX_TOKEN = f"{ALEX_BOT}:alex-token-aaaaaaaaaaaaaaaa"
+NEW_BOT = FIDO_BOT + 10
+NEW_TOKEN = f"{NEW_BOT}:new-token-eeeeeeeeeeeeeeee"
+NEW_HANDLE = "CasaFinance4821Bot"
+
+
+@pytest.fixture
+def voices(tmp_path):
+    """Alex (``finance``) declares a chat of its own; nothing is offered yet."""
+    w = World()
+    w.configs = {ROLE: specialist("Alex")}
+    w.queues = {ROLE}
+    w.tokens = {ALEX_BOT: ALEX_TOKEN}
+    root = tmp_path / "data"
+    lc, host = make_lifecycle(w, root)
+    own_voice_lifecycle.install(lc)
+    yield SimpleNamespace(world=w, root=root, lc=lc, host=host)
+    own_voice_lifecycle.install(None)
+
+
+async def _bound_alex(v) -> None:
+    res = await own_voice.offer_own_chat(ROLE, username="HeyAlexTestBot")
+    assert res["status"] == "offered"
+    await v.lc.on_created(created(ALEX_BOT, "AlexTest", "HeyAlexTestBot"), TG_OPERATOR)
+    assert v.lc.store.bots[ALEX_BOT]["phase"] == own_voice_lifecycle.BOUND
+
+
+async def _created_switch(v) -> None:
+    await _bound_alex(v)
+    res = await own_voice.offer_own_chat(ROLE, mode="replace", username=NEW_HANDLE)
+    assert res["status"] == "change_offered"
+    v.world.tokens[NEW_BOT] = NEW_TOKEN
+    await v.lc.on_created(created(NEW_BOT, "Alex", NEW_HANDLE), TG_OPERATOR)
+    assert v.lc.store.bots[NEW_BOT]["phase"] == own_voice_lifecycle.SWITCHING
+
+
+async def test_the_facade_checks_candidate_handles(voices):
+    voices.world.taken_handles = {"CasaFinance1111Bot"}
+    res = await own_voice.offer_own_chat(
+        ROLE, mode="check", candidates=[NEW_HANDLE, "CasaFinance1111Bot", "not a handle"])
+    assert res["status"] == "checked"
+    assert res["candidates"] == {NEW_HANDLE: "probably_free",
+                                 "CasaFinance1111Bot": "taken",
+                                 "not a handle": "invalid_format"}
+    assert res["context"]["persona_name"] == "Alex"
+    assert voices.world.cards == {}
+
+
+async def test_the_facade_offers_the_handle_it_is_given(voices):
+    res = await own_voice.offer_own_chat(ROLE, username="HeyAlexTestBot")
+    assert res == {"status": "offered", "suggested_name": "Alex",
+                   "suggested_username": "HeyAlexTestBot"}
+    (_text, buttons), = voices.world.cards.values()
+    assert buttons == [("Create Alex's chat",
+                        "https://t.me/newbot/HeyEllenTestBot/HeyAlexTestBot?name=Alex")]
+
+
+async def test_an_offer_without_a_handle_is_refused(voices):
+    res = await own_voice.offer_own_chat(ROLE)
+    assert res["status"] == "error" and res["kind"] == "invalid_handle"
+    assert voices.world.cards == {}
+
+
+async def test_the_facade_replaces_a_bound_bot(voices):
+    await _bound_alex(voices)
+    res = await own_voice.offer_own_chat(ROLE, mode="replace", username=NEW_HANDLE)
+    assert res == {"status": "change_offered", "suggested_username": NEW_HANDLE,
+                   "replaces": "@HeyAlexTestBot"}
+    assert voices.lc.store.agents[ROLE]["change"]["old_bot"] == ALEX_BOT
+
+
+async def test_the_facade_drops_a_pending_change(voices):
+    await _bound_alex(voices)
+    await own_voice.offer_own_chat(ROLE, mode="replace", username=NEW_HANDLE)
+    res = await own_voice.offer_own_chat(ROLE, mode="drop")
+    assert res == {"status": "dropped", "keeps": "@HeyAlexTestBot"}
+    assert voices.lc.store.agents[ROLE]["change"] is None
+
+
+async def test_an_unknown_mode_is_an_error(voices):
+    res = await own_voice.offer_own_chat(ROLE, mode="rename", username=NEW_HANDLE)
+    assert res["status"] == "error" and res["kind"] == "bad_mode"
+    assert voices.world.cards == {}
+
+
+async def test_the_boot_step_applies_a_pending_switch(voices):
+    await _created_switch(voices)
+    lc2, _host2 = make_lifecycle(voices.world, voices.root)      # the restart
+    own_voice_lifecycle.install(lc2)
+    await own_voice.apply_switches_at_boot()
+    agent = lc2.store.agents[ROLE]
+    assert agent["bot_id"] == NEW_BOT and agent["change"] is None
+    assert ALEX_BOT not in lc2.store.bots
+    assert lc2.store.bots[NEW_BOT]["phase"] == own_voice_lifecycle.BINDING
+
+
+async def test_a_moved_chat_is_reported_until_it_opens(voices):
+    await _created_switch(voices)
+    assert not own_voice.chat_moved(NEW_BOT)                     # not moved yet
+    lc2, _host2 = make_lifecycle(voices.world, voices.root)
+    own_voice_lifecycle.install(lc2)
+    await own_voice.apply_switches_at_boot()
+    await lc2.boot()
+    assert own_voice.chat_moved(NEW_BOT) is True
+    assert own_voice.chat_moved(ALEX_BOT) is False
+    await lc2.mark_open(NEW_BOT)
+    assert own_voice.chat_moved(NEW_BOT) is False
+
+
+async def test_the_boot_step_needs_only_casas_records(world, voices, tmp_path):
+    """At boot no channel, endpoint or worker exists yet: the switch is
+    applied over the real Telegram host with no transport, and reads what
+    still waits on the old bot from Casa's stores."""
+    await _created_switch(voices)
+    tokens = own_voice_lifecycle.TokenStore(tmp_path / "boot-tokens", env={})
+    await _scheduled_ask(ALEX_BOT)                       # something still waits on it
+    held = own_voice_lifecycle.Lifecycle(root=voices.root, tokens=tokens)
+    assert isinstance(held.host, own_voice_lifecycle.TelegramHost)
+    own_voice_lifecycle.install(held)
+    await own_voice.apply_switches_at_boot()
+    assert held.store.agents[ROLE]["change"]["new_bot"] == NEW_BOT
+    assert held.store.agents[ROLE]["bot_id"] == ALEX_BOT
+    await scheduled_asks.STORE.drop("ask-1")
+    moved = own_voice_lifecycle.Lifecycle(root=voices.root, tokens=tokens)
+    own_voice_lifecycle.install(moved)
+    await own_voice.apply_switches_at_boot()
+    assert moved.store.agents[ROLE]["bot_id"] == NEW_BOT
+    assert moved.store.bots[NEW_BOT]["phase"] == own_voice_lifecycle.BINDING
+
+
+async def test_the_real_host_reads_what_waits_from_open_on_bot(world):
+    await _scheduled_ask(BOT)
+    host = own_voice_lifecycle.TelegramHost()
+    assert host.open_items(ROLE, BOT, True) == [SCHEDULED]
+    assert host.open_items(ROLE, OTHER, False) == []
