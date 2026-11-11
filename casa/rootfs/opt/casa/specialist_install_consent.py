@@ -411,7 +411,8 @@ def install_card_request(
 
     The facts are the renderer's own inputs, digests left out, plus what the
     caller knows beyond them: *role_grants* (the Casa tools the role grants,
-    when the inspection does not carry them), *from_version* (the installed
+    when the inspection does not carry them; with neither, the facts do not
+    mention grants), *from_version* (the installed
     version an update replaces) and *protected_tools* (per bundled plugin's
     scoped name, its protected tools as ``{"name", "summary"}`` from the
     plugin's manifest; a plugin missing from it is listed by tool name)."""
@@ -419,8 +420,11 @@ def install_card_request(
 
     text = render_install_consent_message(
         inspection, mode=mode, values=values, submitted_config=submitted_config)
+    # Grants the caller did not pass are known only when the inspection
+    # carries some; an empty tuple there may just mean nobody read them, so
+    # the key is then left out rather than claiming "none".
     grants = role_grants if role_grants is not None else (
-        getattr(inspection, "role_tool_grants", ()) or ())
+        getattr(inspection, "role_tool_grants", ()) or None)
     facts: dict = {"requested_by": requester_name,
                    "request": "update" if mode == "upgrade" else "install",
                    "specialist": inspection.slug,
@@ -433,7 +437,7 @@ def install_card_request(
         facts["version"] = inspection.version
     facts.update({
         "mission": inspection.mission,
-        "casa_tools_granted": list(grants),
+        **({"casa_tools_granted": list(grants)} if grants is not None else {}),
         "default_persona": inspection.default_persona_ref,
         "dependencies": [f"{d.kind}:{d.identifier}" for d in inspection.dependencies],
         "bundled_plugins": [

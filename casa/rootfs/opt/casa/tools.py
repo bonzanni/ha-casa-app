@@ -15133,12 +15133,16 @@ async def _post_approval_card(record: Any, post: "Callable[..., Any]", *, what: 
         return {"ok": False, "kind": "consent_prompt_failed",
                 "detail": f"{type(exc).__name__}: {exc}"}
     failure = await _settle_install_consent_post(handle)
-    if failure is not None:
-        return failure
     # The card records where it landed and, when a newer request replaced this
-    # one while it was posting, edits itself to say so at once.
+    # one while it was posting, edits itself to say so at once. One replaced
+    # while its card was still being written is never posted: its question
+    # settled first, which reads as inactive.
     now = approval_records.get(record.rid)
-    if now is not None and now.state == "superseded":
+    replaced = now is not None and now.state == "superseded"
+    if failure is not None and not (replaced
+                                    and failure.get("kind") == "consent_prompt_inactive"):
+        return failure
+    if replaced:
         return {"ok": False, "kind": "approval_superseded",
                 "detail": ("a newer request replaced this one while its card was "
                            "posting; the newer card is the one the operator answers")}

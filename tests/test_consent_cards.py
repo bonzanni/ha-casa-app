@@ -408,18 +408,34 @@ async def test_superseded_install_while_writing_posts_nothing(env, monkeypatch):
         await release.wait()
         return json.dumps(REPLY)
     monkeypatch.setattr(approval_card, "_ask", _slow)
-    record, handle = await _post_specialist(env)
+    from specialist_install_consent import (SpecialistInstallAckStore,
+                                            prompt_specialist_install_consent)
+    monkeypatch.setattr(tools, "CHALLENGES", env.coord)
+    monkeypatch.setattr(tools, "_casa_card_target",
+                        lambda: (env.channel, TgAddress(111, 100), None))
+    inspection = _specialist_inspection()
+    record, _, _ = await _specialist_record(inspection=inspection)
+
+    def _post(**kw):
+        return prompt_specialist_install_consent(
+            inspection_facts=inspection, submitted_config={"API_URL": "x"},
+            acks=SpecialistInstallAckStore(path=env.tmp / "acks.json"), **kw)
+    # The older run, posting its card through the request tool's own poster.
+    older = asyncio.create_task(tools._post_approval_card(
+        record, _post, what="specialist:mtg", continuation="carry on"))
     await _settle()
     _b, outcome, prev = await _specialist_record(
         values={"config": {"API_URL": "https://b.test"}, "secrets": []})
     assert (outcome, prev.rid, prev.card) == ("superseded_previous", record.rid, None)
     await tools._supersede_card(prev)
     release.set()
-    assert await handle.settled_post() == "inactive"
+    result = await older
     await _settle()
     assert env.channel.posts == []
     assert env.channel.edits == []
     assert ar.get(record.rid).state == "superseded"
+    # The older run hears it was replaced, not that its card expired.
+    assert result["kind"] == "approval_superseded", result
 
 
 # --- the governed request tool -----------------------------------------------------
@@ -528,6 +544,21 @@ async def test_governed_install_request_carries_role_grants_and_tool_summaries(e
     assert reg["challenge_text"] == _todays_body(governed, config)
     assert "Casa tools:" not in reg["challenge_text"]
     assert reg["card_request"].fallback == approval_card.text_fallback(reg["challenge_text"])
+
+
+async def test_unknown_grants_are_left_unsaid(env, governed, monkeypatch):
+    """When the card's extra facts cannot be read at all, the model is not
+    told the role grants nothing: the grants are simply not mentioned."""
+    def _fails(*a, **kw):
+        raise OSError("staged tree gone")
+    monkeypatch.setattr(tools, "_install_card_facts", _fails)
+    out = await _request_approval(governed, {})
+    assert out["approval"] == "requested", out
+    [facts] = env.asked
+    assert "casa_tools_granted" not in facts
+    # The plugin's tools still come from the checked receipt, by name.
+    assert [t["name"] for t in facts["bundled_plugins"][0]["protected_tools"]] == [
+        "danger_tool", "plain_tool"]
 
 
 async def test_unreadable_plugin_manifest_lists_its_tools_by_name(env, governed, caplog,
