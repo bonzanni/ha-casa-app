@@ -62,6 +62,8 @@ class World:
     op_argv: list = field(default_factory=list)
     op_create_timeout_once: bool = False
     fail_post: bool = False
+    taken_handles: set = field(default_factory=set)   # usernames in use on Telegram
+    probe_down: bool = False                          # t.me cannot be reached
 
     def tick(self, what: str) -> None:
         self.effects.append(what)
@@ -134,6 +136,11 @@ class FakeHost:
         if not self.w.manager_ok:
             raise InvalidToken("Unauthorized")
         return {"first_name": self.w.manager_first_name, "username": self.w.manager_username}
+
+    async def handle_taken(self, username):
+        if self.w.probe_down:
+            return None
+        return username.lower() in {t.lower() for t in self.w.taken_handles}
 
     async def manager_check(self):
         return "ok" if self.w.manager_ok else "unauthorized"

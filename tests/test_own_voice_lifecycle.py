@@ -45,7 +45,7 @@ def root(tmp_path) -> Path:
 
 
 async def _bind_alex(lc, host) -> None:
-    await lc.post_offer("finance")
+    await lc.post_offer("finance", "HeyAlexTestBot")
     await lc.on_created(created(ALEX_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR)
     assert lc.store.bots[ALEX_BOT]["phase"] == ovl.BOUND
 
@@ -60,7 +60,7 @@ def _disk(root: Path) -> dict:
 
 async def test_a_managed_bot_update_alone_registers_nothing(world, root):
     lc, _host = make_lifecycle(world, root)
-    await lc.post_offer("finance")
+    await lc.post_offer("finance", "HeyAlexTestBot")
     await lc.on_updated(created(ALEX_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR)
     assert lc.store.bots == {} and world.fetches == []
     assert lc.state("finance") == "no_bot"
@@ -68,7 +68,7 @@ async def test_a_managed_bot_update_alone_registers_nothing(world, root):
 
 async def test_a_creation_sent_by_someone_else_is_ignored(world, root):
     lc, _host = make_lifecycle(world, root)
-    await lc.post_offer("finance")
+    await lc.post_offer("finance", "HeyAlexTestBot")
     await lc.on_created(created(ALEX_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR + 1)
     assert lc.store.bots == {} and world.fetches == []
 
@@ -88,12 +88,12 @@ async def test_a_redelivered_creation_is_registered_once(world, root):
 @pytest.mark.parametrize("name, username, binds", [
     ("AlexTest", "HeyAlexTestBot", True),
     ("AlexTest", "heyalextestbot", True),       # usernames are case-insensitive
-    ("Alex Test", "HeyAlexTestBot", False),     # edited name
+    ("Alex Test", "HeyAlexTestBot", True),      # an edited name: Casa sets the name itself
     ("AlexTest", "HeyAlexBot", False),          # edited username
 ])
 async def test_only_an_exact_match_binds(world, root, name, username, binds):
     lc, host = make_lifecycle(world, root)
-    await lc.post_offer("finance")
+    await lc.post_offer("finance", "HeyAlexTestBot")
     await lc.on_created(created(ALEX_BOT, name, username), OPERATOR)
     rec = lc.store.bots[ALEX_BOT]
     if binds:
@@ -107,17 +107,17 @@ async def test_only_an_exact_match_binds(world, root, name, username, binds):
 
 async def test_a_stale_suggestion_asks(world, root):
     lc, host = make_lifecycle(world, root)
-    await lc.post_offer("finance")
-    world.manager_first_name, world.manager_username = "Ellen", "EllenCasaBot"
-    await lc.post_offer("finance")      # the operator used the first card's form
+    await lc.post_offer("finance", "HeyAlexTestBot")
+    await lc.post_offer("finance", "CasaFinance4821Bot")
+    # the operator used the first card's form
     await lc.on_created(created(ALEX_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR)
     assert lc.store.bots[ALEX_BOT]["phase"] == ovl.UNBOUND
 
 
 async def test_two_agents_with_equal_suggestions_ask(world, root):
     lc, host = make_lifecycle(world, root)
-    await lc.post_offer("finance")
-    await lc.post_offer("browser")
+    await lc.post_offer("finance", "HeyAlexTestBot")
+    await lc.post_offer("browser", "HeyFidoTestBot")
     lc.store.agents["browser"]["suggestion"] = dict(lc.store.agents["finance"]["suggestion"])
     await lc.on_created(created(ALEX_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR)
     assert lc.store.bots[ALEX_BOT]["phase"] == ovl.UNBOUND
@@ -294,7 +294,7 @@ async def test_a_tap_on_a_stale_question_cannot_bind(world, root):
 
 async def test_an_agent_that_gained_a_bot_meanwhile_is_asked_about_again(world, root):
     lc, host = make_lifecycle(world, root)
-    await lc.post_offer("finance")
+    await lc.post_offer("finance", "HeyAlexTestBot")
     world.tokens[777] = "777:another-token-zzzzzzzzzzzz"
     await lc.on_created(created(777, "Alex", "AlexHomeBot"), OPERATOR)  # asks
     rid, options, answer = host.latest_ask()
@@ -345,7 +345,7 @@ async def test_every_effect_finds_its_phase_on_disk(world, root):
         return op(cmd, **kw)
     lc.tokens._run_fn = op_call
 
-    await lc.post_offer("finance")
+    await lc.post_offer("finance", "HeyAlexTestBot")
     await lc.on_created(created(ALEX_BOT, "Alex", "AlexHomeBot"), OPERATOR)
     await host.answer("Alex")
     by = {}
@@ -366,7 +366,7 @@ async def test_every_effect_finds_its_phase_on_disk(world, root):
 
 async def test_a_released_held_start_opens_the_chat_once(world, root):
     lc, host = make_lifecycle(world, root)
-    await lc.post_offer("finance")
+    await lc.post_offer("finance", "HeyAlexTestBot")
     await lc.on_created(created(ALEX_BOT, "Alex", "AlexHomeBot"), OPERATOR)
     await lc.intake(ALEX_BOT, update(1, "/start"))
     assert lc.state("finance") == "no_bot"
@@ -495,24 +495,8 @@ async def test_a_rotation_while_stopped_is_recovered_at_boot(world, root):
 
 
 # ---------------------------------------------------------------------------
-# the suggestion is derived from the resident's bot
+# the handle is Ellen's choice; Casa checks only its format, owner and use
 # ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("first, username, agent, taken, expected", [
-    ("EllenTest", "HeyEllenTestBot", "Alex", set(), ("AlexTest", "HeyAlexTestBot")),
-    ("Casa", "CasaHomeBot", "Alex", set(), ("Alex", "AlexBot")),
-    ("EllenTest", "HeyEllenTestBot", "Zoë", set(), ("ZoëTest", "HeyZoeTestBot")),
-    ("Ellen", "Ellen_bot", "Al", set(), ("Al", "Al_bot")),
-    ("Ellen", "XEllenX", "Alex", set(), ("Alex", "AlexBot")),         # no "bot" ending
-    ("Ellen", "EllenBot", "A", set(), ("A", "")),                     # nothing valid
-    ("EllenTest", "HeyEllenTestBot", "Alex", {"heyalextestbot"},
-     ("AlexTest", "HeyAlexTest_financeBot")),
-])
-def test_the_suggestion(first, username, agent, taken, expected):
-    assert ovl.suggest(resident_name="Ellen", resident_first_name=first,
-                       resident_username=username, agent_name=agent, role="finance",
-                       taken=taken) == expected
-
 
 def test_the_create_link_is_the_trial_form():
     assert ovl.create_link("HeyEllenTestBot", "AlexTest", "HeyAlexTestBot") == \
@@ -521,14 +505,123 @@ def test_the_create_link_is_the_trial_form():
         "https://t.me/newbot/HeyEllenTestBot?name=Al+Ex"
 
 
-async def test_the_offer_card_carries_the_suggestion(world, root):
-    lc, _host = make_lifecycle(world, root)
-    result = await lc.post_offer("finance")
-    assert result == {"status": "offered", "suggested_name": "AlexTest",
-                      "suggested_username": "HeyAlexTestBot"}
+async def test_the_offer_card_carries_ellens_handle(world, root):
+    lc, _ = make_lifecycle(world, root)
+    res = await lc.offer("finance", "CasaFinance4821Bot")
+    assert res == {"status": "offered", "suggested_name": "Alex",
+                   "suggested_username": "CasaFinance4821Bot"}
     text, buttons = world.cards[lc.store.agents["finance"]["offer_card"][2]]
+    assert text == "Alex can get a separate chat with you. Tap below, then Create."
     assert buttons == [("Create Alex's chat",
-                        "https://t.me/newbot/HeyEllenTestBot/HeyAlexTestBot?name=AlexTest")]
+                        "https://t.me/newbot/HeyEllenTestBot/CasaFinance4821Bot?name=Alex")]
+    assert lc.store.agents["finance"]["handles"] == ["CasaFinance4821Bot"]
+
+
+@pytest.mark.parametrize("handle", [
+    "", "Alex", "AlexBott!", "CasaFinance4821", "Casa" + "x" * 26 + "Bot"])   # the last: 33
+async def test_an_invalid_handle_is_refused_with_its_reason(world, root, handle):
+    lc, _ = make_lifecycle(world, root)
+    res = await lc.offer("finance", handle)
+    assert res["status"] == "error" and res["kind"] == "invalid_handle"
+    assert "ending in bot" in res["message"]
+    assert world.cards == {} and "finance" not in lc.store.agents
+
+
+async def test_a_handle_once_offered_to_another_specialist_is_refused(world, root):
+    lc, _ = make_lifecycle(world, root)
+    await lc.offer("finance", "CasaFinance4821Bot")
+    cards = dict(world.cards)
+    res = await lc.offer("browser", "casafinance4821bot")
+    assert res["status"] == "error" and res["kind"] == "handle_owned"
+    assert "Alex" in res["message"]
+    assert world.cards == cards and "browser" not in lc.store.agents
+
+
+async def test_a_taken_handle_is_refused(world, root):
+    world.taken_handles = {"CasaFinance4821Bot"}
+    lc, _ = make_lifecycle(world, root)
+    res = await lc.offer("finance", "CasaFinance4821Bot")
+    assert res["status"] == "error" and res["kind"] == "handle_taken"
+    assert world.cards == {} and "finance" not in lc.store.agents
+
+
+async def test_an_unreachable_probe_never_blocks_the_offer(world, root):
+    world.probe_down = True
+    lc, _ = make_lifecycle(world, root)
+    res = await lc.offer("finance", "CasaFinance4821Bot")
+    assert res["status"] == "offered"
+    assert lc.store.agents["finance"]["suggestion"]["username"] == "CasaFinance4821Bot"
+
+
+async def test_the_check_reports_each_candidate_and_the_context(world, root):
+    world.taken_handles = {"CasaFinance4821Bot"}
+    lc, host = make_lifecycle(world, root)
+    await lc.offer("browser", "CasaBrowser2222Bot")
+    cards = dict(world.cards)
+    res = await lc.check_handles(
+        "finance", ["x", "CasaFinance4821Bot", "CasaFinance1111Bot", "CasaBrowser2222Bot"])
+    assert res["status"] == "checked"
+    assert res["candidates"] == {
+        "x": "invalid_format", "CasaFinance4821Bot": "taken",
+        "CasaFinance1111Bot": "probably_free", "CasaBrowser2222Bot": "owned_by_other"}
+    ctx = res["context"]
+    assert ctx["role"] == "finance" and ctx["persona_name"] == "Alex"
+    assert ctx["resident_bot"] == {"username": "HeyEllenTestBot", "name": "EllenTest"}
+    assert ctx["current_handle"] is None
+    assert ctx["other_handles"] == ["CasaBrowser2222Bot"]
+    assert "ending in bot" in ctx["rules"]
+    assert world.cards == cards                 # a check posts nothing
+    assert "finance" not in lc.store.agents
+    world.probe_down = True
+    res = await lc.check_handles("finance", ["CasaFinance1111Bot"])
+    assert res["candidates"] == {"CasaFinance1111Bot": "unknown"}
+    res = await lc.check_handles("finance", [f"CasaFinance{n}Bot" for n in range(6)])
+    assert res["status"] == "error" and res["kind"] == "too_many_candidates"
+
+
+async def test_the_check_names_the_bound_handles(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _bind_alex(lc, host)
+    res = await lc.check_handles("finance", [])
+    assert res["context"]["current_handle"] == "HeyAlexTestBot"
+    res = await lc.check_handles("browser", [])
+    assert res["context"]["current_handle"] is None
+    assert res["context"]["other_handles"] == ["HeyAlexTestBot"]
+
+
+async def test_handles_are_kept_across_a_new_offer_and_a_restart(world, root):
+    lc, _ = make_lifecycle(world, root)
+    await lc.offer("finance", "CasaFinance4821Bot")
+    await lc.offer("finance", "CasaFinance1111Bot")
+    await lc.offer("finance", "casafinance4821bot")      # its own again: no duplicate
+    lc2, _ = make_lifecycle(world, root)
+    assert lc2.store.agents["finance"]["handles"] == ["CasaFinance4821Bot", "CasaFinance1111Bot"]
+    res = await lc2.offer("browser", "CasaFinance1111Bot")
+    assert res["kind"] == "handle_owned"
+
+
+async def test_the_probe_reads_the_page_title_block(monkeypatch):
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+
+    async def page(request):
+        name = request.match_info["name"]
+        if name == "TakenBot":
+            return web.Response(text='<div class="tgme_page_title"><span>Alex</span></div>',
+                                content_type="text/html")
+        if name == "BrokenBot":
+            return web.Response(status=500)
+        return web.Response(text=f'<meta property="og:title" content="Telegram: Contact @{name}">',
+                            content_type="text/html")
+    app = web.Application()
+    app.router.add_get("/{name}", page)
+    host = ovl.TelegramHost()
+    async with TestServer(app) as server:
+        monkeypatch.setattr(ovl, "HANDLE_PAGE", str(server.make_url("/")) + "{}")
+        assert await host.handle_taken("TakenBot") is True
+        assert await host.handle_taken("FreeBot") is False
+        assert await host.handle_taken("BrokenBot") is None
+    assert await host.handle_taken("TakenBot") is None      # nothing answers
 
 
 # ---------------------------------------------------------------------------
@@ -779,30 +872,20 @@ async def test_an_upgrade_that_drops_the_declaration_goes_dormant_and_back(world
     assert lc.store.bots[ALEX_BOT]["phase"] == ovl.BOUND
 
 
-async def test_an_upgrade_that_newly_declares_is_offered_once(world, root):
-    del world.configs["browser"]
-    world.configs["finance"] = specialist("Alex", own=False)
+async def test_an_install_or_upgrade_posts_no_offer_by_itself(world, root):
     lc, _host = make_lifecycle(world, root)
-    await lc.on_upgrade("finance")
-    assert "finance" not in lc.store.agents
-    world.configs["finance"] = specialist("Alex")
-    await lc.on_upgrade("finance")
-    assert lc.store.agents["finance"]["offer_card"] is not None
-    cards = len(world.cards)
-    await lc.on_upgrade("finance")         # never re-offered on its own
-    lc2, _ = make_lifecycle(world, root)
-    await lc2.boot()
-    assert len(world.cards) == cards
+    await lc.on_install("finance")
+    world.configs["browser"] = specialist("Fido", own=False)
+    await lc.on_upgrade("browser")
+    world.configs["browser"] = specialist("Fido")
+    await lc.on_upgrade("browser")
+    assert world.cards == {} and lc.store.agents == {}
 
 
-async def test_boot_offers_once_to_an_eligible_agent_with_no_record(world, root):
+async def test_boot_posts_no_offer_by_itself(world, root):
     lc, _host = make_lifecycle(world, root)
     await lc.boot()
-    assert set(lc.store.agents) == {"finance", "browser"}
-    cards = len(world.cards)
-    lc2, _ = make_lifecycle(world, root)
-    await lc2.boot()
-    assert len(world.cards) == cards
+    assert world.cards == {} and lc.store.agents == {}
 
 
 # ---------------------------------------------------------------------------
@@ -819,7 +902,7 @@ async def test_one_item_per_role_through_bind_rotate_delete_and_recreate(world, 
     await lc.on_updated(created(ALEX_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR)
     assert lc.store.bots[ALEX_BOT]["phase"] == ovl.RELEASED
     world.tokens[8888] = "8888:recreated-token-dddddddddd"
-    await lc.offer("finance")
+    await lc.offer("finance", "HeyAlexTestBot")
     sugg = lc.store.agents["finance"]["suggestion"]
     await lc.on_created(created(8888, sugg["name"], sugg["username"]), OPERATOR)
     assert lc.store.bots[8888]["phase"] == ovl.BOUND
@@ -1085,7 +1168,7 @@ async def test_a_stored_token_of_another_bot_is_never_used(world, root):
 
 async def test_the_record_file_is_owner_only(world, root):
     lc, _host = make_lifecycle(world, root)
-    await lc.post_offer("finance")
+    await lc.post_offer("finance", "HeyAlexTestBot")
     assert stat.S_IMODE(os.stat(root / "agent-voices.json").st_mode) == 0o600
 
 
@@ -1094,7 +1177,7 @@ async def test_the_record_file_is_owner_only(world, root):
 # ---------------------------------------------------------------------------
 
 async def _scenario_ask_then_bind(lc, host, world):
-    await lc.post_offer("finance")
+    await lc.post_offer("finance", "HeyAlexTestBot")
     await lc.on_created(created(ALEX_BOT, "Alex", "AlexHomeBot"), OPERATOR)
     await lc.intake(ALEX_BOT, update(1, "/start"))
     await lc.intake(ALEX_BOT, update(2))
@@ -1128,13 +1211,13 @@ def _check_ask_then_bind(lc, host, world, held):
 
 
 async def _scenario_match(lc, host, world):
-    await lc.post_offer("finance")
+    await lc.post_offer("finance", "HeyAlexTestBot")
     await lc.on_created(created(ALEX_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR)
 
 
 async def _finish_match(lc, host, world):
     if "finance" not in lc.store.agents:
-        await lc.post_offer("finance")
+        await lc.post_offer("finance", "HeyAlexTestBot")
     if ALEX_BOT not in lc.store.bots:
         await lc.on_created(created(ALEX_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR)
     rec = lc.store.bots[ALEX_BOT]
