@@ -516,7 +516,7 @@ _STOP_WORK_RESULTS["in_flight"] = _STOP_WORK_RESULTS["already_stopped"]
     {"type": "object", "properties": {"ref": {"type": "string"}}, "required": []},
 )
 async def stop_work(args: dict) -> dict:
-    """The resident's direct stop (``plugin_stop``): no desk, no specialist turn. Only on the
+    """The resident's direct stop (``plugin_stop``): no model turn, no specialist turn. Only on the
     operator's own live turn — the spawn cap's ``_is_agent_context`` False and the sender the
     operator as configured now; voice, narration, scheduled and delegated turns are refused."""
     import plugin_stop
@@ -864,7 +864,7 @@ async def _settle_task(birth: "TaskBirth | None", *, answer: "str | None" = None
         if answer is not None:
             import result_broker as rb
             await _post_task_text(birth, answer, intent=IntentKind.FINAL_REPLY,
-                                  slot="task-answer", kind=rb.DESK_REPLY)
+                                  slot="task-answer", kind=rb.TASK_ANSWER)
         _note_task(birth, "asked you",
                    "you answered" if answer is not None
                    else f"you couldn't finish it ({failure or 'unknown'})")
@@ -1170,13 +1170,6 @@ _MEDIA_SEND_DEBITS_MAX_KEYS: int = 512
 _delegation_quota_key: ContextVar[str] = ContextVar(
     "_delegation_quota_key", default="")
 
-# S4 §8: set by delegate_to_agent around its `_prelaunch` call when the
-# delegation is a specialist-desk use, so the concurrency gate leaves the
-# permit to the desk's own use (lock first, permit second). A ContextVar
-# rather than a parameter: the `_prelaunch` seam is monkeypatched by exact
-# five-argument signature in test doubles (the voice-handoff suite's among
-# them), and a new keyword on the call turned one of them into a silent hang.
-_desk_skip_permit: ContextVar[bool] = ContextVar("_desk_skip_permit", default=False)
 # S7a (INV-BGJOB-008): set ONLY around the one ``_prelaunch`` call of a
 # specialist's start of its own job (``_launch_interactive_engagement``), so
 # that call skips the two gates a self-start has no use for — the delegation
@@ -1185,26 +1178,27 @@ _desk_skip_permit: ContextVar[bool] = ContextVar("_desk_skip_permit", default=Fa
 _self_host_prelaunch: ContextVar[bool] = ContextVar("_self_host_prelaunch", default=False)
 
 # S5 §5.2: the ``PinnedRun`` of a stored-call tap, set by
-# ``specialist_desk.handle_tap`` around its create_task of the delegated
+# ``stored_call_settler.handle_tap`` around its create_task of the delegated
 # runner; the options builder consumes its captured build input instead of
 # deriving its own, injects the pin, and the runner lets it own the client.
 # A ContextVar for the same reason as the two above: the runner and builder
 # seams are monkeypatched by signature across the suite.
 _pinned_run: ContextVar["Any | None"] = ContextVar("_pinned_run", default=None)
 
-# #1197: a list bound by a specialist-desk use (``specialist_desk.handle_reply``
-# around its create_task of the bounded runner, ``delegation_use`` around its
-# call) into which ``_run_delegated_agent_bounded`` puts the inner task it
-# creates — so the desk, not the runner, can tell a run that ended from one
-# still unwinding past the teardown bound. A ContextVar for the same reason as
-# the three above: the bounded runner is monkeypatched by its five-argument
-# signature across the suite. Non-desk callers leave it None.
-_desk_run_sink: ContextVar["list | None"] = ContextVar("_desk_run_sink", default=None)
+# #1197: the lane's unwinding guard — a list bound by one use of an agent's
+# lane (a delegation, a plugin continuation, Casa continuing the configurator)
+# around its call of the bounded runner, into which
+# ``_run_delegated_agent_bounded`` puts the inner task it creates — so the
+# lane, not the runner, can tell a run that ended from one still unwinding
+# past the teardown bound. A ContextVar for the same reason as the ones above:
+# the bounded runner is monkeypatched by its five-argument signature across
+# the suite. Callers outside a lane leave it None.
+_lane_run_sink: ContextVar["list | None"] = ContextVar("_lane_run_sink", default=None)
 
 # #1212: the ``pinned_run.ProcessTree`` ``_run_delegated_agent_bounded`` owns for
 # the run it creates — set around that create_task and reset at once, read and
 # cleared by the run at its entry, so a run nested inside it gets its own. A
-# ContextVar for the same reason as ``_desk_run_sink``.
+# ContextVar for the same reason as ``_lane_run_sink``.
 @dataclass(frozen=True)
 class ConversationTurn:
     """A continuation turn's conversation: the binding it belongs to, and the session
@@ -3041,7 +3035,7 @@ SPECIALIST_CASA_GRANTS: tuple[str, ...] = (
 # and executors.
 MANDATORY_BRIDGE_CASA_GRANTS: tuple[str, ...] = SPECIALIST_CASA_GRANTS
 
-# S7a: the one grant a specialist's desk or delegated build may be offered for
+# S7a: the one grant a specialist's pinned or delegated build may be offered for
 # starting its own plugins' jobs (``background_jobs.offers_start_job``).
 START_JOB_GRANT: str = "mcp__casa-framework__start_job"
 
@@ -3056,7 +3050,7 @@ def _delegated_resolution(cfg):
 
 
 def _capture_build_input(cfg):
-    """S5 §4.2.3: ONE capture, under the desk lock, of exactly the derivations
+    """S5 §4.2.3: ONE capture, under the agent's lane, of exactly the derivations
     that decide WHICH artifacts and tools a delegated session of *cfg* admits
     — in the builder's own order: the resolution, the env withholding, the
     protected map, the contract map, the profile plan. The tap's re-checks
@@ -3104,7 +3098,7 @@ _HANDOFF_GRANT = "mcp__casa-framework__hand_off"
 
 def _handoff_grants(cfg, *, engagement: bool) -> tuple[str, ...]:
     """Browser executor §5.4: ``hand_off`` for every specialist's delegated
-    or desk build — granted in code, never declared by a bundle (#541 keeps
+    or pinned build — granted in code, never declared by a bundle (#541 keeps
     spawn tools off the bundle allowlist) — and for no engagement or job
     build, the same condition as the inbox tools (``agent_inbox``)."""
     if engagement or getattr(cfg, "kind", "") != "specialist":
@@ -3149,7 +3143,7 @@ def _build_specialist_options(
 
     # S6 §2.3: an inbox specialist reads its own ready/ and has the two
     # inbound-file tools — path and tools from the one constructor (INV-FILE-002)
-    # the coordinator's ruling R-D1 (a): only a desk or delegated turn gets the inbox; a job or
+    # only a pinned or delegated turn gets the inbox; a job or
     # engagement build — the only callers that pass launch grants — gets neither the
     # path nor the tools, and the #541 dispatch ceiling stays as it is
     if not task_id and not extra_casa_tools:
@@ -3209,8 +3203,8 @@ def _build_specialist_options(
     # engagement record + the options share ONE resolve (no create-vs-builder
     # drift), and a resumed engagement rebuilds from its RECORDED artifacts.
     _role = getattr(cfg, "role", "unknown")
-    # S5 §4.2.3: on a pinned one-call turn the tap captured — under the desk
-    # lock, after its re-checks — the resolution (already env-withheld), the
+    # S5 §4.2.3: on a pinned one-call turn the tap captured — under the
+    # agent's lane, after its re-checks — the resolution (already env-withheld), the
     # withheld list, the protected map, the contract map and the profile
     # plan. This builder consumes them UNCHANGED: nothing is resolved,
     # filtered, mapped or planned again, so a replacement artifact carrying
@@ -3309,7 +3303,7 @@ def _build_specialist_options(
     for grant in _inbox_tools:                       # S6 §2.3, the same condition as the path
         if grant not in allowed_tools:
             allowed_tools.append(grant)
-    # S7a §3.1 (INV-BGJOB-008): a specialist's desk or delegated build that
+    # S7a §3.1 (INV-BGJOB-008): a specialist's pinned or delegated build that
     # loads a job-declaring plugin is offered start_job — visibility only;
     # the handler decides which job at the call. On a tap the S5 pin refuses it.
     _job_tools = ((START_JOB_GRANT,) if background_jobs.offers_start_job(
@@ -3337,7 +3331,7 @@ def _build_specialist_options(
             *resolved_hooks.get("PreToolUse", []), _profile_guard]
     if _owner is not None:
         # S5 §5.3: the pin for every NON-plugin tool (built-ins, ToolSearch,
-        # Skill, the messaging and desk tools) — FIRST, before every other
+        # Skill, the messaging tools) — FIRST, before every other
         # PreToolUse matcher; the plugin admission hook carries the same pin
         # as its own first check, because the CLI runs matching hooks
         # concurrently and one hook's deny does not stop its siblings.
@@ -3854,11 +3848,6 @@ class DelegatedOutput:
     run_terminal_reason: str | None = None
     run_stop_reason: str | None = None
     tool_calls: dict[str, int] = field(default_factory=dict)
-    # #1283: the text-bearing messages ``text`` is joined from — under a #1252
-    # approval cut, the prefix ``approval_kept`` joins — for the desk reply's
-    # closing-silence rule. Empty from a producer that does not report them,
-    # which leaves the reply judged on its whole text.
-    reply_messages: tuple[str, ...] = ()
     # Slice 5p: the last text-bearing message of the turn, whole — never cut
     # by #1252 — the answer the delegate closed its turn with; it travels
     # beside a result the length cap cut, and its silence is told to the
@@ -4030,7 +4019,7 @@ def validate_voice_handoff_static(
 # `<other>` when it isn't one (Sol review, Blocking). The diagnosis never
 # depends on the raw value: the booleans beside it carry the signal.
 _KNOWN_MODES = frozenset({"sync", "async"})
-# Interactive specialist engagements are retired in favour of the desk. The
+# Interactive specialist engagements are retired in favour of delegations. The
 # value stays in the tool schema's enum only so that a stale call — a model's,
 # or one a stored scheduled prompt still asks for — reaches the handler's typed
 # refusal instead of the SDK's bare validation error, which names no
@@ -4473,7 +4462,7 @@ _SETUP_CLEARED_REFRESHES: set = set()
 async def _refresh_plugin_health_live() -> None:
     """A live, guarded regeneration of the plugin-health report, waited for
     with a bound — the same unit a cleared setup obligation uses (S5 §14.8:
-    a faulted desk's row lands at once, not at the next mutation)."""
+    a faulted agent's row lands at once, not at the next mutation)."""
     await _refresh_health_after_setup_cleared()
 
 
@@ -4829,7 +4818,7 @@ async def _run_delegated_turn(
     # #1252: the text-bearing messages `text` is joined from, and where they
     # stop being the operator's because a protected call is waiting on the
     # operator's approval — read at each call's result, as the resident's
-    # turn reads it. Only the specialist desk reads the outcome.
+    # turn reads it; the delegation reads which approvals are still waiting.
     messages: list[str] = []
     approval_cut = ApprovalCut()
     approval_scope: TurnScope | None = None
@@ -5138,7 +5127,6 @@ async def _run_delegated_turn(
             if result_msg is not None else None
         ),
         tool_calls=dict(tool_counts or {}),
-        reply_messages=tuple(messages),
         final_message=messages[-1] if messages else "",
     )
 
@@ -5160,13 +5148,6 @@ async def _run_delegated_turn(
         _log.end(False)
         raise ApiErrorTurn(_caller_fault)
     _log.end(not output.run_aborted)
-
-    # #1252: a run that ended with an approval pending publishes the words it
-    # wrote before that call onto the scope it ran under; `text` stays whole.
-    if approval_scope is not None and approval_cut.cut is not None:
-        approval_scope.approval_kept = "\n\n".join(messages[:approval_cut.cut])
-        # #1283: the messages the kept words are joined from, cut at the same index
-        output = replace(output, reply_messages=tuple(messages[:approval_cut.cut]))
 
     # The answer is captured at completion — the whole live fold — only when
     # the run's own evidence says it is complete (INV-MEM-016).
@@ -5407,13 +5388,17 @@ async def _settle_then_announce(
 
 def _delegation_failure_kind(exc: BaseException) -> str:
     """The typed kind of a delegation that raised: its agent's lane was full
-    (``busy``) or is out of service until restart (``agent_faulted``), else
-    the classified error."""
+    (``busy``) or is out of service until restart (``agent_faulted``), the
+    approval Casa started it for was used or replaced meanwhile
+    (``approval_used`` / ``approval_superseded``), else the classified error."""
     import agent_lane
+    import approval_records
     if isinstance(exc, agent_lane.LaneBusy):
         return "busy"
     if isinstance(exc, agent_lane.LaneFaulted):
         return "agent_faulted"
+    if isinstance(exc, approval_records.ApprovalNotCurrent):
+        return "approval_used" if exc.verdict == "used" else "approval_superseded"
     return _classify_error(exc).value
 
 
@@ -6275,11 +6260,10 @@ async def _prelaunch(
                                "with the Cancel button on its start line or by asking me.",
                 })
     permit = None
-    # S4 §8: a delegation that is a use of a specialist desk takes its permit
-    # AFTER the desk lock, inside the desk's own use (lock first, permit
-    # second — a queued delegation is never refused by the permit a running
-    # desk turn rightly holds); the caller says so with ``skip_permit``.
-    if _specialist_limiter is not None and not (skip_permit or _desk_skip_permit.get()):
+    # The permit is taken here, before the agent's lane: a delegation refused
+    # busy creates no task and posts no start line. A caller that takes its
+    # own permit says so with ``skip_permit``.
+    if _specialist_limiter is not None and not skip_permit:
         scope = _delegation_scope(origin, agent_name, mode)
         permit = _specialist_limiter.try_acquire(scope)
         if permit is None:
@@ -6587,8 +6571,8 @@ async def _run_delegated_agent_bounded(
     timing exactly).
 
     Either way it can return while the inner task is still unwinding past
-    the bound; a specialist-desk use learns of that task through
-    ``_desk_run_sink`` and keeps its desk refused until it ends (#1197).
+    the bound; a use of an agent's lane learns of that task through
+    ``_lane_run_sink`` and keeps the lane refused until it ends (#1197).
 
     #1212: either way, too, the processes the run's CLI started are Casa's to
     end, not the SDK close's (which signals the CLI only): the run's
@@ -6612,26 +6596,37 @@ async def _run_delegated_agent_bounded(
 
 
 async def _configurator_lease(cfg, task_text: str):
-    """The configurator lease for a run of *cfg*, or ``None`` for any other role."""
+    """The configurator lease for a run of *cfg*, or ``None`` for any other role.
+    A run Casa started after an approval starts only while that approval is
+    still approved and current; the approval itself is used by the governed
+    call's attempt, not here."""
+    import approval_records
     import configurator_run
     if not configurator_run.is_configurator(cfg):
         return None
     origin = _snapshot_origin() or {}
-    return await configurator_run.acquire(
-        run_key=str(origin.get("_delegation_id") or _delegation_quota_key.get() or ""),
-        via="desk" if origin.get("desk") is not None else "delegation",
-        task=task_text)
+    run_key = str(origin.get("_delegation_id") or _delegation_quota_key.get() or "")
+    lease = await configurator_run.acquire(run_key=run_key, via="delegation", task=task_text)
+    approval = origin.get(approval_records.APPROVAL_KEY)
+    if isinstance(approval, dict):
+        gen = approval.get("generation")
+        verdict = (approval_records.startable(str(approval.get("rid") or ""), gen)
+                   if isinstance(gen, int) and not isinstance(gen, bool) else "unknown")
+        if verdict != "ok":
+            lease.release()                   # nothing of the run started
+            raise approval_records.ApprovalNotCurrent(verdict)
+    return lease
 
 
 async def _bounded_run(cfg, task_text, context_text, resolution, output_format,
                        pinned_run, lease) -> DelegatedOutput:
     tool_counts: dict[str, int] = {}
-    sink = _desk_run_sink.get()
+    sink = _lane_run_sink.get()
     role = _known_role(getattr(cfg, "role", None))
     tree = pinned_run.ProcessTree(run_id=f"bounded-{uuid.uuid4().hex[:12]}")
     # #1197: the inner task is created with no sink, so a run nested inside it
-    # never reports into the desk's; #1212: and with this run's tree
-    sink_tok = _desk_run_sink.set(None)
+    # never reports into the lane's; #1212: and with this run's tree
+    sink_tok = _lane_run_sink.set(None)
     tree_tok = _bounded_tree.set(tree)
     ceiling = _DELEGATION_CEILING_S
     if not math.isfinite(ceiling) or ceiling <= 0:
@@ -6647,7 +6642,7 @@ async def _bounded_run(cfg, task_text, context_text, resolution, output_format,
     finally:
         _ceiling_clock.reset(clock_tok)
         _bounded_tree.reset(tree_tok)
-        _desk_run_sink.reset(sink_tok)
+        _lane_run_sink.reset(sink_tok)
     if lease is not None:
         import configurator_run
         configurator_run.release_when_done(lease, inner)
@@ -7803,8 +7798,9 @@ async def start_scheduled_job(role: str, trig: Any) -> None:
     occurrence."""
     import authz_grants
     import background_jobs
+    import chat_notes
     import ingress_identity as ingress_mod
-    import specialist_desk as sd
+    import result_broker as rb
     from log_cid import new_cid
     from provenance import scheduled_delivery_markers
     import scheduled_asks
@@ -7818,21 +7814,21 @@ async def start_scheduled_job(role: str, trig: Any) -> None:
         return
     chat_id, user_id = identity
     title = str(getattr(getattr(host, "decl", None), "title", "") or trig.job)
-    label = sd.label_for(host.role) if host is not None else sd.label_for(role)
+    label = rb.post_label(host.role) if host is not None else rb.post_label(role)
 
     async def tell(reason: str) -> None:
-        line = sd.bounded_line('{label}: "{title}" did not start — ' + reason,
-                               label=label, fields={"title": title})
-        # Casa's own notice, through Casa's bot; the resident's echo is kept
-        # for its next turn in that bot's chat.
+        line = chat_notes.bounded_line('{label}: "{title}" did not start — ' + reason,
+                                       label=label, fields={"title": title})
+        # Casa's own notice, through Casa's bot; the chat's agent reads the
+        # same line as a note at its next turn in that bot's chat.
         channel = _casa_endpoint()
         try:
             if channel is not None:
-                await channel.deliver_desk_notice(chat_id, line)
+                await channel.deliver_casa_notice(chat_id, line)
         except Exception as exc:  # noqa: BLE001 — nothing more is attempted
             logger.warning("scheduled job notice failed: %s", type(exc).__name__)
         if channel is not None and channel.has_bot_id:
-            sd.record_echo(channel.bot_id, chat_id, line)
+            chat_notes.record(channel.bot_id, chat_id, line)
 
     if host is None:
         await tell("no host was available at this occurrence.")
@@ -7898,22 +7894,21 @@ async def start_job(args: dict) -> dict:
         return _result({"status": "error", "kind": "job_needs_text_channel"})
     caller = str(origin.get("execution_role") or origin.get("role", ""))
     cfg = _agent_role_map.get(caller)
-    # S7a (INV-BGJOB-008): a specialist's own desk or delegated turn (no
+    # S7a (INV-BGJOB-008): a specialist's own delegated or pinned turn (no
     # engagement bound) starts only a job its own plugins declare, hosted on
     # itself; every other caller resolves hosts exactly as before.
-    import specialist_desk
     self_host = (engagement_var.get(None) is None
-                 and specialist_desk.is_specialist(cfg))
+                 and getattr(cfg, "kind", "") == "specialist")
     if self_host:
         hosts = background_jobs.own_job_hosts(caller)
         host = next((h for h in hosts
                      if h.decl.qualified_name == args.get("job", "")), None)
         # the work's origin: the calling turn's, without the markers that identify
-        # the calling turn (its desk use, its quota and echo key, its conversation,
-        # its task's delivery: the job is a task of its own, born at its launch)
+        # the calling turn (its quota and echo key, its conversation, its
+        # task's delivery: the job is a task of its own, born at its launch)
         from provenance import TASK_DELIVERY_KEY
         origin = {k: v for k, v in origin.items()
-                  if k not in ("desk", "_delegation_id", "_delegated_session_id",
+                  if k not in ("_delegation_id", "_delegated_session_id",
                                TASK_DELIVERY_KEY)}
     else:
         delegates = [d.agent for d in (getattr(cfg, "delegates", None) or [])]
@@ -8118,21 +8113,8 @@ async def delegate_to_agent(args: dict) -> dict:
         # #433: `agent_name` is REBOUND to the canonical role id — the ACL
         # accepts a persona display name, and every downstream record,
         # telemetry key, engagement scope and launch target must use the role.
-        # S4 §8: decide BEFORE the concurrency gate whether this delegation
-        # is a desk use (an operator DM turn to a specialist, sync or async),
-        # so the gate leaves the permit to the desk's own use.
-        import specialist_desk as _desk_mod
-        _desk_pre = None
-        if mode in ("sync", "async") and isinstance(agent_name, str) and agent_name:
-            _pre_name = _canonical_delegate_target(agent_name, origin)
-            _desk_pre = _desk_mod.desk_for_delegation(
-                origin, _agent_role_map.get(_pre_name), _pre_name)
-        _skip_tok = _desk_skip_permit.set(_desk_pre is not None)
-        try:
-            agent_name, cfg, resolution, permit, prelaunch_error = await _prelaunch(
-                agent_name, origin, mode, task_text, context_text)
-        finally:
-            _desk_skip_permit.reset(_skip_tok)
+        agent_name, cfg, resolution, permit, prelaunch_error = await _prelaunch(
+            agent_name, origin, mode, task_text, context_text)
     except BaseException:
         if handoff_reservation is not None:
             handoff_reservation.release()
@@ -8156,7 +8138,7 @@ async def delegate_to_agent(args: dict) -> dict:
     # Every release is idempotent, so an overlapping release on the SAME
     # permit is a safe no-op.
     owned = permit
-    _desk_reservation = None  # S4 §4: the lane queue place, until transferred
+    _lane_reservation = None  # the lane queue place, until transferred
     _task_input_open = None   # a task's input destination, until its run owns it
     try:
         is_voice = str(origin.get("channel", "")) == "voice"
@@ -8214,13 +8196,6 @@ async def delegate_to_agent(args: dict) -> dict:
                 return _deadline_exceeded_result(delegation_id, agent_name)
 
         started_at = time.time()
-        # S4 §8: a delegation the resident launches from the operator's DM to
-        # a specialist is one use of that specialist's desk — reserved on the
-        # desk's queue BEFORE any task exists; a full queue is the typed busy
-        # result (the permit is released by the lexical guard below) and no
-        # task. Jobs, engagements, scheduled and webhook turns touch no desk.
-        _desk = _desk_pre
-        _desk_scope = ""
         # Every delegation to an agent with a lane (a specialist, the
         # configurator) is one use of that agent's lane — shared with its
         # taps, its continuations and every other delegation to it, whatever
@@ -8229,7 +8204,7 @@ async def delegate_to_agent(args: dict) -> dict:
         # sync, degraded and async alike (an async launch must not return
         # ``pending`` for work that will never run).
         import agent_lane
-        _lane = agent_lane.LANES.get(agent_name) if _desk_mod.has_desk(cfg) else None
+        _lane = agent_lane.LANES.get(agent_name) if agent_lane.has_lane(cfg) else None
         if _lane is not None and _lane.faulted:
             return _result({
                 "status": "error",
@@ -8237,13 +8212,9 @@ async def delegate_to_agent(args: dict) -> dict:
                 "agent": agent_name,
                 "message": agent_lane.faulted_line(_display_name_for_role(agent_name)),
             })
-        if _desk is not None:
-            _desk_reservation = _desk.reserve()
-            # the permit was left to the desk's own use (skip_permit above)
-            _desk_scope = _delegation_scope(origin, agent_name, mode)
-        elif _lane is not None:
-            _desk_reservation = _lane.reserve()
-        if _lane is not None and _desk_reservation is None:
+        if _lane is not None:
+            _lane_reservation = _lane.reserve()
+        if _lane is not None and _lane_reservation is None:
             return _result({
                 "status": "error",
                 "kind": "busy",
@@ -8348,18 +8319,9 @@ async def delegate_to_agent(args: dict) -> dict:
             _child_origin.update(task_delivery_marker(_birth.delivery))
         _ov_tok = _agent_mod.origin_var.set(_child_origin)
         try:
-            if _desk is not None:
-                # S4 §8: the run as one use of the desk — lock, idle check,
-                # block read, permit after the lock, run, commit.
-                _run_coro = _desk_mod.delegation_use(
-                    _desk, reservation=_desk_reservation,
-                    run=_run_delegated_agent_bounded, cfg=cfg,
-                    task_text=task_text, context_text=context_text,
-                    scope=_desk_scope, resolution=resolution,
-                    output_format=(VOICE_JOB_OUTPUT_FORMAT if is_voice else None))
-            elif _lane is not None:
+            if _lane is not None:
                 _run_coro = _delegation_in_lane(
-                    _lane, _desk_reservation, cfg, task_text, context_text,
+                    _lane, _lane_reservation, cfg, task_text, context_text,
                     resolution=resolution,
                     output_format=(VOICE_JOB_OUTPUT_FORMAT if is_voice else None))
             else:
@@ -8371,10 +8333,10 @@ async def delegate_to_agent(args: dict) -> dict:
         finally:
             _agent_mod.origin_var.reset(_ov_tok)
             _delegation_quota_key.reset(_qk_tok)
-        if _desk_reservation is not None:
+        if _lane_reservation is not None:
             # a task cancelled before its coroutine starts has no finally
-            task.add_done_callback(_desk_reservation.release)
-            _desk_reservation = None  # __TRANSFER_DESK_RESERVATION__
+            task.add_done_callback(_lane_reservation.release)
+            _lane_reservation = None  # __TRANSFER_LANE_RESERVATION__
         if _task_input_open is not None:
             # the task's input ends with its run, however it ends
             task.add_done_callback(functools.partial(_end_task_input, _task_input_open))
@@ -8682,10 +8644,10 @@ async def delegate_to_agent(args: dict) -> dict:
     finally:
         if owned is not None:
             owned.release()
-        # S4 §4: the lane queue place, when still lexically owned (never
+        # the lane queue place, when still lexically owned (never
         # transferred to a created task — a cancel during registration).
-        if _desk_reservation is not None:
-            _desk_reservation.release()
+        if _lane_reservation is not None:
+            _lane_reservation.release()
         # a task whose run was never created: its input ends here
         if _task_input_open is not None:
             _end_task_input(_task_input_open)
@@ -8711,7 +8673,7 @@ async def _delegation_in_lane(lane: Any, reservation: Any, cfg: Any, task_text: 
                 raise agent_lane.LaneFaulted(
                     agent_lane.faulted_line(_display_name_for_role(cfg.role)))
             runs: list = []
-            sink_tok = _desk_run_sink.set(runs)
+            sink_tok = _lane_run_sink.set(runs)
             try:
                 with (configurator_run.waiting_until(deadline) if deadline is not None
                       else nullcontext()):
@@ -8719,7 +8681,7 @@ async def _delegation_in_lane(lane: Any, reservation: Any, cfg: Any, task_text: 
                         cfg, task_text, context_text, resolution=resolution,
                         output_format=output_format)
             finally:
-                _desk_run_sink.reset(sink_tok)
+                _lane_run_sink.reset(sink_tok)
                 lane.hold_unwinding(runs)
     finally:
         if reservation is not None:
@@ -8785,7 +8747,7 @@ def _handoff_target(agent_name: str) -> "tuple[str | None, dict | None]":
 async def hand_off(args: dict) -> dict:
     """Run one hand-off synchronously and return the target's answer.
 
-    Available only inside a specialist's own delegated or desk run (never an
+    Available only inside a specialist's own delegated or pinned run (never an
     engagement, a job, a stored-call turn or a voice-originated run). The
     bounds are mechanical (``handoff.handoff_refusal``): no agent twice in the
     chain, at most ``MAX_HANDOFFS`` hand-offs after the resident. The run is
@@ -9892,8 +9854,8 @@ def _effective_caller_role() -> str | None:
     """Return the calling agent's role for authorisation checks.
 
     The EXECUTING role first: Casa stamps ``execution_role`` on the origin of
-    every delegated run and desk turn from the loaded config it runs
-    (``_run_delegated_turn``, ``specialist_desk._desk_origin``), while
+    every delegated run and pinned turn from the loaded config it runs
+    (``_run_delegated_turn``, the stored-call settler's origin), while
     ``origin["role"]`` there is the caller (the resident). Then an active
     engagement's role (a background job, whose turn inherits the engager's
     origin), then the origin's own role.
@@ -14891,15 +14853,11 @@ async def plugin_update(args: dict) -> dict:
 @tool(
     "specialist_install_inspect",
     "Fetch a specialist component repo for inspection (non-persistent staging, no CAS write). "
-    "Returns the component's mission, default persona, required config/secret names, and "
-    "dependency-closure availability, or a structured error. On success this ALSO posts the "
-    "operator's DM Approve/Deny consent keyboard — specialist_install_commit will refuse until "
-    "that tap lands — UNLESS the consent ledger already holds an approval for this exact "
-    "component identity (pre-authorized installs skip the keyboard). If the keyboard cannot "
-    "actually be posted, this returns ok:false (consent_channel_unavailable / "
-    "consent_prompt_refused / consent_prompt_failed / consent_delivery_failed / "
-    "consent_prompt_inactive / consent_post_unsettled) instead of stranding the flow at "
-    "consent_missing. Pass mode='upgrade' + target_slug=<slug> when re-inspecting the SAME repo "
+    "Returns the component's mission, default persona, required config/secret names, "
+    "dependency-closure availability and the staged facts (slug, root_digest, staged_dir, "
+    "receipt_id), or a structured error. It posts nothing: agree the values with the operator, "
+    "then call specialist_install_request_approval. Pass mode='upgrade' + target_slug=<slug> "
+    "when re-inspecting the SAME repo "
     "for an already-installed specialist (otherwise the collision check refuses it).",
     {"type": "object", "properties": {
         "repo": {"type": "string"}, "ref": {"type": "string"},
@@ -14921,41 +14879,6 @@ async def specialist_install_inspect(args: dict) -> dict:
     except SpecialistInstallError as exc:
         return _result({"ok": False, "kind": exc.kind, "detail": exc.detail})
 
-    # Round-2 fix (finding #3): CREATE the structural approval challenge here
-    # — the prior draft returned inspection data and left
-    # prompt_specialist_install_consent uncalled anywhere in production, so
-    # the DM keyboard the recipe tells the LLM to "wait for" never posted.
-    # Mirrors the REAL production pattern trigger_reconcile._fire_consent_
-    # prompts (trigger_reconcile.py) already uses for plugin-trigger
-    # consent: the module-level ChallengeCoordinator singleton (CHALLENGES,
-    # already imported at module scope from authz_grants — no separate
-    # import needed here), the configured Telegram DM channel, and the
-    # validated operator identity.
-    #
-    # Round-5b (Sol P1): this used to return ok:true even when the keyboard
-    # could never post (no channel / no operator identity / registration
-    # refused / async delivery failed) — the flow then stranded forever at
-    # commit's consent_missing with zero diagnosis. Now: (1) if the ack
-    # ledger ALREADY holds a consent for this EXACT identity — the same
-    # install_consent_identity(component_id, version, root_digest, slug,
-    # receipt_digest) binding specialist_install_commit/upgrade_specialist
-    # re-validate against re-staged bytes — no keyboard is required or
-    # attempted (preserves the pre-authorized/synthetic-ack path and the
-    # Telegram-less container e2e). Fix round 1 (task-13 e2e finding): this
-    # identity used to omit `receipt_digest`, so an ack recorded WITH a
-    # receipt digest (the consent-prompt and commit/upgrade gates all include
-    # it) was never recognized as pre-authorized here — the keyboard would
-    # re-post even though an operator had already approved this exact
-    # bundled-plugin closure. Now threads `result.receipt_digest` through so
-    # this identity matches what every other call site computes.
-    # (2) otherwise the post is VERIFIED via the coordinator's
-    # settled-post machinery (ChallengeHandle.settled_post, authz_grants) and
-    # every failure is a STRUCTURED ok:false the recipe reports verbatim.
-    from specialist_install_consent import (
-        SpecialistInstallAckStore, install_consent_identity,
-        prompt_specialist_install_consent,
-    )
-
     ok_payload = {
         "ok": True, "component_id": result.component_id, "version": result.version,
         "slug": result.slug, "component_checksum": result.component_checksum,
@@ -14974,12 +14897,12 @@ async def specialist_install_inspect(args: dict) -> dict:
         # REQUIRE args["receipt_id"] (see their "required" schemas below) —
         # without it in this payload every real install/upgrade dead-ends at
         # receipt_required. receipt_digest is included too since it is part
-        # of the consent identity binding (install_consent_identity above).
+        # of the consent identity binding.
         "receipt_id": result.receipt_id, "receipt_digest": result.receipt_digest,
-        # Tool-payload mirror of the plugin blocks the consent DM already
+        # Tool-payload mirror of the plugin blocks the approval card
         # enumerates (render_install_consent_message,
         # specialist_install_consent.py) — lets the calling LLM narrate what
-        # the consent covers without re-deriving it from prose.
+        # the approval covers without re-deriving it from prose.
         "plugins": [
             {"scoped_name": row.scoped_name, "manifest_name": row.manifest_name,
              "version": row.version, "mcp_servers": list(row.mcp_servers),
@@ -14993,116 +14916,231 @@ async def specialist_install_inspect(args: dict) -> dict:
         ],
     }
 
-    acks = SpecialistInstallAckStore()
-    identity = install_consent_identity(
-        component_id=result.component_id, version=result.version,
-        root_digest=result.root_digest, slug=result.slug,
-        receipt_digest=result.receipt_digest,
-    )
-    if acks.is_acked(identity):
-        # Spec §E: consent = "pre_authorized" | "keyboard_posted" on ok:true.
-        ok_payload["consent"] = "pre_authorized"
-        return _result(ok_payload)
-
-    # Casa's own card, through Casa's bot in the operator's direct chat.
-    channel, address, problem = _casa_card_target()
-    if problem is not None:
-        return _result({
-            "ok": False, "kind": "consent_channel_unavailable",
-            "detail": (
-                _CASA_CARD_PROBLEMS[problem]
-                + " — the install-consent keyboard cannot be posted and no "
-                "pre-recorded consent ack exists for this component; fix the "
-                "operator DM channel (or pre-record a consent ack) and re-run "
-                "specialist_install_inspect"),
-        })
-    chat_id = operator_id = address.chat_id
-
-    # An Approve tap continues the configurator by itself — one turn on its
-    # desk in the operator's DM, whose text carries every staged value,
-    # because that turn starts a fresh session. Deny and expiry show on the
-    # card only.
-    mode = args.get("mode", "install")
-    _staged = (
-        f"component_id {result.component_id!r}, version {result.version!r}, "
-        f"root_digest {result.root_digest!r}, slug {result.slug!r}, staged_dir "
-        f"{str(result.staged_dir)!r}, receipt_id {result.receipt_id!r}")
-    # #1150/#1163: an upgrade re-consents through this same keyboard, but its
-    # recipe continues with specialist_upgrade (upgrade.md step 3) —
-    # specialist_install_commit refuses an installed slug (active_present) and
-    # an upgrade wires no delegation.
-    if mode == "upgrade":
-        continuation = (
-            "The operator approved the consent for upgrading "
-            f"specialist:{result.slug}. Continue the upgrade recipe now without "
-            f"waiting for further input: call specialist_upgrade with {_staged} "
-            "(and any config values agreed in the conversation above), then "
-            "finish the upgrade recipe from its step 3 onward "
-            "(config_git_commit), and end with your answer.")
-    else:
-        continuation = (
-            "The operator approved the install consent for "
-            f"specialist:{result.slug}. Continue the recipe now without "
-            f"waiting for further input: call specialist_install_commit with "
-            f"{_staged} (and any config values agreed in the conversation "
-            "above), then finish the recipe (wire delegation, "
-            "config_git_commit), and end with your answer.")
-
-    async def _reconcile_cb() -> bool:
-        return await _continue_configurator(channel, chat_id, operator_id, continuation,
-                                            what=f"specialist:{result.slug}")
-
-    try:
-        # Round-3 fix (finding #3): register_challenge (authz_grants.py)
-        # calls `asyncio.get_running_loop().create_task(...)` SYNCHRONOUSLY
-        # — it requires the CALLING thread to already be inside a running
-        # event loop, so it is called directly from this coroutine (never
-        # via asyncio.to_thread), exactly like the production pattern
-        # trigger_reconcile._fire_consent_prompts.
-        handle = prompt_specialist_install_consent(
-            coordinator=CHALLENGES,
-            channel=channel, chat_id=chat_id, operator_id=operator_id, inspection=result,
-            acks=acks, reconcile_cb=_reconcile_cb,
-            # #1225: the keyboard and its edits name an upgrade as an update.
-            mode=mode,
-            # #1445: each run gets its own card.
-            requester=_configurator_run_key(),
-        )
-    except Exception as exc:  # noqa: BLE001 — round-5b: structured, never a silent ok:true
-        logger.exception("specialist install consent prompt failed to post")
-        return _result({"ok": False, "kind": "consent_prompt_failed",
-                         "detail": f"{type(exc).__name__}: {exc}"})
-    failure = await _settle_install_consent_post(handle)
-    if failure is not None:
-        return _result(failure)
-    ok_payload["consent"] = "keyboard_posted"
+    ok_payload["next"] = ("agree the values with the operator, then call "
+                          "specialist_install_request_approval")
     return _result(ok_payload)
 
 
 def _configurator_run_key() -> str:
-    """The configurator run this tool runs in (its delegation id or desk turn
-    id), or ``""``."""
+    """The configurator run this tool runs in (its delegation id), or ``""``."""
     origin = _snapshot_origin() or {}
     return str(origin.get("_delegation_id") or "")
 
 
-async def _continue_configurator(channel: Any, chat_id: Any, operator_id: Any,
-                                 text: str, *, what: str) -> bool:
-    """Continue the configurator after an approval, as one turn on its
-    desk in the operator's DM — a fresh session whose task is *text*. Returns
-    the desk route's own report (the operator was told either way). Runs from a
-    tap-callback finish hook: never raises."""
-    dispatch = getattr(channel, "_dispatch_desk_continuation", None)
-    if dispatch is None:
-        return False
-    try:
-        return bool(await dispatch(
-            chat_id=int(chat_id), user_id=int(operator_id), desk_role="configurator",
-            request_id=uuid.uuid4().hex, text=text))
-    except Exception:  # noqa: BLE001 — tap-callback path: never raise
-        logger.warning("configurator continuation failed (%s)", what, exc_info=True)
-        return False
+#: Where the installed specialists live; the approval request reads their
+#: active and pending settings here (tests point it elsewhere).
+_SPECIALISTS_DIR = Path("/config/specialists")
 
+
+def _inspection_from_checked(checked: Any, staged_dir: Path) -> Any:
+    """The inspection the governed tools work on, rebuilt from the staged bytes
+    and the trusted receipt a resume check validated — never from the
+    caller's arguments."""
+    from specialist_install import InspectionResult
+    receipt, component = checked.receipt, checked.component
+    return InspectionResult(
+        component_id=component.component_id, version=component.version, slug=component.slug,
+        component_checksum=component.checksum, root_digest=checked.root_digest,
+        mission=str(component.role.role.get("mission", "")),
+        default_persona_ref=component.default_persona_ref,
+        default_persona_checksum=component.default_persona_checksum,
+        required_config_names=(), required_secret_names=(), dependencies=checked.dependencies,
+        staged_dir=staged_dir, receipt_id=receipt.receipt_id,
+        receipt_digest=receipt.receipt_digest, plugin_resolutions=receipt.plugins)
+
+
+def _run_approval() -> "dict | None":
+    """The approval Casa started this run for (the origin's ``_approval``),
+    or ``None``."""
+    import approval_records
+    value = (_snapshot_origin() or {}).get(approval_records.APPROVAL_KEY)
+    return value if isinstance(value, dict) else None
+
+
+def _install_fence(kind: str, inspection: Any, approval: "dict | None"
+                   ) -> "tuple[dict | None, dict | None, str]":
+    """A governed specialist call's entry check: ``(refusal, approved values,
+    consent identity)``. A read; the attempt inside the transaction uses the
+    approval."""
+    import approval_records
+    from specialist_install_consent import identity_for_inspection
+    values = approval_records.approved_values(approval)
+    identity = identity_for_inspection(inspection, values=values) if values is not None else ""
+    return (approval_records.fence(approval, kind=kind, consent_identity=identity),
+            values, identity)
+
+
+def _upgrade_changes_nothing(inspection: Any, slug: str, effective: dict,
+                             secrets: list) -> bool:
+    """Whether upgrading *slug* to *inspection* with the *effective* settings
+    would change nothing: the active install has the same root and the same
+    settings, and no secret names are involved on either side (Casa keeps no
+    record of the installed ones, so it cannot show they match). A read."""
+    from personality_binding import InstanceDir
+    from specialist_install import component_root_string, load_specialist_component
+    if secrets:
+        return False
+    staged = Path(inspection.staged_dir)
+    try:
+        component = load_specialist_component(staged, staged / "manifest.json")
+        active = InstanceDir(_SPECIALISTS_DIR / slug).active()
+    except (ValueError, OSError):
+        return False
+    if component.config_schema.get("secret_names") or active is None:
+        return False
+    root = component_root_string(component_id=inspection.component_id,
+                                 version=inspection.version,
+                                 component_checksum=inspection.root_digest)
+    return active.root == root and dict(active.config_snapshot or {}) == effective
+
+
+async def _supersede_card(record: Any) -> None:
+    """Edit a replaced request's card to say so and settle it, so a later tap
+    on it answers "replaced". Never raises."""
+    if record is None or getattr(record, "card", None) is None:
+        return
+    try:
+        import inspect as _inspect
+        from specialist_install_consent import supersede_card
+        done = supersede_card(record)
+        if _inspect.isawaitable(done):
+            await done
+    except Exception:  # noqa: BLE001 — the newer card stands either way
+        logger.warning("replaced approval card not edited (%s)", record.rid[:8],
+                       exc_info=True)
+
+
+async def _post_approval_card(record: Any, post: "Callable[..., Any]", *, what: str,
+                              continuation: str) -> dict:
+    """Post Casa's approval card for the new *record* through *post* (the
+    card function of its kind); its Approve carries the configurator on with
+    *continuation*."""
+    import approval_records
+    channel, address, problem = _casa_card_target()
+    if problem is not None:
+        return {"ok": False, "kind": "consent_channel_unavailable",
+                "detail": (_CASA_CARD_PROBLEMS[problem]
+                           + f" — the approval card for {what} cannot be posted; fix the "
+                           "operator DM channel and ask again")}
+    try:
+        handle = post(coordinator=CHALLENGES, channel=channel, chat_id=address.chat_id,
+                      operator_id=address.chat_id, record=record, continuation=continuation,
+                      requester=_configurator_run_key())
+    except Exception as exc:  # noqa: BLE001 — structured, never a silent ok:true
+        logger.exception("approval card for %s failed to post", what)
+        return {"ok": False, "kind": "consent_prompt_failed",
+                "detail": f"{type(exc).__name__}: {exc}"}
+    failure = await _settle_install_consent_post(handle)
+    if failure is not None:
+        return failure
+    # The card records where it landed and, when a newer request replaced this
+    # one while it was posting, edits itself to say so at once.
+    now = approval_records.get(record.rid)
+    if now is not None and now.state == "superseded":
+        return {"ok": False, "kind": "approval_superseded",
+                "detail": ("a newer request replaced this one while its card was "
+                           "posting; the newer card is the one the operator answers")}
+    return {"ok": True, "approval": "requested",
+            "next": "stop; Casa continues you after the operator approves"}
+
+
+def _approval_notice(what: str) -> "Callable[[str], Awaitable[None]]":
+    """The ``on_outcome`` of a continuation started without a card to edit: the
+    operator hears once when it could not be started."""
+    async def _told(outcome: str) -> None:
+        if outcome in ("busy", "failed"):
+            import casa_core
+            await casa_core.operator_notify(
+                _channel_manager,
+                f"The configurator could not carry on with the approved {what}; ask Ellen "
+                "again — the approval is kept.")
+    return _told
+
+
+@tool(
+    "specialist_install_request_approval",
+    "Ask the operator to approve installing or upgrading an inspected specialist with the "
+    "settings you agreed with them. Pass slug, root_digest, staged_dir and receipt_id exactly as "
+    "specialist_install_inspect returned them, mode ('install' or 'upgrade'), the config values "
+    "and the secret names provided. Casa computes the settings the install will end up with "
+    "(including those kept from the current install) and posts the card; after Approve Casa "
+    "continues you with exactly those values. Results: approval 'requested' (stop; Casa "
+    "continues you after Approve), 'already_approved' (stop; Casa continues you once this run "
+    "ends), 'in_progress' (this run is the one Casa started for the approval: make the call), "
+    "'not_needed' (an upgrade that would change nothing: tell the operator it is already done).",
+    {"type": "object", "properties": {
+        "slug": {"type": "string"}, "root_digest": {"type": "string"},
+        "staged_dir": {"type": "string"}, "receipt_id": {"type": "string"},
+        "mode": {"type": "string", "enum": ["install", "upgrade"]},
+        "config": {"type": "object", "additionalProperties": {"type": "string"}},
+        "secret_names_provided": {"type": "array", "items": {"type": "string"}}},
+     "required": ["slug", "root_digest", "staged_dir", "receipt_id", "mode"]},
+)
+@_off_the_ceiling
+async def specialist_install_request_approval(args: dict) -> dict:
+    import approval_records
+    import configurator_continue
+    from specialist_install import (SpecialistInstallError, preview_effective_config,
+                                    validate_resume_inputs)
+    from specialist_install_consent import identity_for_inspection
+
+    mode = args.get("mode") or "install"
+    if mode not in ("install", "upgrade"):
+        return _result({"ok": False, "kind": "invalid_mode",
+                        "detail": "mode is 'install' or 'upgrade'"})
+    slug = str(args.get("slug") or "")
+    staged_dir = Path(str(args.get("staged_dir") or ""))
+    checked = validate_resume_inputs(
+        staged_dir=staged_dir, receipt_id=args.get("receipt_id"),
+        root_digest=args.get("root_digest"), expect_slug=slug if mode == "install" else None)
+    if not checked.ok:
+        return _result({"ok": False, "kind": checked.kind, "detail": checked.detail})
+    inspection = _inspection_from_checked(checked, staged_dir)
+    kind = "specialist_upgrade" if mode == "upgrade" else "specialist_install"
+    config = {str(k): v for k, v in dict(args.get("config") or {}).items()}
+    secrets = sorted({str(n) for n in (args.get("secret_names_provided") or [])})
+    try:
+        effective = await asyncio.to_thread(
+            preview_effective_config, kind, inspection, slug=slug, config=config,
+            secret_names_provided=secrets, specialists_dir=_SPECIALISTS_DIR)
+    except SpecialistInstallError as exc:
+        return _result({"ok": False, "kind": exc.kind, "detail": exc.detail})
+    values = {"config": effective, "secrets": secrets}
+    identity = identity_for_inspection(inspection, values=values)
+    origin = _snapshot_origin() or {}
+    asked = str(origin.get("user_text") or "")[:approval_records.ASKED_MAX]
+    carrying = origin.get(approval_records.APPROVAL_KEY)
+    carrying_rid = str(carrying.get("rid") or "") if isinstance(carrying, dict) else ""
+    async with _plugin_tools_guard():
+        if mode == "upgrade" and await asyncio.to_thread(
+                _upgrade_changes_nothing, inspection, slug, effective, secrets):
+            return _result({"ok": True, "approval": "not_needed",
+                            "detail": (f"already at {inspection.version} with these settings; "
+                                       "nothing to change")})
+        record, outcome, superseded = approval_records.request(
+            kind, f"{inspection.component_id}:{inspection.slug}", identity, values,
+            asked=asked, carrying_rid=carrying_rid)
+    continuation = configurator_continue.continuation_text(
+        kind, slug=inspection.slug, component_id=inspection.component_id,
+        version=inspection.version, root_digest=inspection.root_digest,
+        staged_dir=str(inspection.staged_dir), receipt_id=inspection.receipt_id)
+    if outcome == "in_progress":
+        return _result({"ok": True, "approval": "in_progress",
+                        "next": "this run is the one Casa started for this approval; make the call"})
+    if outcome == "already_approved":
+        configurator_continue.start(
+            continuation, key=record.rid, approval=record,
+            on_outcome=_approval_notice(f"{mode} of specialist:{inspection.slug}"))
+        return _result({"ok": True, "approval": "already_approved",
+                        "next": "stop; Casa continues you once this run ends"})
+    await _supersede_card(superseded)
+    from specialist_install_consent import prompt_specialist_install_consent
+
+    def _post(**kw):
+        return prompt_specialist_install_consent(inspection_facts=inspection,
+                                                 submitted_config=config, **kw)
+    return _result(await _post_approval_card(
+        record, _post, what=f"specialist:{inspection.slug}", continuation=continuation))
 
 # Round-5b: bound on awaiting the consent keyboard's settled post. The
 # coordinator's setup driver only posts (the operator tap resolves later,
@@ -15559,10 +15597,10 @@ def _activation_error_disclosure(instance) -> dict:
 
 @tool(
     "specialist_install_commit",
-    "Persist an INSPECTED specialist component to CAS, compile, and activate it — REFUSES unless "
-    "the operator has approved the install via the DM consent keyboard "
-    "(prompt_specialist_install_consent). Supply the component_id/version/root_digest/slug "
-    "exactly as returned by specialist_install_inspect.",
+    "Persist an INSPECTED specialist component to CAS, compile, and activate it — only in the "
+    "run Casa started after the operator approved it (specialist_install_request_approval), "
+    "with exactly the approved values; one approval is one attempt. Supply the component_id/"
+    "version/root_digest/slug exactly as returned by specialist_install_inspect.",
     {"type": "object", "properties": {
         "component_id": {"type": "string"}, "version": {"type": "string"},
         "root_digest": {"type": "string"}, "slug": {"type": "string"},
@@ -15573,9 +15611,9 @@ def _activation_error_disclosure(instance) -> dict:
 )
 @_off_the_ceiling
 async def specialist_install_commit(args: dict) -> dict:
+    import approval_records
     from specialist_install import (
-        InspectionResult, SpecialistInstallError, commit_specialist_install,
-        validate_resume_inputs,
+        SpecialistInstallError, commit_specialist_install, validate_resume_inputs,
     )
     from specialist_install_consent import SpecialistInstallAckStore
     import specialist_bundle_journal
@@ -15604,18 +15642,14 @@ async def specialist_install_commit(args: dict) -> dict:
                   else "specialist_install_commit requires a valid receipt_id "
                        "from specialist_install_inspect")
         return _result({"ok": False, "kind": checked.kind, "detail": detail})
-    receipt, component = checked.receipt, checked.component
-    deps, root_digest = checked.dependencies, checked.root_digest
-    inspection = InspectionResult(
-        component_id=component.component_id, version=component.version, slug=component.slug,
-        component_checksum=component.checksum, root_digest=root_digest,
-        mission=str(component.role.role.get("mission", "")),
-        default_persona_ref=component.default_persona_ref,
-        default_persona_checksum=component.default_persona_checksum,
-        required_config_names=(), required_secret_names=(), dependencies=deps, staged_dir=staged_dir,
-        receipt_id=receipt.receipt_id, receipt_digest=receipt.receipt_digest,
-        plugin_resolutions=receipt.plugins,
-    )
+    receipt = checked.receipt
+    inspection = _inspection_from_checked(checked, staged_dir)
+    # The run's own approval, for this action and these settings: a read here,
+    # used by the attempt right before the library call.
+    approval = _run_approval()
+    refusal, approved, identity = _install_fence("specialist_install", inspection, approval)
+    if refusal is not None:
+        return _result(refusal)
 
     async def _txn() -> dict:
         # #346: same in-lock receipt re-check as specialist_upgrade — a
@@ -15626,12 +15660,18 @@ async def specialist_install_commit(args: dict) -> dict:
                             "detail": "the receipt was consumed by a concurrent "
                                       "bundle while waiting for the mutation lock "
                                       "— re-run specialist_install_inspect"}
+        # One tap, one attempt: the approval is used now, under the lock this
+        # body holds through the library write, whatever the call's outcome.
+        refused = approval_records.attempt(approval, kind="specialist_install",
+                                           consent_identity=identity)
+        if refused is not None:
+            return refused
         try:
             instance, txn = await asyncio.to_thread(
                 commit_specialist_install, inspection=inspection, receipt=receipt,
                 config=args.get("config") or {},
                 secret_names_provided=frozenset(args.get("secret_names_provided") or []),
-                acks=SpecialistInstallAckStore(),
+                acks=SpecialistInstallAckStore(), approved_values=approved,
             )
         except SpecialistInstallError as exc:
             return {"ok": False, "kind": exc.kind, "detail": exc.detail}
@@ -15723,9 +15763,9 @@ async def specialist_install_commit(args: dict) -> dict:
 @_off_the_ceiling
 async def specialist_upgrade(args: dict) -> dict:
     import agent as agent_mod
+    import approval_records
     from specialist_install import (
-        InspectionResult, SpecialistInstallError, upgrade_specialist,
-        validate_resume_inputs,
+        SpecialistInstallError, upgrade_specialist, validate_resume_inputs,
     )
     from specialist_install_consent import SpecialistInstallAckStore
     import specialist_bundle_journal
@@ -15747,18 +15787,12 @@ async def specialist_upgrade(args: dict) -> dict:
                   else "specialist_upgrade requires a valid receipt_id "
                        "from specialist_install_inspect(mode='upgrade')")
         return _result({"ok": False, "kind": checked.kind, "detail": detail})
-    receipt, component = checked.receipt, checked.component
-    deps, root_digest = checked.dependencies, checked.root_digest
-    inspection = InspectionResult(
-        component_id=component.component_id, version=component.version, slug=component.slug,
-        component_checksum=component.checksum, root_digest=root_digest,
-        mission=str(component.role.role.get("mission", "")),
-        default_persona_ref=component.default_persona_ref,
-        default_persona_checksum=component.default_persona_checksum,
-        required_config_names=(), required_secret_names=(), dependencies=deps, staged_dir=staged_dir,
-        receipt_id=receipt.receipt_id, receipt_digest=receipt.receipt_digest,
-        plugin_resolutions=receipt.plugins,
-    )
+    receipt = checked.receipt
+    inspection = _inspection_from_checked(checked, staged_dir)
+    approval = _run_approval()
+    refusal, approved, identity = _install_fence("specialist_upgrade", inspection, approval)
+    if refusal is not None:
+        return _result(refusal)
     # #1095: warn first, before the transaction — the receipt, the staging tree
     # and the consent are untouched by a refused call (validation above only
     # reads them).
@@ -15777,12 +15811,17 @@ async def specialist_upgrade(args: dict) -> dict:
                             "detail": "the receipt was consumed by a concurrent "
                                       "bundle while waiting for the mutation lock "
                                       "— re-run specialist_install_inspect"}
+        # One tap, one attempt (see specialist_install_commit).
+        refused = approval_records.attempt(approval, kind="specialist_upgrade",
+                                           consent_identity=identity)
+        if refused is not None:
+            return refused
         try:
             instance, txn = await asyncio.to_thread(
                 upgrade_specialist, slug=args["slug"], inspection=inspection, receipt=receipt,
                 config=args.get("config") or {},
                 secret_names_provided=frozenset(args.get("secret_names_provided") or []),
-                acks=SpecialistInstallAckStore(),
+                acks=SpecialistInstallAckStore(), approved_values=approved,
             )
         except SpecialistInstallError as exc:
             if exc.kind == "upgrade_kept_new_version":
@@ -16047,22 +16086,22 @@ async def specialist_uninstall(args: dict) -> dict:
     "sha, a branch, or the literal 'latest' — the newest published release tag, reported back as "
     "resolved_ref, never a branch; a repository with no published release refuses with "
     "no_release_found. Returns the persona "
-    "id/version/checksum/display name, or a structured error. On success this ALSO posts the "
-    "operator's DM Approve/Deny consent keyboard — unless the consent ledger already holds an "
-    "approval for this exact persona identity (pre-authorized installs skip the keyboard). If "
-    "the keyboard cannot actually be posted, this returns ok:false (consent_channel_unavailable "
-    "/ consent_prompt_refused / consent_prompt_failed / consent_delivery_failed / "
-    "consent_prompt_inactive / consent_post_unsettled) instead of stranding the flow at "
-    "consent_missing.",
+    "id/version/checksum/display name, or a structured error. On success this ALSO asks the "
+    "operator to approve the install on Casa's card (approval 'requested': stop; Casa continues "
+    "you with persona_install_commit after Approve), or reports approval 'already_approved' "
+    "(stop; Casa continues you once this run ends) or 'in_progress' (this run is the one Casa "
+    "started for the approval: make the call). If the card cannot be posted, this returns "
+    "ok:false (consent_channel_unavailable / consent_prompt_refused / consent_prompt_failed / "
+    "consent_delivery_failed / consent_prompt_inactive / consent_post_unsettled).",
     {"type": "object", "properties": {
         "repo": {"type": "string"}, "ref": {"type": "string"}, "subdir": {"type": "string"},
         "expected_revision": {"type": "string"}}, "required": ["repo", "ref"]},
 )
 @_off_the_ceiling
 async def persona_install_inspect(args: dict) -> dict:
-    from persona_install import (
-        PersonaInstallAckStore, inspect_persona_repo, persona_install_consent_identity,
-    )
+    import approval_records
+    import configurator_continue
+    from persona_install import inspect_persona_repo, persona_install_consent_identity
     from persona_install_consent import prompt_persona_install_consent
     from specialist_install import SpecialistInstallError
 
@@ -16073,16 +16112,6 @@ async def persona_install_inspect(args: dict) -> dict:
     except SpecialistInstallError as exc:
         return _result({"ok": False, "kind": exc.kind, "detail": exc.detail})
 
-    # Same structural-consent wiring as specialist_install_inspect above —
-    # CREATE the challenge here rather than leaving it uncalled (Round-2
-    # fix, finding #3, the bare-persona sibling of that same gap). CHALLENGES
-    # is the same module-level singleton already imported at the top of this
-    # file (`from authz_grants import CHALLENGES, ...`). Round-5b (Sol P1):
-    # same ledger-precedence + verified-post contract as
-    # specialist_install_inspect — the identity checked here
-    # (persona_install_consent_identity(persona_id, version, checksum)) is
-    # exactly what persona_install.commit_persona_install re-validates.
-
     ok_payload = {"ok": True, "persona_id": result.persona_id, "version": result.version,
                   "checksum": result.checksum, "display_name": result.display_name,
                   "staged_dir": str(result.staged_dir),
@@ -16090,71 +16119,50 @@ async def persona_install_inspect(args: dict) -> dict:
                   # when the caller passed ``latest``.
                   "resolved_ref": result.resolved_ref}
 
-    acks = PersonaInstallAckStore()
+    # The approval this install asks for: the persona as inspected, with no
+    # settings. Casa's card asks the operator; after Approve Casa carries the
+    # configurator on with persona_install_commit.
+    values: dict = {}
     identity = persona_install_consent_identity(
-        persona_id=result.persona_id, version=result.version, checksum=result.checksum)
-    if acks.is_acked(identity):
-        # Spec §E: consent = "pre_authorized" | "keyboard_posted" on ok:true.
-        ok_payload["consent"] = "pre_authorized"
-        return _result(ok_payload)
+        persona_id=result.persona_id, version=result.version, checksum=result.checksum,
+        values_digest=approval_records.values_digest(values))
+    origin = _snapshot_origin() or {}
+    asked = str(origin.get("user_text") or "")[:approval_records.ASKED_MAX]
+    carrying = origin.get(approval_records.APPROVAL_KEY)
+    carrying_rid = str(carrying.get("rid") or "") if isinstance(carrying, dict) else ""
+    async with _plugin_tools_guard():
+        record, outcome, superseded = approval_records.request(
+            "persona_install", result.persona_id, identity, values,
+            asked=asked, carrying_rid=carrying_rid)
+    continuation = configurator_continue.continuation_text(
+        "persona_install", persona_id=result.persona_id, version=result.version,
+        checksum=result.checksum, staged_dir=str(result.staged_dir))
+    if outcome == "in_progress":
+        return _result({**ok_payload, "approval": "in_progress",
+                        "next": ("this run is the one Casa started for this approval; "
+                                 "call persona_install_commit")})
+    if outcome == "already_approved":
+        configurator_continue.start(
+            continuation, key=record.rid, approval=record,
+            on_outcome=_approval_notice(f"install of persona {result.persona_id}"))
+        return _result({**ok_payload, "approval": "already_approved",
+                        "next": "stop; Casa continues you once this run ends"})
+    await _supersede_card(superseded)
 
-    # Casa's own card, through Casa's bot in the operator's direct chat.
-    channel, address, problem = _casa_card_target()
-    if problem is not None:
-        return _result({
-            "ok": False, "kind": "consent_channel_unavailable",
-            "detail": (
-                _CASA_CARD_PROBLEMS[problem]
-                + " — the install-consent keyboard cannot be posted and no "
-                "pre-recorded consent ack exists for this persona; fix the "
-                "operator DM channel (or pre-record a consent ack) and re-run "
-                "persona_install_inspect"),
-        })
-    chat_id = operator_id = address.chat_id
-
-    # As specialist_install_inspect — Approve
-    # continues the configurator on its desk with the staged values; Deny and
-    # expiry show on the card only.
-    continuation = (
-        "The operator approved the install consent for persona "
-        f"{result.persona_id}. Continue the recipe now without waiting for "
-        f"further input: call persona_install_commit with persona_id "
-        f"{result.persona_id!r}, version {result.version!r}, checksum "
-        f"{result.checksum!r} and staged_dir {str(result.staged_dir)!r}, then "
-        "finish the recipe (config_git_commit), and end with your answer.")
-
-    async def _reconcile_cb() -> bool:
-        return await _continue_configurator(channel, chat_id, operator_id, continuation,
-                                            what=f"persona {result.persona_id}")
-
-    try:
-        # Round-3 fix (finding #3): same event-loop requirement as
-        # `specialist_install_inspect` above — `register_challenge`
-        # (authz_grants.py) calls `asyncio.get_running_loop().create_task(...)`
-        # synchronously, so it must run ON the event loop (never via
-        # asyncio.to_thread), mirroring trigger_reconcile._fire_consent_prompts.
-        handle = prompt_persona_install_consent(
-            coordinator=CHALLENGES,
-            channel=channel, chat_id=chat_id, operator_id=operator_id, inspection=result,
-            acks=acks, reconcile_cb=_reconcile_cb,
-            # #1445: each run gets its own card.
-            requester=_configurator_run_key(),
-        )
-    except Exception as exc:  # noqa: BLE001 — round-5b: structured, never a silent ok:true
-        logger.exception("persona install consent prompt failed to post")
-        return _result({"ok": False, "kind": "consent_prompt_failed",
-                         "detail": f"{type(exc).__name__}: {exc}"})
-    failure = await _settle_install_consent_post(handle)
-    if failure is not None:
-        return _result(failure)
-    ok_payload["consent"] = "keyboard_posted"
-    return _result(ok_payload)
+    def _post(**kw):
+        return prompt_persona_install_consent(inspection=result, **kw)
+    posted = await _post_approval_card(
+        record, _post, what=f"persona {result.persona_id}", continuation=continuation)
+    if posted.get("ok") is not True:
+        return _result(posted)
+    return _result({**ok_payload, **posted})
 
 
 @tool(
     "persona_install_commit",
-    "Persist an INSPECTED persona to /config/personas — REFUSES unless the operator has approved "
-    "via the DM consent keyboard.",
+    "Persist an INSPECTED persona to /config/personas — only in the run Casa started after the "
+    "operator approved it on the card persona_install_inspect asked for; one approval is one "
+    "attempt.",
     {"type": "object", "properties": {
         "persona_id": {"type": "string"}, "version": {"type": "string"},
         "checksum": {"type": "string"}, "staged_dir": {"type": "string"}},
@@ -16162,7 +16170,11 @@ async def persona_install_inspect(args: dict) -> dict:
 )
 @_off_the_ceiling
 async def persona_install_commit(args: dict) -> dict:
-    from persona_install import PersonaInspectionResult, PersonaInstallAckStore, commit_persona_install
+    import approval_records
+    from persona_install import (
+        PersonaInspectionResult, PersonaInstallAckStore, commit_persona_install,
+        persona_install_consent_identity,
+    )
     from persona_pack import PersonaPackError, load_persona_pack
     from specialist_install import SpecialistInstallError
 
@@ -16182,13 +16194,33 @@ async def persona_install_commit(args: dict) -> dict:
     inspection = PersonaInspectionResult(
         persona_id=pack.persona_id, version=pack.version, checksum=pack.checksum,
         display_name=pack.identity.get("display_name", pack.persona_id), staged_dir=staged_dir)
-    try:
-        pack = await asyncio.to_thread(
-            commit_persona_install, inspection=inspection, acks=PersonaInstallAckStore())
-    except SpecialistInstallError as exc:
-        return _result({"ok": False, "kind": exc.kind, "detail": exc.detail})
-    return _result({"ok": True, "persona_id": pack.persona_id, "version": pack.version,
-                     "checksum": pack.checksum})
+    approval = _run_approval()
+    approved = approval_records.approved_values(approval)
+    identity = (persona_install_consent_identity(
+        persona_id=pack.persona_id, version=pack.version, checksum=pack.checksum,
+        values_digest=approval_records.values_digest(approved))
+        if approved is not None else "")
+    refusal = approval_records.fence(approval, kind="persona_install", consent_identity=identity)
+    if refusal is not None:
+        return _result(refusal)
+
+    async def _txn() -> dict:
+        # Under the plugin-tools lock from the attempt through the write, so a
+        # newer request cannot replace the approval in between.
+        refused = approval_records.attempt(approval, kind="persona_install",
+                                           consent_identity=identity)
+        if refused is not None:
+            return refused
+        try:
+            done = await asyncio.to_thread(
+                commit_persona_install, inspection=inspection, acks=PersonaInstallAckStore(),
+                approved_values=approved)
+        except SpecialistInstallError as exc:
+            return {"ok": False, "kind": exc.kind, "detail": exc.detail}
+        return {"ok": True, "persona_id": done.persona_id, "version": done.version,
+                "checksum": done.checksum}
+
+    return _result(await _run_bundle_transaction(_txn))
 
 
 # #931: a resident's persona identity is an input of its binding digest
@@ -17178,13 +17210,23 @@ def _owned_entries_now(slug: str) -> "list[dict]":
     return plugin_registry.owned_entries_for(slug, data) if data.valid else []
 
 
-def _configurator_deliverer(channel: Any, chat_id: Any, operator_id: Any, *, what: str):
-    """A continuation of the configurator: one turn on its desk in the
-    operator's DM; returns True when the desk route took it."""
-    async def _deliver(text: str) -> bool:
-        if channel is None:
-            return False
-        return await _continue_configurator(channel, chat_id, operator_id, text, what=what)
+def _configurator_deliverer(question: str, asked: str):
+    """Casa continuing the configurator for the erase question *question*: a
+    delegation Casa starts on the configurator's lane, keyed by the question,
+    so the eraser's result waits behind a choice run still going. *asked* is
+    the operator's own words that led to the uninstall. The returned function
+    starts it with *text* and returns whether it was taken; if the run cannot
+    be started, the operator is told *fallback* directly."""
+    import configurator_continue
+
+    def _deliver(text: str, fallback: str) -> bool:
+        async def _told(outcome: str) -> None:
+            if outcome in ("busy", "failed"):
+                import casa_core
+                await casa_core.operator_notify(_channel_manager, fallback)
+        outcome = configurator_continue.start(
+            text, key=f"erase:{question}", asked=asked, on_outcome=_told)
+        return outcome in ("started", "queued")
     return _deliver
 
 
@@ -17213,8 +17255,8 @@ def _choice_continuation(tool: str, arg: str, name: str, choice: int,
 
 async def _deliver_erasure_outcome(tool: str, name: str, outcomes: list,
                                    deliver, extra: str = "") -> None:
-    """Continue the configurator with what the eraser(s) said; if its desk
-    cannot take it, tell the operator directly. Never raises."""
+    """Continue the configurator with what the eraser(s) said; if it cannot
+    be started, tell the operator directly. Never raises."""
     arg = "slug" if tool == "specialist_uninstall" else "name"
     try:
         if outcomes and all(o.verdict == "complete" for o in outcomes):
@@ -17245,7 +17287,7 @@ async def _deliver_erasure_outcome(tool: str, name: str, outcomes: list,
                 f"Erasing {plugin}'s data did not complete, so nothing was "
                 "removed, and the configurator could not be resumed to relay "
                 "the plugin's report — run the uninstall again to see it.")
-        if await deliver(model_text):
+        if deliver(model_text, operator_text):
             return
         import casa_core
         await casa_core.operator_notify(_channel_manager, operator_text)
@@ -17346,7 +17388,8 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
                            "erase_data=false to keep the data.")}, []
     chat_id = operator_id = address.chat_id
     artifacts = tuple(s.artifact_id for s in specs)
-    deliver = _configurator_deliverer(channel, chat_id, operator_id, what=name)
+    # the operator's own words in this run: what a continuation's row keeps
+    asked = str((_snapshot_origin() or {}).get("user_text") or "")
     if erase is None:
         if confirm is not None:
             had = questions.current(subject) is not None
@@ -17372,12 +17415,17 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
             if pec.ERASE in choices:
                 erasers.append((s.name, s.tool, s.summary))
         text = pec.render_erase_choice(what, erasers, choices)
+        deliver = _configurator_deliverer(question, asked)
+
         async def _continue(choice: int) -> bool:
             if choice in (pec.CANCEL, pec.KEEP):
                 # Keep and Cancel answer the question now: an erase already
                 # approved and queued must not run behind them.
                 questions.close(subject, question)
-            return await deliver(_choice_continuation(tool, arg, name, choice, call_extra))
+            return deliver(
+                _choice_continuation(tool, arg, name, choice, call_extra),
+                f"The configurator could not be resumed with your choice about {name}'s "
+                f"data; nothing was removed — ask it to uninstall {name} again.")
         try:
             handle = pec.prompt_erase_choice(
                 coordinator=CHALLENGES, channel=channel, key=key, text=text,
@@ -17424,6 +17472,7 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
     fenced = [s.name for s in specs]
     fence = plugin_erasure.FENCE
     fence.raise_(fenced, subject, question)
+    deliver = _configurator_deliverer(question, asked)
 
     async def _run() -> None:
         complete = False
@@ -17931,7 +17980,7 @@ async def event_ack_revoke(args: dict) -> dict:
 _OPEN_KEYBOARD_LABELS = {
     "specialist_install_consent": (
         "a specialist install/upgrade consent — re-asked by "
-        "specialist_install_inspect (it needs the inspection)"),
+        "specialist_install_request_approval, after specialist_install_inspect"),
     "persona_install_consent": (
         "a persona install consent — re-asked by persona_install_inspect"),
     "plugin_erase_choice": (
@@ -17962,7 +18011,7 @@ def _open_keyboard_label(kind: str) -> str:
     "request) is named by kind, never re-issued. A specialist or persona "
     "install/upgrade consent that already expired is not re-issued by any "
     "tool: it comes back only by running that install or upgrade again (the "
-    "configurator re-inspects and posts a fresh card).",
+    "configurator requests approval again, and Casa posts a fresh card).",
     {"type": "object", "properties": {}},
 )
 async def consent_reprompt(args: dict) -> dict:
@@ -19579,6 +19628,7 @@ CASA_TOOLS: tuple = (
     # Personality Phase A, Plan 2 Task N1b — configurator-only specialist
     # install-from-repo tools.
     specialist_install_inspect,
+    specialist_install_request_approval,   # the approval card for an install or upgrade
     specialist_install_commit,
     # Personality Phase A, Plan 2 Task N1c — configurator-only specialist
     # upgrade/rollback/uninstall tools.
