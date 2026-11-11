@@ -445,6 +445,17 @@ class Confirmations:
             c.card = None
             self._save_locked()
 
+    def open_cards_on_bot(self, bot_id: int) -> int:
+        """How many requests asked on bot *bot_id* still hold a card whose Stop works:
+        admitted, with a card a natural end has not yet forgotten (``clear_card``), and a
+        binding that still exists — what the Stop callback itself requires. Read-only."""
+        from plugin_bindings import BINDINGS
+        with self._lock:
+            self._load_locked()
+            held = [c for c in self._items.values()
+                    if c.status == "admitted" and c.card and c.bot_id == int(bot_id)]
+        return sum(1 for c in held if BINDINGS.peek(c.binding_ref) is not None)
+
     def peek(self, cid: Any) -> "Confirmation | None":
         """Casa's own read (the Stop callback): no plugin or operator check — the caller
         compares the tapper itself."""

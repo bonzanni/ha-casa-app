@@ -132,6 +132,10 @@ class Continuations:
     def pending_count(self) -> int:
         return len(self._pending)
 
+    def pending_on_bot(self, bot_id: int) -> int:
+        """How many continuations are queued on bot *bot_id* and not yet started."""
+        return sum(1 for p in self._pending.values() if p.bot_id == int(bot_id))
+
     def drop(self, plugin: str, bot_id: int, operator_id: int, refs) -> int:
         """The operator stopped, on bot *bot_id*, the work these references name
         (``plugin_stop``): every pending continuation of one of them on that bot that has

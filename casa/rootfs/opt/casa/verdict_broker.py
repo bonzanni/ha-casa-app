@@ -358,6 +358,19 @@ class VerdictBroker:
             if k[0] == namespace and k[1] == scope
         ]
 
+    def live_on_bot(self, bot_id: int) -> int:
+        """How many live requests were asked on bot *bot_id*: those whose
+        meta names it as ``bot_id``, or whose scope (``<kind>:<bot>:<chat>``)
+        does. Read-only."""
+        want = str(bot_id)
+        n = 0
+        for (_ns, scope, _rid), req in self._live.items():
+            parts = scope.split(":")
+            if ((isinstance(req.meta, dict) and req.meta.get("bot_id") == bot_id)
+                    or (len(parts) == 3 and parts[1] == want)):
+                n += 1
+        return n
+
     # -- unregister / cancel ------------------------------------------------
 
     def unregister(self, *, namespace: str, scope: str, request_id: str) -> None:
