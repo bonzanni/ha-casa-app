@@ -177,6 +177,7 @@ async def test_a_started_continuation_is_one_durable_task_with_the_operators_wor
     await again.load()
     row = again.get(job.id)
     assert row is not None and origin_from_job(row)["user_text"] == ASKED
+    assert origin_from_job(row)["_tg_bot"] == CASA_BOT       # Casa's own bot, kept at reload
     assert seen == ["started"]
 
 

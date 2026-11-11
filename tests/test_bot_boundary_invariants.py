@@ -188,14 +188,13 @@ async def _a_flush(reg) -> None:
 
 @pytest.fixture
 def a_isolated(monkeypatch):
-    """A fresh broker and post map; the per-chat lane cancel and the memory
-    captures of an operator message recorded rather than run."""
+    """A fresh broker; the per-chat lane cancel and the memory captures of an
+    operator message recorded rather than run."""
     import delegated_memory
     import result_broker
     import scheduled_asks
     import verdict_broker
     monkeypatch.setattr(verdict_broker, "BROKER", verdict_broker.VerdictBroker())
-    monkeypatch.setattr(result_broker, "POST_MAP", result_broker.PostMap())
     monkeypatch.setattr(scheduled_asks, "cancel_non_scheduled_for_chat",
                         lambda bot, chat, reason: 0)
     monkeypatch.setattr(delegated_memory, "capture_post_line", lambda **kw: None)
@@ -488,8 +487,8 @@ async def test_a_stop_after_a_restart_is_taken_and_told_on_the_bot_that_posted_t
     import plugin_bindings
     import plugin_continuations as pc
     import plugin_stop
+    import chat_notes
     import run_admission
-    import specialist_desk
     from authz_grants import GrantIdentity
 
     bindings_path = str(tmp_path / "bindings.json")
@@ -513,7 +512,7 @@ async def test_a_stop_after_a_restart_is_taken_and_told_on_the_bot_that_posted_t
                         plugin_bindings.BindingStore(bindings_path))
     monkeypatch.setattr(run_admission, "CONFIRMATIONS",
                         run_admission.Confirmations(admissions_path))
-    monkeypatch.setattr(specialist_desk, "record_echo", lambda *a, **kw: None)
+    chat_notes.reset()
     # the run's continuation, queued and held: the Stop must drop it
     monkeypatch.setattr(pc, "CONTINUATIONS", pc.Continuations())
     held = asyncio.Event()
@@ -1471,10 +1470,21 @@ def _c_payload(result) -> dict:
     return json.loads(result["content"][0]["text"])
 
 
-async def _c_specialist_install_card(h, tmp_path):
-    import specialist_install
-    import specialist_install_consent as sic
+def _approval_store(h, tmp_path):
+    """Approval records under *tmp_path*, never /data."""
+    import approval_records
     import tools as tools_mod
+    h.monkeypatch.setattr(approval_records, "PATH", str(tmp_path / "approval-records.json"))
+    approval_records.reset()
+    h.monkeypatch.setattr(tools_mod, "_PLUGIN_TOOLS_LOCK", asyncio.Lock())
+
+
+async def _request_specialist_approval(h, tmp_path) -> dict:
+    """The configurator asks the operator to approve installing an inspected
+    specialist: the staged component's checks pass, so Casa posts the card."""
+    import specialist_install
+    import tools as tools_mod
+    _approval_store(h, tmp_path)
     staged = NS(
         component_id="ledger-specialist", version="1.0.0", slug="ledger",
         component_checksum="f" * 64, root_digest="0" * 64, mission="Books.",
@@ -1482,28 +1492,38 @@ async def _c_specialist_install_card(h, tmp_path):
         required_secret_names=(), dependencies=(), staged_dir=tmp_path,
         resolved_ref="v1.0.0", receipt_id="r-1", receipt_digest="1" * 64,
         plugin_resolutions=())
-    h.monkeypatch.setattr(specialist_install, "inspect_specialist_repo",
+    h.monkeypatch.setattr(specialist_install, "validate_resume_inputs",
+                          lambda **kw: NS(ok=True))
+    h.monkeypatch.setattr(tools_mod, "_inspection_from_checked",
+                          lambda checked, staged_dir: staged)
+    h.monkeypatch.setattr(specialist_install, "preview_effective_config",
+                          lambda *a, **kw: {})
+    return _c_payload(await tools_mod.specialist_install_request_approval.handler(
+        {"slug": "ledger", "root_digest": "0" * 64, "staged_dir": str(tmp_path),
+         "receipt_id": "r-1", "mode": "install"}))
+
+
+async def _inspect_persona(h, tmp_path) -> dict:
+    import persona_install
+    import tools as tools_mod
+    _approval_store(h, tmp_path)
+    staged = NS(persona_id="ledger", version="1.0.0", checksum="9" * 64,
+                display_name="Ledger", staged_dir=tmp_path,
+                resolved_ref="v1.0.0")
+    h.monkeypatch.setattr(persona_install, "inspect_persona_repo",
                           lambda *a, **kw: staged)
-    h.monkeypatch.setattr(sic.SpecialistInstallAckStore, "is_acked",
-                          lambda self, identity: False)
-    payload = _c_payload(await tools_mod.specialist_install_inspect.handler(
-        {"repo": "https://example.invalid/ledger.git", "ref": "v1.0.0"}))
-    assert payload.get("consent") == "keyboard_posted", payload
+    return _c_payload(await tools_mod.persona_install_inspect.handler(
+        {"repo": "https://example.invalid/persona.git", "ref": "v1.0.0"}))
+
+
+async def _c_specialist_install_card(h, tmp_path):
+    payload = await _request_specialist_approval(h, tmp_path)
+    assert payload.get("approval") == "requested", payload
 
 
 async def _c_persona_install_card(h, tmp_path):
-    import persona_install
-    import tools as tools_mod
-    staged = NS(persona_id="ledger", version="1.0.0", checksum="9" * 64,
-                   display_name="Ledger", staged_dir=tmp_path,
-                   resolved_ref="v1.0.0")
-    h.monkeypatch.setattr(persona_install, "inspect_persona_repo",
-                          lambda *a, **kw: staged)
-    h.monkeypatch.setattr(persona_install.PersonaInstallAckStore, "is_acked",
-                          lambda self, identity: False)
-    payload = _c_payload(await tools_mod.persona_install_inspect.handler(
-        {"repo": "https://example.invalid/persona.git", "ref": "v1.0.0"}))
-    assert payload.get("consent") == "keyboard_posted", payload
+    payload = await _inspect_persona(h, tmp_path)
+    assert payload.get("approval") == "requested", payload
 
 
 async def _c_erase_card(h, tmp_path):
@@ -2451,8 +2471,8 @@ async def _e_continuation_record(env, tmp_path, monkeypatch):
     """The delegation record a continuation registers names the binding's
     route."""
     import authz_grants
+    import agent_lane
     import plugin_continuations as pc
-    import specialist_desk
     import tools
     from config import AgentConfig, CharacterConfig, MemoryConfig
     from role_artifact_stub import STUB_ROLE_ARTIFACT
@@ -2468,7 +2488,7 @@ async def _e_continuation_record(env, tmp_path, monkeypatch):
         "browser": cfg("browser", "Fido")}, raising=False)
     monkeypatch.setattr(authz_grants, "_live_operator_identity",
                         lambda: (OPERATOR, OPERATOR))
-    monkeypatch.setattr(specialist_desk, "DESKS", specialist_desk.DeskRegistry())
+    agent_lane.reset()
     monkeypatch.setattr(tools, "_specialist_limiter", None, raising=False)
     records: list = []
     monkeypatch.setattr(tools, "_specialist_registry", NS(
@@ -2759,38 +2779,11 @@ def f_window(monkeypatch):
 
 
 async def _f_specialist_install(h, tmp_path):
-    import specialist_install
-    import specialist_install_consent as sic
-    import tools as tools_mod
-    staged = NS(
-        component_id="ledger-specialist", version="1.0.0", slug="ledger",
-        component_checksum="f" * 64, root_digest="0" * 64, mission="Books.",
-        default_persona_ref="persona:ledger@1", required_config_names=(),
-        required_secret_names=(), dependencies=(), staged_dir=tmp_path,
-        resolved_ref="v1.0.0", receipt_id="r-1", receipt_digest="1" * 64,
-        plugin_resolutions=())
-    h.monkeypatch.setattr(specialist_install, "inspect_specialist_repo",
-                          lambda *a, **kw: staged)
-    h.monkeypatch.setattr(sic.SpecialistInstallAckStore, "is_acked",
-                          lambda self, identity: False)
-    payload = _c_payload(await tools_mod.specialist_install_inspect.handler(
-        {"repo": "https://example.invalid/ledger.git", "ref": "v1.0.0"}))
-    return payload.get("kind")
+    return (await _request_specialist_approval(h, tmp_path)).get("kind")
 
 
 async def _f_persona_install(h, tmp_path):
-    import persona_install
-    import tools as tools_mod
-    staged = NS(persona_id="ledger", version="1.0.0", checksum="9" * 64,
-                display_name="Ledger", staged_dir=tmp_path,
-                resolved_ref="v1.0.0")
-    h.monkeypatch.setattr(persona_install, "inspect_persona_repo",
-                          lambda *a, **kw: staged)
-    h.monkeypatch.setattr(persona_install.PersonaInstallAckStore, "is_acked",
-                          lambda self, identity: False)
-    payload = _c_payload(await tools_mod.persona_install_inspect.handler(
-        {"repo": "https://example.invalid/persona.git", "ref": "v1.0.0"}))
-    return payload.get("kind")
+    return (await _inspect_persona(h, tmp_path)).get("kind")
 
 
 async def _f_erase_question(h, tmp_path):

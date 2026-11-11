@@ -81,17 +81,6 @@ def test_a_missing_field_value_is_empty_not_none():
     assert chat_notes.bounded_line("{label}: {x}", label="L", fields={"x": None}) == "L: "
 
 
-def test_the_desk_module_reexports_the_moved_helpers():
-    import specialist_desk as sd
-    assert sd.clip is chat_notes.clip and sd.FIELD_MIN_CHARS == chat_notes.FIELD_MIN_CHARS
-    args = ("{label} could not take {name}: inbox full.",)
-    kw = dict(label=LABEL_MAX, fields={"name": NAME_200})
-    assert sd.bounded_line(*args, **kw) == chat_notes.bounded_line(*args, **kw)
-    for kind in ("specialist", "executor", "resident"):
-        cfg = SimpleNamespace(kind=kind)
-        assert sd.has_desk(cfg) is agent_lane.has_lane(cfg)
-
-
 # -- has_lane ------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("kind, expected", [("specialist", True), ("executor", True),
@@ -103,4 +92,4 @@ def test_a_specialist_or_the_configurator_has_a_lane_a_resident_none(kind, expec
 
 def test_a_task_answer_is_an_answer_kind():
     assert rb.TASK_ANSWER == "task_answer"
-    assert rb.TASK_ANSWER in rb.ANSWER_KINDS and rb.DESK_REPLY in rb.ANSWER_KINDS
+    assert rb.ANSWER_KINDS == frozenset({rb.TASK_ANSWER})

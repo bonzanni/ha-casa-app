@@ -267,7 +267,7 @@ def _authz_challenge(ch, engagement_id):
 
     The authz grant is the continuation kind that still takes the reservation
     at the tap commit; the install-consent cards that used to (#663) now
-    continue the configurator on its desk, outside any engagement."""
+    continue the configurator as a run Casa starts, outside any engagement."""
     from authz_grants import ChallengeCoordinator, GrantKey, GrantStore
 
     class _Capture(ChallengeCoordinator):

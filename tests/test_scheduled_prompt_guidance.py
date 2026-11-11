@@ -523,6 +523,7 @@ NOT_A_DELIVERY = {
     "tools.py::share_inbound_file",
     "tools.py::specialist_install_commit",
     "tools.py::specialist_install_inspect",
+    "tools.py::specialist_install_request_approval",
     "tools.py::specialist_rollback",
     "tools.py::specialist_uninstall",
     "tools.py::specialist_upgrade",

@@ -1,4 +1,4 @@
-"""#1212 — a bounded delegated run (a desk reply, a delegation) ended by its
+"""#1212 — a bounded delegated run (a delegation, a configurator continuation) ended by its
 ceiling or cancelled leaves no process its CLI started running.
 
 The fixture is the live shape: a "CLI" whose "server" shells out a helper

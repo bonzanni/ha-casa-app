@@ -19,7 +19,7 @@ from agent_logs import LogKey
 from authz_grants import GrantIdentity
 from scratchpad import GRANT, PROMPT_LINE, SERVER
 from test_memory_capture import mem  # noqa: F401 — fixture
-from test_plugin_continuations import ORIGIN, announce, conv, desks, roles  # noqa: F401
+from test_plugin_continuations import ORIGIN, announce, conv, lanes, roles  # noqa: F401
 from test_scratchpad import pads  # noqa: F401
 
 LONG = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"

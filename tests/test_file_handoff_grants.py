@@ -104,7 +104,7 @@ def test_a_delegated_inbox_specialist_gets_the_framework_server_exposing_both_to
 
 
 def test_an_engagement_build_offers_no_inbox_tools_and_no_inbox_read(tmp_path, bound, inbox_root):
-    """the coordinator's ruling R-D1 (a): only a specialist's desk and delegated turns get its inbox;
+    """the coordinator's ruling R-D1 (a): only a specialist's delegated turns get its inbox;
     its jobs and engagements (the builds that carry the launch grants) are offered neither
     tool nor the read path, and the #541 ceiling is unchanged."""
     inbox = _wire("finance", inbox_root)
@@ -121,7 +121,7 @@ def test_an_engagement_build_offers_no_inbox_tools_and_no_inbox_read(tmp_path, b
 
 def test_a_delegated_resident_keeps_its_read_path_but_takes_no_inbox_tools(tmp_path, bound, inbox_root):
     """Diff round 3, Astra (third round on this grant — generalised): the delegated builder
-    also builds a RESIDENT delegated by another resident; only a specialist's desk or
+    also builds a RESIDENT delegated by another resident; only a specialist's
     delegated build takes the two tools from `grants_for`, a resident's stay what its own
     configuration lists. Its read path still comes from the one constructor."""
     inbox = _wire("assistant", inbox_root)

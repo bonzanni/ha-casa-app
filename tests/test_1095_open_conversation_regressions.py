@@ -165,8 +165,8 @@ async def test_a_confirmed_uninstalls_continuations_carry_its_acknowledgement(
     tm = sflow.tm
     delivered: list = []
 
-    def deliverer(channel, chat_id, operator_id, *, what):
-        async def deliver(text):
+    def deliverer(question, asked):
+        def deliver(text, fallback):
             delivered.append(text)
             return True
         return deliver
@@ -191,7 +191,7 @@ async def test_a_confirmed_uninstalls_continuations_carry_its_acknowledgement(
     await tm._deliver_erasure_outcome(
         "specialist_uninstall", "fin",
         [pe.ErasureOutcome("fin.bank", "1" * 64, "complete", "gone")],
-        deliverer(None, None, None, what="fin"), f", acknowledged_conversations={[a.id]!r}")
+        deliverer("q-1", ""), f", acknowledged_conversations={[a.id]!r}")
     assert f"acknowledged_conversations={[a.id]!r}" in delivered[-1]
 
 

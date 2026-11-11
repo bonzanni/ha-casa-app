@@ -244,10 +244,6 @@ async def world(tmp_path, monkeypatch):
                         plugin_bindings.BindingStore(str(tmp_path / "bindings.json")))
     monkeypatch.setattr(run_admission, "CONFIRMATIONS",
                         run_admission.Confirmations(str(tmp_path / "admissions.json")))
-    monkeypatch.setattr(rb, "POST_MAP", rb.PostMap())
-    import specialist_desk
-    monkeypatch.setattr(specialist_desk, "DESKS", specialist_desk.DeskRegistry())
-    monkeypatch.setattr(specialist_desk, "DESK_ECHO", rb.PostLedger(max_events=64))
     agent_inbox._reset_for_tests()
     for role in ("assistant", "finance"):
         agent_inbox._inboxes[role] = agent_inbox.open_inbox(role, str(tmp_path / "inbox" / role))
@@ -1002,13 +998,9 @@ async def test_a_protected_call_in_alexs_chat_is_asked_and_continued_there(world
 async def test_alexs_work_shares_one_lane_and_his_conversation_never_waits_on_it(
         world, monkeypatch, conversation):
     import plugin_continuations as pc
-    import specialist_desk
     call, _did = await _live_delegation(world, monkeypatch)
     lane = agent_lane.LANES.get("finance")
     assert lane.lock.locked()                                  # Ellen's task holds it
-    # a tap on one of Alex's cards uses the same lane, from any chat
-    assert specialist_desk.DESKS.get_or_create(ALEX_BOT, OPERATOR, "finance").lane is lane
-    assert specialist_desk.DESKS.get_or_create(CASA_BOT, OPERATOR, "finance").lane is lane
     # a continuation of Alex's run waits for it
     monkeypatch.setattr(pc, "RETRY_EVERY_S", 0.001)
     entered = []
@@ -1478,9 +1470,6 @@ POST_RECORDS = {
         "the card's executing agent; posted in the chat the tap arrived in, "
         "which owns the card (a card of another agent's chat refuses at the "
         "callback's ingress)",
-    ("specialist_desk.py", "handle_reply"):
-        "the desk's agent; reached only by a reply to a post that agent made in "
-        "this chat — none is made in the resident's chat any more",
     ("tools.py", "_post_task_text"):
         "the task's executor; posted at the task's delivery, its own chat",
     ("tools.py", "_media_post"):
@@ -1489,6 +1478,9 @@ POST_RECORDS = {
     ("run_admission.py", "_card_post"):
         "the call's executing agent; its question and status card are posted at "
         "the call's delivery, as every capability post of the call",
+    ("plugin_stop.py", "tell_line"):
+        "no agent: Casa's own Stop line, in the chat of the card it answers; the "
+        "record only files the line under that card's task",
 }
 
 

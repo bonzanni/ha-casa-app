@@ -1,7 +1,7 @@
 """The job launch owner's engagement launch, and the retired interactive mode.
 
 Interactive specialist engagements (``delegate_to_agent(mode='interactive')``)
-are retired in favour of the desk; a specialist's background job still runs as
+are retired in favour of the agent's own chat; a specialist's background job still runs as
 an engagement in its own topic through the one launch owner,
 ``tools._launch_interactive_engagement``. The shared specialist fixtures here
 are imported by other suites."""

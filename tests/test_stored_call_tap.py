@@ -278,6 +278,19 @@ async def test_a_tap_runs_one_pinned_turn_on_the_captured_build_input_and_posts_
     assert permit.released and permit.released_under_lock is True
 
 
+async def test_a_tap_turn_runs_and_replies_on_the_bot_that_received_it(env):
+    """The pinned turn's origin and its receipt's delivery context carry the
+    bot that delivered the card and received the tap, never another bot."""
+    other = 222
+    env.channel.bot_id = other
+    await _tap(env, meta={"bot_id": other, "_scope": f"proposal:{other}:{OPERATOR}"})
+    (call,) = env.calls
+    assert call.origin["_tg_bot"] == other
+    ((_message, context),) = env.channel.replies
+    assert context["_tg_bot"] == other
+    assert chat_notes.drain(BOT, OPERATOR) == [] and chat_notes.drain(other, OPERATOR)
+
+
 async def test_the_models_own_text_never_reaches_the_operator_or_the_chats_agent(env):
     async def respond(call):
         call.owner.resolve(pr.Capture("receipt", "applied"))

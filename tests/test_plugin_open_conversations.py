@@ -354,8 +354,8 @@ async def test_closed_engagement_confirms(reg, plug):
 def _capture_continuations(monkeypatch, tm) -> list:
     delivered: list = []
 
-    def deliverer(channel, chat_id, operator_id, *, what):
-        async def deliver(text):
+    def deliverer(question, asked):
+        def deliver(text, fallback):
             delivered.append(text)
             return True
         return deliver
