@@ -25,6 +25,7 @@ import result_broker as rb
 import specialist_desk as sd
 from test_desk_route import OPERATOR, _channel, _record, _settle, routed  # noqa: F401
 from channels.tg_address import TgAddress
+from task_model import Requester
 from test_desk_route import BOT
 from test_inbound_files import PDF, _doc, _msg
 from test_telegram_new_reset import _drain_bus
@@ -61,6 +62,13 @@ def _names(monkeypatch):
                         lambda role: {"finance": "Finance"}.get(role, role))
 
 
+def _born(role: str, chat: int) -> dict:
+    """A job's task fields: *role* runs it for the resident on Casa's bot, and
+    its lines go to *chat* there."""
+    return {"executor": role, "requester": Requester("assistant", {"_tg_bot": 111}),
+            "delivery": TgAddress(BOT, chat)}
+
+
 async def _ended_job(tmp_path, *, role="finance", chat=OPERATOR, user=OPERATOR,
                      posts=(), outcome="completed", plugin=None):
     from engagement_registry import EngagementRegistry
@@ -70,7 +78,7 @@ async def _ended_job(tmp_path, *, role="finance", chat=OPERATOR, user=OPERATOR,
     if plugin is not None:
         origin["plugin_job"] = {"plugin": plugin, "model": "m"}
     rec = await reg.create("plugin" if plugin else "specialist", role, "in_casa",
-                           "t", origin)
+                           "t", origin, **_born(role, chat))
     for mid, keyboard in posts:
         assert reg.record_job_post(rec.id, TgAddress(BOT, chat, mid), keyboard=keyboard) is True
     assert await reg.try_transition_terminal(
@@ -375,7 +383,8 @@ async def test_ended_jobs_of_two_chats_sharing_a_message_id_stay_apart(routed, t
     for chat, role in ((OPERATOR, "finance"), (99, "travel")):
         origin = {"role": "assistant", "channel": "telegram", "_tg_bot": 111, "chat_id": str(chat),
                   "user_id": OPERATOR, "job": _job_state()}
-        recs[chat] = await reg.create("specialist", role, "in_casa", "t", origin)
+        recs[chat] = await reg.create("specialist", role, "in_casa", "t", origin,
+                                      **_born(role, chat))
         assert reg.record_job_post(recs[chat].id, TgAddress(BOT, chat, 501)) is True
         assert await reg.try_transition_terminal(
             recs[chat].id, "completed", completed_at=ENDED_AT, strict=True)

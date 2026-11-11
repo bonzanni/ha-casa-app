@@ -22,7 +22,7 @@ import tools as tools_mod
 import verdict_broker as vb
 from channels import DeliveryOutcome
 from test_proposal_slot import (LABEL, SLOT, _identity, _map, _open, _post,  # noqa: F401
-                                _proposal, _Manager)
+                                _proposal, _Manager, open_chats)
 from test_desk_tap import LABEL as DESK_LABEL, OPERATOR, _tap, env  # noqa: F401
 from test_tap_in_place_card import _respond, edit_env  # noqa: F401
 from test_tap_next_card import _card, _live, card_env  # noqa: F401
@@ -71,6 +71,7 @@ def penv(monkeypatch):
         "finance": SimpleNamespace(character=SimpleNamespace(name="Finance"))})
     monkeypatch.setattr(vb, "BROKER", vb.VerdictBroker())
     monkeypatch.setattr(rb, "POSTS", rb.PostLedger())
+    open_chats(monkeypatch, "finance")
     monkeypatch.setattr(rb, "POST_MAP", rb.PostMap())
     store = rb.ReferenceStore(now=lambda: 1000.0)
     return SimpleNamespace(rec=rec, store=store)

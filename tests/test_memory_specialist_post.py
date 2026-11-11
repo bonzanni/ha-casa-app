@@ -376,7 +376,7 @@ def _done():
 
 
 @pytest.fixture
-async def topic(tmp_path, roles, mem):
+async def topic(tmp_path, roles, mem, monkeypatch):
     """Fido's job (and one of finance's, and one of an executor's) on a real
     channel and a real in_casa driver, each with a live scripted session."""
     from channels.telegram import TelegramChannel
@@ -389,6 +389,9 @@ async def topic(tmp_path, roles, mem):
         from turn_scripted_session import attach_session
 
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
+    # the running Casa's registry: the task-post index finds a job's posts there
+    import tools
+    monkeypatch.setattr(tools, "_engagement_registry", reg)
     origin = {"role": "assistant", "channel": "telegram",
               "user_id": OPERATOR_CHAT, "_tg_bot": BOT}
     recs = {
