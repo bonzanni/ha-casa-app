@@ -1919,3 +1919,40 @@ async def test_completion_reconciliation_retries_the_same_answer_after_first_wri
     assert row.result_available is True
     assert row.terminal_notification_pending is True
     assert path.read_bytes().count(_ANSWER_688.encode()) == 1
+
+
+async def test_old_task_rows_are_skipped_with_one_warning(tmp_path, caplog):
+    """A Telegram row written before rows carried their executor, requester
+    and delivery is skipped and counted into one WARNING for the whole load.
+    A value that is present but malformed is still an ERROR of its own, even
+    on a row that also lacks keys."""
+    import logging
+
+    registry = await loaded_registry(tmp_path)
+    for i in range(1, 6):
+        await registry.create(make_job(
+            id=f"job-{i}", creator_peer="telegram", route={"_tg_bot": 111},
+            **TG_TASK))
+    snapshot = json.loads((tmp_path / "jobs.json").read_text())
+    rows = {row["id"]: row for row in snapshot}
+    for job_id in ("job-1", "job-2", "job-3"):
+        for key in ("executor", "requester", "delivery"):
+            rows[job_id].pop(key)
+    rows["job-4"]["delivery"] = "broken"
+    rows["job-5"].pop("executor")
+    rows["job-5"].pop("requester")
+    rows["job-5"]["delivery"] = "broken"
+    (tmp_path / "jobs.json").write_text(json.dumps(snapshot))
+
+    reloaded = JobRegistry(tmp_path / "jobs.json")
+    with caplog.at_level(logging.INFO, logger="job_registry"):
+        await reloaded.load()
+    for i in range(1, 6):
+        assert reloaded.get(f"job-{i}") is None
+    mine = [r for r in caplog.records if r.name == "job_registry"]
+    errors = [r for r in mine if r.levelno == logging.ERROR]
+    warnings = [r for r in mine if r.levelno == logging.WARNING]
+    assert sorted(r.getMessage().split(":")[0] for r in errors) == [
+        "Skipping job job-4", "Skipping job job-5"]
+    assert len(warnings) == 1
+    assert "Skipped 3 job row(s)" in warnings[0].getMessage()

@@ -129,15 +129,19 @@ def _keyboard_posts(value: object,
     return posts
 
 
+class _WrittenBeforeTasks(ValueError):
+    """A stored record from before records carried their task fields."""
+
+
 def _task_fields(row: dict, *, required: bool) -> dict:
     """A stored record's ``executor``, ``requester`` and ``delivery``.
     ``required`` (a Telegram job): all three keys must be present —
     ``delivery`` may be ``null``. Otherwise an absent key decodes to nothing.
-    A value present but malformed raises ``ValueError``."""
+    A value present but malformed raises ``ValueError``; that is checked
+    first, so a record that only lacks keys — one written before records
+    carried them — is the one that raises ``_WrittenBeforeTasks``."""
     out: dict[str, Any] = {}
     missing = [k for k in ("executor", "requester", "delivery") if k not in row]
-    if required and missing:
-        raise ValueError(f"task record without {', '.join(missing)}")
     if "executor" in row:
         executor = row["executor"]
         if not isinstance(executor, str) or (required and not executor):
@@ -155,6 +159,8 @@ def _task_fields(row: dict, *, required: bool) -> dict:
             if value.message_id is not None:
                 raise ValueError(f"not a stored delivery: {row['delivery']!r}")
         out["delivery"] = value
+    if required and missing:
+        raise _WrittenBeforeTasks(f"task record without {', '.join(missing)}")
     return out
 
 
@@ -498,6 +504,7 @@ class EngagementRegistry:
         # Keyed exactly like ``self._records``, so a duplicated id resolves to
         # the same surviving record here as there.
         loaded: dict[Any, EngagementRecord] = {}
+        older = 0
         for row in raw:
             origin = row.get("origin") if isinstance(row, dict) else None
             if (isinstance(origin, dict) and origin.get("channel") == "telegram"
@@ -514,6 +521,11 @@ class EngagementRegistry:
                     row, required=(isinstance(origin, dict)
                                    and origin.get("channel") == "telegram"
                                    and isinstance(origin.get("job"), dict)))
+            except _WrittenBeforeTasks:
+                # Expected after an upgrade, and the same for every such
+                # record: counted into one line below rather than one each.
+                older += 1
+                continue
             except ValueError as exc:
                 # A job's delivery and requester are decided at its birth; a
                 # record that does not carry them has nothing to post at or
@@ -590,6 +602,10 @@ class EngagementRegistry:
                 for addr in rec.dm_posts:
                     self._ended_post_index[_post_key(addr)] = rec.id
                 rec.questions = {}
+        if older:
+            logger.warning(
+                "Skipped %d engagement record(s) written before records "
+                "carried their executor, requester and delivery", older)
 
         # #1093: what the previous process left owed, captured here — before
         # any path that can arm an obligation in this process is reachable.
