@@ -418,7 +418,11 @@ async def run_continuation(pending: Pending, *, on_start) -> None:
                         "_origin_clearance": binding.origin.get("_origin_clearance",
                                                                 "private"),
                         **carry_route(binding.origin),
-                        **task_delivery_marker(delivery_of(binding))})
+                        **task_delivery_marker(delivery_of(binding))},
+                # the continuation as a task: run by the chain's last agent,
+                # its result to the requester, its posts at the binding's
+                # delivery — persisted, so a restart replays it whole
+                executor=role, requester=requester, delivery=delivery_of(binding))
             await tools_mod._specialist_registry.register_delegation(record)
 
             async def _chain():

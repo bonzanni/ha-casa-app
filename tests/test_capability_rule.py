@@ -471,6 +471,31 @@ async def _completed(seen):
 
 
 @pytest.mark.asyncio
+async def test_a_continuation_is_a_task_that_survives_a_restart(world, runs, monkeypatch):
+    """The continuation's durable record is a task like any delegation: run
+    by the chain's last agent, its result to the requester, its posts at the
+    binding's delivery — and a restart reads it back whole, so its result is
+    still owed after one."""
+    from job_registry import JobRegistry
+    from specialist_registry import SpecialistRegistry
+    path = str(world.tmp / "jobs.json")
+    jobs = JobRegistry(path)
+    await jobs.load()
+    monkeypatch.setattr(tools_mod, "_specialist_registry",
+                        SpecialistRegistry(str(world.tmp / "specialists"), job_registry=jobs),
+                        raising=False)
+    b = _mint("finance", ellen_delegates("finance", ALEX_CHAT), ("assistant", "finance"))
+    await _continue(b)
+    [(_task, record)] = runs.announced
+    restarted = JobRegistry(path)
+    await restarted.load()
+    job = restarted.get(record.id)
+    assert job is not None, "the continuation's row was refused at reload"
+    assert (job.executor, job.delivery) == ("finance", ALEX_CHAT)
+    assert job.requester.role == "assistant" and job.requester.route == {"_tg_bot": CASA_BOT}
+
+
+@pytest.mark.asyncio
 async def test_a_null_delivery_tasks_continuation_posts_nothing_live_and_after_a_restart(
         world, runs, tmp_path, monkeypatch):
     """Born while Alex's chat was closed: its binding keeps the null delivery, so each

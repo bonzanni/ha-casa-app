@@ -7230,7 +7230,8 @@ async def _launch_interactive_engagement(
     by a resident's plugin worker (``plugin_host``): the job runs as an
     engagement with its own long session. ``self_host`` (S7a): a specialist starting
     its own job — the prelaunch skips the ACL and the depth cap, and the
-    record is stamped at depth 1."""
+    record is stamped at depth 1. *task_birth* is the job's birth as its
+    launcher decided it; without one it is decided here, once."""
     import agent as agent_mod
 
     if plugin_host is None:
@@ -7415,7 +7416,9 @@ async def _launch_interactive_engagement(
                                )) + casa_grants,
                 # #283: reservation rides the record from here (r4).
                 agent_spawn_permit=spawn_owned,
-                **_task_record_fields(task_birth),
+                # a job is a task: born here when its launcher did not
+                **_task_record_fields(task_birth if task_birth is not None
+                                      else _task_birth("", task_text, agent_name, origin)),
             )
         except asyncio.CancelledError:
             # create() already compensated the record.
