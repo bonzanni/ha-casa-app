@@ -684,7 +684,7 @@ async def test_the_channel_leaves_no_opening_note_itself(world, kind, text):
     assert chat_notes.drain(ch.bot_id, OPERATOR) == []
 
 
-def test_the_opening_mark_is_casas_alone():
+async def test_the_opening_mark_is_casas_alone():
     import provenance
     assert "_chat_opening" in provenance.RESERVED_CONTEXT_KEYS
     assert "_chat_opening" not in provenance.sanitize_external_context({"_chat_opening": True})
