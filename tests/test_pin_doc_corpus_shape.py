@@ -889,9 +889,12 @@ PLUGIN_SHARD_RANGES = {
 # The plugin-access-profiles row was re-pinned when the job session stopped
 # opening fresh sessions: its binding to the fresh-open profile test went with
 # that path, and the resume test pins the same persist-before-open rule.
+# The plugin-authorization row moved on when the tap that runs behind the
+# assistant gained its own test file (test_behind_ellen_approval.py), listed
+# beside the approval tests that row already names.
 PLUGIN_SHARD_ROW_DIGESTS = {
     "architecture/plugin-authorization.md":
-        "3d428f89a763a6365d072808fb7564576b964ba30cc6b1e77871eec9a45ff4e6",
+        "6d8736f920dac090b005b27d8317ac12d116656e57e02078eba5bdb36f11e921",
     "architecture/plugin-delivered-files.md":
         "06be628ad8c9cd6134135f26b8eb4c8e5934a528e1946133b419997878f9328e",
     "architecture/plugin-delivered-slots.md":
