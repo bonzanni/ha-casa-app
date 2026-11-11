@@ -345,7 +345,11 @@ async def test_burst_of_cards_degrades_to_fallbacks_within_budget(
         rid = post["request_id"]
         assert post["text"] == fallbacks[rid]
         elapsed = channel.post_times[rid] - registered[rid]
-        assert elapsed <= 0.45, (rid, elapsed)
+        # The budget covers the wait for a model slot: each card is posted
+        # about 0.3 s after its own registration. A budget that started only
+        # once a slot freed would post the fourth card about 0.54 s after its
+        # registration; the margin up to 0.5 s absorbs a loaded runner.
+        assert elapsed <= 0.5, (rid, elapsed)
 
 
 @pytest.mark.parametrize("with_card", [False, True])

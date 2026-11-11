@@ -330,6 +330,7 @@ IDENTITY_SITE_HITS = {
     "agent_lane.py": {"Fault": 1},
     "agent_logs.py": {"LogKey": 1},
     "agent_registry.py": {"KnownAgent": 1},
+    "approval_card.py": {"<module>": 1, "_cache_get": 2, "_cache_put": 1, "tool_fallback": 1},
     "ask_retirement.py": {"retirement_headline": 1},
     "authz_grants.py": {
         "ChallengeCoordinator.__init__": 1, "ChallengeCoordinator._after_slot": 1,
@@ -586,6 +587,7 @@ IDENTITY_SITE_HITS = {
     "stored_calls.py": {"resolve_stored_call": 1},
     "task_model.py": {"Requester": 1},
     "tokens.py": {"format_turn_summary": 1},
+    "tool_descriptions.py": {"<module>": 1, "_fill": 1, "get": 1},
     "tools.py": {
         "DelegatedOutput": 1, "DelegationCeilingExceeded.__init__": 1,
         "_apply_erasure_to_disclosure": 2, "_bounded_str_list": 1, "_bundle_seq_failure": 1,
@@ -678,6 +680,9 @@ IDENTITY_FILES = {
     "mcp_registry.py": (SAFE, "conversation identities, qualified by role"),
     "background_jobs.py": (SAFE, "the per-plugin job mutex, install-global by design"),
     "vault_drop_off.py": (SAFE, "shared by roles, not by bots: no Telegram component"),
+    "approval_card.py": (SAFE, "the written-card cache is keyed by model, kind and a hash "
+                               "of the facts, and holds only reply text: the card is "
+                               "rebuilt for each request"),
 }
 for _file in (
         "callback_spool.py", "callback_episodes.py", "callback_http.py", "callback_acks.py",
@@ -693,7 +698,7 @@ for _file in (
         "plugin_health.py", "reload.py", "persona_pack.py", "role_slot.py", "role_artifact.py",
         "resident_trigger_secrets.py", "secrets_resolver.py", "tokens.py", "config.py",
         "agent_registry.py", "agent_home.py", "canonical_bytes.py", "stored_calls.py",
-        "explanation_store.py", "scratchpad.py"):
+        "explanation_store.py", "scratchpad.py", "tool_descriptions.py"):
     IDENTITY_FILES[_file] = (SAFE, "install-global plugin, artifact and configuration state: "
                                    "no Telegram component")
 for _file in ("agent.py", "agent_logs.py", "casa_core.py", "job_registry.py",
@@ -785,6 +790,7 @@ IDENTITY_FUNCTIONS = {
     ("plugin_continuations.py", "_lane_turn"): (SAFE, "a per-(chat, role) concurrency cap, "
                                                       "kept per role by design"),
     ("memory/occurrence.py", "post_key"): (SAFE, "keyed by a Casa-minted tool-use id"),
+    ("approval_card.py", "tool_fallback"): (NOISE, "a card title, not a key"),
 }
 
 
