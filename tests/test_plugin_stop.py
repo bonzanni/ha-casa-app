@@ -43,7 +43,7 @@ BOT = CASA_BOT
 ARTIFACT = "1" * 64
 CID = "conf-" + "c" * 32
 CARD_MID = 777
-CARD_TEXT = "📊 Fido\nStart this browsing run?\n• RunPod — invoice\nAsked for by Ellen.\n\n☑ Start"
+CARD_TEXT = "📊 Fido\nEllen asked me for this browsing run. OK to start?\n• RunPod — invoice\n\n☑ Start"
 ORIGIN = {"role": "assistant", "channel": "telegram", "chat_id": OPERATOR,
           "user_id": OPERATOR, "user_name": "N", "_origin_route": "telegram",
           "_origin_clearance": "private", "user_text": "get my invoice", "_operator_turn": True,
@@ -448,9 +448,9 @@ async def test_the_start_tap_ordering_is_admitted_before_the_stop_shows(env, mon
     ("stopped", "☑ Stopped", "Stopped."),
     ("ended", "☑ Ended", "It had already ended."),
     ("not_taken", "☑ Stop asked",
-     "Casa Browser isn't answering; the browsing stops as soon as it does."),
+     "The browser isn't answering yet; I'll stop as soon as it does."),
     ("unknown", None, None),
-    ("unavailable", None, "I couldn't stop it: Fido's browser isn't set up any more."),
+    ("unavailable", None, "I couldn't stop it: my browser isn't set up any more."),
 ])
 async def test_each_outcome_has_its_mark_and_line(env, outcome, mark, line):
     if outcome != "unavailable":            # unavailable: no plugin resolved for the role
@@ -905,7 +905,7 @@ async def test_a_request_that_ended_on_its_own_marks_its_card_once(env, monkeypa
 
 
 async def test_a_status_card_admitted_by_his_words_is_marked_too(env, monkeypatch):
-    status_text = "📊 Fido\nBrowsing now:\n• RunPod — invoice\nAsked for by Ellen."
+    status_text = "📊 Fido\nOn it for Ellen:\n• RunPod — invoice"
     c, b = env.admit()
     run_admission.CONFIRMATIONS.set_card(CID, TgAddress(BOT, OPERATOR, CARD_MID), status_text)
     _sweeping(env, monkeypatch, [_ended_entry(b)])

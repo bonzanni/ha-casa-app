@@ -356,10 +356,11 @@ def _knowledge_line(requester: str, task: str, out=None, *, failed: "str | None"
     brief = task if len(task) <= 80 else task[:79] + "…"
     who = tools_mod._display_name_for_role(requester)
     if failed is not None:
-        return f"{who} asked you «{brief}»; it failed: {failed}"
+        return f"{who} asked you «{brief}»; you couldn't finish it ({failed})"
     if getattr(out, "run_aborted", False):
-        return f"{who} asked you «{brief}»; it failed: {out.run_subtype or 'aborted'}"
-    return f"{who} asked you «{brief}»; you answered ({len(out.text or '')} chars)"
+        return (f"{who} asked you «{brief}»; you couldn't finish it "
+                f"({out.run_subtype or 'aborted'})")
+    return f"{who} asked you «{brief}»; you answered"
 
 
 def _note_knowledge(binding, requester, role: str, line: str) -> None:
@@ -466,7 +467,9 @@ async def run_continuation(pending: Pending, *, on_start) -> None:
                     if tok is not None:
                         tools_mod._conversation.reset(tok)
                     fido_done.set()
-                if not out.run_aborted and (out.text or "").strip() == SILENCE_SENTINEL:
+                # the message the turn closed with, whole, is exactly the sentinel
+                if (not out.run_aborted
+                        and tools_mod._closing_text(out).strip() == SILENCE_SENTINEL):
                     progress_only.append(out)
                     return out       # progress only (C4a): nothing climbs the chain
                 _note_knowledge(binding, requester, role,

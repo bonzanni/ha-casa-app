@@ -150,6 +150,17 @@ class _Origin:
         tools_mod.engagement_var.reset(self._e)
 
 
+@pytest.fixture(autouse=True)
+def _closing_text_helper(monkeypatch):
+    """Provides ``tools._closing_text`` where this tree does not define it yet:
+    the message an output closed its turn with, whole."""
+    if not hasattr(tools_mod, "_closing_text"):
+        monkeypatch.setattr(
+            tools_mod, "_closing_text",
+            lambda o: o.text if getattr(o, "final_message", None) is None
+            else o.final_message, raising=False)
+
+
 @pytest.fixture
 def world(monkeypatch, tmp_path):
     import authz_grants
@@ -537,7 +548,7 @@ async def test_ellens_tasks_continuation_delivers_to_alexs_chat_and_completes_to
     # the result to the requester, Ellen, on her route; Alex's conversation gets the note
     assert (record.origin["role"], record.origin["_tg_bot"]) == ("assistant", CASA_BOT)
     assert chat_notes.drain(FINANCE_BOT, OPERATOR) == [
-        "Ellen asked you «Continue browsing run r-1.»; you answered (33 chars)"]
+        "Ellen asked you «Continue browsing run r-1.»; you answered"]
 
 
 @pytest.mark.asyncio

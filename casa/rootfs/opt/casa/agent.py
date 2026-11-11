@@ -236,6 +236,11 @@ _session_extras_var: ContextVar[Any] = ContextVar(
 #: (:mod:`chat_notes`), in the turn's notes block.
 CHAT_NOTE_PREFIX = "(Casa) "
 
+#: The line above those notes: they are the agent's own record of what it did
+#: in this chat for others, to recall as its own memory.
+CHAT_NOTES_FRAME = ("What you did in this chat for others since you last spoke here — "
+                    "your own memory, so recall it naturally, never as a note or a record:")
+
 
 def _projection_name_for_turn(channel: str, origin_route: str | None) -> str:
     """Name the bundle projection actually SERVED for this turn, in lockstep
@@ -2332,12 +2337,13 @@ class Agent:
                     notes.append("\n".join(desk_lines))
                 # What Casa noted for the agent that owns this chat since its
                 # last turn (a task it ran for someone else, and how it
-                # ended), drained once, each line marked as Casa's.
+                # ended), drained once, under one frame line that hands them
+                # to the agent as its own memory, each line marked as Casa's.
                 chat_lines = _drain_chat_notes(
                     msg.context.get("_tg_bot"), msg.context.get("chat_id"))
                 if chat_lines:
-                    notes.append("\n".join(
-                        f"{CHAT_NOTE_PREFIX}{line}" for line in chat_lines))
+                    notes.append("\n".join([CHAT_NOTES_FRAME, *(
+                        f"{CHAT_NOTE_PREFIX}{line}" for line in chat_lines)]))
                 reply_note = msg.context.get("_reply_note")
                 if isinstance(reply_note, str) and reply_note.strip():
                     notes.append(reply_note)

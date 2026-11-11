@@ -265,7 +265,7 @@ async def test_an_api_fault_is_continued_once_then_parks(rig):
     await settle()
     assert rig.drv.writes == [bj.CONTINUE_LINE]
     assert rig.ch.parked == [
-        f"«Accounting check» stopped on an error from Claude "
+        f"«Accounting check» stopped on an error "
         f"({ErrorKind.RATE_LIMIT.value}). Reply to continue it, or Cancel."]
     assert rig.rec.status == "active"
 

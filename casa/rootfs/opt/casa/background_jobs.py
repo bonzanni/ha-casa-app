@@ -874,8 +874,8 @@ class JobRunner:
                             "in %.0fs", rec.id[:8], kind, FAULT_RETRY_S)
                 self.spawn(self._continue_after_fault(rec))
             else:
-                self.park(rec, f"«{_title(rec)}» stopped on an error from "
-                               f"Claude ({kind}). Reply to continue it, or Cancel.")
+                self.park(rec, f"«{_title(rec)}» stopped on an error ({kind}). "
+                               f"Reply to continue it, or Cancel.")
             return
         st.faults = 0
         if self._input_pending(rec.id):
