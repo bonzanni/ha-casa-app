@@ -175,7 +175,7 @@ silence sentinel is no longer part of that residue — it is never streamed at a
 (INV-TURN-009), so the reclassified reply is one fresh send rather than a posted literal
 and a superseding edit.
 
-**INV-TURN-009**: The token stream never carries a cumulative that is nothing but `<silent/>` sentinels and whitespace, nor — on the partial-delta path — one that could still become such silence. With a token callback present, a canonical-fold cumulative that is not silence, and a partial-delta cumulative that cannot still become silence, is handed to the callback in full, including any literal sentinel, unless it equals the last cumulative already handed to that callback, or the attempt has folded the result of a call left waiting on the operator's approval — or of a synchronous `delegate_to_agent` call whose child's run left one waiting (#1207) — with no later result of a call that consumed the same grant, directly or in such a delegate's child — then nothing is handed over (#1252).
+**INV-TURN-009**: The token stream never carries a cumulative that is nothing but `<silent/>` sentinels and whitespace, nor — on the partial-delta path — one that could still become such silence. With a token callback present, a canonical-fold cumulative that is not silence, and a partial-delta cumulative that cannot still become silence, is handed to the callback as admitted (INV-OUT-006), unless it equals, or after a dropped sentinel run is a prefix of, the last cumulative already handed to that callback, or the attempt has folded the result of a call left waiting on the operator's approval — or of a synchronous `delegate_to_agent` call whose child's run left one waiting (#1207) — with no later result of a call that consumed the same grant, directly or in such a delegate's child — then nothing is handed over (#1252).
 
 The sentinel is the model's way of saying "send nothing", and the gate above already
 honours it — but only at the end of the turn, after the stream has run. So a turn that
@@ -185,8 +185,8 @@ only releases the typing indicator. The hold moves the decision to the emission 
 It is stated per emission rather than per turn, because on the partial-delta path a
 provisional sentence can be streamed and then replaced by a canonical fold of pure
 silence; what has been spoken cannot be unspoken, and the guarantee is that the
-correction adds nothing further. Release hands over the exact cumulative, the literal
-included, so a turn that recants after the sentinel still delivers its whole text; and
+correction adds nothing further. Release hands over the cumulative as admitted (#1512:
+no leading or closing tag), and never takes back words a voice stream already has; and
 because the fold uses the same predicate as the final gate, the stream never holds
 something the gate would deliver. Nothing records a held cumulative, so a hold can never
 suppress its own release. On a held turn the teardown hook is the only thing that stops

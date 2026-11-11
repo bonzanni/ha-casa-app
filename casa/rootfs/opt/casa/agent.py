@@ -3784,6 +3784,13 @@ class Agent:
                        if scope is not None else cum)
             if emitted == state["last_emitted"]:
                 return
+            # #1512: admission drops a closing ``<silent/>``; on the partial
+            # path the fragments before it were already handed over, and
+            # taking them back would make a voice stream restart and say the
+            # words again — what is already shown stays as it is.
+            if (_SILENCE_SENTINEL in cum
+                    and state["last_emitted"].startswith(emitted)):
+                return
             await on_token(emitted)
             state["last_emitted"] = emitted
 

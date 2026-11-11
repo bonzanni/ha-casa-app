@@ -35,7 +35,10 @@ Obligations are a closed, Casa-owned set; the model can never add one.
   never turned into a visible line; prose after a sentinel is delivered whole
   (the G-3 recant contract, INV-TURN-009). A suppressed admission says whether
   the model CHOSE the silence (``chosen_silence``: at least one sentinel) or
-  merely produced nothing (#1079). On a buffered (``NoStream``) turn, a final
+  merely produced nothing (#1079). On a streaming turn, a final reply and every
+  stream update lose a leading or closing run of sentinels
+  (:func:`without_sentinels`, #1512): the words arrive, the tag never does. On
+  a buffered (``NoStream``) turn, a final
   reply whose LAST message is a closing ``<silent/>`` after earlier text is the
   operator's ruling on #1075: silent after a confirmed send, else the earlier
   text without the tag (:meth:`TurnScope.admit`).
@@ -739,6 +742,13 @@ class TurnScope:
                     "closing silence without confirmed sends: role=%s cid=%s "
                     "— earlier text kept, tag dropped", self.role, self.cid)
                 text = kept
+        if (kind in (IntentKind.FINAL_REPLY, IntentKind.STREAM_UPDATE)
+                and self.streaming_allowed):
+            # #1512: a streaming turn shows its words as they are written, so
+            # a leading or closing run of ``<silent/>`` markers around them is
+            # dropped from every stream update and from the final edit — the
+            # tag never reaches the operator, the words still do.
+            text = without_sentinels(text)
         send = None
         if kind in _SENT_INTENTS:
             send = self.open_send(kind.value)

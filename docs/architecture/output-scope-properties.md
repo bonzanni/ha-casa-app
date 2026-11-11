@@ -29,7 +29,7 @@ one turn gets one answer wherever it is asked.
 ## Contracts & invariants
 
 
-**INV-OUT-006**: Whether a turn streams, whether its final reply is closing silence, and where an untrusted webhook turn's discrete send goes are properties of its scope — the first and third registered at mint from the message's own facts, the second intrinsic to final-reply admission: a scheduled turn or an event wake never receives a token callback, a final reply that strips to nothing but `<silent/>` sentinels is suppressed by admission while prose after a sentinel is delivered whole — except that when a scheduled turn's or an event wake's last text-bearing message strips to a `<silent/>` after earlier text, the reply is suppressed if the turn made at least one Casa send, every one confirmed delivered, every send call resolved without failure, and exactly one attempt ran with no retry, and is otherwise the earlier messages without the closing ones — and an untrusted webhook turn's `send_message` is bound to Telegram whatever channel it named, while its final reply is delivered only when its route declares `deliver: operator` or `operator_always`, and then on every output path only to the operator's Telegram with a fresh delivery context; and when the winning attempt folded the result of a call the authorization hook left waiting on the operator's approval — or of a synchronous `delegate_to_agent` call whose child's run left one waiting — with no later result of a call that consumed the same grant, directly or in such a delegate's child, the final reply is only the text-bearing messages folded before that result, and is suppressed, not chosen, when they strip to silence.
+**INV-OUT-006**: Whether a turn streams, whether its final reply is closing silence, and where an untrusted webhook turn's discrete send goes are properties of its scope — the first and third registered at mint from the message's own facts, the second intrinsic to final-reply admission: a scheduled turn or an event wake never receives a token callback, a final reply that strips to nothing but `<silent/>` sentinels is suppressed by admission while prose after a sentinel is delivered whole — on a streaming turn, the final reply and every stream update without a leading or closing run of `<silent/>` sentinels, a sentinel anywhere else kept — except that when a scheduled turn's or an event wake's last text-bearing message strips to a `<silent/>` after earlier text, the reply is suppressed if the turn made at least one Casa send, every one confirmed delivered, every send call resolved without failure, and exactly one attempt ran with no retry, and is otherwise the earlier messages without the closing ones — and an untrusted webhook turn's `send_message` is bound to Telegram whatever channel it named, while its final reply is delivered only when its route declares `deliver: operator` or `operator_always`, and then on every output path only to the operator's Telegram with a fresh delivery context; and when the winning attempt folded the result of a call the authorization hook left waiting on the operator's approval — or of a synchronous `delegate_to_agent` call whose child's run left one waiting — with no later result of a call that consumed the same grant, directly or in such a delegate's child, the final reply is only the text-bearing messages folded before that result, and is suppressed, not chosen, when they strip to silence.
 
 The three used to be inline checks — the two-clause callback condition and the sentinel
 gate in `handle_message`, the egress clamp in `send_message` — and are now `NoStream`
@@ -64,9 +64,18 @@ reply is admitted here), one attempt, no retries and `TurnScope.closing_silence_
 and every `SendAttempt` resolved `ok`. The reply is suppressed with `chosen_silence` left
 False, so the discharge below still reads only a reply of nothing but sentinels. Otherwise,
 rule 2 admits the earlier messages verbatim, and the disclosure line goes on after the
-strip. A single message carrying prose and a sentinel, prose in the last message, a trailing
-whitespace message (even after a sentinel), a streaming turn and a reply with no per-message fact are judged as
-before. Rule 1 drops all the earlier text, and the operator accepted two residuals: no-send
+strip. On a buffered turn, a single message carrying prose and a sentinel, prose in the last
+message, a trailing whitespace message (even after a sentinel) and a reply with no
+per-message fact are judged as before.
+
+A streaming turn never takes the #1075 silence: its earlier words are already on screen.
+What it used to show instead was the tag itself — `Done.` streamed, then the closing
+`<silent/>` folded into the next stream update and the final edit (#1512). Admission now
+drops a leading or closing run of sentinels from a streaming turn's `STREAM_UPDATE` and
+`FINAL_REPLY` (`without_sentinels`, the same helper a delegate's words use), after the
+whole-text silence test and before the disclosure line: the words arrive as written, the
+tag never does, and a sentinel between words — quoted, in a code span — is content and
+stays. Rule 1 drops all the earlier text, and the operator accepted two residuals: no-send
 narration still arrives, untagged, and a real message written as plain text after a
 confirmed send is dropped. The verdict is taken at
 admission: a synchronous delegate that timed out and sends later belongs to its own

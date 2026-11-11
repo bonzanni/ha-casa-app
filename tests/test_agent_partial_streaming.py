@@ -578,13 +578,13 @@ async def test_sentinel_prefix_that_diverges_releases_the_whole_cumulative(
     assert text == "<silly good"
 
 
-async def test_g3_recant_releases_the_exact_cumulative_sentinel_included(
+async def test_g3_recant_releases_the_words_without_the_leading_sentinel(
     agent_fixture, monkeypatch,
 ):
     """The G-3 recant contract: a sentinel followed by real prose delivers the
-    WHOLE text, literal included. The hold must release the exact ``_cum()``
-    — a stripped variant would make the final delivery re-insert what the
-    stream hid, and would break the AR-A formula."""
+    words whole. The stream drops the leading marker, exactly as the final
+    reply's admission does, so the final edit never re-inserts what the
+    stream hid; the turn's own text keeps the literal."""
     factory = QueuedScriptFactory([[
         _mk_assistant("<silent/>"),
         _mk_assistant("Actually, meeting at 3pm."),
@@ -598,8 +598,32 @@ async def test_g3_recant_releases_the_exact_cumulative_sentinel_included(
 
     text = await agent._process(_msg("voice", "lr", "hi"), on_token=on_token)
 
-    assert seen == ["<silent/>\n\nActually, meeting at 3pm."]
+    assert seen == ["Actually, meeting at 3pm."]
     assert text == "<silent/>\n\nActually, meeting at 3pm."
+
+
+async def test_a_dropped_closing_sentinel_never_takes_back_streamed_words(
+    agent_fixture, monkeypatch,
+):
+    """A closing marker that arrives as deltas after words already streamed:
+    admission drops it, and what is left is shorter than what the device
+    already has. Nothing more is handed over — a shorter cumulative would make
+    the voice stream restart and say the words again."""
+    factory = QueuedScriptFactory([[
+        _mk_stream_event("Sure. "),
+        _mk_stream_event("<silent/>"),
+        _mk_assistant("Sure. <silent/>"),
+    ]])
+    monkeypatch.setattr("sdk_client_pool._default_make_client", factory)
+    agent = agent_fixture
+    seen: list[str] = []
+
+    async def on_token(text: str) -> None:
+        seen.append(text)
+
+    await agent._process(_msg("voice", "lr", "hi"), on_token=on_token)
+
+    assert seen == ["Sure. "]
 
 
 async def test_held_sentinel_does_not_survive_into_the_next_attempt(
@@ -719,5 +743,7 @@ async def test_a_sentinel_fragment_with_content_behind_it_is_released(
 
     text = await agent._process(_msg("voice", "lr", "hi"), on_token=on_token)
 
-    assert seen == ["<sil<silent/>", "<sil<silent/>x"]
+    # The release at the middle delta shows the words before the closing
+    # marker (admission drops a closing run; #1512).
+    assert seen == ["<sil", "<sil<silent/>x"]
     assert text == "<sil<silent/>x"

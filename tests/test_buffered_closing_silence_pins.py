@@ -12,8 +12,9 @@ delivery, and on ``TurnScope`` directly where it is a record:
 * what does NOT change: a single message with its sentinel, prose after a
   sentinel in the last message, a trailing whitespace message (even after a
   sentinel, with or without a confirmed send), a patched
-  ``_process`` with no per-message fact, a streaming turn, the #1079
-  discharge on a streaming announcement turn;
+  ``_process`` with no per-message fact, the #1079 discharge on a streaming
+  announcement turn; a streaming turn keeps its words and drops only a leading
+  or closing run of markers (#1512);
 * the record: ``closing_silence_earned`` is never vacuous, an in-flight or
   failed attempt blocks it, a synchronous child shares the attempts and an
   async child or an engagement does not, the attempt count gates rule 1, and
@@ -206,17 +207,65 @@ async def test_a_patched_process_keeps_the_whole_text_rule(
     assert stub.final_texts() == ["Done.\n\n<silent/>"]
 
 
-async def test_a_streaming_turn_is_unchanged(tmp_path, monkeypatch):
-    """A direct chat streams: its closing `<silent/>` after a confirmed send
-    and earlier text is delivered exactly as before the ruling."""
+def _chat() -> BusMessage:
+    return BusMessage(type=MessageType.REQUEST, source="telegram",
+                      target="assistant", content="hi", channel="telegram",
+                      context={"chat_id": "123", "cid": "dm-1"})
+
+
+async def _streamed(tmp_path, monkeypatch, script):
+    """A direct chat turn through the real fold: what the stream handed to
+    the token callback, and what the final edit carried."""
+    agent, stub = await _resident(tmp_path)
+    tokens: list[str] = []
+
+    def _create_on_token(_context):
+        stub.on_token_created += 1
+
+        async def _on_token(text: str) -> None:
+            tokens.append(str(text))
+        return _on_token
+    stub.create_on_token = _create_on_token
+    try:
+        await _run(agent, _chat(), _Factory([script]), monkeypatch)
+    finally:
+        await agent.aclose()
+    return stub, tokens
+
+
+async def test_a_streaming_turn_drops_the_closing_tag(tmp_path, monkeypatch):
+    """A direct chat streams: the earlier text stays as streamed, the rule's
+    silence after a confirmed send does not apply, and the closing
+    `<silent/>` reaches neither the stream nor the final edit."""
     results: list = []
-    msg = BusMessage(type=MessageType.REQUEST, source="telegram", target="assistant",
-                     content="hi", channel="telegram",
-                     context={"chat_id": "123", "cid": "dm-1"})
-    stub, _ = await _deliveries(tmp_path, monkeypatch, lambda: msg, [
+    stub, tokens = await _streamed(tmp_path, monkeypatch, [
         _send(results), _mk_assistant("Done."), _mk_assistant("<silent/>")])
     assert stub.on_token_created == 1
-    assert stub.final_texts() == ["Done.\n\n<silent/>"]
+    assert tokens == ["Done."]
+    assert stub.final_texts() == ["Done."]
+
+
+async def test_a_streaming_turn_drops_a_leading_tag_and_keeps_the_words(
+    tmp_path, monkeypatch,
+):
+    """A recant on a streaming turn: the words after the marker arrive whole,
+    without the marker, in the stream and in the final edit."""
+    stub, tokens = await _streamed(tmp_path, monkeypatch, [
+        _mk_assistant("<silent/>"), _mk_assistant("Actually: the bins.")])
+    assert tokens == ["Actually: the bins."]
+    assert stub.final_texts() == ["Actually: the bins."]
+
+
+async def test_a_streaming_turn_keeps_a_marker_between_words(
+    tmp_path, monkeypatch,
+):
+    """Only a leading or closing run goes: a marker between words is the
+    reply's content and stays."""
+    stub, tokens = await _streamed(tmp_path, monkeypatch, [
+        _mk_assistant("Reply with <silent/> when done."),
+        _mk_assistant("<silent/>")])
+    assert tokens == ["Reply with <silent/> when done."]
+    assert stub.final_texts() == ["Reply with <silent/> when done."]
 
 
 async def test_a_synthesized_announcement_turn_streams_and_still_discharges(
@@ -343,10 +392,12 @@ def test_a_fact_that_is_not_this_texts_is_ignored():
 
 
 def test_a_streaming_scope_ignores_the_report():
+    """The buffered rule's silence after a confirmed send never applies to a
+    streaming turn; its closing tag is dropped and the words stay."""
     s = _scope()
     _confirmed(s)
     out = s.admit(K.FINAL_REPLY, "Done.\n\n<silent/>", report=_report())
-    assert out.suppressed is False and out == "Done.\n\n<silent/>"
+    assert out.suppressed is False and out == "Done."
 
 
 def test_the_verdict_is_taken_at_admission():
