@@ -625,6 +625,198 @@ async def test_the_probe_reads_the_page_title_block(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# a new bot for an agent: offered by its exact handle, applied at a restart
+# ---------------------------------------------------------------------------
+
+NEW_BOT = FIDO_BOT + 10
+NEW_TOKEN = f"{NEW_BOT}:new-token-eeeeeeeeeeeeeeee"
+
+
+async def _change_alex(lc, host, world, new="CasaFinance4821Bot"):
+    await _bind_alex(lc, host)
+    return await lc.replace("finance", new)
+
+
+async def test_a_change_offers_the_new_handle_and_names_the_old_bot(world, root):
+    lc, host = make_lifecycle(world, root)
+    res = await _change_alex(lc, host, world)
+    assert res == {"status": "change_offered", "suggested_username": "CasaFinance4821Bot",
+                   "replaces": "@HeyAlexTestBot"}
+    agent = lc.store.agents["finance"]
+    assert agent["change"] == {"new_bot": None, "old_bot": ALEX_BOT,
+                               "old_username": "HeyAlexTestBot"}
+    assert agent["bot_id"] == ALEX_BOT and agent["handles"] == ["HeyAlexTestBot",
+                                                                "CasaFinance4821Bot"]
+    text, buttons = world.cards[agent["offer_card"][2]]
+    assert "@HeyAlexTestBot" in text
+    assert buttons == [("Create Alex's chat",
+                        "https://t.me/newbot/HeyEllenTestBot/CasaFinance4821Bot?name=Alex")]
+
+
+async def test_a_change_needs_a_bot_to_replace(world, root):
+    lc, _host = make_lifecycle(world, root)
+    res = await lc.replace("finance", "CasaFinance4821Bot")
+    assert res["status"] == "error" and res["kind"] == "no_bot"
+    res = await lc.replace("nobody", "CasaFinance4821Bot")
+    assert res["status"] == "error" and res["kind"] == "not_declared"
+    assert world.cards == {}
+
+
+async def test_a_change_is_refused_while_something_waits_on_the_old_chat(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _bind_alex(lc, host)
+    world.open[ALEX_BOT] = ["a background job"]
+    cards = dict(world.cards)
+    res = await lc.replace("finance", "CasaFinance4821Bot")
+    assert res["status"] == "error" and res["kind"] == "busy"
+    assert res["open"] == ["a background job"]
+    assert world.cards == cards and lc.store.agents["finance"]["change"] is None
+
+
+async def test_a_change_to_a_taken_or_owned_handle_is_refused(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _bind_alex(lc, host)
+    await lc.offer("browser", "CasaBrowser2222Bot")
+    world.taken_handles = {"CasaFinance4821Bot"}
+    assert (await lc.replace("finance", "CasaFinance4821Bot"))["kind"] == "handle_taken"
+    assert (await lc.replace("finance", "CasaBrowser2222Bot"))["kind"] == "handle_owned"
+    assert lc.store.agents["finance"]["change"] is None
+
+
+async def test_only_the_current_suggestion_completes_a_change(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _change_alex(lc, host, world, "CasaFinanceAaaaBot")
+    await lc.replace("finance", "CasaFinanceBbbbBot")
+    assert lc.store.agents["finance"]["change"]["old_username"] == "HeyAlexTestBot"
+    world.tokens[777] = "777:another-token-zzzzzzzzzzzz"
+    await lc.on_created(created(777, "Alex", "CasaFinanceAaaaBot"), OPERATOR)
+    assert lc.store.bots[777]["phase"] == ovl.UNBOUND
+    assert "finance" not in lc.store.bots[777]["ask"]["candidates"]
+    assert world.restarts == 0
+    world.tokens[NEW_BOT] = NEW_TOKEN
+    await lc.on_created(created(NEW_BOT, "Alex", "casafinancebbbbbot"), OPERATOR)
+    rec = lc.store.bots[NEW_BOT]
+    assert rec["phase"] == ovl.SWITCHING and rec["role"] == "finance"
+    agent = lc.store.agents["finance"]
+    assert agent["change"]["new_bot"] == NEW_BOT and agent["bot_id"] == ALEX_BOT
+    assert lc.store.bots[ALEX_BOT]["phase"] == ovl.BOUND
+    assert world.restarts == 1
+    assert world.card_text(agent["offer_card"]) == \
+        "Alex is moving to @casafinancebbbbbot — Casa restarts for a moment."  # its own name
+    assert _disk(root)["bots"][str(NEW_BOT)]["phase"] == ovl.SWITCHING
+    world.tokens[779] = "779:third-token-yyyyyyyyyyyy"
+    await lc.on_created(created(779, "Alex", "CasaFinanceBbbbBot"), OPERATOR)   # a second one
+    assert lc.store.bots[779]["phase"] == ovl.UNBOUND
+    assert lc.store.agents["finance"]["change"]["new_bot"] == NEW_BOT
+
+
+async def test_an_older_handle_of_the_same_specialist_completes_nothing(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _change_alex(lc, host, world)
+    world.tokens[777] = "777:another-token-zzzzzzzzzzzz"
+    await lc.on_created(created(777, "Alex", "HeyAlexTestBot"), OPERATOR)
+    assert lc.store.bots[777]["phase"] == ovl.UNBOUND
+    assert lc.store.agents["finance"]["change"]["new_bot"] is None
+    assert world.restarts == 0
+
+
+async def test_the_ask_never_offers_a_specialist_with_a_bot_or_a_pending_change(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _change_alex(lc, host, world)
+    world.deleted.add(ALEX_BOT)          # its bot is gone, its change still pending
+    await lc.on_updated(created(ALEX_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR)
+    assert lc.store.agents["finance"]["bot_id"] is None
+    assert lc.store.agents["finance"]["change"] is not None
+    world.tokens[777] = "777:another-token-zzzzzzzzzzzz"
+    await lc.on_created(created(777, "Other", "OtherHomeBot"), OPERATOR)
+    assert lc.store.bots[777]["ask"]["candidates"] == ["browser"]
+
+
+async def test_a_failed_restart_request_says_the_move_waits_for_the_next_restart(world, root):
+    world.restart_ok = False
+    lc, host = make_lifecycle(world, root)
+    await _change_alex(lc, host, world)
+    world.tokens[NEW_BOT] = NEW_TOKEN
+    await lc.on_created(created(NEW_BOT, "Alex", "CasaFinance4821Bot"), OPERATOR)
+    assert lc.store.bots[NEW_BOT]["phase"] == ovl.SWITCHING
+    assert world.restarts == 1
+    assert world.card_text(lc.store.agents["finance"]["offer_card"]) == \
+        "Alex moves to @CasaFinance4821Bot when Casa next restarts."
+
+
+async def _created_switch(lc, host, world, new="CasaFinance4821Bot"):
+    await _change_alex(lc, host, world, new)
+    world.tokens[NEW_BOT] = NEW_TOKEN
+    await lc.on_created(created(NEW_BOT, "Alex", new), OPERATOR)
+    assert lc.store.bots[NEW_BOT]["phase"] == ovl.SWITCHING
+
+
+async def test_asking_again_finishes_a_created_switch_with_another_restart(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _created_switch(lc, host, world)
+    cards = len(world.cards)
+    world.open[ALEX_BOT] = ["a scheduled question"]
+    res = await lc.replace("finance", "CasaFinance4821Bot")
+    assert res["status"] == "error" and res["kind"] == "busy"
+    del world.open[ALEX_BOT]
+    res = await lc.replace("finance", "CasaFinance4821Bot")
+    assert res["status"] == "restarting"
+    assert world.restarts == 2 and len(world.cards) == cards
+    world.restart_ok = False
+    res = await lc.replace("finance", "CasaFinance4821Bot")
+    assert res["status"] == "restart_failed"
+
+
+async def test_dropping_a_change_before_create_keeps_the_old_bot(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _change_alex(lc, host, world)
+    res = await lc.drop_change("finance")
+    assert res["status"] == "dropped"
+    agent = lc.store.agents["finance"]
+    assert agent["change"] is None and agent["bot_id"] == ALEX_BOT
+    assert world.card_text(agent["offer_card"]) == "Alex keeps @HeyAlexTestBot."
+    world.tokens[NEW_BOT] = NEW_TOKEN
+    await lc.on_created(created(NEW_BOT, "Alex", "CasaFinance4821Bot"), OPERATOR)
+    assert lc.store.bots[NEW_BOT]["phase"] == ovl.UNBOUND
+    assert lc.store.bots[ALEX_BOT]["phase"] == ovl.BOUND
+    assert (await lc.drop_change("finance"))["status"] == "nothing_to_drop"
+
+
+async def test_a_change_cannot_be_dropped_once_its_bot_exists(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _created_switch(lc, host, world)
+    res = await lc.drop_change("finance")
+    assert res["status"] == "error" and res["kind"] == "already_created"
+    assert lc.store.agents["finance"]["change"]["new_bot"] == NEW_BOT
+
+
+async def test_an_uninstall_drops_a_pending_change(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _change_alex(lc, host, world)
+    del world.configs["finance"]
+    await lc.reconcile_role("finance")
+    assert lc.store.agents["finance"]["change"] is None
+    assert _disk(root)["agents"]["finance"]["change"] is None
+    assert lc.store.bots[ALEX_BOT]["phase"] == ovl.DORMANT
+
+
+async def test_a_switching_bot_holds_what_it_receives_and_says_setup_once(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _created_switch(lc, host, world)
+    assert host.endpoints[NEW_BOT].default_agent == ""
+    for uid in (1, 2):
+        assert await lc.intake(NEW_BOT, update(uid)) == "held"
+    assert world.notices == [(NEW_BOT, ovl.SETUP_REPLY)]
+    assert [u["update_id"] for u in lc.journal.pending(NEW_BOT)] == [1, 2]
+    assert world.released == []
+    lc2, host2 = make_lifecycle(world, root)       # a boot that does not apply it
+    await lc2.boot()
+    assert lc2.store.bots[NEW_BOT]["phase"] == ovl.SWITCHING
+    assert host2.endpoints[NEW_BOT].default_agent == ""
+    assert lc2.store.agents["finance"]["bot_id"] == ALEX_BOT
+
+
+# ---------------------------------------------------------------------------
 # every unbound bot has an answerable question after a restart
 # ---------------------------------------------------------------------------
 

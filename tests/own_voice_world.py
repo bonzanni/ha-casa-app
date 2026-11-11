@@ -64,6 +64,9 @@ class World:
     fail_post: bool = False
     taken_handles: set = field(default_factory=set)   # usernames in use on Telegram
     probe_down: bool = False                          # t.me cannot be reached
+    open: dict = field(default_factory=dict)          # bot_id -> what still waits on it
+    restarts: int = 0                                 # app restarts requested
+    restart_ok: bool = True
 
     def tick(self, what: str) -> None:
         self.effects.append(what)
@@ -141,6 +144,13 @@ class FakeHost:
         if self.w.probe_down:
             return None
         return username.lower() in {t.lower() for t in self.w.taken_handles}
+
+    async def request_restart(self):
+        self.w.restarts += 1
+        return self.w.restart_ok
+
+    def open_items(self, role, bot_id, durable_only):
+        return list(self.w.open.get(bot_id, []))
 
     async def manager_check(self):
         return "ok" if self.w.manager_ok else "unauthorized"
