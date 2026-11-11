@@ -183,9 +183,14 @@ started; work the resident started reaches it only as a `(Casa) ` note line.
 - the specialist desk's reply route runs only on the resident's bot.
 
 The files of one album share the destination its first file resolved. Every landed post
-of a task — each page, proposal, link, file, run card — is filed under it through one
+of a task — each page, proposal, link and file of a plugin, a `send_media` file, a run
+admission's question and status card, the Stop's line — is filed under it through one
 bridge (`TelegramChannel._record_post` → `task_posts.record`): a job's on its engagement
-record, a delegation's on its job row, keyed by bot, chat and message, rebuilt at load.
+record, a delegation's (or continuation's) on its job row, keyed by bot, chat and message,
+rebuilt at load. The task rides on the post record's owner: a plugin call's job or
+delegation (`result_broker._post_owner`), a file's bound engagement or run
+(`tools._media_post`); the Stop's line is filed as the card it answers. A job's start line,
+question and parking line are filed as its keyboard posts.
 
 **A card left behind in the resident's chat.** A tap on the resident's bot whose card
 records an agent that now declares its own chat (a proposal, a question, a run card's

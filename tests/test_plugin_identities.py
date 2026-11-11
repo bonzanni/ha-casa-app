@@ -61,11 +61,11 @@ class _Endpoint(FakeEndpoint):
         self._record("deliver_operator_message", chat_id, text)
         return DeliveryOutcome.DELIVERED if self.is_ready else DeliveryOutcome.NOT_DELIVERED
 
-    async def deliver_operator_question(self, chat_id, text, labels, rid):
+    async def deliver_operator_question(self, chat_id, text, labels, rid, *, post=None):
         self._record("deliver_operator_question", chat_id, text, rid)
         return self._mid()
 
-    async def deliver_run_card(self, chat_id, text, buttons):
+    async def deliver_run_card(self, chat_id, text, buttons, *, post=None):
         self._record("deliver_run_card", chat_id, text)
         return self._mid()
 
@@ -73,7 +73,7 @@ class _Endpoint(FakeEndpoint):
         self._record("edit_dm_message", chat_id, message_id, text)
         return True
 
-    async def send_reply_line(self, chat_id, text, reply_to):
+    async def send_reply_line(self, chat_id, text, reply_to, *, post=None):
         self._record("send_reply_line", chat_id, text, reply_to)
         return True
 

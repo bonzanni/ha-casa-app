@@ -255,16 +255,21 @@ async def tell_line(bot_id: int, chat_id: int, role: str, outcome: str, *,
                     reply_to: "int | None") -> None:
     """The one line, Casa's fixed text under the specialist's label (none in the agent's own
     chat), as a reply to the card, through the bot *bot_id* that holds it; the resident hears
-    it at its next turn, as every Casa line."""
+    it at its next turn, as every Casa line. The line is filed as the card it answers (the
+    card's post record), so a reply to it reaches whatever a reply to the card reaches."""
     import specialist_desk
-    from result_broker import compose_operator_message, label_at
+    from channels.tg_address import TgAddress
+    from result_broker import POST_MAP, compose_operator_message, label_at
     line = line_for(outcome, role)
     transport = _transport()
     if line is None or transport is None:
         return
     endpoint = transport.endpoint(int(bot_id))
+    card = (POST_MAP.get(TgAddress(int(bot_id), int(chat_id), reply_to))
+            if isinstance(reply_to, int) and not isinstance(reply_to, bool) else None)
     await endpoint.send_reply_line(
-        int(chat_id), compose_operator_message(line, label_at(role, endpoint)), reply_to)
+        int(chat_id), compose_operator_message(line, label_at(role, endpoint)), reply_to,
+        post=card)
     specialist_desk.record_echo(int(bot_id), int(chat_id),
                                 f"{specialist_desk.label_for(role)}: {line}")
 

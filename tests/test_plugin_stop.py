@@ -425,7 +425,7 @@ async def test_the_start_tap_ordering_is_admitted_before_the_stop_shows(env, mon
     order: list = []
     ch = types.SimpleNamespace(default_agent="assistant", bot_id=BOT, has_bot_id=True)
 
-    async def deliver_operator_question(chat_id, text, labels, rid):
+    async def deliver_operator_question(chat_id, text, labels, rid, *, post=None):
         return CARD_MID
 
     async def edit_dm_message(chat_id, message_id, text, buttons=None):

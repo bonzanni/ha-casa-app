@@ -1017,15 +1017,16 @@ def _closing_beyond_cut(output: "DelegatedOutput", prefix: str, truncated: bool)
         return ""
 
 
-async def _classify_send(ch, content, kind, filename, origin, caption) -> dict:
+async def _classify_send(ch, content, kind, filename, origin, caption, post=None) -> dict:
     """Attempt the channel send and classify the outcome into a payload dict.
     Never raises a send/channel exception (the caller's finally still cleans up
-    the claim)."""
+    the claim). The landed file is filed under *post*."""
     from telegram.error import (
         BadRequest, Forbidden, NetworkError, RetryAfter, TelegramError, TimedOut,
     )
     try:
-        await ch.send_media(content, kind, filename, context=origin, caption=caption)
+        await ch.send_media(content, kind, filename, context=origin, caption=caption,
+                            post=post)
         return {"status": "ok", "kind_error": None, "kind": kind,
                 "filename": filename,
                 "summary": f"delivered {kind} {filename!r}",
@@ -1152,6 +1153,21 @@ def _media_delivery(eng, origin: dict) -> "tuple[str, bool, TgAddress | None]":
     if is_task or executor != str(origin.get("role") or ""):
         return executor, True, delivery
     return executor, False, None
+
+
+def _media_post(eng, origin: dict, executor: str) -> Any:
+    """The post record a ``send_media`` file is filed under: the sending
+    agent's, owned by the task the call runs in — its job (the bound
+    engagement) or its delegation (the run's ``_delegation_id``) — so a reply
+    to the file reaches that task. A turn of no task owns nothing."""
+    import result_broker as rb
+    from provenance import strict_positive_id
+    owner = (str(getattr(eng, "id", "") or "") if eng is not None
+             else str(origin.get("_delegation_id") or ""))
+    return rb.PostRecord(
+        role=executor, operator_id=strict_positive_id(origin.get("user_id")) or 0,
+        plugin="", slot="media", tool_use_id=uuid.uuid4().hex, owner=owner,
+        posted_at=time.time(), kind=rb.OPERATOR_FILE)
 
 
 def _closed_own_chat(executor: str, origin: dict) -> Any:
@@ -1466,7 +1482,8 @@ async def send_media(args: dict) -> dict:
                 else:
                     content = await asyncio.to_thread(outbox.capture, claim, kind)
                     payload = await _classify_send(
-                        ch, content, kind, filename, origin, caption)
+                        ch, content, kind, filename, origin, caption,
+                        post=_media_post(eng, origin, executor))
                     # #1079: confirmed at the channel's normal return (its
                     # failure contract is to raise) — before claim cleanup,
                     # whose failure says nothing about what was delivered.

@@ -182,7 +182,7 @@ async def post_question(*, endpoint: Any, identity: Any, role: str, text: str,
                         options: list[str], timeout_s: float,
                         on_settle: Callable[[dict], Awaitable[None]],
                         after_choice: "dict[int, list[tuple[str, str]]] | None" = None,
-                        chat_id: "int | None" = None) -> bool:
+                        chat_id: "int | None" = None, post: Any = None) -> bool:
     """Post *text* under *role*'s label with one button per option, through
     the Telegram *endpoint* the caller resolved (the call's delivery for a run
     admission, Casa's own for its restart card), to the operator *identity*
@@ -205,7 +205,11 @@ async def post_question(*, endpoint: Any, identity: Any, role: str, text: str,
     (the start card's Stop). That choice's ``on_settle`` runs BEFORE the edit
     that shows the keyboard, and is also given the card's ``message_id``, its
     ``address`` and its settled ``text``, so what the buttons act on is saved
-    before they appear."""
+    before they appear.
+
+    ``post``: the post record the landed question is filed under (a task's
+    question is filed under that task, so a reply to it reaches the task).
+    """
     from channels.tg_address import EndpointNotReady, TgAddress, scope as lane_scope
     from result_broker import compose_operator_message, label_at
     from verdict_broker import BROKER
@@ -233,7 +237,8 @@ async def post_question(*, endpoint: Any, identity: Any, role: str, text: str,
                              "role": role, "delivery": TgAddress(bot_id, int(chat_id))})
 
     async def _post():
-        return await channel.deliver_operator_question(chat_id, body, list(options), rid)
+        return await channel.deliver_operator_question(chat_id, body, list(options), rid,
+                                                       post=post)
 
     def _finish_factory(message_id: int):
         async def _finish(outcome: dict) -> None:

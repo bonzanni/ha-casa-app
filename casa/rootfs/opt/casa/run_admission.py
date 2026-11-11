@@ -573,7 +573,8 @@ async def _decide(call, runs: list[dict], request_key: str, binding, endpoint,
         endpoint=endpoint, identity=call.identity, role=call.role,
         text=compose_question(runs, tools_mod._display_name_for_role(binding.requester)),
         options=[start, "Not now"], timeout_s=CONFIRM_TIMEOUT_S, on_settle=_on_settle,
-        after_choice={0: [stop_button(cid)]}, chat_id=chat_id)
+        after_choice={0: [stop_button(cid)]}, chat_id=chat_id,
+        post=_card_post(call, cid))
     logger.info("run admission: %d run(s) put to the operator (%s) extract_ms=%s",
                 len(runs), "posted" if landed else "not delivered", extract_ms)
     if not landed:
@@ -582,6 +583,17 @@ async def _decide(call, runs: list[dict], request_key: str, binding, endpoint,
 
 
 _CARD_TASKS: set = set()
+
+
+def _card_post(call, cid: str):
+    """The post record a request's card (its question, or its status card) is
+    filed under: the calling agent's, owned by the call's task (its job or its
+    delegation, ``result_broker._post_owner``), so a reply to the card reaches
+    the task the call runs in."""
+    import result_broker as rb
+    return rb.PostRecord(role=call.role, operator_id=int(call.identity.operator_id),
+                         plugin=call.plugin, slot="run_admission", tool_use_id=cid,
+                         owner=rb._post_owner(call.identity), posted_at=time.time())
 
 
 def _spawn_status_card(call, runs: list[dict], binding, cid: str, endpoint,
@@ -596,7 +608,8 @@ def _spawn_status_card(call, runs: list[dict], binding, cid: str, endpoint,
         text = compose_operator_message(
             compose_status(runs, tools_mod._display_name_for_role(binding.requester)),
             label_at(call.role, endpoint))
-        mid = await endpoint.deliver_run_card(chat_id, text, [stop_button(cid)])
+        mid = await endpoint.deliver_run_card(chat_id, text, [stop_button(cid)],
+                                              post=_card_post(call, cid))
         if isinstance(mid, int) and not isinstance(mid, bool):
             CONFIRMATIONS.set_card(cid, TgAddress(endpoint.bot_id, chat_id, mid), text)
         else:

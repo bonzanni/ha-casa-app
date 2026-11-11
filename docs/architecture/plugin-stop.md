@@ -63,8 +63,9 @@ turn once it holds it; one already started is the running session, left to end i
 mark and loses its keyboard (`settle_run_card`): `☑ Stopped` (also for `already_stopped`),
 `☑ Ended`, `☑ Stop asked` (`not_taken`). Any other outcome leaves the card with its Stop.
 The line is Casa's fixed text under the specialist's label, posted as a reply to the card
-that was tapped (`tell_line`, `TelegramChannel.send_reply_line`), and recorded as the
-resident's echo, so the resident hears it at its next turn: `Stopped.`, `It had already
+that was tapped (`tell_line`, `TelegramChannel.send_reply_line`), filed as that card (the
+card's post record), so a reply to it reaches whatever a reply to the card reaches, and
+recorded as the resident's echo, so the resident hears it at its next turn: `Stopped.`, `It had already
 ended.`, the `not_taken` line saying the browsing stops as soon as Casa Browser answers, and
 for `unavailable` that the specialist's browser is no longer set up. `already_stopped` adds
 no line: he has been told.

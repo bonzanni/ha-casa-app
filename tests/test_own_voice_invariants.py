@@ -336,9 +336,14 @@ DEPOSITS = {LINK: ("link", URL), NOTE: ("note", "Groceries in October: EUR 420."
                                        "buttons": [{"label": "Close", "close": True}]}))}
 
 
+FILE = "mcp__plugin_demo_api__export"           # capability: delivers a file
+
+
 def _map() -> ResultContractMap:
     return ResultContractMap(
         tools={
+            FILE: ToolContract(ARTIFACT, PLUGIN, "capability", ("export",), {},
+                               {"export": "operator_file"}, servers=("api",)),
             LINK: ToolContract(ARTIFACT, PLUGIN, "capability", ("link",), {},
                                {"link": "operator_link"}, servers=("api",)),
             NOTE: ToolContract(ARTIFACT, PLUGIN, "capability", ("note",), {},
@@ -364,10 +369,11 @@ class _Origin:
 
 
 async def call_tool(role: str, tool: str, origin: "dict | None" = None, *, client="c1",
-                    tu="tu-1") -> tuple:
+                    tu="tu-1", deposit: "tuple | None" = None) -> tuple:
     """One plugin call of *role* through the real admission and result hooks, on
     the turn of *origin* (default: the turn running now): ``("denied", why)``,
-    ``("admitted", None)``, ``("delivered", body)`` or ``("withheld", body)``."""
+    ``("admitted", None)``, ``("delivered", body)`` or ``("withheld", body)``.
+    *deposit*: ``(slot, value, deposit keywords)`` instead of :data:`DEPOSITS`'."""
     store = rb.ReferenceStore()
     admit = rb.make_plugin_admission_hook(role, _map(), client_id=client, store=store)
     result = rb.make_result_hook(_map(), client_id=client, store=store)
@@ -376,10 +382,10 @@ async def call_tool(role: str, tool: str, origin: "dict | None" = None, *, clien
                                "tool_input": {}}, tu, {})
         if verdict:
             return "denied", verdict["hookSpecificOutput"]["permissionDecisionReason"]
-        if tool not in DEPOSITS:
+        if tool not in DEPOSITS and deposit is None:
             return "admitted", None
-        slot, value = DEPOSITS[tool]
-        ref, err = store.deposit(client_id=client, slot=slot, value=value)
+        slot, value, extra = deposit if deposit is not None else (*DEPOSITS[tool], {})
+        ref, err = store.deposit(client_id=client, slot=slot, value=value, **extra)
         assert err is None, err
         out = await result({"hook_event_name": "PostToolUse", "tool_name": tool,
                             "tool_input": {}, "tool_response": json.dumps({slot: ref})},
@@ -1344,6 +1350,8 @@ import re  # noqa: E402
 CODE = pathlib.Path(__file__).resolve().parents[1] / "casa" / "rootfs" / "opt" / "casa"
 _SURFACE_METHOD = re.compile(r"^(deliver_operator_(?!reply$)\w+|post_job_\w+|deliver_run_card"
                              r"|post_question)$")
+# methods whose name is also a common word in strings (a site name): calls only
+_SURFACE_CALL = re.compile(r"^(send_media|send_reply_line)$")
 
 # Admission sites: A — the plugin admission hook (result_broker), whose
 # capability rule admits a call that posts only at its call's delivery;
@@ -1373,6 +1381,11 @@ SURFACE_POSTS = {
     ("tools.py", "ask_operator", "post_job_question"): C,
     ("tools.py", "_post_job_start_line", "post_job_start_line"): C,
     ("background_jobs.py", "JobRunner._post_parked", "post_job_parked"): C,
+    # a file the agent sends, at the task's delivery
+    ("tools.py", "_classify_send", "send_media"): B,
+    ("channels/telegram_transport.py", "TelegramTransport.send_media", "send_media"): B,
+    # the Stop's one line, a reply to the card it stops (a card admitted at A)
+    ("plugin_stop.py", "tell_line", "send_reply_line"): A,
     # the configurator's Restart now button: Casa's own, on Casa's endpoint
     ("configurator_run.py", "offer_restart", "post_question"): CASA,
 }
@@ -1413,13 +1426,15 @@ def _surface_posts() -> set:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         owners = _owners(tree)
         for node in ast.walk(tree):
-            name = None
+            name, call = None, False
             if isinstance(node, ast.Call):
                 f = node.func
                 name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+                call = True
             elif isinstance(node, ast.Constant) and isinstance(node.value, str):
                 name = node.value
-            if name and _SURFACE_METHOD.match(name):
+            if name and (_SURFACE_METHOD.match(name)
+                         or (call and _SURFACE_CALL.match(name))):
                 found.add((rel, _owner(owners, node.lineno), name))
     return found
 
@@ -1450,6 +1465,12 @@ POST_RECORDS = {
         "this chat — none is made in the resident's chat any more",
     ("tools.py", "_post_task_text"):
         "the task's executor; posted at the task's delivery, its own chat",
+    ("tools.py", "_media_post"):
+        "the agent sending the file; posted at the task's delivery, or in its "
+        "own turn's chat when that chat is the agent's own (send_media's rule)",
+    ("run_admission.py", "_card_post"):
+        "the call's executing agent; its question and status card are posted at "
+        "the call's delivery, as every capability post of the call",
 }
 
 
@@ -1576,3 +1597,193 @@ async def test_a_reply_to_a_continuations_post_reaches_it_even_before_its_sessio
     assert _queued(world.bus, "finance") == []
     await _end_continuation(run)
     assert task_input.state(cid) == "ended"
+
+
+# ---------------------------------------------------------------------------
+# Every post a task makes is filed under that task, whatever path it takes;
+# a reply to any of them reaches the task
+# ---------------------------------------------------------------------------
+
+#: Every kind of post a task makes in its executor's own chat, and the
+#: endpoint method it lands through. Closed: every agent-surface method of
+#: ``SURFACE_POSTS`` (outside Casa's own cards) must be driven by a kind here,
+#: so a new way for a task to post is driven, and found filed, or this fails.
+TASK_POST_KINDS = {
+    "delegation start line": "send_response",
+    "delegation answer": "send_response",
+    "plugin link": "deliver_operator_link",
+    "plugin message": "deliver_operator_message",
+    "plugin page": "deliver_operator_page",
+    "plugin proposal": "deliver_operator_proposal",
+    "plugin file": "deliver_operator_file",
+    "send_media": "send_media",
+    "run admission question": "deliver_operator_question",
+    "run status card": "deliver_run_card",
+    "Stop line": "send_reply_line",
+    "job start line": "post_job_start_line",
+    "job question": "post_job_question",
+    "job parked line": "post_job_parked",
+    "job send_media": "send_media",
+    "continuation plugin post": "deliver_operator_link",
+    "continuation send_media": "send_media",
+}
+
+RUN = {"spec_digest": "sha256:aa", "mode": "account", "task_kind": "download invoice",
+       "task_text": "t", "sites": [{"site_id": "runpod", "access": "account",
+                                    "name": "RunPod"}]}
+
+
+async def _landed(world, landed: dict, kind: str, step) -> object:
+    """Run *step* (an awaitable) and file under *kind* the messages it landed
+    in Alex's chat."""
+    before = len(world.alex.recorder.sends())
+    out = await step
+    landed.setdefault(kind, []).extend(_mids_since(world, before))
+    return out
+
+
+def _operator_call(role: str, *, words: "str | None" = None, tu: str):
+    """The operator call a plugin of *role* makes on the turn running now."""
+    from authz_grants import resolve_grant_identity
+    origin = dict(agent_mod.origin_var.get())
+    identity, why = resolve_grant_identity(role, artifact_id=ARTIFACT)
+    assert why is None, why
+    if words is not None:
+        origin["_operator_words"] = words
+    return operator_calls.CALLS.open(client_id="c-run", tool_use_id=tu, tool_name=LINK,
+                                     role=role, plugin=PLUGIN, identity=identity,
+                                     origin=origin)
+
+
+async def _task_surfaces(world, monkeypatch, outbox) -> tuple:
+    """Ellen's task for Alex, held live; inside its run every surface a task
+    has posts once. Returns the pending call, the task id and what landed,
+    by kind."""
+    landed: dict = {}
+    path = os.path.join(outbox._root_realpath, "rows.txt")
+    with open(path, "w") as fh:
+        fh.write("12 rows\n")
+    named: list = []
+
+    async def sites_named(_words):
+        return named
+
+    monkeypatch.setattr(run_admission, "sites_named", sites_named)
+    page_card = ("card", json.dumps({"text": "Keep this?", "pages": ["The October rows."],
+                                     "buttons": [{"label": "Close", "close": True}]}), {})
+
+    async def inside(_client):
+        start = _mids_since(world, 0)
+        landed["delegation start line"] = start
+        await _landed(world, landed, "plugin link", call_tool("finance", LINK, tu="t1"))
+        await _landed(world, landed, "plugin message", call_tool("finance", NOTE, tu="t2"))
+        before = len(world.alex.recorder.sends())
+        await call_tool("finance", CARD, tu="t3", deposit=page_card)
+        page, card = _mids_since(world, before)
+        landed["plugin page"], landed["plugin proposal"] = [page], [card]
+        await _landed(world, landed, "plugin file", call_tool(
+            "finance", FILE, tu="t4", deposit=("export", path, {"kind": "text"})))
+        await _landed(world, landed, "send_media", _send_media())
+        await _landed(world, landed, "run admission question", run_admission.request_admission(
+            _operator_call("finance", tu="t5"), [dict(RUN)], "k-question"))
+        named.append("runpod")
+        before = len(world.alex.recorder.sends())
+        await run_admission.request_admission(
+            _operator_call("finance", words="get my RunPod invoice", tu="t6"),
+            [dict(RUN)], "k-card")
+        await asyncio.gather(*list(run_admission._CARD_TASKS))
+        landed["run status card"] = _mids_since(world, before)
+
+    Client.on_query = inside
+    call, did = await _live_delegation(world, monkeypatch)
+    Client.on_query = None
+    [card] = landed["run status card"]
+    import plugin_stop
+    await _landed(world, landed, "Stop line", plugin_stop.tell_line(
+        ALEX_BOT, OPERATOR, "finance", "stopped", reply_to=card))
+    return call, did, landed
+
+
+def _owner_of(mid: int):
+    ref = task_posts.owner(TgAddress(ALEX_BOT, OPERATOR, mid))
+    return ref.task_id if ref is not None else None
+
+
+async def _job_surfaces(world, rt, outbox) -> tuple:
+    """A job Ellen starts for Alex: its start line, a question, a parking line
+    and a file, each landing in Alex's chat. Returns the job and what landed."""
+    from output_boundary_testing import admitted
+    landed: dict = {}
+    rec = await _landed(world, landed, "job start line", _start_job(_ellen_turn(), rt))
+    await _landed(world, landed, "job question", world.transport.post_job_question(
+        rec, "q1", admitted("📊 Alex\nWhich account?"), ["A", "B"], ["A", "B"]))
+    await _landed(world, landed, "job parked line", world.transport.post_job_parked(
+        rec, "Waiting for you."))
+    token = tools.engagement_var.set(rec)
+    origin_token = agent_mod.origin_var.set(dict(rec.origin))
+    try:
+        media = await _landed(world, landed, "job send_media", _send_media("job.pdf"))
+    finally:
+        agent_mod.origin_var.reset(origin_token)
+        tools.engagement_var.reset(token)
+    assert media["status"] == "ok", media
+    return rec, landed
+
+
+async def test_every_post_a_task_makes_is_filed_under_it(world, monkeypatch, outbox, jobs_rt):
+    """Each kind of post a task makes — a delegation's, a job's, a
+    continuation's — is driven through the real endpoint, and every message
+    it landed is filed under its task: a reply to it reaches the task."""
+    surface_methods = {m for (_f, _fn, m), site in SURFACE_POSTS.items() if site != CASA}
+    driven = set(TASK_POST_KINDS.values())
+    assert surface_methods - {"post_question"} <= driven, surface_methods - driven
+
+    found: dict = {}
+    # a delegation
+    call, did, landed = await _task_surfaces(world, monkeypatch, outbox)
+    for kind, mids in landed.items():
+        found[kind] = (did, mids, [_owner_of(m) for m in mids])
+    Held.release.set()
+    assert (await call)["status"] == "ok"
+    await _settled()
+    answer = [a for a in world.specialists.job_registry.task_posts(did)
+              if a.message_id not in {m for _t, ms, _o in found.values() for m in ms}]
+    found["delegation answer"] = (did, [a.message_id for a in answer], [
+        ref.task_id if (ref := task_posts.ended_owner(a)) is not None else None
+        for a in answer])
+    # a job
+    rec, landed = await _job_surfaces(world, jobs_rt, outbox)
+    for kind, mids in landed.items():
+        found[kind] = (rec.id, mids, [_owner_of(m) for m in mids])
+    # a continuation
+    cont: dict = {}
+
+    async def inside(_client):
+        await _landed(world, cont, "continuation plugin post",
+                      call_tool("finance", LINK, client="c-cont", tu="t9"))
+        await _landed(world, cont, "continuation send_media", _send_media("cont.pdf"))
+
+    run, cid = await _live_continuation(world, monkeypatch, inside)
+    for kind, mids in cont.items():
+        found[kind] = (cid, mids, [_owner_of(m) for m in mids])
+    await _end_continuation(run)
+
+    assert set(found) == set(TASK_POST_KINDS), set(TASK_POST_KINDS) ^ set(found)
+    unfiled = {kind: (task, mids, owners) for kind, (task, mids, owners) in found.items()
+               if not mids or owners != [task] * len(mids)}
+    assert unfiled == {}
+    assert _ellen_texts(world)[:1] == [HANDOFF_ALEX]
+
+
+@pytest.mark.parametrize("kind", ["send_media", "run admission question",
+                                  "run status card", "Stop line"])
+async def test_a_reply_to_a_tasks_file_question_card_or_stop_line_reaches_the_task(
+        world, monkeypatch, outbox, kind):
+    call, did, landed = await _task_surfaces(world, monkeypatch, outbox)
+    [mid] = landed[kind]
+    await _handle(world.alex, _text("the March one, please", reply_to=mid))
+    assert Held.built.writes[-1].endswith("the March one, please")
+    assert _queued(world.bus, "finance") == []
+    Held.release.set()
+    await call
+    await _settled()

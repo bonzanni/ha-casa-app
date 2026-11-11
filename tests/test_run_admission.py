@@ -52,7 +52,7 @@ class _Channel:
         self.cards: list[tuple] = []
         self.card_lands = True
 
-    async def deliver_operator_question(self, chat_id, text, labels, rid):
+    async def deliver_operator_question(self, chat_id, text, labels, rid, *, post=None):
         self.posted.append((chat_id, text, labels, rid))
         return 555 if self.deliver else None
 
@@ -61,7 +61,7 @@ class _Channel:
         self.edit_buttons.append(list(buttons or []))
         return True
 
-    async def deliver_run_card(self, chat_id, text, buttons):
+    async def deliver_run_card(self, chat_id, text, buttons, *, post=None):
         self.cards.append((chat_id, text, list(buttons)))
         return 556 if self.card_lands else None
 

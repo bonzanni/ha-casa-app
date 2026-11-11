@@ -121,7 +121,8 @@ class FakeEndpoint:
         return DeliveryOutcome.DELIVERED if self._ready else DeliveryOutcome.NOT_DELIVERED
 
     async def send_media(self, content: bytes, kind: str, filename: str,
-                         context: dict, *, caption: "str | None" = None) -> None:
+                         context: dict, *, caption: "str | None" = None,
+                         post=None) -> None:
         self._record("send_media", kind, filename, context, caption)
         if not self._ready:
             raise self.media_unavailable

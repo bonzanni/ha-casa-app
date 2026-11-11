@@ -5006,7 +5006,7 @@ class TelegramChannel(Channel):
 
     async def send_media(
         self, content: bytes, kind: str, filename: str, context: dict[str, Any],
-        *, caption: str | None = None,
+        *, caption: str | None = None, post=None,
     ) -> None:
         """Deliver *content* as the given media *kind* to the resolved chat.
 
@@ -5017,7 +5017,8 @@ class TelegramChannel(Channel):
         all send as `document`; the kind, not the method, is what was gated.
         Raises when the channel isn't started (the tool maps that to
         ``channel_unavailable``); lets TelegramError propagate (the tool
-        classifies it)."""
+        classifies it). The landed message is filed under *post*, so a
+        reply to the file finds the task that sent it."""
         # Release the lease before the availability guard (local bookkeeping
         # must survive a reconnect window even when the send itself can't run).
         target_chat = _resolve_chat_id(context, self.chat_id)
@@ -5027,11 +5028,12 @@ class TelegramChannel(Channel):
         if self._app is None:
             raise RuntimeError("Telegram channel not started; cannot send media")
         method = getattr(self._app.bot, MEDIA_POLICIES[kind].ptb_method)
-        await method(
+        sent = await method(
             target_chat,
             InputFile(BytesIO(content), filename=filename),
             caption=caption,
         )
+        self._record_post(target_chat, sent, post)
 
     # ------------------------------------------------------------------
     # Rich-text response delivery (v0.70.0). ONLY reached via the
@@ -5322,13 +5324,14 @@ class TelegramChannel(Channel):
         return DeliveryOutcome.DELIVERED
 
     async def deliver_operator_question(self, chat_id: int, text: str, labels: list,
-                                        rid: str) -> "int | None":
+                                        rid: str, *, post=None) -> "int | None":
         """Browser executor §5.3/§5.5: post a plugin's operator question
         (``operator_calls.ask_operator`` composed *text*: Casa's label line and
         the validated body — the delivered-slot class, not model text) with one
         button per label, ``callback_data = v1|resident_ask|<rid>|<i>``, so the
         tap settles the waiting request through the resident-ask handler.
-        Returns the message id, or ``None`` when nothing landed."""
+        Filed under *post* as it lands. Returns the message id, or ``None``
+        when nothing landed."""
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
         if self._app is None:
@@ -5345,14 +5348,17 @@ class TelegramChannel(Channel):
             logger.warning("deliver_operator_question send failed (chat=%s): %s",
                            chat_id, type(exc).__name__)
             return None
+        self._record_post(chat_id, msg, post)
         mid = getattr(msg, "message_id", None)
         return mid if isinstance(mid, int) else None
 
     async def deliver_run_card(self, chat_id: int, text: str,
-                               buttons: "list[tuple[str, str]]") -> "int | None":
+                               buttons: "list[tuple[str, str]]", *,
+                               post=None) -> "int | None":
         """The status card of browsing his own words started (``run_admission``): Casa's
         label line and its fixed text, with ``(label, callback data)`` buttons — the
-        request's Stop. Returns the message id, or ``None`` when nothing landed."""
+        request's Stop. Filed under *post* as it lands. Returns the message id, or
+        ``None`` when nothing landed."""
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
         if self._app is None:
@@ -5367,21 +5373,25 @@ class TelegramChannel(Channel):
             logger.warning("deliver_run_card send failed (chat=%s): %s",
                            chat_id, type(exc).__name__)
             return None
+        self._record_post(chat_id, msg, post)
         mid = getattr(msg, "message_id", None)
         return mid if isinstance(mid, int) else None
 
-    async def send_reply_line(self, chat_id: int, text: str, reply_to: "int | None") -> bool:
+    async def send_reply_line(self, chat_id: int, text: str, reply_to: "int | None", *,
+                              post=None) -> bool:
         """One Casa line (a Stop's outcome, under the specialist's label) as a reply to the
-        card it answers; a failure is logged and nothing more is attempted."""
+        card it answers, filed under *post* (the card's own record) as it lands; a failure
+        is logged and nothing more is attempted."""
         if self._app is None:
             return False
         kwargs = {"reply_to_message_id": reply_to} if isinstance(reply_to, int) else {}
         try:
-            await self._app.bot.send_message(chat_id=chat_id, text=text, **kwargs)
-            return True
+            sent = await self._app.bot.send_message(chat_id=chat_id, text=text, **kwargs)
         except Exception as exc:  # noqa: BLE001 — a notice fault is logged
             logger.warning("reply line failed: %s", type(exc).__name__)
             return False
+        self._record_post(chat_id, sent, post)
+        return True
 
     async def deliver_operator_proposal(self, chat_id: int, text: str, labels: list,
                                         rid: str, *, post=None, photo=None, urls=None):

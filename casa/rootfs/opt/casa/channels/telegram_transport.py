@@ -402,11 +402,11 @@ class TelegramTransport(Channel):
 
     async def send_media(
         self, content: bytes, kind: str, filename: str, context: dict[str, Any],
-        *, caption: str | None = None,
+        *, caption: str | None = None, post=None,
     ) -> None:
         ep = self.endpoint_for_route(context, site="send_media")
         return await ep.send_media(content, kind, filename, context,
-                                   caption=caption)
+                                   caption=caption, post=post)
 
     async def send_response(self, message: str,
                             context: dict[str, Any]) -> DeliveryOutcome:
