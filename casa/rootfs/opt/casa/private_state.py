@@ -118,6 +118,10 @@ FILES: tuple[Entry, ...] = (
           "Consent ledger — operator decisions."),
     Entry("/data/specialist_install_acks.json", 0o600, PRIVATE,
           "Consent ledger — operator decisions."),
+    Entry("/data/approval-records.json", 0o600, PRIVATE,
+          "Approval records: what the operator approved for each install or "
+          "upgrade, its settings, the card that asked and the operator's "
+          "words that led to it."),
 )
 
 # --- file globs ----------------------------------------------------------
