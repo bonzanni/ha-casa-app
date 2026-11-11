@@ -1956,3 +1956,33 @@ async def test_old_task_rows_are_skipped_with_one_warning(tmp_path, caplog):
         "Skipping job job-4", "Skipping job job-5"]
     assert len(warnings) == 1
     assert "Skipped 3 job row(s)" in warnings[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_an_old_row_with_a_malformed_route_is_an_error_not_counted(tmp_path, caplog):
+    """A row lacking its task fields is counted as old only when nothing
+    else on it is wrong: a Telegram row with a broken route stays an ERROR
+    of its own and is not folded into the old-rows WARNING."""
+    import logging
+
+    registry = await loaded_registry(tmp_path)
+    for i in (1, 2):
+        await registry.create(make_job(
+            id=f"job-{i}", creator_peer="telegram", route={"_tg_bot": 111},
+            **TG_TASK))
+    snapshot = json.loads((tmp_path / "jobs.json").read_text())
+    for row in snapshot:
+        for key in ("executor", "requester", "delivery"):
+            row.pop(key)
+    rows = {row["id"]: row for row in snapshot}
+    rows["job-2"]["route"] = {"_tg_bot": "broken"}
+    (tmp_path / "jobs.json").write_text(json.dumps(snapshot))
+
+    reloaded = JobRegistry(tmp_path / "jobs.json")
+    with caplog.at_level(logging.INFO, logger="job_registry"):
+        await reloaded.load()
+    mine = [r for r in caplog.records if r.name == "job_registry"]
+    errors = [r.getMessage() for r in mine if r.levelno == logging.ERROR]
+    warnings = [r.getMessage() for r in mine if r.levelno == logging.WARNING]
+    assert len(errors) == 1 and errors[0].startswith("Skipping job job-2")
+    assert len(warnings) == 1 and "Skipped 1 job row(s)" in warnings[0]

@@ -1645,14 +1645,16 @@ class JobRegistry:
         older = 0
         for row in raw:
             job = self._decode_job(row)
+            written_before_tasks = False
             try:
                 job = replace(job, **self._decode_task_fields(
                     row, required=job.creator_peer == "telegram"))
             except _WrittenBeforeTasks:
                 # Expected after an upgrade, and the same for every such
-                # row: counted into one line below rather than one each.
-                older += 1
-                continue
+                # row: counted into one line below rather than one each —
+                # but only once every other check on the row has passed,
+                # so a malformed row is never counted as merely old.
+                written_before_tasks = True
             except ValueError as exc:
                 # A delegation's delivery and requester are decided at its
                 # birth; a row that does not carry them has nothing to post
@@ -1667,6 +1669,9 @@ class JobRegistry:
                 logger.error(
                     "Skipping job %s: Telegram row without a valid route "
                     "(%r)", job.id[:8], job.route.get("_tg_bot"))
+                continue
+            if written_before_tasks:
+                older += 1
                 continue
             if job.id in jobs:
                 raise JobRegistryError(f"duplicate job id {job.id!r} in snapshot")
