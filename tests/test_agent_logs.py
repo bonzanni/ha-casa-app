@@ -432,6 +432,65 @@ async def test_utf16_length_counts_toward_the_limit(logs, bot) -> None:
     assert len(_texts(bot)) == 2
 
 
+async def test_a_repeated_line_queued_together_shows_once_with_a_count(
+    logs, bot,
+) -> None:
+    logs.log(FINANCE, "Q3", "a")
+    await logs.step()  # topic
+    for _ in range(3):
+        logs.log(FINANCE, "Q3", "🔧 Reading files")
+    logs.log(FINANCE, "Q3", "b")
+    await _drain(logs)
+    assert _texts(bot) == ["Q3 · a\nQ3 · 🔧 Reading files ×3\nQ3 · b"]
+
+
+async def test_a_repeated_line_already_shown_is_counted_in_place(logs, bot) -> None:
+    """One step at a time, each one posted before the next arrives: the line
+    already on screen takes the count, rather than the step being shown again."""
+    await _post(logs, FINANCE, "a")
+    for _ in range(4):
+        await _post(logs, FINANCE, "🔧 Reading files")
+    await _post(logs, FINANCE, "b")
+    await _post(logs, FINANCE, "🔧 Reading files")
+    assert _texts(bot)[-1] == ("Q3 · a\nQ3 · 🔧 Reading files ×4\nQ3 · b\n"
+                               "Q3 · 🔧 Reading files")
+    assert bot.methods().count("send_message") == 1
+
+
+async def test_a_repeat_after_a_new_message_starts_its_own_count(
+    logs, bot, clock,
+) -> None:
+    await _post(logs, FINANCE, "🔧 Reading files")
+    await _post(logs, FINANCE, "🔧 Reading files")
+    clock.advance(301)  # the rolling message is idle: the next line starts a new one
+    await _post(logs, FINANCE, "🔧 Reading files")
+    assert _texts(bot) == ["Q3 · 🔧 Reading files", "Q3 · 🔧 Reading files ×2",
+                           "Q3 · 🔧 Reading files"]
+
+
+async def test_a_repeat_logged_while_its_line_is_being_posted_is_counted(
+    logs, bot,
+) -> None:
+    await _post(logs, FINANCE, "🔧 Reading files")
+    logs.log(FINANCE, "Q3", "🔧 Reading files")
+    gate = bot.gates["edit_message_text"] = asyncio.Event()
+    edit = asyncio.create_task(logs.step())
+    while not bot.named("edit_message_text"):
+        await asyncio.sleep(0)
+    logs.log(FINANCE, "Q3", "🔧 Reading files")  # arrives mid-request
+    gate.set()
+    await edit
+    await _drain(logs)
+    assert _texts(bot)[-1] == "Q3 · 🔧 Reading files ×3"
+
+
+async def test_the_same_step_of_another_run_is_its_own_line(logs, bot) -> None:
+    logs.log(FINANCE, "Q3", "🔧 Reading files")
+    logs.log(FINANCE, "Q4", "🔧 Reading files")
+    await _drain(logs)
+    assert _texts(bot) == ["Q3 · 🔧 Reading files\nQ4 · 🔧 Reading files"]
+
+
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------

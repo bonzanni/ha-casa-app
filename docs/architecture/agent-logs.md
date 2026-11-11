@@ -66,7 +66,10 @@ key starts with `… N lines skipped`). One writer task serves the keys with que
 round-robin, one Telegram request per turn, so one busy agent cannot starve the others; lines
 that arrive while a key waits ride its next request. A key's lines go into a rolling plain-text
 message, edited in place with its whole text until the next line would pass 4,096 characters,
-the message has been idle five minutes or is an hour old; then a new message is sent. Every
+the message has been idle five minutes or is an hour old; then a new message is sent. A line
+logged several times in a row — a step repeated call after call — is shown once with its
+count (`Q3 accounting · 🔧 Reading files ×4`); a repeat of the line the rolling message ends
+with is counted there, in place, and a new message starts its own count. Every
 request the log makes to the group — the rights check, topic creation, send, edit, delete,
 bulk delete — spends one token from one budget of 18 requests per 60 seconds, which keeps the
 bot inside Telegram's per-group limit whether or not edits count towards it. A flood wait
