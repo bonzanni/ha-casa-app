@@ -1197,11 +1197,21 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # base-vs-new compiled text, word by word: 19 non-equal opcodes on
 # `assistant:text`, all inside those three paragraphs; the eight other carriers
 # byte-identical. No retention claim.
+# MOVED 2026-11-11 (the resident closes the loop on a task shown in a
+# delegate's own chat), `assistant:text` only: two sentences after the
+# already-posted paragraph's last one ("…relay or narrate the outcome as
+# before."). When Casa's note says the posts went to the person in the
+# delegate's own chat, she closes the loop herself in a short line and stays
+# silent only when nothing is worth saying; when the answer is already in that
+# chat, she closes in a line or two without retelling it. Measured with
+# `difflib` over base-vs-new compiled text, word by word: exactly ONE `insert`
+# on `assistant:text`, those two sentences; the eight other carriers
+# byte-identical. No retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "c2c249fe7a34c5e33409f0114550920554ca15892b7f652b631ebbff53cc7111",
     "assistant:text":
-        "b73f0a6dd9e62ce89ec78d9fb4913f0ba6a68911617fb16ae602cdeaef059c91",
+        "55a61fd10a1e44920fe6535b3b05e32b8969f386144d333b9cb87be45f83bfc1",
     "assistant:voice":
         "7379e0d5b817c09b0c6cf4ad2a69e0a1ca3a668c791d66211bcc6d1584e646a4",
     "butler:restricted_webhook":
@@ -1655,6 +1665,44 @@ def test_the_already_posted_rule_reaches_only_the_assistant_text_projection():
         for surface in ("text", "voice", "restricted_webhook")}
     legacy = dict(_legacy_prompt_carriers())
     assert _collapse_ws(legacy["assistant"]).count(needle) == 1
+
+
+# A task the person sees in a delegate's own chat was still asked of the
+# resident: she closes the loop herself, briefly, instead of staying silent or
+# retelling what the person already read there. The rule sits right after the
+# already-posted rule, on the assistant's text projection and the legacy
+# carrier only. No markup, because a compiled doctrine may not carry it.
+_OWN_CHAT_CLOSE_DOCTRINE = (
+    "When Casa's note says those posts went to the person in the delegate's "
+    "own chat, the person still asked you here: close the loop yourself, "
+    "usually in one short line on what came of it, and stay silent only when "
+    "nothing at all is worth saying. When the answer is already in the "
+    "delegate's own chat, close in a line or two; do not retell it."
+)
+
+_POSTED_PARAGRAPH_END = "Without such lines, relay or narrate the outcome as before."
+
+
+def test_the_own_chat_close_rule_reaches_only_the_assistant_text_projection():
+    needle = _collapse_ws(_OWN_CHAT_CLOSE_DOCTRINE)
+    compiled = _compiled_resident_carriers()
+    assert {name: _collapse_ws(body).count(needle) for name, body in compiled} == {
+        f"{slot}:{surface}": int(slot == "assistant" and surface == "text")
+        for slot in _RESIDENT_SLOTS
+        for surface in ("text", "voice", "restricted_webhook")}
+    assert {slot: _collapse_ws(body).count(needle)
+            for slot, body in _legacy_prompt_carriers()} == {
+        slot: int(slot == "assistant") for slot in _RESIDENT_SLOTS}
+
+
+def test_the_own_chat_close_rule_ends_the_already_posted_paragraph():
+    compiled = dict(_compiled_resident_carriers())
+    legacy = dict(_legacy_prompt_carriers())
+    for body in (compiled["assistant:text"], legacy["assistant"]):
+        flat = _collapse_ws(body)
+        anchor = _collapse_ws(_POSTED_DOCTRINE) + " " + _POSTED_PARAGRAPH_END
+        assert flat.count(
+            anchor + " " + _collapse_ws(_OWN_CHAT_CLOSE_DOCTRINE)) == 1
 
 
 def test_casas_note_under_the_post_lines_names_the_silence_sentinel():
