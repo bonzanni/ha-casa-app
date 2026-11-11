@@ -47,6 +47,14 @@ def _job_state():
 
 
 @pytest.fixture(autouse=True)
+def _task_index(monkeypatch):
+    """Every job's posts are found through the task index, which reads the
+    engagement registry that holds the job."""
+    import task_posts_double
+    return task_posts_double.install(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
 def _names(monkeypatch):
     import tools
     monkeypatch.setattr(tools, "_display_name_for_role",
@@ -311,13 +319,13 @@ async def test_the_ended_route_never_outranks_a_live_job(routed, tmp_path):
     ch, _bus = _channel()
     ch._engagement_registry = reg
     assert reg.job_post_owner(TgAddress(BOT, OPERATOR, 501)) is rec
-    assert ch._ended_job_quoted(str(OPERATOR), types.SimpleNamespace(id=OPERATOR),
-                                types.SimpleNamespace(message_id=501)) is None
+    assert ch._quoted_task(str(OPERATOR), types.SimpleNamespace(id=OPERATOR),
+                           types.SimpleNamespace(message_id=501))[1] is None
     release.set()
     assert await transition is True
     reg._write_tombstone = real
-    assert ch._ended_job_quoted(str(OPERATOR), types.SimpleNamespace(id=OPERATOR),
-                                types.SimpleNamespace(message_id=501)) is rec
+    assert ch._quoted_task(str(OPERATOR), types.SimpleNamespace(id=OPERATOR),
+                           types.SimpleNamespace(message_id=501))[1].task_id == rec.id
 
 
 async def test_a_pending_terminal_reply_goes_into_the_job_through_the_handler(

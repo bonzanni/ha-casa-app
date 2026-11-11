@@ -150,6 +150,22 @@ class _Rig:
     pass
 
 
+@pytest.fixture(autouse=True)
+def _task_index(monkeypatch):
+    """Every job's posts are found through the task index, which reads the
+    engagement registry that holds the job."""
+    import task_posts_double
+    return task_posts_double.install(monkeypatch)
+
+
+async def _route_reply(ch, update, chat_id) -> bool:
+    """The reply route the text handler runs first: a live task's post, into
+    the task. ``True`` when the message was taken there."""
+    live, _ended = ch._quoted_task(chat_id, update.effective_user,
+                                   update.message.reply_to_message)
+    return live is not None and await ch._route_task_reply(update, chat_id, live) == "taken"
+
+
 async def _rig(tmp_path, monkeypatch, *, quiet=False, started_by="operator",
                kind="specialist"):
     import tools
@@ -314,7 +330,7 @@ class TestReplyRoute:
     async def test_another_sender_falls_through(self, tmp_path, monkeypatch):
         r = await _rig(tmp_path, monkeypatch)
         r.reg.record_job_post(r.rec.id, A(501))
-        assert await r.ch._maybe_route_job_reply(
+        assert await _route_reply(r.ch, 
             _reply_update("hello", 501, user=555), str(CHAT)) is False
 
     async def test_a_plugin_post_of_the_job_is_filed_and_routes(
@@ -327,7 +343,7 @@ class TestReplyRoute:
             posted_at=0.0)
         r.ch._record_post(CHAT, SimpleNamespace(message_id=640), post)
         assert r.reg.job_post_owner(A(640)) is r.rec
-        assert await r.ch._maybe_route_job_reply(
+        assert await _route_reply(r.ch, 
             _reply_update("skip that one", 640, quoted_text="📊 Finance\nrow 7"),
             str(CHAT)) is True
         await _drain(r)
@@ -669,7 +685,7 @@ class TestQuietRunsEndOnInteraction:
         fin = asyncio.ensure_future(tools._finalize_engagement(
             r.rec, outcome="completed", text="done", next_steps=[], driver=r.drv))
         await _wait(held.started.is_set, "the completion write")
-        reply = asyncio.ensure_future(r.ch._maybe_route_job_reply(
+        reply = asyncio.ensure_future(_route_reply(r.ch, 
             _reply_update("one more thing", 501), str(CHAT)))
         await asyncio.sleep(0.01)
         assert not reply.done()                  # its promotion is waiting
@@ -696,7 +712,7 @@ class TestQuietRunsEndOnInteraction:
         transition = asyncio.ensure_future(r.reg.try_transition_terminal(
             r.rec.id, "completed", strict=True))
         await _wait(held.started.is_set, "the completion write")
-        reply = asyncio.ensure_future(r.ch._maybe_route_job_reply(
+        reply = asyncio.ensure_future(_route_reply(r.ch, 
             _reply_update("one more thing", 501), str(CHAT)))
         await asyncio.sleep(0.01)
         assert not reply.done()                  # its promotion is waiting
@@ -717,7 +733,7 @@ class TestQuietRunsEndOnInteraction:
         import tools
         r = await _rig(tmp_path, monkeypatch, quiet=True)
         r.reg.record_job_post(r.rec.id, A(501))
-        assert await r.ch._maybe_route_job_reply(
+        assert await _route_reply(r.ch, 
             _reply_update("also check May", 501), str(CHAT)) is True
         await _drain(r)
         assert r.rec.origin["job"]["quiet"] is False
@@ -765,7 +781,7 @@ class TestPendingTerminalRoutesIntoTheJob:
         transition = asyncio.ensure_future(r.reg.try_transition_terminal(
             r.rec.id, "completed", strict=True))
         await _wait(held.started.is_set, "the terminal write")
-        reply = asyncio.ensure_future(r.ch._maybe_route_job_reply(
+        reply = asyncio.ensure_future(_route_reply(r.ch, 
             _reply_update("wait", 501), str(CHAT)))
         # Routed: the reply waits for the pending write to settle before the
         # job accepts it.
@@ -859,7 +875,7 @@ class TestSeamEdges:
         r.reg.record_job_post(r.rec.id, A(501))
         await _drain(r)
         held = _FailFirstWrite(r.reg)
-        reply = asyncio.ensure_future(r.ch._maybe_route_job_reply(
+        reply = asyncio.ensure_future(_route_reply(r.ch, 
             _reply_update("one more thing", 501), str(CHAT)))
         await _wait(held.started.is_set, "the reply's promotion write")
         assert r.rec.origin["job"]["quiet"] is False      # provisional
@@ -897,7 +913,7 @@ class TestSeamEdges:
         ask = asyncio.ensure_future(_ask(r))
         await _wait(held.started.is_set, "the question's promotion write")
         assert r.rec.origin["job"]["quiet"] is False      # provisional
-        reply = asyncio.ensure_future(r.ch._maybe_route_job_reply(
+        reply = asyncio.ensure_future(_route_reply(r.ch, 
             _reply_update("one more thing", 501), str(CHAT)))
         await asyncio.sleep(0.01)
         held.release.set()

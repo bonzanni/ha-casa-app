@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextvars
 import logging
 import os
 import re
@@ -128,6 +129,13 @@ def _proposal_keyboard(labels: list, rid: str, urls: "list | None" = None):
         for i, label in enumerate(labels)])
 
 
+def _replying_to(quoted_text: "str | None", text: str) -> str:
+    """The operator's reply as a task receives it: the first line of the post
+    it answers, then his words."""
+    first = ((quoted_text or "").strip().splitlines() or [""])[0].strip()
+    return f"[replying to «{first[:200]}»]\n{text}" if first else text
+
+
 def _plain(text):
     """#1330: ``plain_text`` for a send without entities, keeping the
     admission of model text — the plain transports refuse a bare string, and
@@ -208,7 +216,7 @@ def _resolve_chat_id(context: dict[str, Any], default: int | str) -> int | str:
 class _NormalisedRequestData:
     """Read-only view of a PTB ``RequestData`` whose serialized form values carry
     no surrogate code point. Exposes exactly the two properties
-    ``HTTPXRequest.do_request`` reads (PTB 22.7: ``multipart_data`` and
+    ``HTTPXRequest.do_request`` reads (PTB 22.8: ``multipart_data`` and
     ``json_parameters``); nothing else is consulted on that path."""
 
     __slots__ = ("_inner",)
@@ -279,7 +287,7 @@ def _peek_stream_message_id(on_token: "OnTokenCallback") -> int | None:
 # dynamic text are unescaped ("can't parse entities", HTTP 400) — and the
 # engagement_permission_relay hook treats that failure as an auto-DENY. We
 # escape locally (rather than importing telegram.helpers.escape_markdown) so
-# the code is stub-independent under tests; the char sets match PTB 22.7's
+# the code is stub-independent under tests; the char sets match PTB 22.8's
 # escape_markdown(version=2). Outside a code entity every reserved char must
 # be backslash-escaped; inside a ``` / ` (pre/code) entity only backtick and
 # backslash are special.
@@ -750,10 +758,62 @@ def _non_text_filter():
     """The filter the non-text handler is registered with — one definition,
     so the test that checks it against the real library checks THIS one.
 
-    ``UpdateType.MESSAGE`` is load-bearing: PTB 22.7's ``BaseFilter`` also
+    ``UpdateType.MESSAGE`` is load-bearing: PTB 22.8's ``BaseFilter`` also
     matches edited messages, channel posts and business messages, and an
     edited caption must not draw a reply. Disjoint from ``filters.TEXT``."""
     return filters.UpdateType.MESSAGE & ~filters.TEXT
+
+
+def _managed_bot_created_filter():
+    """The filter the creation handler is registered with: a message telling
+    Casa's bot that the operator just created a bot for it to manage. It is
+    registered ahead of the non-text handler, which it would otherwise reach
+    (it carries no text) and be answered as a message Casa cannot read."""
+    return filters.UpdateType.MESSAGE & filters.StatusUpdate.MANAGED_BOT_CREATED
+
+
+def _managed_bot_updated_handler(callback):
+    """The handler for a ``managed_bot`` update (a bot Casa's bot manages was
+    created, or its token or owner changed), or ``None`` — logged — when the
+    installed library has no such handler: Casa's own chat comes up either
+    way."""
+    try:
+        from telegram.ext import ManagedBotUpdatedHandler
+    except ImportError:
+        logger.warning("python-telegram-bot has no ManagedBotUpdatedHandler; "
+                       "managed-bot updates are not handled")
+        return None
+    return ManagedBotUpdatedHandler(callback, block=False)
+
+
+#: The update types each endpoint asks Telegram for, stated on every
+#: ``setWebhook`` and ``getUpdates`` (an omitted list keeps whatever was set
+#: before). Only Casa's bot manages other bots, so only it hears of them.
+ALLOWED_UPDATES_CASA = ("message", "callback_query", "managed_bot")
+ALLOWED_UPDATES_AGENT = ("message", "callback_query")
+
+#: While an agent's held update is being released, the bus outcomes its
+#: delivery met (see :meth:`TelegramChannel.release_update`).
+_RELEASING: "contextvars.ContextVar[list | None]" = contextvars.ContextVar(
+    "telegram_releasing", default=None)
+
+
+class _IntakeQueue(asyncio.Queue):
+    """The update queue of an agent's own bot. Every update is offered to the
+    agent chat's lifecycle (``own_voice.intake``) before it is queued, which
+    is before the webhook answers and before polling confirms it: an update
+    the lifecycle holds or answers is acknowledged and goes no further, so no
+    handler of this endpoint sees an update its agent may not receive yet."""
+
+    def __init__(self, channel: "TelegramChannel") -> None:
+        super().__init__()
+        self._channel = channel
+
+    async def put(self, item: Any) -> None:
+        if isinstance(getattr(item, "update_id", None), int):
+            if not await self._channel._own_intake(item):
+                return
+        await super().put(item)
 
 
 def _carries_content(msg) -> bool:
@@ -1061,6 +1121,9 @@ class TelegramChannel(Channel):
         # file-intake locks (FIFO) — a file is judged, stored and given its desk place under one
         self._armings: dict = {}
         self._intake_locks: dict = {}
+        # An album's destination, set by its first file and read by the rest
+        # ((chat, album id) -> (when, address)); memory-only.
+        self._album_dest: dict = {}
         # Injectable collaborators (wired at startup by Task 22; tests assign AsyncMocks).
         self._engagement_registry = None
         # #649: producer-closing stop gate — once stop() began, no message is
@@ -1236,9 +1299,23 @@ class TelegramChannel(Channel):
         # surrogate-replacing request class. Not reassigned: the builder
         # mutates and returns itself, and the suite's fake builder chain does
         # not. A no-argument HTTPXRequest carries the same pool size, HTTP
-        # version and timeouts the builder would have installed (PTB 22.7).
+        # version and timeouts the builder would have installed (PTB 22.8).
         builder.request(_SurrogateSafeRequest())
+        if not self.is_casa:
+            # An agent's own bot: every update passes its chat's lifecycle
+            # first (holding while the bot is not ready for its agent).
+            builder.update_queue(_IntakeQueue(self))
         app = builder.build()
+        if self.is_casa:
+            # The operator created a bot for Casa's bot to manage: a service
+            # message, routed ahead of every other message handler (it would
+            # reach the non-text one), and the update that follows it.
+            app.add_handler(MessageHandler(
+                _managed_bot_created_filter(), self._on_managed_bot_created,
+                block=False))
+            updated = _managed_bot_updated_handler(self._on_managed_bot_updated)
+            if updated is not None:
+                app.add_handler(updated)
         # E-13: dispatch to handle_update, which routes by chat: the
         # operator's direct chat to _handle (via _route_to_assistant), the
         # log group to its read-only pointer.
@@ -1282,7 +1359,8 @@ class TelegramChannel(Channel):
                             + f"/telegram/update/{bot_id}")
                 secret = (self._webhook_secret_for(bot_id)
                           if self._webhook_secret_for is not None else "")
-                kwargs: dict[str, Any] = {"url": full_url}
+                kwargs: dict[str, Any] = {
+                    "url": full_url, "allowed_updates": list(self.allowed_updates)}
                 if secret:
                     kwargs["secret_token"] = secret
                     # #214: PTB logs Bot API call parameters (incl.
@@ -1302,13 +1380,14 @@ class TelegramChannel(Channel):
                     "yes" if secret else "no",
                 )
             else:
-                await app.updater.start_polling()  # type: ignore[union-attr]
+                await app.updater.start_polling(  # type: ignore[union-attr]
+                    allowed_updates=list(self.allowed_updates))
                 logger.info(
                     "Telegram started (polling, chat_id=%s)",
                     self.chat_id,
                 )
         except BaseException as exc:
-            # PTB 22.7 ordering: stop() raises if not running (guard with
+            # PTB 22.8 ordering: stop() raises if not running (guard with
             # app.running); shutdown() raises while running (only after
             # stop()).
             #
@@ -1410,6 +1489,11 @@ class TelegramChannel(Channel):
         raise EndpointNotReady(
             f"the Telegram endpoint for role {self.default_agent!r} has no "
             "bot id yet")
+
+    @property
+    def allowed_updates(self) -> tuple[str, ...]:
+        """The update types this bot asks Telegram for."""
+        return ALLOWED_UPDATES_CASA if self.is_casa else ALLOWED_UPDATES_AGENT
 
     @property
     def has_bot_id(self) -> bool:
@@ -1547,6 +1631,144 @@ class TelegramChannel(Channel):
         return "accepted"
 
     # ------------------------------------------------------------------
+    # Bots Casa's bot manages, and an agent's own bot's intake
+    # ------------------------------------------------------------------
+
+    async def _on_managed_bot_created(self, update: Any, _context: Any = None) -> None:
+        """The operator created a bot for Casa's bot to manage. Accepted only
+        on Casa's bot, in the operator's direct chat, from the operator; it
+        is handed to the own-chat lifecycle and is never a turn and never
+        answered. Anything else is logged and ignored."""
+        msg = getattr(update, "message", None)
+        created = getattr(msg, "managed_bot_created", None) if msg is not None else None
+        if created is None:
+            return
+        user = getattr(msg, "from_user", None)
+        chat = getattr(getattr(msg, "chat", None), "id", None)
+        if (not self.is_casa or not self._user_id_is_operator(chat)
+                or not self._sender_is_operator(user)):
+            logger.info("bot-created message ignored: not from the operator in "
+                        "the direct chat with Casa's bot")
+            return
+        import own_voice
+        try:
+            await own_voice.on_managed_bot_created(created.bot.to_dict(), user.id)
+        except Exception:  # noqa: BLE001 — the lifecycle retries from its own state
+            logger.exception("registering a created bot failed")
+
+    async def _on_managed_bot_updated(self, update: Any, _context: Any = None) -> None:
+        """A bot Casa's bot manages was created, or its token or owner changed:
+        handed to the own-chat lifecycle, which decides (an unknown bot or
+        another owner is ignored there)."""
+        managed = getattr(update, "managed_bot", None)
+        if managed is None or not self.is_casa:
+            return
+        import own_voice
+        try:
+            await own_voice.on_managed_bot_updated(
+                managed.bot.to_dict(), managed.user.id)
+        except Exception:  # noqa: BLE001 — the lifecycle retries from its own state
+            logger.exception("a managed bot's update failed")
+
+    async def _own_intake(self, update: Any) -> bool:
+        """Offer one update that reached this agent's own bot to its chat's
+        lifecycle (``own_voice.intake``). ``True`` when it goes on to the
+        normal path. An update the lifecycle holds is acknowledged and nothing
+        else happens; one it answers as dormant gets the dormant line. A
+        lifecycle that fails is logged and the update goes no further:
+        delivering it could hand the agent a message before its chat is ready
+        for it."""
+        import own_voice
+        try:
+            decision = await own_voice.intake(self.bot_id, update.to_dict())
+        except Exception:  # noqa: BLE001
+            logger.exception("own chat intake failed (role %r); update %s not delivered",
+                             self.default_agent, getattr(update, "update_id", None))
+            return False
+        if decision == "deliver":
+            return True
+        if decision == "dormant_reply":
+            await self._send_dormant_line(update)
+        return False
+
+    def _dormant_line(self) -> str:
+        """What the operator is told in an agent's own chat while it is
+        dormant: the agent is not installed, or no longer has a chat of its
+        own."""
+        import tools as tools_mod
+        role = self.default_agent
+        name = tools_mod._display_name_for_role(role)
+        if tools_mod._agent_role_map.get(role) is None:
+            return f"{name} isn't installed right now."
+        resident = "Casa"
+        try:
+            from channels.telegram_transport import telegram_transport
+            transport = telegram_transport()
+            if transport is not None:
+                resident = tools_mod._display_name_for_role(
+                    transport.casa_endpoint().default_agent)
+        except Exception:  # noqa: BLE001 — the line still says where to go
+            pass
+        return f"{name} no longer has a separate chat — talk to {resident}."
+
+    async def _send_dormant_line(self, update: Any) -> None:
+        line = self._dormant_line()
+        cq = getattr(update, "callback_query", None)
+        if cq is not None:
+            await _safe_answer(cq, line)
+            return
+        msg = getattr(update, "message", None)
+        chat = getattr(getattr(msg, "chat", None), "id", None)
+        if chat is None or not self._user_id_is_operator(chat):
+            return
+        await self.deliver_desk_notice(chat, line)
+
+    async def _hand_back(self, update: Any, msg: BusMessage) -> None:
+        """A message this agent's bot delivered found no queue for its agent
+        (it is being reloaded or reinstalled). It goes back to the chat's
+        lifecycle, which holds it until the queue is registered again; while
+        a held message is being released, the release keeps it held."""
+        releasing = _RELEASING.get()
+        if releasing is not None:
+            releasing.append("no_target")
+            return
+        import own_voice
+        try:
+            decision = await own_voice.intake(self.bot_id, update.to_dict())
+        except Exception:  # noqa: BLE001
+            logger.exception("own chat intake failed (role %r); update %s not delivered",
+                             self.default_agent, getattr(update, "update_id", None))
+            return
+        if decision == "dormant_reply":
+            await self._send_dormant_line(update)
+        elif decision == "deliver" and await self._bus.send_checked(msg) != "accepted":
+            logger.error("role %r has no queue; update %s not delivered",
+                         self.default_agent, getattr(update, "update_id", None))
+
+    async def release_update(self, update_json: dict) -> str:
+        """Deliver one update the chat's lifecycle held for this agent's bot,
+        on the normal path, now, as if it had just arrived (the intake already
+        let it go). ``"no_target"`` when its turn found no queue for the agent
+        — the lifecycle keeps it held — else ``"accepted"``: delivered, or
+        handled without a turn (a file is stored and acknowledged)."""
+        if self._app is None:
+            return "no_target"
+        update = Update.de_json(update_json, self._app.bot)
+        outcomes: list = []
+        token = _RELEASING.set(outcomes)
+        try:
+            if getattr(update, "callback_query", None) is not None:
+                await self._on_inline_callback(update)
+            elif getattr(update, "message", None) is not None:
+                if update.message.text is not None:
+                    await self.handle_update(update)
+                else:
+                    await self._on_non_text_message(update)
+        finally:
+            _RELEASING.reset(token)
+        return "no_target" if "no_target" in outcomes else "accepted"
+
+    # ------------------------------------------------------------------
     # Typing indicator (with 401 backoff)
     # ------------------------------------------------------------------
 
@@ -1655,7 +1877,7 @@ class TelegramChannel(Channel):
                     # reconnect supervisor owns transport recovery (spec 5.2
                     # §4.2/§4.3). (Order matters: NetworkError/TimedOut
                     # subclass TelegramError, so this clause must precede it.
-                    # Note in PTB 22.7 BadRequest subclasses NetworkError, so
+                    # Note in PTB 22.8 BadRequest subclasses NetworkError, so
                     # a persistent BadRequest no longer trips the breaker —
                     # bounded because _stop_typing cancels the loop at end of
                     # turn.)
@@ -1820,17 +2042,24 @@ class TelegramChannel(Channel):
         # "/new, start over" on a Finance post is Finance's turn, as text: it
         # resets nothing, and the desk turn's context says so (#1198).
         # Everything that does not route takes the path below, byte for byte.
+        ended_task = None
         if getattr(update.message, "reply_to_message", None) is not None:
-            # A reply to a live job's post goes into that job, ahead of the
-            # desk: the job is the one that is waiting on the operator.
-            if await self._maybe_route_job_reply(update, chat_id):
-                return
-            # #1522: a reply to an ended job's post is the resident's turn,
-            # with the job's end in its note — never the desk, which cannot
-            # see the job.
-            ended = self._ended_job_quoted(
+            # A reply to a live task's post (a job or a delegation, on any
+            # bot) goes into that task, ahead of everything else: the task is
+            # the one that is waiting on the operator.
+            live, ended_task = self._quoted_task(
                 chat_id, update.effective_user, update.message.reply_to_message)
-            if ended is None and await self._maybe_route_desk_reply(update, chat_id):
+            if live is not None:
+                taken = await self._route_task_reply(update, chat_id, live)
+                if taken == "taken":
+                    return
+                if taken == "ended":
+                    ended_task = live
+            # #1522: a reply to an ended task's post is this chat's agent's
+            # turn, with the task's end in its note — never the desk, which
+            # cannot see the task. The desk is the resident's chat's only.
+            if (ended_task is None and self.is_casa
+                    and await self._maybe_route_desk_reply(update, chat_id)):
                 return
         # /new reset — intercept before rate-limiting or bus dispatch (spec §4.2 #2, C2).
         text = (update.message.text or "").strip()
@@ -1888,17 +2117,34 @@ class TelegramChannel(Channel):
                 await reset_channel(channel_key, self._session_registry)
             return  # do NOT feed /new to the agent
 
+        if (not self.is_casa and _first.split("@", 1)[0] == "/start"
+                and len(text.split()) == 1
+                and self._sender_is_operator(update.effective_user)):
+            # A bare /start opens an agent's own chat: an ordinary turn, with
+            # Casa's note so the agent introduces itself in its own words.
+            chat = strict_positive_id(chat_id)
+            if chat is not None:
+                import chat_notes
+                chat_notes.record(self.bot_id, chat, "The operator just opened your chat.")
+
         await self._dispatch_dm_turn(update, chat_id, update.message.text,
-                                     user=update.effective_user)
+                                     user=update.effective_user, ended_task=ended_task)
 
     async def _dispatch_dm_turn(self, update: Update, chat_id: str, content: str, *,
-                                user: Any, received_file: dict | None = None) -> bool:
+                                user: Any, received_file: dict | None = None,
+                                ended_task: Any = None) -> bool:
         """The direct chat's turn admission, run under ``_chat_serial_locks[chat_id]``:
         the rate decision, the typed-answer ask cancellation, the trusted identity,
         the typing lease and ONE bus message for the default agent. ``False`` when
         nothing was dispatched: the rate limiter refused the turn, or the memory
         wipe's restart is under way. #1378: a file's
-        caption takes this same path, with ``received_file`` naming the stored file."""
+        caption takes this same path, with ``received_file`` naming the stored file.
+        ``ended_task``: the ended task the message replied to, when the caller
+        already knows it (its input refused the reply as ended).
+
+        On an agent's own bot the turn is handed to the agent's queue with
+        ``send_checked``: a text the queue cannot take goes back to the chat's
+        lifecycle (:meth:`_hand_back`) rather than being dropped."""
         # The memory wipe's courtesy line: the Supervisor accepted the app
         # restart, so a turn now would only be cut off. A message nicety, not
         # a guarantee — one that slips past is handled, and wiped with the rest.
@@ -2015,7 +2261,7 @@ class TelegramChannel(Channel):
             context["_operator_words"] = content
         # #1314: a reply the desk did not take still tells the resident what
         # it answered — Casa's note, on a reserved key; the text stays raw.
-        reply_note = self._reply_note_for(update, chat_id)
+        reply_note = self._reply_note_for(update, chat_id, ended_task=ended_task)
         if reply_note is not None:
             context["_reply_note"] = reply_note
         # #1378: the file a caption was written on — Casa's note of it and the
@@ -2032,7 +2278,7 @@ class TelegramChannel(Channel):
             context=context,
             trusted_user_origin=trusted_origin,
         )
-        if received_file is None:
+        if received_file is None and self.is_casa:
             await self._bus.send(msg)
             return True
         # #1378: a caption turn reports whether the agent's queue took it, so a
@@ -2040,14 +2286,18 @@ class TelegramChannel(Channel):
         if await self._bus.send_checked(msg) == "accepted":
             return True
         self._stop_typing(chat_id, cid)
+        if received_file is None:
+            await self._hand_back(update, msg)
         return False
 
-    def _reply_note_for(self, update: Update, chat_id: str) -> str | None:
+    def _reply_note_for(self, update: Update, chat_id: str, *,
+                        ended_task: Any = None) -> str | None:
         """#1314: the note of what a message the desk did not take replied to,
         or ``None`` for a message that is not a reply. Who posted it is decided
         from Casa's post map and Telegram's sender ids, never from its text: a
         message sent on behalf of a chat names no person (its ``from_user`` may
-        be a placeholder shared by every anonymous admin)."""
+        be a placeholder shared by every anonymous admin). *ended_task*: the
+        ended task the caller already found the quoted post to be."""
         import result_broker
         import specialist_desk
         message = update.message
@@ -2061,11 +2311,12 @@ class TelegramChannel(Channel):
         quoted_from = getattr(quoted, "from_user", None)
         sender = getattr(message, "from_user", None) or update.effective_user
         bot_id = self.bot_id if self.has_bot_id else None
-        ended_job = self._ended_job_quoted(chat_id, sender, quoted)
-        if ended_job is not None:
+        if ended_task is None:
+            _live, ended_task = self._quoted_task(chat_id, sender, quoted)
+        if ended_task is not None:
             # #1522: ahead of the post map, which names a specialist-hosted
             # job's plugin post as that specialist's
-            who = self._ended_job_phrase(ended_job)
+            who = self._ended_task_phrase(ended_task)
         elif record is not None:
             who = ("a message Casa posted on your behalf" if record.role == self.default_agent
                    else f"a message Casa posted for {specialist_desk.label_for(record.role)}")
@@ -2093,46 +2344,87 @@ class TelegramChannel(Channel):
         return specialist_desk.reply_note(who, posted, text)
 
     # ------------------------------------------------------------------
-    # A reply to a live background job's post in the direct chat
+    # A reply to a task's post: a job's or a delegation's, on any bot
     # ------------------------------------------------------------------
 
-    async def _maybe_route_job_reply(self, update: Update, chat_id: str) -> bool:
-        """The sender is the authenticated operator, the quoted message is a
-        post the job record filed (its start line, a question, a plugin
-        post), the record counts as live, and it is this operator's job in
-        this chat — then the chat's rate decision, then the reply goes into
-        the job (``deliver_operator_reply``). ``True`` when the message was
-        consumed here; anything else falls through to the routes below
-        unchanged. A reply the job does not take up is told, never sent
-        anywhere else."""
+    def _task_lookup(self, lookup: Callable[[TgAddress], Any], addr: TgAddress):
+        """One task-index lookup; a lookup that fails is logged and finds no
+        task, so the message still reaches this chat's agent."""
+        try:
+            return lookup(addr)
+        except Exception:  # noqa: BLE001 — the message is never lost over it
+            logger.warning("task post lookup failed", exc_info=True)
+            return None
+
+    def _quoted_task(self, chat_id: Any, user: Any, quoted: Any) -> tuple:
+        """``(live, ended)``: the task (``task_posts.TaskRef``) whose post
+        *quoted* is — live, or ended — when the sender is the authenticated
+        operator and, for a job, the one who started it in this chat;
+        ``(None, None)`` otherwise. The post is looked up at its address on
+        this bot: another bot's equal message id is another message."""
+        import task_posts
+        chat = strict_positive_id(chat_id)
+        if quoted is None or chat is None or not self._sender_is_operator(user):
+            return None, None
+        quoted_at = self._quoted_address(chat, quoted)
+        if quoted_at is None:
+            return None, None
+        live = self._task_lookup(task_posts.owner, quoted_at)
+        if live is not None:
+            return (live, None) if self._task_is_theirs(live, user, chat) else (None, None)
+        ended = self._task_lookup(task_posts.ended_owner, quoted_at)
+        if ended is not None and self._task_is_theirs(ended, user, chat):
+            return None, ended
+        return None, None
+
+    def _task_is_theirs(self, ref: Any, user: Any, chat: int) -> bool:
+        """A job must be one *user* started in *chat* (its record says so); a
+        delegation's posts are the operator's, in the chat they were posted
+        in."""
+        if getattr(ref, "kind", None) != "job":
+            return True
         reg = self._engagement_registry
-        owner_of = getattr(reg, "job_post_owner", None) if reg is not None else None
+        rec = reg.get(ref.task_id) if reg is not None else None
+        return self._job_is_theirs(rec, user, chat)
+
+    async def _route_task_reply(self, update: Update, chat_id: str, ref: Any) -> str:
+        """The operator's reply to a live task's post, into that task, after
+        the chat's rate decision: a job's through ``deliver_operator_reply``
+        (a reply the job does not take is told there, never sent anywhere
+        else); a delegation's through its input (``task_input.submit``).
+        ``"taken"`` when the message was consumed here, ``"ended"`` when the
+        delegation's input had already ended (the caller sends it to this
+        chat's agent with the ended note), ``"no"`` when there is no job
+        record to deliver to."""
+        import task_input
         user = update.effective_user
         chat = strict_positive_id(chat_id)
-        if (owner_of is None or chat is None or user is None
-                or not self._sender_is_operator(user)):
-            return False
-        quoted_at = self._quoted_address(chat, update.message.reply_to_message)
         quoted = update.message.reply_to_message
-        rec = owner_of(quoted_at) if quoted_at is not None else None
-        if not self._job_is_theirs(rec, user, chat):
-            return False
+        quoted_text = getattr(quoted, "text", None) or getattr(quoted, "caption", None)
+        rec = None
+        if ref.kind == "job":
+            reg = self._engagement_registry
+            rec = reg.get(ref.task_id) if reg is not None else None
+            if rec is None:
+                return "no"
         if self._rate_limiter is not None and self._rate_limiter.enabled:
             decision = self._rate_limiter.check(chat_id)
             if not decision.allowed:
                 if decision.should_notify:
-                    logger.info("Telegram rate limit hit for chat_id=%s (job reply); "
+                    logger.info("Telegram rate limit hit for chat_id=%s (task reply); "
                                 "replying with one-shot notice", chat_id)
                     await self._send_rate_limit_reply(chat_id)
-                return True
-        await self.deliver_operator_reply(
-            rec, update.message.text, chat_id=chat,
-            message_id=update.message.message_id,
-            quoted_text=(getattr(quoted, "text", None)
-                         or getattr(quoted, "caption", None)),
-            user_name=getattr(user, "first_name", None) or "unknown",
-            user_id=user.id)
-        return True
+                return "taken"
+        if rec is not None:
+            await self.deliver_operator_reply(
+                rec, update.message.text, chat_id=chat,
+                message_id=update.message.message_id, quoted_text=quoted_text,
+                user_name=getattr(user, "first_name", None) or "unknown",
+                user_id=user.id)
+            return "taken"
+        if task_input.submit(ref.task_id, _replying_to(quoted_text, update.message.text)) == "ended":
+            return "ended"
+        return "taken"
 
     @staticmethod
     def _job_is_theirs(rec, user, chat: "int | None") -> bool:
@@ -2146,23 +2438,19 @@ class TelegramChannel(Channel):
         return owner is not None and owner == getattr(user, "id", None) and (
             job_chat is None or strict_positive_id(job_chat) == chat)
 
-    def _ended_job_quoted(self, chat_id: Any, user: Any, quoted: Any):
-        """#1522: the ended job record whose direct chat post *quoted* is,
-        when the sender is the authenticated operator who started that job in
-        this chat — the live route's own checks; otherwise ``None``. Such a
-        reply is the resident's, with the job's end named, never the desk's:
-        the desk cannot see the job."""
-        reg = self._engagement_registry
-        owner_of = getattr(reg, "ended_job_post_owner", None) if reg is not None else None
-        chat = strict_positive_id(chat_id)
-        if (owner_of is None or quoted is None or chat is None
-                or not self._sender_is_operator(user)):
-            return None
-        quoted_at = self._quoted_address(chat, quoted)
-        if quoted_at is None:
-            return None
-        rec = owner_of(quoted_at)
-        return rec if self._job_is_theirs(rec, user, chat) else None
+    def _ended_task_phrase(self, ref: Any) -> str:
+        """#1522: who posted a quoted message of an ended task, and how it
+        ended: a job's from its record; a delegation's from its index entry."""
+        if ref.kind == "job":
+            reg = self._engagement_registry
+            rec = reg.get(ref.task_id) if reg is not None else None
+            if rec is not None:
+                return self._ended_job_phrase(rec)
+        import tools as tools_mod
+        whose = ("your" if ref.executor == self.default_agent
+                 else f"{tools_mod._display_name_for_role(ref.executor)}'s")
+        what = "background job" if ref.kind == "job" else "task"
+        return f"a message Casa posted for {whose} {what}, which has ended"
 
     def _ended_job_phrase(self, rec) -> str:
         """#1522: who posted a quoted message of an ended job, and how and when
@@ -2383,12 +2671,20 @@ class TelegramChannel(Channel):
                     # S6 §2.4: the arming is written HERE, synchronously, before any
                     # await — the finish hook runs as a separate task and a file can
                     # arrive before it; a later arming replaces this one (R4-1: no
-                    # message follows; the edited keyboard is the acknowledgement)
+                    # message follows; the edited keyboard is the acknowledgement).
+                    # It records where the file goes: the task whose post the card
+                    # is, while that task is live, else the card's agent.
+                    import task_posts
+                    card = self.address(chat, tapped) if isinstance(tapped, int) else None
+                    task = (self._task_lookup(task_posts.owner, card)
+                            if card is not None else None)
+                    role = str(meta.get("role") or "")
                     self._armings[chat] = {
                         "chat_id": chat, "operator_id": expected,
-                        "role": str(meta.get("role") or ""),
+                        "role": role,
                         "artifact_id": str(meta.get("artifact_id") or ""),
                         "expires_at": time.monotonic() + self.FILE_ARM_TTL_S,
+                        "dest": ("task", task) if task is not None else ("conversation", role),
                     }
         finally:
             t = asyncio.create_task(_safe_answer(cq, toast))
@@ -2507,7 +2803,7 @@ class TelegramChannel(Channel):
                     logger.warning("arm_file keyboard edit failed (rid=%s); telling by notice", rid[:8])
                     await self.deliver_desk_notice(chat_id, specialist_desk.bounded_line(
                         "{label} ☑ {button} — the buttons could not be cleared.",
-                        label=specialist_desk.label_for(str(meta.get("role") or "")),
+                        label=self._agent_label(str(meta.get("role") or "")),
                         fields={"button": label}))
                 return
             # A stored call of the declared stop tool starts at once, before any edit of the
@@ -2532,7 +2828,7 @@ class TelegramChannel(Channel):
                 import specialist_desk
                 logger.warning("proposal keyboard edit failed (rid=%s); telling by notice", rid[:8])
                 await self.deliver_desk_notice(
-                    chat_id, f"{specialist_desk.label_for(str(meta.get('role') or ''))} ☑ {label} — "
+                    chat_id, f"{self._agent_label(str(meta.get('role') or ''))} ☑ {label} — "
                              "applying your tap (the buttons could not be cleared).")
             try:
                 await self._dispatch_proposal_tap(meta=meta, idx=idx, request_id=rid)
@@ -2593,6 +2889,16 @@ class TelegramChannel(Channel):
         self._turn_tasks.add(task)
         task.add_done_callback(self._turn_tasks.discard)
 
+    def _agent_label(self, role: str) -> str:
+        """How Casa's lines in this chat name *role*: in the resident's chat the
+        ``📊 <name>`` head every specialist's post carries; in an agent's own
+        chat its plain name, since every message there is its own."""
+        import specialist_desk
+        if self.is_casa:
+            return specialist_desk.label_for(role)
+        import tools as tools_mod
+        return tools_mod._display_name_for_role(role)
+
     async def _dispatch_proposal_tap(self, *, meta: dict, idx: int, request_id: str) -> bool:
         """S5 §4.2 steps 2–5: reserve the specialist's desk (a full queue ⇒
         the busy line on the keyboard and the busy notice, nothing runs), take
@@ -2602,7 +2908,7 @@ class TelegramChannel(Channel):
         chat_id, desk_role = int(meta["chat_id"]), str(meta.get("role") or "")
         if await self._stop_tap(meta=meta, idx=idx):
             return True             # a stored call of the declared stop tool: no desk, no turn
-        label = specialist_desk.label_for(desk_role)
+        label = self._agent_label(desk_role)
         desk = specialist_desk.DESKS.get_or_create(self.bot_id, chat_id, desk_role)
         # #1362: a keep_card tap never writes a line over its card
         keep = specialist_desk.keeps_card(meta, idx)
@@ -2729,7 +3035,7 @@ class TelegramChannel(Channel):
         carried the operator's consent is confirmed to Telegram and never
         delivered again after the restart. Polling: stopping the updater
         makes one last ``getUpdates`` with the next offset, which confirms
-        every update fetched so far (PTB 22.7). A webhook update is already
+        every update fetched so far (PTB 22.8). A webhook update is already
         acknowledged when it is queued. Returns whether intake was paused."""
         app = self._app
         updater = getattr(app, "updater", None) if app is not None else None
@@ -2746,7 +3052,7 @@ class TelegramChannel(Channel):
         if (self._webhook_url or updater is None
                 or getattr(updater, "running", False)):
             return
-        await updater.start_polling()
+        await updater.start_polling(allowed_updates=list(self.allowed_updates))
 
     async def deliver_desk_notice(self, chat_id: int, text: str) -> bool:
         """§9: ONE Casa-composed, labelled, body-free notice to the operator's
@@ -3130,8 +3436,7 @@ class TelegramChannel(Channel):
         # notice replies to it there, and memory keys it by that bot.
         received = self.address(int(chat_id), int(message_id))
         notice_target = _NoticeTarget(address=received)
-        first = ((quoted_text or "").strip().splitlines() or [""])[0].strip()
-        sent = f"[replying to «{first[:200]}»]\n{text}" if first else text
+        sent = _replying_to(quoted_text, text)
         if not await self._end_quiet_run(rec):
             await self._tell_not_delivered(rec, notice_target)
             return False
@@ -3600,6 +3905,9 @@ class TelegramChannel(Channel):
         # S6 §2.1: WHO the file is addressed to — resolved before the classification
         # refusal, synchronously (an arming is consumed here whatever follows)
         address = self._file_address(chat_id, user, msg)
+        if address is not None and address[0] == "task":
+            await self._route_task_file(chat_id, user, msg, address)
+            return
         if address is not None:
             await self._route_addressed_file(chat_id, user, msg, address)
             return
@@ -3799,12 +4107,14 @@ class TelegramChannel(Channel):
     FILE_ARM_TTL_S = 600.0
 
     def _file_address(self, chat_id: Any, user: Any, msg: Any):
-        """S6 §2.1 step 1 — exactly one of: a swipe-reply on a retained specialist post for
-        this operator (``("reply", record, role)``); a live 📎 arming in this chat for this
-        operator (``("armed", None, role)``, consumed here — expired or not — before any
-        await); or ``None``: the file is the default agent's, today's path — always for a
-        reply to an ended job's post (#1522)."""
-        import result_broker
+        """S6 §2.1 step 1 — exactly one of: a reply to a live task's post, or a live 📎
+        arming whose destination is a live task (``("task", ref, how)``); on the
+        resident's bot, a swipe-reply on a retained specialist post for this operator
+        (``("reply", record, role)``) or a live 📎 arming of a specialist's card
+        (``("armed", None, role)``); or ``None``: the file is this chat's agent's — always
+        for a reply to an ended task's post (#1522). An arming is consumed here — expired
+        or not — before any await. The files of one album share the destination its first
+        file resolved."""
         chat = strict_positive_id(chat_id)
         if chat is None or user is None:
             return None
@@ -3812,21 +4122,112 @@ class TelegramChannel(Channel):
         # here, before the reply check, so a swipe-reply file cannot leave it live for a
         # later file (INV-FILE-003; diff round 1, Terra)
         arming = self._armings.pop(chat, None)
+        album = getattr(msg, "media_group_id", None) or None
+        if album is not None and (chat, album) in self._album_dest:
+            return self._album_dest[(chat, album)][1]
+        address = self._resolve_file_address(chat, user, msg, arming)
+        if album is not None:
+            now = time.monotonic()
+            for key in [k for k, (at, _a) in self._album_dest.items() if now - at > 600]:
+                del self._album_dest[key]
+            self._album_dest[(chat, album)] = (now, address)
+        return address
+
+    def _resolve_file_address(self, chat: int, user: Any, msg: Any, arming: "dict | None"):
+        """:meth:`_file_address`'s decision for one file, task first."""
+        import result_broker
         quoted = getattr(msg, "reply_to_message", None)
-        if self._ended_job_quoted(chat_id, user, quoted) is not None:
-            # #1522: a file sent as a reply to an ended job's post is the
-            # default agent's, never the desk's, which cannot see the job
+        live, ended = self._quoted_task(chat, user, quoted)
+        if live is not None:
+            return ("task", live, "reply")
+        if ended is not None:
+            # #1522: a file sent as a reply to an ended task's post is this chat's
+            # agent's, never the desk's, which cannot see the task
             return None
         quoted_at = self._quoted_address(chat, quoted)
-        if quoted_at is not None:
+        if quoted_at is not None and self.is_casa:
             record = result_broker.POST_MAP.get(quoted_at)
             if (record is not None and record.operator_id == getattr(user, "id", None)
                     and record.role != self.default_agent):
                 return ("reply", record, record.role)
         if (arming is not None and arming.get("operator_id") == getattr(user, "id", None)
                 and float(arming.get("expires_at", 0.0)) > time.monotonic()):
-            return ("armed", None, str(arming.get("role") or ""))
+            dest = arming.get("dest")
+            if isinstance(dest, tuple) and dest[0] == "task":
+                return ("task", dest[1], "armed")
+            if self.is_casa:
+                return ("armed", None, str(arming.get("role") or ""))
         return None
+
+    async def _route_task_file(self, chat_id: Any, user: Any, msg: Any, address: tuple) -> None:
+        """A file for a live task: stored in the inbox of the task's executor, granted to
+        that task alone (``agent_inbox.grant_task_file``), then handed to the task as a
+        Casa line naming its path — through the same input as a text reply (a job's
+        ``deliver_operator_reply``, a delegation's ``task_input``). Every refusal is told
+        once; nothing here reaches this chat's agent's inbox."""
+        import agent_inbox
+        import task_input
+        from pathlib import Path
+        _kind, ref, how = address
+        chat = strict_positive_id(chat_id)
+        label = self._agent_label(ref.executor)
+        cls = _classify_inbound(msg)
+        doc = getattr(msg, "document", None)
+        name = cls.display_name or getattr(doc, "file_name", None) or "your file"
+
+        async def tell(line: str) -> None:
+            try:
+                await self.deliver_desk_notice(chat, line)
+            except Exception as exc:  # noqa: BLE001 — nothing more is attempted
+                logger.warning("task file notice failed: %s", type(exc).__name__)
+
+        lock = self._intake_locks.setdefault((chat, ref.executor), asyncio.Lock())
+        async with lock:
+            inbox = agent_inbox.get_inbox(ref.executor)
+            if inbox is None:
+                await tell(f"{label} could not take your file (storage).")
+                return
+            if not cls.accept:
+                await tell(cls.refusal)
+                return
+            bot = self.bot
+            try:
+                receipt = await inbox.receive(
+                    lambda cap: agent_inbox.fetch_telegram_file(bot, cls.file_id, cap),
+                    ext=cls.ext, display_name=cls.display_name, declared_size=cls.declared_size)
+            except Exception:  # noqa: BLE001 — the outcome is unknown, never "absent"
+                logger.warning("task file: unexpected failure", exc_info=True)
+                receipt = agent_inbox.Receipt(agent_inbox.Outcome.UNCERTAIN)
+            logger.info("task file: role=%s outcome=%s bytes=%d",
+                        ref.executor, receipt.outcome.value, receipt.size)
+            if receipt.outcome is not agent_inbox.Outcome.STORED:
+                await tell(_inbound_reply(receipt, cls))
+                return
+            stored_path = os.path.join(inbox.ready_dir, receipt.name)
+            try:
+                agent_inbox.grant_task_file(ref.task_id, Path(stored_path))
+            except Exception:  # noqa: BLE001 — the task is still told where it is
+                logger.warning("task file grant failed", exc_info=True)
+        text = (f"[casa file] {name} at {stored_path} — sent as "
+                + ("a reply to your post" if how == "reply" else "a file for your post"))
+        caption = getattr(msg, "caption", None)
+        if caption:
+            text += f"\nThe operator wrote: {caption}"
+        if ref.kind == "job":
+            reg = self._engagement_registry
+            rec = reg.get(ref.task_id) if reg is not None else None
+            mid = getattr(msg, "message_id", None)
+            if rec is not None and type(mid) is int:
+                quoted = getattr(msg, "reply_to_message", None) if how == "reply" else None
+                await self.deliver_operator_reply(
+                    rec, text, chat_id=chat, message_id=mid,
+                    quoted_text=(getattr(quoted, "text", None) or getattr(quoted, "caption", None))
+                    if quoted is not None else None,
+                    user_name=getattr(user, "first_name", None) or "unknown", user_id=user.id)
+                return
+        elif task_input.submit(ref.task_id, text) != "ended":
+            return
+        await tell(f"{name} is in {label}'s inbox; the task had already ended.")
 
     async def _route_addressed_file(self, chat_id: Any, user: Any, msg: Any, address: tuple) -> None:
         """S6 §2.1 step 2, under the per-(chat, specialist) intake lock (§5): delegable now,
@@ -3974,6 +4375,11 @@ class TelegramChannel(Channel):
         if ns is None:
             await _safe_answer(cq, "expired")
             return
+        # A card of an agent that now has its own chat, left in the resident's
+        # chat from before: refused here, before any namespace's handler can
+        # stop, edit, claim or reserve anything.
+        if await self._refuse_moved_card(cq, ns, request_id):
+            return
 
         # v0.76.0 (W5b, r1-B2): resident_ask is DM-scoped (dm:/authz:) — it
         # is handled fully by its own single-owner branch and returns.
@@ -3991,6 +4397,63 @@ class TelegramChannel(Channel):
             await self._on_run_stop_callback(cq, request_id)
             return
         await _safe_answer(cq, "expired")
+
+    def _card_agent(self, cq: Any, ns: str, request_id: str) -> str:
+        """The agent whose card was tapped, read from the card's stored record
+        alone (nothing is claimed, edited or reserved): a proposal's and a
+        question's recorded role, a run card's executing agent (its binding's
+        last link). ``""`` when the record names none (a Casa card) or is
+        gone — the namespace's own handler then answers it."""
+        from verdict_broker import BROKER
+        msg = getattr(cq, "message", None)
+        chat = getattr(getattr(msg, "chat", None), "id", None)
+        if chat is None or not self.has_bot_id:
+            return ""
+        bot = self.bot_id
+        meta = None
+        if ns == "proposal":
+            settled = self._proposal_settled.get(request_id)
+            meta = (settled[0] if settled is not None else BROKER.get_meta(
+                namespace="proposal", scope=tg_scope("proposal", bot, chat),
+                request_id=request_id))
+        elif ns == "resident_ask":
+            for lane in ("dm", "authz", "ask"):
+                meta = BROKER.get_meta(namespace="resident_ask",
+                                       scope=tg_scope(lane, bot, chat),
+                                       request_id=request_id)
+                if meta is not None:
+                    break
+        elif ns == "run_stop":
+            import plugin_bindings
+            import run_admission
+            c = run_admission.CONFIRMATIONS.peek(request_id)
+            b = plugin_bindings.BINDINGS.peek(c.binding_ref) if c is not None else None
+            chain = getattr(b, "chain", None) or ()
+            return str(chain[-1]) if chain else ""
+        role = meta.get("role") if isinstance(meta, dict) else None
+        return role if isinstance(role, str) else ""
+
+    async def _refuse_moved_card(self, cq: Any, ns: str, request_id: str) -> bool:
+        """A tap on the resident's bot whose card belongs to another agent that
+        now declares its own chat is answered with one line naming that chat,
+        and nothing else happens. ``True`` when the tap was refused here. A
+        Casa card, the resident's own and anything on an agent's own bot are
+        untouched."""
+        if not self.is_casa:
+            return False
+        import own_voice
+        try:
+            role = self._card_agent(cq, ns, request_id)
+            moved = bool(role) and role != self.default_agent and own_voice.declared(role)
+        except Exception:  # noqa: BLE001 — the card's own checks still apply
+            logger.warning("the tapped card's agent could not be read", exc_info=True)
+            return False
+        if not moved:
+            return False
+        import tools as tools_mod
+        name = tools_mod._display_name_for_role(role)
+        await _safe_answer(cq, f"This card belongs to {name}'s chat now — open it there.")
+        return True
 
     async def _on_resident_callback(self, cq: Any, rid: str, idx: int) -> None:
         """resident_ask tap — SINGLE-OWNER commit contract [A:§2, r1-B2/r3-B1].
@@ -4097,6 +4560,7 @@ class TelegramChannel(Channel):
     async def post_dm_keyboard(
         self, *, chat_id: int, request_id: str, text: str, options: list[str],
         short_labels: bool = False, shorts: "list | None" = None,
+        urls: "list | None" = None,
     ) -> int | None:
         """Post a plain-text question to a DM chat with one tappable button
         per option (resident_ask).
@@ -4117,14 +4581,23 @@ class TelegramChannel(Channel):
         FULL options must already live VERBATIM in ``text`` (the caller renders
         them with ``render_ask_body``). Default False keeps the authz-challenge
         DM path (``authz_grants`` — short ``Approve``/``Deny`` options) untouched.
+
+        ``urls`` (a Casa card that links out, such as the offer of an agent's own
+        chat): parallel to ``options``, as in ``_proposal_keyboard`` — where it has
+        an address at an option's index, that button opens the address and sends
+        no callback.
         """
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
         if _unadmitted("post_dm_keyboard", text):
             return None
         heuristic = short_option_labels(options, shorts) if short_labels else None
+        links = list(urls or [])
         kbd = InlineKeyboardMarkup([
             [InlineKeyboardButton(
+                text=(heuristic[i] if heuristic is not None else options[i]),
+                url=links[i],
+            ) if i < len(links) and links[i] else InlineKeyboardButton(
                 text=(heuristic[i] if heuristic is not None else options[i]),
                 callback_data=f"v1|resident_ask|{request_id}|{i}",
             )]
@@ -4185,7 +4658,7 @@ class TelegramChannel(Channel):
 
     async def edit_dm_message(
         self, chat_id: int, message_id: int, text: str, *, caption: bool = False,
-        buttons: "list[tuple[str, str]] | None" = None,
+        buttons: "list[tuple[str, str]] | None" = None, urls: "list | None" = None,
     ) -> bool:
         """Plain (no parse_mode, no reply_markup) text edit of a posted DM
         message — resident_ask finish-hook target.
@@ -4219,12 +4692,19 @@ class TelegramChannel(Channel):
         ``buttons`` (the start card's Stop): ``(label, callback data)`` pairs the
         edited message carries instead of the empty keyboard — the one caller
         that settles a question into a card that still acts.
+
+        ``urls``: parallel to ``buttons``, as in ``_proposal_keyboard`` — where it
+        has an address at a button's index, that button opens the address instead
+        of sending its callback (a Casa card edited to a stage that links out).
         """
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+        links = list(urls or [])
         cleared = InlineKeyboardMarkup(
-            [[InlineKeyboardButton(text=str(label), callback_data=str(data))]
-             for label, data in (buttons or [])])
+            [[InlineKeyboardButton(text=str(label), url=links[i])
+              if i < len(links) and links[i] else
+              InlineKeyboardButton(text=str(label), callback_data=str(data))]
+             for i, (label, data) in enumerate(buttons or [])])
         display, entities = render(text)
         for attempt in (1, 2):
             try:
@@ -4622,19 +5102,18 @@ class TelegramChannel(Channel):
         if address is not None:
             import result_broker
             result_broker.POST_MAP.record(address, post)
-        # A job's plugin post is also filed on the job's record, so a reply
-        # to it reaches the job for as long as the job lives — a restart and
-        # the post map's bound included. Anything else files nothing.
-        reg = self._engagement_registry
+        # Every landed post of a task — each page, proposal, link, file and
+        # run card — is also filed under that task (a job's or a
+        # delegation's), so a reply to any of them reaches the task for as
+        # long as it lives. The task index decides what an owner names; a
+        # post of no task files nothing.
         owner = getattr(post, "owner", "")
-        if (reg is not None and isinstance(owner, str) and owner
-                and address is not None):
-            filer = getattr(reg, "record_job_post", None)
-            if filer is not None:
-                try:
-                    filer(owner, address)
-                except Exception:  # noqa: BLE001 — filing never fails a post
-                    logger.warning("job post filing failed", exc_info=True)
+        if isinstance(owner, str) and owner and address is not None:
+            import task_posts
+            try:
+                task_posts.record(owner, address)
+            except Exception:  # noqa: BLE001 — filing never fails a post
+                logger.warning("task post filing failed", exc_info=True)
         if message_id is not None:
             # INV-MEM-040: memory keeps that a specialist which keeps no
             # memory posted here, never what (one line per post).
@@ -5383,7 +5862,7 @@ class TelegramChannel(Channel):
 # nothing was displayed. Membership is an explicit allowlist rather than a class
 # test, because the hierarchy cuts across the distinction that matters here —
 # `BadRequest` (HTTP 400, a refusal) and `TimedOut` (no response at all) are
-# BOTH `NetworkError` subclasses in PTB 22.7, so classifying by base class gets
+# BOTH `NetworkError` subclasses in PTB 22.8, so classifying by base class gets
 # it exactly backwards.
 _SERVER_REFUSALS = (
     BadRequest, Forbidden, InvalidToken, RetryAfter, ChatMigrated, Conflict,
