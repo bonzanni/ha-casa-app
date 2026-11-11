@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.360.2] - 2026-11-11
+
+### Changed
+
+- **An agent says hello on whatever you send it first.** The first message you send in an agent's own chat (a "hi", a question, a file with a caption, or Start) gets a short hello from the agent as it answers; before, only Start did. A file sent on its own, without a caption, is kept and acknowledged but does not open the chat yet.
+- The task line in an agent's chat reads as a plain sentence: "Ellen asked me: …".
+- Work Casa starts in an agent's chat itself, such as a plugin's setup after an update, no longer shows as a task the assistant asked for; only the agent's answer is posted.
+- When the assistant answers without opening a file you sent, the note on her reply reads "(Ellen hasn't opened “…”.)".
+
+### Fixed
+
+- After you added something to a running task from the agent's chat, the assistant could pass your words on again as a new task.
+- Asking to update a specialist to a version written without its "v" (or with it, when the release has none) failed with "not found"; Casa now tries the other spelling and says which one it used.
+- Memory kept that a task's line was posted in an agent's chat, but not that the agent then posted its answer there.
+
 ## [0.360.1] - 2026-11-11
 
 ### Changed
