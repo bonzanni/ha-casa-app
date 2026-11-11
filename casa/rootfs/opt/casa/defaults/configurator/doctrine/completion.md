@@ -21,9 +21,9 @@ step 1 is skipped. The answer carries the findings themselves, in plain words.
 ## A question
 
 When you need the operator, end the run with your question. Your run ends
-there; his reply, or what he tells Ellen, starts a new run that sees this
-exchange. Re-inspect before acting on it: nothing you staged in memory survives,
-only what is on disk.
+there; what he tells Ellen next starts a new run, with what Ellen passes on.
+Re-inspect before acting on it: nothing you staged in memory survives, only
+what is on disk.
 
 ## Waiting on Casa
 

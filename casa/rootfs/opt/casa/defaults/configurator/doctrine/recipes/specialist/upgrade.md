@@ -5,7 +5,8 @@
 To change an installed specialist's own config values — the config names its inspection lists —
 upgrade it with `specialist_upgrade` to the version it already has, passing the new settings.
 Before you inspect anything, tell the operator plainly what that costs:
-- the install may ask for their approval again;
+- the change asks for their approval on a card (an identical request that changes nothing
+  needs none);
 - afterwards, "rollback" restores the previous settings, not the previous version, and that
   previous version can no longer be rolled back to.
 
@@ -33,15 +34,17 @@ apply unchanged, step 3's open-conversation warning included.
    fresh `receipt_id` for THIS closure — hold onto it verbatim for step 3. The new version's
    dependency closure (including any bundled/declared plugin) can differ from what is currently
    active — a plugin may be added, dropped, or repointed to a new digest by the new version; the
-   consent DM in the next step covers the FULL new closure, not a diff against the old one.
-2. Same consent flow as `recipes/specialist/install.md` steps 2-3 — an upgrade re-consents through
-   the same keyboard and the same approval as a fresh install, which the DM words as an update (the
-   identity binds `root_digest`, which changes with every version; at the
-   version already installed the approval may already be on record, or may be asked again). The
-   run Approve starts tells you to continue with step 3's `specialist_upgrade` —
-   never `specialist_install_commit`, which refuses an installed slug with
-   `kind: "active_present"`. Deny or expiry is shown on the card and starts no run: the specialist
-   keeps its current version and settings.
+   approval card in the next step covers the FULL new closure, not a diff against the old one.
+2. Same approval flow as `recipes/specialist/install.md` steps 2-3, with
+   `specialist_install_request_approval(..., mode="upgrade")`: agree the values with the operator,
+   ask, and stop. The card words it as an update and shows the settings the upgrade ends up with,
+   the ones kept from the current install included. `approval: "not_needed"` means the specialist
+   is already at that version with those settings: tell the operator nothing needed changing,
+   and end. Casa continues you after Approve, with the approved values, and tells you to go on
+   with step 3's `specialist_upgrade` — never `specialist_install_commit`, which refuses an
+   installed slug with `kind: "active_present"`; commit exactly the approved values. Deny or
+   expiry is shown on the card and starts no run: the specialist keeps its current version and
+   settings.
 3. `specialist_upgrade(slug=..., component_id=..., version=..., root_digest=..., staged_dir=...,
    receipt_id=..., config={...}, secret_names_provided=[...])` using the EXACT `root_digest` and
    `receipt_id` `specialist_install_inspect` returned. Omitting `receipt_id` (or passing a stale
@@ -68,11 +71,13 @@ apply unchanged, step 3's open-conversation warning included.
    version running, that new and open conversations still use the previous version; otherwise,
    that the specialist was not running the new version when the upgrade returned. Do not add the
    previous-version sentence yourself.
-   Then do the finishing step the result names — normally re-run this same `specialist_upgrade`
-   call (same arguments, same `acknowledged_conversations`); when it says
-   "restart Casa, then re-run the upgrade", call `casa_restart_supervised` and end your run
-   saying the update finishes after the restart: the operator taps Restart now when it suits
-   him, then asks again (or replies to your message), and that run re-runs the call.
+   Then do the finishing step the result names. One approval is one attempt, so re-running the
+   upgrade needs a new one: ask with `specialist_install_request_approval` (the same values, as in
+   step 2) and stop; the run Casa starts after Approve re-runs the call (same arguments, same
+   `acknowledged_conversations`). When it says "restart Casa, then re-run the upgrade", call
+   `casa_restart_supervised` and end your run saying the update finishes after the restart: the
+   operator taps Restart now when it suits him, then asks again (or the operator asks Ellen
+   again), and that run asks for the approval again.
    Key this on the `kind`, never on `kept_new_version: true` alone: a sequencer-failure result
    carries that flag too, with its own `outcome`: relay that outcome as written.
    If the result carries
