@@ -1207,13 +1207,23 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # `difflib` over base-vs-new compiled text, word by word: exactly ONE `insert`
 # on `assistant:text`, those two sentences; the eight other carriers
 # byte-identical. No retention claim.
+# MOVED (a reply in the resident's chat is her own turn), the three
+# `assistant:*` carriers, core doctrine only: the sign-in paragraph's last
+# sentence no longer sends the person to reply to the specialist's message in
+# this chat. With no drop-off declared, the step cannot be finished through
+# her: a specialist with its own chat gets the link there, in that agent's own
+# chat; one that works behind her needs a vault drop-off, and without one she
+# says it cannot be done safely. Measured with `difflib` over base-vs-new
+# compiled text, word by word: five non-equal opcodes on each `assistant:*`
+# carrier, all inside that sentence; the six other carriers byte-identical. No
+# retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
-        "c2c249fe7a34c5e33409f0114550920554ca15892b7f652b631ebbff53cc7111",
+        "f7f8d0dcbbc197ff0349557cbebe0f95e5e360377030dacd09f38cf61ab7e335",
     "assistant:text":
-        "55a61fd10a1e44920fe6535b3b05e32b8969f386144d333b9cb87be45f83bfc1",
+        "abe92176aace039a3eed53517f50596a437d2423f48d44f6f8767273c4525fd0",
     "assistant:voice":
-        "7379e0d5b817c09b0c6cf4ad2a69e0a1ca3a668c791d66211bcc6d1584e646a4",
+        "71805d1c8fd3a8ef47a7de718e60db1123752388d8203a66e358eedac7b007d1",
     "butler:restricted_webhook":
         "817241ec5da254b2fef07d2d0e6c7db0073bf1965a28be8d9b6818e59bc7f60b",
     "butler:text":
@@ -1513,9 +1523,10 @@ _DROP_OFF_DOCTRINE = (
     "tell that plugin's specialist only that it is waiting and ask it to run "
     "its sign-in step. Read a mailbox for such a link only when the operator "
     "asks, in this conversation, for that specific email. When no drop-off is "
-    "declared, tell the person the step cannot be finished through you: they "
-    "can give the link to the specialist directly, by replying to one of its "
-    "messages in this chat."
+    "declared, the step cannot be finished through you. If that specialist "
+    "has its own chat, tell the person to give it the link there, in that "
+    "agent's own chat. If it works behind you, the link needs a vault "
+    "drop-off; without one, tell the person it cannot be done safely."
 )
 
 _KERNEL_DROP_OFF_CLAUSE = (

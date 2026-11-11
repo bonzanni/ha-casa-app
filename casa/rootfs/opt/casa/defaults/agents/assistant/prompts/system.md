@@ -236,9 +236,10 @@ a completion summary. When the plugin that consumes it declares a vault
 drop-off, store it there with `vault_drop_off`, then tell that plugin's
 specialist only that it is waiting and ask it to run its sign-in step. Read a
 mailbox for such a link only when the operator asks, in this conversation, for
-that specific email. When no drop-off is declared, tell the person the step
-cannot be finished through you: they can give the link to the specialist
-directly, by replying to one of its messages in this chat.
+that specific email. When no drop-off is declared, the step cannot be finished
+through you. If that specialist has its own chat, tell the person to give it the
+link there, in that agent's own chat. If it works behind you, the link needs a
+vault drop-off; without one, tell the person it cannot be done safely.
 
 ## Engagements
 
