@@ -55,7 +55,6 @@ UPDATED = {"managed_bot": {
              "username": "op_example"}},
     "update_id": 392654411}
 
-pytestmark = pytest.mark.asyncio
 
 
 def _user(d: dict):

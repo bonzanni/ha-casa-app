@@ -75,6 +75,8 @@ CASA_TEXT_SITES = {
     ("casa_core.py", "_telegram_outbound"): "bus target for Casa notices only; a model reply never reaches it",
     ("casa_core.py", "operator_notify"): "operator notice, Casa template",
     ("tools.py", "_post"): "wipe_memory's confirmation keyboard, Casa template",
+    ("own_voice_lifecycle.py", "post_card"): "an own-chat card in the resident's chat (offer, bound, released), Casa template",
+    ("own_voice_lifecycle.py", "_post"): "the own-chat question naming a new bot, Casa template",
 }
 
 EDIT_DM_MESSAGE_CALLERS = {
@@ -93,6 +95,7 @@ EDIT_DM_MESSAGE_CALLERS = {
     ("plugin_erase_consent.py", "_finish"): {"status"},      # #1046: fixed Keep/Erase/Cancel/expired statuses
     ("specialist_install_consent.py", "_finish"): {"plugin"},
     ("trigger_consent.py", "_finish"): {"plugin"},
+    ("own_voice_lifecycle.py", "edit_card"): {"status"},           # an own-chat card's fixed Casa lines (asked again, bound, released)
     ("operator_calls.py", "_finish"): {"plugin"},                  # browser executor: a plugin's question, ☑ label / retired
     ("plugin_stop.py", "settle_run_card"): {"status"},             # the Stop: the card's stored text + ☑ Stopped / Ended / Stop asked
     ("channels/telegram.py", "_retire_job_post"): {"status"},      # an ended job's start line: its outcome mark, Casa template
@@ -166,7 +169,10 @@ CHANNEL_METHOD_CALLERS = {
     ("tools.py", "_post"): "admitted",                          # ask_user (both arms) and wipe_memory (casa_text)
     ("tools.py", "ask_operator"): "admitted",                   # a job's question, admitted on the job's scope
     ("specialist_desk.py", "handle_reply"): "admitted",         # S4: the desk reply, the specialist's admitted text
-    ("specialist_desk.py", "handle_tap"): "admitted",           # S5: the stored call's receipt, the plugin's admitted text
+    ("stored_call_settler.py", "handle_tap"): "admitted",       # the stored call's receipt, the plugin's admitted text
+    ("tools.py", "_post_task_text"): "admitted",                # a task's start line and answer, admitted on the task's scope
+    ("own_voice_lifecycle.py", "post_card"): "casa_text",       # an own-chat card in the resident's chat
+    ("own_voice_lifecycle.py", "_post"): "casa_text",           # the own-chat question naming a new bot
 }
 _NON_CHANNEL_RECEIVERS = {"bot", "_bot", "bus", "_bus", "self_bus"}
 
