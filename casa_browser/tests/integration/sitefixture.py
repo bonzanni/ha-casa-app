@@ -19,6 +19,7 @@ from pathlib import Path
 
 import proxyharness
 from casa_browser.infra import onepassword_extension_hosts
+from casa_browser.proxy_addon import WINDOW_QUIET
 from casa_browser.proxy_client import CONTROL_SOCKET
 
 CA_PUBLIC = Path("/run/casa-browser/ca/ca.pem")
@@ -88,7 +89,10 @@ class ChromeSites:
         self._thread.start()
         if not self._ready.wait(30):
             raise RuntimeError("harness did not start")
-        time.sleep(3.1)  # the start window's close takes effect 3 s after it was asked
+        # Every test starts outside the credential window, with events that keep their origin:
+        # a test that looks for an origin's absence would otherwise pass for the wrong reason.
+        if self.call(lambda: self.harness.addon.window_open):
+            raise RuntimeError("the harness proxy's credential window is still open")
         shutil.copyfile(self.tmp / "ca" / "mitmproxy-ca-cert.pem", CA_PUBLIC)
         return self
 
@@ -107,8 +111,13 @@ class ChromeSites:
                                                'acct.1password.eu'))) as hz:
             self.harness = hz
             # As the controller does before a run's first browser: a started proxy opens the
-            # credential window; no Chrome has run yet, so close it (raw events after 3 s).
+            # credential window; no Chrome has run yet, so close it.
             hz.addon.close_window(hz.addon.token)
+            # That close takes effect WINDOW_QUIET later, a quiet that covers requests begun
+            # while the window was open. Nothing has connected to this proxy yet, so end the
+            # quiet now instead of waiting it out: the state is the one the wait would reach.
+            # The quiet itself is covered by the addon's unit tests (test_proxy_adapter.py).
+            hz.addon.window_until -= WINDOW_QUIET
             self._ready.set()
             await self._stop.wait()
 
