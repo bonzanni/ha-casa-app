@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.361.0] - 2026-11-11
+
+Not backward compatible. Approvals you gave an earlier version to install or update a specialist, or to install a persona, are not carried over: asking again posts a new card. A specialist install or upgrade that the update cuts off half-way is normally undone, or finished, at startup; if Casa cannot do that (it may not, for one begun under an earlier version), the specialist is set aside — its plugins stay off and the plugin health report lists it — until you install, update or roll it back again. Let any install or upgrade finish before you update.
+
+### Changed
+
+- **The specialist desk is gone.** A reply in the assistant's chat always reaches the assistant, unless it quotes a message from a task that is still running, which goes into that task. Specialists with their own chat talk to you there; the others work behind the assistant.
+- **One tap is one attempt.** An Approve on an install or upgrade card is used up the moment the work starts. If the attempt fails, or you want it again after a rollback, asking again posts a new card.
+- **The approval card shows the settings the specialist will actually have**, marking the ones kept from the current install, and Casa refuses to install anything other than what you approved. Values show as typed; quotes appear only where plain text would hide something, such as an empty value.
+- After you approve, the Configurator carries on by itself; if it cannot start (it is busy, say), the card says your approval is saved and you can ask the assistant again.
+- An install or upgrade that would change nothing just says so, with no card to tap.
+- When a specialist needs a sign-in link from you, the assistant points you to that specialist's own chat or to a vault drop-off, instead of a reply in her chat.
+
 ## [0.360.2] - 2026-11-11
 
 ### Changed
