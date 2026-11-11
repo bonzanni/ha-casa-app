@@ -1,8 +1,8 @@
 """Human pacing for browser actions (Plan 1 Task 8; design §5.1 "looking like the operator").
 
 Every action scrolls its target into view, checks it is visible and enabled, and returns
-control within a fixed timeout (5 s) instead of retrying for Playwright's default 30 s. The
-pointer follows a curved path to a point inside the target; typing has a bounded random delay
+control within a fixed timeout (5 s; a long text's one insertion, 60 s) instead of retrying
+for Playwright's default 30 s. The pointer follows a curved path to a point inside the target; typing has a bounded random delay
 per character; scrolling moves in steps. Clock and randomness are injected for tests.
 
 This is consistency with a person at the keyboard, not concealment: no fingerprint or
@@ -26,6 +26,11 @@ import math
 import random
 
 ACTION_TIMEOUT = 5.0
+# ``insert``'s one insertion of a long text into a <textarea> is a single browser call whose time
+# grows with the square of its line count (measured in Chrome: about 3.5 s for 2,500 lines, 47 s
+# for 8,000 at the 32,000-character cap). Cancelling the wait would not stop the insertion, only
+# report a text that lands as not known to have landed, so it has a bound of its own.
+INSERT_TIMEOUT = 60.0
 MOVE_STEP_DELAY = (0.008, 0.03)
 KEY_DELAY = (0.05, 0.18)
 PAUSE = (0.08, 0.3)
@@ -117,16 +122,17 @@ def pointer_path(start, end, rng: random.Random) -> list[tuple[float, float]]:
 
 class Pacer:
     def __init__(self, page, *, rng: random.Random | None = None, sleep=asyncio.sleep,
-                 action_timeout: float = ACTION_TIMEOUT):
+                 action_timeout: float = ACTION_TIMEOUT, insert_timeout: float = INSERT_TIMEOUT):
         self.page = page
         self.rng = rng or random.SystemRandom()
         self.sleep = sleep
         self.action_timeout = action_timeout
+        self.insert_timeout = insert_timeout
         self.pointer = (self.rng.uniform(200, 900), self.rng.uniform(150, 600))
 
-    async def _bounded(self, coro):
+    async def _bounded(self, coro, timeout: float | None = None):
         try:
-            return await asyncio.wait_for(coro, self.action_timeout)
+            return await asyncio.wait_for(coro, self.action_timeout if timeout is None else timeout)
         except asyncio.TimeoutError:
             raise ActionError("timeout") from None
 
@@ -219,12 +225,13 @@ class Pacer:
 
     async def insert(self, locator, text: str, *, guard=None, on_dispatch=None, focus=None) -> None:
         """Click into a <textarea> through ``guard``, then replace what it holds with one
-        insertion (no key event) while ``focus`` holds."""
+        insertion (no key event) while ``focus`` holds. The insertion is bounded by
+        ``insert_timeout``; every step before it by the action timeout."""
         await self.click(locator, guard=guard, on_dispatch=on_dispatch)
         await self._bounded(locator.evaluate("(e) => e.select()"))
         if focus is not None and not await self._bounded(focus()):
             raise GuardRefused("changed")
-        await self._bounded(self.page.keyboard.insert_text(text))
+        await self._bounded(self.page.keyboard.insert_text(text), self.insert_timeout)
 
     async def press_enter(self, guard, on_dispatch=None) -> None:
         """The one non-printable key an agent action sends: Enter, only after ``guard()``

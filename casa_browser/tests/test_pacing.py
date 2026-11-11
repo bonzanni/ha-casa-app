@@ -4,6 +4,7 @@ before every character and never sends Enter; Enter goes only through ``press_en
 guard; scrolling never wheels over a form control. The real ``Pacer`` over a recording page."""
 from __future__ import annotations
 
+import asyncio
 import random
 
 import pytest
@@ -291,6 +292,65 @@ async def test_insert_goes_through_the_guard_and_the_focus():
     with pytest.raises(GuardRefused):
         await pacer(page).insert(Area(page), "text", guard=ok, focus=lost)
     assert not [e for e in page.log if e[0] == "insert"]
+
+
+def slow_inserting(page, done: asyncio.Event | None):
+    """``page``'s one insertion returns when ``done`` is set; with None it never returns."""
+    async def insert_text(text):
+        page.log.append(("inserting", text))
+        await (done.wait() if done is not None else asyncio.Event().wait())
+        page.log.append(("insert", text))
+    page.keyboard.insert_text = insert_text
+
+
+async def ok_guard(point=None):
+    return "ok"
+
+
+async def test_a_long_insertion_has_its_own_bound_past_the_action_timeout():
+    """Chrome's one insertion of a long list grows with its line count (seconds for a couple of
+    thousand lines): it is bounded by ``insert_timeout``, not by the per-step action timeout,
+    so an insertion that outlasts the action timeout still ends done."""
+    page = Page()
+    done = asyncio.Event()
+    slow_inserting(page, done)
+    p = pacer(page)
+    p.action_timeout, p.insert_timeout = 0.05, 2.0
+
+    async def focused():
+        return True
+    asyncio.get_running_loop().call_later(0.3, done.set)    # six action timeouts
+    await p.insert(Area(page), "a\nb", guard=ok_guard, focus=focused)
+    assert ("insert", "a\nb") in page.log
+    assert pacing.Pacer(Page()).insert_timeout == pacing.INSERT_TIMEOUT > pacing.ACTION_TIMEOUT
+
+
+async def test_an_insertion_past_its_own_bound_and_every_other_step_still_time_out():
+    """The insertion's bound is a bound: past it the step raises ``timeout``. The click, the
+    select and the focus check keep the action timeout."""
+    page = Page()
+    slow_inserting(page, None)
+    p = pacer(page)
+    p.action_timeout, p.insert_timeout = 0.05, 0.3
+
+    async def focused():
+        return True
+    with pytest.raises(ActionError) as err:
+        await p.insert(Area(page), "a\nb", guard=ok_guard, focus=focused)
+    assert err.value.code == "timeout" and ("inserting", "a\nb") in page.log
+    assert ("insert", "a\nb") not in page.log
+
+    page = Page()
+    slow_inserting(page, asyncio.Event())
+    p = pacer(page)
+    p.action_timeout, p.insert_timeout = 0.05, 5.0
+
+    async def slow_focus():
+        await asyncio.sleep(0.3)
+        return True
+    with pytest.raises(ActionError) as err:
+        await p.insert(Area(page), "a\nb", guard=ok_guard, focus=slow_focus)
+    assert err.value.code == "timeout" and not [e for e in page.log if e[0] == "inserting"]
 
 
 async def test_type_selects_an_input_or_textarea_so_the_text_replaces_it():

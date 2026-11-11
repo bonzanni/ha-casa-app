@@ -152,7 +152,7 @@ target's scroll waits out its timeout, after a moment for a page in a transition
 (`pacing.py::Pacer.shown`), `disabled` or `no_size`, each reaching the step's reply as its
 `not_run` reason), move the pointer along a curve to a point inside it, type with a bounded random delay per character,
 scroll in steps. Every operation on the page — reaching the target, each key, each wheel
-step — returns control within `pacing.py::ACTION_TIMEOUT` (5 s) with a typed
+step, but not a long text's one insertion (below) — returns control within `pacing.py::ACTION_TIMEOUT` (5 s) with a typed
 `pacing.py::ActionError` rather than retrying; typing a long text at that pace may take longer
 in all and is never cut short. For the action gate a judged press takes a `guard`, awaited
 after the pointer has moved and immediately before `mouse.down()` (only `ok` presses);
@@ -163,7 +163,9 @@ printable `keyboard.type` and never Enter, which only `Pacer.press_enter` sends 
 own guard, and inserts a line break as text (`keyboard.insert_text`, no key event) only when
 its caller allows line breaks, refusing the text before any click otherwise; `Pacer.insert`
 puts more than 200 characters into a real `<textarea>` (no Enter after it) as one insertion
-replacing what it holds, behind the same guard and focus check; `scroll` checks before every wheel step that the point is over no form control,
+replacing what it holds, behind the same guard and focus check, and bounds that one insertion by
+`pacing.py::INSERT_TIMEOUT` (60 s) rather than the action timeout, since Chrome's time for it grows
+with the square of the text's line count and a cut wait would not stop it; `scroll` checks before every wheel step that the point is over no form control,
 editable element or frame and moves off one, or refuses (`unsupported`)
 ([`casa-browser-actions.md`](casa-browser-actions.md)), and answers where that left what it scrolled
 (`pacing.py::_position`: the outermost scroller that moved, or with none the innermost at the
