@@ -8,7 +8,7 @@ import shutil
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Iterable, Literal, Mapping
 
 import jsonschema
 import yaml
@@ -1938,11 +1938,177 @@ def _assert_receipt_matches_inspection(
             "inspection")
 
 
+def install_effective_config(*, config: "Mapping[str, Any]", schema: "Mapping[str, Any]",
+                             pending_snapshot: "Mapping[str, Any] | None") -> dict:
+    """The non-secret settings an install stages: the call's *config* over
+    *pending_snapshot*, the saved settings of a pending candidate for the same
+    root (``None`` when there is none), of which only schema-known, non-secret
+    keys carry. A pending-configuration retry supplies only the settings still
+    missing, so those already supplied survive it."""
+    merged_config = dict(config)
+    if pending_snapshot is not None:
+        _secret_declared = set(schema.get("secret_names", []) or [])
+        _known = set(schema.get("required", []) or []) | _secret_declared
+        carried = {
+            k: v for k, v in dict(pending_snapshot).items()
+            if k in _known and k not in _secret_declared
+        }
+        merged_config = {**carried, **dict(config)}
+    return merged_config
+
+
+def _upgrade_carried_config(*, config: "Mapping[str, Any]", schema: "Mapping[str, Any]",
+                            active_snapshot: "Mapping[str, Any]",
+                            prior_secret_names: "set[str] | None",
+                            pending_snapshot: "Mapping[str, Any] | None") -> dict:
+    """Every setting an upgrade starts from, before the incoming schema
+    filters it: the active install's settings less the prior component's
+    secret names (all of them when the prior schema could not be read, so no
+    legacy plaintext rides through), beneath the same-root pending
+    candidate's schema-known non-secret settings, beneath the call's
+    *config*."""
+    secret_names = set(schema.get("secret_names", []) or [])
+    known_keys = set(schema.get("required", []) or []) | secret_names
+    prior = set(active_snapshot) if prior_secret_names is None else set(prior_secret_names)
+    carried_config = {k: v for k, v in dict(active_snapshot).items() if k not in prior}
+    desired_carried = {}
+    if pending_snapshot is not None:
+        desired_carried = {
+            k: v for k, v in dict(pending_snapshot).items()
+            if k in known_keys and k not in secret_names
+        }
+    return {**carried_config, **desired_carried, **dict(config)}
+
+
+def upgrade_effective_config(*, config: "Mapping[str, Any]", schema: "Mapping[str, Any]",
+                             active_snapshot: "Mapping[str, Any]",
+                             prior_secret_names: "set[str] | None",
+                             pending_snapshot: "Mapping[str, Any] | None") -> dict:
+    """The non-secret settings an upgrade stages (precedence: active <
+    same-root pending candidate < the call's *config*), filtered to the
+    incoming schema's known, non-secret keys."""
+    secret_names = set(schema.get("secret_names", []) or [])
+    known_keys = set(schema.get("required", []) or []) | secret_names
+    stale_config = _upgrade_carried_config(
+        config=config, schema=schema, active_snapshot=active_snapshot,
+        prior_secret_names=prior_secret_names, pending_snapshot=pending_snapshot)
+    return {k: v for k, v in stale_config.items()
+            if k in known_keys and k not in secret_names}
+
+
+def _refuse_secret_channel_violations(*, schema: "Mapping[str, Any]",
+                                      config: "Mapping[str, Any]",
+                                      secret_names_provided: "frozenset[str]") -> None:
+    """#337: a secret-named key with a plaintext value is never accepted, and
+    secret_names_provided may only name schema-declared secrets (else a
+    required non-secret key could be "satisfied" with no value ever
+    provided)."""
+    from specialist_lifecycle import secret_config_violations
+    secret_valued, unknown_secret_names = secret_config_violations(
+        schema=schema, provided_non_secret=config,
+        provided_secret_names=secret_names_provided,
+    )
+    if secret_valued:
+        raise SpecialistInstallError(
+            "secret_value_in_config",
+            f"config keys {secret_valued} are declared secret_names — secret values "
+            "are never accepted as plaintext config; provide the secret through the "
+            "secret channel and list its name in secret_names_provided")
+    if unknown_secret_names:
+        raise SpecialistInstallError(
+            "unknown_secret_name",
+            f"secret_names_provided entries {unknown_secret_names} are not declared "
+            "in the component's config_schema secret_names")
+
+
+def _require_approved_values(approved_values: object, *, config: "Mapping[str, Any]",
+                             secret_names_provided: "Iterable[str]") -> None:
+    """Refuse unless the settings about to be staged are exactly the approved
+    ones; called before anything is staged or journalled."""
+    staged = {"config": dict(config), "secrets": sorted(secret_names_provided)}
+    if staged == approved_values:
+        return
+    if not (isinstance(approved_values, dict)
+            and isinstance(approved_values.get("config"), dict)):
+        differing = ["config"]
+    else:
+        approved_config = approved_values["config"]
+        absent = object()
+        differing = sorted(k for k in set(staged["config"]) | set(approved_config)
+                           if staged["config"].get(k, absent) != approved_config.get(k, absent))
+        if staged["secrets"] != approved_values.get("secrets"):
+            differing.append("secrets")
+    raise SpecialistInstallError(
+        "approval_values_differ",
+        f"the settings to stage differ from the approved ones ({', '.join(differing)}); "
+        "nothing was changed — ask for a new approval")
+
+
+def _pending_snapshot_for_root(instance_dir: Any, *, slug: str, root: str
+                               ) -> "Mapping[str, Any] | None":
+    try:
+        pending = instance_dir.desired()
+    except (ValueError, OSError, yaml.YAMLError, jsonschema.ValidationError) as exc:
+        raise SpecialistInstallError(
+            "concurrent_mutation",
+            f"{slug!r}: the pending candidate's configuration could not be read "
+            f"({exc}); resolve the read error and retry") from exc
+    if pending is not None and pending.root == root:
+        return pending.config_snapshot
+    return None
+
+
+def preview_effective_config(
+    kind: str, inspection: "InspectionResult", *, slug: str, config: "Mapping[str, Any]",
+    secret_names_provided: "Iterable[str]",
+    specialists_dir: Path = Path("/config/specialists"),
+) -> dict:
+    """The non-secret settings ``commit_specialist_install`` (*kind*
+    ``"specialist_install"``) or ``upgrade_specialist`` (``"specialist_upgrade"``)
+    would stage for *inspection* with this *config* now: the same tuples read,
+    the same merge. A read; writes nothing. Refuses, as the library would, a
+    secret sent as plain config or an undeclared secret name."""
+    from personality_binding import InstanceDir
+
+    validate_specialist_slug(slug)
+    staged = Path(inspection.staged_dir)
+    try:
+        component = load_specialist_component(staged, staged / "manifest.json")
+    except (ValueError, OSError) as exc:
+        raise SpecialistInstallError("staged_dir_invalid", str(exc)) from exc
+    schema = component.config_schema
+    _refuse_secret_channel_violations(
+        schema=schema, config=config, secret_names_provided=frozenset(secret_names_provided))
+    root = component_root_string(component_id=inspection.component_id,
+                                 version=inspection.version,
+                                 component_checksum=inspection.root_digest)
+    instance_dir = InstanceDir(specialists_dir / slug)
+    if kind == "specialist_install":
+        return install_effective_config(
+            config=config, schema=schema,
+            pending_snapshot=_pending_snapshot_for_root(instance_dir, slug=slug, root=root))
+    if kind == "specialist_upgrade":
+        try:
+            active = instance_dir.active()
+        except ValueError as exc:
+            raise SpecialistInstallError("active_unreadable", str(exc)) from exc
+        if active is None:
+            raise SpecialistInstallError(
+                "no_active_tuple", f"{slug!r} has no active install to upgrade")
+        return upgrade_effective_config(
+            config=config, schema=schema, active_snapshot=active.config_snapshot,
+            prior_secret_names=_declared_secret_names_for_root(
+                active.root, specialists_dir=specialists_dir),
+            pending_snapshot=_pending_snapshot_for_root(instance_dir, slug=slug, root=root))
+    raise ValueError(f"not a specialist approval kind: {kind!r}")
+
+
 @_under_specialist_lifecycle_lock
 def commit_specialist_install(
     *, inspection: "InspectionResult", receipt: "SourceReceipt | None" = None,
     config: "Mapping[str, str]",
     secret_names_provided: frozenset[str], acks: "SpecialistInstallAckStore",
+    approved_values: dict,
     specialists_dir: Path = Path("/config/specialists"),
     agents_specialists_dir: Path = Path("/config/agents/specialists"),
     registry_path: "Path | None" = None,
@@ -1974,7 +2140,12 @@ def commit_specialist_install(
     every boot/`casa_reload` call site per Correction #1) unconditionally
     re-materializes every ACTIVE slug's operational files from its tuple on
     every subsequent call, so this slug self-heals on the very next
-    reconcile with no operator action required."""
+    reconcile with no operator action required.
+
+    *approved_values* are the settings the operator approved
+    (``{"config", "secrets"}``): the recorded approval must be for them, and
+    the settings this call would stage must equal them, or it refuses
+    ``approval_values_differ`` before anything is staged."""
     from personality_binding import (
         InstanceDir, check_persona_requirements,
         compute_effective_config_digest, make_instance_tuple,
@@ -1984,9 +2155,10 @@ def commit_specialist_install(
     from prompt_compiler import compile_prompt_bundle
     from role_slot import _ha_model_options, materialize_role
     from role_artifact import load_role_artifact
-    from specialist_lifecycle import SpecialistInstance, satisfy_config, secret_config_violations
+    from specialist_lifecycle import SpecialistInstance, satisfy_config
     from specialist_component import load_specialist_component
     from specialist_install_consent import install_consent_identity
+    from approval_records import values_digest
     import plugin_registry
     import plugin_store
     import specialist_bundle_journal
@@ -2023,6 +2195,7 @@ def commit_specialist_install(
         component_id=inspection.component_id, version=inspection.version,
         root_digest=inspection.root_digest, slug=inspection.slug,
         receipt_digest=inspection.receipt_digest,
+        values_digest=values_digest(approved_values),
     )
     if not acks.is_acked(identity):
         raise SpecialistInstallError(
@@ -2130,24 +2303,10 @@ def commit_specialist_install(
 
         # #337: refuse BEFORE satisfy_config and before any instance-dir
         # mutation — a secret-named key with a plaintext value must never be
-        # persisted into a config_snapshot, and secret_names_provided may only
-        # name schema-declared secrets (else a required non-secret key could be
-        # "satisfied" with no value ever provided).
-        secret_valued, unknown_secret_names = secret_config_violations(
-            schema=component.config_schema, provided_non_secret=config,
-            provided_secret_names=secret_names_provided,
-        )
-        if secret_valued:
-            raise SpecialistInstallError(
-                "secret_value_in_config",
-                f"config keys {secret_valued} are declared secret_names — secret values "
-                "are never accepted as plaintext config; provide the secret through the "
-                "secret channel and list its name in secret_names_provided")
-        if unknown_secret_names:
-            raise SpecialistInstallError(
-                "unknown_secret_name",
-                f"secret_names_provided entries {unknown_secret_names} are not declared "
-                "in the component's config_schema secret_names")
+        # persisted into a config_snapshot.
+        _refuse_secret_channel_violations(
+            schema=component.config_schema, config=config,
+            secret_names_provided=secret_names_provided)
         root = component_root_string(
             component_id=component.component_id, version=component.version,
             component_checksum=fresh_root_digest,
@@ -2201,15 +2360,16 @@ def commit_specialist_install(
                 f"preserve the pending candidate, its saved configuration, and "
                 f"the receipt and staging tree needed to resume; resolve the "
                 f"read error and retry") from exc
-        merged_config = dict(config)
-        if pending_before is not None and pending_before.root == root:
-            _secret_declared = set(component.config_schema.get("secret_names", []) or [])
-            _known = set(component.config_schema.get("required", []) or []) | _secret_declared
-            carried = {
-                k: v for k, v in dict(pending_before.config_snapshot).items()
-                if k in _known and k not in _secret_declared
-            }
-            merged_config = {**carried, **dict(config)}
+        merged_config = install_effective_config(
+            config=config, schema=component.config_schema,
+            pending_snapshot=(pending_before.config_snapshot
+                              if pending_before is not None and pending_before.root == root
+                              else None))
+        # What is staged is exactly what the approval froze, whatever the
+        # saved settings became since the request: refused here, before any
+        # stage or journal write.
+        _require_approved_values(approved_values, config=merged_config,
+                                 secret_names_provided=secret_names_provided)
 
         satisfied, missing = satisfy_config(
             schema=component.config_schema, provided_non_secret=merged_config,
@@ -2608,6 +2768,7 @@ def upgrade_specialist(
     *, slug: str, inspection: "InspectionResult", receipt: "SourceReceipt | None" = None,
     config: "Mapping[str, str]",
     secret_names_provided: frozenset[str], acks: "SpecialistInstallAckStore",
+    approved_values: dict,
     specialists_dir: Path = Path("/config/specialists"),
     agents_specialists_dir: Path = Path("/config/agents/specialists"),
     registry_path: "Path | None" = None,
@@ -2631,7 +2792,10 @@ def upgrade_specialist(
     (#810, INV-SPEC-011). The journal's before-state covers the crash window,
     and the whole transaction — sampling, journal, publish, swap, both commits
     — runs under SPECIALIST_LIFECYCLE_LOCK, so nothing can observe the
-    tuple-vs-sidecar window between the two materialize scopes."""
+    tuple-vs-sidecar window between the two materialize scopes.
+
+    *approved_values*: as for ``commit_specialist_install`` — the approval
+    must be for them and the settings staged must equal them."""
     import dataclasses
 
     import plugin_registry
@@ -2639,6 +2803,7 @@ def upgrade_specialist(
     from specialist_bundle_journal import BundleTxn
     from specialist_lifecycle import SpecialistInstance  # noqa: F401 (typing)
     from specialist_install_consent import install_consent_identity
+    from approval_records import values_digest
     import plugin_store
     import specialist_materialize
     from personality_binding import InstanceDir
@@ -2652,6 +2817,7 @@ def upgrade_specialist(
         instance = _upgrade_core(
             slug=slug, inspection=inspection, config=config,
             secret_names_provided=secret_names_provided, acks=acks,
+            approved_values=approved_values,
             specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir,
             receipt=None)
         if instance.state == "active":
@@ -2702,11 +2868,13 @@ def upgrade_specialist(
         # removing them from the core would move a gate that the legacy
         # no-receipt arm and every direct library caller still need.
         _assert_receipt_matches_inspection(receipt, eff_inspection)
+        approved_digest = values_digest(approved_values)
         if not acks.is_acked(install_consent_identity(
                 component_id=eff_inspection.component_id,
                 version=eff_inspection.version,
                 root_digest=eff_inspection.root_digest, slug=eff_inspection.slug,
-                receipt_digest=eff_inspection.receipt_digest)):
+                receipt_digest=eff_inspection.receipt_digest,
+                values_digest=approved_digest)):
             raise SpecialistInstallError(
                 "consent_missing", "no recorded operator approval for the upgrade")
         _instance_dir = InstanceDir(slug_dir)
@@ -2743,6 +2911,23 @@ def upgrade_specialist(
                 f"read ({exc}); refusing to restage over it — preserve the pending "
                 f"candidate, its saved configuration, and the receipt and staging "
                 f"tree needed to resume; resolve the read error and retry") from exc
+        # The settings the core will stage, from the same observations: refused
+        # here, before the rotation below and before the journal exists, unless
+        # they are exactly the approved ones.
+        _upgrade_root = component_root_string(
+            component_id=verified.component.component_id,
+            version=verified.component.version, component_checksum=verified.root_digest)
+        _require_approved_values(
+            approved_values,
+            config=upgrade_effective_config(
+                config=config, schema=verified.component.config_schema,
+                active_snapshot=_active_before.config_snapshot,
+                prior_secret_names=_declared_secret_names_for_root(
+                    _active_before.root, specialists_dir=specialists_dir),
+                pending_snapshot=(_pending_before.config_snapshot
+                                  if _pending_before is not None
+                                  and _pending_before.root == _upgrade_root else None)),
+            secret_names_provided=secret_names_provided)
 
         # #975: complete a prior rotation an earlier commit left pending BEFORE
         # the capture, exactly as `rollback_specialist` does (#810 F1). The
@@ -2783,7 +2968,8 @@ def upgrade_specialist(
             consent_identity=install_consent_identity(
                 component_id=inspection.component_id, version=inspection.version,
                 root_digest=inspection.root_digest, slug=inspection.slug,
-                receipt_digest=inspection.receipt_digest),
+                receipt_digest=inspection.receipt_digest,
+                values_digest=approved_digest),
             target_root=target_root,
             specialists_dir=specialists_dir,
             declared_secret_names=declared_secret_names,
@@ -2803,6 +2989,7 @@ def upgrade_specialist(
             instance = _upgrade_core(
                 slug=slug, inspection=eff_inspection, config=config,
                 secret_names_provided=secret_names_provided, acks=acks,
+                approved_values=approved_values,
                 specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir,
                 receipt=receipt, _pending_before=_pending_before)
             if instance.state == "active" and lossy:
@@ -3260,6 +3447,7 @@ _UNREAD = _Unread()
 def _upgrade_core(
     *, slug: str, inspection: "InspectionResult", config: "Mapping[str, str]",
     secret_names_provided: frozenset[str], acks: "SpecialistInstallAckStore",
+    approved_values: dict,
     specialists_dir: Path = Path("/config/specialists"),
     agents_specialists_dir: Path = Path("/config/agents/specialists"),
     receipt: "SourceReceipt | None" = None,
@@ -3296,8 +3484,9 @@ def _upgrade_core(
     from prompt_compiler import compile_prompt_bundle
     from role_slot import _ha_model_options, materialize_role
     from role_artifact import load_role_artifact
-    from specialist_lifecycle import SpecialistInstance, satisfy_config, secret_config_violations
+    from specialist_lifecycle import SpecialistInstance, satisfy_config
     from specialist_install_consent import install_consent_identity
+    from approval_records import values_digest
     import specialist_materialize
 
     # F1: `slug` is a caller-supplied argument independent of `inspection`;
@@ -3313,7 +3502,8 @@ def _upgrade_core(
     identity = install_consent_identity(
         component_id=inspection.component_id, version=inspection.version,
         root_digest=inspection.root_digest, slug=inspection.slug,
-        receipt_digest=inspection.receipt_digest)
+        receipt_digest=inspection.receipt_digest,
+        values_digest=values_digest(approved_values))
     if not acks.is_acked(identity):
         raise SpecialistInstallError("consent_missing", "no recorded operator approval for the upgrade")
 
@@ -3358,21 +3548,9 @@ def _upgrade_core(
     # #337: same channel discipline as commit_specialist_install — refuse a
     # secret-named key arriving with a plaintext value, and an undeclared
     # secret_names_provided entry, BEFORE any staging.
-    secret_valued, unknown_secret_names = secret_config_violations(
-        schema=component.config_schema, provided_non_secret=config,
-        provided_secret_names=secret_names_provided,
-    )
-    if secret_valued:
-        raise SpecialistInstallError(
-            "secret_value_in_config",
-            f"config keys {secret_valued} are declared secret_names — secret values "
-            "are never accepted as plaintext config; provide the secret through the "
-            "secret channel and list its name in secret_names_provided")
-    if unknown_secret_names:
-        raise SpecialistInstallError(
-            "unknown_secret_name",
-            f"secret_names_provided entries {unknown_secret_names} are not declared "
-            "in the component's config_schema secret_names")
+    _refuse_secret_channel_violations(
+        schema=component.config_schema, config=config,
+        secret_names_provided=secret_names_provided)
 
     # Re-validate the OPERATOR'S EXISTING non-secret config against the NEW
     # schema, fail-closed, into the DESIRED snapshot only (spec §4.1) — the
@@ -3397,10 +3575,6 @@ def _upgrade_core(
         # operator re-supplies config (or the upgrade lands
         # pending-configuration) rather than legacy plaintext riding through.
         prior_secret_names = set(active_before.config_snapshot)
-    carried_config = {
-        k: v for k, v in dict(active_before.config_snapshot).items()
-        if k not in prior_secret_names
-    }
     known_keys = set(component.config_schema.get("required", [])) | secret_names
     # #331: a pending-configuration UPGRADE retry must also keep the settings
     # its earlier attempt already supplied — carry the SAME-TARGET-ROOT
@@ -3436,13 +3610,14 @@ def _upgrade_core(
                 f"read ({exc}); refusing to restage over it — preserve the pending "
                 f"candidate, its saved configuration, and the receipt and staging "
                 f"tree needed to resume; resolve the read error and retry") from exc
-    desired_carried = {}
-    if _desired_before is not None and _desired_before.root == root:
-        desired_carried = {
-            k: v for k, v in dict(_desired_before.config_snapshot).items()
-            if k in known_keys and k not in secret_names
-        }
-    stale_config = {**carried_config, **desired_carried, **dict(config)}
+    _effective_inputs = dict(
+        config=config, schema=component.config_schema,
+        active_snapshot=active_before.config_snapshot,
+        prior_secret_names=prior_secret_names,
+        pending_snapshot=(_desired_before.config_snapshot
+                          if _desired_before is not None and _desired_before.root == root
+                          else None))
+    stale_config = _upgrade_carried_config(**_effective_inputs)
     dropped_keys = sorted(k for k in stale_config if k not in known_keys)
     stripped_secret_keys = sorted(
         {k for k in active_before.config_snapshot if k in prior_secret_names}
@@ -3451,10 +3626,11 @@ def _upgrade_core(
         logger.info(
             "specialist upgrade %r: stripped legacy plaintext secret key(s) %s from "
             "the carried config_snapshot (#337)", slug, stripped_secret_keys)
-    merged_config = {
-        k: v for k, v in stale_config.items()
-        if k in known_keys and k not in secret_names
-    }
+    merged_config = upgrade_effective_config(**_effective_inputs)
+    # What is staged is exactly what the approval froze: refused here, before
+    # any stage, whatever the saved settings became since the request.
+    _require_approved_values(approved_values, config=merged_config,
+                             secret_names_provided=secret_names_provided)
     satisfied, missing = satisfy_config(
         schema=component.config_schema, provided_non_secret=merged_config,
         provided_secret_names=secret_names_provided,

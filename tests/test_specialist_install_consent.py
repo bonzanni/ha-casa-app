@@ -3,13 +3,18 @@ from types import SimpleNamespace
 
 import pytest
 
+from approval_records import values_digest
 from specialist_install import DependencyResolution, InspectionResult
 from specialist_install_consent import (
     SpecialistInstallAckStore,
+    identity_for_inspection,
     install_consent_identity,
     prompt_specialist_install_consent,
     render_install_consent_message,
 )
+
+#: the values digest of a fresh install with no settings supplied
+VD = values_digest({"config": {}, "secrets": []})
 
 
 def _inspection(**overrides) -> InspectionResult:
@@ -29,37 +34,37 @@ def _inspection(**overrides) -> InspectionResult:
 
 def test_identity_is_stable_for_the_same_inputs() -> None:
     a = install_consent_identity(component_id="casa-test/mtg", version="0.1.0",
-                                  root_digest="sha256:" + "1" * 64, slug="mtg")
+                                  root_digest="sha256:" + "1" * 64, slug="mtg", values_digest=VD)
     b = install_consent_identity(component_id="casa-test/mtg", version="0.1.0",
-                                  root_digest="sha256:" + "1" * 64, slug="mtg")
+                                  root_digest="sha256:" + "1" * 64, slug="mtg", values_digest=VD)
     assert a == b
 
 
 def test_identity_changes_when_component_checksum_changes() -> None:
     a = install_consent_identity(component_id="casa-test/mtg", version="0.1.0",
-                                  root_digest="sha256:" + "1" * 64, slug="mtg")
+                                  root_digest="sha256:" + "1" * 64, slug="mtg", values_digest=VD)
     b = install_consent_identity(component_id="casa-test/mtg", version="0.1.0",
-                                  root_digest="sha256:" + "9" * 64, slug="mtg")
+                                  root_digest="sha256:" + "9" * 64, slug="mtg", values_digest=VD)
     assert a != b
 
 
 def test_ack_store_is_unacked_until_recorded(tmp_path: Path) -> None:
     store = SpecialistInstallAckStore(path=tmp_path / "acks.json")
     identity = install_consent_identity(component_id="casa-test/mtg", version="0.1.0",
-                                         root_digest="sha256:" + "1" * 64, slug="mtg")
+                                         root_digest="sha256:" + "1" * 64, slug="mtg", values_digest=VD)
     assert store.is_acked(identity) is False
     store.record(identity=identity, component_id="casa-test/mtg", version="0.1.0",
-                 component_checksum="sha256:" + "1" * 64, slug="mtg")
+                 component_checksum="sha256:" + "1" * 64, slug="mtg", values_digest=VD)
     assert store.is_acked(identity) is True
 
 
 def test_ack_store_persists_across_instances(tmp_path: Path) -> None:
     path = tmp_path / "acks.json"
     identity = install_consent_identity(component_id="casa-test/mtg", version="0.1.0",
-                                         root_digest="sha256:" + "1" * 64, slug="mtg")
+                                         root_digest="sha256:" + "1" * 64, slug="mtg", values_digest=VD)
     SpecialistInstallAckStore(path=path).record(
         identity=identity, component_id="casa-test/mtg", version="0.1.0",
-        component_checksum="sha256:" + "1" * 64, slug="mtg")
+        component_checksum="sha256:" + "1" * 64, slug="mtg", values_digest=VD)
     reopened = SpecialistInstallAckStore(path=path)
     assert reopened.is_acked(identity) is True
 
@@ -69,10 +74,10 @@ def test_ack_store_fails_closed_on_a_hand_edited_key(tmp_path: Path) -> None:
 
     path = tmp_path / "acks.json"
     identity = install_consent_identity(component_id="casa-test/mtg", version="0.1.0",
-                                         root_digest="sha256:" + "1" * 64, slug="mtg")
+                                         root_digest="sha256:" + "1" * 64, slug="mtg", values_digest=VD)
     SpecialistInstallAckStore(path=path).record(
         identity=identity, component_id="casa-test/mtg", version="0.1.0",
-        component_checksum="sha256:" + "1" * 64, slug="mtg")
+        component_checksum="sha256:" + "1" * 64, slug="mtg", values_digest=VD)
     raw = json.loads(path.read_text(encoding="utf-8"))
     # Tamper: change the recorded component_checksum without updating the key.
     list(raw["acks"].values())[0]["component_checksum"] = "sha256:" + "0" * 64
@@ -90,11 +95,12 @@ def test_record_aborts_rather_than_wiping_on_transient_read_failure(
     path = tmp_path / "acks.json"
     store = SpecialistInstallAckStore(path=path)
     ident_a = install_consent_identity(component_id="casa-test/a", version="0.1.0",
-                                       root_digest="sha256:" + "1" * 64, slug="a")
+                                       root_digest="sha256:" + "1" * 64, slug="a", values_digest=VD)
     ident_b = install_consent_identity(component_id="casa-test/b", version="0.1.0",
-                                       root_digest="sha256:" + "2" * 64, slug="b")
+                                       root_digest="sha256:" + "2" * 64, slug="b", values_digest=VD)
     store.record(identity=ident_a, component_id="casa-test/a", version="0.1.0",
-                 component_checksum="sha256:" + "1" * 64, slug="a")
+                 component_checksum="sha256:" + "1" * 64, slug="a",
+                 values_digest=VD)
 
     real_read_text = Path.read_text
 
@@ -107,7 +113,8 @@ def test_record_aborts_rather_than_wiping_on_transient_read_failure(
         mp.setattr(Path, "read_text", _flaky)
         with pytest.raises(OSError):
             store.record(identity=ident_b, component_id="casa-test/b", version="0.1.0",
-                         component_checksum="sha256:" + "2" * 64, slug="b")
+                         component_checksum="sha256:" + "2" * 64, slug="b",
+                         values_digest=VD)
 
     assert SpecialistInstallAckStore(path=path).is_acked(ident_a)
 
@@ -115,11 +122,87 @@ def test_record_aborts_rather_than_wiping_on_transient_read_failure(
 def test_revoke_removes_an_ack(tmp_path: Path) -> None:
     store = SpecialistInstallAckStore(path=tmp_path / "acks.json")
     identity = install_consent_identity(component_id="casa-test/mtg", version="0.1.0",
-                                         root_digest="sha256:" + "1" * 64, slug="mtg")
+                                         root_digest="sha256:" + "1" * 64, slug="mtg", values_digest=VD)
     store.record(identity=identity, component_id="casa-test/mtg", version="0.1.0",
-                 component_checksum="sha256:" + "1" * 64, slug="mtg")
+                 component_checksum="sha256:" + "1" * 64, slug="mtg", values_digest=VD)
     assert store.revoke(identity) is True
     assert store.is_acked(identity) is False
+
+
+def test_identity_changes_when_the_values_digest_changes() -> None:
+    a = install_consent_identity(component_id="casa-test/mtg", version="0.1.0",
+                                  root_digest="sha256:" + "1" * 64, slug="mtg", values_digest=VD)
+    b = install_consent_identity(component_id="casa-test/mtg", version="0.1.0",
+                                  root_digest="sha256:" + "1" * 64, slug="mtg",
+                                  values_digest=values_digest({"config": {"A": "1"},
+                                                               "secrets": []}))
+    assert a != b
+
+
+def test_identity_needs_a_values_digest() -> None:
+    with pytest.raises(TypeError):
+        install_consent_identity(component_id="casa-test/mtg", version="0.1.0",  # type: ignore[call-arg]
+                                 root_digest="sha256:" + "1" * 64, slug="mtg")
+    with pytest.raises(ValueError):
+        install_consent_identity(component_id="casa-test/mtg", version="0.1.0",
+                                 root_digest="sha256:" + "1" * 64, slug="mtg", values_digest="")
+
+
+def test_identity_for_inspection_is_the_identity_of_its_fields_and_values() -> None:
+    insp = _inspection(receipt_digest="sha256:" + "7" * 64)
+    values = {"config": {"A": "1"}, "secrets": ["S"]}
+    assert identity_for_inspection(insp, values=values) == install_consent_identity(
+        component_id=insp.component_id, version=insp.version, root_digest=insp.root_digest,
+        slug=insp.slug, receipt_digest=insp.receipt_digest,
+        values_digest=values_digest(values))
+    assert identity_for_inspection(insp, values=values) != identity_for_inspection(
+        insp, values={"config": {"A": "2"}, "secrets": ["S"]})
+
+
+def test_the_ack_record_persists_its_values_digest(tmp_path: Path) -> None:
+    import json
+
+    path = tmp_path / "acks.json"
+    identity = install_consent_identity(component_id="casa-test/mtg", version="0.1.0",
+                                         root_digest="sha256:" + "1" * 64, slug="mtg",
+                                         values_digest=VD)
+    SpecialistInstallAckStore(path=path).record(
+        identity=identity, component_id="casa-test/mtg", version="0.1.0",
+        component_checksum="sha256:" + "1" * 64, slug="mtg", values_digest=VD)
+    assert json.loads(path.read_text(encoding="utf-8"))["acks"][identity]["values_digest"] == VD
+
+
+def test_a_record_without_a_values_digest_is_an_identity_mismatch(tmp_path: Path) -> None:
+    """An entry written before approvals carried their values recomputes to no
+    key: the store reads it as it reads any mismatch, failing closed."""
+    import json
+
+    path = tmp_path / "acks.json"
+    legacy_fields = {"component_id": "casa-test/mtg", "version": "0.1.0",
+                     "component_checksum": "sha256:" + "1" * 64, "slug": "mtg", "ts": 1}
+    from canonical_bytes import checksum_json
+    legacy_key = checksum_json({k: legacy_fields[k] for k in
+                                ("component_id", "version", "component_checksum", "slug")})
+    path.write_text(json.dumps({"schema_version": 1, "acks": {legacy_key: legacy_fields}}),
+                    encoding="utf-8")
+    store = SpecialistInstallAckStore(path=path)
+    assert store.is_acked(legacy_key) is False
+    assert store.get(legacy_key) is None
+    assert store.snapshot_slug("mtg") == []
+
+
+def test_restoring_a_journalled_record_recomputes_its_identity_with_its_values_digest(
+        tmp_path: Path) -> None:
+    store = SpecialistInstallAckStore(path=tmp_path / "acks.json")
+    identity = install_consent_identity(component_id="casa-test/mtg", version="0.1.0",
+                                         root_digest="sha256:" + "1" * 64, slug="mtg",
+                                         values_digest=VD)
+    store.record(identity=identity, component_id="casa-test/mtg", version="0.1.0",
+                 component_checksum="sha256:" + "1" * 64, slug="mtg", values_digest=VD)
+    removed = store.retire_slug("mtg")
+    assert store.is_acked(identity) is False
+    store.restore_records(removed)
+    assert store.is_acked(identity) is True
 
 
 def test_render_message_names_slug_and_dependencies() -> None:

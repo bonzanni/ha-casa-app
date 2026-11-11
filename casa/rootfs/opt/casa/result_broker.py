@@ -575,11 +575,13 @@ DESK_REPLY = "desk_reply"           # a desk turn's reply (``specialist_desk``)
 #: approval (#1252): posted as its reply, but the work is not done
 DESK_REPLY_BEFORE_APPROVAL = "desk_reply_before_approval"
 RECEIPT = "receipt"                 # a stored call's receipt after a tap
+#: the message a task's delegate closed with, posted in the task's own chat
+TASK_ANSWER = "task_answer"
 #: v0.347.6: the kinds whose post is the message the specialist's turn closed
 #: with, his answer. A delivered slot and a receipt are sent the same way
 #: mid-run and at the end, so neither is, nor a desk reply cut at a pending
 #: approval: the send path decides, never the text.
-ANSWER_KINDS = frozenset({DESK_REPLY})
+ANSWER_KINDS = frozenset({DESK_REPLY, TASK_ANSWER})
 
 
 @dataclasses.dataclass(frozen=True)

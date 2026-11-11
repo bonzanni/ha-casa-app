@@ -42,8 +42,12 @@ def prompt_persona_install_consent(
     requester: str = "",
 ) -> Any:
     # #1445: ``requester`` — see the specialist sibling.
+    # The values this card approves: a persona install has no settings.
+    from approval_records import values_digest as _values_digest
+    values_digest = _values_digest({})
     identity = persona_install_consent_identity(
-        persona_id=inspection.persona_id, version=inspection.version, checksum=inspection.checksum)
+        persona_id=inspection.persona_id, version=inspection.version, checksum=inspection.checksum,
+        values_digest=values_digest)
     key = PersonaInstallConsentKey(persona_id=inspection.persona_id, identity=identity,
                                    requester=requester)
     text = render_persona_install_consent_message(inspection)
@@ -62,7 +66,7 @@ def prompt_persona_install_consent(
             meta["acked"] = acks.record(
                 identity=identity, persona_id=inspection.persona_id,
                 version=inspection.version, checksum=inspection.checksum,
-                expect_generations=generations)
+                values_digest=values_digest, expect_generations=generations)
 
     def _finish_factory(message_id: int, req: Any) -> Callable[[dict], Any]:
         async def _finish(outcome: dict) -> None:

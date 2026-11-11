@@ -1,8 +1,8 @@
 """The configurator's run lease and its Restart now button.
 
 The configurator is a delegated run in the operator's DM, not an engagement.
-Every configurator run, from every origin (Ellen's delegation, a swipe-reply
-on its message, an Approve continuation), takes this one process-wide lease
+Every configurator run, from every origin (Ellen's delegation, or Casa
+continuing it after an approval), takes this one process-wide lease
 before anything of the run starts, and holds it until the run's session has
 ended. A later request waits up to ``LEASE_WAIT_S``, then is refused with the
 busy text and nothing of it runs. A new run also waits, within the same
@@ -127,8 +127,8 @@ def busy_error() -> ConfiguratorBusy:
 
 
 # The instant a configurator request's whole wait ends: set where the request
-# arrives (a desk use waits for its desk first), read by :func:`acquire`, so
-# the desk wait and the lease wait share one ``LEASE_WAIT_S``.
+# arrives (a delegation waits for the configurator's lane first), read by
+# :func:`acquire`, so the lane wait and the lease wait share one ``LEASE_WAIT_S``.
 _wait_deadline: "ContextVar[float | None]" = ContextVar(
     "configurator_wait_deadline", default=None)
 
@@ -156,7 +156,7 @@ def is_configurator(cfg: Any) -> bool:
 async def acquire(*, run_key: str, via: str, task: str) -> Lease:
     """Take the lease, waiting up to ``LEASE_WAIT_S`` for the holder, any
     running plugin erasure and any surviving bundle transaction (less any
-    time the request already spent waiting for its desk); past the bound
+    time the request already spent waiting for the configurator's lane); past the bound
     raise :class:`ConfiguratorBusy`."""
     global _held
     lock = _get_lock()

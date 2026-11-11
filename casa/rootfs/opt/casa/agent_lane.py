@@ -40,6 +40,12 @@ class LaneFaulted(Exception):
     """A use admitted by the lane found the agent faulted; nothing ran."""
 
 
+def has_lane(cfg: Any) -> bool:
+    """Who has a lane: a specialist, or the configurator (kind ``executor``).
+    A resident has none."""
+    return getattr(cfg, "kind", "") in ("specialist", "executor")
+
+
 def faulted_line(label: str) -> str:
     """The operator's line for an agent that is out of service until restart."""
     return f"{label} is out of service until Casa restarts."

@@ -82,13 +82,8 @@ OUTCOME_ECHO = {"operator_link": "posted a link to your chat.",
 OUTCOME_ECHO_OTHER = "sent you something."
 
 
-def clip(text: str, limit: int) -> str:
-    """*text* within *limit* characters, a visible marker when it was cut."""
-    text = text or ""
-    if len(text) <= limit:
-        return text
-    keep = max(limit - len(CLIP), 0)
-    return text[:keep] + CLIP
+import chat_notes  # noqa: E402
+from chat_notes import FIELD_MIN_CHARS, clip  # noqa: E402,F401 — re-exported
 
 
 # -- #1314: a reply the desk does not take ----------------------------------------
@@ -110,50 +105,10 @@ def reply_note(who: str, posted: str | None, quoted_text: str | None) -> str:
 
 # -- S6 §2.6: one bounded composer for every line the slice introduces or changes ----------
 
-FIELD_MIN_CHARS = 8          # the least a label or a display field keeps (then CLIP)
-
-
 def bounded_line(template: str, *, label: str, fields: "dict[str, Any] | None" = None,
                  limit: "int | None" = None) -> str:
-    """ONE string for the notice and the resident's echo, within the echo cap:
-    the literal text of *template* (the outcome clause and its connectives) is
-    reserved first, then the label and the display fields — ``{label}`` and
-    ``{<field>}`` placeholders — share what remains, each keeping at least
-    ``FIELD_MIN_CHARS`` and clipped with the marker. A notice composed any other
-    way lost its outcome when ``record_echo`` clipped it at 120 (S6 design §2.6:
-    the echo-budget shape, found in three review rounds, generalised here)."""
-    import result_broker as rb
-    cap = rb.ECHO_LINE_MAX if limit is None else int(limit)
-    values = {"label": str(label or "")}
-    for key, value in (fields or {}).items():
-        values[str(key)] = str(value if value is not None else "")
-    literal = template
-    for key in values:
-        literal = literal.replace("{" + key + "}", "")
-    budget = max(0, cap - len(literal))
-    keys = list(values)
-    floor = min(FIELD_MIN_CHARS, budget // max(1, len(keys)))
-    alloc = {k: min(len(values[k]), floor) for k in keys}
-    remaining = budget - sum(alloc.values())
-    need = [k for k in keys if len(values[k]) > alloc[k]]
-    while need and remaining > 0:
-        share = max(1, remaining // len(need))
-        progressed = False
-        for key in list(need):
-            extra = min(share, len(values[key]) - alloc[key], remaining)
-            if extra > 0:
-                alloc[key] += extra
-                remaining -= extra
-                progressed = True
-            if alloc[key] >= len(values[key]):
-                need.remove(key)
-        if not progressed:
-            break
-    out = template
-    for key in keys:
-        value = values[key]
-        out = out.replace("{" + key + "}", value if alloc[key] >= len(value) else clip(value, alloc[key]))
-    return out
+    """:func:`chat_notes.bounded_line`."""
+    return chat_notes.bounded_line(template, label=label, fields=fields, limit=limit)
 
 
 _FILE_OUTCOME_CLAUSES = {
@@ -444,10 +399,8 @@ def is_specialist(cfg: Any) -> bool:
 
 
 def has_desk(cfg: Any) -> bool:
-    """Who holds a desk: a specialist, or the configurator (kind ``executor``,
-    since v0.351.0) — a reply on its post reaches it here, and an
-    approval it raised continues here. A resident holds none."""
-    return getattr(cfg, "kind", "") in ("specialist", "executor")
+    """:func:`agent_lane.has_lane`."""
+    return agent_lane.has_lane(cfg)
 
 
 def desk_target_ok(resident_role: str, role: str) -> bool:

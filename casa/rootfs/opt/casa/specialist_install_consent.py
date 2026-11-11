@@ -32,12 +32,13 @@ _LEDGER_LOCK = threading.Lock()
 
 
 def install_consent_identity(*, component_id: str, version: str, root_digest: str,
-                              slug: str, receipt_digest: str = "") -> str:
+                              slug: str, values_digest: str, receipt_digest: str = "") -> str:
     """The ONE identity-derivation function for a specialist-install consent
     decision (mirrors plugin_triggers.ack_identity). Binds the approval to
-    the EXACT inspected component — a re-fetch that changes any of these
-    fields yields a different identity, so a stale approval can never
-    ack a different artifact.
+    the EXACT inspected component AND the exact settings it will stage — a
+    re-fetch that changes any of these fields, or other effective settings,
+    yields a different identity, so a stale approval can never ack a
+    different artifact or other values.
 
     The bound digest is `inspection.root_digest` — compute_install_root_digest's
     full-closure digest (role+doctrine+config-schema+manifest+persona+
@@ -45,28 +46,37 @@ def install_consent_identity(*, component_id: str, version: str, root_digest: st
     digest, which is still a separate field on InspectionResult for
     CAS-neutral display/logging only). Binding consent to the narrow digest
     would let a persona/corpus/plugin substitution slip past an operator's
-    approval unnoticed.
+    approval unnoticed. The persisted ack-store field and the hashed input key
+    keep their historical name, ``"component_checksum"``.
 
-    Minor Ma (whole-branch review): the PARAMETER is now honestly named
-    `root_digest` to match what every caller actually passes. The persisted
-    ack-store JSON field and the identity-hash INPUT KEY both stay
-    `"component_checksum"` for backward compatibility — an existing ack file's
-    recomputed identity must remain byte-stable — so the value is mapped onto
-    that historical key here rather than renamed through the hash.
-
-    Task 7: `receipt_digest` binds a bundled-plugin receipt (Task 8) into the
-    consent identity so re-approval is required whenever the bundled-plugin
-    closure changes. It joins the hashed payload ONLY when non-empty — the
-    default `receipt_digest=""` MUST hash byte-identically to the pre-Task-7
-    four-key payload, so every legacy ack file recorded before this change
-    keeps recomputing to the same identity on load."""
+    `receipt_digest` binds a bundled-plugin receipt into the identity, so
+    re-approval is required whenever the bundled-plugin closure changes; it
+    joins the hashed payload only when non-empty. `values_digest` is
+    ``approval_records.values_digest`` of the effective settings
+    (``{"config": <the merged non-secret config the library will stage>,
+    "secrets": <the sorted secret names provided>}``) and is required."""
+    if not (isinstance(values_digest, str) and values_digest):
+        raise ValueError("install_consent_identity needs the values digest")
     payload = {
         "component_id": component_id, "version": version,
         "component_checksum": root_digest, "slug": slug,
+        "values_digest": values_digest,
     }
     if receipt_digest:
         payload["receipt_digest"] = receipt_digest
     return checksum_json(payload)
+
+
+def identity_for_inspection(inspection: Any, *, values: dict) -> str:
+    """The consent identity of *inspection* with the effective settings *values*
+    (``{"config", "secrets"}``): the one builder every caller holding an
+    inspection uses."""
+    from approval_records import values_digest
+    return install_consent_identity(
+        component_id=inspection.component_id, version=inspection.version,
+        root_digest=inspection.root_digest, slug=inspection.slug,
+        receipt_digest=inspection.receipt_digest,
+        values_digest=values_digest(values))
 
 
 @dataclass(frozen=True)
@@ -135,16 +145,16 @@ class SpecialistInstallAckStore:
             receipt_digest = rec.get("receipt_digest", "")
             if not isinstance(receipt_digest, str):
                 return {}
-            # Ma: the persisted field stays "component_checksum" (backward
-            # compat); map it onto the honestly-named `root_digest` parameter.
-            # A legacy record has no "receipt_digest" key at all, so
-            # `rec.get("receipt_digest", "")` defaults to "" — the SAME
-            # default `install_consent_identity` uses — recomputing the
-            # exact byte-stable legacy identity.
+            # The values digest is part of the identity: a record without one
+            # cannot recompute to its key, so it fails the whole store closed
+            # like any other identity mismatch.
+            values_digest = rec.get("values_digest")
+            if not (isinstance(values_digest, str) and values_digest):
+                return {}
             if install_consent_identity(
                 component_id=fields["component_id"], version=fields["version"],
                 root_digest=fields["component_checksum"], slug=fields["slug"],
-                receipt_digest=receipt_digest,
+                receipt_digest=receipt_digest, values_digest=values_digest,
             ) != ident:
                 return {}
             out[ident] = rec
@@ -171,10 +181,11 @@ class SpecialistInstallAckStore:
             return dict(rec) if rec is not None else None
 
     def record(self, *, identity: str, component_id: str, version: str,
-               component_checksum: str, slug: str, receipt_digest: str = "") -> None:
+               component_checksum: str, slug: str, values_digest: str,
+               receipt_digest: str = "") -> None:
         rec = {"component_id": component_id, "version": version,
                "component_checksum": component_checksum, "slug": slug,
-               "ts": int(time.time())}
+               "values_digest": values_digest, "ts": int(time.time())}
         if receipt_digest:
             rec["receipt_digest"] = receipt_digest
         with _LEDGER_LOCK:
@@ -214,7 +225,7 @@ class SpecialistInstallAckStore:
     def restore_records(self, records: list[dict]) -> None:
         """Slug-scoped delta re-insert used by journal rollback/boot
         reconciliation: each record's identity is recomputed from its OWN
-        fields (including its own `receipt_digest`, defaulting to "" for
+        fields (its own `values_digest`, and its `receipt_digest`, "" for
         records without the key) rather than trusted verbatim, and the
         result is merged into the current ledger under the lock — never a
         whole-map rewrite that could clobber a concurrent unrelated write."""
@@ -229,6 +240,7 @@ class SpecialistInstallAckStore:
                     component_id=rec["component_id"], version=rec["version"],
                     root_digest=rec["component_checksum"], slug=rec["slug"],
                     receipt_digest=rec.get("receipt_digest", ""),
+                    values_digest=rec["values_digest"],
                 )
                 candidate[identity] = rec
             self._persist_locked(candidate)
@@ -335,10 +347,13 @@ def prompt_specialist_install_consent(
     # into the identity so a bundled-plugin closure change forces
     # re-approval.
     receipt_digest = inspection.receipt_digest
+    # The settings this card approves: none supplied, as a fresh install stages.
+    from approval_records import values_digest as _values_digest
+    values_digest = _values_digest({"config": {}, "secrets": []})
     identity = install_consent_identity(
         component_id=inspection.component_id, version=inspection.version,
         root_digest=inspection.root_digest, slug=inspection.slug,
-        receipt_digest=receipt_digest,
+        receipt_digest=receipt_digest, values_digest=values_digest,
     )
     key = SpecialistInstallConsentKey(
         component_id=inspection.component_id, slug=inspection.slug, identity=identity,
@@ -353,7 +368,7 @@ def prompt_specialist_install_consent(
             acks.record(identity=identity, component_id=inspection.component_id,
                         version=inspection.version,
                         component_checksum=inspection.root_digest, slug=inspection.slug,
-                        receipt_digest=receipt_digest)
+                        receipt_digest=receipt_digest, values_digest=values_digest)
             meta["acked"] = True
 
     def _finish_factory(message_id: int, req: Any) -> Callable[[dict], Any]:
