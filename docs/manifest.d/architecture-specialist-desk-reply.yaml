@@ -1,5 +1,0 @@
-# Manifest shard: the retired specialist desk-reply document's row, kept until a docs-only
-# change deletes the document.
-- doc: architecture/specialist-desk-reply.md
-  summary: "Retired: a specialist desk turn's labelled reply, its notices and the resident's echo of it, removed with the desk."
-  when_changing: nothing; this retired document is deleted in a docs-only change
