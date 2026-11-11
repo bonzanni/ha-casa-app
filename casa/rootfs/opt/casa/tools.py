@@ -814,11 +814,13 @@ def _answer_posts(birth: "TaskBirth | None", answer: str) -> bool:
 
 
 async def _post_task_text(birth: TaskBirth, text: str, *, intent: IntentKind,
-                          kind: str = "") -> bool:
+                          slot: str, kind: str = "") -> bool:
     """Post *text* at the task's delivery, through its executor's endpoint,
     every page filed under the task (its post record's owner is the task), so
-    a reply to any page reaches the task. Bounded; a failure is logged and
-    reported as ``False``."""
+    a reply to any page reaches the task. *slot* names which of the task's
+    posts this is (its start line or its answer): the two share owner and
+    tool-use id, so the slot alone keeps them two posts, each with its own
+    memory line. Bounded; a failure is logged and reported as ``False``."""
     import result_broker as rb
     ep = _task_endpoint(birth)
     if ep is None:
@@ -828,7 +830,7 @@ async def _post_task_text(birth: TaskBirth, text: str, *, intent: IntentKind,
     if admitted is None:
         return False
     post = rb.PostRecord(role=birth.executor, operator_id=delivery.chat_id, plugin="",
-                         slot="task", tool_use_id=birth.task_id, owner=birth.task_id,
+                         slot=slot, tool_use_id=birth.task_id, owner=birth.task_id,
                          posted_at=time.time(), kind=kind)
     try:
         outcome = await asyncio.wait_for(
@@ -847,7 +849,7 @@ async def _post_task_start(birth: TaskBirth) -> None:
     await _post_task_text(
         birth,
         f"{who} asked me: {_clip_line(birth.brief, _TASK_START_BRIEF_CHARS)}",
-        intent=IntentKind.DISCRETE)
+        intent=IntentKind.DISCRETE, slot="task-start")
 
 
 async def _settle_task(birth: "TaskBirth | None", *, answer: "str | None" = None,
@@ -862,7 +864,7 @@ async def _settle_task(birth: "TaskBirth | None", *, answer: "str | None" = None
         if answer is not None:
             import result_broker as rb
             await _post_task_text(birth, answer, intent=IntentKind.FINAL_REPLY,
-                                  kind=rb.DESK_REPLY)
+                                  slot="task-answer", kind=rb.DESK_REPLY)
         _note_task(birth, "asked you",
                    "you answered" if answer is not None
                    else f"you couldn't finish it ({failure or 'unknown'})")

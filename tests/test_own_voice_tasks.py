@@ -58,6 +58,8 @@ try:
 except ImportError:
     from test_delegate_to_agent import _caller_cfg, _FakeSpecialistClient, _seed_specialist_dir
     from test_specialist_registry import _use_synthetic_roles_dir
+from test_memory_capture import captured_events
+from test_memory_capture import mem  # noqa: F401 — fixture
 
 pytestmark = pytest.mark.asyncio
 
@@ -921,3 +923,29 @@ async def test_a_run_under_another_id_inside_the_task_is_not_told_so(world):
     await _delegate("sync")
     assert "answer_shown:" in nested["outer"]
     assert "answer_shown:" not in nested["inner"]
+
+
+
+# ---------------------------------------------------------------------------
+# Memory keeps one line for the start line and one for the answer
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("answer", ["€420, mostly Albert Heijn.", "long"],
+                         ids=["one-page", "multi-page"])
+async def test_memory_keeps_a_line_for_the_start_line_and_one_for_the_answer(
+        world, mem, answer):
+    """When the agent keeps no memory, its chat's start line and its answer
+    are two posts: memory keeps one Casa line for each, every page of the
+    answer being the one answer line."""
+    tools._agent_role_map["finance"].memory.token_budget = 0
+    _FakeSpecialistClient.reset(response=_long_answer() if answer == "long" else answer)
+    payload = await _delegate("sync")
+    assert payload["status"] == "ok", payload
+    texts = _alex_texts(world)
+    assert texts[0] == START
+    if answer == "long":
+        assert len(texts) >= 3                   # the answer is paged
+    rows = await captured_events(mem)
+    assert sorted(e["text"] for e in rows) == [
+        f"{NAME} posted his answer to your chat.", f"{NAME} posted to your chat."]
+    assert len({e["source_key"] for e in rows}) == 2
