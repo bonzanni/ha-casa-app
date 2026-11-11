@@ -868,7 +868,7 @@ BOT_ID_READS = {
     ("callback_episodes.py", "_run_nudge"): (1, FIELD, "the sign-in link's delivery's own bot"),
     ("channels/telegram.py", "TelegramChannel._card_agent"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._dispatch_button_continuation"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
-    ("channels/telegram.py", "TelegramChannel._dispatch_dm_turn"): (3, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
+    ("channels/telegram.py", "TelegramChannel._dispatch_dm_turn"): (4, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._dispatch_proposal_tap"): (3, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._dispatch_scheduled_continuation"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._hand_back"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),

@@ -155,17 +155,23 @@ def world(monkeypatch, tmp_path):
                         lambda task_id, path: grants.append((task_id, path)))
     # the own chat's lifecycle, as far as a turn asks it: whether the chat has
     # opened yet (a flag only ``mark_open`` flips), and every mark
-    opening = types.SimpleNamespace(unopened=False, asked=[], marks=[])
+    opening = types.SimpleNamespace(unopened=False, moved=False, asked=[], marks=[])
 
     def chat_opening(bot_id):
         opening.asked.append(bot_id)
         return opening.unopened
+
+    def chat_moved(bot_id):
+        if isinstance(opening.moved, Exception):
+            raise opening.moved
+        return opening.moved
 
     async def mark_open(bot_id):
         opening.marks.append(bot_id)
         opening.unopened = False
     monkeypatch.setattr(own_voice, "chat_opening", chat_opening, raising=False)
     monkeypatch.setattr(own_voice, "mark_open", mark_open, raising=False)
+    monkeypatch.setattr(own_voice, "chat_moved", chat_moved, raising=False)
     yield types.SimpleNamespace(index=index, inputs=inputs, inboxes=inboxes, grants=grants,
                                 opening=opening)
     chat_notes.reset()
@@ -648,6 +654,46 @@ async def test_a_turn_handed_back_and_taken_on_retry_opens_the_chat(world, monke
     assert first.context["_chat_opening"] is True
     assert "_chat_opening" not in second.context
     assert world.opening.marks == [OWN_BOT]
+
+
+async def test_the_first_turn_of_a_moved_chat_carries_the_moved_opening(world):
+    ch, bus = _endpoint("own")
+    world.opening.unopened = True
+    world.opening.moved = True
+    await _handle(ch, _text("hi"))
+    [turn] = _turns(bus, "finance")
+    assert turn.context["_chat_opening"] == "moved"
+    assert world.opening.marks == [OWN_BOT]
+
+
+async def test_a_moved_opening_marks_the_chat_open_once_taken(world, monkeypatch):
+    ch, bus = _endpoint("own", register=False)
+    world.opening.unopened = True
+    world.opening.moved = True
+    await _handle(ch, _text("hi"))                      # no queue yet: nothing opens
+    assert world.opening.marks == []
+
+    async def registered(bot_id, update_json):
+        bus.register("finance", _noop)                  # the agent came back meanwhile
+        return "deliver"
+    monkeypatch.setattr(own_voice, "intake", registered)
+    await _handle(ch, _text("hi", mid=70))
+    await _handle(ch, _text("still there?", mid=71))
+    first, second = _turns(bus, "finance")
+    assert first.context["_chat_opening"] == "moved"
+    assert "_chat_opening" not in second.context
+    assert world.opening.marks == [OWN_BOT]
+
+
+async def test_a_moved_read_that_fails_opens_the_chat_as_a_first_one(world, caplog):
+    ch, bus = _endpoint("own")
+    world.opening.unopened = True
+    world.opening.moved = RuntimeError("no lifecycle")
+    await _handle(ch, _text("hi"))
+    [turn] = _turns(bus, "finance")
+    assert turn.context["_chat_opening"] is True
+    assert world.opening.marks == [OWN_BOT]
+    assert any("moved" in r.getMessage() for r in caplog.records)
 
 
 async def test_the_residents_bot_never_asks(world):
