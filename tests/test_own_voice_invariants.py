@@ -680,6 +680,24 @@ async def test_a_reply_to_a_live_delegations_post_reaches_it_and_after_its_end_a
     assert _ellen_texts(world) == []
 
 
+async def test_what_the_operator_wrote_into_a_live_task_reaches_its_requester(
+        world, monkeypatch):
+    call, did = await _live_delegation(world, monkeypatch)
+    await _handle(world.alex, _text("only Lidl", reply_to=500,
+                                    quoted_text=f"Ellen asked me: «{BRIEF}»"))
+    assert Held.built.writes[-1].endswith("only Lidl")      # the task read it
+    Held.release.set()
+    payload = await call
+    await _settled()
+    assert payload["status"] == "ok"
+    # Ellen's result names the words once, as the operator wrote them
+    assert payload["text"].endswith(
+        "(Casa: the person also wrote to Alex directly while it worked on this: «only Lidl»)")
+    assert payload["text"].count("only Lidl") == 1
+    assert task_input.take_said(did) == []                   # taken once
+    assert _ellen_texts(world) == []
+
+
 async def _reads(options, path) -> bool:
     """The build's own path check, as its ``Read`` meets it."""
     [scope] = [m for m in options.hooks["PreToolUse"] if m.matcher == "Read|Write|Edit"]

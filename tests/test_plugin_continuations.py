@@ -56,17 +56,6 @@ def roles(monkeypatch, tmp_path):
     return m
 
 
-@pytest.fixture(autouse=True)
-def _closing_text_helper(monkeypatch):
-    """Provides ``tools._closing_text`` where this tree does not define it yet:
-    the message an output closed its turn with, whole."""
-    if not hasattr(tools_mod, "_closing_text"):
-        monkeypatch.setattr(
-            tools_mod, "_closing_text",
-            lambda o: o.text if getattr(o, "final_message", None) is None
-            else o.final_message, raising=False)
-
-
 def _binding(chain=("assistant", "browser"), plugin="browser"):
     ident = GrantIdentity(operator_id=100, chat_id=42, enforcement_role=chain[-1],
                           artifact_id="1" * 64, engagement_id="", bot_id=BOT)

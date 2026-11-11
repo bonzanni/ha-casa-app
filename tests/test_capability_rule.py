@@ -150,17 +150,6 @@ class _Origin:
         tools_mod.engagement_var.reset(self._e)
 
 
-@pytest.fixture(autouse=True)
-def _closing_text_helper(monkeypatch):
-    """Provides ``tools._closing_text`` where this tree does not define it yet:
-    the message an output closed its turn with, whole."""
-    if not hasattr(tools_mod, "_closing_text"):
-        monkeypatch.setattr(
-            tools_mod, "_closing_text",
-            lambda o: o.text if getattr(o, "final_message", None) is None
-            else o.final_message, raising=False)
-
-
 @pytest.fixture
 def world(monkeypatch, tmp_path):
     import authz_grants
