@@ -1262,3 +1262,40 @@ async def test_the_host_releases_through_the_endpoints_release_update_and_edits_
         ("edit", OPERATOR, 5, "ready", [("Open Alex's chat", "noop")],
          ["https://t.me/HeyAlexTestBot"]),
         ("edit", OPERATOR, 5, "open", None, None)]
+
+
+async def test_the_graceful_stop_cancels_pending_retries_before_the_channels_stop(
+        world, root, monkeypatch):
+    """A retry of an agent's bot waits up to an hour, then starts, stops or
+    edits endpoints. Casa's graceful stop cancels it before the channels
+    stop, so nothing wakes during the teardown."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+    import casa_core
+    import tools
+    lc, _host = make_lifecycle(world, root)
+    lc.retry_delays = (3600.0,)
+    lc._schedule_retry(ALEX_BOT, "token not fetched")
+    (retry,) = list(lc._tasks)
+    monkeypatch.setattr(ovl, "_CURRENT", lc)
+    seen = {}
+
+    async def drain(_cm):
+        seen["retry_done_at_channel_stop"] = retry.done()
+
+    monkeypatch.setattr(casa_core, "_drain_broker_before_channel_shutdown", drain)
+    monkeypatch.setattr(tools, "stop_engagement_launches", AsyncMock())
+    monkeypatch.setattr(tools, "drain_delegation_settlements", AsyncMock())
+    monkeypatch.setattr(casa_core, "_close_butler_ha_facade", AsyncMock())
+    engagement_registry = MagicMock(begin_launch_shutdown=MagicMock(return_value=0),
+                                    drain_launches=AsyncMock())
+    await casa_core._shutdown_cleanup(
+        job_registry=MagicMock(close=AsyncMock()), engagement_registry=engagement_registry,
+        scheduler=MagicMock(shutdown=MagicMock()), session_sweeper=MagicMock(stop=AsyncMock()),
+        runtime=MagicMock(agents={}), ha_facade=None,
+        bus=MagicMock(begin_shutdown=MagicMock(), agent_loop_tasks=MagicMock(return_value=[]),
+                      fail_pending=MagicMock(), live_dispatch_tasks=MagicMock(return_value=[])),
+        loop_tasks=[], channel_manager=MagicMock(stop_all=AsyncMock()), runners=[])
+    assert seen == {"retry_done_at_channel_stop": True}
+    assert retry.cancelled() and not lc._tasks
+    await asyncio.sleep(0)

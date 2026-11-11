@@ -1655,3 +1655,11 @@ def install(lifecycle: "Lifecycle | None") -> None:
     """Use *lifecycle* as the process's (``None`` forgets it)."""
     global _CURRENT  # noqa: PLW0603
     _CURRENT = lifecycle
+
+
+async def close_current() -> None:
+    """Graceful stop: cancel the process's pending retries and in-flight
+    reconciles, before the endpoints stop, so none wakes to start or edit
+    anything during the teardown. Nothing when no lifecycle was used."""
+    if _CURRENT is not None:
+        await _CURRENT.close()

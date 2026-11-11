@@ -4334,6 +4334,15 @@ async def _shutdown_cleanup(
         except Exception:  # noqa: BLE001 — shutdown must complete
             logger.warning("agent log stop failed", exc_info=True)
 
+    # The own-chat lifecycle's retries and reconciles start, stop and edit
+    # agent endpoints: cancelled before the channels stop, so none wakes in
+    # the teardown. Crash-safe by design: a cancelled step resumes at boot.
+    try:
+        import own_voice_lifecycle
+        await asyncio.wait_for(own_voice_lifecycle.close_current(), timeout=5)
+    except Exception:  # noqa: BLE001 — shutdown must complete
+        logger.warning("own-chat lifecycle close failed", exc_info=True)
+
     # Channel teardown (Telegram bot, voice, etc.) — resolve in-flight broker
     # work first, then stop the channels.
     await _drain_broker_before_channel_shutdown(channel_manager)
