@@ -85,6 +85,7 @@ def _ack(acks, subscriber, artifact_id, emitter, event,
 
 class _FakeTelegram:
     chat_id = "100"
+    bot_id = 111
 
     def __init__(self):
         self.posts = []
@@ -95,6 +96,17 @@ class _FakeTelegram:
 
     async def edit_dm_message(self, chat_id, message_id, text):
         return True
+
+
+def _fixed_consent_target(monkeypatch, telegram, *, chat_id=100, operator_id=200):
+    """Pin where Casa's consent cards go: *telegram* as Casa's endpoint, chat
+    *chat_id* on bot 111, answerable by *operator_id*."""
+    import trigger_consent
+    from channels.tg_address import TgAddress
+    target = trigger_consent.ConsentTarget(
+        telegram, TgAddress(111, chat_id), operator_id)
+    monkeypatch.setattr(trigger_consent, "casa_consent_target",
+                        lambda channel_manager: target)
 
 
 class _FakeChannelManager:
@@ -473,7 +485,8 @@ async def test_reconcile_lock_serializes_stale_compute(tmp_path,
     assert fake_event_episodes.kicks == 2
 
 
-async def test_reconcile_fires_deduped_consent_prompt(tmp_path, fake_event_episodes):
+async def test_reconcile_fires_deduped_consent_prompt(tmp_path, fake_event_episodes,
+                                                      monkeypatch):
     emitter = _rp("gmail", emits=["mail_in"])
     subscriber = _rp("finance", subscribes=[("gmail", "mail_in")])
     acks = EventAckStore(path=tmp_path / "acks.json")
@@ -483,33 +496,22 @@ async def test_reconcile_fires_deduped_consent_prompt(tmp_path, fake_event_episo
         role_configs=_role_configs(assistant=["telegram"]),
         channel_manager=channel_manager)
 
-    import authz_grants
     import trigger_consent
-    monkey_ok = hasattr(trigger_consent, "operator_identity")
-    assert monkey_ok
+    assert hasattr(trigger_consent, "casa_consent_target")
+    _fixed_consent_target(monkeypatch, telegram)
 
     async def _run():
         return await er.reconcile_plugin_events(
             runtime, acks=acks, resolver=_resolver([emitter, subscriber]),
             entries=_entries(emitter, subscriber), prompt=True)
 
-    import event_consent
-
-    def _fixed_identity(channel):
-        return (100, 200)
-
-    orig = event_consent.operator_identity
-    event_consent.operator_identity = _fixed_identity
-    try:
-        await _run()
-        # a second reconcile pass with the SAME pending set must not double
-        # the outstanding keyboard (in-flight dedup lives in the shared
-        # ChallengeCoordinator; calling twice must not raise/duplicate).
-        await _run()
-        for _ in range(8):           # settle the coordinator's post driver(s)
-            await asyncio.sleep(0)
-    finally:
-        event_consent.operator_identity = orig
+    await _run()
+    # a second reconcile pass with the SAME pending set must not double
+    # the outstanding keyboard (in-flight dedup lives in the shared
+    # ChallengeCoordinator; calling twice must not raise/duplicate).
+    await _run()
+    for _ in range(8):           # settle the coordinator's post driver(s)
+        await asyncio.sleep(0)
     # EXACT count (Important-4b, review round 1): >=1 would pass even if
     # dedup silently failed and posted twice.
     assert len(telegram.posts) == 1
@@ -528,7 +530,6 @@ async def test_role_removed_between_prompt_and_approve_never_republishes(
     import verdict_broker
     import authz_grants
     import agent as agent_mod
-    import event_consent
 
     broker = verdict_broker.VerdictBroker()
     monkeypatch.setattr(verdict_broker, "BROKER", broker)
@@ -547,16 +548,12 @@ async def test_role_removed_between_prompt_and_approve_never_republishes(
         channel_manager=channel_manager)
     monkeypatch.setattr(agent_mod, "active_runtime", runtime)
 
-    orig_identity = event_consent.operator_identity
-    event_consent.operator_identity = lambda channel: (100, 200)
-    try:
-        await er.reconcile_plugin_events(
-            runtime, acks=acks, resolver=_resolver([emitter, subscriber]),
-            entries=_entries(emitter, subscriber), prompt=True)
-        for _ in range(8):        # settle the coordinator's post driver
-            await asyncio.sleep(0)
-    finally:
-        event_consent.operator_identity = orig_identity
+    _fixed_consent_target(monkeypatch, telegram)
+    await er.reconcile_plugin_events(
+        runtime, acks=acks, resolver=_resolver([emitter, subscriber]),
+        entries=_entries(emitter, subscriber), prompt=True)
+    for _ in range(8):        # settle the coordinator's post driver
+        await asyncio.sleep(0)
     assert len(telegram.posts) == 1
 
     # Between prompt and approve: the role is REMOVED from the LIVE
@@ -1014,7 +1011,6 @@ async def test_consent_approve_regenerates_health(monkeypatch, tmp_path,
     event-consent keyboard clears the stale `event_pending_ack` at once."""
     import authz_grants
     import agent as agent_mod
-    import event_consent
     import tools as tools_mod
     import verdict_broker
 
@@ -1035,16 +1031,12 @@ async def test_consent_approve_regenerates_health(monkeypatch, tmp_path,
         channel_manager=_FakeChannelManager(telegram))
     monkeypatch.setattr(agent_mod, "active_runtime", runtime)
 
-    orig_identity = event_consent.operator_identity
-    event_consent.operator_identity = lambda channel: (100, 200)
-    try:
-        await er.reconcile_plugin_events(
-            runtime, acks=acks, resolver=_resolver([emitter, subscriber]),
-            entries=_entries(emitter, subscriber), prompt=True)
-        for _ in range(8):
-            await asyncio.sleep(0)
-    finally:
-        event_consent.operator_identity = orig_identity
+    _fixed_consent_target(monkeypatch, telegram)
+    await er.reconcile_plugin_events(
+        runtime, acks=acks, resolver=_resolver([emitter, subscriber]),
+        entries=_entries(emitter, subscriber), prompt=True)
+    for _ in range(8):
+        await asyncio.sleep(0)
     assert len(telegram.posts) == 1
     assert regen == []          # nothing regenerated yet — still pending
 

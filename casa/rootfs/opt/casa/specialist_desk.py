@@ -201,10 +201,14 @@ class DeskFault:
 
 
 class Desk:
-    """One (chat, specialist) thread: the log, the activity stamp, the lock
-    that serialises every use, and the queue reservation count."""
+    """One (bot, chat, specialist) thread: the log, the activity stamp, the
+    lock that serialises every use, and the queue reservation count. The bot
+    is the endpoint the operator wrote to: two bots' private chats with the
+    operator share the chat id, so a desk keyed by the chat alone would mix
+    two conversations."""
 
-    def __init__(self, chat_id: int, role: str) -> None:
+    def __init__(self, bot_id: int, chat_id: int, role: str) -> None:
+        self.bot_id = bot_id
         self.chat_id = chat_id
         self.role = role
         self.log: list[Exchange] = []
@@ -353,6 +357,17 @@ class DeskFaulted(Exception):
     ``desk_faulted`` and nothing runs."""
 
 
+def _require_bot(bot_id: Any) -> int:
+    from channels.tg_address import AddressError
+    if not isinstance(bot_id, int) or isinstance(bot_id, bool) or bot_id <= 0:
+        raise AddressError(f"not a Telegram bot id: {bot_id!r}")
+    return bot_id
+
+
+def _positive_int(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+
 def faulted_line(label: str) -> str:
     return f"{label}'s desk is faulted; a Casa restart clears it."
 
@@ -377,17 +392,21 @@ def faulted_desk_issues() -> list:
 
 class DeskRegistry:
     def __init__(self, now: Callable[[], float] = time.time) -> None:
-        self._desks: dict[tuple[int, str], Desk] = {}
+        self._desks: dict[tuple[int, int, str], Desk] = {}
         self.now = now
 
-    def get(self, chat_id: int, role: str) -> Desk | None:
-        return self._desks.get((chat_id, role))
+    def get(self, bot_id: int, chat_id: int, role: str) -> Desk | None:
+        return self._desks.get((bot_id, chat_id, role))
 
-    def get_or_create(self, chat_id: int, role: str) -> Desk:
-        desk = self._desks.get((chat_id, role))
+    def get_or_create(self, bot_id: int, chat_id: int, role: str) -> Desk:
+        """The desk of *role* in *chat_id* on the bot *bot_id*. The bot must
+        be an int, the id of the endpoint that received the operator's
+        message (a route value never keys a desk)."""
+        key = (_require_bot(bot_id), chat_id, role)
+        desk = self._desks.get(key)
         if desk is None:
-            desk = Desk(chat_id, role)
-            self._desks[(chat_id, role)] = desk
+            desk = Desk(bot_id, chat_id, role)
+            self._desks[key] = desk
         return desk
 
     def faulted(self) -> list[Desk]:
@@ -588,41 +607,49 @@ def turn_outcomes(turn_id: str, posts, scope, *,
     return bool(posts or landed or delivered or approval), kinds
 
 
-def record_echo(chat_id: int, line: str) -> None:
-    """One body-free Casa line for the chat's resident, drained at its next
-    turn; nothing for a chat id that is not a positive int."""
-    if not isinstance(chat_id, int) or isinstance(chat_id, bool) or chat_id <= 0:
+def _echo_owner(bot_id: int, chat_id: int) -> str:
+    """The echo ledger's owner for one chat on one bot: ``desk:<bot>:<chat>``.
+    Each bot's resident reads only the lines of its own chat."""
+    return f"{ECHO_OWNER_PREFIX}{bot_id}:{chat_id}"
+
+
+def record_echo(bot_id: int, chat_id: int, line: str) -> None:
+    """One body-free Casa line for the resident of *chat_id* on the bot
+    *bot_id*, drained at its next turn; nothing for a bot or chat id that is
+    not a positive int."""
+    if not _positive_int(bot_id) or not _positive_int(chat_id):
         return
     import result_broker as rb
-    _ledger().record(f"{ECHO_OWNER_PREFIX}{chat_id}", clip(line, rb.ECHO_LINE_MAX))
+    _ledger().record(_echo_owner(bot_id, chat_id), clip(line, rb.ECHO_LINE_MAX))
 
 
-def drain_echo_lines(chat_id: int) -> list[str]:
+def drain_echo_lines(bot_id: int, chat_id: int) -> list[str]:
     """Read-and-clear: at most ECHO_MAX_LINES lines then ``…and N more.``."""
     import result_broker as rb
-    if not isinstance(chat_id, int) or isinstance(chat_id, bool) or chat_id <= 0:
+    if not _positive_int(bot_id) or not _positive_int(chat_id):
         return []
-    events = _ledger().drain(f"{ECHO_OWNER_PREFIX}{chat_id}")
+    events = _ledger().drain(_echo_owner(bot_id, chat_id))
     lines = [str(e) for e in events[:rb.ECHO_MAX_LINES]]
     if len(events) > rb.ECHO_MAX_LINES:
         lines.append(f"…and {len(events) - rb.ECHO_MAX_LINES} more.")
     return lines
 
 
-def prompt_lines(chat_id: Any) -> list[str]:
-    """The drained lines for the resident's next prompt, each marked as Casa's
-    — or none. The turn carries them in its Casa notes block
-    (``timekeeping.compose_turn_preamble``), which the readback strips (#1317)."""
+def prompt_lines(bot_id: Any, chat_id: Any) -> list[str]:
+    """The drained lines for the resident's next prompt on the bot *bot_id*,
+    each marked as Casa's — or none. The turn carries them in its Casa notes
+    block (``timekeeping.compose_turn_preamble``), which the readback strips
+    (#1317)."""
     try:
         chat = int(chat_id)
     except (TypeError, ValueError):
         return []
-    return [f"{PROMPT_PREFIX}{line}" for line in drain_echo_lines(chat)]
+    return [f"{PROMPT_PREFIX}{line}" for line in drain_echo_lines(bot_id, chat)]
 
 
-def prompt_prefix(chat_id: Any) -> str:
+def prompt_prefix(bot_id: Any, chat_id: Any) -> str:
     """:func:`prompt_lines` as one text, a blank line after — or nothing."""
-    lines = prompt_lines(chat_id)
+    lines = prompt_lines(bot_id, chat_id)
     if not lines:
         return ""
     return "".join(f"{line}\n" for line in lines) + "\n"
@@ -635,7 +662,10 @@ def desk_for_delegation(origin: dict, cfg: Any, agent_name: str) -> Desk | None:
     """The desk a resident's delegation uses, or ``None``: an authenticated
     operator's Telegram DM turn (the reserved ``_operator_turn`` marker, a
     canonical chat id) delegating to a specialist. A scheduled, webhook,
-    engagement or voice turn, a job, or a non-specialist target: no desk."""
+    engagement or voice turn, a job, or a non-specialist target: no desk.
+    The desk is the one on the bot that received the operator's message: the
+    DM turn's ``_tg_bot``, stamped by that endpoint (an int; any other value
+    names no desk)."""
     from provenance import strict_positive_id
     origin = origin or {}
     if origin.get("_operator_turn") is not True or origin.get("channel") != "telegram":
@@ -647,11 +677,12 @@ def desk_for_delegation(origin: dict, cfg: Any, agent_name: str) -> Desk | None:
         # button continuation or a setup turn delegates as in v0.340.0
         return None
     chat = strict_positive_id(origin.get("chat_id"))
-    if chat is None or not agent_name:
+    bot = origin.get("_tg_bot")
+    if chat is None or not _positive_int(bot) or not agent_name:
         return None
     if not has_desk(cfg):
         return None
-    return DESKS.get_or_create(chat, agent_name)
+    return DESKS.get_or_create(bot, chat, agent_name)
 
 
 async def delegation_use(desk: Desk, *, reservation: "Reservation | None", run: Callable[..., Any],
@@ -722,15 +753,18 @@ async def delegation_use(desk: Desk, *, reservation: "Reservation | None", run: 
 
 # -- §5: the desk turn -------------------------------------------------------
 
-def _desk_origin(*, resident_role: str, desk_role: str, chat_id: int, user_id: int,
-                 user_name: str, message_id: Any, cid: str, text: str, turn_id: str,
-                 operator_typed: bool = False) -> dict:
+def _desk_origin(*, resident_role: str, desk_role: str, bot_id: int, chat_id: int,
+                 user_id: int, user_name: str, message_id: Any, cid: str, text: str,
+                 turn_id: str, operator_typed: bool = False) -> dict:
     """The DM's own Casa-owned context plus the three fields the classifier
     needs, the resident's role, the specialist as the executing role, depth 1
     (as after any delegation: the specialist cannot delegate onward; the
     runner's own increment only deepens it), the turn id as the quota key and echo owner, the
-    operator's words raw, the operator's read clearance, and the reserved desk marker."""
+    operator's words raw, the operator's read clearance, the reserved desk marker, and
+    the route ``_tg_bot``: the bot that received the operator's message, which every
+    reply of the turn goes back through."""
     return {
+        "_tg_bot": _require_bot(bot_id),
         "role": resident_role,
         "execution_role": desk_role,
         "channel": "telegram",
@@ -795,6 +829,7 @@ async def handle_reply(
     message_id: Any, cid: str, text: str, quoted_text: str | None, record: Any,
     desk_role: str, continuation: bool = False, reservation: "Reservation | None" = None,
     file_name: "str | None" = None, file_path: "str | None" = None,
+    bot_id: "int | None" = None,
 ) -> None:
     """One desk use: the queue place (handed over by the route, or taken
     here), the desk lock, the idle reset, the log read, the specialist run on
@@ -802,7 +837,9 @@ async def handle_reply(
     classification, the labelled reply or the one notice, the exchange
     committed at the clock of completion, the resident's echo — the permit
     released inside the lock, the reservation and the typing lease released
-    on every exit."""
+    on every exit. *channel* is the endpoint that received the reply; the
+    desk, the echo and the turn's route are keyed by its bot (*bot_id*,
+    which defaults to ``channel.bot_id``)."""
     import result_broker as rb
     import tools as tools_mod
     from channels import DeliveryOutcome
@@ -811,8 +848,9 @@ async def handle_reply(
                                  without_sentinels)
 
     label = label_for(desk_role)
-    context = {"chat_id": str(chat_id), "cid": cid}
-    desk = DESKS.get_or_create(chat_id, desk_role)
+    bot = channel.bot_id if bot_id is None else bot_id
+    context = {"chat_id": str(chat_id), "cid": cid, "_tg_bot": bot}
+    desk = DESKS.get_or_create(bot, chat_id, desk_role)
 
     async def _tell(tail: str, *, notice: bool = False, receipt: bool = True,
                     fields: "dict[str, Any] | None" = None, raw: bool = False,
@@ -842,7 +880,7 @@ async def handle_reply(
                 await channel.deliver_desk_notice(chat_id, line)
             except Exception as exc:  # noqa: BLE001 — nothing more is attempted
                 logger.warning("desk notice failed: %s", type(exc).__name__)
-        record_echo(chat_id, line)
+        record_echo(bot, chat_id, line)
 
     if reservation is None:
         if desk.faulted:
@@ -892,9 +930,9 @@ async def handle_reply(
             turn_id = uuid.uuid4().hex
             task_text = clip(text or "", DESK_TASK_CHARS)
             origin = _desk_origin(
-                resident_role=resident_role, desk_role=desk_role, chat_id=chat_id,
-                user_id=user_id, user_name=user_name, message_id=message_id, cid=cid,
-                text=task_text, turn_id=turn_id,
+                resident_role=resident_role, desk_role=desk_role, bot_id=bot,
+                chat_id=chat_id, user_id=user_id, user_name=user_name,
+                message_id=message_id, cid=cid, text=task_text, turn_id=turn_id,
                 # a file-routed turn's task is Casa's composition (name, path,
                 # instructions), not what he typed (p3r3b)
                 operator_typed=not continuation and file_name is None)
@@ -1078,6 +1116,7 @@ def _profile_refuses(plan: Any, runtime_name: str) -> bool:
 async def handle_tap(
     *, channel: Any, resident_role: str, chat_id: int, user_id: int, cid: str,
     desk_role: str, meta: dict, idx: int, request_id: str, reservation: "Reservation | None",
+    bot_id: "int | None" = None,
 ) -> None:
     """One desk use for a committed tap (§5.2, ``handle_reply``'s sibling):
     under the lock the faulted check, the re-checks of §4.3 on ONE captured
@@ -1088,6 +1127,9 @@ async def handle_tap(
     anything else is one labelled notice; the model's text is discarded —
     the exchange ``[tapped: <label>]`` and one body-free echo line. The
     reservation, the typing lease and the permit are released on every exit.
+    *channel* is the endpoint the tap arrived on; the desk, the echo and the
+    turn's route are keyed by its bot (*bot_id*, which defaults to
+    ``channel.bot_id``).
     """
     import agent as agent_mod
     import plugin_erasure
@@ -1099,8 +1141,9 @@ async def handle_tap(
     from stored_calls import stored_call_still_ok
 
     label = label_for(desk_role)
-    context = {"chat_id": str(chat_id), "cid": cid}
-    desk = DESKS.get_or_create(chat_id, desk_role)
+    bot = channel.bot_id if bot_id is None else bot_id
+    context = {"chat_id": str(chat_id), "cid": cid, "_tg_bot": bot}
+    desk = DESKS.get_or_create(bot, chat_id, desk_role)
     calls, options = list(meta.get("calls") or []), list(meta.get("options") or [])
     call = dict(calls[idx]) if 0 <= idx < len(calls) else {}
     button = str(options[idx]) if 0 <= idx < len(options) else "?"
@@ -1129,12 +1172,12 @@ async def handle_tap(
         """§10: the keyboard line, one notice, the refused echo line; not a use."""
         await _mark(f"✖ {reason}")
         await _notice(f"{label} could not apply your tap ({reason}).")
-        record_echo(chat_id, f"{label} refused your tap ({button}): {reason}.")
+        record_echo(bot, chat_id, f"{label} refused your tap ({button}): {reason}.")
 
     async def _tell_faulted() -> None:
         line = faulted_line(label)
         await _notice(line)
-        record_echo(chat_id, line)
+        record_echo(bot, chat_id, line)
 
     try:
         async with desk.use(reservation):
@@ -1178,9 +1221,9 @@ async def handle_tap(
             run_id = uuid.uuid4().hex
             tapped = f"[tapped: {button}]"
             origin = _desk_origin(
-                resident_role=resident_role, desk_role=desk_role, chat_id=chat_id,
-                user_id=user_id, user_name="", message_id=meta.get("message_id"), cid=cid,
-                text=tapped, turn_id=run_id)
+                resident_role=resident_role, desk_role=desk_role, bot_id=bot,
+                chat_id=chat_id, user_id=user_id, user_name="",
+                message_id=meta.get("message_id"), cid=cid, text=tapped, turn_id=run_id)
             origin["stored_call"] = {"run_id": run_id, "runtime_name": runtime,
                                      "canonical": canonical, "label": button}
             origin["turn_scope"] = TurnScope.for_desk(
@@ -1200,7 +1243,7 @@ async def handle_tap(
                     await _mark("✖ busy")
                     await _notice(f"{label} is busy; the specialist will propose again, "
                                   "or type your verdict.")
-                    record_echo(chat_id, f"{label} refused your tap ({button}): busy.")
+                    record_echo(bot, chat_id, f"{label} refused your tap ({button}): busy.")
                     return
             owner = PinnedRun(run_id=run_id, runtime_name=runtime, canonical=canonical,
                               label=button, build_input=build)
@@ -1213,7 +1256,7 @@ async def handle_tap(
 
             async def _tell_failed(kind: str) -> None:
                 nonlocal told_failed
-                await _refuse_failed(_mark, _notice, label, button, chat_id, kind)
+                await _refuse_failed(_mark, _notice, label, button, bot, chat_id, kind)
                 told_failed = True
 
             async def _on_alive() -> None:
@@ -1233,7 +1276,7 @@ async def handle_tap(
                 stamp = DESKS.now()
                 desk.append("operator", tapped, stamp)
                 desk.append("specialist", side, stamp)
-                record_echo(chat_id, f"{label} applied your tap ({button})"
+                record_echo(bot, chat_id, f"{label} applied your tap ({button})"
                                      f"{TELL_ECHO if capture.rewritten else ''}.")
 
             try:
@@ -1308,7 +1351,7 @@ async def handle_tap(
                     if why is None:
                         specialist_side = clip(str(capture.text or ""),
                                                STORED_CALL_RECEIPT_CHARS).split("\n", 1)[0]
-                        record_echo(chat_id, applied)
+                        record_echo(bot, chat_id, applied)
                         replaced = True
                     else:
                         logger.info("stored call %s: the card was not replaced in place (%s)",
@@ -1326,7 +1369,7 @@ async def handle_tap(
                     on_card = await _mark(f"{tick} {line}")
                     if on_card:
                         specialist_side = line
-                        record_echo(chat_id, applied)
+                        record_echo(bot, chat_id, applied)
                 if (not replaced and not in_place_unknown and not on_card
                         and capture.kind in ("receipt", "no_post", "delivered")):
                     await _mark(f"{tick} {button}")     # #1341: the tap is applied
@@ -1351,7 +1394,7 @@ async def handle_tap(
                     specialist_side = receipt.split("\n", 1)[0]
                     if not delivered:
                         await _notice(f"{label} applied your tap; the receipt did not go out.")
-                    record_echo(chat_id, applied)
+                    record_echo(bot, chat_id, applied)
                     # #1302: the card follows a receipt that landed, never stands in for one
                     if capture.kind == "receipt" and capture.next and delivered and not desk.faulted:
                         why = await _post_next_card(capture.next, meta=meta, build=build,
@@ -1366,7 +1409,7 @@ async def handle_tap(
                         # #1303: a file's caption is the plugin's, so the tell is
                         # one notice after it (a proposal composes its own)
                         await _notice(f"{label} {TELL_LINE}")
-                    record_echo(chat_id, applied)
+                    record_echo(bot, chat_id, applied)
                 else:
                     if tell:
                         # #1303: the call ran with changed arguments even though
@@ -1424,8 +1467,8 @@ async def _post_next_card(value: str, *, meta: dict, build: Any, runtime: str, s
     from authz_grants import GrantIdentity
     entry = build.contract_map.tools.get(runtime)
     identity = GrantIdentity(
-        operator_id=int(meta["operator_id"]), chat_id=int(meta["chat_id"]),
-        enforcement_role=str(meta.get("role") or ""),
+        operator_id=int(meta["operator_id"]), bot_id=int(meta["bot_id"]),
+        chat_id=int(meta["chat_id"]), enforcement_role=str(meta.get("role") or ""),
         artifact_id=str(meta.get("artifact_id") or ""), engagement_id="")
     call = types.SimpleNamespace(identity=identity, entry=entry, tool_use_id=run_id,
                                  contract_map=build.contract_map, protected=build.protected)
@@ -1536,8 +1579,9 @@ async def _shielded(coro) -> "tuple[Any, bool]":
     return task.result(), interrupted
 
 
-async def _refuse_failed(mark, notice, label: str, button: str, chat_id: int, kind: str) -> None:
+async def _refuse_failed(mark, notice, label: str, button: str, bot_id: int, chat_id: int,
+                         kind: str) -> None:
     """§10's ``✖ failed`` row: the keyboard line, the notice, the refused echo."""
     await mark("✖ failed")
     await notice(f"{label} could not apply your tap ({kind}).")
-    record_echo(chat_id, f"{label} refused your tap ({button}): {kind}.")
+    record_echo(bot_id, chat_id, f"{label} refused your tap ({button}): {kind}.")

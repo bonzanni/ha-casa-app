@@ -30,10 +30,12 @@ from verdict_broker import VerdictBroker
 
 from test_ask_user import _FakeBot, _drain_bus, _fake_update
 from test_scheduled_ask_user import (
+    CASA_BOT,
     LABEL,
     OPERATOR,
     _FakeChannel,
     _mk_cm,
+    _transport,
     _payload,
     _scheduled_origin,
 )
@@ -78,7 +80,8 @@ def _fresh_store(monkeypatch, tmp_path):
 def _channel(bus, bot):
     from channels.telegram import TelegramChannel
 
-    ch = TelegramChannel(bot_token="T", chat_id="0", default_agent="assistant", bus=bus)
+    ch = TelegramChannel(bot_token="T", chat_id="0", default_agent="assistant",
+                         bus=bus, known_bot_id=CASA_BOT)
     ch._start_typing = lambda *a, **k: None
     ch._app = types.SimpleNamespace(bot=bot)
     return ch
@@ -97,7 +100,7 @@ def _mk_bus():
 
 def _register(broker, finishes, *, rid, scope, chat_id, scheduled):
     """One raw request in the broker with a COUNTING finish hook."""
-    meta = {"options": ["Yes", "No"], "chat_id": chat_id,
+    meta = {"options": ["Yes", "No"], "bot_id": CASA_BOT, "chat_id": chat_id,
             "operator_id": chat_id, "_scope": scope}
     if scheduled:
         meta["scheduled"] = True
@@ -120,6 +123,7 @@ def _dm_origin(chat_id=OPERATOR):
         "role": "assistant", "execution_role": "assistant",
         "channel": "telegram", "chat_id": str(chat_id), "user_id": chat_id,
         "message_type": "channel_in", "source": "telegram",
+        "_tg_bot": CASA_BOT,
     }
 
 
@@ -171,26 +175,26 @@ async def test_plain_text_cancels_only_same_dm_interactive(_fresh_broker):
     finishes: dict[str, list] = {}
 
     _register(_fresh_broker, finishes, rid="interactive-same",
-              scope=f"dm:{OPERATOR}", chat_id=OPERATOR, scheduled=False)
+              scope=f"dm:{CASA_BOT}:{OPERATOR}", chat_id=OPERATOR, scheduled=False)
     _register(_fresh_broker, finishes, rid="scheduled-same",
-              scope=f"dm:{OPERATOR}", chat_id=OPERATOR, scheduled=True)
+              scope=f"dm:{CASA_BOT}:{OPERATOR}", chat_id=OPERATOR, scheduled=True)
     _register(_fresh_broker, finishes, rid="authz-same",
-              scope=f"authz:{OPERATOR}", chat_id=OPERATOR, scheduled=False)
+              scope=f"authz:{CASA_BOT}:{OPERATOR}", chat_id=OPERATOR, scheduled=False)
     _register(_fresh_broker, finishes, rid="interactive-other",
-              scope=f"dm:{OTHER}", chat_id=OTHER, scheduled=False)
+              scope=f"dm:{CASA_BOT}:{OTHER}", chat_id=OTHER, scheduled=False)
 
     await ch._handle(_fake_update(str(OPERATOR), "ordinary words", OPERATOR), None)
     await _fresh_broker.drain_hooks()
 
-    same = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}")
+    same = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
     assert len(same) == 1
     assert sum(rid == "scheduled-same" for rid in same) == 1
 
-    authz = _fresh_broker.pending(namespace="resident_ask", scope=f"authz:{OPERATOR}")
+    authz = _fresh_broker.pending(namespace="resident_ask", scope=f"authz:{CASA_BOT}:{OPERATOR}")
     assert len(authz) == 1
     assert sum(rid == "authz-same" for rid in authz) == 1
 
-    other = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OTHER}")
+    other = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OTHER}")
     assert len(other) == 1
     assert sum(rid == "interactive-other" for rid in other) == 1
 
@@ -224,7 +228,7 @@ async def test_new_retires_scheduled_once_with_new_session(
     await _fresh_broker.drain_hooks()
 
     assert len(_fresh_broker.pending(
-        namespace="resident_ask", scope=f"dm:{OPERATOR}")) == 0
+        namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")) == 0
     assert len(channel.scheduled_dispatches) == 1
     assert sum("new_session" in d["text"]
                for d in channel.scheduled_dispatches) == 1
@@ -256,7 +260,7 @@ async def test_rate_limited_text_retires_nothing(_fresh_broker, _fresh_store):
     await ch._handle(_fake_update(str(OPERATOR), "dropped words", OPERATOR), None)
     await _fresh_broker.drain_hooks()
 
-    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}")
+    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
     assert len(live) == 1
     assert sum(r == rid for r in live) == 1
     assert len(channel.scheduled_dispatches) == 0
@@ -305,7 +309,7 @@ async def test_delivered_human_ask_displaces_scheduled_after_post_once(
     task = asyncio.create_task(_ask_on(channel, _dm_origin(), "Celsius?"))
     await asyncio.wait_for(channel.post_started.wait(), 5.0)
 
-    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}")
+    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
     assert len(live) == 2
     assert sum(r == scheduled_rid for r in live) == 1
     assert len(channel.scheduled_dispatches) == 0
@@ -316,7 +320,7 @@ async def test_delivered_human_ask_displaces_scheduled_after_post_once(
 
     assert human["status"] == "awaiting_user"
     assert len(channel.posts) == 2
-    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}")
+    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
     assert len(live) == 1
     assert sum(r == channel.second_request_id for r in live) == 1
     assert len(channel.scheduled_dispatches) == 1
@@ -340,7 +344,7 @@ async def test_undelivered_human_ask_leaves_scheduled_live(
     assert len(channel.posts) == 2
     assert sum(p.get("kind") == "delivery_failed" for p in [human]) == 1
 
-    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}")
+    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
     assert len(live) == 1
     assert sum(r == scheduled_rid for r in live) == 1
     assert len(channel.scheduled_dispatches) == 0
@@ -365,7 +369,7 @@ async def test_plain_text_during_human_post_cancels_replacement_not_scheduled(
     await ch._handle(
         _fake_update(str(OPERATOR), "I'll answer in words", OPERATOR), None)
 
-    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}")
+    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
     assert len(live) == 1
     assert sum(r == scheduled_rid for r in live) == 1
     assert len(await _drain_bus(bus)) == 1
@@ -375,7 +379,7 @@ async def test_plain_text_during_human_post_cancels_replacement_not_scheduled(
     human = _payload(raw)
     await _fresh_broker.drain_hooks()
 
-    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}")
+    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
     assert len(live) == 1
     assert sum(r == scheduled_rid for r in live) == 1
     assert sum(r == channel.second_request_id for r in live) == 0
@@ -422,7 +426,7 @@ async def test_a_live_plain_ask_still_returns_the_unchanged_awaiting_payload(
                            "note": tools.ASK_USER_SILENCE_NOTE})
     assert sum(_wire(raw) == expected for _ in [0]) == 1
     assert sum("is_error" in envelope for envelope in [raw]) == 0
-    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}")
+    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
     assert len(live) == 1
     assert sum(r == _payload(raw)["request_id"] for r in live) == 1
 
@@ -441,27 +445,27 @@ async def test_restored_scheduled_ask_survives_plain_text(
     await _fresh_store.put({
         "rid": "restored", "state": scheduled_asks.STATE_LIVE,
         "role": "assistant", "session_scope": LABEL,
-        "scope": f"dm:{OPERATOR}", "chat_id": OPERATOR,
+        "scope": f"dm:{CASA_BOT}:{OPERATOR}", "bot_id": CASA_BOT, "chat_id": OPERATOR,
         "operator_id": OPERATOR, "message_id": 77,
         "options": ["Confirm", "Wrong"], "body": "Send the invoice?",
         "epoch": 0, "created_at": 0.0, "expires_at": 1_000.0,
     })
     channel = _FakeChannel()
-    counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+    counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
     assert counts["restored"] == 1
     assert len(_fresh_broker.pending(
-        namespace="resident_ask", scope=f"dm:{OPERATOR}")) == 1
+        namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")) == 1
 
     bus, bot = _mk_bus(), _FakeBot()
     ch = _channel(bus, bot)
     await ch._handle(_fake_update(str(OPERATOR), "ordinary words", OPERATOR), None)
     await _fresh_broker.drain_hooks()
 
-    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}")
+    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
     assert len(live) == 1
     assert sum(r == "restored" for r in live) == 1
     assert verdict_broker.BROKER.get_meta(
-        namespace="resident_ask", scope=f"dm:{OPERATOR}",
+        namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}",
         request_id="restored")["scheduled"] is True
     assert len(channel.scheduled_dispatches) == 0
     assert len(channel.edits) == 0
@@ -480,24 +484,24 @@ async def test_cancel_for_chat_selects_only_same_dm_scheduled(_fresh_broker):
     so donating the predicate cannot silently change a live caller."""
     finishes: dict[str, list] = {}
     _register(_fresh_broker, finishes, rid="scheduled-same",
-              scope=f"dm:{OPERATOR}", chat_id=OPERATOR, scheduled=True)
+              scope=f"dm:{CASA_BOT}:{OPERATOR}", chat_id=OPERATOR, scheduled=True)
     _register(_fresh_broker, finishes, rid="interactive-same",
-              scope=f"dm:{OPERATOR}", chat_id=OPERATOR, scheduled=False)
+              scope=f"dm:{CASA_BOT}:{OPERATOR}", chat_id=OPERATOR, scheduled=False)
     _register(_fresh_broker, finishes, rid="scheduled-authz",
-              scope=f"authz:{OPERATOR}", chat_id=OPERATOR, scheduled=True)
+              scope=f"authz:{CASA_BOT}:{OPERATOR}", chat_id=OPERATOR, scheduled=True)
     _register(_fresh_broker, finishes, rid="scheduled-other",
-              scope=f"dm:{OTHER}", chat_id=OTHER, scheduled=True)
+              scope=f"dm:{CASA_BOT}:{OTHER}", chat_id=OTHER, scheduled=True)
 
-    assert scheduled_asks.cancel_for_chat(OPERATOR, "operator_challenge") == 1
+    assert scheduled_asks.cancel_for_chat(CASA_BOT, OPERATOR, "operator_challenge") == 1
     await _fresh_broker.drain_hooks()
 
-    same = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}")
+    same = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
     assert len(same) == 1
     assert sum(r == "interactive-same" for r in same) == 1
     assert len(_fresh_broker.pending(
-        namespace="resident_ask", scope=f"authz:{OPERATOR}")) == 1
+        namespace="resident_ask", scope=f"authz:{CASA_BOT}:{OPERATOR}")) == 1
     assert len(_fresh_broker.pending(
-        namespace="resident_ask", scope=f"dm:{OTHER}")) == 1
+        namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OTHER}")) == 1
 
     assert len(finishes["scheduled-same"]) == 1
     assert sum(o == {"outcome": "cancelled", "reason": "operator_challenge"}
@@ -554,7 +558,8 @@ async def test_failed_challenge_post_leaves_scheduled_live(
     channel.fail_next = True
     coordinator = authz_grants.ChallengeCoordinator()
     handle = coordinator.register_challenge(
-        ("tool", "args"), chat_id=OPERATOR, operator_id=OPERATOR,
+        ("tool", "args"), bot_id=CASA_BOT, chat_id=OPERATOR,
+        operator_id=OPERATOR,
         channel=channel, challenge_text="Approve send_email?",
     )
     assert handle.created is True
@@ -563,13 +568,13 @@ async def test_failed_challenge_post_leaves_scheduled_live(
 
     # The challenge is gone — that is the premise, not the finding.
     assert len(_fresh_broker.pending(
-        namespace="resident_ask", scope=f"authz:{OPERATOR}")) == 0
+        namespace="resident_ask", scope=f"authz:{CASA_BOT}:{OPERATOR}")) == 0
     # Two posts were attempted: the scheduled keyboard, then the failed one.
     assert len(channel.posts) == 2
     assert sum(p[1] == scheduled_rid for p in channel.posts) == 1
 
     # The finding: the operator's scheduled question is untouched.
-    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}")
+    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
     assert len(live) == 1
     assert sum(r == scheduled_rid for r in live) == 1
     assert len(channel.edits) == 0

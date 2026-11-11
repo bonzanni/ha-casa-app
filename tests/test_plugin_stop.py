@@ -26,9 +26,12 @@ import tools as tools_mod
 import verdict_broker as vb
 from authz_grants import GrantIdentity
 from bus import MessageBus
+from channels.tg_address import TgAddress
 from channels.telegram import TelegramChannel, _parse_callback_data
 from config import AgentConfig, CharacterConfig, MemoryConfig
 from plugin_registry import ResolutionResult, ResolvedPlugin
+from telegram_channel_double import make_transport
+from two_endpoints import CASA_BOT
 
 try:
     from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
@@ -36,13 +39,15 @@ except ImportError:
     from role_artifact_stub import STUB_ROLE_ARTIFACT
 
 OPERATOR = 42
+BOT = CASA_BOT
 ARTIFACT = "1" * 64
 CID = "conf-" + "c" * 32
 CARD_MID = 777
 CARD_TEXT = "📊 Fido\nStart this browsing run?\n• RunPod — invoice\nAsked for by Ellen.\n\n☑ Start"
 ORIGIN = {"role": "assistant", "channel": "telegram", "chat_id": OPERATOR,
           "user_id": OPERATOR, "user_name": "N", "_origin_route": "telegram",
-          "_origin_clearance": "private", "user_text": "get my invoice", "_operator_turn": True}
+          "_origin_clearance": "private", "user_text": "get my invoice", "_operator_turn": True,
+          "_tg_bot": BOT}
 
 STOP_SERVER = r'''
 import json, os, sys, time
@@ -108,7 +113,8 @@ async def _noop(*a, **k):
 def _channel():
     bus = MessageBus()
     bus.register("assistant", _noop)
-    ch = TelegramChannel(bot_token="T", chat_id=str(OPERATOR), default_agent="assistant", bus=bus)
+    ch = TelegramChannel(bot_token="T", chat_id=str(OPERATOR), default_agent="assistant", bus=bus,
+                         is_casa=True, known_bot_id=BOT)
     ch._start_typing = lambda *a, **k: None
     ch._app = types.SimpleNamespace(bot=_FakeBot())
     ch._session_registry = None
@@ -158,13 +164,13 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(tools_mod, "_delegated_resolution", lambda cfg: ResolutionResult(
         registry_valid=True, plugins=list(plugins.get(cfg.role, []))))
     ch = _channel()
-    monkeypatch.setattr(rb, "_telegram_channel", lambda: ch)
+    monkeypatch.setattr(tools_mod, "_channel_manager", make_transport(ch), raising=False)
     desk_uses: list = []
     real_get = sd.DESKS.get_or_create
 
-    def _get_or_create(chat_id, role):
-        desk_uses.append((chat_id, role))
-        return real_get(chat_id, role)
+    def _get_or_create(*key):
+        desk_uses.append(key[-2:])          # (chat, role); the bot is asserted elsewhere
+        return real_get(*key)
     monkeypatch.setattr(sd.DESKS, "get_or_create", _get_or_create)
     turns: list = []
 
@@ -186,13 +192,14 @@ def env(monkeypatch, tmp_path):
     def admit(*, status="admitted", card=True, request_key="k1", cid=CID, plugin="browser",
               operator=OPERATOR):
         ident = GrantIdentity(operator_id=operator, chat_id=OPERATOR, enforcement_role="browser",
-                              artifact_id=ARTIFACT, engagement_id="")
+                              artifact_id=ARTIFACT, engagement_id="", bot_id=BOT)
         b = plugin_bindings.BINDINGS.for_turn(plugin=plugin, turn_key="d-" + cid, identity=ident,
                                               chain=("assistant", "browser"), origin=ORIGIN)
         c = run_admission.Confirmation(
-            cid=cid, plugin=plugin, operator_id=operator, binding_ref=b.ref,
+            cid=cid, plugin=plugin, bot_id=BOT, operator_id=operator, binding_ref=b.ref,
             request_key=request_key, status=status, admissions=[], created_at=time.time(),
-            card_message_id=CARD_MID if card else 0, card_text=CARD_TEXT if card else "")
+            card=[BOT, OPERATOR, CARD_MID] if card else None,
+            card_text=CARD_TEXT if card else "")
         run_admission.CONFIRMATIONS.add(c)
         return c, b
 
@@ -415,23 +422,25 @@ async def test_the_start_tap_ordering_is_admitted_before_the_stop_shows(env, mon
     """7b: his Start settles the Confirmation — admitted, saved with its card's message id —
     BEFORE the edit that shows the Stop button."""
     order: list = []
-    ch = types.SimpleNamespace()
+    ch = types.SimpleNamespace(default_agent="assistant", bot_id=BOT, has_bot_id=True)
 
     async def deliver_operator_question(chat_id, text, labels, rid):
         return CARD_MID
 
     async def edit_dm_message(chat_id, message_id, text, buttons=None):
         c = run_admission.CONFIRMATIONS.peek(cid_box[0])
-        order.append(("edit", c.status, c.card_message_id, [d for _, d in (buttons or [])]))
+        order.append(("edit", c.status, c.card, [d for _, d in (buttons or [])]))
         return True
     ch.deliver_operator_question, ch.edit_dm_message = deliver_operator_question, edit_dm_message
-    monkeypatch.setattr(rb, "_telegram_channel", lambda: ch)
+    monkeypatch.setattr(tools_mod, "_channel_manager", make_transport(ch), raising=False)
     cid_box = await _pending_card(env, monkeypatch)
     await _answer_card(0)
-    assert order == [("edit", "admitted", CARD_MID, [f"v1|run_stop|{cid_box[0]}|0"])]
+    assert order == [("edit", "admitted", [BOT, OPERATOR, CARD_MID],
+                      [f"v1|run_stop|{cid_box[0]}|0"])]
     c = run_admission.CONFIRMATIONS.peek(cid_box[0])
     reread = run_admission.Confirmations(str(env.tmp / "admissions.json")).peek(cid_box[0])
-    assert reread.card_message_id == CARD_MID and reread.status == "admitted" == c.status
+    assert reread.card_address() == TgAddress(BOT, OPERATOR, CARD_MID)
+    assert reread.status == "admitted" == c.status
 
 
 @pytest.mark.parametrize("outcome, mark, line", [
@@ -469,7 +478,7 @@ async def test_a_stop_tap_after_a_restart_still_stops(env, monkeypatch):
                         plugin_bindings.BindingStore(str(env.tmp / "b.json")))
     env.ch = _channel()
     env.bot = env.ch._app.bot
-    monkeypatch.setattr(rb, "_telegram_channel", lambda: env.ch)
+    monkeypatch.setattr(tools_mod, "_channel_manager", make_transport(env.ch), raising=False)
     await _tap(env)
     await _quiet(env)
     assert len(_calls(rp)) == 1 and len(_lines(env)) == 1
@@ -479,7 +488,7 @@ async def test_a_stop_tap_after_a_restart_still_stops(env, monkeypatch):
 
 @pytest.fixture
 async def held_desk(env):
-    desk = sd.DESKS.get_or_create(OPERATOR, "browser")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "browser")
     env.desk_uses.clear()
     reservation = desk.reserve()
     release = asyncio.Event()
@@ -519,7 +528,7 @@ async def test_stop_work_does_not_wait_for_the_running_desk_use(env, held_desk):
 
 def _binding():
     ident = GrantIdentity(operator_id=OPERATOR, chat_id=OPERATOR, enforcement_role="browser",
-                          artifact_id=ARTIFACT, engagement_id="")
+                          artifact_id=ARTIFACT, engagement_id="", bot_id=BOT)
     return plugin_bindings.BINDINGS.for_turn(plugin="browser", turn_key="d-x", identity=ident,
                                              chain=("assistant", "browser"), origin=ORIGIN)
 
@@ -548,7 +557,7 @@ async def test_a_dropped_continuation_runs_no_turn(env, held_desk, held_queue):
     b = _binding()
     assert pc.CONTINUATIONS.request(b, "run_abc", "sweep") == "queued"
     await asyncio.sleep(0.05)
-    assert pc.CONTINUATIONS.drop("browser", OPERATOR, ["run_abc"]) == 1
+    assert pc.CONTINUATIONS.drop("browser", BOT, OPERATOR, ["run_abc"]) == 1
     held_desk.release()
     await _drain_queue()
     assert held_queue == []
@@ -595,7 +604,7 @@ async def test_a_continuation_for_another_ref_still_runs(env, held_desk, held_qu
     pc.CONTINUATIONS.request(b, "run_abc", "sweep")
     pc.CONTINUATIONS.request(b, "run_other", "sweep")
     await asyncio.sleep(0.05)
-    assert pc.CONTINUATIONS.drop("browser", OPERATOR, ["run_abc"]) == 1
+    assert pc.CONTINUATIONS.drop("browser", BOT, OPERATOR, ["run_abc"]) == 1
     held_desk.release()
     await _drain_queue()
     assert held_queue == ["Continue browsing run run_other."]
@@ -615,7 +624,7 @@ async def test_a_started_continuation_is_not_dropped(env, held_queue, monkeypatc
         if held_queue:
             break
         await asyncio.sleep(0.01)
-    assert pc.CONTINUATIONS.drop("browser", OPERATOR, ["run_abc"]) == 0
+    assert pc.CONTINUATIONS.drop("browser", BOT, OPERATOR, ["run_abc"]) == 0
     gate.set()
     await _drain_queue()
     assert held_queue == ["Continue browsing run run_abc."]
@@ -632,10 +641,11 @@ async def _drain_queue():
 # -- 12. the 20-minute card ------------------------------------------------------------------
 
 def _proposal_meta(wire_name="stop_runs", arguments=None):
-    return {"deadline": 10_000.0, "chat_id": OPERATOR, "operator_id": OPERATOR, "role": "browser",
+    return {"deadline": 10_000.0, "chat_id": OPERATOR, "bot_id": BOT, "operator_id": OPERATOR,
+            "role": "browser",
             "artifact_id": ARTIFACT, "plugin_seg": "browser", "label": "📊 Fido",
             "text": "📊 Fido\nStill going.", "options": ["Close", "Stop"], "revision": "",
-            "message_id": 601, "owner": "d-1", "_scope": f"proposal:{OPERATOR}",
+            "message_id": 601, "owner": "d-1", "_scope": f"proposal:{BOT}:{OPERATOR}",
             "kinds": ["close", "call"],
             "calls": [None, {"server": "browser", "wire_name": wire_name,
                              "runtime_name": f"mcp__plugin_browser_browser__{wire_name}",
@@ -781,7 +791,7 @@ async def _pending_card(env, monkeypatch):
     import operator_calls
     monkeypatch.setattr(operator_calls, "CALLS", operator_calls.OperatorCalls())
     ident = GrantIdentity(operator_id=OPERATOR, chat_id=OPERATOR, enforcement_role="browser",
-                          artifact_id=ARTIFACT, engagement_id="")
+                          artifact_id=ARTIFACT, engagement_id="", bot_id=BOT)
     origin = {**ORIGIN, "execution_role": "browser", "_delegation_id": "d-1",
               "delegation_depth": 1, "_handoff_chain": ("assistant", "browser"),
               "synthetic": "continuation", "user_text": ""}
@@ -799,12 +809,12 @@ async def _pending_card(env, monkeypatch):
 
 async def _answer_card(index):
     for _ in range(200):
-        reqs = vb.BROKER.pending(namespace="resident_ask", scope=f"ask:{OPERATOR}")
+        reqs = vb.BROKER.pending(namespace="resident_ask", scope=f"ask:{BOT}:{OPERATOR}")
         if reqs:
             break
         await asyncio.sleep(0)
     (rid,) = reqs
-    claim = vb.BROKER.claim(namespace="resident_ask", scope=f"ask:{OPERATOR}",
+    claim = vb.BROKER.claim(namespace="resident_ask", scope=f"ask:{BOT}:{OPERATOR}",
                             request_id=getattr(rid, "request_id", rid), option_index=index,
                             actor_id=OPERATOR)
     assert not isinstance(claim, str), claim
@@ -857,14 +867,14 @@ async def test_a_request_that_ended_on_its_own_marks_its_card_once(env, monkeypa
     await pc.sweep_once()                                # named again on the next pass
     assert len(passes) == 2 and len(_card_edits(env)) == 1
     reloaded = run_admission.Confirmations(str(env.tmp / "admissions.json"))
-    assert reloaded.peek(CID).card_message_id == 0       # forgotten durably, text kept
+    assert reloaded.peek(CID).card is None               # forgotten durably, text kept
     assert reloaded.peek(CID).card_text == CARD_TEXT
 
 
 async def test_a_status_card_admitted_by_his_words_is_marked_too(env, monkeypatch):
     status_text = "📊 Fido\nBrowsing now:\n• RunPod — invoice\nAsked for by Ellen."
     c, b = env.admit()
-    run_admission.CONFIRMATIONS.set_card(CID, CARD_MID, status_text)
+    run_admission.CONFIRMATIONS.set_card(CID, TgAddress(BOT, OPERATOR, CARD_MID), status_text)
     _sweeping(env, monkeypatch, [_ended_entry(b)])
     await pc.sweep_once()
     assert [e["text"] for e in _card_edits(env)] == [f"{status_text}\n☑ Ended"]
@@ -902,13 +912,13 @@ async def test_an_ended_entry_that_is_not_his_admitted_card_marks_nothing(env, m
 async def test_a_stop_in_flight_keeps_the_card_for_its_own_mark(env, monkeypatch):
     c, b = env.admit()
     _sweeping(env, monkeypatch, [_ended_entry(b)])
-    plugin_stop._FLIGHTS.add(("browser", "request:k1"))
+    plugin_stop._FLIGHTS.add(("browser", BOT, "request:k1"))
     try:
         await pc.sweep_once()
     finally:
-        plugin_stop._FLIGHTS.discard(("browser", "request:k1"))
+        plugin_stop._FLIGHTS.discard(("browser", BOT, "request:k1"))
     assert _card_edits(env) == []
-    assert run_admission.CONFIRMATIONS.peek(CID).card_message_id == CARD_MID
+    assert run_admission.CONFIRMATIONS.peek(CID).card == [BOT, OPERATOR, CARD_MID]
 
 
 async def test_a_card_that_cannot_be_edited_is_tried_once(env, monkeypatch):
@@ -924,16 +934,16 @@ async def test_a_card_that_cannot_be_edited_is_tried_once(env, monkeypatch):
     await pc.sweep_once()
     await pc.sweep_once()
     assert len(tries) == 1                               # not retried every pass
-    assert run_admission.CONFIRMATIONS.peek(CID).card_message_id == 0
+    assert run_admission.CONFIRMATIONS.peek(CID).card is None
 
 
 async def test_with_no_channel_yet_the_next_pass_marks_it(env, monkeypatch):
     c, b = env.admit()
     _sweeping(env, monkeypatch, [_ended_entry(b)])
-    monkeypatch.setattr(rb, "_telegram_channel", lambda: None)
+    monkeypatch.setattr(tools_mod, "_channel_manager", None, raising=False)
     await pc.sweep_once()
-    assert run_admission.CONFIRMATIONS.peek(CID).card_message_id == CARD_MID
-    monkeypatch.setattr(rb, "_telegram_channel", lambda: env.ch)
+    assert run_admission.CONFIRMATIONS.peek(CID).card == [BOT, OPERATOR, CARD_MID]
+    monkeypatch.setattr(tools_mod, "_channel_manager", make_transport(env.ch), raising=False)
     await pc.sweep_once()
     assert [e["text"] for e in _card_edits(env)] == [f"{CARD_TEXT}\n☑ Ended"]
 
@@ -946,7 +956,7 @@ async def test_while_the_bot_is_rebuilt_the_next_pass_marks_it(env, monkeypatch)
     app = env.ch._app
     env.ch._app = None                                   # what _rebuild's teardown leaves
     await pc.sweep_once()
-    assert run_admission.CONFIRMATIONS.peek(CID).card_message_id == CARD_MID
+    assert run_admission.CONFIRMATIONS.peek(CID).card == [BOT, OPERATOR, CARD_MID]
     env.ch._app = app
     await pc.sweep_once()
     assert [e["text"] for e in _card_edits(env)] == [f"{CARD_TEXT}\n☑ Ended"]

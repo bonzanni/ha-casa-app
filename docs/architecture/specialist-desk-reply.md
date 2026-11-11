@@ -56,10 +56,10 @@ label and the outcome whole and clips only the display fields (a file name, a jo
 fit the 120-character echo line. Nothing else in the desk turn sends a notice or writes the
 echo. Every such line states a past or standing fact: what happened, never what will.
 
-**The resident learns, without a turn.** Each desk turn leaves one Casa line on the chat's
-echo ledger (`📊 Finance answered your reply (2 pages).`, `… could not handle your reply
+**The resident learns, without a turn.** Each desk turn leaves one Casa line on the echo
+ledger of the chat on the bot it ran on (`📊 Finance answered your reply (2 pages).`, `… could not handle your reply
 (specialist_turn_limit).`), with the delivered-slot echo lines of any post the turn made; the
-resident's next turn in that chat drains them (read-and-clear), each marked `(front desk)`,
+resident's next turn in that chat, on that bot, drains them (read-and-clear), each marked `(front desk)`,
 at most five then a count, each within 120 characters, as the first note of its Casa notes
 block: one `<casa_notes>` block directly after the turn's `<current_time>` envelope
 (`timekeeping.compose_turn_preamble`), which the transcript readback strips with the

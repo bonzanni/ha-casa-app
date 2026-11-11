@@ -50,12 +50,37 @@ pass "E-0b container healthy"
 # the casa venv. Fails (assert_contains style) if the harness's last line
 # is not "OK".
 # ---------------------------------------------------------------------------
+# Every harness starts with this prelude. Casa reaches a Telegram bot only
+# through the transport registered as the "telegram" channel, so a harness
+# registers the endpoint it builds there, as casa_core does at boot.
+read -r -d '' HARNESS_PRELUDE <<'PY' || true
+import sys
+sys.path.insert(0, "/opt/casa")
+
+
+def register_casa_endpoint(ch, tag):
+    """Register *ch* as Casa's endpoint of a fresh Telegram transport (its
+    verified bot id persisted under /tmp, keyed by *tag*). Returns the
+    ChannelManager that holds the transport as its "telegram" channel."""
+    from pathlib import Path
+    from channels import ChannelManager
+    from channels.telegram_transport import CasaBotIdStore, TelegramTransport
+    store_path = Path(f"/tmp/_casa_bot_{tag}.json")
+    store_path.unlink(missing_ok=True)
+    transport = TelegramTransport(
+        casa_bot_ids=CasaBotIdStore(store_path, ch.bot_token))
+    transport.add_endpoint(ch, casa=True)
+    manager = ChannelManager()
+    manager.register(transport)
+    return manager
+PY
+
 run_harness() {
     local label="$1"; shift
     local py="$1"; shift
     local host_tmp
     host_tmp="$(mktemp)"
-    printf '%s\n' "$py" > "$host_tmp"
+    printf '%s\n\n%s\n' "$HARNESS_PRELUDE" "$py" > "$host_tmp"
     MSYS_NO_PATHCONV=1 docker cp "$host_tmp" "$NAME:/tmp/_harness.py" >/dev/null
     rm -f "$host_tmp"
     local out
@@ -96,6 +121,7 @@ async def main():
         bus=None, webhook_url="",
         engagement_supergroup_id=supergroup,
     )
+    register_casa_endpoint(ch, "e1")
     logs = AgentLogs(display_name=lambda role: "Finance",
                      path="/tmp/_logs_e1.json")
     ch._agent_logs = logs
@@ -150,11 +176,12 @@ async def main():
         bus=None, webhook_url="",
         engagement_supergroup_id=supergroup,
     )
+    register_casa_endpoint(ch, "e2")
     await ch._rebuild()
 
     class StubDriver:
         def __init__(self): self.turns = []
-        def submit_operator(self, rec, text, *, tg_message_id=None, notice=None):
+        def submit_operator(self, rec, text, *, tg_message=None, notice=None):
             self.turns.append((rec.id, text))
     drv = StubDriver()
     ch._engagement_registry = reg
@@ -206,6 +233,7 @@ async def main():
         bot_token="test-token", chat_id="999", default_agent="assistant",
         bus=None, webhook_url="",
     )
+    manager = register_casa_endpoint(ch, "e3")
     await ch._rebuild()
     ch._engagement_registry = reg
 
@@ -214,13 +242,10 @@ async def main():
         async def notify(self, msg): self.notifs.append(msg)
     bus = StubBus()
 
-    class StubChanMgr:
-        def get(self, name): return ch
-
     import tools
     tools._engagement_registry = reg
     tools._bus = bus
-    tools._channel_manager = StubChanMgr()
+    tools._channel_manager = manager
 
     rec = await reg.create(kind="specialist", role_or_type="finance",
                            driver="in_casa", task="",
@@ -268,6 +293,7 @@ async def main():
         bot_token="test-token", chat_id="999", default_agent="assistant",
         bus=None, webhook_url="",
     )
+    register_casa_endpoint(ch, "e7")
     await ch._rebuild()
 
     # Stub driver: alive flag flips after cancel.
@@ -275,11 +301,13 @@ async def main():
         def __init__(self):
             self._alive = {}
             self.turns = []
+            self.addresses = []
         def is_alive(self, rec): return self._alive.get(rec.id, False)
         def get_session_id(self, rec): return "mock-session-e7"
         async def cancel(self, rec): self._alive.pop(rec.id, None)
-        def submit_operator(self, rec, text, *, tg_message_id=None, notice=None):
+        def submit_operator(self, rec, text, *, tg_message=None, notice=None):
             self.turns.append(text)
+            self.addresses.append(tg_message)
     drv = StubDriver()
     ch._engagement_registry = reg
     ch._engagement_driver = drv
@@ -305,6 +333,10 @@ async def main():
         user_id=999)
     assert accepted, "the reply was not accepted"
     assert drv.turns == ["are you there?"], f"turns: {drv.turns}"
+    # The reply is addressed as the bot that received it saw it.
+    (addr,) = drv.addresses
+    assert (addr.bot_id, addr.chat_id, addr.message_id) == (
+        ch.bot_id, 999, 90001), f"reply address: {addr}"
     await ch._teardown_app()
     print("OK")
 
@@ -314,13 +346,15 @@ run_harness "E-7" "$E7_PY"
 pass "E-7 suspend, then the next reply is handed to the driver"
 
 # ---------------------------------------------------------------------------
-# E-8 — Orphan recovery: pre-seed /data/engagements.json with a row an older
-# version wrote (it still holds a topic_id), restart, verify
-# EngagementRegistry loads the record on startup.
+# E-8 — Orphan recovery: pre-seed /data/engagements.json with a row that
+# still holds an older version's topic_id, restart, verify EngagementRegistry
+# loads the record on startup. A Telegram job's origin names the bot it was
+# started on (``_tg_bot``, here Casa's own route); a row without one is
+# skipped at load, so the seed carries it.
 # ---------------------------------------------------------------------------
 log "E-8: startup with pre-seeded engagements.json"
 
-SEED_JSON='[{"id":"e8orphan0000000000000000000000","kind":"specialist","role_or_type":"finance","driver":"in_casa","status":"active","topic_id":9999,"started_at":1000.0,"last_user_turn_ts":1000.0,"last_idle_reminder_ts":0,"completed_at":null,"sdk_session_id":"mock-session-e8","origin":{"channel":"telegram"},"task":"E-8 orphan"}]'
+SEED_JSON='[{"id":"e8orphan0000000000000000000000","kind":"specialist","role_or_type":"finance","driver":"in_casa","status":"active","topic_id":9999,"started_at":1000.0,"last_user_turn_ts":1000.0,"last_idle_reminder_ts":0,"completed_at":null,"sdk_session_id":"mock-session-e8","origin":{"channel":"telegram","_tg_bot":"casa"},"task":"E-8 orphan"}]'
 MSYS_NO_PATHCONV=1 docker exec "$NAME" sh -c \
     "printf '%s' '$SEED_JSON' > /data/engagements.json"
 
@@ -461,19 +495,18 @@ async def main():
         bus=None, webhook_url="",
         engagement_supergroup_id=supergroup,
     )
+    manager = register_casa_endpoint(ch, "e10")
     await ch._rebuild()
     ch._engagement_registry = reg
 
     class StubBus:
         def __init__(self): self.notifs = []
         async def notify(self, msg): self.notifs.append(msg)
-    class StubChanMgr:
-        def get(self, _name): return ch
     bus = StubBus()
     import tools as _tools
     _tools._engagement_registry = reg
     _tools._bus = bus
-    _tools._channel_manager = StubChanMgr()
+    _tools._channel_manager = manager
 
     class StubDriver:
         async def cancel(self, rec): pass

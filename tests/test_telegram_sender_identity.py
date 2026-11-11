@@ -68,6 +68,7 @@ def _channel(configured_chat_id: str):
     bus = MessageBus()
     bus.register("assistant", _noop_handler)
     channel = TelegramChannel(
+        known_bot_id=111,
         bot_token="T", chat_id=configured_chat_id,
         default_agent="assistant", bus=bus,
     )

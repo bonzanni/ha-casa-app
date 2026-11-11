@@ -25,6 +25,8 @@ from authz_grants import GrantIdentity
 from channels import DeliveryOutcome
 from plugin_grants import PluginContract, ResultContractMap, ToolContract
 from text_util import utf16_len
+from telegram_channel_double import make_transport
+from two_endpoints import CASA_BOT as BOT
 
 ARTIFACT = "3" * 64
 PLUGIN = "probe"
@@ -39,7 +41,7 @@ SLOT = "approval_link"
 
 def _identity(**over) -> GrantIdentity:
     base = dict(operator_id=42, chat_id=42, enforcement_role="finance",
-                artifact_id=ARTIFACT, engagement_id="")
+                artifact_id=ARTIFACT, engagement_id="", bot_id=BOT)
     base.update(over)
     return GrantIdentity(**base)
 
@@ -68,6 +70,7 @@ class _Clock:
 
 
 class _Recorder:
+    default_agent, bot_id, has_bot_id, on_identity = "assistant", BOT, True, None
     """The Telegram channel double: records every delivery the hook asks for
     and every OTHER send, so a test can assert the link went to the identity
     chat and nowhere else."""
@@ -104,12 +107,10 @@ class _Recorder:
         return DeliveryOutcome.DELIVERED
 
 
-class _Manager:
-    def __init__(self, channel):
-        self._channel = channel
-
-    def get(self, name):
-        return self._channel if name == "telegram" else None
+def _Manager(channel):
+    """The channel manager with Telegram's transport over *channel*, Casa's
+    endpoint on bot 111; ``None`` (no Telegram) for no channel."""
+    return make_transport(channel) if channel is not None else None
 
 
 @pytest.fixture
@@ -374,7 +375,7 @@ async def test_the_real_channel_method_sends_once_and_falls_back_plain():
     from channels.telegram import TelegramChannel
     text, entities, plain = rb.compose_operator_link(URL, caption="c", label="Approve")
     # not started: nothing sent, not proven
-    ch = TelegramChannel(bot=MagicMock(), chat_id="42")
+    ch = TelegramChannel(bot=MagicMock(), chat_id="42", known_bot_id=BOT)
     ch._app = None
     assert await ch.deliver_operator_link(42, text, entities, plain) is DeliveryOutcome.NOT_DELIVERED
     # started: exactly one send_message with the entity; DELIVERED
@@ -417,7 +418,7 @@ async def test_the_real_channel_method_sends_the_url_button_first():
     body, label = rb.compose_operator_link_button(URL, caption="c", label="Approve", head="H")
     assert (body, label) == ("H\nc", "Approve (bank.example.com)")
     assert rb.compose_operator_link_button(URL) == ("Open", "Open (bank.example.com)")
-    ch = TelegramChannel(bot=MagicMock(), chat_id="42")
+    ch = TelegramChannel(bot=MagicMock(), chat_id="42", known_bot_id=BOT)
     app = MagicMock()
     app.bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=7))
     ch._app = app
@@ -463,7 +464,7 @@ async def test_casas_warnings_on_the_send_path_log_the_error_type_only(recorder,
     from channels.telegram import TelegramChannel
     caplog.set_level(logging.DEBUG)
     text, entities, plain = rb.compose_operator_link(URL, label="Approve")
-    ch = TelegramChannel(bot=MagicMock(), chat_id="42")
+    ch = TelegramChannel(bot=MagicMock(), chat_id="42", known_bot_id=BOT)
     app = MagicMock()
     app.bot.send_message = AsyncMock(side_effect=[BadRequest("rejected URL " + URL), True])
     ch._app = app
@@ -498,7 +499,7 @@ async def test_a_setup_tool_declared_capability_takes_the_path_through_both_real
         out = await pre(_pre(SETUP_CAP), "s-0", {})
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert store._inflight == {}
-    with _Origin(DM):
+    with _Origin({**DM, "_tg_bot": BOT}):
         assert await pre(_pre(SETUP_CAP), "s-1", {}) == {}
     assert len(store._inflight) == 1
     ref, err = store.deposit(client_id="c1", slot="auth_url", value=URL,
@@ -529,7 +530,7 @@ async def test_an_engagements_link_goes_to_the_origin_chat_not_the_topic(recorde
         role_or_type="finance",
         origin={"role": "assistant", "channel": "telegram", "chat_id": 42,
                 "user_id": 42, "message_type": "channel_in", "source": "telegram",
-                "execution_role": "assistant"})
+                "execution_role": "assistant", "_tg_bot": BOT})
     topic_origin = {"role": "finance", "execution_role": "finance",
                     "channel": "telegram", "chat_id": -100123, "user_id": 42,
                     "message_type": "channel_in", "source": "telegram"}

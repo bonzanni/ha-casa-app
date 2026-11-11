@@ -25,7 +25,7 @@ is [`specialist-desk.md`](specialist-desk.md); the announcement its answer becom
 a tap on its own card: the tap is a use of the same desk the turn holds. So the plugin ends
 the turn when its run must wait or has run long enough, and the run is continued by a
 new turn. `CONTINUATIONS.request(binding, run_ref, reason)` keeps at most one pending
-continuation per plugin, operator and `run_ref`; once its turn has started, a new request
+continuation per plugin, bot, operator and `run_ref`; once its turn has started, a new request
 for the run queues the next one, so a tap that arrives while a turn still drives the run
 is applied after that turn.
 
@@ -139,7 +139,7 @@ to be asked first.
 
 **INV-PLUG-053**: A continuation turn runs only for a binding of the configured operator and of the plugin that asked for it or that the sweep called, under an origin rebuilt from that binding with no operator words, as one use of its specialist's desk, and its answer reaches the binding's resident through a durably announced delegation after each specialist requester in the chain has had its turn with it under that requester's desk — or the climb fails with Casa's message.
 
-Enforced by `Continuations.request` (one pending per plugin, operator and run), by
+Enforced by `Continuations.request` (one pending per plugin, bot, operator and run), by
 `run_continuation` checking the operator and that the chain ends with a loaded specialist,
 and taking the desk and a slot (`_desk_turn`)
 before it registers the delegation record and attaches the completion callback, by

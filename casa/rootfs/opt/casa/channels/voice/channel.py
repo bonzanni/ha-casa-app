@@ -41,6 +41,17 @@ from job_registry import JobTransitionError, VoiceJob
 
 logger = logging.getLogger(__name__)
 
+
+def _fresh_route(role: str) -> dict:
+    """The route a voice turn is born with, stamped server-side: the turn
+    arrives over voice, but its tools may still send to Telegram
+    (``send_message``), so it carries ``route_for(role)`` (the role's own bot,
+    else Casa's), decided once at creation. Nothing when Telegram is not
+    configured."""
+    from channels.telegram_transport import telegram_transport
+    transport = telegram_transport()
+    return {} if transport is None else {"_tg_bot": transport.route_for(role)}
+
 # Concierge specialist hand-off wire protocol. The client must echo this (and
 # the job id) in its `handoff_received` receipt; see VoiceHandoff.frame and
 # VoiceHandoffCoordinator.handle. Named rather than repeated as a literal so
@@ -874,6 +885,7 @@ class VoiceChannel(Channel):
                 # an out-of-band delivery route, even when its external
                 # context contains route-shaped spoof fields.
                 "_voice_transport": "sse",
+                **_fresh_route(agent_role),
             },
             # Task 9: anonymous but trusted voice speaker — server-created
             # ingress identity (never decoded from the SSE payload), resolved
@@ -1530,6 +1542,7 @@ class VoiceChannel(Channel):
                 "_progress_sink": _progress_sink,
                 "_voice_handoff_reservation": reservation,
                 **trusted_route_context,
+                **_fresh_route(agent_role),
             },
             # Task 9: anonymous but trusted voice speaker — server-created
             # ingress identity (never decoded from the WS frame), resolved

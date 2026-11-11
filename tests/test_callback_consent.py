@@ -44,6 +44,7 @@ class _FakeChannel:
         self.edits: list = []
         self.dispatches: list = []
         self.chat_id = "100"
+        self.bot_id = 111
 
     async def post_dm_keyboard(self, *, chat_id, request_id, text, options):
         self.posts.append((chat_id, request_id, text, tuple(options)))
@@ -59,8 +60,12 @@ class _FakeChannel:
 
 
 class _FakeChannelManager:
+    """The ``"telegram"`` channel is a real transport with *telegram*
+    registered as Casa's endpoint, bot 111."""
+
     def __init__(self, telegram=None):
-        self._telegram = telegram
+        from _fixture_a import transport_for
+        self._telegram = transport_for(telegram) if telegram is not None else None
 
     def get(self, name):
         return self._telegram if name == "telegram" else None
@@ -153,11 +158,20 @@ async def test_duplicate_prompt_is_deduped(monkeypatch, tmp_path):
 
 async def test_operator_identity_is_the_trigger_consent_rule(monkeypatch,
                                                              tmp_path):
+    """Callback consent cards go where trigger consent cards go: Casa's bot,
+    the operator's private chat on it (``trigger_consent.casa_consent_target``)."""
+    import trigger_consent
+
     ch = _FakeChannel()
+    ch.has_bot_id = True
+    ch.default_agent = "assistant"
     ch.chat_id = "-100123"       # a group chat: nobody is the operator
-    assert cc.operator_identity(ch) is None
+    cm = _FakeChannelManager(ch)
+    assert trigger_consent.casa_consent_target(cm) is None
     ch.chat_id = "4242"
-    assert cc.operator_identity(ch) == (4242, 4242)
+    target = trigger_consent.casa_consent_target(cm)
+    assert (target.address.chat_id, target.operator_id) == (4242, 4242)
+    assert target.address.bot_id == 111 and target.endpoint is ch
 
 
 # ---------------------------------------------------------------------------

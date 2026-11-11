@@ -305,9 +305,10 @@ class TestBrokerShutdownOrdering:
             async def _dispatch_button_continuation(self, **kw):
                 return True
 
-        channel = _FakeAskChannel()
-        cm = MagicMock()
-        cm.get = MagicMock(return_value=channel)
+        from _fixture_d import as_endpoint, endpoint_manager
+
+        channel = as_endpoint(_FakeAskChannel())
+        cm = endpoint_manager(channel)
         tools.init_tools(
             channel_manager=cm, bus=MagicMock(), specialist_registry=MagicMock(),
             mcp_registry=MagicMock(),
@@ -315,7 +316,7 @@ class TestBrokerShutdownOrdering:
         tok = agent_mod.origin_var.set(with_scope({
             "role": "assistant", "channel": "telegram", "chat_id": "500",
             "user_id": 999, "message_type": "channel_in", "source": "telegram",
-            "execution_role": "assistant",
+            "execution_role": "assistant", "_tg_bot": 111,
         }))
         try:
             result = await tools.ask_user.handler(

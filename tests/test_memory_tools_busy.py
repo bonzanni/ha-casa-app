@@ -31,7 +31,7 @@ pytestmark = [pytest.mark.asyncio]
 #: room for a loaded test host, and is far below any default wait).
 ANSWER_WITHIN_S = 1.5
 
-KEY = occurrence.provider_key("telegram", "4242", "900")
+KEY = occurrence.message_key("telegram", 111, "4242", "900")
 
 #: (name, which store file and lock, the store's journal mode, whether the
 #: lock is taken only once the search's catch-up is done — so the search's

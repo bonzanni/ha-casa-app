@@ -1018,6 +1018,14 @@ def test_worker_owns_no_episode_store():
 _PRESTART = "channels not started yet"
 
 #: variant → (site message prefix, the site's existing ERROR message, n).
+@pytest.fixture
+def operator_seam(operator_seam):
+    """The shared seam, with its channel behind the Telegram transport."""
+    from _fixture_d import seam_behind_transport
+
+    return seam_behind_transport(operator_seam)
+
+
 _SITES_930 = {
     "exhaustion": ("callback exhaustion note",
                    f"callback exhaustion note failed (plugin={PLUGIN})", 1),

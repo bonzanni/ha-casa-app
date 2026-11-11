@@ -14,16 +14,22 @@ flavor on the generic :class:`authz_grants.ChallengeCoordinator`:
   the next lifecycle reconcile may re-prompt.
 
 Taps ride the SAME validated Telegram DM callback path as authz grants
-(broker scope ``authz:{chat}``): the handler fail-closes on the meta's
-``chat_id``/``operator_id``, so an unauthorized or stale tap can never ack.
+(broker scope ``authz:<bot>:<chat>``): the handler fail-closes on the meta's
+``bot_id``/``chat_id``/``operator_id``, so an unauthorized or stale tap can
+never ack.
+
+Every consent card is Casa's own, so it is posted on Casa's bot, whichever
+bot the turn that caused it came from: :func:`casa_consent_target` is where
+the consent modules and their reconcilers find that bot and the operator.
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, NamedTuple
 
 import plugin_triggers
+from channels.tg_address import AddressError, EndpointNotReady, TgAddress
 from plugin_triggers import ack_identity
 
 logger = logging.getLogger(__name__)
@@ -43,6 +49,8 @@ class TriggerConsentKey:
     artifact=old)`` — the plugin-lifecycle invalidation — cancels a pending
     keyboard whose artifact just changed: an old keyboard can never ack the
     replacement artifact (``identity`` binds the full approved tuple).
+    ``address`` is the operator's chat on the bot the keyboard is posted
+    through.
     """
 
     plugin: str
@@ -50,27 +58,42 @@ class TriggerConsentKey:
     effective: str
     target: str
     identity: str
+    address: TgAddress
 
 
-def operator_identity(channel: Any) -> "tuple[int, int] | None":
-    """The validated operator ``(chat_id, operator_id)`` from the configured
-    Telegram DM channel, or ``None`` (fail-closed: no prompt, the trigger
-    stays ``pending_ack``).
+class ConsentTarget(NamedTuple):
+    """Where a Casa consent card goes: Casa's endpoint, the operator's chat
+    on it, and the operator who may answer."""
 
-    The configured ``channel.chat_id`` is the operator's 1:1 DM chat. For a
-    private Telegram chat the chat id EQUALS the operator's user id (both
-    positive); group/supergroup ids are negative, so a misconfigured group
-    chat yields ``None`` — nobody's tap would validate rather than the wrong
-    someone's.
-    """
-    raw = getattr(channel, "chat_id", None)
+    endpoint: Any
+    address: TgAddress
+    operator_id: int
+
+
+def casa_consent_target(channel_manager: Any) -> "ConsentTarget | None":
+    """Casa's endpoint and the operator's chat on it, from the Telegram
+    transport registered in *channel_manager*; ``None`` when no card can be
+    posted (fail-closed: no prompt, the consent stays pending and is asked
+    again later).
+
+    ``None`` when there is no channel manager or no Telegram transport, no
+    Casa endpoint, no valid private operator chat (a group id is never the
+    operator: nobody's tap would validate rather than the wrong someone's),
+    or Casa's bot has no id yet — its token has never completed ``getMe``,
+    so the card's key and broker scope cannot be formed."""
+    if channel_manager is None:
+        return None
+    from channels.telegram_transport import telegram_transport
+
+    transport = telegram_transport(channel_manager)
+    if transport is None:
+        return None
     try:
-        cid = int(str(raw).strip())
-    except (TypeError, ValueError):
+        address = transport.casa_operator_address()
+        endpoint = transport.casa_endpoint()
+    except (EndpointNotReady, AddressError, RuntimeError):
         return None
-    if cid <= 0:
-        return None
-    return cid, cid
+    return ConsentTarget(endpoint, address, address.chat_id)
 
 
 def render_trigger_consent_message(
@@ -122,12 +145,15 @@ def prompt_trigger_consent(
     Returns the coordinator's ``ChallengeHandle``. ``acks`` is the
     :class:`trigger_acks.TriggerAckStore`; ``reconcile_cb`` re-runs the
     trigger reconciler after an approve so the route goes live immediately.
+    *channel* is the endpoint that posts the card (Casa's, from
+    :func:`casa_consent_target`); the card's key and scope carry its bot.
     """
     identity = ack_identity(plugin=plugin, artifact_id=artifact_id,
                             effective=effective, target=target, auth=auth)
+    address = TgAddress(channel.bot_id, chat_id)
     key = TriggerConsentKey(plugin=plugin, artifact_id=artifact_id,
                             effective=effective, target=target,
-                            identity=identity)
+                            identity=identity, address=address)
     role = target.partition(":")[2] or target
     text = render_trigger_consent_message(
         plugin=plugin, effective=effective, role=role, auth=auth,
@@ -294,7 +320,8 @@ def prompt_trigger_consent(
         return _finish
 
     return coordinator.register_challenge(
-        key, chat_id=chat_id, operator_id=operator_id, channel=channel,
+        key, bot_id=address.bot_id, chat_id=chat_id, operator_id=operator_id,
+        channel=channel,
         challenge_text=text, options=["Approve", "Deny"],
         on_commit_sync=_on_commit_sync, finish_factory=_finish_factory,
         kind="trigger_consent",

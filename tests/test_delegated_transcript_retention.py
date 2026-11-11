@@ -450,7 +450,7 @@ async def test_retention_of_an_older_row_means_the_next_turn_is_fresh(env, monke
     sid = h.launches[0].session_id
     bindings = plugin_bindings.BindingStore(str(tmp_path / "b.json"))
     monkeypatch.setattr(plugin_bindings, "BINDINGS", bindings)
-    ident = GrantIdentity(operator_id=100, chat_id=42, enforcement_role="finance",
+    ident = GrantIdentity(operator_id=100, bot_id=111, chat_id=42, enforcement_role="finance",
                           artifact_id="1" * 64, engagement_id="")
     binding = bindings.for_turn(plugin="p", turn_key="d-1", identity=ident,
                                 chain=("assistant", "finance"), origin={})

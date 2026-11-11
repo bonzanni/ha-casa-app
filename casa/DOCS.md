@@ -245,6 +245,7 @@ All endpoints are accessible through the ingress proxy.
 | `GET` | `/api/voice/agents` | Discover enabled Home Assistant voice residents (authenticated) |
 | `POST` | `/webhook/{name}` | Fire-and-forget named webhook |
 | `POST` | `/invoke/{agent}` | Synchronous agent invocation (returns response) |
+| `POST` | `/telegram/update/{bot_id}` | Telegram updates for one bot, in webhook mode only. Casa registers this URL with Telegram itself (your `public_url` joined with the path), signed with a secret derived for that bot; you never enter it anywhere |
 
 Webhook and invoke endpoints accept JSON bodies (capped at 64 KiB; a plugin
 trigger may declare a larger cap, see below). Auth is
@@ -575,7 +576,7 @@ Casa exposes two transports for Home Assistant voice / generic voice clients. Th
 
 > **Voice is authenticated.** Both transports below are fail-closed: without a
 > webhook secret every voice request is rejected with `401` — the same
-> treatment as `/invoke` and `/telegram/update`. This matters because the
+> treatment as `/invoke` and `/telegram/update/<bot id>`. This matters because the
 > external API port can be published, and an unsigned voice turn reaches an
 > agent that can drive Home Assistant. Casa always has a secret, and the
 > companion integration signs every request.
@@ -735,6 +736,12 @@ The terminal is an unauthenticated **root** shell, so it is reachable only throu
 - **App won't start**: Check the log for "claude_oauth_token is required". You must set the token before starting.
 - **No Telegram messages**: Verify `telegram_bot_token` and `telegram_chat_id` are correct. The bot must have been started (`/start` in Telegram).
 - **No agent logs**: see [Optional: agent logs](#optional-agent-logs). Background jobs work without them.
+- **Old Telegram records ignored after an upgrade**: Casa stores every Telegram message it keeps
+  (a job's posts and buttons, a pending scheduled question, a plugin's delivery records) together
+  with the bot that sent or received it, and it does not convert records an older version wrote
+  without the bot. This is not backward compatible: at startup each such record is logged as
+  refused and skipped; a pending scheduled question written that way, for example, is not
+  restored.
 - **Ellen doesn't tell you a job ended**: how she narrates a job's result comes from
   the prompt she is actually served, compiled from her persona and her role — not from
   any file in her agent folder. Editing `prompts/system.md` there does nothing (Casa

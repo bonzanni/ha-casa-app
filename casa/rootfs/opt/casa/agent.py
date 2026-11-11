@@ -63,7 +63,9 @@ from timekeeping import compose_turn_preamble, resolve_tz
 from sensitivity import clearance_for_origin
 from personality_types import SpeakerProvenance
 from speaker_provenance import UserProvenance, provenance_from_mapping
-from provenance import ANSWERED_BY_OPERATOR
+from provenance import (
+    ANSWERED_BY_OPERATOR, ROUTING_KEYS, carry_route, route_context,
+)
 from session_gate import session_write_gate
 from session_registry import (
     SessionRegistry,
@@ -195,6 +197,9 @@ COPIED_CONTEXT_MARKERS = (
     # Browser executor §5.5: the operator's own typed words (Telegram ingress,
     # or his reply on a specialist's desk); read only by handoff.operator_words.
     "_operator_words",
+    # The turn's route: the bot its replies go out through, decided where the
+    # turn was born and carried by every turn derived from it.
+    *ROUTING_KEYS,
 )
 
 # Personality Task 14 / GH #199: the per-turn explanation draft. ``_build_options``
@@ -1107,8 +1112,11 @@ class _TurnCapture:
             ctx = msg.context
             provider_id = ctx.get("message_id") if self._operator_authored \
                 else None
-            key = (occurrence.provider_key(msg.channel, ctx.get("chat_id"),
-                                           provider_id)
+            # An operator message is keyed by the bot that received it: the
+            # route its endpoint stamped on the inbound turn. The key refuses
+            # anything but a bot id, and the guard below logs that refusal.
+            key = (occurrence.message_key(msg.channel, ctx.get("_tg_bot"),
+                                          ctx.get("chat_id"), provider_id)
                    if provider_id else None)
             if not self._operator_authored:
                 speaker = "casa"
@@ -1342,11 +1350,13 @@ class Agent:
         # to the operator's Telegram (the channel its scope binds every send
         # to) with a FRESH context: the execution context's `chat_id` keys the
         # session and is never a destination, and a numeric one would
-        # override the channel's own chat. Every other turn: the message's own
-        # channel and context, as before.
+        # override the channel's own chat. The fresh context carries only the
+        # turn's route, so the reply goes out through the bot the fire was
+        # routed to at ingress. Every other turn: the message's own channel
+        # and context, as before.
         if scope.delivers_to_operator:
             channel = self._channel_manager.get(scope.resolve_channel("webhook"))
-            delivery_context: dict[str, Any] = {}
+            delivery_context: dict[str, Any] = route_context(msg.context)
             if channel is None:
                 logger.warning(
                     "webhook deliver: no operator channel (role=%s webhook=%s)",
@@ -1796,10 +1806,19 @@ class Agent:
             target, ctx = channel, dict(msg.context)
             resumable = _is_chat_id(ctx.get("chat_id"))
         else:
-            import trigger_consent as _tc
-            target = self._channel_manager.get("telegram")
-            op = _tc.operator_identity(target) if target is not None else None
-            ctx = {"chat_id": op[0]} if op is not None else {}
+            # Casa's own notice to the operator: sent through Casa's endpoint
+            # to the operator's chat, ready or not (an unready endpoint
+            # reports it not delivered, as any send of it would).
+            from channels.telegram_transport import telegram_transport
+            transport = telegram_transport(self._channel_manager)
+            target, op = None, None
+            if transport is not None:
+                try:
+                    target = transport.casa_endpoint()
+                except RuntimeError:  # a transport with no Casa endpoint
+                    target = None
+                op = transport.operator_user_id()
+            ctx = {"chat_id": op} if op is not None else {}
             resumable = False
         what = "turn limit line" if line is None else "casa fallback line"
         if line is None:
@@ -1984,6 +2003,9 @@ class Agent:
         ):
             if _marker_key in origin:
                 synth_context[_marker_key] = origin[_marker_key]
+        # The reply goes out through the bot the delegating turn was routed
+        # to, as persisted on its origin, never one re-derived from the role.
+        synth_context.update(carry_route(origin))
 
         return BusMessage(
             type=MessageType.REQUEST,
@@ -2228,7 +2250,8 @@ class Agent:
             memory_note = await self._memory_note(
                 channel=msg.channel, channel_key=channel_key)
             if msg.channel == "telegram":
-                desk_lines = specialist_desk.prompt_lines(msg.context.get("chat_id"))
+                desk_lines = specialist_desk.prompt_lines(
+                    msg.context.get("_tg_bot"), msg.context.get("chat_id"))
                 if desk_lines:
                     notes.append("\n".join(desk_lines))
                 reply_note = msg.context.get("_reply_note")
@@ -3325,7 +3348,8 @@ class Agent:
             _cm = self._channel_manager
 
             def _authz_deps_factory(_cm=_cm):
-                ch = _cm.get("telegram") if _cm is not None else None
+                from channels.telegram_transport import telegram_transport
+                ch = telegram_transport(_cm) if _cm is not None else None
                 if ch is None:
                     return None  # no DM reachable ⇒ unsupported-origin deny
                 # Read the CURRENT loaded character name at call time (W2) — a

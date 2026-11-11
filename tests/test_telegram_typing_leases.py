@@ -28,6 +28,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
 def _channel() -> TelegramChannel:
     return TelegramChannel(
+        known_bot_id=111,
         bot_token="t", chat_id="1", default_agent="a",
     )
 
@@ -237,6 +238,7 @@ async def test_first_token_releases_lease_even_when_app_gone():
     # Streaming first-token teardown must release the lease before its
     # `_app is None` short-circuit as well.
     ch = TelegramChannel(
+        known_bot_id=111,
         bot_token="t", chat_id="1", default_agent="a",
     )
     _install_bot(ch)

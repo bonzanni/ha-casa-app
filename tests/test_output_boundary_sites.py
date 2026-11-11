@@ -154,6 +154,13 @@ CHANNEL_METHOD_CALLERS = {
     ("channels/telegram.py", "finalize_response_stream"): "forward",
     ("channels/telegram.py", "finalize_stream"): "forward",
     ("channels/telegram.py", "send_response"): "forward",
+    # The transport resolves one endpoint and hands it the same value unchanged.
+    ("channels/telegram_transport.py", "send"): "forward",
+    ("channels/telegram_transport.py", "send_media"): "forward",
+    ("channels/telegram_transport.py", "send_response"): "forward",
+    ("channels/telegram_transport.py", "finalize_response_stream"): "forward",
+    ("channels/telegram_transport.py", "finalize_stream"): "forward",
+    ("channels/telegram_transport.py", "post_job_question"): "forward",
     ("tools.py", "send_message"): "admitted",
     ("tools.py", "_classify_send"): "admitted",                 # the caption, admitted by send_media
     ("tools.py", "_post"): "admitted",                          # ask_user (both arms) and wipe_memory (casa_text)

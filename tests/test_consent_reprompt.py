@@ -66,6 +66,7 @@ def _identity(plugin="gmail", declared="authorize"):
 
 class _FakeTelegram:
     chat_id = "100"
+    bot_id = 111
 
     def __init__(self, *, deliver=True):
         self.posts = []
@@ -82,8 +83,12 @@ class _FakeTelegram:
 
 
 class _FakeChannelManager:
+    """The ``"telegram"`` channel is a real transport with *telegram*
+    registered as Casa's endpoint, bot 111."""
+
     def __init__(self, telegram=None):
-        self._telegram = telegram
+        from _fixture_a import transport_for
+        self._telegram = transport_for(telegram) if telegram is not None else None
 
     def get(self, name):
         return self._telegram if name == "telegram" else None
@@ -596,7 +601,7 @@ def _open_challenge(channel, kind, *, key=None, chat_id=100, operator_id=100,
                     meta_extra=None, text="challenge"):
     import authz_grants
     return authz_grants.CHALLENGES.register_challenge(
-        key or ("t1164", kind, chat_id, operator_id), chat_id=chat_id,
+        key or ("t1164", kind, chat_id, operator_id), bot_id=111, chat_id=chat_id,
         operator_id=operator_id, channel=channel, challenge_text=text,
         kind=kind, meta_extra=meta_extra)
 

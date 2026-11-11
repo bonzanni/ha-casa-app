@@ -22,8 +22,10 @@ Commands
   post --path P --body JSON
       Arbitrary signed POST; prints "HTTP <code> <body>" (exact body bytes —
       used for 404 no-existence-oracle byte-parity assertions).
-  telegram --text T [--chat-id C]
-      Synthetic Telegram DM update (drives the telegram-resident path).
+  telegram --text T [--chat-id C] [--bot-id B]
+      Synthetic Telegram DM update on bot B's route (default: Casa's own bot,
+      as stored in /data/telegram-casa-bot.json); drives the telegram-resident
+      path.
   sessions
       Print sessions.json rows as "key|agent|scope_class|last_active".
   key --channel C --role R --scope S
@@ -170,6 +172,15 @@ def cmd_post(a) -> int:
     return 0
 
 
+def _casa_bot_id() -> int:
+    """The bot id Casa's own endpoint last verified (0 when none is stored)."""
+    try:
+        with open("/data/telegram-casa-bot.json") as f:
+            return int(json.load(f).get("bot_id") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
+
+
 def cmd_telegram(a) -> int:
     now = int(time.time())
     payload = {
@@ -179,10 +190,19 @@ def cmd_telegram(a) -> int:
                     "chat": {"id": a.chat_id, "type": "private"},
                     "date": now, "text": a.text}}
     body = json.dumps(payload).encode()
+    bot_id = a.bot_id or _casa_bot_id()
+    if not bot_id:
+        print("no bot id: pass --bot-id (Casa's bot has not connected yet)")
+        return 2
+    # Each bot has its own update route, signed with a secret derived from
+    # the configured one for that bot.
+    sys.path.insert(0, "/opt/casa")
+    from channels.telegram_transport import webhook_secret_for
     req = urllib.request.Request(
-        BASE + "/telegram/update", data=body,
+        f"{BASE}/telegram/update/{bot_id}", data=body,
         headers={"Content-Type": "application/json",
-                 "X-Telegram-Bot-Api-Secret-Token": _secret()})
+                 "X-Telegram-Bot-Api-Secret-Token":
+                     webhook_secret_for(_secret(), bot_id)})
     with urllib.request.urlopen(req, timeout=10) as r:
         print(f"HTTP {r.status} {r.read().decode(errors='replace')}")
     return 0
@@ -238,6 +258,8 @@ def main() -> int:
     t = sub.add_parser("telegram")
     t.add_argument("--text", required=True)
     t.add_argument("--chat-id", type=int, default=DEFAULT_TG_USER)
+    t.add_argument("--bot-id", type=int, default=0,
+                   help="the receiving bot (default: Casa's own bot)")
     t.set_defaults(fn=cmd_telegram)
 
     s = sub.add_parser("sessions")

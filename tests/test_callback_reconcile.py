@@ -180,8 +180,12 @@ class _FakeTelegram:
 
 
 class _FakeChannelManager:
+    """The ``"telegram"`` channel is a real transport with *telegram*
+    registered as Casa's endpoint, bot 111."""
+
     def __init__(self, telegram=None):
-        self._telegram = telegram
+        from _fixture_a import transport_for
+        self._telegram = transport_for(telegram) if telegram is not None else None
 
     def get(self, name):
         return self._telegram if name == "telegram" else None

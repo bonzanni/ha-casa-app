@@ -26,9 +26,11 @@ import pytest
 import result_broker as rb
 import tools
 from channels import DeliveryOutcome
+from channels.tg_address import TgAddress
 from test_memory_capture import captured_events
 from test_memory_capture import mem  # noqa: F401 — fixture
 from test_no_retain_specialist import _cfg
+from two_endpoints import CASA_BOT as BOT
 
 pytestmark = [pytest.mark.asyncio]
 
@@ -48,7 +50,7 @@ def roles(monkeypatch):
 
 def _channel(chat_id: str = str(OPERATOR_CHAT)):
     from channels.telegram import TelegramChannel
-    ch = TelegramChannel(bot=MagicMock(), chat_id=chat_id,
+    ch = TelegramChannel(bot=MagicMock(), chat_id=chat_id, known_bot_id=BOT,
                          default_agent="assistant")
     ch._app = MagicMock()
     ids = iter(range(100, 200))
@@ -308,8 +310,8 @@ async def test_a_swipe_reply_on_a_no_memory_specialist_s_desk_is_his_message(
     assert mine["eligibility"] == "desk_reply" and mine["origin_tier"] is None
     assert mine["speaker_id"] == str(OPERATOR_CHAT)
     assert mine["speaker_name"] == "Nicola"
-    assert mine["source_key"] == occurrence.provider_key(
-        "telegram", str(OPERATOR_CHAT), "70")
+    assert mine["source_key"] == occurrence.message_key(
+        "telegram", BOT, str(OPERATOR_CHAT), "70")
     # never the post he quoted, never the specialist's reply
     assert not any(tok in str(v) for e in rows for v in e.values()
                    for tok in (CANARY, QUOTED))
@@ -388,7 +390,7 @@ async def topic(tmp_path, roles, mem):
 
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     origin = {"role": "assistant", "channel": "telegram",
-              "user_id": OPERATOR_CHAT}
+              "user_id": OPERATOR_CHAT, "_tg_bot": BOT}
     recs = {
         "browser": await reg.create("specialist", "browser", "in_casa", "t",
                                     dict(origin)),
@@ -408,7 +410,7 @@ async def topic(tmp_path, roles, mem):
         attach_session(drv, rec, client)
 
     def channel(chat_id=str(OPERATOR_CHAT)):
-        ch = TelegramChannel(bot=MagicMock(), chat_id=chat_id,
+        ch = TelegramChannel(bot=MagicMock(), chat_id=chat_id, known_bot_id=BOT,
                              engagement_supergroup_id=SUPERGROUP,
                              default_agent="assistant")
         ch._engagement_registry = reg
@@ -470,7 +472,7 @@ async def test_the_operator_s_reply_to_a_no_memory_specialist_s_job_post_is_thei
         "sample:work", "sample", "work", "sample:work", "Book slots", None), started_by="operator")
     rec.origin["chat_id"] = str(OPERATOR_CHAT)
     ch = topic.channel()
-    ch._engagement_registry.record_job_post(rec.id, 600)
+    ch._engagement_registry.record_job_post(rec.id, TgAddress(BOT, OPERATOR_CHAT, 600))
     quoted = SimpleNamespace(message_id=600, text="📊 Fido: which day?",
                              caption=None)
     update = SimpleNamespace(
@@ -487,5 +489,5 @@ async def test_the_operator_s_reply_to_a_no_memory_specialist_s_job_post_is_thei
         ("operator", "operator", "assistant", "Saturday please")]
     [mine] = rows
     assert mine["source_key"] == occurrence.engagement_key(
-        "telegram", rec.id, "910")
+        "telegram", BOT, rec.id, "910")
     assert not any(CANARY in str(v) for e in rows for v in e.values())

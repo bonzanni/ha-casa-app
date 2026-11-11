@@ -64,10 +64,15 @@ def _role_configs(**roles):
 
 
 class _FakeTelegram:
+    """Casa's Telegram endpoint (bot 111) serving operator 100."""
     chat_id = "100"
+    default_agent = "assistant"
+    bot_id = 111
+    has_bot_id = True
 
     def __init__(self):
         self.posts = []
+        self.on_identity = None
 
     async def post_dm_keyboard(self, *, chat_id, request_id, text, options):
         self.posts.append((chat_id, request_id, text, tuple(options)))
@@ -78,8 +83,16 @@ class _FakeTelegram:
 
 
 class _FakeChannelManager:
+    """A channel manager whose ``"telegram"`` channel is the transport over
+    *telegram* as Casa's endpoint, the way ``casa_core`` registers it."""
+
     def __init__(self, telegram=None):
-        self._telegram = telegram
+        self._telegram = None
+        if telegram is not None:
+            from channels.telegram_transport import TelegramTransport
+            from telegram_channel_double import MemoryBotIdStore
+            self._telegram = TelegramTransport(casa_bot_ids=MemoryBotIdStore())
+            self._telegram.add_endpoint(telegram, casa=True)
 
     def get(self, name):
         return self._telegram if name == "telegram" else None

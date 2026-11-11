@@ -22,22 +22,29 @@ def test_plugin_job_offers_and_admits_only_its_two_casa_tools():
         background_jobs.PLUGIN_JOB_CASA_GRANTS)
 
 
-def test_plugin_job_identity_is_bound_to_its_host_and_artifact():
+def test_plugin_job_identity_is_bound_to_its_host_and_artifact(monkeypatch):
+    from two_endpoints import CASA_BOT, build_two_endpoints
+    monkeypatch.setattr(tools, "_channel_manager", build_two_endpoints().manager)
     artifact = "a" * 64
     rec = SimpleNamespace(
         id="job-1", kind="plugin", status="active",
-        role_or_type="assistant", origin={"chat_id": 42, "user_id": 7},
+        role_or_type="assistant",
+        origin={"chat_id": 42, "user_id": 7, "_tg_bot": CASA_BOT},
         plugin_artifacts=({"artifact_id": artifact},),
     )
     origin = {"role": "assistant", "execution_role": "assistant",
               "channel": "telegram", "source": "telegram",
-              "message_type": "channel_in", "chat_id": 42, "user_id": 7}
+              "message_type": "channel_in", "chat_id": 42, "user_id": 7,
+              "_tg_bot": CASA_BOT}
     origin_token = agent.origin_var.set(origin)
     engagement_token = tools.engagement_var.set(rec)
     try:
         identity, why = resolve_grant_identity("assistant", artifact)
         assert why is None
-        assert identity == GrantIdentity(7, 42, "assistant", artifact, "job-1")
+        assert identity == GrantIdentity(
+            operator_id=7, bot_id=CASA_BOT, chat_id=42,
+            enforcement_role="assistant", artifact_id=artifact,
+            engagement_id="job-1")
         assert resolve_grant_identity("other", artifact) == (None, "engagement_unavailable")
         assert resolve_grant_identity("assistant", "b" * 64) == (None, "engagement_unavailable")
     finally:

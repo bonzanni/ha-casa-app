@@ -31,6 +31,8 @@ from test_proposal_slot import (  # noqa: F401 — the env fixture rides along
     APPLY, ARTIFACT, GUARDED, LABEL, MORE, OFFER, PROTECTED, SEG, SLOT, _identity, _map, _open,
     _proposal, env,
 )
+from telegram_channel_double import make_transport
+from two_endpoints import CASA_BOT as BOT
 
 CANON = '{"choice":"yes","match_id":17}'
 ARGS = {"match_id": 17, "choice": "yes"}
@@ -419,6 +421,8 @@ async def test_the_more_exceptions_capture_is_the_hooks_effective_result_never_t
 
 
 class _NoticeRecorder:
+    default_agent, bot_id, has_bot_id, on_identity = "assistant", BOT, True, None
+
     def __init__(self, rec):
         self._rec = rec
         self.notices = []
@@ -433,7 +437,7 @@ class _NoticeRecorder:
 
 async def test_a_more_rewrite_tells_inside_the_next_proposal_when_it_fits_else_in_one_notice_after_it(env, monkeypatch):
     rec = _NoticeRecorder(env.rec)
-    monkeypatch.setattr(tools_mod, "_channel_manager", types.SimpleNamespace(get=lambda n: rec))
+    monkeypatch.setattr(tools_mod, "_channel_manager", make_transport(rec))
     import specialist_desk as sd
     # fits one page: the tell line rides above the label, no separate notice
     owner = _owner(runtime_name=MORE, canonical='{"page":2}')

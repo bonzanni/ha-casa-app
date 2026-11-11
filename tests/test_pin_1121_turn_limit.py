@@ -47,6 +47,7 @@ pytestmark = [pytest.mark.asyncio]
 CASA = Path(__file__).resolve().parent.parent / "casa" / "rootfs" / "opt" / "casa"
 SID = "limit-sid"
 OPERATOR = 4242
+CASA_BOT = 111
 LINE = "step limit"
 
 
@@ -118,6 +119,12 @@ class _Tg:
     def __init__(self, stream: bool = True) -> None:
         self.chat_id = OPERATOR
         self.is_ready = True
+        # Casa's endpoint, as the transport registers it.
+        self.default_agent = "assistant"
+        self.is_casa = True
+        self.has_bot_id = True
+        self.bot_id = CASA_BOT
+        self.on_identity = None
         self._stream = stream
         self.send = AsyncMock(return_value=DeliveryOutcome.DELIVERED)
         self.send_response = AsyncMock(return_value=DeliveryOutcome.DELIVERED)
@@ -144,6 +151,17 @@ class _Tg:
             "finalize_response_stream"))
 
 
+def _register(agent, tg: _Tg) -> None:
+    """Register *tg* as Casa's endpoint behind the Telegram transport, the
+    only ``"telegram"`` channel, as ``casa_core`` does."""
+    from channels.telegram_transport import TelegramTransport
+    from telegram_channel_double import MemoryBotIdStore
+
+    transport = TelegramTransport(casa_bot_ids=MemoryBotIdStore(CASA_BOT))
+    transport.add_endpoint(tg, casa=True)
+    agent._channel_manager.register(transport)
+
+
 def _limit_warnings(caplog, role: str, channel: str) -> list[str]:
     out = []
     for r in caplog.records:
@@ -158,7 +176,7 @@ def _dm(chat: str = "123", trusted: bool = True, role: str = "assistant",
         text: str = "go and check now") -> BusMessage:
     m = BusMessage(type=MessageType.CHANNEL_IN, source="telegram", target=role,
                    content=text, channel="telegram",
-                   context={"chat_id": chat})
+                   context={"chat_id": chat, "_tg_bot": CASA_BOT})
     if trusted:
         m.trusted_user_origin = ingress_identity(
             "telegram", sender_id="9001", sender_is_operator=True)
@@ -170,7 +188,7 @@ def _scheduled(channel: str = "telegram", trigger: str = "heartbeat") -> BusMess
         type=MessageType.SCHEDULED, source="scheduler", target="assistant",
         content="Run the check.", channel=channel,
         context={"chat_id": f"interval-{trigger}", "trigger": trigger,
-                 "cid": "sched-1"},
+                 "cid": "sched-1", "_tg_bot": CASA_BOT},
     )
 
 
@@ -189,7 +207,7 @@ async def test_rc1_dm_progress_stays_and_one_line_follows(tmp_path, caplog):
     caplog.set_level(logging.INFO)
     agent = _make_agent(tmp_path, role="assistant")
     tg = _Tg()
-    agent._channel_manager.register(tg)
+    _register(agent, tg)
     _reset(_limit_script("One new lead worth chasing..."))
     await _run(agent, _dm())
     assert tg.texts("finalize_response_stream") == ["One new lead worth chasing..."]
@@ -205,7 +223,7 @@ async def test_rc2_dm_no_text_gets_the_line_alone(tmp_path, caplog):
     caplog.set_level(logging.INFO)
     agent = _make_agent(tmp_path, role="assistant")
     tg = _Tg()
-    agent._channel_manager.register(tg)
+    _register(agent, tg)
     _reset(_limit_script(None))
     await _run(agent, _dm())
     assert tg.texts("finalize_response_stream") == []
@@ -222,7 +240,7 @@ async def test_rc3_retry_then_limit_is_not_an_error_and_not_a_strike(
     reg = await _seeded_registry(tmp_path)
     agent = _make_agent_with_registry(reg, role="butler")
     tg = _Tg()
-    agent._channel_manager.register(tg)
+    _register(agent, tg)
     _align_seeded_surface(reg, agent)
     _reset(_sdk_error_attempt(), _limit_script(None))
     await _run(agent, _dm(chat="fault-scope", role="butler"))
@@ -246,7 +264,7 @@ async def test_rc4_scheduled_no_text_names_the_task_and_offers_a_redo(
     caplog.set_level(logging.INFO)
     agent = _make_agent(tmp_path, role="assistant")
     tg = _Tg()
-    agent._channel_manager.register(tg)
+    _register(agent, tg)
     _reset(_limit_script(None))
     await _run(agent, _scheduled())
     lines = tg.lines()
@@ -265,7 +283,7 @@ async def test_rc4_scheduled_no_text_names_the_task_and_offers_a_redo(
 async def test_rc5_scheduled_text_is_delivered_then_one_line(tmp_path):
     agent = _make_agent(tmp_path, role="assistant")
     tg = _Tg()
-    agent._channel_manager.register(tg)
+    _register(agent, tg)
     _reset(_limit_script("Two of five invoices filed."))
     await _run(agent, _scheduled(trigger="morning-briefing"))
     assert tg.texts("send_response") == ["Two of five invoices filed."]
@@ -309,7 +327,8 @@ def _narration(channel: str = "telegram", chat: str = "123") -> tuple:
             delegation_id="deleg-1", agent="finance", status="ok",
             text="Ledger reconciled.",
             origin={"role": "assistant", "channel": channel, "chat_id": chat,
-                    "cid": "route-1", "user_text": "reconcile the ledger"},
+                    "cid": "route-1", "user_text": "reconcile the ledger",
+                    "_tg_bot": CASA_BOT},
         ),
         channel=channel,
         context={"chat_id": chat, "cid": "route-1", "delegation_id": "deleg-1"},
@@ -322,7 +341,7 @@ def _narration(channel: str = "telegram", chat: str = "123") -> tuple:
 async def test_rc7_narration_with_only_casas_line_stays_owed(tmp_path, text):
     agent = _make_agent(tmp_path, role="assistant")
     tg = _Tg()
-    agent._channel_manager.register(tg)
+    _register(agent, tg)
     msg, ack = _narration()
     _reset(_limit_script(text))
     await _run(agent, msg)
@@ -333,7 +352,7 @@ async def test_rc7_narration_with_only_casas_line_stays_owed(tmp_path, text):
 async def test_rc8_voice_origin_narration_line_reaches_the_operator_chat(tmp_path):
     agent = _make_agent(tmp_path, role="assistant")
     tg = _Tg()
-    agent._channel_manager.register(tg)
+    _register(agent, tg)
     msg, ack = _narration(channel="voice", chat="kitchen")
     _reset(_limit_script(None))
     await _run(agent, msg)
@@ -351,11 +370,12 @@ async def test_rc8_voice_origin_narration_line_reaches_the_operator_chat(tmp_pat
 async def test_rc9_streaming_plugin_setup_turn_gets_exactly_one_line(tmp_path):
     agent = _make_agent(tmp_path, role="assistant")
     tg = _Tg()
-    agent._channel_manager.register(tg)
+    _register(agent, tg)
     msg = BusMessage(
         type=MessageType.CHANNEL_IN, source="telegram", target="assistant",
         content="Set up the plugin.", channel="telegram",
         context={"chat_id": OPERATOR, "user_id": OPERATOR, "cid": "setup-1",
+                 "_tg_bot": CASA_BOT,
                  "synthetic": "plugin_setup", "setup_episode": "ep-1",
                  "plugin_setup_target": "quarterly-accounting"},
     )
@@ -377,7 +397,7 @@ async def test_rc9_streaming_plugin_setup_turn_gets_exactly_one_line(tmp_path):
 async def test_rc10_trusted_invoke_body_is_text_then_the_line(tmp_path):
     agent = _make_agent(tmp_path, role="assistant")
     tg = _Tg()
-    agent._channel_manager.register(tg)
+    _register(agent, tg)
     msg = BusMessage(type=MessageType.REQUEST, source="webhook",
                      target="assistant", content="status?", channel="webhook",
                      context={"chat_id": "named-caller", "_origin_route": "invoke"},
@@ -408,7 +428,7 @@ async def test_rc11_untrusted_webhook_sends_nothing_and_runs_at_20(
     agent = _make_agent(tmp_path, role="assistant")
     agent.config.tools.max_turns = 80
     tg = _Tg()
-    agent._channel_manager.register(tg)
+    _register(agent, tg)
     msg = BusMessage(
         type=MessageType.SCHEDULED, source="webhook", target="assistant",
         content="Webhook 'x' triggered with payload: {}", channel="webhook",
@@ -430,7 +450,7 @@ async def test_rc12_scheduled_trigger_on_webhook_channel_tells_the_operator(
     agent = _make_agent(tmp_path, role="assistant")
     agent.config.tools.max_turns = 80
     tg = _Tg()
-    agent._channel_manager.register(tg)
+    _register(agent, tg)
     _reset(_limit_script(None))
     await _run(agent, _scheduled(channel="webhook", trigger="nightly-sync"))
     lines = tg.lines()
@@ -443,7 +463,7 @@ async def test_rc12_scheduled_trigger_on_webhook_channel_tells_the_operator(
 async def test_rc17_scheduled_voice_trigger_tells_the_operator(tmp_path):
     agent = _make_agent(tmp_path, role="assistant")
     tg = _Tg()
-    agent._channel_manager.register(tg)
+    _register(agent, tg)
     _reset(_limit_script(None))
     await _run(agent, _scheduled(channel="voice", trigger="evening-lights"))
     lines = tg.lines()
@@ -458,7 +478,7 @@ async def test_rc18_line_and_warning_survive_a_raising_delivery(
     tg = _Tg()
     tg.finalize_response_stream = AsyncMock(
         side_effect=RuntimeError("channel down"))
-    agent._channel_manager.register(tg)
+    _register(agent, tg)
     _reset(_limit_script("progress"))
     with pytest.raises(RuntimeError, match="channel down"):
         await _run(agent, _dm())

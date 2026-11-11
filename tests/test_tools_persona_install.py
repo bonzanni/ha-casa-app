@@ -412,6 +412,20 @@ def _fake_persona_inspection(tmp_path):
     )
 
 
+def _telegram_manager(channel):
+    """A channel manager whose ``"telegram"`` is the transport with
+    *channel* as Casa's endpoint (bot 111), the way ``casa_core`` registers
+    it; one with no Telegram for ``None``."""
+    if channel is None:
+        return SimpleNamespace(get=lambda name: None)
+    from telegram_channel_double import make_transport
+    channel.default_agent = "assistant"
+    channel.has_bot_id = True
+    channel.bot_id = 111
+    channel.on_identity = None
+    return make_transport(channel)
+
+
 def _wire_persona_inspect(monkeypatch, tmp_path, *, channel=None):
     import persona_install
     from persona_install import PersonaInstallAckStore
@@ -428,7 +442,7 @@ def _wire_persona_inspect(monkeypatch, tmp_path, *, channel=None):
 
     monkeypatch.setattr(persona_install, "PersonaInstallAckStore", _TmpAckStore)
     monkeypatch.setattr(
-        tools_mod, "_channel_manager", SimpleNamespace(get=lambda name: channel))
+        tools_mod, "_channel_manager", _telegram_manager(channel))
     return fake, _TmpAckStore
 
 

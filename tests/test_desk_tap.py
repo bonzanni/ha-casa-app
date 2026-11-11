@@ -30,6 +30,7 @@ from output_boundary import Admitted
 from plugin_grants import PluginContract, ProfiledPlugin, ProfilePlan, ResultContractMap, ToolContract
 
 OPERATOR = 42
+BOT = 111          # the endpoint the operator wrote to
 LABEL = "📊 Finance"
 ART = "7" * 64
 RID = "f" * 32
@@ -69,6 +70,8 @@ class _Limiter:
 
 
 class _Channel:
+    bot_id = BOT
+
     def __init__(self, fail_send=False):
         self.replies, self.notices, self.released, self.marks = [], [], [], []
         self.order = []
@@ -128,10 +131,10 @@ def _build(*, tools=None, artifact=ART, plan=None, protected=None, plugins=None)
 
 
 def _meta(**over):
-    base = {"deadline": 10_000.0, "chat_id": OPERATOR, "operator_id": OPERATOR, "role": "finance",
-            "artifact_id": ART, "plugin_seg": SEG, "label": LABEL,
+    base = {"deadline": 10_000.0, "chat_id": OPERATOR, "bot_id": BOT, "operator_id": OPERATOR,
+            "role": "finance", "artifact_id": ART, "plugin_seg": SEG, "label": LABEL,
             "text": f"{LABEL}\nPair 17?", "options": ["Yes", "More"], "revision": "",
-            "message_id": 501, "owner": "d-1", "_scope": f"proposal:{OPERATOR}",
+            "message_id": 501, "owner": "d-1", "_scope": f"proposal:{BOT}:{OPERATOR}",
             "calls": [{"server": "probe", "wire_name": "apply", "runtime_name": APPLY,
                        "proposal": False, "arguments": {"choice": "yes"}, "canonical": CANON},
                       {"server": "probe", "wire_name": "more",
@@ -174,7 +177,7 @@ def env(monkeypatch):
                                owner=tools_mod._pinned_run.get(),
                                origin=dict(agent_mod.origin_var.get(None) or {}),
                                turn_id=tools_mod._delegation_quota_key.get(),
-                               lock_held=sd.DESKS.get(OPERATOR, "finance").lock.locked())
+                               lock_held=sd.DESKS.get(BOT, OPERATOR, "finance").lock.locked())
         calls.append(call)
         return await env.respond(call)
 
@@ -202,7 +205,7 @@ def env(monkeypatch):
         env.refreshes.append(True)
     monkeypatch.setattr(tools_mod, "_refresh_plugin_health_live", refresh, raising=False)
     env.channel = _Channel()
-    env.desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    env.desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     limiter.desk_holder.append(env.desk)
     return env
 
@@ -219,7 +222,7 @@ async def _tap(env, idx=0, meta=None, reservation=None, **over):
 
 
 def _echo():
-    return sd.drain_echo_lines(OPERATOR)
+    return sd.drain_echo_lines(BOT, OPERATOR)
 
 
 async def test_a_tap_on_a_slash_labelled_button_context_is_the_base_context(env):

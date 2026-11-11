@@ -26,10 +26,13 @@ from test_proposal_slot import (LABEL, SLOT, _identity, _map, _open, _post,  # n
 from test_desk_tap import LABEL as DESK_LABEL, OPERATOR, _tap, env  # noqa: F401
 from test_tap_in_place_card import _respond, edit_env  # noqa: F401
 from test_tap_next_card import _card, _live, card_env  # noqa: F401
+from channels.tg_address import TgAddress
+from two_endpoints import CASA_BOT as BOT
 
 
 class _PagesRecorder:
     """One ordered log of every message: ``("page", text)`` / ``("card", text)``."""
+    default_agent, bot_id, has_bot_id, on_identity = "assistant", BOT, True, None
 
     def __init__(self):
         self.log: list[tuple[str, str]] = []
@@ -47,7 +50,7 @@ class _PagesRecorder:
             return DeliveryOutcome.NOT_DELIVERED
         self.log.append(("page", text))
         self.next_mid += 1
-        rb.POST_MAP.record(chat_id, self.next_mid, post)
+        rb.POST_MAP.record(TgAddress(BOT, chat_id, self.next_mid), post)
         self.posts.append(post)
         return DeliveryOutcome.DELIVERED
 
@@ -56,7 +59,7 @@ class _PagesRecorder:
         if not self.card_lands:
             return None
         self.next_mid += 1
-        rb.POST_MAP.record(chat_id, self.next_mid, post)
+        rb.POST_MAP.record(TgAddress(BOT, chat_id, self.next_mid), post)
         return self.next_mid
 
 
@@ -78,7 +81,7 @@ PAGES = ["Payments without invoice (1/3)\n- Adobe 2 Sep €100", "(2/3)\n- Figma
 
 
 def _live_rids():
-    return vb.BROKER.pending(namespace="proposal", scope="proposal:42")
+    return vb.BROKER.pending(namespace="proposal", scope=f"proposal:{BOT}:42")
 
 
 # --- the deposit ---------------------------------------------------------------------
@@ -131,8 +134,8 @@ async def test_the_pages_land_in_order_then_the_card_under_one_receipt(penv):
     assert receipt["casa_delivery"] == {"slot": SLOT, "status": "delivered", "to": "operator_chat",
                                         "proposal_id": rid, "buttons": 2, "pages": 3}
     # every page is filed under the card's own post record: a swipe-reply routes
-    card_post = rb.POST_MAP.get(42, 704)
-    assert [rb.POST_MAP.get(42, mid) for mid in (701, 702, 703)] == [card_post] * 3
+    card_post = rb.POST_MAP.get(TgAddress(BOT, 42, 704))
+    assert [rb.POST_MAP.get(TgAddress(BOT, 42, mid)) for mid in (701, 702, 703)] == [card_post] * 3
     assert (card_post.role, card_post.kind) == ("finance", rb.OPERATOR_PROPOSAL)
     assert rb.echo_lines(rb.POSTS.drain("d-1")) == [
         LABEL + " posted 3 pages and a proposal to your chat (2 buttons)."]
@@ -220,7 +223,7 @@ async def test_a_keyed_repeat_while_the_card_is_live_sends_nothing(penv, monkeyp
     # the remembered entry survives a reload (its detail shape is accepted)
     reloaded = delivery_keys.DeliveryKeys()
     reloaded.load(str(tmp_path / "keys.json"))
-    assert reloaded.lookup("probe", 42, "list-q3")["detail"]["pages"] == 3
+    assert reloaded.lookup("probe", BOT, 42, "list-q3")["detail"]["pages"] == 3
 
 
 # --- a tap's next card: never in place -----------------------------------------------------
@@ -245,8 +248,19 @@ async def test_a_next_card_with_pages_is_never_an_edit_and_falls_back_to_receipt
 # --- the channel: one page is one message ----------------------------------------------
 
 def _channel_with_bot():
-    from telegram_channel_double import _mk_channel_with_fake_bot
-    return _mk_channel_with_fake_bot()
+    """A channel with a fake bot, known as bot BOT: a page it delivers is
+    filed under that bot's address."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from channels.telegram import TelegramChannel
+    bot = MagicMock()
+    bot.send_message = AsyncMock(return_value=MagicMock(message_id=12345))
+    bot.edit_message_text = AsyncMock()
+    ch = TelegramChannel(bot_token="x:y", chat_id=100, default_agent="assistant",
+                         engagement_supergroup_id=-1001, known_bot_id=BOT)
+    ch._app = MagicMock()
+    ch._app.bot = bot
+    return ch, bot
 
 
 async def test_a_page_is_one_rich_message_filed_under_its_post(monkeypatch):
@@ -258,7 +272,7 @@ async def test_a_page_is_one_rich_message_filed_under_its_post(monkeypatch):
         f"| row {i} | €{i} |" for i in range(20))
     assert await ch.deliver_operator_page(42, page, post=post) is DeliveryOutcome.DELIVERED
     assert bot.send_message.await_count == 1 and bot.send_message.await_args.kwargs["entities"]
-    assert rb.POST_MAP.get(42, 77) is post
+    assert rb.POST_MAP.get(ch.address(42, 77)) is post
 
 
 async def test_a_page_whose_entities_are_refused_is_resent_whole_as_one_plain_message(monkeypatch):
@@ -278,4 +292,4 @@ async def test_a_page_whose_entities_are_refused_is_resent_whole_as_one_plain_me
     assert await ch.deliver_operator_page(42, page, post=post) is DeliveryOutcome.DELIVERED
     assert bot.send_message.await_count == 2                 # the rich try, then ONE plain message
     assert bot.send_message.await_args.kwargs["text"] == page
-    assert rb.POST_MAP.get(42, 78) is post
+    assert rb.POST_MAP.get(ch.address(42, 78)) is post

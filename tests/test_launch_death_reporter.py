@@ -23,6 +23,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from channels.tg_address import TgAddress
+
 try:
     from tests.test_in_casa_launch_terminal_artifact import (
         ScriptedCompleteClient, ScriptedCutoffClient, _Probe, _build, _launch,
@@ -33,6 +35,13 @@ except ImportError:  # pragma: no cover — direct-path collection
     )
 
 pytestmark = [pytest.mark.asyncio]
+
+#: The operator's direct chat message 7, received by Casa's bot (111): the
+#: message the job is handed and the one its lost-message notice answers.
+_MESSAGE_7 = {
+    "tg_message": TgAddress(111, 100, 7),
+    "notice": {"address": [111, 100, 7], "answer": False},
+}
 
 _COUNTERPARTY_LATENCY_S = 0.1
 """#695: the modelled round-trip of the Telegram counterparty the launch-death
@@ -330,7 +339,7 @@ class TestTheBoundaries:
         await _cancel_while_opening(
             launcher, driver, monkeypatch,
             during=lambda rec: driver.submit_operator(
-                rec, "wait, also remove the old config", tg_message_id=7))
+                rec, "wait, also remove the old config", **_MESSAGE_7))
         await _drain_owner()
 
         assert len(probe.notice_texts) == 1
@@ -348,11 +357,14 @@ class TestTheBoundaries:
             tmp_path, monkeypatch, probe, ScriptedCutoffClient,
         )
         channel.tell_journal_lost = AsyncMock()
+        # The transport hands out the endpoint of the bot that received the
+        # message: the same double here.
+        channel.endpoint.return_value = channel
 
         rec = await _cancel_while_opening(
             launcher, driver, monkeypatch,
             during=lambda rec: driver.submit_operator(
-                rec, "wait, also remove the old config", tg_message_id=7))
+                rec, "wait, also remove the old config", **_MESSAGE_7))
         await _drain_owner()
 
         assert registry.get(rec.id).status == "error"

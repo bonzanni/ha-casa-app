@@ -79,6 +79,7 @@ def _channel_factory():
         bus.register("assistant", _noop_handler)
         limiter = RateLimiter(capacity=capacity, window_s=60.0)
         channel = TelegramChannel(
+            known_bot_id=111,
             bot_token="T",
             chat_id="0",
             default_agent="assistant",
@@ -152,6 +153,7 @@ class TestTelegramRateLimit:
         bus = MessageBus()
         bus.register("assistant", _noop_handler)
         channel = TelegramChannel(
+            known_bot_id=111,
             bot_token="T", chat_id="0",
             default_agent="assistant", bus=bus,
             # no rate_limiter kwarg

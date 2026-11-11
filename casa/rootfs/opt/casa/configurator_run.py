@@ -18,8 +18,8 @@ operator once which task was interrupted (``claim_interrupted`` and
 A restart the configurator needs is never made inline: ``note_restart``
 records it for the run, and the run's answer is followed by a Casa message with
 one "Restart now" button (``offer_restart``). The button is Casa's own keyboard
-(``operator_calls.post_question``): spent on its first tap, edited to say so
-when it expires or Casa restarts first.
+(``operator_calls.post_question``), always on Casa's own bot: spent on its
+first tap, edited to say so when it expires or Casa restarts first.
 
 While a run holds the lease, the plugins it installs are held back from the
 plugin-health DM (``installing``); the release schedules the deferred pass.
@@ -38,6 +38,7 @@ from types import SimpleNamespace
 from typing import Any, Awaitable, Callable
 
 import specialist_desk
+from channels.tg_address import AddressError, EndpointNotReady, TgAddress
 
 logger = logging.getLogger(__name__)
 
@@ -237,12 +238,13 @@ def record_installing(names) -> None:
             _held.installing.add(name)
 
 
-def record_step_line(chat_id: int, message_id: int) -> None:
-    """Name the held run's step line in the lease record, so the boot after a
-    stop that cut the run off can delete it."""
+def record_step_line(addr: "TgAddress") -> None:
+    """Name the held run's step line in the lease record by its address (the
+    bot that posted it, the chat, the message), so the boot after a stop that
+    cut the run off can delete it through that bot."""
     if _held is None:
         return
-    _held.record["step_line"] = [int(chat_id), int(message_id)]
+    _held.record["step_line"] = addr.to_json()
     try:
         _write(_held.record)
     except OSError:
@@ -283,18 +285,24 @@ def claim_interrupted() -> "dict | None":
 
 async def announce_interrupted(record: "dict | None", *, recovered_ids,
                                notify: Callable[[str], Awaitable[Any]],
-                               delete: "Callable[[int, int], Awaitable[Any]] | None" = None
+                               delete: "Callable[[TgAddress], Awaitable[Any]] | None" = None
                                ) -> None:
-    """Delete the interrupted run's step line, then tell the operator once,
-    unless the job registry already announces the same run (a delegation
-    Ellen started has its own restart notice)."""
+    """Delete the interrupted run's step line at its stored address, then tell
+    the operator once, unless the job registry already announces the same run
+    (a delegation Ellen started has its own restart notice). A step line
+    stored without its bot is not deleted."""
     if not record:
         return
     line = record.get("step_line")
-    if (delete is not None and isinstance(line, list) and len(line) == 2
-            and all(isinstance(v, int) and not isinstance(v, bool) for v in line)):
+    addr = None
+    if line is not None:
         try:
-            await delete(line[0], line[1])
+            addr = TgAddress.from_json(line)
+        except AddressError:
+            logger.error("interrupted step line has no full address; not deleted")
+    if delete is not None and addr is not None and addr.message_id is not None:
+        try:
+            await delete(addr)
         except Exception as exc:  # noqa: BLE001 — logged, not retried
             logger.info("interrupted step line not deleted: %s", type(exc).__name__)
     if record.get("run_key") and record["run_key"] in set(recovered_ids or ()):
@@ -316,14 +324,22 @@ def note_restart(run_key: str, task: str = "") -> None:
         _RESTARTS[str(run_key)] = _clip(task)
 
 
+def _transport() -> Any:
+    from channels.telegram_transport import telegram_transport
+    return telegram_transport()
+
+
 def _operator_identity() -> Any:
-    import trigger_consent
-    from result_broker import _telegram_channel
-    channel = _telegram_channel()
-    op = trigger_consent.operator_identity(channel) if channel is not None else None
-    if op is None:
+    """The operator's private chat on Casa's own bot, or None when there is
+    no Telegram, no configured operator, or Casa's bot has no id yet."""
+    transport = _transport()
+    if transport is None:
         return None
-    return SimpleNamespace(chat_id=op[0], operator_id=op[1])
+    try:
+        addr = transport.casa_operator_address()
+    except (AddressError, EndpointNotReady):
+        return None
+    return SimpleNamespace(chat_id=addr.chat_id, operator_id=transport.operator_user_id())
 
 
 # Strong refs for the restart a tap fires.
@@ -349,8 +365,8 @@ async def _ask_for_restart() -> None:
     if status == 200:
         return
     logger.warning("restart button: Supervisor answered %r", status)
-    from result_broker import _telegram_channel
-    channel = _telegram_channel()
+    transport = _transport()
+    channel = transport.casa_endpoint() if transport is not None else None
     notify = getattr(channel, "notify_operator", None)
     if notify is not None:
         try:
@@ -367,7 +383,9 @@ async def offer_restart(run_key: str) -> bool:
     _RESTARTS.pop(str(run_key), None)
     import operator_calls
     try:
+        transport = _transport()
         return await operator_calls.post_question(
+            endpoint=transport.casa_endpoint() if transport is not None else None,
             identity=_operator_identity(), role="configurator", text=RESTART_TEXT,
             options=[RESTART_BUTTON], timeout_s=RESTART_BUTTON_TTL_S,
             on_settle=_restart_on_tap)

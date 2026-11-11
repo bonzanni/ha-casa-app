@@ -21,7 +21,10 @@ turn stops at its turn limit is [`turn-limits.md`](turn-limits.md).
 registered under `webhook`, so an untrusted fire's final text is simply dropped. A plugin
 opts a trigger in with `deliver`, an enum in its manifest entry: `none` (the default),
 `operator`, or `operator_always`. Both operator values deliver the reply, a classified
-error and the limit-stop line to the operator's Telegram. They differ only on silence.
+error and the limit-stop line to the operator's Telegram. They differ only on silence. The
+reply and the error line go through the bot the fire was routed to when it arrived (its
+trigger role's route, [`telegram-bots.md`](telegram-bots.md)); the limit-stop line is Casa's
+notice and goes through Casa's own bot.
 
 **`operator` lets the model decide; `operator_always` does not.** Under `operator`, Casa's
 line on the turn invites `<silent/>`, and a silent reply is suppressed like any other: the

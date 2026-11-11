@@ -12,6 +12,9 @@ import agent as agent_mod
 import tools as tools_mod
 from provenance import (
     RESERVED_CONTEXT_KEYS,
+    ROUTING_KEYS,
+    carry_route,
+    route_context,
     Provenance,
     sanitize_external_context,
     strict_positive_id,
@@ -87,7 +90,38 @@ def test_reserved_context_keys_are_exactly_the_spec_set():
         # #1277: the operator answered this scheduled ask — a caller who could
         # set it would have a job its turn starts say the operator asked.
         "_answered_by_operator",
+        # The turn's Telegram route: a caller who could set it would choose
+        # which bot an untrusted turn speaks through.
+        "_tg_bot",
     })
+
+
+def test_the_route_is_the_one_routing_key_and_reserved():
+    assert ROUTING_KEYS == ("_tg_bot",)
+    assert set(ROUTING_KEYS) <= RESERVED_CONTEXT_KEYS
+
+
+# ---------------------------------------------------------------------------
+# carry_route / route_context
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("route", [111, "casa"])
+def test_carry_route_copies_only_the_route(route):
+    origin = {"_tg_bot": route, "chat_id": 100, "role": "finance", "cid": "c"}
+    assert carry_route(origin) == {"_tg_bot": route}
+    assert route_context(origin) == {"_tg_bot": route}
+    out = route_context(origin)
+    out["_tg_bot"] = 222
+    assert origin["_tg_bot"] == route
+
+
+def test_carry_route_of_a_routeless_source_is_empty():
+    # Absent stays absent: a derivation from a route-less source carries no
+    # made-up route, so its delivery fails loudly instead of guessing a bot.
+    assert carry_route({"chat_id": 100}) == {}
+    assert route_context({}) == {}
+    assert carry_route({"_tg_bot": None}) == {"_tg_bot": None}
 
 
 # ---------------------------------------------------------------------------
@@ -122,9 +156,15 @@ class TestSanitizeExternalContext:
             "_origin_device_id": "spoofed-device",
             "_voice_transport": "ws",
             "_voice_handoff_reservation": Mock(),
+            "_tg_bot": 222,
         }
         out = sanitize_external_context(ctx)
         assert out == {"chat_id": "1", "cid": "abc"}
+
+    @pytest.mark.parametrize("route", [111, "casa", None, "x"])
+    def test_strips_the_route(self, route):
+        out = sanitize_external_context({"chat_id": "1", "_tg_bot": route})
+        assert out == {"chat_id": "1"}
 
     def test_non_reserved_keys_pass_through_untouched(self):
         ctx = {"chat_id": "1", "device_id": "d1", "conversation_id": "c1"}

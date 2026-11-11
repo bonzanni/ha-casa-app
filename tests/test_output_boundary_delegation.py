@@ -51,7 +51,7 @@ async def test_the_synthesized_narration_turn_inherits_the_note(tmp_path):
     complete = DelegationComplete(
         delegation_id="d1", agent="finance", status="ok", text="€412 due Friday",
         result_available=True,
-        origin={"role": "assistant", "channel": "telegram", "chat_id": "500",
+        origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111, "chat_id": "500",
                 "cid": "c", "user_text": "check the invoice", "_inherited_note": WROTE})
     msg = BusMessage(type=MessageType.NOTIFICATION, source="finance", target="assistant",
                      content=complete, channel="telegram",
@@ -69,7 +69,7 @@ async def test_a_completion_without_a_note_narrates_clean(tmp_path):
     agent._channel_manager.register(stub)
     complete = DelegationComplete(delegation_id="d2", agent="finance", status="ok",
                                   text="ok", result_available=True,
-                                  origin={"role": "assistant", "channel": "telegram",
+                                  origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111,
                                           "chat_id": "500", "cid": "c", "user_text": "x"})
     msg = BusMessage(type=MessageType.NOTIFICATION, source="finance", target="assistant",
                      content=complete, channel="telegram", context={"cid": "c", "chat_id": "500"})
@@ -87,6 +87,7 @@ def _job(**changes):
         id="job-1", parent_job_id=None, creating_speaker=SYSTEM, executing_speaker=SYSTEM,
         creating_role="assistant", specialist_role="finance", specialist_display_name="Finance",
         creator_peer="telegram", creator_user_id=None, scope_id="500", origin_route_id="c",
+        route={"_tg_bot": 111},
         origin_device_id=None, task="check the invoice", context="", created_at=100.0,
         started_at=101.0, terminal_at=None, expires_at=None,
         execution_state=ExecutionState.RUNNING, delivery_state=DeliveryState.NONE,
@@ -144,7 +145,7 @@ async def test_boot_replay_restores_the_note_on_the_completion_origin(tmp_path):
 async def test_the_registration_adapter_writes_the_note_from_the_record_origin(tmp_path):
     reg = SpecialistRegistry(str(tmp_path / "specs"), tombstone_path=str(tmp_path / "tombs.json"))
     record = DelegationRecord(id="d9", agent="finance", started_at=100.0,
-                              origin={"role": "assistant", "channel": "telegram", "chat_id": "500",
+                              origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111, "chat_id": "500",
                                       "cid": "c", "user_text": "check", "_inherited_note": WROTE})
     await reg.register_delegation(record)
     assert reg.job_registry.get("d9").output_note == WROTE
@@ -164,7 +165,7 @@ async def test_the_child_runs_under_a_view_with_the_launch_note_even_after_the_h
     monkeypatch.setattr(tools, "_attach_completion_callback", lambda task, record: None)
 
     a_scope = _armed_scope()
-    holder = {"role": "assistant", "channel": "telegram", "chat_id": "1", "user_id": 1,
+    holder = {"role": "assistant", "channel": "telegram", "_tg_bot": 111, "chat_id": "1", "user_id": 1,
               "cid": "A", "user_text": "check the invoice", "turn_scope": a_scope}
     gate = asyncio.Event()
     seen: dict = {}
@@ -184,7 +185,7 @@ async def test_the_child_runs_under_a_view_with_the_launch_note_even_after_the_h
         assert payload["casa_note"] == WROTE
         # turn B rewrites the pooled holder IN PLACE before the child's first step
         holder.clear()
-        holder.update({"role": "assistant", "channel": "telegram", "chat_id": "2", "user_id": 2,
+        holder.update({"role": "assistant", "channel": "telegram", "_tg_bot": 111, "chat_id": "2", "user_id": 2,
                        "cid": "B", "user_text": "unrelated", "turn_scope": _scope(id="turn-B")})
         gate.set()
         await asyncio.sleep(0)
@@ -215,7 +216,7 @@ async def test_a_launch_owing_nothing_stores_no_note(tmp_path, monkeypatch):
         return tools.DelegatedOutput(text="ok")
 
     monkeypatch.setattr(tools, "_run_delegated_agent_bounded", _fake_bounded)
-    token = agent_mod.origin_var.set({"role": "assistant", "channel": "telegram", "chat_id": "1",
+    token = agent_mod.origin_var.set({"role": "assistant", "channel": "telegram", "_tg_bot": 111, "chat_id": "1",
                                       "user_id": 1, "cid": "A", "user_text": "x",
                                       "turn_scope": _scope()})
     try:
@@ -234,7 +235,7 @@ async def test_a_launch_owing_nothing_stores_no_note(tmp_path, monkeypatch):
 
 def test_current_scope_prefers_a_bound_engagement_and_carries_its_note():
     eng = SimpleNamespace(id="eng-1", status="active",
-                          origin={"role": "assistant", "channel": "telegram", "chat_id": 500,
+                          origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111, "chat_id": 500,
                                   "_inherited_note": WROTE})
     token = tools.engagement_var.set(eng)
     try:

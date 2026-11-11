@@ -86,7 +86,7 @@ async def _mk_driver_rec(tmp_path, client):
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     rec = await reg.create(
         "executor", "configurator", "in_casa", "t",
-        {"role": "assistant", "channel": "telegram", "user_id": 77})
+        {"role": "assistant", "channel": "telegram", "_tg_bot": 111, "user_id": 77})
     drv = InCasaDriver(record_lookup=reg.get,
                        begin_turn_delivery=reg.begin_turn_delivery)
     attach_session(drv, rec, client)
@@ -154,7 +154,7 @@ async def _mk_channel(tmp_path, fake_telegram_bot, client):
 
     reg, rec, drv = await _mk_driver_rec(tmp_path, client)
     ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                         engagement_supergroup_id=-1001)
+                         engagement_supergroup_id=-1001, known_bot_id=111)
     ch._engagement_registry = reg
     ch._engagement_driver = drv
     ch._send_dm_reply = AsyncMock()
@@ -164,7 +164,8 @@ async def _mk_channel(tmp_path, fake_telegram_bot, client):
 def _card():
     """The approval card a continuation answers: where its one notice goes."""
     from channels.telegram import _NoticeTarget
-    return _NoticeTarget(chat_id=100, message_id=5)
+    from channels.tg_address import TgAddress
+    return _NoticeTarget(TgAddress(111, 100, 5))
 
 
 def _notices(ch):
@@ -336,10 +337,14 @@ class TestUngatedTerminalKeepsTheTicket:
 
         client = _HeldClient()                 # the session never reads it
         reg, rec, drv = await _mk_driver_rec(tmp_path, client)
+        # ``tch`` is the endpoint of the bot that received the message; the
+        # transport hands it out by the message's address.
         tch = MagicMock()
         tch.tell_journal_lost = AsyncMock()
+        transport = MagicMock()
+        transport.endpoint.return_value = tch
         cm = MagicMock()
-        cm.get.return_value = tch
+        cm.get.return_value = transport
         bus = MagicMock()
         bus.notify = AsyncMock()
         init_tools(
@@ -348,13 +353,15 @@ class TestUngatedTerminalKeepsTheTicket:
             trigger_registry=MagicMock(), engagement_registry=reg,
         )
         try:
-            token = drv.submit_operator(rec, "approval resume that died")
+            from channels.telegram import _notice_dict
+            token = drv.submit_operator(rec, "approval resume that died",
+                                        notice=_notice_dict(_card()))
             fin = await _finalize_engagement(
                 rec, outcome="cancelled", text="",
                 next_steps=[], driver=drv)
             assert bool(fin) is True
-            posted = "".join(str(c) for c in tch.mock_calls
-                             if c[0] != "tell_journal_lost")
+            posted = "".join(str(c) for c in transport.mock_calls
+                             if "tell_journal_lost" not in c[0])
             assert "approval resume that died" not in posted
             assert "inbound message(s)" not in posted
             assert tch.tell_journal_lost.await_count == 1

@@ -19,6 +19,9 @@ except ImportError:
 
 pytestmark = pytest.mark.asyncio
 
+#: the bot the operator's Telegram turns arrive on
+BOT = 111
+
 
 class _FakeClient:
     captured: dict = {}
@@ -63,6 +66,8 @@ def _agent(tmp_path):
 async def _turn(agent, text="hello", channel="telegram", chat_id="42", **context):
     from bus import BusMessage, MessageType
     _FakeClient.captured = {}
+    if channel == "telegram":
+        context.setdefault("_tg_bot", BOT)
     with patch("sdk_client_pool._default_make_client", _FakeClient):
         msg = BusMessage(type=MessageType.REQUEST, source=channel, target="assistant",
                          content=text, channel=channel,
@@ -74,8 +79,8 @@ async def _turn(agent, text="hello", channel="telegram", chat_id="42", **context
 async def test_the_residents_next_turn_carries_the_echo_once_then_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(sd, "DESK_ECHO", rb.PostLedger(max_events=64))
     agent = _agent(tmp_path)
-    sd.record_echo(42, "📊 Finance answered your reply (2 pages).")
-    sd.record_echo(42, "📊 Finance posted to your chat (1 page).")
+    sd.record_echo(BOT, 42, "📊 Finance answered your reply (2 pages).")
+    sd.record_echo(BOT, 42, "📊 Finance posted to your chat (1 page).")
     query = await _turn(agent)
     # #1317: the lines ride in the Casa notes block after the envelope, so the
     # readback strips them with it and only the operator's words are retained
@@ -92,7 +97,7 @@ async def test_the_residents_next_turn_carries_the_echo_once_then_nothing(tmp_pa
 async def test_another_chats_echo_and_a_non_telegram_turn_get_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(sd, "DESK_ECHO", rb.PostLedger(max_events=64))
     agent = _agent(tmp_path)
-    sd.record_echo(42, "📊 Finance answered your reply (1 page).")
+    sd.record_echo(BOT, 42, "📊 Finance answered your reply (1 page).")
     assert "(front desk)" not in await _turn(agent, chat_id="43")
     assert "(front desk)" not in await _turn(agent, channel="webhook", chat_id="42")
     assert "(front desk)" in await _turn(agent)                   # still owed to chat 42
@@ -107,7 +112,7 @@ async def test_a_reply_note_rides_in_the_notes_after_the_desk_lines(tmp_path, mo
     the operator's text is untouched."""
     monkeypatch.setattr(sd, "DESK_ECHO", rb.PostLedger(max_events=64))
     agent = _agent(tmp_path)
-    sd.record_echo(42, "📊 Finance answered your reply (1 page).")
+    sd.record_echo(BOT, 42, "📊 Finance answered your reply (1 page).")
     query = await _turn(agent, text="start from Q2 2026", _reply_note=NOTE)
     assert ("<casa_notes>\n(front desk) 📊 Finance answered your reply (1 page).\n\n"
             + NOTE + "\n</casa_notes>\n\nstart from Q2 2026") in query

@@ -78,7 +78,13 @@ class Channel(ABC):
 
 
 class ChannelManager:
-    """Registry and lifecycle manager for channels."""
+    """Registry and lifecycle manager for channels.
+
+    One channel per kind, by name. The ``"telegram"`` entry is the Telegram
+    transport (``channels.telegram_transport.TelegramTransport``), which holds
+    every bot endpoint and resolves each outbound call to one of them; no bot
+    endpoint is registered here on its own. Look it up through
+    ``telegram_transport()``, never by name."""
 
     def __init__(self) -> None:
         self._channels: dict[str, Channel] = {}

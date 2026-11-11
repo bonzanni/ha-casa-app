@@ -43,8 +43,9 @@ tombstone after it ends), `ui_posts` the ones carrying a keyboard (start line, q
 parking lines), and `questions` the asked questions by a random id. The channel files
 each post as it lands (`EngagementRegistry.record_job_post`, called from the post-landing seam
 for plugin posts and from the start-line and question posters), and the registry keeps an index
-from message id to live record, rebuilt at load. When the job ends, its posts move to a second
-index keyed by chat and message id (Telegram numbers messages per chat), which load rebuilds
+from each post's address — the bot that posted it, the chat and the message id, since Telegram
+numbers messages per bot and per chat — to live record, rebuilt at load. When the job ends, its
+posts move to a second index keyed by the same address, which load rebuilds
 from terminal job records; a post that lands after the end is filed there directly. A record
 pruned from the tombstone takes its posts out of both.
 
@@ -95,7 +96,7 @@ terminal record and gets "already finished".
 
 ## Contracts & invariants
 
-**INV-BGJOB-026**: A job's direct-chat posts — its start line, its questions and its plugin's delivered posts — are filed on its engagement record as they land, without a cap while the record counts as live, persisted, and indexed by message id again at load; a record counts as live while active or idle and while its strict terminal write is pending; the write that settles the terminal transition stores the record's questions empty and keeps its posts, which then leave the live index for the ended-post index keyed by chat and message id — rebuilt at load from terminal job records, joined by any post of the job that lands after the end, and left by a record pruned from the tombstone.
+**INV-BGJOB-026**: A job's direct-chat posts — its start line, its questions and its plugin's delivered posts — are filed on its engagement record as they land, without a cap while the record counts as live, persisted, and indexed by address (bot, chat and message id) again at load; a record counts as live while active or idle and while its strict terminal write is pending; the write that settles the terminal transition stores the record's questions empty and keeps its posts, which then leave the live index for the ended-post index keyed by the same address — rebuilt at load from terminal job records, joined by any post of the job that lands after the end, and left by a record pruned from the tombstone.
 
 **INV-BGJOB-012**: An authenticated operator's reply quoting a post the job record holds, while that record counts as live and is their job in that chat, is delivered into that job as an operator message — ahead of the desk route — journaled and admitted synchronously at the seam's entry; it is never sent to another route, and if the job does not take it up its one notice comes from the ticket's holder (INV-ENG-029).
 

@@ -12,7 +12,7 @@ import pytest
 import agent as agent_mod
 import result_broker as rb
 import specialist_desk as sd
-from test_desk_turn import LABEL, OPERATOR, _reply, env  # noqa: F401
+from test_desk_turn import BOT, LABEL, OPERATOR, _reply, env  # noqa: F401
 from test_pending_approval_desk import _Scripted, _Step, _text, desk  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
@@ -38,7 +38,7 @@ async def test_a_card_then_a_closing_silence_posts_only_the_card(desk, before_po
     assert _replies(desk) == []
     assert desk.channel.notices == []
     # the resident's echo names the post, never the dropped words
-    echo = sd.prompt_prefix(OPERATOR)
+    echo = sd.prompt_prefix(BOT, OPERATOR)
     assert "posted to your chat" in echo and NARRATION not in echo
     assert desk.desk.log[-1].text == sd.POSTED_VIEW
 

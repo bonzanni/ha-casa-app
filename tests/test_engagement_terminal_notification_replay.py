@@ -76,13 +76,13 @@ async def _owing_records(tmp_path):
     a = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa",
         task="tidy the plugins",
-        origin={"role": "concierge", "channel": "telegram",
+        origin={"role": "concierge", "channel": "telegram", "_tg_bot": 111,
                 "chat_id": "chat-A", "cid": "route-A",
                 "user_text": "tidy the plugins please"})
     b = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
         task="plan Q2",
-        origin={"role": "assistant", "channel": "telegram",
+        origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111,
                 "chat_id": "chat-B", "cid": "route-B",
                 "user_text": "plan Q2 please"})
 
@@ -96,7 +96,7 @@ async def _owing_records(tmp_path):
     c = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
         task="reconcile the ledger",
-        origin={"role": "assistant", "channel": "telegram",
+        origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111,
                 "chat_id": "chat-D", "cid": "route-D",
                 "user_text": "reconcile the ledger please"})
     await _finalize_engagement(
@@ -110,7 +110,7 @@ async def _owing_records(tmp_path):
     told = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
         task="already told",
-        origin={"role": "assistant", "channel": "telegram",
+        origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111,
                 "chat_id": "chat-C", "cid": "route-C", "user_text": "c"})
     await _finalize_engagement(
         told, outcome="completed", text="done", next_steps=[],
@@ -509,7 +509,7 @@ async def test_live_engagement_finalization_is_not_marked_as_a_boot_replay(
     eng = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
         task="plan Q2",
-        origin={"role": "assistant", "channel": "telegram",
+        origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111,
                 "chat_id": "chat-B", "cid": "route-B",
                 "user_text": "plan Q2 please"})
     await _finalize_engagement(
@@ -733,7 +733,7 @@ async def test_boot_replays_loaded_owed_outcome_but_defers_live_outcome(
     live = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
         task="live task",
-        origin={"role": "assistant", "channel": "telegram",
+        origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111,
                 "chat_id": "live-chat", "cid": "live-route",
                 "user_text": "live task"})
     await _finalize_engagement(
@@ -986,7 +986,7 @@ async def test_an_empty_load_then_a_live_outcome_replays_nothing(tmp_path):
     live = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
         task="t",
-        origin={"role": "assistant", "channel": "telegram",
+        origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111,
                 "chat_id": "c", "cid": "r", "user_text": "t"})
     await _finalize_engagement(
         live, outcome="cancelled", text="", next_steps=[],

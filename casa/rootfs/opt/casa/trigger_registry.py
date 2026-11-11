@@ -30,6 +30,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _fresh_route(role: str) -> dict:
+    """The route a fired trigger turn is born with: ``route_for(role)`` at creation
+    (the role's own bot, else Casa's), decided once so that every later reply,
+    question or post of the turn goes through that bot even if the role's
+    endpoint changes meanwhile. Nothing when Telegram is not configured."""
+    from channels.telegram_transport import telegram_transport
+    transport = telegram_transport()
+    return {} if transport is None else {"_tg_bot": transport.route_for(role)}
+
+
 # #1156: the webhook body cap a route reads when it declares none — every
 # resident route, and a plugin route without ``max_body_kib``.
 _DEFAULT_MAX_BODY = 1024 * plugin_triggers.MAX_BODY_KIB_DEFAULT
@@ -309,6 +320,7 @@ class TriggerRegistry:
                     "chat_id": f"{trig.type}-{trig.name}",
                     "trigger": trig.name,
                     "cid": new_cid(),
+                    **_fresh_route(role),
                     # #485: admits send_media for a telegram-channel trigger.
                     # The chat_id above stays the SESSION LABEL — it keys the
                     # SDK session and the voice-job scope, and the delivery

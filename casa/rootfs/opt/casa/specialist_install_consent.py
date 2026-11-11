@@ -440,8 +440,11 @@ def prompt_specialist_install_consent(
 
         return _finish
 
+    # The card is Casa's own: *channel* is Casa's endpoint, and the card's
+    # broker scope carries that bot.
     return coordinator.register_challenge(
-        key, chat_id=chat_id, operator_id=operator_id, channel=channel,
+        key, bot_id=channel.bot_id, chat_id=chat_id, operator_id=operator_id,
+        channel=channel,
         challenge_text=text, options=["Approve", "Deny"],
         on_commit_sync=_on_commit_sync, finish_factory=_finish_factory,
         kind="specialist_install_consent",

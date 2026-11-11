@@ -665,13 +665,13 @@ def _fire_consent_prompts(
     import authz_grants
     import trigger_consent
 
-    channel = channel_manager.get("telegram") if channel_manager else None
-    if channel is None:
+    # Rule C: a consent card is Casa's own and goes to the operator's chat on
+    # Casa's bot, whichever bot the mutation that led here came from.
+    target = trigger_consent.casa_consent_target(channel_manager)
+    if target is None:
         return  # no DM reachable — pending_ack stands; re-prompted later
-    op = trigger_consent.operator_identity(channel)
-    if op is None:
-        return
-    chat_id, operator_id = op
+    channel, chat_id, operator_id = (
+        target.endpoint, target.address.chat_id, target.operator_id)
 
     async def _reconcile_again() -> None:
         # Captures THIS reconcile's inputs. If a reload_full rebinds the
@@ -1002,13 +1002,12 @@ async def reprompt_pending(
     if runtime is None:
         return
     channel_manager = getattr(runtime, "channel_manager", None)
-    channel = channel_manager.get("telegram") if channel_manager else None
-    if channel is None:
+    # Rule C: a consent card is Casa's own (see _fire_consent_prompts).
+    target = trigger_consent.casa_consent_target(channel_manager)
+    if target is None:
         return
-    op = trigger_consent.operator_identity(channel)
-    if op is None:
-        return
-    chat_id, operator_id = op
+    channel, chat_id, operator_id = (
+        target.endpoint, target.address.chat_id, target.operator_id)
     role_configs = getattr(runtime, "role_configs", None) or {}
     acks = acks if acks is not None else _default_acks()
 

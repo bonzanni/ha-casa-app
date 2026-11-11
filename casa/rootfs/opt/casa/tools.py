@@ -65,6 +65,12 @@ from claude_agent_sdk import (
 
 from bus import BusMessage, MessageBus, MessageType
 from channels import ChannelManager, DeliveryOutcome
+from channels.telegram_transport import telegram_transport
+from channels.tg_address import (
+    AddressError, EndpointNotReady, EndpointUnavailable, RouteMissing, TgAddress,
+    scope as tg_scope,
+)
+from provenance import carry_route, route_context
 from output_boundary import (
     Admitted, ApprovalCut, IntentKind, ReadBeforeDescribe, TurnScope,
     UnadmittedText, casa_text, resolve_scope,
@@ -142,6 +148,54 @@ _agent_logs = None
 engagement_var: ContextVar[EngagementRecord | None] = ContextVar(
     "engagement_var", default=None,
 )
+
+
+def _transport() -> Any:
+    """The Telegram transport, or ``None`` before ``init_tools`` or when
+    Telegram is not configured."""
+    if _channel_manager is None:
+        return None
+    return telegram_transport(_channel_manager)
+
+
+def _casa_endpoint() -> Any:
+    """Casa's own Telegram endpoint, ready or not (Casa's cards and notices
+    always go through Casa's bot), or ``None`` without Telegram."""
+    transport = _transport()
+    if transport is None:
+        return None
+    try:
+        return transport.casa_endpoint()
+    except RuntimeError:  # a transport with no Casa endpoint
+        return None
+
+
+#: Why one of Casa's cards cannot be posted, as the start of a refusal's detail.
+_CASA_CARD_PROBLEMS = {
+    "no_channel": "no telegram channel is configured",
+    "no_operator": ("no valid operator DM identity (chat_id unset, "
+                    "non-numeric, or a group chat)"),
+    "not_ready": "Casa's Telegram bot has not connected yet",
+}
+
+
+def _casa_card_target() -> "tuple[Any, TgAddress | None, str | None]":
+    """Where one of Casa's own cards (a consent, install or erase question)
+    is posted: ``(Casa's endpoint, the operator's chat on Casa's bot, None)``,
+    or ``(endpoint or None, None, why)`` when it cannot be, *why* being
+    ``"no_channel"`` (no Telegram), ``"no_operator"`` (no valid operator chat
+    configured) or ``"not_ready"`` (Casa's bot has not connected yet, so the
+    card's identity, which names the bot, cannot be formed before it is
+    posted)."""
+    channel = _casa_endpoint()
+    if channel is None:
+        return None, None, "no_channel"
+    try:
+        return channel, _transport().casa_operator_address(), None
+    except EndpointNotReady:
+        return channel, None, "not_ready"
+    except AddressError:
+        return channel, None, "no_operator"
 
 
 def init_tools(
@@ -361,7 +415,9 @@ async def send_message(args: dict) -> dict:
     if _channel_manager is None:
         return _text_result("Error: tools not initialized", is_error=True)
 
-    ch = _channel_manager.get(channel)
+    # Telegram is one transport over every bot; the send goes through the
+    # bot of this turn's route, decided where the turn was born.
+    ch = _transport() if channel == "telegram" else _channel_manager.get(channel)
     if ch is None:
         return _text_result(f"Error: channel '{channel}' not found",
                             is_error=True)
@@ -382,7 +438,9 @@ async def send_message(args: dict) -> dict:
     # #1038: admission — the turn's obligations applied to the text at the
     # moment it is committed, against the evidence gathered so far.
     admitted = scope.admit(IntentKind.DISCRETE, message)
-    ctx: dict[str, Any] = {}
+    # The delivery context carries the turn's route and nothing else: the
+    # destination is the route's operator chat, never a field of the origin.
+    ctx: dict[str, Any] = route_context(_origin)
     try:
         outcome = await ch.send(admitted, ctx)
     except asyncio.CancelledError:
@@ -467,6 +525,18 @@ async def stop_work(args: dict) -> dict:
     chat_id, user_id = origin.get("chat_id"), origin.get("user_id")
     if _is_agent_context(origin) or not is_configured_operator(chat_id, user_id):
         return _text_result(f"Error: {STOP_WORK_ONLY_OPERATOR}", is_error=True)
+    # The requests are those admitted on the bot of this turn: its id is read
+    # from the endpoint the turn's route resolves to, never from the route.
+    transport = _transport()
+    bot_id = None
+    if transport is not None:
+        try:
+            bot_id = transport.endpoint_for_route(origin, site="stop_work").bot_id
+        except (RouteMissing, AddressError, EndpointUnavailable, EndpointNotReady) as exc:
+            logger.warning("stop_work: no Telegram endpoint for the turn: %s", exc)
+    if bot_id is None:
+        return _text_result("Error: the stop cannot be asked right now; try again in a "
+                            "moment.", is_error=True)
     plugins = await plugin_stop.stop_plugins()
     ref = args.get("ref")
     if not isinstance(ref, str) or not ref.strip():
@@ -479,7 +549,7 @@ async def stop_work(args: dict) -> dict:
             for r in listing.get("requests") or []:
                 ref = r.get("ref")
                 if not isinstance(ref, str) or plugin_stop.confirmation_for(
-                        seg, int(user_id), ref) is None:
+                        seg, bot_id, int(user_id), ref) is None:
                     continue            # not his: a request admitted for another operator
                 tasks = "; ".join(t for t in (r.get("tasks") or []) if isinstance(t, str))
                 lines.append(f"- {r.get('ref')}: {name} — {tasks} ({r.get('state')})")
@@ -490,15 +560,16 @@ async def stop_work(args: dict) -> dict:
                             "ref to see what is running.", is_error=True)
     operator_id = int(user_id)
     for role, _cfg, _rp, seg, _tool in plugins:
-        if plugin_stop.confirmation_for(seg, operator_id, ref) is None:
+        if plugin_stop.confirmation_for(seg, bot_id, operator_id, ref) is None:
             continue                    # no request of this plugin admitted for him has it
         async def _tell(outcome: dict, seg=seg) -> None:
             mark = plugin_stop.MARKS.get(outcome.get("outcome"))
             if mark is not None:
                 await plugin_stop.settle_run_card(
-                    plugin_stop.confirmation_for(seg, operator_id, ref), mark)
+                    plugin_stop.confirmation_for(seg, bot_id, operator_id, ref), mark)
 
-        out = await plugin_stop.stop(role, seg, ref, operator_id=operator_id, tell=_tell)
+        out = await plugin_stop.stop(role, seg, ref, bot_id=bot_id, operator_id=operator_id,
+                                     tell=_tell)
         o = out.get("outcome")
         if o in ("unknown", "unavailable"):
             continue
@@ -595,9 +666,18 @@ def _post_handoff_line(origin: dict, line: str) -> "asyncio.Task[bool] | None":
     if str(origin.get("channel", "")) != "telegram" or _is_agent_context(origin):
         return None
     chat_id = origin.get("chat_id")
-    channel = _channel_manager.get("telegram") if _channel_manager is not None else None
+    transport = _transport()
+    if chat_id in (None, "") or transport is None:
+        return None
+    # The line goes in the chat the turn came from, through the bot it came
+    # in on: the turn's route.
+    try:
+        channel = transport.endpoint_for_route(origin, site="handoff_line")
+    except Exception as exc:  # noqa: BLE001 — a status line is never the work's fault
+        logger.warning("hand-off line not posted: %s", type(exc).__name__)
+        return None
     send = getattr(channel, "send_handoff_line", None)
-    if chat_id in (None, "") or send is None:
+    if send is None:
         return None
 
     async def _post() -> bool:
@@ -734,6 +814,11 @@ async def _classify_send(ch, content, kind, filename, origin, caption) -> dict:
         # #1038: never "the channel was down" — the caption was not admitted.
         return {"status": "error", "kind_error": "refused", "kind": kind,
                 "message": "caption refused: not admitted text"}
+    except (RouteMissing, AddressError, EndpointUnavailable) as exc:
+        # The origin names no bot that can carry the file: nothing was sent.
+        logger.warning("send_media: no Telegram endpoint for the origin: %s", exc)
+        return {"status": "error", "kind_error": "channel_unavailable", "kind": kind,
+                "message": "no Telegram bot for this conversation"}
     except RuntimeError:
         return {"status": "error", "kind_error": "channel_unavailable", "kind": kind,
                 "message": "channel not started"}
@@ -891,8 +976,8 @@ def _scheduled_operator_target(origin: dict) -> "tuple[int, int] | None":
     Resolved HERE, per call, rather than stamped at dispatch: the trigger that
     fired an hour ago must not be able to deliver to an operator id that has
     since changed. For a private Telegram chat the chat id equals the user id,
-    so both returned values are that id (same premise as
-    ``trigger_consent.operator_identity``).
+    so both returned values are that id (the transport's
+    ``operator_user_id()``: one operator per deployment, on every bot).
 
     Deliberately NOT part of ``turn_provenance()``: that predicate is shared
     with the protected-action authorization hook (``authz_grants``), and
@@ -912,10 +997,8 @@ def _scheduled_operator_target(origin: dict) -> "tuple[int, int] | None":
     role = origin.get("role")
     if not role or origin.get("execution_role") != role:
         return None
-    if _channel_manager is None:
-        return None
-    channel = _channel_manager.get("telegram")
-    resolver = getattr(channel, "operator_user_id", None)
+    transport = _transport()
+    resolver = getattr(transport, "operator_user_id", None)
     if not callable(resolver):
         return None
     operator_id = strict_positive_id(resolver())
@@ -1015,7 +1098,9 @@ async def send_media(args: dict) -> dict:
         if _channel_manager is None:
             return _result({"status": "error", "kind_error": "channel_unavailable",
                             "message": "tools not initialised"})
-        ch = _channel_manager.get(origin.get("channel", "telegram"))
+        # The origin is Telegram's (checked above): the transport sends the
+        # file through the bot of the origin's route.
+        ch = _transport()
         if ch is None:
             return _result({"status": "error", "kind_error": "channel_unavailable",
                             "message": "channel not registered"})
@@ -1111,7 +1196,7 @@ async def send_media(args: dict) -> dict:
 #
 # Two-turn, detached: REGISTER -> POST -> RETURN. The tool never awaits the
 # operator's tap — it registers a `resident_ask` broker request scoped
-# `dm:<chat_id>`, posts the inline keyboard, and returns `awaiting_user`
+# `dm:<bot_id>:<chat_id>`, posts the inline keyboard, and returns `awaiting_user`
 # immediately. The operator's tap (or a same-DM typed reply, or /new, or a
 # timeout, or Casa shutdown) resolves the request later; the broker finish
 # hook installed here is the SINGLE owner of the post-commit keyboard edit +
@@ -1265,7 +1350,7 @@ def _ask_user_validate(
 async def _ask_user_scheduled(
     *, channel, origin: dict, rid: str, scope: str, body: str,
     options: list, chat_id: int, operator_id: int, target_role,
-    timeout_s: float, shorts: "list | None" = None,
+    timeout_s: float, shorts: "list | None" = None, bot_id: int,
 ) -> dict:
     """The scheduled arm of ``ask_user`` (#573).
 
@@ -1293,9 +1378,9 @@ async def _ask_user_scheduled(
     req, _created = BROKER.register(
         namespace="resident_ask", scope=scope, request_id=rid,
         timeout_s=timeout_s, detached=True, supersede=False,
-        require_idle=True, idle_scopes=(f"authz:{chat_id}",),
+        require_idle=True, idle_scopes=(tg_scope("authz", bot_id, chat_id),),
         meta=scheduled_asks.broker_meta({
-            "rid": rid, "scope": scope, "chat_id": chat_id,
+            "rid": rid, "scope": scope, "bot_id": bot_id, "chat_id": chat_id,
             "operator_id": operator_id, "role": target_role,
             "session_scope": str(origin.get("chat_id") or ""),
             "options": list(options),
@@ -1317,6 +1402,9 @@ async def _ask_user_scheduled(
         "role": target_role,
         "session_scope": str(origin.get("chat_id") or ""),
         "scope": scope,
+        # The bot that posts the keyboard: written with the record, before
+        # the post, so a restart edits the keyboard through the same bot.
+        "bot_id": bot_id,
         "chat_id": chat_id,
         "operator_id": operator_id,
         "message_id": None,
@@ -1461,8 +1549,25 @@ async def ask_user(args: dict) -> dict:
     if _channel_manager is None:
         return _result({"status": "error", "kind": "delivery_failed",
                         "message": "tools not initialized"})
-    channel = _channel_manager.get(origin.get("channel", "telegram"))
-    if channel is None:
+    transport = _transport()
+    if transport is None:
+        return _result({"status": "error", "kind": "delivery_failed",
+                        "message": "channel not available"})
+    # The question is posted by the bot of the turn's route, and its lane is
+    # keyed by that bot before anything is registered or stored: the bot's id
+    # is read from the endpoint that will post, never from the route itself.
+    try:
+        channel = transport.endpoint_for_route(origin, site="ask_user")
+        bot_id = channel.bot_id
+    except EndpointNotReady:
+        # That bot has not connected yet: the question cannot be posted, as
+        # when its post fails, and nothing is registered or stored.
+        return _result({
+            "status": "error", "kind": "delivery_failed",
+            "message": "could not deliver the question to the operator",
+        })
+    except (RouteMissing, AddressError, EndpointUnavailable) as exc:
+        logger.error("ask_user: no Telegram endpoint for the turn: %s", exc)
         return _result({"status": "error", "kind": "delivery_failed",
                         "message": "channel not available"})
 
@@ -1471,7 +1576,7 @@ async def ask_user(args: dict) -> dict:
 
     rid = uuid.uuid4().hex
     target_role = origin.get("role")
-    scope = f"dm:{chat_id}"
+    scope = tg_scope("dm", bot_id, chat_id)
     # v0.81.0 (W-R3b): the DM MESSAGE body carries the FULL options VERBATIM +
     # 1-based numbered (the SAME single-source renderer the engagement asks use),
     # while the buttons carry only short number-prefixed labels. Both the post
@@ -1496,6 +1601,7 @@ async def ask_user(args: dict) -> dict:
         return await _ask_user_scheduled(
             channel=channel, origin=origin, rid=rid, scope=scope, body=body,
             options=list(options), chat_id=chat_id, operator_id=operator_id,
+            bot_id=bot_id,
             target_role=target_role, timeout_s=timeout_s, shorts=shorts,
         )
 
@@ -1513,12 +1619,13 @@ async def ask_user(args: dict) -> dict:
     # commit time (that's the authz challenge's job, Task 5+).
     import scheduled_asks
 
-    scheduled_asks.cancel_non_scheduled_for_chat(chat_id, "superseded")
+    scheduled_asks.cancel_non_scheduled_for_chat(bot_id, chat_id, "superseded")
     req, _created = BROKER.register(
         namespace="resident_ask", scope=scope, request_id=rid,
         timeout_s=timeout_s, detached=True, supersede=False,
         meta={
             "options": list(options),
+            "bot_id": bot_id,
             "chat_id": chat_id,
             "operator_id": operator_id,
             "target_role": target_role,
@@ -1594,7 +1701,7 @@ async def ask_user(args: dict) -> dict:
     if not live:
         return _result({"status": "settled", "request_id": rid,
                         "message": _SETTLED_ASK_MESSAGE})
-    scheduled_asks.displace_scheduled_for_chat(chat_id, "superseded")
+    scheduled_asks.displace_scheduled_for_chat(bot_id, chat_id, "superseded")
     return _result({"status": "awaiting_user", "request_id": rid,
                     "note": ASK_USER_SILENCE_NOTE,
                     **({"casa_prefixed": list(body.annotations)}
@@ -2016,12 +2123,26 @@ async def wipe_memory(args: dict) -> dict:
             "message": "wipe_memory is not available from an engagement",
         })
 
-    import trigger_consent
     from memory import maintenance as memory_maintenance
 
-    channel = _channel_manager.get("telegram") if _channel_manager is not None else None
-    op = trigger_consent.operator_identity(channel) if channel is not None else None
-    if channel is None or op is None:
+    # The wipe card is Casa's own: it goes through Casa's bot, in the
+    # operator's direct chat there, whichever bot the request came in on.
+    transport = _transport()
+    channel = _casa_endpoint()
+    address = None
+    if channel is not None:
+        try:
+            address = transport.casa_operator_address()
+        except EndpointNotReady:
+            # Casa's bot has not connected yet: the card cannot be posted,
+            # as when its post fails, and nothing is registered.
+            return _result({
+                "status": "error", "kind": "delivery_failed",
+                "message": "could not deliver the consent keyboard to the operator",
+            })
+        except AddressError:
+            address = None
+    if channel is None or address is None:
         # Identity v0.136: with telegram_chat_id empty NOBODY is the
         # operator, so consent cannot be granted and the wipe is denied for
         # everyone — same posture as protected plugin tools.
@@ -2032,7 +2153,8 @@ async def wipe_memory(args: dict) -> dict:
                 "cannot be posted, so the wipe is refused"
             ),
         })
-    chat_id, operator_id = op
+    bot_id = address.bot_id
+    chat_id = operator_id = address.chat_id
 
     from verdict_broker import BROKER
     from channels.telegram import render_ask_body, short_option_labels
@@ -2040,13 +2162,14 @@ async def wipe_memory(args: dict) -> dict:
     rid = uuid.uuid4().hex
     options = ["Approve — wipe everything", "Cancel"]
     question = f"⚠️ Wipe ALL memory?\n\n{memory_maintenance.CONFIRMATION}"
-    scope = f"authz:{chat_id}"
+    scope = tg_scope("authz", bot_id, chat_id)
     body = render_ask_body(None, question, options, short_option_labels(options))
     req, _created = BROKER.register(
         namespace="resident_ask", scope=scope, request_id=rid,
         timeout_s=300.0, detached=True, supersede=False,
         meta={
             "options": options,
+            "bot_id": bot_id,
             "chat_id": chat_id,
             "operator_id": operator_id,
             "kind": "memory_wipe",
@@ -2091,14 +2214,15 @@ async def wipe_memory(args: dict) -> dict:
                 return
             # Approve: the finish hook runs broker-owned, OUTSIDE any turn.
             # Update intake pauses before the restart is requested, so the
-            # tap is confirmed to Telegram and never redelivered after it.
+            # tap is confirmed to Telegram and never redelivered after it —
+            # on every bot, since the restart ends every bot's intake.
             try:
                 await memory_maintenance.request_wipe(
                     reply=_wipe_status,
                     notify=getattr(channel, "notify_operator", None),
                     pause_updates=getattr(
-                        channel, "pause_updates_for_restart", None),
-                    resume_updates=getattr(channel, "resume_updates", None),
+                        transport, "pause_updates_for_restart", None),
+                    resume_updates=getattr(transport, "resume_updates", None),
                 )
             except Exception as exc:  # noqa: BLE001 — report truthfully
                 logger.exception("memory wipe could not be scheduled")
@@ -2114,8 +2238,9 @@ async def wipe_memory(args: dict) -> dict:
             "message": "could not deliver the consent keyboard to the operator",
         })
     # #682: the same last-moment liveness question the plain arm asks. This
-    # lane (`authz:{chat_id}`) is retired by `/new`'s scope cancel, by the
-    # 300 s timeout, by an operator tap and by shutdown's `cancel_all`.
+    # lane (`authz:<bot>:<chat>` on Casa's bot) is retired by `/new`'s scope
+    # cancel, by the 300 s timeout, by an operator tap and by shutdown's
+    # `cancel_all`.
     if rid not in BROKER.pending(namespace="resident_ask", scope=scope):
         return _result({"status": "settled", "request_id": rid,
                         "message": _SETTLED_WIPE_MESSAGE})
@@ -2718,8 +2843,9 @@ def _build_specialist_options(
     if _protected:
 
         def _authz_deps_factory():
-            ch = (_channel_manager.get("telegram")
-                  if _channel_manager is not None else None)
+            # The transport: a challenge is posted and edited through the
+            # bot of the grant identity it is for.
+            ch = _transport()
             if ch is None:
                 return None  # no DM reachable ⇒ unsupported-origin deny
             # Read the CURRENT loaded character name at call time (W2); a
@@ -2971,7 +3097,8 @@ def _build_plugin_job_options(rec, resolution,
     protected = protected_map(resolution)
 
     def deps():
-        channel = _channel_manager.get("telegram") if _channel_manager else None
+        # The transport: a challenge goes through the bot of the job's route.
+        channel = _transport()
         if channel is None:
             return None
         return AuthzDeps(channel=channel, grants=GRANTS, challenges=CHALLENGES,
@@ -3599,23 +3726,23 @@ def _configurator_step_line(cfg: Any, origin: dict) -> Any:
         return None
     if _agent_logs is not None and _agent_logs.enabled:
         return None
-    channel = _channel_manager.get("telegram") if _channel_manager is not None else None
+    # Casa's own line, through Casa's bot in the operator's direct chat.
+    channel = _casa_endpoint()
     send = getattr(channel, "send_step_line", None)
     delete = getattr(channel, "delete_dm_message", None)
     edit = getattr(channel, "edit_dm_message", None)
-    import trigger_consent
-    op = trigger_consent.operator_identity(channel) if channel is not None else None
-    if send is None or delete is None or edit is None or op is None:
+    chat_id = _operator_user_id()
+    if send is None or delete is None or edit is None or chat_id is None:
         return None
-    chat_id = op[0]
     import configurator_run
     from drivers.turn_progress import TurnProgressLine
 
     async def _send(text: str) -> "int | None":
         mid = await send(chat_id, text)
         if mid is not None:
-            # a stop that cuts the run off leaves the line; the boot deletes it
-            configurator_run.record_step_line(chat_id, mid)
+            # a stop that cuts the run off leaves the line; the boot deletes
+            # it, through the bot that posted it
+            configurator_run.record_step_line(channel.address(chat_id, mid))
         return mid
 
     return TurnProgressLine(
@@ -4847,6 +4974,8 @@ async def _settle_then_announce(
             "cid": record.origin.get("cid", "-"),
             "chat_id": record.origin.get("chat_id", ""),
             "delegation_id": record.id,
+            # the reply goes back through the bot the delegation came from
+            **carry_route(record.origin),
         },
         on_delivery=_ack,
     ))
@@ -6885,8 +7014,17 @@ async def _launch_interactive_engagement(
         refusal = _job_origin_refusal(origin)
         if refusal is not None:
             return refusal
-        channel = _channel_manager.get("telegram")
-        if channel is None:
+        # The job talks through the bot of its origin's route, which the
+        # record persists with the origin.
+        transport = _transport()
+        if transport is None:
+            return _result({"status": "error", "kind": "channel_unavailable",
+                            "message": "the Telegram channel is not running"})
+        try:
+            channel = transport.endpoint_for_route(origin, site="job_launch")
+        except (RouteMissing, AddressError, EndpointUnavailable) as exc:
+            logger.error("job launch for %s: no Telegram endpoint for the "
+                         "origin: %s", agent_name, exc)
             return _result({"status": "error", "kind": "channel_unavailable",
                             "message": "the Telegram channel is not running"})
         # §3.8 (Sol #4): record the specialist's plugin binding so verify can
@@ -7196,13 +7334,16 @@ async def start_scheduled_job(role: str, trig: Any) -> None:
     async def tell(reason: str) -> None:
         line = sd.bounded_line('{label}: "{title}" did not start — ' + reason,
                                label=label, fields={"title": title})
-        channel = _channel_manager.get("telegram") if _channel_manager is not None else None
+        # Casa's own notice, through Casa's bot; the resident's echo is kept
+        # for its next turn in that bot's chat.
+        channel = _casa_endpoint()
         try:
             if channel is not None:
                 await channel.deliver_desk_notice(chat_id, line)
         except Exception as exc:  # noqa: BLE001 — nothing more is attempted
             logger.warning("scheduled job notice failed: %s", type(exc).__name__)
-        sd.record_echo(chat_id, line)
+        if channel is not None and channel.has_bot_id:
+            sd.record_echo(channel.bot_id, chat_id, line)
 
     if host is None:
         await tell("no host was available at this occurrence.")
@@ -7227,6 +7368,12 @@ async def start_scheduled_job(role: str, trig: Any) -> None:
             trig.channel, scheduled_asks.epoch_for(role, f"{trig.type}-{trig.name}")),
         "_scheduled_job": True,
     }
+    # The job has no parent turn: its route is decided here, once, and
+    # persists with its record, so every later post and question of the job
+    # goes through the same bot whatever the role is bound to later.
+    transport = _transport()
+    if transport is not None:
+        origin["_tg_bot"] = transport.route_for(role)
     result = await _start_job_on_host(host, str(trig.task or title), str(trig.context or ""), origin)
     try:
         payload = json.loads(result["content"][0]["text"])
@@ -7317,7 +7464,7 @@ async def _post_job_start_line(engagement_id: Any) -> None:
            else None)
     if rec is None or (rec.origin.get("job") or {}).get("started_by") != "operator":
         return
-    channel = _channel_manager.get("telegram") if _channel_manager is not None else None
+    channel = _transport()
     poster = getattr(channel, "post_job_start_line", None)
     if not callable(poster):
         return
@@ -9834,15 +9981,23 @@ async def _settle_job_journal(engagement: Any, driver: Any) -> None:
         settle = getattr(driver, "settle_journal_terminal", None)
         if not callable(settle):
             return
-        tch = (_channel_manager.get("telegram")
-               if _channel_manager is not None else None)
-        teller = getattr(tch, "tell_journal_lost", None)
+        transport = _transport()
 
-        async def _untold(_rec: Any, _entry: dict) -> None:
-            raise RuntimeError("no channel to tell a lost message")
+        async def _tell(_rec: Any, _entry: dict) -> None:
+            # Told in reply to the operator's message, through the bot that
+            # received it: the notice's stored address names it.
+            if transport is None:
+                raise RuntimeError("no channel to tell a lost message")
+            notice = _entry.get("notice")
+            if not isinstance(notice, dict):
+                logger.warning("lost message of %s has no message to reply "
+                               "to; not told", str(getattr(_rec, "id", "?"))[:8])
+                return
+            address = TgAddress.from_json(notice.get("address"))
+            await transport.endpoint(address).tell_journal_lost(_rec, _entry)
 
         try:
-            await settle(engagement, teller if callable(teller) else _untold)
+            await settle(engagement, _tell)
         except Exception as exc:  # noqa: BLE001 — never stops a terminal path
             logger.warning("engagement %s: settling the message journal failed: %s",
                            getattr(engagement, "id", "?")[:8], exc)
@@ -10012,7 +10167,8 @@ async def send_engagement_outcome(
     ``"assistant"`` sent a role-less record's replay to a queue that may not
     exist, which the bus drops silently), channel, the cid/chat_id/engagement_id
     context merged with ``context_extra`` (the funnel's ``next_steps``), and
-    the delivery acknowledgement."""
+    the delivery acknowledgement. The context carries the origin's route, so
+    the outcome is told through the bot the engagement came from."""
     _role = origin.get("role")
     target_role = _role if isinstance(_role, str) and _role else fallback_role
     _channel = origin.get("channel")
@@ -10020,6 +10176,8 @@ async def send_engagement_outcome(
         "cid": origin.get("cid", "-"),
         "chat_id": origin.get("chat_id", ""),
         "engagement_id": complete.delegation_id,
+        # the outcome is told through the bot the engagement came from
+        **carry_route(origin),
     }
     if context_extra:
         context.update(context_extra)
@@ -10295,8 +10453,7 @@ def _paint_job_end(engagement: Any) -> None:
     outcome, time and cost) — the step the terminal observer left to the
     finalize tail. Never raises."""
     _end_paint_deferred.discard(engagement.id)
-    channel = (_channel_manager.get("telegram")
-               if _channel_manager is not None else None)
+    channel = _transport()
     retire = getattr(channel, "retire_job_keyboards", None)
     if not callable(retire):
         return
@@ -10924,7 +11081,7 @@ async def ask_operator(args: dict) -> dict:
                         f"{_ASK_QUESTION_MAX} characters; options: at most "
                         f"{_ASK_OPTIONS_MAX} non-empty strings of at most "
                         f"{_ASK_OPTION_LABEL_MAX} characters each")})
-    channel = _channel_manager.get("telegram") if _channel_manager is not None else None
+    channel = _transport()
     if channel is None or not hasattr(channel, "post_job_question"):
         return _result({"status": "error", "kind": "delivery_failed",
                         "message": "the operator's chat is not available"})
@@ -10948,9 +11105,16 @@ async def ask_operator(args: dict) -> dict:
     qid = _engagement_registry.new_job_question(rec.id, question, options)
     if qid is None:
         return _result({"status": "error", "kind": "not_a_job"})
-    message_id = await channel.post_job_question(
-        rec, qid, scope.admit(IntentKind.KEYBOARD, body), list(options),
-        captions)
+    # Posted through the bot of the job's route. A route that names no bot
+    # Casa runs is reported like a post that failed: nothing reached the
+    # operator.
+    try:
+        message_id = await channel.post_job_question(
+            rec, qid, scope.admit(IntentKind.KEYBOARD, body), list(options),
+            captions)
+    except (RouteMissing, AddressError, EndpointUnavailable) as exc:
+        logger.error("job %s question not posted: %s", rec.id[:8], exc)
+        message_id = None
     if message_id is None:
         return _result({"status": "error", "kind": "delivery_failed",
                         "message": "the question was not posted; you may ask again"})
@@ -12426,7 +12590,7 @@ def _on_engagement_terminal(rec) -> None:
     CHALLENGES.cancel_matching(engagement=rec.id, reason="engagement_ended")
     if rec.id in _end_paint_deferred:
         return                  # the finalize tail paints it after the turn ends
-    channel = _channel_manager.get("telegram") if _channel_manager is not None else None
+    channel = _transport()
     retire = getattr(channel, "retire_job_keyboards", None)
     if callable(retire):
         try:
@@ -14198,7 +14362,6 @@ async def specialist_install_inspect(args: dict) -> dict:
         SpecialistInstallAckStore, install_consent_identity,
         prompt_specialist_install_consent,
     )
-    import trigger_consent
 
     ok_payload = {
         "ok": True, "component_id": result.component_id, "version": result.version,
@@ -14248,21 +14411,19 @@ async def specialist_install_inspect(args: dict) -> dict:
         ok_payload["consent"] = "pre_authorized"
         return _result(ok_payload)
 
-    channel = _channel_manager.get("telegram") if _channel_manager is not None else None
-    op = trigger_consent.operator_identity(channel) if channel is not None else None
-    if channel is None or op is None:
+    # Casa's own card, through Casa's bot in the operator's direct chat.
+    channel, address, problem = _casa_card_target()
+    if problem is not None:
         return _result({
             "ok": False, "kind": "consent_channel_unavailable",
             "detail": (
-                ("no telegram channel is configured" if channel is None else
-                 "no valid operator DM identity (chat_id unset, non-numeric, "
-                 "or a group chat)")
+                _CASA_CARD_PROBLEMS[problem]
                 + " — the install-consent keyboard cannot be posted and no "
                 "pre-recorded consent ack exists for this component; fix the "
                 "operator DM channel (or pre-record a consent ack) and re-run "
                 "specialist_install_inspect"),
         })
-    chat_id, operator_id = op
+    chat_id = operator_id = address.chat_id
 
     # An Approve tap continues the configurator by itself — one turn on its
     # desk in the operator's DM, whose text carries every staged value,
@@ -14500,13 +14661,13 @@ def _names_this_specialist(ack: "list | None", slug: str) -> bool:
 
 
 def _operator_user_id() -> "int | None":
-    import trigger_consent
-    channel = _channel_manager.get("telegram") if _channel_manager is not None else None
+    """The operator's Telegram user id (one per deployment, the same on
+    every bot), or ``None`` without Telegram or a valid operator chat."""
+    transport = _transport()
     try:
-        op = trigger_consent.operator_identity(channel) if channel is not None else None
+        return transport.operator_user_id() if transport is not None else None
     except Exception:  # noqa: BLE001 — the identity only refines a line
-        op = None
-    return op[1] if op else None
+        return None
 
 
 def _conversation_row(rec, operator_id: "int | None") -> dict:
@@ -15307,7 +15468,6 @@ async def persona_install_inspect(args: dict) -> dict:
     # specialist_install_inspect — the identity checked here
     # (persona_install_consent_identity(persona_id, version, checksum)) is
     # exactly what persona_install.commit_persona_install re-validates.
-    import trigger_consent
 
     ok_payload = {"ok": True, "persona_id": result.persona_id, "version": result.version,
                   "checksum": result.checksum, "display_name": result.display_name,
@@ -15324,21 +15484,19 @@ async def persona_install_inspect(args: dict) -> dict:
         ok_payload["consent"] = "pre_authorized"
         return _result(ok_payload)
 
-    channel = _channel_manager.get("telegram") if _channel_manager is not None else None
-    op = trigger_consent.operator_identity(channel) if channel is not None else None
-    if channel is None or op is None:
+    # Casa's own card, through Casa's bot in the operator's direct chat.
+    channel, address, problem = _casa_card_target()
+    if problem is not None:
         return _result({
             "ok": False, "kind": "consent_channel_unavailable",
             "detail": (
-                ("no telegram channel is configured" if channel is None else
-                 "no valid operator DM identity (chat_id unset, non-numeric, "
-                 "or a group chat)")
+                _CASA_CARD_PROBLEMS[problem]
                 + " — the install-consent keyboard cannot be posted and no "
                 "pre-recorded consent ack exists for this persona; fix the "
                 "operator DM channel (or pre-record a consent ack) and re-run "
                 "persona_install_inspect"),
         })
-    chat_id, operator_id = op
+    chat_id = operator_id = address.chat_id
 
     # As specialist_install_inspect — Approve
     # continues the configurator on its desk with the staged values; Deny and
@@ -16434,7 +16592,6 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
     (that refusal comes first, unchanged)."""
     import plugin_erase_consent as pec
     import plugin_erasure
-    import trigger_consent
     questions = plugin_erasure.QUESTIONS
     if erase is False:
         # Keep data: today's removal. It answers — and so closes — whatever
@@ -16467,15 +16624,15 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
                 held.append(token)
             questions.close(subject, open_q)
             return None, taken
-    channel = _channel_manager.get("telegram") if _channel_manager is not None else None
-    op = trigger_consent.operator_identity(channel) if channel is not None else None
-    if op is None:
+    # Casa's own question, through Casa's bot in the operator's direct chat.
+    channel, address, problem = _casa_card_target()
+    if problem is not None:
         return {"ok": False, "kind": "consent_channel_unavailable",
                 "detail": ("the operator's Telegram DM is not available, so the "
                            "erase-data question cannot be asked; nothing was "
                            "removed. Fix the Telegram channel, or uninstall with "
                            "erase_data=false to keep the data.")}, []
-    chat_id, operator_id = op
+    chat_id = operator_id = address.chat_id
     artifacts = tuple(s.artifact_id for s in specs)
     deliver = _configurator_deliverer(channel, chat_id, operator_id, what=name)
     if erase is None:
@@ -16492,8 +16649,8 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
         # an earlier question — or of an earlier installation of the same
         # artifact — is void, so only the answer to THIS question decides.
         question = questions.open(subject)
-        key = pec.EraseChoiceKey(operator_id=operator_id, chat_id=chat_id,
-                                 subject=subject, artifacts=artifacts,
+        key = pec.EraseChoiceKey(operator_id=operator_id, bot_id=address.bot_id,
+                                 chat_id=chat_id, subject=subject, artifacts=artifacts,
                                  question=question)
         choices = _offered_erase_choices(specs)
         erasers = []
@@ -16528,8 +16685,8 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
                            "you with their choice. End your turn now with one "
                            "short line saying what you asked.")}, []
     question = questions.current(subject)
-    key = pec.EraseChoiceKey(operator_id=operator_id, chat_id=chat_id,
-                             subject=subject, artifacts=artifacts,
+    key = pec.EraseChoiceKey(operator_id=operator_id, bot_id=address.bot_id,
+                             chat_id=chat_id, subject=subject, artifacts=artifacts,
                              question=question or "")
     choice = pec.CHOICES.consume_erase(key) if question is not None else None
     if choice is None:
@@ -17113,10 +17270,9 @@ async def consent_reprompt(args: dict) -> dict:
             return _result({"ok": False, "kind": "runtime_unavailable",
                             "message": "runtime not ready"})
         channel_manager = getattr(runtime, "channel_manager", None)
-        channel = channel_manager.get("telegram") if channel_manager else None
-        import trigger_consent
-        op = (trigger_consent.operator_identity(channel)
-              if channel is not None else None)
+        transport = telegram_transport(channel_manager) if channel_manager else None
+        op = (transport.operator_user_id()
+              if transport is not None else None)
         if op is None:
             return _result({
                 "ok": False, "kind": "dm_unreachable",
@@ -17196,8 +17352,9 @@ async def consent_reprompt(args: dict) -> dict:
     import authz_grants
     shown = {f"{r.get('kind')}_consent" for r in rows
              if r.get("status") in ("posted", "already_pending")}
-    live = authz_grants.CHALLENGES.live_kinds(chat_id=op[0],
-                                              operator_id=op[1])
+    # Casa's consent cards sit in the operator's private chat, whose id is the
+    # operator's own user id.
+    live = authz_grants.CHALLENGES.live_kinds(chat_id=op, operator_id=op)
     others = [k for k in live if k not in shown]
     message = (
         f"{posted} consent keyboard(s) (re)posted to the operator DM"

@@ -19,6 +19,7 @@ from claude_agent_sdk import ClaudeAgentOptions
 
 import job_inbox
 from drivers import in_casa_driver as drv
+from channels.tg_address import TgAddress
 
 try:
     from tests.test_job_session_driver import FakeCLI, until
@@ -28,6 +29,8 @@ except ImportError:  # pragma: no cover — direct-path collection
 pytestmark = pytest.mark.asyncio
 
 OPERATOR = 100
+#: The bot the rig's channel is: journaled notices name it.
+BOT = 111
 MEMBER = 555
 SUPERGROUP = -1001
 TOPIC = 77
@@ -72,13 +75,13 @@ async def rig(tmp_path, monkeypatch):
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
     decl = jobs.JobDecl("q:run", "q", "run", "q:job", "Accounting check", None)
     origin = {"role": "assistant", "channel": "telegram",
-              "chat_id": str(OPERATOR), "user_id": OPERATOR,
+              "chat_id": str(OPERATOR), "user_id": OPERATOR, "_tg_bot": BOT,
               "_origin_clearance": "private",
               "job": jobs.initial_job_state(decl, started_by="operator")}
     rec = await reg.create("specialist", "finance", "in_casa", "Check", origin)
     bot = _Bot()
     ch = TelegramChannel(bot=bot, chat_id=str(OPERATOR),
-                         engagement_supergroup_id=SUPERGROUP)
+                         engagement_supergroup_id=SUPERGROUP, known_bot_id=BOT)
     driver = drv.InCasaDriver(
         record_lookup=reg.get, begin_turn_delivery=reg.begin_turn_delivery,
         lifecycle_lock=ch.engagement_lifecycle_lock)
@@ -155,7 +158,7 @@ async def test_an_operator_reply_is_journaled_with_its_notice_target(rig):
         quoted_text="📊 Finance started «Accounting check»."), 2)
     assert ok is True
     [entry] = job_inbox.load(rig.rec.id)
-    assert entry["notice"] == {"chat_id": OPERATOR, "message_id": 31,
+    assert entry["notice"] == {"address": [BOT, OPERATOR, 31],
                                "answer": False}
     assert entry["text"] == (
         "[replying to «📊 Finance started «Accounting check».»]\ngo on")
@@ -181,7 +184,7 @@ async def test_a_tapped_answer_hands_its_reservation_to_the_ticket(rig):
     from channels.telegram import _NoticeTarget
     ok = await rig.ch.deliver_system_turn(
         rig.rec, "[operator answered «Which?»: B]", inbound_reservation=lease,
-        notice_target=_NoticeTarget(chat_id=OPERATOR, message_id=40, answer=True))
+        notice_target=_NoticeTarget(TgAddress(BOT, OPERATOR, 40), answer=True))
     assert ok is True
     assert seen == [(1, 1)]                       # both held at admission
     assert rig.drv.inbound_reservations(rig.rec.id) == 0
@@ -195,10 +198,10 @@ async def test_a_lost_journal_entry_is_told_in_reply_to_its_message(rig, caplog)
     await rig.reg.try_transition_terminal(rig.rec.id, "completed", strict=True)
     await rig.ch.tell_journal_lost(
         rig.rec, {"uuid": "u", "text": "x",
-                  "notice": {"chat_id": OPERATOR, "message_id": 31, "answer": False}})
+                  "notice": {"address": [BOT, OPERATOR, 31], "answer": False}})
     await rig.ch.tell_journal_lost(
         rig.rec, {"uuid": "v", "text": "y",
-                  "notice": {"chat_id": OPERATOR, "message_id": 40, "answer": True}})
+                  "notice": {"address": [BOT, OPERATOR, 40], "answer": True}})
     with caplog.at_level("WARNING", logger="channels.telegram"):
         await rig.ch.tell_journal_lost(
             rig.rec, {"uuid": "w", "text": "z", "notice": None})
@@ -214,10 +217,8 @@ async def test_the_finalize_funnel_tells_each_unread_message_once(rig, monkeypat
     — journaled, written, never echoed — tells that message as lost once, in
     reply to it; the journal goes with the record."""
     import tools
-    from unittest.mock import MagicMock
-    cm = MagicMock()
-    cm.get.return_value = rig.ch
-    monkeypatch.setattr(tools, "_channel_manager", cm)
+    from telegram_channel_double import make_transport
+    monkeypatch.setattr(tools, "_channel_manager", make_transport(rig.ch))
     monkeypatch.setattr(tools, "_engagement_registry", rig.reg)
     monkeypatch.setattr(tools, "_bus", None)
     monkeypatch.setattr(job_inbox, "transcript_path",

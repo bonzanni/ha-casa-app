@@ -115,6 +115,7 @@ class TestCanonicalArgsHash:
 def _key(**overrides) -> GrantKey:
     base = dict(
         operator_id=1,
+        bot_id=111,
         chat_id=100,
         enforcement_role="finance",
         artifact_id="artifact-abc",
@@ -135,6 +136,15 @@ class TestGrantKey:
 
     def test_distinct_field_differs(self):
         assert _key() != _key(tool_name="other_tool")
+
+    def test_the_bot_is_part_of_the_key(self):
+        assert _key(bot_id=111) != _key(bot_id=222)
+
+    @pytest.mark.parametrize("bot", ["casa", None, True, 0, "111"])
+    def test_a_key_refuses_anything_but_a_bot_id(self, bot):
+        from channels.tg_address import AddressError
+        with pytest.raises(AddressError):
+            _key(bot_id=bot)
 
 
 # ---------------------------------------------------------------------------
@@ -224,10 +234,22 @@ class TestGrantStorePurges:
         k3 = _key(chat_id=200)
         for k in (k1, k2, k3):
             store.mint(k)
-        assert store.purge_chat(100) == 2
+        assert store.purge_chat(111, 100) == 2
         assert store.consume(k1) is False
         assert store.consume(k2) is False
         assert store.consume(k3) is True
+
+    def test_purge_chat_leaves_another_bots_chat_with_the_operator(self):
+        # The operator's chats with two bots share the chat id: /new on one
+        # bot must not void an approval given on the other.
+        store = GrantStore(_now=_FakeClock())
+        mine = _key(bot_id=111, chat_id=100)
+        other = _key(bot_id=222, chat_id=100)
+        store.mint(mine)
+        store.mint(other)
+        assert store.purge_chat(222, 100) == 1
+        assert store.consume(other) is False
+        assert store.consume(mine) is True
 
     def test_purge_role_removes_only_matching_returns_count(self):
         store = GrantStore(_now=_FakeClock())
@@ -255,7 +277,7 @@ class TestGrantStorePurges:
 
     def test_purge_on_empty_store_returns_zero(self):
         store = GrantStore(_now=_FakeClock())
-        assert store.purge_chat(1) == 0
+        assert store.purge_chat(111, 1) == 0
         assert store.purge_role("x") == 0
         assert store.purge_artifact("y") == 0
 
@@ -903,7 +925,7 @@ class TestChallengeAtomicRegistration:
         assert sum(1 for h in results if h.created) == 1
         assert sum(1 for h in results if not h.created) == 15
         # exactly ONE live broker record (still pending — nobody answered)
-        assert broker.pending(namespace="resident_ask", scope="authz:100") == \
+        assert broker.pending(namespace="resident_ask", scope="authz:111:100") == \
             [coord._entries[key].rid]
         # exactly one keyboard was ever posted
         assert len(channel.posts) == 1
@@ -920,7 +942,7 @@ class TestChallengeAtomicRegistration:
         assert handle.refused == "args_too_large"
         assert key not in coord._entries
         assert channel.posts == []
-        assert broker.pending(namespace="resident_ask", scope="authz:100") == []
+        assert broker.pending(namespace="resident_ask", scope="authz:111:100") == []
 
     async def test_registration_is_synchronous_before_first_turn(
         self, monkeypatch,
@@ -931,7 +953,7 @@ class TestChallengeAtomicRegistration:
         broker, coord, channel = _fresh_env(monkeypatch)
         key, handle = _create(coord, channel)
         # No await yet: the record must already be live and cancellable.
-        assert broker.pending(namespace="resident_ask", scope="authz:100") == \
+        assert broker.pending(namespace="resident_ask", scope="authz:111:100") == \
             [coord._entries[key].rid]
         assert channel.posts == []  # the driver has not run its first turn
         await handle.settled_post()
@@ -1021,7 +1043,7 @@ class TestSettledPostClassification:
         key, handle = _create(coord, channel)
         task = asyncio.ensure_future(handle.settled_post())
         await asyncio.sleep(0)          # driver starts, post blocks
-        broker.cancel_scope(namespace="resident_ask", scope="authz:100",
+        broker.cancel_scope(namespace="resident_ask", scope="authz:111:100",
                             reason="new_session")
         channel.post_gate.set()
         assert await task == "inactive"
@@ -1052,7 +1074,7 @@ class TestPrePostAndShutdownTerminal:
         broker, coord, channel = _fresh_env(monkeypatch)
         key, handle = _create(coord, channel)
         # synchronous /new, before any await
-        broker.cancel_scope(namespace="resident_ask", scope="authz:100",
+        broker.cancel_scope(namespace="resident_ask", scope="authz:111:100",
                             reason="new_session")
         assert await handle.settled_post() == "inactive"
         await _settle()
@@ -1078,7 +1100,7 @@ class TestPrePostAndShutdownTerminal:
         broker, coord, channel = _fresh_env(monkeypatch)
         key, handle = _create(coord, channel)
         req = coord._entries[key].req
-        broker.cancel(namespace="resident_ask", scope="authz:100",
+        broker.cancel(namespace="resident_ask", scope="authz:111:100",
                       request_id=coord._entries[key].rid, reason="x")
         await handle.settled_post()
         await _settle()
@@ -1445,7 +1467,7 @@ class TestTwoLatchCleanup:
         key, handle = _create(coord, channel)
         task = asyncio.ensure_future(handle.settled_post())
         await asyncio.sleep(0)
-        broker.cancel_scope(namespace="resident_ask", scope="authz:100",
+        broker.cancel_scope(namespace="resident_ask", scope="authz:111:100",
                             reason="new")
         channel.post_gate.set()
         await task
@@ -1475,7 +1497,8 @@ class TestTwoLatchCleanup:
         old = coord._entries[key]
         # A newer challenge takes the slot (simulating a completed retry).
         newer = coord._entries[key].__class__(
-            key=key, scope=old.scope, rid="newer-rid", req=old.req,
+            key=key, scope=old.scope, rid="newer-rid", bot_id=old.bot_id,
+            req=old.req,
             broker=broker,
         )
         coord._entries[key] = newer

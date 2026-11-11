@@ -13,17 +13,20 @@ from aiohttp.test_utils import make_mocked_request
 import operator_calls
 import plugin_bindings
 import plugin_continuations
-import result_broker as rb
 import run_admission
 import tools as tools_mod
 from authz_grants import GrantIdentity
+from channels.tg_address import TgAddress
+from telegram_channel_double import make_transport
+from two_endpoints import CASA_BOT
 from verdict_broker import BROKER
 
 ARTIFACT = "1" * 64
 ORIGIN = {"role": "assistant", "execution_role": "browser", "channel": "telegram",
           "chat_id": "42", "user_id": 100, "cid": "c", "message_type": "channel_in",
           "source": "telegram", "_operator_turn": True, "_delegation_id": "d-1",
-          "delegation_depth": 1, "_handoff_chain": ("assistant", "browser")}
+          "delegation_depth": 1, "_handoff_chain": ("assistant", "browser"),
+          "_tg_bot": CASA_BOT}
 
 
 def _run(*sites, mode="account", digest="sha256:aa", kind="download invoice"):
@@ -35,6 +38,12 @@ RUNPOD = _run(("RunPod", "account"))
 
 
 class _Channel:
+    """Casa's Telegram endpoint (bot 111), as far as run admission uses it."""
+    default_agent = "assistant"
+    bot_id = CASA_BOT
+    has_bot_id = True
+    on_identity = None
+
     def __init__(self, deliver=True):
         self.deliver = deliver
         self.posted: list[tuple] = []
@@ -70,7 +79,7 @@ def wired(monkeypatch, tmp_path):
         "browser": SimpleNamespace(character=SimpleNamespace(name="Fido"), kind="specialist"),
     }, raising=False)
     channel = _Channel()
-    monkeypatch.setattr(rb, "_telegram_channel", lambda: channel)
+    monkeypatch.setattr(tools_mod, "_channel_manager", make_transport(channel), raising=False)
     continued: list = []
 
     class _Q:
@@ -84,7 +93,7 @@ def wired(monkeypatch, tmp_path):
 
 def _call(words="download my latest RunPod invoice", chain=("assistant", "browser")):
     ident = GrantIdentity(operator_id=100, chat_id=42, enforcement_role="browser",
-                          artifact_id=ARTIFACT, engagement_id="")
+                          artifact_id=ARTIFACT, engagement_id="", bot_id=CASA_BOT)
     origin = {**ORIGIN, "user_text": words or "", "_handoff_chain": chain}
     if words is None:
         origin["synthetic"] = "continuation"
@@ -112,7 +121,7 @@ async def _tap(channel, index, actor=100):
             break
         await asyncio.sleep(0)
     rid = channel.posted[-1][3]
-    claim = BROKER.claim(namespace="resident_ask", scope="ask:42", request_id=rid,
+    claim = BROKER.claim(namespace="resident_ask", scope=f"ask:{CASA_BOT}:42", request_id=rid,
                          option_index=index, actor_id=actor)
     assert not isinstance(claim, str), claim
     assert BROKER.commit(claim)
@@ -293,7 +302,7 @@ async def test_status_is_readable_only_by_its_plugin_and_operator(wired, monkeyp
     other = operator_calls.OperatorCall(
         client_id="c2", tool_use_id="t", tool_name="x", role="finance", plugin="bank",
         identity=GrantIdentity(operator_id=100, chat_id=42, enforcement_role="finance",
-                               artifact_id=ARTIFACT, engagement_id=""),
+                               artifact_id=ARTIFACT, engagement_id="", bot_id=CASA_BOT),
         operator_words=None, chain=("assistant", "finance"), requester="assistant",
         turn_key="", binding_ref=None, origin={}, opened_at=0.0)
     assert run_admission.confirmation_status(other, out["confirmation_id"])[
@@ -339,12 +348,12 @@ async def test_words_are_kept_per_admitted_digest(wired, monkeypatch, reply, sta
     out = await run_admission.request_admission(_call(), runs, "k1")
     assert out["status"] == status
     for digest in ("sha256:aa", "sha256:bb"):
-        assert action_judgement.WORDS.get(plugin="browser", operator_id=100,
+        assert action_judgement.WORDS.get(plugin="browser", bot_id=CASA_BOT, operator_id=100,
                                           spec_digest=digest) == (
             "download my latest RunPod invoice")
-    assert action_judgement.WORDS.get(plugin="bank", operator_id=100,
+    assert action_judgement.WORDS.get(plugin="bank", bot_id=CASA_BOT, operator_id=100,
                                       spec_digest="sha256:aa") is None
-    assert action_judgement.WORDS.get(plugin="browser", operator_id=999,
+    assert action_judgement.WORDS.get(plugin="browser", bot_id=CASA_BOT, operator_id=999,
                                       spec_digest="sha256:aa") is None
 
 
@@ -356,7 +365,7 @@ async def test_no_words_keeps_nothing(wired, monkeypatch):
     monkeypatch.setattr(run_admission, "_ask_model", ask)
     out = await run_admission.request_admission(_call(words=None), [RUNPOD], "k1")
     assert out["status"] == "confirmation_pending"
-    assert action_judgement.WORDS.get(plugin="browser", operator_id=100,
+    assert action_judgement.WORDS.get(plugin="browser", bot_id=CASA_BOT, operator_id=100,
                                       spec_digest="sha256:aa") is None
 
 
@@ -407,20 +416,20 @@ async def test_answers_survive_a_restart_and_a_dead_card_reads_expired(wired, mo
 def test_answers_are_kept_thirty_days_after_the_answer(tmp_path):
     now = [1_000_000.0]
     store = run_admission.Confirmations(str(tmp_path / "a.json"), now=lambda: now[0])
-    c = run_admission.Confirmation(cid="conf-1", plugin="browser", operator_id=100,
+    c = run_admission.Confirmation(cid="conf-1", plugin="browser", bot_id=CASA_BOT, operator_id=100,
                                    binding_ref="b", request_key="k", status="admitted",
                                    admissions=[{"spec_digest": "d"}], created_at=now[0])
     store.add(c)
     now[0] += run_admission.ANSWER_KEEP_S - 60
-    store.add(run_admission.Confirmation(cid="conf-2", plugin="browser", operator_id=100,
+    store.add(run_admission.Confirmation(cid="conf-2", plugin="browser", bot_id=CASA_BOT, operator_id=100,
                                          binding_ref="b", request_key="k2", status="declined",
                                          admissions=[], created_at=now[0]))
-    assert store.by_key(plugin="browser", operator_id=100, request_key="k") is not None
+    assert store.by_key(plugin="browser", bot_id=CASA_BOT, operator_id=100, request_key="k") is not None
     now[0] += 120
-    store.add(run_admission.Confirmation(cid="conf-3", plugin="browser", operator_id=100,
+    store.add(run_admission.Confirmation(cid="conf-3", plugin="browser", bot_id=CASA_BOT, operator_id=100,
                                          binding_ref="b", request_key="k3", status="declined",
                                          admissions=[], created_at=now[0]))
-    assert store.by_key(plugin="browser", operator_id=100, request_key="k") is None
+    assert store.by_key(plugin="browser", bot_id=CASA_BOT, operator_id=100, request_key="k") is None
     import os
     assert oct(os.stat(tmp_path / "a.json").st_mode & 0o777) == "0o600"
 
@@ -463,7 +472,7 @@ async def test_his_start_leaves_the_card_with_exactly_its_stop(wired, monkeypatc
     assert channel.edit_buttons == [[("Stop", f"v1|run_stop|{cid}|0")]]
     assert len(f"v1|run_stop|{cid}|0".encode()) <= 64
     c = run_admission.CONFIRMATIONS.peek(cid)
-    assert c.card_message_id == 555 and c.card_text.endswith("☑ Start")
+    assert c.card == [CASA_BOT, 42, 555] and c.card_text.endswith("☑ Start")
 
 
 @pytest.mark.asyncio
@@ -496,7 +505,7 @@ async def test_runs_his_words_admitted_get_one_status_card_with_its_stop(wired, 
     assert card[2] == [("Stop", f"v1|run_stop|{cid}|0")]
     assert "Browsing now:" in card[1] and "• RunPod — download invoice" in card[1]
     c = run_admission.CONFIRMATIONS.peek(cid)
-    assert c.card_message_id == 556 and c.card_text == card[1]
+    assert c.card_address() == TgAddress(CASA_BOT, 42, 556) and c.card_text == card[1]
 
 
 @pytest.mark.asyncio
@@ -508,4 +517,4 @@ async def test_a_status_card_that_fails_to_post_leaves_the_admission(wired, monk
     out = await run_admission.request_admission(_call(), [RUNPOD], "k1")
     await _cards_settle()
     assert out["status"] == "admitted" and len(channel.cards) == 1
-    assert run_admission.CONFIRMATIONS.peek(out["confirmation_id"]).card_message_id == 0
+    assert run_admission.CONFIRMATIONS.peek(out["confirmation_id"]).card is None

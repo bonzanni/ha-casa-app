@@ -67,7 +67,7 @@ class _CapturingClient(_FakeClient):
 
 
 def _origin(user_text=...):
-    origin = {"role": "assistant", "channel": "telegram",
+    origin = {"role": "assistant", "channel": "telegram", "_tg_bot": 111,
               "chat_id": "777", "cid": "c1"}
     if user_text is not ...:
         origin["user_text"] = user_text

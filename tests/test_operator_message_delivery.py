@@ -25,6 +25,8 @@ from channels import DeliveryOutcome
 from channels.tg_richtext import render_paged
 from plugin_grants import PluginContract, ResultContractMap, ToolContract
 from text_util import utf16_len
+from telegram_channel_double import make_transport
+from two_endpoints import CASA_BOT as BOT
 
 ARTIFACT = "5" * 64
 PLUGIN = "probe"
@@ -36,7 +38,7 @@ LABEL = "📊 Finance"
 
 def _identity(**over) -> GrantIdentity:
     base = dict(operator_id=42, chat_id=42, enforcement_role="finance",
-                artifact_id=ARTIFACT, engagement_id="")
+                artifact_id=ARTIFACT, engagement_id="", bot_id=BOT)
     base.update(over)
     return GrantIdentity(**base)
 
@@ -59,6 +61,7 @@ class _Clock:
 
 
 class _Recorder:
+    default_agent, bot_id, has_bot_id, on_identity = "assistant", BOT, True, None
     def __init__(self, outcome=DeliveryOutcome.DELIVERED, raise_exc=None,
                  sleep_s=0.0, block=None):
         self.outcome, self.raise_exc, self.sleep_s, self.block = (
@@ -92,12 +95,10 @@ class _Recorder:
         return DeliveryOutcome.DELIVERED
 
 
-class _Manager:
-    def __init__(self, channel):
-        self._channel = channel
-
-    def get(self, name):
-        return self._channel if name == "telegram" else None
+def _Manager(channel):
+    """The channel manager with Telegram's transport over *channel*, Casa's
+    endpoint on bot 111; ``None`` (no Telegram) for no channel."""
+    return make_transport(channel) if channel is not None else None
 
 
 @pytest.fixture
@@ -306,7 +307,7 @@ async def test_cancellation_at_the_delivery_await_propagates_and_drops(recorder,
 def _channel():
     from unittest.mock import AsyncMock, MagicMock
     from channels.telegram import TelegramChannel
-    ch = TelegramChannel(bot=MagicMock(), chat_id="42")
+    ch = TelegramChannel(bot=MagicMock(), chat_id="42", known_bot_id=BOT)
     app = MagicMock()
     app.bot.send_message = AsyncMock(return_value=True)
     ch._app = app
@@ -326,7 +327,7 @@ async def test_the_real_channel_method_sends_each_page_and_nothing_else():
         # exactly these: no parse_mode, no message_thread_id (a thread id
         # would post the page into a topic)
         assert call.kwargs == {"chat_id": 42, "text": display, "entities": entities}
-    ch2 = TelegramChannel(bot=object(), chat_id="42")
+    ch2 = TelegramChannel(bot=object(), chat_id="42", known_bot_id=BOT)
     ch2._app = None
     assert await ch2.deliver_operator_message(42, text) is DeliveryOutcome.NOT_DELIVERED
 

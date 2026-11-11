@@ -54,6 +54,7 @@ def _channel():
     bus = MessageBus()
     bus.register("assistant", _noop_handler)
     channel = TelegramChannel(
+        known_bot_id=111,
         bot_token="T", chat_id="0", default_agent="assistant", bus=bus,
     )
     channel._start_typing = lambda *a, **k: None  # type: ignore[assignment]
@@ -91,11 +92,12 @@ class TestTelegramHandleRoutesThroughSanitize:
         assert ctx["message_id"] == "42"
         assert "cid" in ctx
         # #336: the ONLY reserved keys present are the two origin markers
-        # Casa itself stamps AFTER the sanitize pass (server-side, so an
-        # external payload still cannot supply them) — nothing else reserved
-        # ever entered.
+        # and the turn's route (the bot it arrived on), which Casa itself
+        # stamps AFTER the sanitize pass (server-side, so an external payload
+        # still cannot supply them) — nothing else reserved ever entered.
         assert provenance.RESERVED_CONTEXT_KEYS & ctx.keys() == {
-            "_origin_route", "_origin_clearance",
+            "_origin_route", "_origin_clearance", "_tg_bot",
         }
         assert ctx["_origin_route"] == "telegram"
+        assert ctx["_tg_bot"] == channel.bot_id
         assert ctx["_origin_clearance"] in ("private", "public")

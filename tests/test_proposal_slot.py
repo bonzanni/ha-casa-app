@@ -24,6 +24,8 @@ import verdict_broker as vb
 from authz_grants import GrantIdentity
 from channels import DeliveryOutcome
 from plugin_grants import PluginContract, ResultContractMap, ToolContract
+from telegram_channel_double import make_transport
+from two_endpoints import CASA_BOT as BOT
 
 ARTIFACT = "6" * 64
 SEG = "probe"
@@ -38,7 +40,7 @@ LABEL = "📊 Finance"
 
 def _identity(**over) -> GrantIdentity:
     base = dict(operator_id=42, chat_id=42, enforcement_role="finance",
-                artifact_id=ARTIFACT, engagement_id="", delegation_id="d-1")
+                artifact_id=ARTIFACT, engagement_id="", delegation_id="d-1", bot_id=BOT)
     base.update(over)
     return GrantIdentity(**base)
 
@@ -73,6 +75,7 @@ def _proposal(**over):
 
 
 class _Recorder:
+    default_agent, bot_id, has_bot_id, on_identity = "assistant", BOT, True, None
     def __init__(self, outcome=DeliveryOutcome.DELIVERED, message_id=501):
         self.outcome, self.message_id = outcome, message_id
         self.proposals: list[tuple] = []
@@ -90,9 +93,10 @@ class _Recorder:
         self.other.append(("send_response", message)); return DeliveryOutcome.DELIVERED
 
 
-class _Manager:
-    def __init__(self, ch): self._ch = ch
-    def get(self, name): return self._ch if name == "telegram" else None
+def _Manager(channel):
+    """The channel manager with Telegram's transport over *channel*, Casa's
+    endpoint on bot 111; ``None`` (no Telegram) for no channel."""
+    return make_transport(channel) if channel is not None else None
 
 
 @pytest.fixture
@@ -186,7 +190,7 @@ async def test_a_proven_proposal_registers_before_posting_posts_once_and_returns
     assert chat_id == 4242 and text == LABEL + "\nPair invoice 17 with the Adobe payment?"
     assert labels == ["Yes", "No"] and len(rid) == 32
     assert post.kind == "operator_proposal" and post.role == "finance" and post.owner == "d-1"
-    meta = env.broker.get_meta(namespace="proposal", scope="proposal:4242", request_id=rid)
+    meta = env.broker.get_meta(namespace="proposal", scope=f"proposal:{BOT}:4242", request_id=rid)
     assert meta["chat_id"] == 4242 and meta["operator_id"] == 4242 and meta["role"] == "finance"
     assert meta["artifact_id"] == ARTIFACT and meta["plugin_seg"] == SEG and meta["revision"] == "r-9"
     assert meta["message_id"] == 501 and meta["label"] == LABEL and meta["owner"] == "d-1"
@@ -209,7 +213,7 @@ async def test_a_post_that_is_not_proven_unregisters_and_withholds(env):
     out = await hook(_post(json.dumps({SLOT: ref})), "call-1", {})
     parsed = json.loads(out["hookSpecificOutput"]["updatedToolOutput"])
     assert parsed["casa_result_withheld"] is True and "proposal" in parsed["reason"]
-    assert env.broker.pending(namespace="proposal", scope="proposal:42") == []
+    assert env.broker.pending(namespace="proposal", scope=f"proposal:{BOT}:42") == []
     assert ref not in env.store._refs and rb.POSTS.drain("d-1") == []
 
 
@@ -226,7 +230,7 @@ async def test_the_thirty_third_live_proposal_in_a_chat_is_withheld(env):
     out = await hook(_post(json.dumps({SLOT: ref})), "call-x", {})
     assert json.loads(out["hookSpecificOutput"]["updatedToolOutput"])["casa_result_withheld"] is True
     assert len(env.rec.proposals) == rb.PROPOSAL_MAX_LIVE
-    assert len(env.broker.pending(namespace="proposal", scope="proposal:42")) == rb.PROPOSAL_MAX_LIVE
+    assert len(env.broker.pending(namespace="proposal", scope=f"proposal:{BOT}:42")) == rb.PROPOSAL_MAX_LIVE
 
 
 @pytest.mark.asyncio
@@ -238,11 +242,11 @@ async def test_a_same_revision_proposal_supersedes_only_its_own_predecessor(env)
         ref, _ = env.store.deposit(client_id="c1", slot=SLOT, value=json.dumps(_proposal(revision=rev)))
         await hook(_post(json.dumps({SLOT: ref})), f"call-{i}", {})
         rids.append(env.rec.proposals[-1][3])
-    live = env.broker.pending(namespace="proposal", scope="proposal:42")
+    live = env.broker.pending(namespace="proposal", scope=f"proposal:{BOT}:42")
     assert rids[0] not in live                      # superseded by the fourth (same r1)
     assert rids[1] in live and rids[2] in live and rids[3] in live
     # another role's or plugin's same revision is never superseded
     _open(env.store, call="call-z", identity=_identity(enforcement_role="hr"))
     ref, _ = env.store.deposit(client_id="c1", slot=SLOT, value=json.dumps(_proposal(revision="r2")))
     await hook(_post(json.dumps({SLOT: ref})), "call-z", {})
-    assert rids[1] in env.broker.pending(namespace="proposal", scope="proposal:42")
+    assert rids[1] in env.broker.pending(namespace="proposal", scope=f"proposal:{BOT}:42")

@@ -63,6 +63,7 @@ from output_boundary import ApprovalCut
 
 if TYPE_CHECKING:
     from agent_logs import AgentLogs
+    from channels.tg_address import TgAddress
 
 logger = logging.getLogger(__name__)
 
@@ -206,14 +207,16 @@ class _EngagementCapture:
             return False
         return await capture.record(item) is not None
 
-    async def operator(self, text: str, tg_message_id: int) -> None:
+    async def operator(self, text: str, tg_message: "TgAddress") -> None:
+        """Capture the operator's message *tg_message*, keyed by the bot that
+        received it and its message id (never by the engagement's route)."""
         from memory import eligibility, occurrence
         eid = self._engagement.id
         await self._record(
             eligibility.Source.ENGAGEMENT_TURN, text,
             source_key=occurrence.engagement_key(
-                self.CHANNEL, eid, str(tg_message_id)),
-            provider_message_id=str(tg_message_id),
+                self.CHANNEL, tg_message.bot_id, eid, str(tg_message.message_id)),
+            provider_message_id=str(tg_message.message_id),
             # Only the operator reads at ``private``; a lower floor means a
             # lower-clearance sender has steered this engagement.
             speaker_kind=("operator" if self._floor == "private"
@@ -365,18 +368,18 @@ class _Ticket:
     is take-up. ``text`` is the message as admitted; ``prefix`` is prepended
     when it is redelivered after a restart."""
 
-    __slots__ = ("uuid", "text", "kind", "state", "tg_message_id", "notice",
+    __slots__ = ("uuid", "text", "kind", "state", "tg_message", "notice",
                  "journaled", "prefix", "memory_note")
 
     def __init__(self, text: str, *, kind: str, uuid: str | None = None,
-                 tg_message_id: int | None = None, notice: Any = None,
+                 tg_message: "TgAddress | None" = None, notice: Any = None,
                  journaled: bool = False, prefix: str = "",
                  memory_note: bool = False) -> None:
         self.uuid = uuid or str(uuid_mod.uuid4())
         self.text = str(text)
         self.kind = kind
         self.state = TICKET_ADMITTED
-        self.tg_message_id = tg_message_id
+        self.tg_message = tg_message
         self.notice = notice
         self.journaled = journaled
         self.prefix = prefix
@@ -983,7 +986,7 @@ class InCasaDriver(DriverProtocol):
 
     def submit_operator(
         self, engagement: EngagementRecord, text: str, *,
-        tg_message_id: int | None = None, notice: dict | None = None,
+        tg_message: "TgAddress | None" = None, notice: dict | None = None,
     ) -> _Ticket:
         """SYNCHRONOUS — nothing is awaited: commit the operator's message to
         the job's journal, admit it (a terminal record refuses), stamp the
@@ -993,9 +996,12 @@ class InCasaDriver(DriverProtocol):
         Raises :class:`job_inbox.JournalError` when the journal could not be
         written and :class:`EngagementTerminalError` when the record is
         terminal; in both cases nothing was accepted and the seam answers
-        with its "please resend" reply."""
+        with its "please resend" reply.
+
+        *tg_message* is the Telegram message the operator sent, addressed by
+        the endpoint that received it; memory keys the message by that bot."""
         eid = engagement.id
-        ticket = _Ticket(text, kind=OPERATOR, tg_message_id=tg_message_id,
+        ticket = _Ticket(text, kind=OPERATOR, tg_message=tg_message,
                          notice=notice, journaled=True)
         job_inbox.append(eid, uuid=ticket.uuid, text=ticket.text, notice=notice)
         self._issued.setdefault(eid, set()).add(ticket.uuid)
@@ -1140,7 +1146,8 @@ class InCasaDriver(DriverProtocol):
             segment = session.segment
             owed = (segment.capture if segment is not None
                     and segment.capture is not None and ticket.kind == OPERATOR
-                    and ticket.tg_message_id is not None else None)
+                    and ticket.tg_message is not None
+                    and ticket.tg_message.message_id is not None else None)
             if owed is not None:
                 owed.owe()
             try:
@@ -1179,7 +1186,7 @@ class InCasaDriver(DriverProtocol):
                 cut = True
                 try:
                     await asyncio.shield(segment.capture_ready)
-                    await owed.operator(ticket.text, ticket.tg_message_id)
+                    await owed.operator(ticket.text, ticket.tg_message)
                     cut = False
                 except Exception:  # noqa: BLE001 — capture never fails delivery
                     cut = False     # a failed capture is the run's to record

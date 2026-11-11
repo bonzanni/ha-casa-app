@@ -69,13 +69,14 @@ def fire_env(monkeypatch):
 
     async def notice(chat_id, text):
         notices.append((chat_id, text)); return True
-    channel = SimpleNamespace(deliver_desk_notice=notice)
+    from _fixture_d import as_endpoint, endpoint_manager
+
+    channel = as_endpoint(SimpleNamespace(deliver_desk_notice=notice))
     # the REAL seam the module reaches Telegram through (a raising=False patch of a name
     # the module does not have would hide a NameError — found by the unit gate)
-    monkeypatch.setattr(tools_mod, "_channel_manager",
-                        SimpleNamespace(get=lambda name: channel if name == "telegram" else None))
+    monkeypatch.setattr(tools_mod, "_channel_manager", endpoint_manager(channel))
     import specialist_desk as sd
-    monkeypatch.setattr(sd, "record_echo", lambda chat, line: echoes.append(line))
+    monkeypatch.setattr(sd, "record_echo", lambda bot, chat, line: echoes.append(line))
     monkeypatch.setattr(sd, "label_for", lambda role: "📊 Finance" if role == "finance" else "🏠 Ellen")
     monkeypatch.setattr(tools_mod, "_agent_role_map", {"assistant": SimpleNamespace(delegates=[SimpleNamespace(agent="finance")])}, raising=False)
     decl = SimpleNamespace(qualified_name="probe:check", title="Quarterly check", session="fresh")

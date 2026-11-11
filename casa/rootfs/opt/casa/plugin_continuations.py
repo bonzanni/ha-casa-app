@@ -7,12 +7,14 @@ ends the turn and the run is continued by a new turn of its specialist, bound
 to the run's binding (``plugin_bindings``):
 
 * **The queue (C8).** ``CONTINUATIONS.request(binding, run_ref, reason)`` keeps
-  at most one pending continuation per (plugin, operator, ``run_ref``). Its
+  at most one pending continuation per (plugin, bot, operator, ``run_ref``):
+  the bot is the one the binding's route resolves to, since one plugin can
+  serve agents on two bots and its run refs may be equal on both. Its
   worker waits for the specialist's desk in the binding's chat (one desk use at
   a time, so it runs after any turn still driving the run), then runs ONE
   delegated turn of the specialist, resuming the binding's conversation
   (``_conversation_for``), whose task is the fixed text ``Continue browsing run <run_ref>.`` under an origin rebuilt from the
-  binding: the chain of requesters, the chat and operator, Casa's
+  binding: the chain of requesters, the chat and operator, the route, Casa's
   ``synthetic: "continuation"`` marker — so the turn has the operator's grant
   identity but no operator words. Once the worker has started the turn, a new
   request for the same run queues again. Only this turn resumes: relay turns,
@@ -57,6 +59,7 @@ from pathlib import Path
 from typing import Any
 
 from output_boundary import SILENCE_SENTINEL
+from provenance import carry_route
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +93,7 @@ class Pending:
     run_ref: str
     reason: str
     queued_at: float
+    bot_id: int                 # the bot the binding's route resolved to when queued
     dropped: bool = False       # its work was stopped before it started (``drop``)
 
 
@@ -100,11 +104,16 @@ class Continuations:
 
     def request(self, binding, run_ref: str, reason: str) -> str:
         """Queue one continuation of *run_ref* for *binding* — ``queued``, or
-        ``already_queued`` when one is pending and not yet started."""
-        key = (binding.plugin, int(binding.operator_id), run_ref)
+        ``already_queued`` when one is pending and not yet started. Raises
+        ``plugin_bindings.ChannelUnavailable``, queueing nothing, when the
+        binding's bot cannot be named now."""
+        from plugin_bindings import binding_target
+        _ep, bot_id = binding_target(binding)
+        key = (binding.plugin, bot_id, int(binding.operator_id), run_ref)
         if key in self._pending:
             return "already_queued"
-        self._pending[key] = Pending(binding, run_ref, reason, time.monotonic())
+        self._pending[key] = Pending(binding, run_ref, reason, time.monotonic(),
+                                     bot_id=bot_id)
         task = asyncio.get_running_loop().create_task(self._run(key))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
@@ -114,15 +123,17 @@ class Continuations:
     def pending_count(self) -> int:
         return len(self._pending)
 
-    def drop(self, plugin: str, operator_id: int, refs) -> int:
-        """The operator stopped the work these references name (``plugin_stop``): every
-        pending continuation of one of them that has not started is dropped — its worker
-        returns without a turn once it holds the desk. A started one is the running session,
-        left to end itself. Returns how many were dropped."""
+    def drop(self, plugin: str, bot_id: int, operator_id: int, refs) -> int:
+        """The operator stopped, on bot *bot_id*, the work these references name
+        (``plugin_stop``): every pending continuation of one of them on that bot that has
+        not started is dropped — its worker returns without a turn once it holds the desk.
+        A started one is the running session, left to end itself. Returns how many were
+        dropped."""
         wanted = {r for r in refs if isinstance(r, str)}
         n = 0
         for key, pending in list(self._pending.items()):
-            if key[0] == plugin and key[1] == int(operator_id) and key[2] in wanted:
+            if (key[0] == plugin and key[1] == int(bot_id) and key[2] == int(operator_id)
+                    and key[3] in wanted):
                 pending.dropped = True
                 del self._pending[key]
                 n += 1
@@ -177,6 +188,7 @@ def continuation_origin(binding, *, executing: str | None = None) -> dict:
         "delegation_depth": max(len(upto) - 1, 0),
         "_handoff_chain": tuple(upto) or (chain[0],),
         "_binding_ref": binding.ref,
+        **carry_route(stored),
     }
     return origin
 
@@ -215,13 +227,14 @@ class RequesterUnavailable(RuntimeError):
 
 
 @contextlib.asynccontextmanager
-async def _desk_turn(chat_id: int, role: str, *, deadline: float):
-    """One use of *role*'s desk in *chat_id* with a concurrency permit for
-    it: waits for the queue and the lock (bounded by *deadline*), rechecks the
-    fault under the lock, takes the permit after the lock as a desk use does."""
+async def _desk_turn(bot_id: int, chat_id: int, role: str, *, deadline: float):
+    """One use of *role*'s desk in *chat_id* on bot *bot_id* with a
+    concurrency permit for it: waits for the queue and the lock (bounded by
+    *deadline*), rechecks the fault under the lock, takes the permit after the
+    lock as a desk use does."""
     import specialist_desk
     import tools as tools_mod
-    desk = specialist_desk.DESKS.get_or_create(int(chat_id), role)
+    desk = specialist_desk.DESKS.get_or_create(int(bot_id), int(chat_id), role)
     reservation = None
     while reservation is None:
         if desk.faulted is None:
@@ -268,9 +281,9 @@ async def _run_turn_cancellable(cfg, task: str, origin: dict, *, quota_key: str)
         raise
 
 
-async def _relay_up(binding, run_ref: str, output, *, deadline: float):
+async def _relay_up(binding, run_ref: str, output, *, bot_id: int, deadline: float):
     """One turn per specialist requester, nearest first, each its own desk
-    use; returns the output the resident is told."""
+    use on bot *bot_id*; returns the output the resident is told."""
     import tools as tools_mod
     chain = list(binding.chain)
     for i in range(len(chain) - 2, 0, -1):
@@ -282,7 +295,7 @@ async def _relay_up(binding, run_ref: str, output, *, deadline: float):
                 f"(run {run_ref}) could not be passed back to it")
         answer = (output.text if not output.run_aborted
                   else f"(its turn did not complete: {output.run_subtype or 'aborted'})")
-        async with _desk_turn(binding.chat_id, requester, deadline=deadline):
+        async with _desk_turn(bot_id, binding.chat_id, requester, deadline=deadline):
             output = await _run_turn_cancellable(
                 req_cfg, RELAY_TASK.format(name=tools_mod._display_name_for_role(below),
                                            run_ref=run_ref, answer=answer),
@@ -333,7 +346,7 @@ async def run_continuation(pending: Pending, *, on_start) -> None:
     fido_done = asyncio.Event()
     progress_only: list = []
     try:
-        async with _desk_turn(binding.chat_id, role, deadline=deadline):
+        async with _desk_turn(pending.bot_id, binding.chat_id, role, deadline=deadline):
             if pending.dropped:
                 return          # its work was stopped while it waited: no turn
             on_start()
@@ -344,7 +357,8 @@ async def run_continuation(pending: Pending, *, on_start) -> None:
                         "cid": "cont-" + uuid.uuid4().hex[:12], "user_text": "",
                         "_origin_route": binding.origin.get("_origin_route", "telegram"),
                         "_origin_clearance": binding.origin.get("_origin_clearance",
-                                                                "private")})
+                                                                "private"),
+                        **carry_route(binding.origin)})
             await tools_mod._specialist_registry.register_delegation(record)
 
             async def _chain():
@@ -378,6 +392,7 @@ async def run_continuation(pending: Pending, *, on_start) -> None:
                     return out       # progress only (C4a): nothing climbs the chain
                 try:
                     return await _relay_up(binding, pending.run_ref, out,
+                                           bot_id=pending.bot_id,
                                            deadline=time.monotonic() + GIVE_UP_AFTER_S)
                 except asyncio.CancelledError:
                     if len(binding.chain) <= 2:
@@ -558,7 +573,7 @@ async def declaring_plugins(declared, *, context: str) -> list[tuple]:
 async def _sweep_pass() -> tuple[int, float | None]:
     """One pass: the continuations it queued, and the soonest extra pass a plugin asked for."""
     from operator_calls import is_configured_operator
-    from plugin_bindings import BINDINGS
+    from plugin_bindings import BINDINGS, ChannelUnavailable
     from plugin_store import manifest_driver_sweep
 
     queued = 0
@@ -589,8 +604,11 @@ async def _sweep_pass() -> tuple[int, float | None]:
                     r["unless_delivered"], plugin=seg, operator_id=binding.operator_id,
                     artifact_id=str(getattr(rp, "artifact_id", "") or "")):
                 continue        # the operator has the card or link it waits on
-            if CONTINUATIONS.request(binding, run_ref, "sweep") == "queued":
-                queued += 1
+            try:
+                if CONTINUATIONS.request(binding, run_ref, "sweep") == "queued":
+                    queued += 1
+            except ChannelUnavailable:
+                continue        # its bot has no id yet: a later pass queues it
         await _settle_ended(seg, ended)
     return queued, again
 
@@ -601,7 +619,7 @@ async def _settle_ended(seg: str, ended: list[dict]) -> None:
     loses its Stop (``plugin_stop.settle_ended``), once."""
     import plugin_stop
     from operator_calls import is_configured_operator
-    from plugin_bindings import BINDINGS
+    from plugin_bindings import BINDINGS, ChannelUnavailable, binding_target
 
     for e in ended:
         ref = e.get("ref")
@@ -614,7 +632,11 @@ async def _settle_ended(seg: str, ended: list[dict]) -> None:
         if not is_configured_operator(binding.chat_id, binding.operator_id):
             continue
         try:
-            await plugin_stop.settle_ended(seg, int(binding.operator_id), ref)
+            _ep, bot_id = binding_target(binding)
+        except ChannelUnavailable:
+            continue            # its bot has no id yet: the next pass names it again
+        try:
+            await plugin_stop.settle_ended(seg, bot_id, int(binding.operator_id), ref)
         except Exception as exc:  # noqa: BLE001 — the next pass names it again
             logger.warning("driver sweep: marking an ended request failed (%s)",
                            type(exc).__name__)

@@ -41,7 +41,7 @@ async def _launch(runtime, monkeypatch):
     monkeypatch.setattr(jobs, 'find_job_host', lambda name, caller, roles:
                         host if name == decl.qualified_name and 'finance' in roles else None)
     token = agent.origin_var.set(dict(role='assistant', execution_role='assistant',
-                                      channel='telegram', chat_id='1', cid='test',
+                                      channel='telegram', _tg_bot=111, chat_id='1', cid='test',
                                       user_text='classify', _operator_turn=True))
     try:
         envelope = await tools.start_job.handler(

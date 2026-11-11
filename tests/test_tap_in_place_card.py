@@ -25,6 +25,8 @@ import verdict_broker as vb
 from channels import UnconfirmedDelivery
 from test_desk_tap import LABEL, OPERATOR, _echo, _tap, env  # noqa: F401
 from test_tap_next_card import _captured, _card, _live, _meta_of, card_env  # noqa: F401
+from channels.tg_address import TgAddress
+from two_endpoints import CASA_BOT as BOT
 
 TAPPED = 501                                   # the fixture's tapped message id
 
@@ -103,7 +105,7 @@ async def test_the_tapped_card_is_edited_in_place_and_nothing_is_sent(edit_env):
     async def checking(chat_id, message_id, text, labels, rid, *, post=None):
         # bound and filed BEFORE the edit goes out (d1, both reviewers)
         registered_at_edit.append((_live() == [rid], _meta_of(rid)["message_id"],
-                                   rb.POST_MAP.get(OPERATOR, TAPPED) is post))
+                                   rb.POST_MAP.get(TgAddress(BOT, OPERATOR, TAPPED)) is post))
         return await inner(chat_id, message_id, text, labels, rid, post=post)
     env.channel.replace_operator_proposal = checking
     env.respond = _respond(nxt=_card())
@@ -120,7 +122,7 @@ async def test_the_tapped_card_is_edited_in_place_and_nothing_is_sent(edit_env):
     meta = _meta_of(rid)
     assert meta["message_id"] == TAPPED and meta["revision"] == "walk-1"
     assert (meta["chat_id"], meta["operator_id"], meta["role"]) == (OPERATOR, OPERATOR, "finance")
-    post = rb.POST_MAP.get(OPERATOR, TAPPED)
+    post = rb.POST_MAP.get(TgAddress(BOT, OPERATOR, TAPPED))
     assert (post.role, post.kind) == ("finance", rb.OPERATOR_PROPOSAL)
     # the desk exchange and the echo are today's
     assert [(e.who, e.text) for e in env.desk.log] == [("operator", "[tapped: Yes]"),
@@ -219,7 +221,7 @@ async def test_an_unconfirmed_edit_without_a_revision_leaves_both_cards_working(
     (card,) = env.proposals
     assert sorted(_live()) == sorted([edit.rid, card.rid])
     assert _meta_of(edit.rid)["message_id"] == TAPPED
-    assert rb.POST_MAP.get(OPERATOR, TAPPED) is not None      # swipe-replies still route
+    assert rb.POST_MAP.get(TgAddress(BOT, OPERATOR, TAPPED)) is not None      # swipe-replies still route
     # #1341: the message may now show the live new card — it is not marked over
     assert env.channel.marks == []
 

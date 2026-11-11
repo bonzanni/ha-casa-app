@@ -41,7 +41,6 @@ logger = logging.getLogger(__name__)
 OPERATOR_CALL_CAP_S = 3600.0
 ASK_MAX_OPTIONS = 6
 ASK_MAX_LABEL_CHARS = 32
-ASK_SCOPE_PREFIX = "ask:"
 RUN_REF_MAX = 64
 CONTINUE_REASONS = ("operator_answer", "next_run", "sweep")
 # The internal app's body limit: a judgement carries a page's picture (2 MiB decoded, base64)
@@ -150,6 +149,20 @@ def binding_for(call: OperatorCall):
                              identity=call.identity, chain=call.chain, origin=call.origin)
 
 
+def call_target(call: OperatorCall) -> "tuple[Any, int]":
+    """The endpoint and bot id the call's binding resolves to — the
+    continuation's own binding, else the route a binding minted for this turn
+    would keep — read now, without minting one. Raises
+    ``plugin_bindings.ChannelUnavailable`` when there is none to read."""
+    from plugin_bindings import BINDINGS, route_of, route_target
+    if call.binding_ref is not None:
+        b = BINDINGS.get(call.binding_ref, plugin=call.plugin,
+                         operator_id=call.identity.operator_id)
+        if b is not None:
+            return route_target(b.origin)
+    return route_target(route_of(call.origin, call.identity))
+
+
 def requester_facts(call: OperatorCall) -> dict:
     b = binding_for(call)
     return {"binding_ref": b.ref, "requester_id": b.requester,
@@ -160,39 +173,51 @@ def requester_facts(call: OperatorCall) -> dict:
 # Casa's own operator question (run admission's confirmation card)
 # ---------------------------------------------------------------------------
 
-async def post_question(*, identity: Any, role: str, text: str, options: list[str],
-                        timeout_s: float,
+async def post_question(*, endpoint: Any, identity: Any, role: str, text: str,
+                        options: list[str], timeout_s: float,
                         on_settle: Callable[[dict], Awaitable[None]],
                         after_choice: "dict[int, list[tuple[str, str]]] | None" = None
                         ) -> bool:
-    """Post *text* under *role*'s label with one button per option to the
-    operator *identity* names; ``on_settle`` runs once with the outcome —
-    ``{"outcome": "answered", "choice": i}``, ``no_answer`` at the timeout or
+    """Post *text* under *role*'s label with one button per option, through
+    the Telegram *endpoint* the caller resolved (the binding's route for a run
+    admission, Casa's own for its restart card), to the operator *identity*
+    names; ``on_settle`` runs once with the outcome — ``{"outcome":
+    "answered", "choice": i}``, ``no_answer`` at the timeout or
     ``cancelled``. Returns whether the keyboard landed. Detached: the caller
-    does not wait. Only that operator can answer (the resident-ask handler's
-    actor check).
+    does not wait. Only that operator can answer, on that bot (the
+    resident-ask handler's actor and bot checks).
+
+    The question's lane and its stored bot are the endpoint's bot id, read
+    before anything is registered; an endpoint with no id yet posts nothing
+    and returns False, as a failed post does.
 
     ``after_choice``: for an answered choice with an entry, the settled card
     keeps that keyboard (``(label, callback data)`` buttons) instead of none
     (the start card's Stop). That choice's ``on_settle`` runs BEFORE the edit
-    that shows the keyboard, and is also given the card's ``message_id`` and
-    its settled ``text``, so what the buttons act on is saved before they
-    appear."""
-    from result_broker import _telegram_channel, compose_operator_message, post_label
+    that shows the keyboard, and is also given the card's ``message_id``, its
+    ``address`` and its settled ``text``, so what the buttons act on is saved
+    before they appear."""
+    from channels.tg_address import EndpointNotReady, TgAddress, scope as lane_scope
+    from result_broker import compose_operator_message, post_label
     from verdict_broker import BROKER
 
-    channel = _telegram_channel()
+    channel = endpoint
     if channel is None or identity is None:
+        return False
+    try:
+        bot_id = channel.bot_id
+    except EndpointNotReady:
+        logger.warning("operator question not posted: the bot has no id yet")
         return False
     chat_id, operator_id = identity.chat_id, identity.operator_id
     body = compose_operator_message(text, post_label(role))
     rid = uuid.uuid4().hex
-    scope = f"{ASK_SCOPE_PREFIX}{chat_id}"
+    scope = lane_scope("ask", bot_id, chat_id)
     req, _ = BROKER.register(
         namespace="resident_ask", scope=scope, request_id=rid, timeout_s=timeout_s,
         detached=True, meta={"options": list(options), "chat_id": chat_id,
-                             "operator_id": operator_id, "kind": "casa_question",
-                             "_scope": scope})
+                             "bot_id": bot_id, "operator_id": operator_id,
+                             "kind": "casa_question", "_scope": scope})
 
     async def _post():
         return await channel.deliver_operator_question(chat_id, body, list(options), rid)
@@ -206,7 +231,9 @@ async def post_question(*, identity: Any, role: str, text: str, options: list[st
                 keep = (after_choice or {}).get(choice)
                 if keep:
                     await on_settle({"outcome": "answered", "choice": choice,
-                                     "message_id": message_id, "text": shown})
+                                     "message_id": message_id,
+                                     "address": TgAddress(bot_id, int(chat_id), message_id),
+                                     "text": shown})
                     await channel.edit_dm_message(chat_id, message_id, shown,
                                                   buttons=list(keep))
                     return
@@ -299,7 +326,8 @@ def build_run_admission_status_handler():
 
 def build_continue_handler():
     """C8 ``{"client", "binding_ref", "run_ref", "reason"}`` ⇒
-    ``{"status": "queued"|"already_queued"}`` | ``{"error"}``."""
+    ``{"status": "queued"|"already_queued"}`` | ``{"error"}``
+    (``channel_unavailable`` while the binding's bot has no id yet)."""
     async def handler(request):
         call, body, bad = await _call_and_body(request)
         if call is None:
@@ -316,8 +344,14 @@ def build_continue_handler():
         if binding is None:
             return _reply({"error": "unknown_binding"})
         import plugin_continuations
-        return _reply({"status": plugin_continuations.CONTINUATIONS.request(
-            binding, run_ref, reason)})
+        from plugin_bindings import ChannelUnavailable
+        try:
+            status = plugin_continuations.CONTINUATIONS.request(binding, run_ref, reason)
+        except ChannelUnavailable:
+            # the binding's bot has no id yet: nothing is queued; the plugin's
+            # next request, or the driver sweep, finds the run again
+            return _reply({"error": "channel_unavailable"})
+        return _reply({"status": status})
     return handler
 
 

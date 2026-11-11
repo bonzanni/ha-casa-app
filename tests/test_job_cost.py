@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 import background_jobs as bj
+from channels.tg_address import TgAddress
 
 pytestmark = pytest.mark.asyncio
 
@@ -28,8 +29,9 @@ def _rec(status="active", **job):
     return SimpleNamespace(
         id="c" * 32, status=status, role_or_type="finance", task="t",
         started_at=1000.0, completed_at=None,
-        origin={"chat_id": "100", "job": {"title": "Accounting check", **job}},
-        ui_posts=[[501, JOB_POST_START]])
+        origin={"chat_id": "100", "_tg_bot": 111,
+                "job": {"title": "Accounting check", **job}},
+        ui_posts=[(TgAddress(111, 100, 501), JOB_POST_START)])
 
 
 @pytest.fixture
@@ -40,7 +42,7 @@ def channel(monkeypatch):
     monkeypatch.setattr(tools, "_display_name_for_role", lambda role: "Finance")
     monkeypatch.setattr(time, "time", lambda: 1000.0 + 40 * 60)
     bot = _Bot()
-    return TelegramChannel(bot=bot, chat_id="100"), bot
+    return TelegramChannel(bot=bot, chat_id="100", known_bot_id=111), bot
 
 
 async def test_the_start_line_shows_elapsed_time_then_the_exact_cost(channel):
@@ -67,7 +69,7 @@ async def test_the_end_paint_carries_time_and_cost(channel):
     ch, bot = channel
     rec = _rec(status="completed", cost_usd=3.9)
     rec.completed_at = 1000.0 + 65 * 60
-    await ch._retire_job_post(rec, [501, JOB_POST_START])
+    await ch._retire_job_post(rec, (TgAddress(111, 100, 501), JOB_POST_START))
     assert bot.edits[-1]["text"] == "✅ Finance «Accounting check» · 1 h 5 min · $3.90"
 
 

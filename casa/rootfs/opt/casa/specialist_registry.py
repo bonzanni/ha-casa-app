@@ -31,11 +31,43 @@ from job_registry import (
 )
 from personality_binding import InstanceDir
 from personality_types import SpeakerProvenance
+from provenance import carry_route
 # Forward re-export for future Plan 2 / Task 14 callers (module-level-accessor
 # precedent this file already follows, e.g. _active_index below).
 from specialist_lifecycle import InstanceState, SpecialistInstance, check_slug_uniqueness  # noqa: F401
 
 logger = logging.getLogger(__name__)
+
+
+def origin_from_job(job: VoiceJob) -> dict[str, Any]:
+    """The origin of a delegation, rebuilt from its durable row: the one
+    rebuilder for every reader that resumes a delegation from disk (the
+    orphan view and the boot replay of an owed completion notice).
+
+    The row's ``route`` is spread in unchanged, so the completion goes
+    through the bot the creating turn was routed to — never through the bot
+    the creating role happens to be bound to now. A route of ``CASA`` stays
+    ``CASA`` and resolves to Casa's own endpoint at delivery."""
+    origin: dict[str, Any] = {
+        "role": job.creating_role,
+        "channel": job.creator_peer,
+        "chat_id": job.scope_id,
+        "cid": job.origin_route_id or "-",
+        "device_id": job.origin_device_id or "",
+        "user_id": job.creator_user_id,
+        "user_text": job.task,
+    }
+    # #485: restore scheduled-delivery eligibility from the durable FIELD,
+    # never by inferring it from the scope label's shape. Added only when
+    # actually stored, so an unmarked job's origin carries no marker.
+    if job.scheduled_delivery is True:
+        origin["_scheduled_delivery"] = True
+    # #1038: the brief's resolved disclosure, restored from the row so the
+    # narration turn after a restart still carries it.
+    if job.output_note:
+        origin["_inherited_note"] = job.output_note
+    origin.update(job.route)
+    return origin
 
 
 def scheduled_delivery_of(origin: "dict[str, Any] | None") -> bool:
@@ -385,6 +417,9 @@ class SpecialistRegistry:
             delivery_attempt_id=None,
             lease_until=None,
             cancel_pending=False,
+            # The creating turn's route, so the completion notice goes
+            # through the same bot even after a restart (``origin_from_job``).
+            route=carry_route(origin),
         ))
 
     # Task 6 (spec §4.6): these terminal transitions deliberately do NOT
@@ -445,7 +480,7 @@ class SpecialistRegistry:
                 id=job.id,
                 agent=job.specialist_role,
                 started_at=job.started_at or job.created_at,
-                origin=self._origin_from_job(job),
+                origin=origin_from_job(job),
             )
             for job in self._job_registry.all()
             if job.execution_state is ExecutionState.ORPHANED
@@ -454,25 +489,6 @@ class SpecialistRegistry:
     @staticmethod
     def _optional_str(value: Any) -> str | None:
         return None if value is None else str(value)
-
-    @staticmethod
-    def _origin_from_job(job: VoiceJob) -> dict[str, Any]:
-        origin = {
-            "role": job.creating_role,
-            "channel": job.creator_peer,
-            "chat_id": job.scope_id,
-            "cid": job.origin_route_id or "",
-            "device_id": job.origin_device_id or "",
-            "user_id": job.creator_user_id,
-            "user_text": job.task,
-        }
-        # #485: restore scheduled-delivery eligibility from the durable FIELD,
-        # never by inferring it from the scope label's shape. Added only when
-        # actually stored, so an unmarked job's origin stays byte-identical to
-        # what it was before this field existed.
-        if job.scheduled_delivery is True:
-            origin["_scheduled_delivery"] = True
-        return origin
 
 
 # ---------------------------------------------------------------------------

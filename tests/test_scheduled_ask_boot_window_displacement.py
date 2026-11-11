@@ -25,7 +25,9 @@ from verdict_broker import VerdictBroker
 
 from broker_helpers import wait_until
 from test_scheduled_ask_attention_lane import _ask_on, _ask_on_raw, _dm_origin
-from test_scheduled_ask_user import LABEL, OPERATOR, _FakeChannel
+from test_scheduled_ask_user import (
+    CASA_BOT, LABEL, OPERATOR, _FakeChannel, _transport,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -57,7 +59,7 @@ async def test_boot_window_displacement_leaves_the_record_to_the_reconciler(
     await _fresh_store.put({
         "rid": "from-previous-process", "state": scheduled_asks.STATE_LIVE,
         "role": "assistant", "session_scope": LABEL,
-        "scope": f"dm:{OPERATOR}", "chat_id": OPERATOR,
+        "scope": f"dm:{CASA_BOT}:{OPERATOR}", "bot_id": CASA_BOT, "chat_id": OPERATOR,
         "operator_id": OPERATOR, "message_id": 77,
         "options": ["Confirm", "Wrong"], "body": "Send the invoice?",
         "epoch": 0, "created_at": 0.0, "expires_at": 1_000.0,
@@ -67,7 +69,7 @@ async def test_boot_window_displacement_leaves_the_record_to_the_reconciler(
     human = await _ask_on(channel, _dm_origin(), "Celsius?")
     assert human["status"] == "awaiting_user"
 
-    counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+    counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
     await _fresh_broker.drain_hooks()
 
     assert counts.get("operator_busy", 0) == 1
@@ -112,7 +114,7 @@ async def _seed_previous_process_record(store):
     await store.put({
         "rid": "from-previous-process", "state": scheduled_asks.STATE_LIVE,
         "role": "assistant", "session_scope": LABEL,
-        "scope": f"dm:{OPERATOR}", "chat_id": OPERATOR,
+        "scope": f"dm:{CASA_BOT}:{OPERATOR}", "bot_id": CASA_BOT, "chat_id": OPERATOR,
         "operator_id": OPERATOR, "message_id": 77,
         "options": ["Confirm", "Wrong"], "body": "Send the invoice?",
         "epoch": 0, "created_at": 0.0, "expires_at": 1_000.0,
@@ -142,19 +144,20 @@ async def test_a_challenge_that_failed_to_post_lets_the_reconciler_restore(
 
     coordinator = authz_grants.ChallengeCoordinator()
     handle = coordinator.register_challenge(
-        ("tool", "args"), chat_id=OPERATOR, operator_id=OPERATOR,
+        ("tool", "args"), bot_id=CASA_BOT, chat_id=OPERATOR,
+        operator_id=OPERATOR,
         channel=channel, challenge_text="Approve send_email?",
     )
     assert await handle.settled_post() == "delivery_failed"
     await _fresh_broker.drain_hooks()
 
-    counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+    counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
     await _fresh_broker.drain_hooks()
 
     assert counts.get("restored", 0) == 1
     assert counts.get("revoked_before_reconcile", 0) == 0
     assert counts.get("operator_busy", 0) == 0
-    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}")
+    live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
     assert len(live) == 1
     assert sum(r == "from-previous-process" for r in live) == 1
     assert len(channel.scheduled_dispatches) == 0
@@ -176,20 +179,21 @@ async def test_a_delivered_challenge_lets_the_reconciler_settle_operator_busy(
 
     coordinator = authz_grants.ChallengeCoordinator()
     handle = coordinator.register_challenge(
-        ("tool", "args"), chat_id=OPERATOR, operator_id=OPERATOR,
+        ("tool", "args"), bot_id=CASA_BOT, chat_id=OPERATOR,
+        operator_id=OPERATOR,
         channel=channel, challenge_text="Approve send_email?",
     )
     assert await handle.settled_post() == "posted"
     await _fresh_broker.drain_hooks()
 
-    counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+    counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
     await _fresh_broker.drain_hooks()
 
     assert counts.get("operator_busy", 0) == 1
     assert counts.get("restored", 0) == 0
     assert counts.get("revoked_before_reconcile", 0) == 0
     assert len(_fresh_broker.pending(
-        namespace="resident_ask", scope=f"dm:{OPERATOR}")) == 0
+        namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")) == 0
     assert len(channel.scheduled_dispatches) == 1
     assert sum("operator_busy" in d["text"]
                for d in channel.scheduled_dispatches) == 1
@@ -225,7 +229,8 @@ async def test_reconcile_skips_an_undelivered_challenge_when_testing_lane_idle(
 
     coordinator = authz_grants.ChallengeCoordinator()
     handle = coordinator.register_challenge(
-        ("tool", "args"), chat_id=OPERATOR, operator_id=OPERATOR,
+        ("tool", "args"), bot_id=CASA_BOT, chat_id=OPERATOR,
+        operator_id=OPERATOR,
         channel=channel, challenge_text="Approve send_email?",
     )
     await wait_until(lambda: len(channel.posts) == 1)
@@ -234,17 +239,17 @@ async def test_reconcile_skips_an_undelivered_challenge_when_testing_lane_idle(
     # than by trusting the sequencing above: exactly one live authz request,
     # and its keyboard is not on screen.
     authz = _fresh_broker.pending(
-        namespace="resident_ask", scope=f"authz:{OPERATOR}")
+        namespace="resident_ask", scope=f"authz:{CASA_BOT}:{OPERATOR}")
     assert len(authz) == 1
     assert sum(
         _fresh_broker.get_meta(
-            namespace="resident_ask", scope=f"authz:{OPERATOR}",
+            namespace="resident_ask", scope=f"authz:{CASA_BOT}:{OPERATOR}",
             request_id=rid,
         ).get("message_id") is None
         for rid in authz
     ) == 1
 
-    counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+    counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
 
     channel.gate.set()
     await handle.settled_post()
@@ -255,11 +260,11 @@ async def test_reconcile_skips_an_undelivered_challenge_when_testing_lane_idle(
     assert counts.get("revoked_before_reconcile", 0) == 0
 
     scheduled = _fresh_broker.pending(
-        namespace="resident_ask", scope=f"dm:{OPERATOR}")
+        namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
     assert len(scheduled) == 1
     assert sum(rid == "from-previous-process" for rid in scheduled) == 1
     assert len(_fresh_broker.pending(
-        namespace="resident_ask", scope=f"authz:{OPERATOR}")) == 0
+        namespace="resident_ask", scope=f"authz:{CASA_BOT}:{OPERATOR}")) == 0
     assert len(channel.posts) == 1
     assert len(channel.edits) == 0
     assert len(channel.scheduled_dispatches) == 0
@@ -286,17 +291,17 @@ async def test_reconcile_skips_an_undelivered_human_ask_when_testing_lane_idle(
     await wait_until(lambda: len(channel.posts) == 1)
 
     live = _fresh_broker.pending(
-        namespace="resident_ask", scope=f"dm:{OPERATOR}")
+        namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
     assert len(live) == 1
     assert sum(rid != "from-previous-process" for rid in live) == 1
     assert sum(
         _fresh_broker.get_meta(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}", request_id=rid,
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}", request_id=rid,
         ).get("message_id") is None
         for rid in live
     ) == 1
 
-    counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+    counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
 
     channel.gate.set()
     await asking
@@ -305,7 +310,7 @@ async def test_reconcile_skips_an_undelivered_human_ask_when_testing_lane_idle(
     assert counts.get("restored", 0) == 1
     assert counts.get("operator_busy", 0) == 0
     restored = _fresh_broker.pending(
-        namespace="resident_ask", scope=f"dm:{OPERATOR}")
+        namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
     assert sum(rid == "from-previous-process" for rid in restored) == 1
     assert len(channel.edits) == 0
     assert len(channel.scheduled_dispatches) == 0
@@ -332,12 +337,13 @@ async def test_a_challenge_delivered_after_a_restore_retires_it_truthfully(
 
     coordinator = authz_grants.ChallengeCoordinator()
     handle = coordinator.register_challenge(
-        ("tool", "args"), chat_id=OPERATOR, operator_id=OPERATOR,
+        ("tool", "args"), bot_id=CASA_BOT, chat_id=OPERATOR,
+        operator_id=OPERATOR,
         channel=channel, challenge_text="Approve send_email?",
     )
     await wait_until(lambda: len(channel.posts) == 1)
 
-    counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+    counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
     assert counts.get("restored", 0) == 1
 
     channel.gate.set()
@@ -345,9 +351,9 @@ async def test_a_challenge_delivered_after_a_restore_retires_it_truthfully(
     await _fresh_broker.drain_hooks()
 
     assert len(_fresh_broker.pending(
-        namespace="resident_ask", scope=f"dm:{OPERATOR}")) == 0
+        namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")) == 0
     assert len(_fresh_broker.pending(
-        namespace="resident_ask", scope=f"authz:{OPERATOR}")) == 1
+        namespace="resident_ask", scope=f"authz:{CASA_BOT}:{OPERATOR}")) == 1
     assert len(channel.edits) == 1
     assert len(channel.scheduled_dispatches) == 1
     assert sum("operator_challenge" in d["text"]

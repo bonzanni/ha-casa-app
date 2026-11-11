@@ -22,12 +22,13 @@ import agent as agent_mod
 import authz_grants
 import tools as tools_mod
 from authz_grants import (
-    AuthzDeps, ChallengeCoordinator, GrantKey, GrantStore,
+    ChallengeCoordinator, GrantKey, GrantStore,
     canonical_args_hash, make_resident_authz_hook,
     _DENY_DELIVERY_FAILED, _DENY_INACTIVE, _DENY_POSTED,
 )
 from engagement_registry import EngagementRegistry
 from specialist_limits import SpecialistLimiter
+from _fixture_a import as_endpoint, install_casa_bot, install_transport, transport_for
 
 TOOL = "mcp__plugin_p_p__purge"
 ARTIFACT = "artifact-1"
@@ -69,9 +70,18 @@ class _Channel:
         return self.eng_result
 
 
+def AuthzDeps(*, channel, **kw):
+    """``authz_grants.AuthzDeps`` with the recording *channel* registered as
+    bot 111's endpoint of a real transport, which becomes both the deps'
+    channel and the transport the identity is resolved through."""
+    transport = install_transport(transport_for(as_endpoint(channel)))
+    return authz_grants.AuthzDeps(channel=transport, **kw)
+
+
 @pytest.fixture
 def env(monkeypatch):
     import verdict_broker
+    install_casa_bot(monkeypatch)
     broker = verdict_broker.VerdictBroker()
     monkeypatch.setattr(verdict_broker, "BROKER", broker)
     monkeypatch.setattr(authz_grants, "_AWAITING_APPROVAL", {})
@@ -86,7 +96,7 @@ async def _settle(n: int = 8):
 def _challenge(coord, channel, *, engagement_id="", chat_id=100,
                enforcement_role="finance", target_role="assistant",
                tool_name="purge"):
-    key = GrantKey(operator_id=7, chat_id=chat_id,
+    key = GrantKey(operator_id=7, bot_id=111, chat_id=chat_id,
                    enforcement_role=enforcement_role, artifact_id=ARTIFACT,
                    tool_name=tool_name, args_hash=canonical_args_hash({"x": 1}),
                    engagement_id=engagement_id)
@@ -344,7 +354,7 @@ def _delegated_origin(**extra) -> dict:
     return {"role": "assistant", "execution_role": "finance",
             "channel": "telegram", "chat_id": "100", "user_id": 7,
             "cid": "c", "message_type": "channel_in", "source": "telegram",
-            "_delegation_id": "deleg-1", **extra}
+            "_delegation_id": "deleg-1", "_tg_bot": 111, **extra}
 
 
 async def _hook_call(deps, origin):
@@ -419,7 +429,7 @@ class TestCompletionTurnLeavesTheCallToTheApproval:
         deps = AuthzDeps(channel=channel, grants=GrantStore(), challenges=coord)
         task = asyncio.ensure_future(_hook_call(deps, _delegated_origin()))
         await _settle()
-        broker.cancel_scope(namespace="resident_ask", scope="authz:100",
+        broker.cancel_scope(namespace="resident_ask", scope="authz:111:100",
                             reason="new_session")
         channel.post_gate.set()
         assert await task == _DENY_INACTIVE

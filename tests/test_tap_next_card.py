@@ -20,6 +20,7 @@ import result_broker as rb
 import tools as tools_mod
 import verdict_broker as vb
 from test_desk_tap import APPLY, ART, LABEL, OPERATOR, SEG, _echo, _map, _tap, _tool, env  # noqa: F401
+from two_endpoints import CASA_BOT as BOT
 
 
 def _card(**over):
@@ -53,7 +54,8 @@ def card_env(env, monkeypatch):
 
     ch.send_response = logged_send
     ch.deliver_operator_proposal = deliver_operator_proposal
-    monkeypatch.setattr(rb, "_telegram_channel", lambda: ch)
+    ch.bot_id = BOT                             # the desk's chat is on Casa's bot
+    monkeypatch.setattr(rb, "_endpoint_for", lambda target: ch)
     monkeypatch.setattr(vb, "BROKER", vb.VerdictBroker())
     env.broker = vb.BROKER
     return env
@@ -70,11 +72,11 @@ def _respond_with(receipt="Confirmed: Adobe ↔ INV-88.", nxt=None):
 
 def _live():
     """The live proposals' request ids, in registration order."""
-    return vb.BROKER.pending(namespace="proposal", scope=f"proposal:{OPERATOR}")
+    return vb.BROKER.pending(namespace="proposal", scope=f"proposal:{BOT}:{OPERATOR}")
 
 
 def _meta_of(rid):
-    return vb.BROKER.get_meta(namespace="proposal", scope=f"proposal:{OPERATOR}", request_id=rid)
+    return vb.BROKER.get_meta(namespace="proposal", scope=f"proposal:{BOT}:{OPERATOR}", request_id=rid)
 
 
 # --- the capture -------------------------------------------------------------------
@@ -187,7 +189,7 @@ async def test_a_card_whose_button_is_a_setup_tool_is_refused(card_env):
 async def test_the_33rd_live_card_is_too_many_open(card_env):
     env = card_env
     for i in range(rb.PROPOSAL_MAX_LIVE):
-        vb.BROKER.register(namespace="proposal", scope=f"proposal:{OPERATOR}", request_id=f"r{i}",
+        vb.BROKER.register(namespace="proposal", scope=f"proposal:{BOT}:{OPERATOR}", request_id=f"r{i}",
                            timeout_s=3600, detached=True, supersede=False, meta={})
     env.respond = _respond_with(nxt=_card())
     await _tap(env)

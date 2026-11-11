@@ -27,6 +27,7 @@ from test_operator_message_delivery import names, recorder  # noqa: F401
 from test_proposal_slot import env  # noqa: F401
 
 KEY = "r1042"
+BOT = 111                    # the bot every delivery here goes through
 
 
 @pytest.fixture(autouse=True)
@@ -111,8 +112,8 @@ async def test_the_memory_survives_a_restart(recorder, names, keys, tmp_path, mo
 @pytest.mark.asyncio
 async def test_a_failed_write_keeps_the_delivery_and_the_memory(recorder, names, tmp_path, monkeypatch):
     unwritable = dk.DeliveryKeys(str(tmp_path / "missing-dir" / "delivery_keys.json"))
-    unwritable.record("probe", 1, "r0", kind="operator_message", detail={"pages": 1})   # never raises
-    assert unwritable.lookup("probe", 1, "r0") is not None
+    unwritable.record("probe", BOT, 1, "r0", kind="operator_message", detail={"pages": 1})   # never raises
+    assert unwritable.lookup("probe", BOT, 1, "r0") is not None
     monkeypatch.setattr(dk, "KEYS", unwritable)
     store, _ = msg._store()
     hook = rb.make_result_hook(msg._map(), client_id="c1", store=store)
@@ -175,11 +176,11 @@ def test_a_malformed_entry_is_dropped_at_load(entry, tmp_path):
     good = {"at": _time.time(), "kind": "operator_message", "detail": {"pages": 1}}
     if isinstance(entry.get("at"), float) and entry["at"] == 1.0:
         entry = {**entry, "at": _time.time()}         # only its shape is wrong, not its age
-    path.write_text(json.dumps({'["probe", 42, "bad"]': entry, '["probe", 42, "good"]': good},
+    path.write_text(json.dumps({'["probe", 111, 42, "bad"]': entry, '["probe", 111, 42, "good"]': good},
                                allow_nan=True))
     k = dk.DeliveryKeys()
     k.load(str(path))
-    assert list(k._entries) == ['["probe", 42, "good"]']
+    assert list(k._entries) == ['["probe", 111, 42, "good"]']
 
 
 def test_a_corrupt_or_missing_file_loads_empty(tmp_path):
@@ -199,13 +200,13 @@ def test_entries_expire_and_are_bounded_per_plugin_and_operator(tmp_path, monkey
     monkeypatch.setattr(dk.time, "time", lambda: now[0])
     for i in range(3):
         now[0] += 1
-        k.record("probe", 42, f"r{i}", kind="operator_message", detail={"pages": 1})
-    k.record("other", 42, "r0", kind="operator_message", detail={"pages": 1})
-    assert k.lookup("probe", 42, "r0") is None             # oldest of its scope dropped
-    assert k.lookup("probe", 42, "r2") is not None
-    assert k.lookup("other", 42, "r0") is not None         # another plugin keeps its own
+        k.record("probe", BOT, 42, f"r{i}", kind="operator_message", detail={"pages": 1})
+    k.record("other", BOT, 42, "r0", kind="operator_message", detail={"pages": 1})
+    assert k.lookup("probe", BOT, 42, "r0") is None             # oldest of its scope dropped
+    assert k.lookup("probe", BOT, 42, "r2") is not None
+    assert k.lookup("other", BOT, 42, "r0") is not None         # another plugin keeps its own
     now[0] += dk.RETENTION_S + 1
-    assert k.lookup("probe", 42, "r2") is None             # expired
+    assert k.lookup("probe", BOT, 42, "r2") is None             # expired
 
 
 # --- proposals --------------------------------------------------------------------
@@ -234,7 +235,7 @@ async def test_a_proposal_repeats_only_while_its_keyboard_is_live(env):
     c = env.store.close_call("c1", "call-3")
     await rb._deliver_and_replace(env.store, prop.SEG, c, {prop.SLOT: ref})
     rid = first["casa_delivery"]["proposal_id"]
-    assert env.broker.get_meta(namespace="proposal", scope="proposal:42", request_id=rid)
+    assert env.broker.get_meta(namespace="proposal", scope=f"proposal:{BOT}:42", request_id=rid)
     fresh = await _deliver_proposal(env, call="call-4")
     assert len(env.rec.proposals) == 3 and "repeat" not in fresh["casa_delivery"]
 
@@ -276,7 +277,7 @@ async def test_a_proposal_is_remembered_at_its_proof_before_any_later_await(env,
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert keys.lookup(prop.SEG, 42, KEY) is not None
+    assert keys.lookup(prop.SEG, BOT, 42, KEY) is not None
     again = await _deliver_proposal(env, call="call-2")
     assert len(env.rec.proposals) == 1 and again["casa_delivery"]["repeat"] is True
 
@@ -308,7 +309,7 @@ async def test_a_repeated_file_consumes_its_staged_file_and_sends_nothing(monkey
 
 @pytest.mark.asyncio
 async def test_a_key_remembered_for_another_kind_is_not_a_repeat(recorder, names, keys):
-    keys.record(msg.PLUGIN, 42, KEY, kind="operator_file", detail={"kind": "zip"})
+    keys.record(msg.PLUGIN, BOT, 42, KEY, kind="operator_file", detail={"kind": "zip"})
     store, _ = msg._store()
     hook = rb.make_result_hook(msg._map(), client_id="c1", store=store)
     _, out = await _deliver_message(store, hook, call="call-1")
@@ -365,8 +366,8 @@ async def test_a_cancelled_proposal_keeps_its_echo_and_its_repeat_adds_none(env,
 async def test_an_unusable_remembered_entry_is_dropped_and_the_post_delivered(recorder, names, keys):
     """Whatever slipped past the load check (here: corrupted after load), an
     entry that cannot be used is no entry — the deposit is delivered fresh."""
-    keys.record(msg.PLUGIN, 42, KEY, kind="operator_message", detail={"pages": 1})
-    ident = keys._id(msg.PLUGIN, 42, KEY)
+    keys.record(msg.PLUGIN, BOT, 42, KEY, kind="operator_message", detail={"pages": 1})
+    ident = keys._id(msg.PLUGIN, BOT, 42, KEY)
     keys._entries[ident]["at"] = 10**400
     store, _ = msg._store()
     hook = rb.make_result_hook(msg._map(), client_id="c1", store=store)
@@ -379,27 +380,27 @@ def test_a_bad_identifier_is_dropped_and_the_bounds_hold_at_load(tmp_path, monke
     monkeypatch.setattr(dk, "MAX_PER_SCOPE", 2)
     monkeypatch.setattr(dk.time, "time", lambda: 10_000.0)
     good = lambda at: {"at": at, "kind": "operator_message", "detail": {"pages": 1}}  # noqa: E731
-    raw = {json.dumps(["probe", 42, f"r{i}"]): good(1000.0 + i) for i in range(4)}
-    raw[json.dumps(["probe", 42, "old"])] = good(10_000.0 - dk.RETENTION_S - 1)
+    raw = {json.dumps(["probe", BOT, 42, f"r{i}"]): good(1000.0 + i) for i in range(4)}
+    raw[json.dumps(["probe", BOT, 42, "old"])] = good(10_000.0 - dk.RETENTION_S - 1)
     raw["not-json"] = good(1000.0)
-    raw[json.dumps(["probe", "42", "r9"])] = good(1000.0)
-    raw[json.dumps(["probe", 42, "bad key"])] = good(1000.0)
+    raw[json.dumps(["probe", BOT, "42", "r9"])] = good(1000.0)
+    raw[json.dumps(["probe", BOT, 42, "bad key"])] = good(1000.0)
     path = tmp_path / "delivery_keys.json"
     path.write_text(json.dumps(raw))
     k = dk.DeliveryKeys()
     k.load(str(path))
-    assert sorted(k._entries) == [json.dumps(["probe", 42, "r2"]), json.dumps(["probe", 42, "r3"])]
+    assert sorted(k._entries) == [json.dumps(["probe", BOT, 42, "r2"]), json.dumps(["probe", BOT, 42, "r3"])]
 
 
 @pytest.mark.asyncio
 async def test_an_entry_corrupted_after_load_is_dropped_at_use(recorder, names, keys):
-    keys.record(msg.PLUGIN, 42, KEY, kind="operator_message", detail={"pages": 1})
-    keys._entries[keys._id(msg.PLUGIN, 42, KEY)]["detail"] = {}
+    keys.record(msg.PLUGIN, BOT, 42, KEY, kind="operator_message", detail={"pages": 1})
+    keys._entries[keys._id(msg.PLUGIN, BOT, 42, KEY)]["detail"] = {}
     store, _ = msg._store()
     hook = rb.make_result_hook(msg._map(), client_id="c1", store=store)
     _, out = await _deliver_message(store, hook, call="call-1")
     assert len(recorder.deliveries) == 1 and "repeat" not in out["casa_delivery"]
-    assert keys._id(msg.PLUGIN, 42, KEY) in keys._entries      # the fresh delivery is remembered
+    assert keys._id(msg.PLUGIN, BOT, 42, KEY) in keys._entries      # the fresh delivery is remembered
 
 
 @pytest.mark.asyncio
@@ -408,9 +409,9 @@ async def test_a_proposal_past_its_deadline_is_posted_fresh(env):
     broker's timer retired the record: no repeat for that card."""
     first = await _deliver_proposal(env, call="call-1")
     rid = first["casa_delivery"]["proposal_id"]
-    meta = env.broker.get_meta(namespace="proposal", scope="proposal:42", request_id=rid)
+    meta = env.broker.get_meta(namespace="proposal", scope=f"proposal:{BOT}:42", request_id=rid)
     meta["deadline"] = asyncio.get_running_loop().time() - 1     # its timer has not run yet
-    assert env.broker.is_live_unclaimed(namespace="proposal", scope="proposal:42", request_id=rid)
+    assert env.broker.is_live_unclaimed(namespace="proposal", scope=f"proposal:{BOT}:42", request_id=rid)
     fresh = await _deliver_proposal(env, call="call-2")
     assert len(env.rec.proposals) == 2 and "repeat" not in fresh["casa_delivery"]
 
@@ -424,7 +425,7 @@ def test_a_load_survives_a_validator_that_raises(tmp_path, monkeypatch):
     import time as _time
     path = tmp_path / "delivery_keys.json"
     good = {"at": _time.time(), "kind": "operator_message", "detail": {"pages": 1}}
-    path.write_text(json.dumps({json.dumps(["probe", 42, "r1"]): good}))
+    path.write_text(json.dumps({json.dumps(["probe", BOT, 42, "r1"]): good}))
 
     def boom(entry):
         raise RuntimeError("unforeseen")
@@ -439,9 +440,11 @@ async def test_a_file_repeat_keeps_its_decision_when_the_key_expires_during_clea
     """The repeat consumes the staged file; a key that expires meanwhile must
     not turn the call into a fresh send of a file that is gone."""
     import tools as tools_mod
+    from _fixture_a import install_casa_bot
+    install_casa_bot(monkeypatch)            # the delivery's bot, 111, is configured
     now = [1000.0]
     monkeypatch.setattr(dk.time, "time", lambda: now[0])
-    keys.record("probe", 42, KEY, kind="operator_file", detail={"kind": "zip"})
+    keys.record("probe", BOT, 42, KEY, kind="operator_file", detail={"kind": "zip"})
     now[0] += dk.RETENTION_S - 1
 
     class _Outbox:

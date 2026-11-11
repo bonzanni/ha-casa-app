@@ -18,6 +18,7 @@ import pytest
 import agent_inbox as ai
 from config import HooksConfig
 from hooks import resolve_hooks
+from two_endpoints import CASA_BOT
 
 PDF = b"%PDF-1.4\n" + b"x" * 64
 OPERATOR = 100
@@ -161,7 +162,7 @@ def _channel(fake_telegram_bot, chat_id=OPERATOR):
     from channels.telegram import TelegramChannel
     return TelegramChannel(bot=fake_telegram_bot, chat_id=chat_id,
                            engagement_supergroup_id=SUPERGROUP,
-                           default_agent="assistant")
+                           default_agent="assistant", known_bot_id=CASA_BOT)
 
 
 def _replies(bot):

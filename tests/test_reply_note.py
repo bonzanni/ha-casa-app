@@ -14,13 +14,13 @@ import pytest
 import result_broker as rb
 import specialist_desk as sd
 from provenance import sanitize_external_context
-from test_desk_route import OPERATOR, _channel, _record, _settle, routed  # noqa: F401
+from channels.tg_address import TgAddress
+from test_desk_route import BOT, OPERATOR, _channel, _record, _settle, routed  # noqa: F401
 from test_telegram_new_reset import _drain_bus
 from timekeeping import resolve_tz
 
 pytestmark = pytest.mark.asyncio
 
-BOT = 900
 WHEN = datetime(2026, 10, 6, 19, 40, tzinfo=timezone.utc)
 
 
@@ -48,8 +48,9 @@ def _update(text="start from Q2 2026", *, quoted_id=12, quoted_from=BOT, quoted_
 
 
 def _bot_channel():
+    # the endpoint's own bot id is BOT: a quoted message from BOT is its own
     ch, bus = _channel()
-    ch._app.bot.id = BOT
+    assert ch.bot_id == BOT
     return ch, bus
 
 
@@ -88,9 +89,9 @@ async def test_a_reply_the_desk_does_not_take_carries_casas_note(routed, monkeyp
     elif case == "sender-on-behalf-of-chat":
         update = _update(quoted_from=OPERATOR, sender_chat=types.SimpleNamespace(id=-100))
     elif case == "resident-post":
-        pm.record(OPERATOR, 12, _record(role="assistant"))
+        pm.record(TgAddress(BOT, OPERATOR, 12), _record(role="assistant"))
     elif case == "not-delegable":
-        pm.record(OPERATOR, 12, _record())
+        pm.record(TgAddress(BOT, OPERATOR, 12), _record())
         monkeypatch.setattr(sd, "desk_target_ok", lambda resident, role: False)
         who = f"a message Casa posted for {sd.label_for('finance')}"
     msg = await _resident_turn(update)

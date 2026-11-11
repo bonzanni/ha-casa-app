@@ -158,7 +158,8 @@ async def test_a_button_index_means_the_choice_it_shows():
 # --- the tool flow -------------------------------------------------------------------
 
 def _current_key(subject="plugin:probe", artifacts=(ART,)):
-    return pec.EraseChoiceKey(42, 42, subject, artifacts, pe.QUESTIONS.current(subject))
+    return pec.EraseChoiceKey(operator_id=42, bot_id=111, chat_id=42, subject=subject,
+                              artifacts=artifacts, question=pe.QUESTIONS.current(subject))
 
 
 @pytest.mark.asyncio

@@ -49,8 +49,9 @@ specialist's desk holds for it alike.
 **The post map is filed as messages land.** The channel files every physical message a post
 produces — each page, each plain fallback chunk, the media message, the link message, a desk
 reply's pages — under a record of its poster (the call's enforcement role and operator, the
-slot, the tool-use id, the echo owner), keyed by the canonical int chat id and the Telegram
-message id, the moment that message's send returns. A page the operator holds is therefore
+slot, the tool-use id, the echo owner), keyed by the message's address — the bot that sent
+it, the canonical int chat id and the Telegram message id — the moment that message's send
+returns, so a reply on one bot never finds another bot's post with the same ids. A page the operator holds is therefore
 routable even when a later page failed and the plugin's result was withheld. The map is
 memory-only and count-bounded (4,096 entries, FIFO): a restart forgets it, and an entry
 older than 4,096 newer posted messages is evicted. Both are stated behaviour, not a gap — a
@@ -75,7 +76,7 @@ earlier message;
 anything else is someone else's message. The resident's turn carries the note in its Casa
 notes block, after the desk lines ([`specialist-desk-reply.md`](specialist-desk-reply.md)); a reply the desk takes carries none.
 
-**A desk is a window on a dialogue, not a session.** Each (chat, specialist) pair has a desk:
+**A desk is a window on a dialogue, not a session.** Each (bot, chat, specialist) triple has a desk:
 an ordered log of exchanges — the operator's words, the resident's brief when it delegated,
 the specialist's delivered text — injected into every desk turn's context as a plain
 `<desk>` block, oldest first. It is not an SDK session resume: the specialist runner runs

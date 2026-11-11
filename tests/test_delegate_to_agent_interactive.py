@@ -68,7 +68,7 @@ async def launch_job(task="Plan Q2", context="", *, origin=None, job=None,
 
     job = job or _job()
     origin = dict(origin or {
-        "role": "assistant", "channel": "telegram",
+        "role": "assistant", "channel": "telegram", "_tg_bot": 111,
         "chat_id": "c1", "cid": "x", "user_text": "hi", "scope": "business",
     })
     origin.setdefault("plugin_job", {"plugin": job.plugin})
@@ -350,7 +350,7 @@ class TestInteractiveModeRetired:
         legacy = await old.create(
             kind="specialist", role_or_type="finance", driver="in_casa",
             task="Walk me through Q2",
-            origin={"role": "assistant", "channel": "telegram", "chat_id": "c1",
+            origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111, "chat_id": "c1",
                     "delegation_depth": 1})
 
         reg, tch, driver = self._wire(tmp_path)

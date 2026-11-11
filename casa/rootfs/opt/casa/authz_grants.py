@@ -32,6 +32,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from channels.tg_address import CASA, AddressError, is_route, scope
 from text_util import escape_unsafe_text, is_unsafe_text, utf16_len
 
 logger = logging.getLogger(__name__)
@@ -116,10 +117,14 @@ class GrantKey:
     ``artifact_id`` binds the grant to the resolved plugin artifact at
     challenge time — a plugin update mid-TTL changes the artifact and
     invalidates the grant. ``enforcement_role`` is the plain role (never
-    tier-qualified) that is actually allowed to consume it.
+    tier-qualified) that is actually allowed to consume it. ``bot_id`` is
+    the bot whose chat the approval was asked in: the operator's chats with
+    two bots share a chat id, and an approval given in one is not given in
+    the other.
     """
 
     operator_id: int
+    bot_id: int
     chat_id: int
     enforcement_role: str
     artifact_id: str
@@ -132,6 +137,15 @@ class GrantKey:
     # args) happen to match — the approval is call-AND-engagement-bound. The
     # "" default preserves the DM/direct path's key identity byte-for-byte.
     engagement_id: str = ""
+
+    def __post_init__(self) -> None:
+        _require_bot_id(self.bot_id)
+
+
+def _require_bot_id(bot_id: object) -> None:
+    """An identity's bot is a verified bot id, never a route value."""
+    if not is_route(bot_id) or bot_id == CASA:
+        raise AddressError(f"not a Telegram bot id: {bot_id!r}")
 
 
 @dataclass
@@ -189,9 +203,12 @@ class GrantStore:
             grant.used = True
             return True
 
-    def purge_chat(self, chat_id: int) -> int:
-        """Drop every grant for *chat_id*. Returns the count removed."""
-        return self._purge(lambda k: k.chat_id == chat_id)
+    def purge_chat(self, bot_id: int, chat_id: int) -> int:
+        """Drop every grant for *chat_id* on bot *bot_id*. Returns the count
+        removed. Another bot's chat with the same operator keeps its
+        grants."""
+        return self._purge(
+            lambda k: k.bot_id == bot_id and k.chat_id == chat_id)
 
     def purge_role(self, role: str) -> int:
         """Drop every grant whose ``enforcement_role`` is *role*."""
@@ -273,9 +290,10 @@ def take_delegation_awaiting_approval(delegation_id: str) -> bool:
 #
 # This section keeps ``authz_grants.py`` leaf-level: the broker singleton is
 # resolved lazily by name (``verdict_broker.BROKER``) so tests can substitute
-# it, and the Telegram channel is passed in as a duck-typed ``channel`` object
-# (``post_dm_keyboard`` / ``edit_dm_message`` / ``_dispatch_button_continuation``)
-# — there is NO import of ``channels`` / ``telegram`` here.
+# it, and the Telegram endpoint that posts is passed in as a duck-typed
+# ``channel`` object (``post_dm_keyboard`` / ``edit_dm_message`` /
+# ``_dispatch_button_continuation``) — the only Telegram import here is the
+# leaf-level address module.
 
 # Challenge message size ceiling (plan Global Constraints): a rendered
 # challenge body longer than this is REFUSED rather than posted (Telegram's
@@ -507,6 +525,7 @@ class _Challenge:
     key: Any            # GrantKey | trigger_consent.TriggerConsentKey
     scope: str
     rid: str
+    bot_id: int
     req: Any                       # verdict_broker.PendingRequest
     broker: Any                    # the VerdictBroker instance that owns req
     driver: "asyncio.Task | None" = None
@@ -595,7 +614,8 @@ class ChallengeCoordinator:
     # -- generic registration (SYNCHRONOUS, loop-confined, single owner) -----
 
     def register_challenge(
-        self, key: Any, *, chat_id: int, operator_id: int, channel: Any,
+        self, key: Any, *, bot_id: int, chat_id: int, operator_id: int,
+        channel: Any,
         challenge_text: str, options: "list[str] | None" = None,
         on_commit_sync: "Callable[[int, dict], None] | None" = None,
         finish_factory: "Callable[[int, Any], Callable[[dict], Any]] | None" = None,
@@ -613,8 +633,10 @@ class ChallengeCoordinator:
 
         Size validation runs BEFORE any insert: oversized ⇒ refused handle,
         NO entry, NO keyboard, NO registration. The broker scope stays
-        ``authz:{chat_id}`` for every kind — the Telegram DM callback resolves
-        taps under that scope and fail-closes on the meta's chat/operator.
+        ``authz:<bot>:<chat>`` for every kind — the Telegram DM callback
+        resolves taps under that scope and fail-closes on the meta's
+        bot/chat/operator. *channel* is the endpoint of bot *bot_id*: the
+        keyboard is posted, and later edited, through that bot only.
         """
         existing = self._entries.get(key)
         if existing is not None:
@@ -630,23 +652,24 @@ class ChallengeCoordinator:
         options = list(options or ["Approve", "Deny"])
         broker = _broker()
         rid = uuid.uuid4().hex
-        scope = f"authz:{chat_id}"
+        lane = scope("authz", bot_id, chat_id)
         # register() shallow-copies this dict; the complete meta (minus the
         # self-referential on_commit_sync) is supplied up front.
         meta = {
             "kind": kind,
+            "bot_id": bot_id,
             "chat_id": chat_id,
             "operator_id": operator_id,
             "options": options,
-            "_scope": scope,
+            "_scope": lane,
         }
         meta.update(meta_extra or {})
         # #573/#680: the operator's attention lane spans two scopes, and a live
-        # SCHEDULED question in `dm:{chat_id}` yields to this human-facing
+        # SCHEDULED question in `dm:<bot>:<chat>` yields to this human-facing
         # challenge — but NOT from here. Displacement happens in `_drive`, once
         # the keyboard is actually on screen; see the note there for why.
         req, _created = broker.register(
-            namespace="resident_ask", scope=scope, request_id=rid,
+            namespace="resident_ask", scope=lane, request_id=rid,
             timeout_s=(_CHALLENGE_TTL_S if timeout_s is None else timeout_s),
             detached=True, supersede=False, meta=meta,
         )
@@ -662,7 +685,8 @@ class ChallengeCoordinator:
 
             req.meta["on_commit_sync"] = _step
 
-        ch = _Challenge(key=key, scope=scope, rid=rid, req=req, broker=broker)
+        ch = _Challenge(key=key, scope=lane, rid=rid, bot_id=bot_id, req=req,
+                        broker=broker)
         # Request latch: fires on EVERY terminal resolution of the future
         # (answered / no_answer / cancelled / delivery_failed).
         req._future.add_done_callback(
@@ -785,8 +809,8 @@ class ChallengeCoordinator:
             )
 
         return self.register_challenge(
-            key, chat_id=chat_id, operator_id=operator_id, channel=channel,
-            challenge_text=challenge_text,
+            key, bot_id=key.bot_id, chat_id=chat_id, operator_id=operator_id,
+            channel=channel, challenge_text=challenge_text,
             on_commit_sync=_on_commit_sync, finish_factory=_finish_factory,
             kind="authz",
             meta_extra={
@@ -826,7 +850,7 @@ class ChallengeCoordinator:
         # the entry on any terminal outcome, so a live exact rid proves the post
         # delivered AND that a tap, timeout or /new did not settle it while the
         # post was in flight. Scope truthiness would NOT do: a sibling challenge
-        # in the same `authz:{chat_id}` scope would answer for this one.
+        # in the same `authz:<bot>:<chat>` scope would answer for this one.
         #
         # NO AWAIT between the check and the displacement — the pair must stay
         # atomic against the Telegram callback handler, exactly as the admission
@@ -842,7 +866,7 @@ class ChallengeCoordinator:
                 import scheduled_asks
 
                 scheduled_asks.displace_scheduled_for_chat(
-                    chat_id, "operator_challenge")
+                    ch.bot_id, chat_id, "operator_challenge")
             except Exception:  # noqa: BLE001 — never fail a DELIVERED challenge
                 logger.warning(
                     "authz challenge: scheduled-ask displacement failed for "
@@ -1219,9 +1243,9 @@ CHALLENGES = ChallengeCoordinator()
 class AuthzDeps:
     """Runtime deps the hook resolves LAZILY at call time (r1-B7).
 
-    ``channel`` is the Telegram channel object (``post_dm_keyboard`` /
-    ``edit_dm_message`` / ``_dispatch_button_continuation``) — the DM the
-    confirmation button is posted to. ``grants`` / ``challenges`` are the
+    ``channel`` is the Telegram transport. The confirmation button is posted
+    through the endpoint of the grant identity's bot (``channel.endpoint``),
+    in that bot's chat with the operator. ``grants`` / ``challenges`` are the
     process-wide ``GRANTS`` / ``CHALLENGES`` singletons in production, injected
     here so tests can substitute fakes.
     """
@@ -1302,8 +1326,14 @@ class GrantIdentity:
     :func:`resolve_grant_identity`, the ONE derivation both the authz hook
     and the result broker use, so the two cannot drift: a capability
     reference is redeemable by exactly whoever could consume a grant for the
-    same call."""
+    same call.
+
+    ``bot_id`` is the bot the challenge for the call is posted through, read
+    from that endpoint when the identity is formed: the turn's route (or the
+    engagement origin's) resolved to its endpoint. It is part of the
+    identity, never a route value."""
     operator_id: int
+    bot_id: int
     chat_id: int
     enforcement_role: str
     artifact_id: str
@@ -1324,6 +1354,34 @@ class GrantIdentity:
     # from equality and binding; ``target_role`` keeps the resident.
     desk_role: str = field(default="", compare=False)
 
+    def __post_init__(self) -> None:
+        _require_bot_id(self.bot_id)
+
+
+def _route_bot(route_source: dict, *, site: str) -> "tuple[int | None, str | None]":
+    """The bot an identity is formed for: *route_source*'s route resolved to
+    its endpoint, and that endpoint's own id. Returns ``(bot_id, None)``, or
+    ``(None, reason)``: ``"channel_unavailable"`` when the endpoint has no
+    id yet (its token has never completed ``getMe``), so no challenge can be
+    keyed or posted; ``"unreachable"`` when there is no Telegram transport,
+    no route, or a route with no endpoint."""
+    from channels.tg_address import (
+        EndpointNotReady, EndpointUnavailable, RouteMissing)
+    from channels.telegram_transport import telegram_transport
+
+    transport = telegram_transport()
+    if transport is None:
+        return None, "unreachable"
+    try:
+        ep = transport.endpoint_for_route(route_source, site=site)
+        return ep.bot_id, None
+    except EndpointNotReady:
+        return None, "channel_unavailable"
+    except (RouteMissing, EndpointUnavailable, AddressError) as exc:
+        logger.error("authz identity: no endpoint for the route (%s): %s",
+                     site, exc)
+        return None, "unreachable"
+
 
 def resolve_grant_identity(role: str, artifact_id: str = ""):
     """The authz hook's identity derivation, factored (#792).
@@ -1343,6 +1401,11 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
     configured NOW, or no Telegram channel is up to say who that is). Every
     branch is the hook's own, in its order; the hook maps the reason to its
     deny text.
+
+    Last, the identity's bot is read from the endpoint the route (the turn's,
+    or the engagement origin's) resolves to — never copied from the route.
+    When that endpoint has no id yet the reason is ``"channel_unavailable"``:
+    the challenge could not be posted, and nothing has been registered.
     """
     import agent as agent_mod
     from provenance import strict_positive_id, turn_provenance
@@ -1402,8 +1465,12 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
                     and artifact.get("artifact_id") == artifact_id
                     for artifact in artifacts)):
                 return None, "engagement_unavailable"
+        bot_id, why = _route_bot(eng_origin, site="authz_engagement")
+        if bot_id is None:
+            return None, (why if why == "channel_unavailable"
+                          else "engagement_unavailable")
         return GrantIdentity(
-            operator_id=operator_id, chat_id=chat_id,
+            operator_id=operator_id, bot_id=bot_id, chat_id=chat_id,
             enforcement_role=role, artifact_id=artifact_id,
             engagement_id=str(rec.id),
             target_role=getattr(rec, "role_or_type", None),
@@ -1417,11 +1484,15 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
     chat_id = strict_positive_id(origin.get("chat_id"))
     if operator_id is None or chat_id is None:
         return None, "unsupported_origin"
+    bot_id, why = _route_bot(origin, site="authz")
+    if bot_id is None:
+        return None, (why if why == "channel_unavailable"
+                      else "unsupported_origin")
     delegation_id = origin.get("_delegation_id")
     desk = origin.get("desk")
     desk_role = desk.get("role") if isinstance(desk, dict) else None
     return GrantIdentity(
-        operator_id=operator_id, chat_id=chat_id,
+        operator_id=operator_id, bot_id=bot_id, chat_id=chat_id,
         enforcement_role=role, artifact_id=artifact_id,
         engagement_id="", target_role=origin.get("role"),
         delegation_id=delegation_id if isinstance(delegation_id, str) else "",
@@ -1431,19 +1502,19 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
 
 def _live_operator_identity() -> "tuple[int, int] | None":
     """The configured operator's ``(chat_id, user_id)`` as of NOW (#1015):
-    read from the initialised channel manager the delegated authz factory
-    reads (``tools._channel_manager``), through the same validation the
-    setup dispatch used to compose the turn (``trigger_consent.
-    operator_identity``). ``None`` when no Telegram channel is up — the
-    setup gate then refuses, fail-closed. Lazy imports: ``tools`` imports
-    this module."""
-    import tools as tools_mod
-    import trigger_consent
-    manager = getattr(tools_mod, "_channel_manager", None)
-    channel = manager.get("telegram") if manager is not None else None
-    if channel is None:
+    the operator the Telegram transport serves, one per deployment and the
+    same on every bot. A private chat's id equals its user's id, so the pair
+    is ``(operator, operator)``. ``None`` when no Telegram transport is up or
+    no valid private chat is configured — the setup gate then refuses,
+    fail-closed. Lazy import: the transport module reaches ``tools``."""
+    from channels.telegram_transport import telegram_transport
+    transport = telegram_transport()
+    if transport is None:
         return None
-    return trigger_consent.operator_identity(channel)
+    operator = transport.operator_user_id()
+    if operator is None:
+        return None
+    return operator, operator
 
 
 def _note_approval(tool_use_id: "str | None", kind: str, key: GrantKey) -> None:
@@ -1536,17 +1607,20 @@ def make_resident_authz_hook(
             # the coordinator (so the approval finish hook resumes THIS
             # engagement instead of dispatching a resident continuation).
             async def _authorize(
-                *, deps: "AuthzDeps", operator_id: int, chat_id: int,
-                engagement_id: str, target_role: "str | None",
+                *, deps: "AuthzDeps", operator_id: int, bot_id: int,
+                chat_id: int, engagement_id: str, target_role: "str | None",
                 desk_role: str = "",
             ) -> "dict[str, Any]":
+                # The challenge is posted, edited and answered on the
+                # identity's own bot: the endpoint registered under it.
+                endpoint = deps.channel.endpoint(bot_id)
                 # #368: only the CONFIGURED operator may satisfy a challenge —
                 # deny OUTRIGHT for any other sender, BEFORE the grant lookup and
                 # with NO challenge (the requester must never receive their own
                 # approval button). Accept-all mode (empty telegram_chat_id) ⇒ NO
                 # sender is the operator (#336). Fail-closed when the channel
                 # cannot answer the question.
-                is_op = getattr(deps.channel, "_user_id_is_operator", None)
+                is_op = getattr(endpoint, "_user_id_is_operator", None)
                 if not callable(is_op) or not is_op(operator_id):
                     return _deny(_DENY_NOT_OPERATOR)
 
@@ -1562,7 +1636,7 @@ def make_resident_authz_hook(
                     canonical_json.encode("utf-8")).hexdigest()
 
                 key = GrantKey(
-                    operator_id=operator_id, chat_id=chat_id,
+                    operator_id=operator_id, bot_id=bot_id, chat_id=chat_id,
                     enforcement_role=role,
                     artifact_id=protected[tool_name]["artifact_id"],
                     tool_name=tool_name, args_hash=args_hash,
@@ -1581,7 +1655,7 @@ def make_resident_authz_hook(
                     key, chat_id=chat_id, operator_id=operator_id,
                     target_role=target_role, tool_name=tool_name,
                     canonical_json=canonical_json, enforcement_role=role,
-                    channel=deps.channel, grants=deps.grants,
+                    channel=endpoint, grants=deps.grants,
                     summary=protected[tool_name].get("summary"),
                     display_name=deps.display_name,
                     engagement_id=engagement_id,
@@ -1633,6 +1707,11 @@ def make_resident_authz_hook(
             # then the explicit role-mismatch deny (defense in depth).
             identity, why = resolve_grant_identity(role)
             if identity is None:
+                if why == "channel_unavailable":
+                    # The bot the challenge would go through has no id yet,
+                    # so it cannot post one: the same answer as a challenge
+                    # whose keyboard failed to post.
+                    return _deny(_DENY_DELIVERY_FAILED)
                 if why == "engagement_unavailable":
                     return _deny(_DENY_ENGAGEMENT_UNAVAILABLE)
                 if why == "role_mismatch":
@@ -1657,7 +1736,7 @@ def make_resident_authz_hook(
             # role_or_type on the engagement path.
             return await _authorize(
                 deps=deps, operator_id=identity.operator_id,
-                chat_id=identity.chat_id,
+                bot_id=identity.bot_id, chat_id=identity.chat_id,
                 engagement_id=identity.engagement_id,
                 target_role=identity.target_role,
                 desk_role=getattr(identity, "desk_role", "") or "",

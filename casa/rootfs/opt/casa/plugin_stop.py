@@ -20,6 +20,12 @@ the Stop of a plugin's own card whose stored call names the stop tool
 tool on the operator's own live turn. One request is stopped by one path at a
 time (``in_flight``); the path that holds the flight marks the card
 (``settle_run_card``) and tells him, while it still holds it.
+
+Every lookup names the Telegram bot the Stop came through as well as the plugin
+and the operator: one plugin can serve agents on two bots, and its request keys
+may be equal on both, so a Stop on one bot never stops, marks or drops the
+other's request. The card is edited, and the line posted, through the bot that
+holds the card.
 """
 from __future__ import annotations
 
@@ -38,8 +44,8 @@ OUTCOMES = frozenset({"stopped", "ended", "already_stopped", "not_taken", "unkno
 #: continuations would only start turns that end silent, so Casa drops them
 KEEPS_SEAL = frozenset({"stopped", "already_stopped", "not_taken"})
 
-#: the (plugin segment, ref) stops in flight in this process
-_FLIGHTS: set[tuple[str, str]] = set()
+#: the (plugin segment, bot id, ref) stops in flight in this process
+_FLIGHTS: set[tuple[str, int, str]] = set()
 #: the stop calls still running, the stdio teardown included (drained at Casa's stop)
 _TASKS: set[asyncio.Task] = set()
 
@@ -106,13 +112,14 @@ def _consume(task: asyncio.Task) -> None:
         logger.warning("stop tool call failed (%s)", type(task.exception()).__name__)
 
 
-async def stop(role: str, seg: str, ref: str, *, operator_id: int,
+async def stop(role: str, seg: str, ref: str, *, bot_id: int, operator_id: int,
                tell: "Callable[[dict], Awaitable[None]] | None" = None) -> dict:
-    """Stop the work *ref* names in *role*'s plugin *seg*. One flight per ``(seg, ref)``: a
-    second call while one runs answers ``in_flight`` at once and tells nothing. The flight is
-    held through *tell* — the caller's card mark and line — so only the path that got the
-    outcome tells him. A plugin no longer resolved for *role* is ``unavailable``."""
-    key = (seg, ref)
+    """Stop the work *ref* names in *role*'s plugin *seg*, asked on bot *bot_id*. One flight
+    per ``(seg, bot, ref)``: a second call while one runs answers ``in_flight`` at once and
+    tells nothing. The flight is held through *tell* — the caller's card mark and line — so
+    only the path that got the outcome tells him. A plugin no longer resolved for *role* is
+    ``unavailable``."""
+    key = (seg, int(bot_id), ref)
     if key in _FLIGHTS:
         return {"outcome": "in_flight"}
     _FLIGHTS.add(key)
@@ -124,7 +131,7 @@ async def stop(role: str, seg: str, ref: str, *, operator_id: int,
         else:
             outcome = await call_stop(found[0], found[1], {"ref": ref})
         if outcome.get("outcome") in KEEPS_SEAL:
-            _drop_continuations(seg, operator_id, ref, outcome.get("refs") or [])
+            _drop_continuations(seg, bot_id, operator_id, ref, outcome.get("refs") or [])
         logger.info("stop of %s: %s", seg, outcome.get("outcome"))
         if tell is not None:
             await tell(outcome)
@@ -133,23 +140,30 @@ async def stop(role: str, seg: str, ref: str, *, operator_id: int,
         _FLIGHTS.discard(key)
 
 
-def _drop_continuations(seg: str, operator_id: int, ref: str, refs: list) -> None:
+def _drop_continuations(seg: str, bot_id: int, operator_id: int, ref: str,
+                        refs: list) -> None:
     import plugin_continuations
     wanted = list(refs)
-    c = confirmation_for(seg, operator_id, ref)
+    c = confirmation_for(seg, bot_id, operator_id, ref)
     if c is not None:
         wanted.append(f"admission:{c.cid}")      # the start card's own continuation
-    plugin_continuations.CONTINUATIONS.drop(seg, operator_id, wanted)
+    plugin_continuations.CONTINUATIONS.drop(seg, bot_id, operator_id, wanted)
 
 
-def confirmation_for(seg: str, operator_id: int, ref: str):
-    """The admission (``run_admission.Confirmation``) of a ``request:<key>`` ref, if Casa
-    holds it."""
+def confirmation_for(seg: str, bot_id: int, operator_id: int, ref: str):
+    """The admission (``run_admission.Confirmation``) of a ``request:<key>`` ref asked on
+    bot *bot_id*, if Casa holds it."""
     import run_admission
     if not ref.startswith(REF_PREFIX):
         return None
-    return run_admission.CONFIRMATIONS.by_key(plugin=seg, operator_id=int(operator_id),
+    return run_admission.CONFIRMATIONS.by_key(plugin=seg, bot_id=int(bot_id),
+                                              operator_id=int(operator_id),
                                               request_key=ref[len(REF_PREFIX):])
+
+
+def _transport():
+    from channels.telegram_transport import telegram_transport
+    return telegram_transport()
 
 
 #: the card mark and the one line, by outcome (``None``: the card keeps its Stop)
@@ -169,21 +183,22 @@ def line_for(outcome: str, role: str) -> "str | None":
 async def settle_run_card(c: Any, mark: str) -> bool:
     """Edit the request's start or status card to its text plus *mark*, with no keyboard, so
     a card never keeps a live Stop for a request that is stopped or ended. Nothing when no
-    card landed (or a natural end already forgot it, ``settle_ended``). True when the edit
-    landed."""
+    card landed (or a natural end already forgot it, ``settle_ended``). The edit goes through
+    the bot that posted the card; a bot with no endpoint any more raises
+    ``EndpointUnavailable`` and no other bot is tried. True when the edit landed."""
     from plugin_bindings import BINDINGS
-    from result_broker import _telegram_channel
-    if c is None or not getattr(c, "card_message_id", 0):
+    card = c.card_address() if c is not None else None
+    if card is None:
         return False
     b = BINDINGS.peek(c.binding_ref)
-    channel = _telegram_channel()
-    if b is None or channel is None:
+    transport = _transport()
+    if b is None or transport is None:
         return False
-    return bool(await channel.edit_dm_message(int(b.chat_id), int(c.card_message_id),
-                                              f"{c.card_text}\n{mark}"))
+    return bool(await transport.endpoint(card).edit_dm_message(
+        card.chat_id, card.message_id, f"{c.card_text}\n{mark}"))
 
 
-async def settle_ended(seg: str, operator_id: int, ref: str) -> bool:
+async def settle_ended(seg: str, bot_id: int, operator_id: int, ref: str) -> bool:
     """The plugin says the request *ref* ended on its own (its driver sweep's ``ended``): its
     card is marked ``☑ Ended`` and loses its Stop — the mark a Stop that finds it ended gives
     it. Nothing while a Stop of it is in flight (that path marks the card), and nothing for a
@@ -193,13 +208,14 @@ async def settle_ended(seg: str, operator_id: int, ref: str) -> bool:
     not retried every pass, and its Stop then answers that it had already ended."""
     import run_admission
     from plugin_bindings import BINDINGS
-    from result_broker import _telegram_channel
-    if (seg, ref) in _FLIGHTS:
+    if (seg, int(bot_id), ref) in _FLIGHTS:
         return False
-    c = confirmation_for(seg, operator_id, ref)
-    if c is None or c.status != "admitted" or not c.card_message_id:
+    c = confirmation_for(seg, bot_id, operator_id, ref)
+    card = c.card_address() if c is not None and c.status == "admitted" else None
+    if card is None:
         return False
-    channel = _telegram_channel()
+    transport = _transport()
+    channel = transport.endpoint(card) if transport is not None else None
     if (BINDINGS.peek(c.binding_ref) is None or channel is None
             or getattr(channel, "bot", None) is None):
         return False                    # no edit can be tried yet (no channel, or its bot is
@@ -211,18 +227,21 @@ async def settle_ended(seg: str, operator_id: int, ref: str) -> bool:
     return landed
 
 
-async def tell_line(chat_id: int, role: str, outcome: str, *, reply_to: "int | None") -> None:
-    """The one line, Casa's fixed text under the specialist's label, as a reply to the card;
-    the resident hears it at its next turn, as every Casa line."""
+async def tell_line(bot_id: int, chat_id: int, role: str, outcome: str, *,
+                    reply_to: "int | None") -> None:
+    """The one line, Casa's fixed text under the specialist's label, as a reply to the card,
+    through the bot *bot_id* that holds it; the resident hears it at its next turn, as every
+    Casa line."""
     import specialist_desk
-    from result_broker import _telegram_channel, compose_operator_message, post_label
+    from result_broker import compose_operator_message, post_label
     line = line_for(outcome, role)
-    channel = _telegram_channel()
-    if line is None or channel is None:
+    transport = _transport()
+    if line is None or transport is None:
         return
-    await channel.send_reply_line(int(chat_id), compose_operator_message(line, post_label(role)),
-                                  reply_to)
-    specialist_desk.record_echo(int(chat_id), f"{specialist_desk.label_for(role)}: {line}")
+    await transport.endpoint(int(bot_id)).send_reply_line(
+        int(chat_id), compose_operator_message(line, post_label(role)), reply_to)
+    specialist_desk.record_echo(int(bot_id), int(chat_id),
+                                f"{specialist_desk.label_for(role)}: {line}")
 
 
 async def drain() -> None:

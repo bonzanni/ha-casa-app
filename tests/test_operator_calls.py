@@ -18,6 +18,7 @@ import result_broker as rb
 import tools as tools_mod
 from authz_grants import GrantIdentity
 from plugin_grants import PluginContract, ResultContractMap, ToolContract
+from _fixture_a import install_casa_bot
 
 ARTIFACT = "1" * 64
 START = "mcp__plugin_browser_api__start_runs"
@@ -29,7 +30,8 @@ FIDO_RUN = {"role": "assistant", "execution_role": "browser", "channel": "telegr
             "_origin_clearance": "private",
             "user_text": "download my latest RunPod invoice",
             "_operator_words": "download my latest RunPod invoice", "_delegation_id": "d-1",
-            "delegation_depth": 1, "_handoff_chain": ("assistant", "browser")}
+            "delegation_depth": 1, "_handoff_chain": ("assistant", "browser"),
+            "_tg_bot": 111}
 
 
 def _map() -> ResultContractMap:
@@ -59,6 +61,7 @@ def _pre(tool):
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch, tmp_path):
     import authz_grants
+    install_casa_bot(monkeypatch)
     live = {"id": (42, 100)}
     monkeypatch.setattr(authz_grants, "_live_operator_identity", lambda: live["id"])
     monkeypatch.setattr(operator_calls, "CALLS", operator_calls.OperatorCalls())
@@ -72,7 +75,7 @@ def _fresh(monkeypatch, tmp_path):
 
 
 def _identity(operator_id=100):
-    return GrantIdentity(operator_id=operator_id, chat_id=42, enforcement_role="browser",
+    return GrantIdentity(operator_id=operator_id, bot_id=111, chat_id=42, enforcement_role="browser",
                          artifact_id=ARTIFACT, engagement_id="")
 
 
@@ -136,7 +139,7 @@ ENGAGEMENT_TURN = {"role": "assistant", "channel": "telegram", "chat_id": "42",
                    "_origin_route": "telegram", "_origin_clearance": "private",
                    "user_text": "order the pizza, ask me before you submit",
                    "_operator_words": "order the pizza, ask me before you submit",
-                   "delegation_depth": 1}
+                   "delegation_depth": 1, "_tg_bot": 111}
 
 
 @pytest.mark.asyncio

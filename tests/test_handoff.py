@@ -67,7 +67,7 @@ def test_operator_words_only_from_a_live_operator_message(origin, expected):
 
 def test_a_desk_reply_carries_his_words_and_a_desk_continuation_does_not():
     import specialist_desk
-    kw = dict(resident_role="assistant", desk_role="browser", chat_id=7, user_id=7,
+    kw = dict(resident_role="assistant", desk_role="browser", bot_id=111, chat_id=7, user_id=7,
               user_name="N", message_id=1, cid="c", text="get the invoice", turn_id="t")
     assert handoff.operator_words(
         specialist_desk._desk_origin(**kw, operator_typed=True)) == "get the invoice"

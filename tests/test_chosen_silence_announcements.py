@@ -213,7 +213,7 @@ def _live_notice(on_delivery) -> BusMessage:
         content=DelegationComplete(
             delegation_id="deleg-live-1", agent="finance", status="ok",
             text=ANSWER,
-            origin={"role": ROLE, "channel": "telegram", "chat_id": "123",
+            origin={"role": ROLE, "channel": "telegram", "_tg_bot": 111, "chat_id": "123",
                     "cid": "route-1", "user_text": QUESTION},
         ),
         channel="telegram",
@@ -348,6 +348,7 @@ def _job(**changes):
         creating_role=ROLE, specialist_role="finance",
         specialist_display_name="Finance",
         creator_peer="telegram", creator_user_id=None,
+        route={"_tg_bot": 111},
         scope_id="123", origin_route_id="route-1",
         origin_device_id=None,
         task=QUESTION, context="",
@@ -509,7 +510,7 @@ async def test_replayed_engagement_chosen_silence_clears_durable_obligation(
     rec = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
         task="reconcile the ledger",
-        origin={"role": ROLE, "channel": "telegram", "chat_id": "123",
+        origin={"role": ROLE, "channel": "telegram", "_tg_bot": 111, "chat_id": "123",
                 "cid": "route-1", "user_text": QUESTION})
     await tools._finalize_engagement(
         rec, outcome="completed", text="reconciled",

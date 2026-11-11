@@ -27,7 +27,8 @@ from provenance import sanitize_external_context, turn_provenance
 from test_agent_process import (
     ScriptedToolClient, _capture_reports, _make_agent, _mk_assistant, _mk_result,
 )
-from test_authz_grants_setup_identity import OP, _Channel, _Manager, live_operator  # noqa: F401
+from test_authz_grants_setup_identity import (  # noqa: F401
+    CASA_BOT, OP, _Channel, _Manager, live_operator)
 from test_delegate_setup_mode_gate import _delegate, _wire
 from test_result_broker import _Origin
 
@@ -37,7 +38,7 @@ ART = "b" * 64
 def _erase_msg(target="assistant", context_extra=None) -> BusMessage:
     context = {"chat_id": OP, "user_id": OP, "cid": "cid-e",
                "synthetic": "plugin_erase", "plugin_erase_target": target,
-               "plugin_erase_artifact": ART}
+               "plugin_erase_artifact": ART, "_tg_bot": CASA_BOT}
     context.update(context_extra or {})
     return BusMessage(type=MessageType.CHANNEL_IN, source="telegram",
                       target="assistant", content="[casa plugin erase] run it",
@@ -49,7 +50,8 @@ def _erase_origin(role="assistant", target="assistant", **over) -> dict:
             "cid": "c", "user_text": "[casa plugin erase]",
             "message_type": "channel_in", "source": "telegram",
             "execution_role": role, "synthetic": "plugin_erase",
-            "plugin_erase_target": target, "plugin_erase_artifact": ART}
+            "plugin_erase_target": target, "plugin_erase_artifact": ART,
+            "_tg_bot": CASA_BOT}
     base.update(over)
     return base
 
@@ -82,7 +84,7 @@ async def test_the_dispatched_erase_turn_carries_its_stamps_and_has_an_identity(
     assert origin["plugin_erase_artifact"] == ART
     assert prov.transport == "setup"
     assert why is None
-    assert identity == GrantIdentity(operator_id=OP, chat_id=OP,
+    assert identity == GrantIdentity(operator_id=OP, bot_id=CASA_BOT, chat_id=OP,
                                      enforcement_role="assistant",
                                      artifact_id="", engagement_id="")
 

@@ -31,6 +31,7 @@ import agent as agent_mod
 import tools
 from memory import capture, meter, transcript_runs
 from memory.store import MemoryStore
+from channels.tg_address import TgAddress
 from session_registry import SessionRegistry
 from session_sweeper import SessionSweeper
 from test_agent_process import (
@@ -358,7 +359,7 @@ async def _engagement_turn(kind="specialist", sid=None, script=None):
     rec = _engagement_record(kind=kind)
     attach_session(drv, rec, _Client())
     try:
-        drv.submit_operator(rec, "topic message", tg_message_id=55)
+        drv.submit_operator(rec, "topic message", tg_message=TgAddress(111, 4242, 55))
         async with asyncio.timeout(5):
             while not ended:
                 await asyncio.sleep(0.001)
@@ -554,7 +555,7 @@ async def test_a_run_cancelled_during_its_registration_confirms_its_row(
         drv = InCasaDriver()
         rec = _engagement_record()
         session = attach_session(drv, rec, _Client())
-        drv.submit_operator(rec, "m", tg_message_id=55)
+        drv.submit_operator(rec, "m", tg_message=TgAddress(111, 4242, 55))
 
         async def _registration():
             # The engagement turn's run registers on its own task as the

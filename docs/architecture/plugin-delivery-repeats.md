@@ -23,7 +23,7 @@ between the two — Casa restarts, or the session dies and is resumed — the jo
 sees the post as unrecorded and posts it again. The plugin cannot close
 that window itself: the post is an external write, and its record is a separate call. So the
 deposit may carry the plugin's own identifier for the post (`key`). Casa remembers each key it
-delivered, per installed plugin and operator. A later deposit with the same key is not sent;
+delivered, per installed plugin, bot and operator. A later deposit with the same key is not sent;
 the call's result is replaced by the original delivery's receipt, marked `repeat`. The plugin
 records the delivery as usual.
 
@@ -34,7 +34,7 @@ are kept thirty days, and at most five hundred per plugin and operator.
 
 ## Contracts & invariants
 
-**INV-PLUG-050**: A delivered slot's deposit may carry a `key` matching `^[A-Za-z0-9._:-]{1,128}$` (anything else is refused `bad_key` before a reference is minted); after a proven delivery of a keyed deposit the key is remembered for that plugin and operator, recorded synchronously at the point the send is proven; a later keyed deposit of the same kind whose key is remembered sends nothing and its result is replaced by the original delivery's receipt with `repeat` set — for a proposal only while the original keyboard is live, unclaimed, not past its deadline and registered under the same artifact as the new call, otherwise a fresh card is posted and remembered; deliveries of one key are serialised; a deposit without a key behaves as before.
+**INV-PLUG-050**: A delivered slot's deposit may carry a `key` matching `^[A-Za-z0-9._:-]{1,128}$` (anything else is refused `bad_key` before a reference is minted); after a proven delivery of a keyed deposit the key is remembered for that plugin, bot and operator, recorded synchronously at the point the send is proven; a later keyed deposit of the same kind whose key is remembered sends nothing and its result is replaced by the original delivery's receipt with `repeat` set — for a proposal only while the original keyboard is live, unclaimed, not past its deadline and registered under the same artifact as the new call, otherwise a fresh card is posted and remembered; deliveries of one key are serialised; a deposit without a key behaves as before.
 
 A repeat still owes what is not the post: a file deposit's staged file is consumed (and a
 proposal's staged photo), and a
@@ -59,7 +59,7 @@ runtime segment starts empty.
 memory: silently when the file is missing, with one warning when it cannot be read or parsed.
 An entry is used only when it is exactly a shape Casa records (a delivered kind, that kind's
 receipt detail and nothing else, a finite time, and for a proposal its registration, under a
-well-formed plugin, operator and key); any other entry is dropped with one warning, and so is
+well-formed plugin, bot, operator and key); any other entry is dropped with one warning, and so is
 one found unusable when it is looked up — the deposit is then delivered fresh. The expiry and
 the per-plugin bound apply to what is read too. Boot never fails on it.
 

@@ -59,7 +59,7 @@ class TestFailClosedActorBinding:
 
         update.callback_query.answer.assert_awaited_once_with("not for you")
         # No claim: request still live/unresolved.
-        assert _fresh_broker.pending(namespace="resident_ask", scope="dm:500") == [
+        assert _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{BOT}:500") == [
             "rid-wu",
         ]
 
@@ -76,7 +76,7 @@ class TestFailClosedActorBinding:
         await ch._on_inline_callback(update, context=None)
 
         update.callback_query.answer.assert_awaited_once_with("not for you")
-        assert _fresh_broker.pending(namespace="resident_ask", scope="dm:500") == [
+        assert _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{BOT}:500") == [
             "rid-noop",
         ]
 
@@ -93,7 +93,7 @@ class TestFailClosedActorBinding:
         await ch._on_inline_callback(update, context=None)
 
         update.callback_query.answer.assert_awaited_once_with("not for you")
-        assert _fresh_broker.pending(namespace="resident_ask", scope="dm:500") == [
+        assert _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{BOT}:500") == [
             "rid-anon",
         ]
 
@@ -160,9 +160,12 @@ def _mk_dm_update(*, data, chat_id, user_id=999, query_id="cq1",
     return SimpleNamespace(callback_query=cq)
 
 
+BOT = 111      # the endpoint's bot: every DM lane is keyed by it
+
+
 def _mk_dm_channel(fake_telegram_bot, bus=None):
     from channels.telegram import TelegramChannel
-    return TelegramChannel(bot=fake_telegram_bot, chat_id=100, bus=bus)
+    return TelegramChannel(known_bot_id=BOT, bot=fake_telegram_bot, chat_id=100, bus=bus)
 
 
 async def _settle(pred, tries=2000):
@@ -182,7 +185,7 @@ async def _settle(pred, tries=2000):
 def _seed_resident(broker, *, kind="dm", chat_id, rid, operator_id=999,
                    options=("Yes", "No"), timeout_s=5.0, on_commit_sync=None,
                    meta_extra=None):
-    scope = f"{kind}:{chat_id}"
+    scope = f"{kind}:{BOT}:{chat_id}"
     req, created = broker.register(
         namespace="resident_ask", scope=scope, request_id=rid,
         timeout_s=timeout_s,
@@ -191,6 +194,7 @@ def _seed_resident(broker, *, kind="dm", chat_id, rid, operator_id=999,
     req.meta.update({
         "options": list(options),
         "chat_id": chat_id,
+        "bot_id": BOT,
         "operator_id": operator_id,
         "_scope": scope,
     })
@@ -335,7 +339,7 @@ class TestResidentRejectionPaths:
             data="v1|resident_ask|rid-nomsg|0", chat_id=500, has_message=False,
         )
         await self._assert_rejected(
-            ch, update, "expired", _fresh_broker, "rid-nomsg", "dm:500")
+            ch, update, "expired", _fresh_broker, "rid-nomsg", f"dm:{BOT}:500")
 
     async def test_no_live_meta_expired(
         self, fake_telegram_bot, _fresh_broker,
@@ -345,7 +349,7 @@ class TestResidentRejectionPaths:
             data="v1|resident_ask|no-such|0", chat_id=500, user_id=999,
         )
         await self._assert_rejected(
-            ch, update, "expired", _fresh_broker, "no-such", "dm:500")
+            ch, update, "expired", _fresh_broker, "no-such", f"dm:{BOT}:500")
 
     async def test_wrong_chat_expired(
         self, fake_telegram_bot, _fresh_broker,
@@ -359,7 +363,7 @@ class TestResidentRejectionPaths:
             data="v1|resident_ask|rid-wc|0", chat_id=500, user_id=999,
         )
         await self._assert_rejected(
-            ch, update, "expired", _fresh_broker, "rid-wc", "dm:500")
+            ch, update, "expired", _fresh_broker, "rid-wc", f"dm:{BOT}:500")
 
     async def test_absent_from_user_not_for_you(
         self, fake_telegram_bot, _fresh_broker,
@@ -370,7 +374,7 @@ class TestResidentRejectionPaths:
             data="v1|resident_ask|rid-anon|0", chat_id=500, user_id=None,
         )
         await self._assert_rejected(
-            ch, update, "not for you", _fresh_broker, "rid-anon", "dm:500")
+            ch, update, "not for you", _fresh_broker, "rid-anon", f"dm:{BOT}:500")
 
     async def test_wrong_user_not_for_you(
         self, fake_telegram_bot, _fresh_broker,
@@ -382,7 +386,7 @@ class TestResidentRejectionPaths:
             data="v1|resident_ask|rid-wu|0", chat_id=500, user_id=42,
         )
         await self._assert_rejected(
-            ch, update, "not for you", _fresh_broker, "rid-wu", "dm:500")
+            ch, update, "not for you", _fresh_broker, "rid-wu", f"dm:{BOT}:500")
 
     async def test_out_of_range_option_invalid(
         self, fake_telegram_bot, _fresh_broker,
@@ -393,7 +397,7 @@ class TestResidentRejectionPaths:
             data="v1|resident_ask|rid-oor|5", chat_id=500, user_id=999,
         )
         await self._assert_rejected(
-            ch, update, "invalid", _fresh_broker, "rid-oor", "dm:500")
+            ch, update, "invalid", _fresh_broker, "rid-oor", f"dm:{BOT}:500")
 
     async def test_stale_after_timeout_expired(
         self, fake_telegram_bot, _fresh_broker,
@@ -406,7 +410,7 @@ class TestResidentRejectionPaths:
             data="v1|resident_ask|rid-stale|0", chat_id=500, user_id=999,
         )
         await self._assert_rejected(
-            ch, update, "expired", _fresh_broker, "rid-stale", "dm:500")
+            ch, update, "expired", _fresh_broker, "rid-stale", f"dm:{BOT}:500")
 
     async def test_duplicate_after_winner_already_answered(
         self, fake_telegram_bot, _fresh_broker,
@@ -605,11 +609,11 @@ class TestResidentCopiedMetaBoundary:
     ):
         ch = _mk_dm_channel(fake_telegram_bot)
         caller = {
-            "options": ["Yes", "No"], "chat_id": 500, "operator_id": 999,
-            "_scope": "dm:500",
+            "options": ["Yes", "No"], "chat_id": 500, "bot_id": BOT,
+            "operator_id": 999, "_scope": f"dm:{BOT}:500",
         }
         req, created = _fresh_broker.register(
-            namespace="resident_ask", scope="dm:500", request_id="rid-cm",
+            namespace="resident_ask", scope=f"dm:{BOT}:500", request_id="rid-cm",
             timeout_s=5.0, meta=caller,
         )
         assert created is True
@@ -617,7 +621,7 @@ class TestResidentCopiedMetaBoundary:
         # Mutating the CALLER's original dict is invisible (shallow copy).
         caller["injected_by_caller"] = True
         gm = _fresh_broker.get_meta(
-            namespace="resident_ask", scope="dm:500", request_id="rid-cm",
+            namespace="resident_ask", scope=f"dm:{BOT}:500", request_id="rid-cm",
         )
         assert "injected_by_caller" not in gm
         assert gm is req.meta  # by reference for a live request
@@ -904,6 +908,7 @@ class TestDeliverSystemTurn:
 
         reg = engagement_fixture.registry
         ch = TelegramChannel(
+            known_bot_id=111,
             bot=fake_telegram_bot, chat_id=100, engagement_supergroup_id=-1001,
         )
         ch._engagement_registry = reg

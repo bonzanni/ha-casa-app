@@ -73,6 +73,7 @@ async def test_662_only_a_literal_true_outcome_selects_the_success_edit(
     class _Channel:
         def __init__(self):
             self.edits = []
+            self.bot_id = 111
 
         async def edit_dm_message(self, chat_id, message_id, text):
             self.edits.append((chat_id, message_id, text))
@@ -129,6 +130,7 @@ async def test_662_a_raising_callback_is_contained_and_selects_the_corrective_ed
     class _Channel:
         def __init__(self):
             self.edits = []
+            self.bot_id = 111
 
         async def edit_dm_message(self, chat_id, message_id, text):
             self.edits.append((chat_id, message_id, text))
@@ -177,6 +179,7 @@ async def test_662_an_absent_callback_selects_the_corrective_edit() -> None:
     class _Channel:
         def __init__(self):
             self.edits = []
+            self.bot_id = 111
 
         async def edit_dm_message(self, chat_id, message_id, text):
             self.edits.append((chat_id, message_id, text))
@@ -232,6 +235,7 @@ async def test_933_a_withdrawn_consent_does_not_claim_it_expired(reason) -> None
     class _Channel:
         def __init__(self):
             self.edits = []
+            self.bot_id = 111
 
         async def edit_dm_message(self, chat_id, message_id, text):
             self.edits.append((chat_id, message_id, text))

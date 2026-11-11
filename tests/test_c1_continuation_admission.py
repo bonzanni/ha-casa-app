@@ -277,7 +277,7 @@ def _authz_challenge(ch, engagement_id):
             return SimpleNamespace(created=True)
 
     coord = _Capture()
-    key = GrantKey(operator_id=701, chat_id=701, enforcement_role="finance",
+    key = GrantKey(operator_id=701, bot_id=111, chat_id=701, enforcement_role="finance",
                    artifact_id="art-1", tool_name="mcp__ledger__reset",
                    args_hash="h", engagement_id=engagement_id)
     coord.get_or_create(
@@ -312,7 +312,7 @@ async def _mk_ctx(tmp_path, fake_telegram_bot):
     agent_mod.active_engagement_driver = drv
 
     ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                         engagement_supergroup_id=-1001)
+                         engagement_supergroup_id=-1001, known_bot_id=111)
     ch._engagement_registry = reg
     ch._engagement_driver = drv
     ch._driver_advance_high_water = AsyncMock()
@@ -486,9 +486,10 @@ class TestTheHandOffOutcomeAndTheTransfer:
         try:
             await _hold_the_worker(drv, rec, client)
             from channels.telegram import _NoticeTarget
+            from channels.tg_address import TgAddress
             handed = await ch.deliver_system_turn(
                 rec, "continue",
-                notice_target=_NoticeTarget(chat_id=1, message_id=5, answer=True))
+                notice_target=_NoticeTarget(address=TgAddress(111, 1, 5), answer=True))
             # Terminal writer wins after the hand-off, before the write.
             assert await reg.try_transition_terminal(
                 rec.id, "cancelled", strict=True) is True

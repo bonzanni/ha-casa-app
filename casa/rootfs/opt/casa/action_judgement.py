@@ -22,7 +22,7 @@ sees the measured body: for
 on its packet alone; ``sign_in`` (is the page the site's own sign-in, which the
 app then signs in to by itself) is judged the same way. The operator's own words travel outside the
 packet and its digest (ruling 3); Casa keeps them, memory-only, per spec
-digest when run admission reads them (``WORDS``).
+digest and Telegram bot when run admission reads them (``WORDS``).
 
 A failure, a timeout, a refusal, an unparsable reply or one outside the
 bounds is ``{"error": "check_unavailable"}`` — never a verdict, and Casa
@@ -110,10 +110,14 @@ class CheckFailed(Exception):
 # ---------------------------------------------------------------------------
 
 class OperatorWords:
-    """``(plugin, operator_id, spec_digest) -> words``, at most
+    """``(plugin, bot_id, operator_id, spec_digest) -> words``, at most
     ``WORDS_MAX_ENTRIES`` for ``WORDS_KEEP_S`` each. Memory-only on purpose:
     nothing durable keeps the operator's words (the binding store's rule); a
-    restart leaves the check the task text alone, as a continuation's has."""
+    restart leaves the check the task text alone, as a continuation's has.
+
+    The bot is part of the key: one plugin can serve agents on two bots, and
+    the operator and a plugin's spec digest are the same on both, so words he
+    wrote to one bot never judge an action of a run asked for on the other."""
 
     def __init__(self, *, now: Callable[[], float] = time.monotonic) -> None:
         self._now = now
@@ -127,10 +131,11 @@ class OperatorWords:
             if expires <= now:
                 del self._items[key]
 
-    def record(self, *, plugin: str, operator_id: Any, spec_digest: Any, words: Any) -> None:
+    def record(self, *, plugin: str, bot_id: int, operator_id: Any, spec_digest: Any,
+               words: Any) -> None:
         if not isinstance(words, str) or not isinstance(spec_digest, str) or not spec_digest:
             return
-        key = (plugin, int(operator_id), spec_digest)
+        key = (plugin, int(bot_id), int(operator_id), spec_digest)
         with self._lock:
             self._sweep_locked()
             self._items.pop(key, None)
@@ -138,12 +143,13 @@ class OperatorWords:
             while len(self._items) > WORDS_MAX_ENTRIES:
                 self._items.popitem(last=False)
 
-    def get(self, *, plugin: str, operator_id: Any, spec_digest: Any) -> "str | None":
+    def get(self, *, plugin: str, bot_id: int, operator_id: Any,
+            spec_digest: Any) -> "str | None":
         if not isinstance(spec_digest, str) or not spec_digest:
             return None
         with self._lock:
             self._sweep_locked()
-            hit = self._items.get((plugin, int(operator_id), spec_digest))
+            hit = self._items.get((plugin, int(bot_id), int(operator_id), spec_digest))
         return hit[0] if hit is not None else None
 
 
@@ -381,7 +387,11 @@ def system_prompt(kind: str, packet: dict, picture: "str | None") -> str:
 async def judge(call, kind: Any, packet: Any, spec_digest: Any, picture: Any = None) -> dict:
     """The check for *call* (an ``operator_calls.OperatorCall``):
     ``{"verdict", "packet_sha256", "latency_ms"}``, ``{"error":
-    "check_unavailable"}``, or a typed request error before any model call."""
+    "check_unavailable"}``, or a typed request error before any model call.
+
+    An ``action``'s words are read for the bot the run's cards go through (the
+    call's binding); when that bot cannot be named now (Casa's bot has not
+    verified its id yet) the check is ``check_unavailable``."""
     if kind not in KINDS:
         return {"error": "bad_kind"}
     if spec_digest is not None and (
@@ -395,8 +405,15 @@ async def judge(call, kind: Any, packet: Any, spec_digest: Any, picture: Any = N
     digest = hashlib.sha256(raw).hexdigest()
     words = None
     if kind == "action":
-        words = WORDS.get(plugin=call.plugin, operator_id=call.identity.operator_id,
-                          spec_digest=spec_digest)
+        from operator_calls import call_target
+        from plugin_bindings import ChannelUnavailable
+        try:
+            _ep, bot_id = call_target(call)
+        except ChannelUnavailable:
+            logger.warning("action judgement: kind=%s check_unavailable (no bot yet)", kind)
+            return {"error": "check_unavailable"}
+        words = WORDS.get(plugin=call.plugin, bot_id=bot_id,
+                          operator_id=call.identity.operator_id, spec_digest=spec_digest)
     body = model_body(kind, parsed, words)
     picture = _usable_picture(kind, picture)
     has_picture = "yes" if picture is not None else "no"

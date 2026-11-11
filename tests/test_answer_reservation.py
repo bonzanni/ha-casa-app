@@ -102,7 +102,7 @@ async def _handler_ctx(tmp_path, fake_telegram_bot):
         "executor", "configurator", "in_casa", "t",
         {"user_id": 77})
     client = _OneShotClient()
-    ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
+    ch = TelegramChannel(known_bot_id=111, bot=fake_telegram_bot, chat_id=100,
                          engagement_supergroup_id=-1001)
     drv = InCasaDriver(record_lookup=reg.get,
                        begin_turn_delivery=reg.begin_turn_delivery,
@@ -244,7 +244,7 @@ class TestInCasaCompletionInboundGate:
         )
         agent_mod.active_engagement_driver = drv
 
-        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
+        ch = TelegramChannel(known_bot_id=111, bot=fake_telegram_bot, chat_id=100,
                              engagement_supergroup_id=-1001)
         ch._engagement_registry = reg
         ch._engagement_driver = drv

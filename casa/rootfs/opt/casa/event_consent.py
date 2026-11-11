@@ -37,9 +37,11 @@ emitter, the event, and the target role(s) receiving it, exactly as the
 identity binds them.
 
 Taps ride the SAME validated Telegram DM callback path as authz grants,
-trigger consents, and callback consents (broker scope ``authz:{chat}``): the
-handler fail-closes on the meta's ``chat_id``/``operator_id``, so an
-unauthorized or stale tap can never ack.
+trigger consents, and callback consents (broker scope
+``authz:<bot>:<chat>``): the handler fail-closes on the meta's
+``bot_id``/``chat_id``/``operator_id``, so an unauthorized or stale tap can
+never ack. The card is Casa's own, posted on Casa's bot
+(``trigger_consent.casa_consent_target``).
 """
 from __future__ import annotations
 
@@ -48,10 +50,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from channels.tg_address import TgAddress
 from plugin_events import ack_identity
-# The operator-DM rule is one rule for every consent kind — imported rather
-# than re-implemented so the two can never drift apart.
-from trigger_consent import operator_identity  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,7 @@ class EventConsentKey:
     emitter: str
     event: str
     identity: str
+    address: TgAddress
 
 
 def _target_roles(targets: "list[str]") -> str:
@@ -122,8 +123,10 @@ def prompt_event_consent(
     """
     identity = ack_identity(subscriber, artifact_id, emitter, event, digest,
                             targets)
+    address = TgAddress(channel.bot_id, chat_id)
     key = EventConsentKey(plugin=subscriber, artifact_id=artifact_id,
-                          emitter=emitter, event=event, identity=identity)
+                          emitter=emitter, event=event, identity=identity,
+                          address=address)
     text = render_event_consent_message(subscriber=subscriber, emitter=emitter,
                                         event=event, targets=targets)
 
@@ -204,7 +207,8 @@ def prompt_event_consent(
         return _finish
 
     return coordinator.register_challenge(
-        key, chat_id=chat_id, operator_id=operator_id, channel=channel,
+        key, bot_id=address.bot_id, chat_id=chat_id, operator_id=operator_id,
+        channel=channel,
         challenge_text=text, options=["Approve", "Deny"],
         on_commit_sync=_on_commit_sync, finish_factory=_finish_factory,
         kind="event_consent",

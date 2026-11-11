@@ -90,7 +90,7 @@ def _stop(monkeypatch, tmp_path, *, release: bool, with_bus: bool,
         gate_holder["gate"] = asyncio.Event()
         rec = DelegationRecord(
             id="d-1", agent="researcher", started_at=time.time(),
-            origin={"role": "assistant", "channel": "telegram",
+            origin={"role": "assistant", "channel": "telegram", "_tg_bot": 111,
                     "chat_id": "42", "cid": "x"})
         await spec.register_delegation(rec)
         task = asyncio.create_task(_run())

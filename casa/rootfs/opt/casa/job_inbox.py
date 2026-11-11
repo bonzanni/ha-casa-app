@@ -10,7 +10,15 @@ one JSON file per job, ``<root>/<engagement id>.json``, rewritten atomically
     {"uuid": ..., "text": ..., "notice": {...} | null, "taken_up": bool}
 
 where ``uuid`` is the id the message is written with, ``text`` what is
-written, and ``notice`` where a lost-message notice would be a reply to.
+written, and ``notice`` where a lost-message notice would be a reply to:
+
+    {"address": [bot, chat, message], "answer": bool}
+
+The address names the bot too, because Telegram numbers messages per bot: the
+notice must be a reply from the bot that received the operator's message. A
+notice that does not name its bot, chat and message is refused, loudly, and
+the entry is kept without one (the message itself is still owed to the job;
+only its notice has nowhere to go).
 
 Every call here is SYNCHRONOUS on purpose: the delivery seams journal, admit
 and enqueue in one step with nothing awaited, so a slow resume can never
@@ -34,6 +42,8 @@ import logging
 from pathlib import Path
 from typing import Any, Iterable
 
+from channels.tg_address import AddressError, TgAddress
+
 logger = logging.getLogger(__name__)
 
 INBOX_ROOT = Path("/data/job-inbox")
@@ -47,6 +57,30 @@ def path_for(engagement_id: str) -> Path:
     return INBOX_ROOT / f"{engagement_id}.json"
 
 
+def notice_address(notice: Any) -> TgAddress | None:
+    """The message a stored notice replies to; ``None`` for a notice that
+    does not name its bot, chat and message."""
+    if not isinstance(notice, dict):
+        return None
+    try:
+        addr = TgAddress.from_json(notice.get("address"))
+    except AddressError:
+        return None
+    return addr if addr.message_id is not None else None
+
+
+def _checked_notice(engagement_id: str, notice: Any) -> dict | None:
+    """*notice* when it names its message, else ``None`` (logged at ERROR
+    when one was given)."""
+    if notice is None:
+        return None
+    if notice_address(notice) is None:
+        logger.error("job inbox %s: notice %r names no bot, chat and message; "
+                     "refused", engagement_id, notice)
+        return None
+    return notice
+
+
 def load(engagement_id: str) -> list[dict]:
     """The job's entries in arrival order; ``[]`` when there is no file. An
     unreadable file is logged and read as empty."""
@@ -58,8 +92,13 @@ def load(engagement_id: str) -> list[dict]:
     except (OSError, ValueError) as exc:
         logger.warning("job inbox %s unreadable: %s", path, exc)
         return []
-    return [e for e in data if isinstance(e, dict) and isinstance(e.get("uuid"), str)] \
-        if isinstance(data, list) else []
+    if not isinstance(data, list):
+        return []
+    entries = [e for e in data
+               if isinstance(e, dict) and isinstance(e.get("uuid"), str)]
+    for entry in entries:
+        entry["notice"] = _checked_notice(engagement_id, entry.get("notice"))
+    return entries
 
 
 def _write(engagement_id: str, entries: list[dict]) -> None:
@@ -82,9 +121,11 @@ def _write(engagement_id: str, entries: list[dict]) -> None:
 def append(engagement_id: str, *, uuid: str, text: str,
            notice: dict | None) -> None:
     """Commit one entry. Raises :class:`JournalError` when it could not be
-    written, in which case nothing was accepted."""
+    written, in which case nothing was accepted. A *notice* that does not
+    name its address is refused and the entry is written without one."""
     entries = load(engagement_id)
-    entries.append({"uuid": uuid, "text": text, "notice": notice,
+    entries.append({"uuid": uuid, "text": text,
+                    "notice": _checked_notice(engagement_id, notice),
                     "taken_up": False})
     _write(engagement_id, entries)
 

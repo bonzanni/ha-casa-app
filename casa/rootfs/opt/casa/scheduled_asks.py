@@ -12,7 +12,11 @@ This module owns three things:
    machine. Each transition is persisted BEFORE the action it authorizes:
 
    ``posting``   written before the keyboard is posted — a keyboard may or may
-                 not exist, and no ``message_id`` is known yet.
+                 not exist, and no ``message_id`` is known yet. The record
+                 already names the bot that will post it (``bot_id``), read
+                 from that endpoint, because every later action on the
+                 question — the boot edit, the continuation — goes through
+                 that bot and no other.
    ``live``      written once the ``message_id`` is known: the broker request
                  owns a real keyboard.
    ``settling``  written before the FIRST terminal action (the keyboard edit),
@@ -49,6 +53,7 @@ from typing import Any, Callable, Coroutine
 
 import ask_retirement
 from atomic_io import PRIVATE, atomic_write_json
+from channels.tg_address import CASA, EndpointUnavailable, is_route, scope
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +94,8 @@ class ScheduledAskStore:
                 if not isinstance(loaded, dict):
                     raise ValueError(f"expected dict, got {type(loaded).__name__}")
                 self._data = {
-                    k: v for k, v in loaded.items() if isinstance(v, dict)
+                    k: v for k, v in loaded.items()
+                    if isinstance(v, dict) and _has_bot(k, v)
                 }
             except (json.JSONDecodeError, OSError, ValueError):
                 logger.error(
@@ -152,6 +158,18 @@ class ScheduledAskStore:
         await asyncio.to_thread(
             lambda: atomic_write_json(self._path, self._data, mode=PRIVATE),
         )
+
+
+def _has_bot(rid: str, rec: dict) -> bool:
+    """Whether a stored record names the bot its question was posted
+    through. A record without one is refused: there is no default bot to
+    assume, and editing or answering through the wrong bot would act on a
+    different conversation."""
+    bot = rec.get("bot_id")
+    if is_route(bot) and bot != CASA:
+        return True
+    logger.error("scheduled ask %s has no bot id; record ignored", rid)
+    return False
 
 
 # Process-wide singleton, installed at boot by casa_core. ``None`` until then:
@@ -436,7 +454,8 @@ def _revoked_before_reconcile(rec: dict) -> str | None:
     """
     for sel in _BOOT_REVOCATIONS:
         if "chat_id" in sel:
-            if rec.get("chat_id") == sel["chat_id"]:
+            if (rec.get("chat_id") == sel["chat_id"]
+                    and rec.get("bot_id") == sel["bot_id"]):
                 return sel["reason"]
             continue
         if sel.get("role") != rec.get("role"):
@@ -502,12 +521,12 @@ def revoke_trigger(
     ))
 
 
-def cancel_for_chat(chat_id: int, reason: str) -> int:
-    """Cancel every pending SCHEDULED ask in one DM.
+def cancel_for_chat(bot_id: int, chat_id: int, reason: str) -> int:
+    """Cancel every pending SCHEDULED ask in one DM on one bot.
 
     The operator's attention lane is not one broker scope — a protected-action
-    challenge registers under ``authz:<chat>`` while these live under
-    ``dm:<chat>`` — and this makes a machine-timed question non-actionable in
+    challenge registers under ``authz:<bot>:<chat>`` while these live under
+    ``dm:<bot>:<chat>`` — and this makes a machine-timed question non-actionable in
     one no-await block against the broker's own live map. An operator's own
     ``ask_user`` carries no ``scheduled`` marker and is never touched.
 
@@ -521,22 +540,24 @@ def cancel_for_chat(chat_id: int, reason: str) -> int:
     """
     from verdict_broker import BROKER
 
-    scope = f"dm:{chat_id}"
-    _note_boot_revocation(reason, chat_id=chat_id)
+    lane = scope("dm", bot_id, chat_id)
+    _note_boot_revocation(reason, bot_id=bot_id, chat_id=chat_id)
     return len(BROKER.cancel_where(
         namespace=NAMESPACE, reason=reason,
-        predicate=lambda r: _is_scheduled(r) and r.scope == scope,
+        predicate=lambda r: _is_scheduled(r) and r.scope == lane,
     ))
 
 
-def cancel_non_scheduled_for_chat(chat_id: int, reason: str) -> int:
-    """Cancel every pending NON-scheduled (human-raised) ask in one DM.
+def cancel_non_scheduled_for_chat(bot_id: int, chat_id: int, reason: str) -> int:
+    """Cancel every pending NON-scheduled (human-raised) ask in one DM on one
+    bot.
 
     The exact inverse selection of :func:`cancel_for_chat`, under the same
     discipline: ONE no-await block against the broker's live map, never the
     durable store. ``cancel_where`` is NAMESPACE-WIDE, so the predicate binds
     ``r.scope`` as well as the marker — without the scope clause this would
-    retire an interactive ask in a DIFFERENT chat.
+    retire an interactive ask in a DIFFERENT chat, or on another bot's chat
+    with the same operator.
 
     #648: an ordinary DM message is what calls this. The v0.76.0 rule it
     implements ("the text IS the answer") is true of a question the operator
@@ -550,15 +571,15 @@ def cancel_non_scheduled_for_chat(chat_id: int, reason: str) -> int:
     """
     from verdict_broker import BROKER
 
-    scope = f"dm:{chat_id}"
+    lane = scope("dm", bot_id, chat_id)
     return len(BROKER.cancel_where(
         namespace=NAMESPACE, reason=reason,
-        predicate=lambda r: r.scope == scope and not _is_scheduled(r),
+        predicate=lambda r: r.scope == lane and not _is_scheduled(r),
     ))
 
 
-def displace_scheduled_for_chat(chat_id: int, reason: str) -> int:
-    """Retire a live SCHEDULED ask in one DM because a human question has just
+def displace_scheduled_for_chat(bot_id: int, chat_id: int, reason: str) -> int:
+    """Retire a live SCHEDULED ask in one DM on one bot because a human question has just
     TAKEN the lane — and, unlike :func:`cancel_for_chat`, leave no boot marker.
 
     Same selection, one difference, and the difference is the point (#648).
@@ -574,10 +595,10 @@ def displace_scheduled_for_chat(chat_id: int, reason: str) -> int:
     """
     from verdict_broker import BROKER
 
-    scope = f"dm:{chat_id}"
+    lane = scope("dm", bot_id, chat_id)
     return len(BROKER.cancel_where(
         namespace=NAMESPACE, reason=reason,
-        predicate=lambda r: _is_scheduled(r) and r.scope == scope,
+        predicate=lambda r: _is_scheduled(r) and r.scope == lane,
     ))
 
 
@@ -587,6 +608,7 @@ def broker_meta(rec: dict) -> dict:
     exactly as the original was."""
     return {
         "options": list(rec.get("options") or []),
+        "bot_id": rec["bot_id"],
         "chat_id": rec["chat_id"],
         "operator_id": rec["operator_id"],
         "target_role": rec["role"],
@@ -628,8 +650,15 @@ async def _replay_terminal_edit(channel: Any, rec: dict) -> None:
                      rec.get("rid"), exc_info=True)
 
 
-async def reconcile_at_boot(channel: Any, *, now: float | None = None) -> dict:
+async def reconcile_at_boot(transport: Any, *, now: float | None = None) -> dict:
     """Reconcile every durable record against a fresh process.
+
+    *transport* is the Telegram transport. Each record is acted on through
+    the endpoint of the bot that posted its question (the record's
+    ``bot_id``), never another: the keyboard to edit and the conversation to
+    continue are that bot's. A record whose bot has no endpoint any more is
+    dropped without a dispatch; nothing can edit its keyboard or carry its
+    answer.
 
     Runs after the Telegram channel is ready (its edits need a live bot).
     Returns a count per disposition, for the boot log.
@@ -637,14 +666,14 @@ async def reconcile_at_boot(channel: Any, *, now: float | None = None) -> dict:
     from verdict_broker import BROKER
 
     store = STORE
-    if store is None or channel is None:
+    if store is None or transport is None:
         return {}
     now = time.time() if now is None else now
     counts = {"restored": 0, "expired": 0, "unconfirmed": 0,
               "settled_before_crash": 0, "operator_changed": 0}
 
     operator_id = None
-    resolver = getattr(channel, "operator_user_id", None)
+    resolver = getattr(transport, "operator_user_id", None)
     if callable(resolver):
         try:
             from provenance import strict_positive_id
@@ -656,6 +685,15 @@ async def reconcile_at_boot(channel: Any, *, now: float | None = None) -> dict:
         rid = rec.get("rid")
         state = rec.get("state")
         if not isinstance(rid, str) or not rid:
+            continue
+        try:
+            channel = transport.endpoint(rec["bot_id"])
+        except EndpointUnavailable:
+            counts["no_endpoint"] = counts.get("no_endpoint", 0) + 1
+            logger.warning(
+                "scheduled ask %s: bot %s has no endpoint; record dropped",
+                rid, rec.get("bot_id"))
+            await store.drop(rid)
             continue
         if state == STATE_SETTLING:
             # A terminal outcome was decided before the crash. At-most-once
@@ -747,7 +785,8 @@ async def reconcile_at_boot(channel: Any, *, now: float | None = None) -> dict:
         req, _created = BROKER.register(
             namespace=NAMESPACE, scope=rec["scope"], request_id=rid,
             timeout_s=remaining, detached=True,
-            require_idle=True, idle_scopes=(f"authz:{rec['chat_id']}",),
+            require_idle=True,
+            idle_scopes=(scope("authz", rec["bot_id"], rec["chat_id"]),),
             idle_requires_delivered=True,
             meta=broker_meta(rec),
         )

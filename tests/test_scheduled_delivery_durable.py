@@ -2,8 +2,8 @@
 
 A scheduled turn that delegates and is interrupted by a restart resumes through
 the DURABLE job, not through the live in-memory record. That path rebuilds the
-completion origin field by field (``specialist_registry._origin_from_job`` and
-the boot orphan-recovery builder in ``casa_core``), so a marker that lives only
+completion origin field by field (``specialist_registry.origin_from_job``, the
+one rebuilder the boot recovery uses too), so a marker that lives only
 in the live record's origin dict is silently gone by the time the resident is
 resumed — and its ``send_media`` then refuses a turn that would have worked had
 Casa stayed up.
@@ -38,6 +38,7 @@ def _job(**over):
         delivery_state=DeliveryState.NONE, result=None, failure=None,
         awaiting_input=False, continuable_until=None, delivery_sequence=0,
         delivery_attempt_id=None, lease_until=None, cancel_pending=False,
+        route={"_tg_bot": 111},
     )
     fields.update(over)
     return VoiceJob(**fields)
@@ -76,20 +77,18 @@ class TestDurableField:
 
 class TestOriginReconstruction:
     def test_marked_job_restores_the_marker(self):
-        from specialist_registry import SpecialistRegistry
+        from specialist_registry import origin_from_job
 
-        origin = SpecialistRegistry._origin_from_job(
-            _job(scheduled_delivery=True),
-        )
+        origin = origin_from_job(_job(scheduled_delivery=True))
         assert origin["_scheduled_delivery"] is True
         # The session label is still the label — restoring eligibility must not
         # smuggle in a delivery address.
         assert origin["chat_id"] == LABEL
 
     def test_unmarked_job_adds_no_key(self):
-        from specialist_registry import SpecialistRegistry
+        from specialist_registry import origin_from_job
 
-        origin = SpecialistRegistry._origin_from_job(_job())
+        origin = origin_from_job(_job())
         assert "_scheduled_delivery" not in origin
 
 

@@ -64,8 +64,8 @@ def _restart(monkeypatch) -> scratchpad.PadStore:
 async def _start(**origin) -> dict:
     """``start_job`` from the operator's own message, with his words on the turn."""
     token = agent.origin_var.set(dict(
-        role="assistant", execution_role="assistant", channel="telegram", chat_id="1",
-        cid="test", user_text="classify", _operator_turn=True, _operator_words=WORDS,
+        role="assistant", execution_role="assistant", channel="telegram", _tg_bot=111,
+        chat_id="1", cid="test", user_text="classify", _operator_turn=True, _operator_words=WORDS,
         **origin))
     try:
         envelope = await tools.start_job.handler(

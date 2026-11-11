@@ -1,6 +1,10 @@
 """L4 (v0.50.0): the Telegram webhook secret-token header must be compared
 with ``hmac.compare_digest`` (constant-time), not ``!=`` (timing oracle).
 
+Each bot has its own route, ``/telegram/update/{bot_id}``, and its own
+secret derived from the configured one; ``tests/test_bot_webhook_routes.py``
+pins the separation between bots.
+
 Mirrors the aiohttp TestClient/TestServer pattern in
 ``tests/test_webhook_handler.py``.
 """
@@ -16,13 +20,24 @@ from aiohttp.test_utils import TestClient, TestServer
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
 
+BOT = 111
+URL = f"/telegram/update/{BOT}"
+
+
+def _token(root: str = "s3cret") -> str:
+    """The secret Telegram sends on bot 111's route."""
+    from channels.telegram_transport import webhook_secret_for
+    return webhook_secret_for(root, BOT)
+
+
 async def _client(secret: str, channel):
     from casa_core import _make_telegram_update_handler
     handler = _make_telegram_update_handler(
-        get_telegram_channel=lambda: channel, webhook_secret=secret,
+        get_endpoint=lambda bot_id: channel if bot_id == BOT else None,
+        root_secret=secret,
     )
     app = web.Application()
-    app.router.add_post("/telegram/update", handler)
+    app.router.add_post("/telegram/update/{bot_id}", handler)
     client = TestClient(TestServer(app))
     await client.start_server()
     return client
@@ -38,8 +53,22 @@ async def test_wrong_token_403_and_not_processed():
     ch = _channel()
     client = await _client("s3cret", ch)
     resp = await client.post(
-        "/telegram/update", json={"update_id": 1},
+        URL, json={"update_id": 1},
         headers={"X-Telegram-Bot-Api-Secret-Token": "wrong"},
+    )
+    assert resp.status == 403
+    ch.process_webhook_update.assert_not_awaited()
+    await client.close()
+
+
+async def test_the_configured_secret_itself_is_not_the_route_secret():
+    """The root secret signs nothing on its own: each route expects the
+    secret derived for its bot."""
+    ch = _channel()
+    client = await _client("s3cret", ch)
+    resp = await client.post(
+        URL, json={"update_id": 1},
+        headers={"X-Telegram-Bot-Api-Secret-Token": "s3cret"},
     )
     assert resp.status == 403
     ch.process_webhook_update.assert_not_awaited()
@@ -50,8 +79,8 @@ async def test_correct_token_200():
     ch = _channel()
     client = await _client("s3cret", ch)
     resp = await client.post(
-        "/telegram/update", json={"update_id": 1},
-        headers={"X-Telegram-Bot-Api-Secret-Token": "s3cret"},
+        URL, json={"update_id": 1},
+        headers={"X-Telegram-Bot-Api-Secret-Token": _token()},
     )
     assert resp.status == 200
     ch.process_webhook_update.assert_awaited_once()
@@ -65,8 +94,8 @@ async def test_outcome_header_reflects_channel_outcome():
         ch = _channel(outcome)
         client = await _client("s3cret", ch)
         resp = await client.post(
-            "/telegram/update", json={"update_id": 7},
-            headers={"X-Telegram-Bot-Api-Secret-Token": "s3cret"},
+            URL, json={"update_id": 7},
+            headers={"X-Telegram-Bot-Api-Secret-Token": _token()},
         )
         assert resp.status == 200
         assert resp.headers["X-Casa-Update"] == outcome
@@ -80,7 +109,7 @@ async def test_non_ascii_token_is_403_not_500():
     ch = _channel()
     client = await _client("s3cret", ch)
     resp = await client.post(
-        "/telegram/update", json={"update_id": 1},
+        URL, json={"update_id": 1},
         headers={"X-Telegram-Bot-Api-Secret-Token": "sécret"},
     )
     assert resp.status == 403
@@ -95,7 +124,7 @@ async def test_no_secret_configured_rejects():
     # mode this route is registered but unused, so rejecting is harmless.
     ch = _channel()
     client = await _client("", ch)
-    resp = await client.post("/telegram/update", json={"update_id": 1})
+    resp = await client.post(URL, json={"update_id": 1})
     assert resp.status == 403
     ch.process_webhook_update.assert_not_awaited()
     await client.close()

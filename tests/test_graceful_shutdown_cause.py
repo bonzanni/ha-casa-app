@@ -200,7 +200,7 @@ async def test_an_unlatched_cancellation_during_a_stop_still_defers(tmp_path):
     `asyncio.wait` cannot tell a barge-in from process death, and those are the
     arms #671 exists for. Unlatched must stay deferred, or the fix is undone.
     """
-    registry = await loaded(tmp_path, make_voice_job(creator_peer="telegram"))
+    registry = await loaded(tmp_path, make_voice_job(creator_peer="telegram", route={"_tg_bot": 111}))
     commits = Commits(registry)
 
     registry.begin_shutdown()

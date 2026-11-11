@@ -29,8 +29,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from atomic_io import atomic_write_json
+from channels.tg_address import AddressError, TgAddress, is_route
 from job_registry import CASA_SHUTDOWN_REASON
-from provenance import strict_positive_id
 from sensitivity import TIERS
 
 logger = logging.getLogger(__name__)
@@ -79,21 +79,60 @@ JOB_POST_QUESTION = "question"
 JOB_POST_PARKED = "parked"
 
 
-def _message_ids(value: object) -> list[int]:
-    """A persisted list of Telegram message ids, as far as it is one."""
-    if not isinstance(value, list):
-        return []
-    return [v for v in value if type(v) is int]
+_JOB_POST_KINDS = (JOB_POST_START, JOB_POST_QUESTION, JOB_POST_PARKED)
 
 
-def _keyboard_posts(value: object) -> list[list]:
-    """A persisted ``ui_posts`` list: ``[message_id, kind]`` pairs."""
+def _post_address(value: object) -> TgAddress | None:
+    """A stored ``[bot, chat, message]`` post as an address naming a
+    message; ``None`` for anything else."""
+    try:
+        addr = TgAddress.from_json(value)
+    except AddressError:
+        return None
+    return addr if addr.message_id is not None else None
+
+
+def _dm_posts(value: object, engagement_id: object) -> list[TgAddress]:
+    """A persisted ``dm_posts`` list, ``[[bot, chat, message], ...]``. An
+    entry that does not name its bot, chat and message is refused, loudly:
+    there is no default bot to file it under."""
     if not isinstance(value, list):
         return []
-    return [[item[0], item[1]] for item in value
-            if isinstance(item, list) and len(item) == 2
-            and type(item[0]) is int
-            and item[1] in (JOB_POST_START, JOB_POST_QUESTION, JOB_POST_PARKED)]
+    posts: list[TgAddress] = []
+    for item in value:
+        addr = _post_address(item)
+        if addr is None:
+            logger.error("engagement %s: direct chat post %r names no bot, "
+                         "chat and message; skipped", engagement_id, item)
+            continue
+        posts.append(addr)
+    return posts
+
+
+def _keyboard_posts(value: object,
+                    engagement_id: object) -> list[tuple[TgAddress, str]]:
+    """A persisted ``ui_posts`` list, ``[[bot, chat, message, kind], ...]``,
+    as ``(address, kind)`` pairs. An entry without its bot is refused,
+    loudly, like a ``dm_posts`` entry."""
+    if not isinstance(value, list):
+        return []
+    posts: list[tuple[TgAddress, str]] = []
+    for item in value:
+        addr = (_post_address(item[:3])
+                if isinstance(item, list) and len(item) == 4 else None)
+        if addr is None or item[3] not in _JOB_POST_KINDS:
+            logger.error("engagement %s: keyboard post %r names no bot, chat, "
+                         "message and kind; skipped", engagement_id, item)
+            continue
+        posts.append((addr, item[3]))
+    return posts
+
+
+def _post_key(addr: TgAddress) -> tuple[int, int, int]:
+    """The index key of one post. Telegram numbers messages per bot and per
+    chat, so a message id alone, or a chat and message id, can name two
+    bots' posts."""
+    return (addr.bot_id, addr.chat_id, addr.message_id)
 
 
 def _question_map(value: object) -> dict:
@@ -105,12 +144,6 @@ def _question_map(value: object) -> dict:
                               if isinstance(o, str)]}
             for qid, q in value.items()
             if isinstance(qid, str) and isinstance(q, dict)}
-
-
-def _post_chat(rec: Any) -> int | None:
-    """The direct chat a job's posts are in: its origin's chat id, or
-    ``None`` when the origin names none."""
-    return strict_positive_id((getattr(rec, "origin", None) or {}).get("chat_id"))
 
 
 def _new_question_id() -> str:
@@ -151,7 +184,9 @@ _TERMINAL_STATUSES = ("completed", "cancelled", "error")
 # never reach the tombstone's ``json.dumps``; the tombstone is a durable record
 # of the engagement, and none of these live objects are meaningful once restored.
 # Strip them at the serialization boundary (they stay on the in-memory
-# ``rec.origin`` for live use).
+# ``rec.origin`` for live use). The route (``_tg_bot``) is NOT one of them:
+# it persists with the origin, ``CASA`` included, so a job reloaded after a
+# restart still delivers through the bot it was started on.
 _NON_PERSISTABLE_ORIGIN_KEYS = frozenset({
     "speaker_provenance",
     "_voice_handoff_reservation",
@@ -289,12 +324,13 @@ class EngagementRecord:
     # steerable. Kept past the end, with the tombstone, so a reply quoting
     # one of them after the job ended is known as a reply to this job
     # (``EngagementRegistry.ended_job_post_owner``); a post that lands after
-    # the end is added too.
+    # the end is added too. Each is the post's ``TgAddress``: the bot that
+    # posted it, the chat and the message (stored ``[bot, chat, message]``).
     dm_posts: list = field(default_factory=list)
     # The subset of those posts that carry a keyboard, each
-    # ``[message_id, kind]`` (``JOB_POST_START`` or ``JOB_POST_QUESTION``).
-    # Kept past the end until the keyboards are retired
-    # (``take_ui_posts``).
+    # ``(TgAddress, kind)`` (``JOB_POST_START``, ``JOB_POST_QUESTION`` or
+    # ``JOB_POST_PARKED``; stored ``[bot, chat, message, kind]``). Kept past
+    # the end until the keyboards are retired (``take_ui_posts``).
     ui_posts: list = field(default_factory=list)
     # The questions the job asked the operator, keyed by the random id their
     # buttons carry: ``{"text": str, "options": [str, ...]}``. Emptied by the
@@ -360,15 +396,14 @@ class EngagementRegistry:
         # record that counts as live. Rebuilt from the records at ``load()``,
         # extended by ``record_job_post`` and emptied for a record when its
         # terminal transition settles.
-        self._job_post_index: dict[int, str] = {}
-        # #1522: (chat id, DM message id) -> the ended job record that posted
-        # it; Telegram numbers messages per chat, so the chat is part of the
-        # key (``None`` for a job whose origin names no chat). Its posts move
-        # here from the index above when the terminal transition settles; a
-        # post landing after that is filed here directly. Rebuilt from
-        # terminal records at ``load()``, so a record that aged out of the
-        # tombstone leaves it at the next boot.
-        self._ended_post_index: dict[tuple[int | None, int], str] = {}
+        # Keyed ``(bot, chat, message)`` (``_post_key``).
+        self._job_post_index: dict[tuple[int, int, int], str] = {}
+        # #1522: (bot, chat, message) -> the ended job record that posted
+        # it. Its posts move here from the index above when the terminal
+        # transition settles; a post landing after that is filed here
+        # directly. Rebuilt from terminal records at ``load()``, so a record
+        # that aged out of the tombstone leaves it at the next boot.
+        self._ended_post_index: dict[tuple[int, int, int], str] = {}
         self._lock = asyncio.Lock()
         # #588: strong refs for the background tombstone persists scheduled by
         # ``begin_turn_delivery`` (which may not await). Without a reference the
@@ -427,6 +462,16 @@ class EngagementRegistry:
         # the same surviving record here as there.
         loaded: dict[Any, EngagementRecord] = {}
         for row in raw:
+            origin = row.get("origin") if isinstance(row, dict) else None
+            if (isinstance(origin, dict) and origin.get("channel") == "telegram"
+                    and not is_route(origin.get("_tg_bot"))):
+                # A Telegram job delivers through the bot it was started
+                # on; a record that does not name it has no bot to go to,
+                # and none is guessed for it.
+                logger.error(
+                    "Skipping engagement %s: its Telegram origin has no valid "
+                    "route (_tg_bot=%r)", row.get("id"), origin.get("_tg_bot"))
+                continue
             try:
                 rec = EngagementRecord(
                     id=row["id"],
@@ -453,8 +498,9 @@ class EngagementRegistry:
                         row.get("terminal_notification_pending", False)),
                     transcripts_reaped=bool(
                         row.get("transcripts_reaped", False)),
-                    dm_posts=_message_ids(row.get("dm_posts")),
-                    ui_posts=_keyboard_posts(row.get("ui_posts")),
+                    dm_posts=_dm_posts(row.get("dm_posts"), row.get("id")),
+                    ui_posts=_keyboard_posts(row.get("ui_posts"),
+                                             row.get("id")),
                     questions=_question_map(row.get("questions")),
                 )
             except (KeyError, TypeError, ValueError) as exc:
@@ -486,14 +532,14 @@ class EngagementRegistry:
             self._records[rec.id] = rec
             loaded[rec.id] = rec
             if rec.status in ("active", "idle"):
-                for message_id in rec.dm_posts:
-                    self._job_post_index[message_id] = rec.id
+                for addr in rec.dm_posts:
+                    self._job_post_index[_post_key(addr)] = rec.id
             else:
                 # An ended job's posts are kept so a reply to one is known as
                 # a reply to this ended job; its questions are not
                 # answerable any more (the settling write stores them empty).
-                for message_id in rec.dm_posts:
-                    self._ended_post_index[(_post_chat(rec), message_id)] = rec.id
+                for addr in rec.dm_posts:
+                    self._ended_post_index[_post_key(addr)] = rec.id
                 rec.questions = {}
 
         # #1093: what the previous process left owed, captured here — before
@@ -582,49 +628,47 @@ class EngagementRegistry:
             async with self._lock:
                 pass
 
-    def job_post_owner(self, message_id: Any) -> "EngagementRecord | None":
-        """The job record that filed *message_id* as one of its direct chat
-        posts, while that record counts as live; otherwise ``None``."""
-        if type(message_id) is not int:
+    def job_post_owner(self, addr: Any) -> "EngagementRecord | None":
+        """The job record that filed the post at *addr* (a ``TgAddress``)
+        as one of its direct chat posts, while that record counts as live;
+        otherwise ``None``. Only the bot that posted the message names it: an
+        equal message id on another bot is a different message."""
+        if not isinstance(addr, TgAddress) or addr.message_id is None:
             return None
-        engagement_id = self._job_post_index.get(message_id)
+        engagement_id = self._job_post_index.get(_post_key(addr))
         if engagement_id is None or not self.counts_as_live(engagement_id):
             return None
         return self._records.get(engagement_id)
 
-    def ended_job_post_owner(self, chat_id: Any,
-                             message_id: Any) -> "EngagementRecord | None":
-        """#1522: the ended job record that filed *message_id* as one of its
-        posts in the direct chat *chat_id* (Telegram numbers messages per
-        chat); ``None`` for any other message, and for a record that still
-        counts as live (``job_post_owner`` answers for it). A record that is
-        no longer held answers ``None``."""
-        chat = strict_positive_id(chat_id)
-        if chat is None or type(message_id) is not int:
+    def ended_job_post_owner(self, addr: Any) -> "EngagementRecord | None":
+        """#1522: the ended job record that filed the post at *addr* (a
+        ``TgAddress``); ``None`` for any other message, and for a record that
+        still counts as live (``job_post_owner`` answers for it). A record
+        that is no longer held answers ``None``."""
+        if not isinstance(addr, TgAddress) or addr.message_id is None:
             return None
-        # A job whose origin names no chat is filed under ``None``. The live
-        # index too: a direct terminal mutator has flipped the status before
-        # its write settles and the posts move.
-        for engagement_id in (self._ended_post_index.get((chat, message_id)),
-                              self._ended_post_index.get((None, message_id)),
-                              self._job_post_index.get(message_id)):
+        key = _post_key(addr)
+        # The live index too: a direct terminal mutator has flipped the
+        # status before its write settles and the posts move.
+        for engagement_id in (self._ended_post_index.get(key),
+                              self._job_post_index.get(key)):
             rec = self._records.get(engagement_id) if engagement_id else None
             if (rec is not None and rec.status in _TERMINAL_STATUSES
                     and not self.counts_as_live(rec.id)
-                    and isinstance(rec.origin.get("job"), dict)
-                    and _post_chat(rec) in (chat, None)):
+                    and isinstance(rec.origin.get("job"), dict)):
                 return rec
         return None
 
-    def record_job_post(self, engagement_id: str, message_id: Any, *,
+    def record_job_post(self, engagement_id: str, addr: Any, *,
                         keyboard: str | None = None) -> bool:
-        """File one landed direct chat post of a job: append it to the
+        """File one landed direct chat post of a job, at *addr* (the
+        ``TgAddress`` the posting endpoint gave it): append it to the
         record's ``dm_posts`` (and, with ``keyboard``, to ``ui_posts``),
         index it, and schedule the tombstone write. SYNCHRONOUS — the
         channel calls it from the step in which the post landed.
 
         ``False`` when the post was not filed as a live job's: an unknown
-        record, one that is not a job, a message id that is not one, or a
+        record, one that is not a job, an address that names no message, or a
         record whose terminal transition has settled. A post of that last kind
         is still kept as the ended job's (``ended_job_post_owner``), but its
         keyboard is the caller's to retire, since the terminal-time
@@ -633,30 +677,32 @@ class EngagementRegistry:
         rollback leaves it steerable and a commit's retirement still takes
         its keyboard."""
         rec = self._records.get(engagement_id)
-        if (rec is None or type(message_id) is not int
+        if (rec is None or not isinstance(addr, TgAddress)
+                or addr.message_id is None
                 or not isinstance(rec.origin.get("job"), dict)):
             return False
         if not self.counts_as_live(engagement_id):
             # #1522: a job can end while one of its posts is still being
             # sent; a reply to that post is a reply to the ended job.
-            if message_id not in rec.dm_posts:
-                rec.dm_posts.append(message_id)
-            self._ended_post_index[(_post_chat(rec), message_id)] = engagement_id
+            if addr not in rec.dm_posts:
+                rec.dm_posts.append(addr)
+            self._ended_post_index[_post_key(addr)] = engagement_id
             self._schedule_tombstone_persist()
             return False
-        if message_id not in rec.dm_posts:
-            rec.dm_posts.append(message_id)
-        self._job_post_index[message_id] = engagement_id
+        if addr not in rec.dm_posts:
+            rec.dm_posts.append(addr)
+        self._job_post_index[_post_key(addr)] = engagement_id
         if keyboard is not None and not any(
-                post[0] == message_id for post in rec.ui_posts):
-            rec.ui_posts.append([message_id, keyboard])
+                post[0] == addr for post in rec.ui_posts):
+            rec.ui_posts.append((addr, keyboard))
         self._schedule_tombstone_persist()
         return True
 
     def take_ui_posts(self, engagement_id: str) -> list:
-        """Take and clear the record's keyboard posts in one synchronous step
-        (and schedule the write), so each keyboard is retired by one owner.
-        Called for a terminal record only."""
+        """Take and clear the record's keyboard posts, as ``(TgAddress,
+        kind)`` pairs, in one synchronous step (and schedule the write), so
+        each keyboard is retired by one owner. Called for a terminal record
+        only."""
         rec = self._records.get(engagement_id)
         if rec is None or not rec.ui_posts:
             return []
@@ -666,7 +712,8 @@ class EngagementRegistry:
 
     def records_with_ui_posts(self) -> list["EngagementRecord"]:
         """Terminal records that still carry keyboard posts — the boot
-        retirement pass's work list."""
+        retirement pass's work list. Each record's ``ui_posts`` are
+        ``(TgAddress, kind)`` pairs."""
         return [r for r in self._records.values()
                 if r.ui_posts and r.status in _TERMINAL_STATUSES]
 
@@ -694,10 +741,11 @@ class EngagementRegistry:
         its questions. The write that settled it already stored the questions
         empty (``_write_tombstone_locked`` writes a terminal record's
         questions empty) and kept the posts, so memory now matches disk."""
-        for message_id in rec.dm_posts:
-            if self._job_post_index.get(message_id) == rec.id:
-                del self._job_post_index[message_id]
-            self._ended_post_index[(_post_chat(rec), message_id)] = rec.id
+        for addr in rec.dm_posts:
+            key = _post_key(addr)
+            if self._job_post_index.get(key) == rec.id:
+                del self._job_post_index[key]
+            self._ended_post_index[key] = rec.id
         rec.questions = {}
 
     async def promote_from_quiet(self, engagement_id: str) -> bool:
@@ -812,8 +860,9 @@ class EngagementRegistry:
                 # that commits the terminal status is the one that drops them
                 # (``_settle_job_posts`` then empties memory). Its posts are
                 # kept (#1522), so a reply to one names the ended job.
-                "dm_posts": list(rec.dm_posts),
-                "ui_posts": [list(post) for post in rec.ui_posts],
+                "dm_posts": [addr.to_json() for addr in rec.dm_posts],
+                "ui_posts": [[*addr.to_json(), kind]
+                             for addr, kind in rec.ui_posts],
                 "questions": ({} if rec.status in _TERMINAL_STATUSES
                               else {qid: dict(q)
                                     for qid, q in rec.questions.items()}),

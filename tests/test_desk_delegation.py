@@ -26,13 +26,14 @@ from test_desk_turn import _REAL_BOUNDED, _Survivor
 pytestmark = pytest.mark.asyncio
 
 OPERATOR = 42
+BOT = 111          # the endpoint the operator wrote to
 
 
 def _dm_origin(**over):
     base = {"role": "assistant", "execution_role": "assistant", "channel": "telegram",
             "source": "telegram", "message_type": "channel_in", "chat_id": str(OPERATOR),
             "user_id": OPERATOR, "cid": "c1", "user_text": "please do X",
-            "_operator_turn": True}
+            "_operator_turn": True, "_tg_bot": BOT}
     base.update(over)
     return base
 
@@ -80,7 +81,7 @@ async def _delegate(task="draft invoice", context="lantern march", mode="sync", 
 
 
 async def test_a_sync_delegation_from_the_operator_dm_reads_and_writes_the_desk(env):
-    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     desk.append("operator", "earlier words", now=4990.0)
     payload = await _delegate()
     assert payload["status"] == "ok" and payload["text"] == "answer 1"
@@ -105,9 +106,9 @@ async def test_a_later_delegation_labels_the_residents_brief_on_the_operators_be
 
 
 async def test_the_thread_begins_with_the_first_delegation(env):
-    assert sd.DESKS.get(OPERATOR, "finance") is None
+    assert sd.DESKS.get(BOT, OPERATOR, "finance") is None
     await _delegate()
-    desk = sd.DESKS.get(OPERATOR, "finance")
+    desk = sd.DESKS.get(BOT, OPERATOR, "finance")
     assert desk is not None and [e.who for e in desk.log] == ["resident", "specialist"]
     assert "<desk>" not in env.calls[0].context                     # nothing to read yet
 
@@ -118,7 +119,7 @@ async def test_the_thread_begins_with_the_first_delegation(env):
     _dm_origin(channel="webhook", source="webhook"),
 ], ids=["not-operator", "no-chat", "webhook"])
 async def test_a_delegation_from_anywhere_else_touches_no_desk(env, origin):
-    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     desk.append("operator", "earlier words", now=4990.0)
     payload = await _delegate(origin=origin)
     assert payload["status"] == "ok"
@@ -127,7 +128,7 @@ async def test_a_delegation_from_anywhere_else_touches_no_desk(env, origin):
 
 
 async def test_a_full_queue_is_the_typed_busy_result_with_no_task(env):
-    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     desk.waiting = sd.DESK_QUEUE_MAX
     payload = await _delegate()
     assert payload == {**payload, "status": "error", "kind": "busy", "agent": "finance"}
@@ -135,7 +136,7 @@ async def test_a_full_queue_is_the_typed_busy_result_with_no_task(env):
 
 
 async def test_an_async_delegation_waits_for_the_desk_and_still_returns_pending(env):
-    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     await desk.lock.acquire()                                    # a desk turn is running
     payload = await _delegate(mode="async")
     assert payload["status"] == "pending"
@@ -153,7 +154,7 @@ async def test_an_async_delegation_waits_for_the_desk_and_still_returns_pending(
 
 
 async def test_the_combined_context_never_exceeds_the_desk_cap(env):
-    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     for i in range(12):
         desk.append("operator" if i % 2 == 0 else "specialist", f"{i:02d}" + "x" * 398, now=4990.0)
     big = "c" * 8000
@@ -173,7 +174,7 @@ async def test_a_delegation_cancelled_before_its_task_releases_the_reservation(e
     async def _blocked_register(record):
         await gate.wait()
     monkeypatch.setattr(tools_mod._specialist_registry, "register_delegation", _blocked_register)
-    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     task = asyncio.create_task(_with_origin(
         delegate_to_agent.handler({"agent": "finance", "task": "t", "context": "", "mode": "sync"}),
         _dm_origin()))
@@ -192,7 +193,7 @@ async def test_a_delegation_behind_a_running_desk_turn_queues_instead_of_being_r
     from specialist_limits import SpecialistLimiter
     limiter = SpecialistLimiter(max_global=2)
     monkeypatch.setattr(tools_mod, "_specialist_limiter", limiter)
-    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     await desk.lock.acquire()
     held = limiter.try_acquire(tools_mod._delegation_scope(_dm_origin(), "finance"))
     assert held is not None
@@ -209,7 +210,7 @@ async def test_a_delegation_behind_a_running_desk_turn_queues_instead_of_being_r
 
 
 async def test_the_delegation_permit_is_released_inside_the_desk_lock(env, monkeypatch):
-    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     seen = {}
 
     class _Permit:
@@ -239,7 +240,7 @@ async def test_the_delegation_exchange_is_stamped_at_completion(env, monkeypatch
         env.clock["t"] += 500.0
         return tools_mod.DelegatedOutput(text="slow")
     monkeypatch.setattr(tools_mod, "_run_delegated_agent_bounded", runner)
-    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     await _delegate()
     assert desk.last_used == 5500.0 and all(e.at == 5500.0 for e in desk.log)
 
@@ -256,7 +257,7 @@ async def test_a_reply_arriving_during_a_delegations_registration_runs_after_it(
         await gate.wait()
         await real_register(record)
     monkeypatch.setattr(tools_mod._specialist_registry, "register_delegation", _slow_register)
-    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     delegation = asyncio.create_task(_with_origin(
         delegate_to_agent.handler({"agent": "finance", "task": "first", "context": "", "mode": "sync"}),
         _dm_origin()))
@@ -296,7 +297,7 @@ async def test_the_prelaunch_seam_keeps_its_five_argument_call(env, monkeypatch)
 async def test_a_faulted_desk_is_the_typed_desk_faulted_result_before_any_queue_place(env):
     """S5 §14.8: a delegation to a faulted desk is refused at once — sync and
     async alike — with no reservation, no task and no exchange."""
-    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     desk.faulted = "run abc: termination unconfirmed"
     for mode in ("sync", "async"):
         payload = await _delegate(mode=mode)
@@ -346,7 +347,7 @@ async def _no_second_run_until_the_first_has_ended(desk, survivor):
 
 async def test_a_delegation_cut_off_at_the_ceiling_keeps_its_desk_until_its_run_has_ended(env, monkeypatch):
     survivor = _survive(monkeypatch)
-    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     try:
         with pytest.raises(tools_mod.DelegationCeilingExceeded):
             await asyncio.wait_for(_use(desk), 5)
@@ -357,7 +358,7 @@ async def test_a_delegation_cut_off_at_the_ceiling_keeps_its_desk_until_its_run_
 
 async def test_a_cancelled_delegation_keeps_its_desk_until_its_run_has_ended(env, monkeypatch):
     survivor = _survive(monkeypatch)
-    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     try:
         first = asyncio.create_task(_use(desk))
         await survivor.started()
@@ -375,7 +376,7 @@ async def test_a_sticky_fault_set_while_a_cut_off_delegation_unwinds_outlives_th
     reason, after that run has ended — the next delegation is the typed
     refusal and starts no run."""
     survivor = _survive(monkeypatch)
-    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    desk = sd.DESKS.get_or_create(BOT, OPERATOR, "finance")
     try:
         with pytest.raises(tools_mod.DelegationCeilingExceeded):
             await asyncio.wait_for(_use(desk), 5)

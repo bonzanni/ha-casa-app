@@ -32,10 +32,10 @@ from test_pending_approval_desk import (  # noqa: F401 — the desk harness
     _Scripted, _ask as _desk_ask, _call as _desk_call, _result as _desk_result,
     _text as _desk_text, desk, env,
 )
-from test_pending_approval_desk import LABEL, OPERATOR as DESK_OPERATOR, _reply
+from test_pending_approval_desk import BOT as DESK_BOT, LABEL, OPERATOR as DESK_OPERATOR, _reply
 from test_pending_approval_output import (  # noqa: F401 — the resident harness
-    ARGS, PROTECTED, TAIL, TOOL, _Factory, _Gate, _ask, _call, _drive, _key,
-    _msg, _result, _text, turn,
+    ARGS, CASA_BOT, PROTECTED, TAIL, TOOL, _Factory, _Gate, _ask, _call, _drive,
+    _key, _msg, _result, _text, turn,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -67,7 +67,8 @@ async def test_other_denies_deliver_the_words_after_the_call(turn, monkeypatch, 
             await post_entered.wait()
             # /new cancels the chat's authz scope while the post is in flight
             verdict_broker.BROKER.cancel_scope(
-                namespace="resident_ask", scope="authz:42", reason="new_session")
+                namespace="resident_ask", scope=f"authz:{CASA_BOT}:42",
+                reason="new_session")
         post_gate.set()
         return await task
 
@@ -167,13 +168,14 @@ async def test_desk_deny_then_consume_then_prose_is_posted_whole(desk):
 
     assert _deny_reason(desk.answers[0]) == _DENY_POSTED and desk.answers[1] == {}
     assert [str(m) for m, _ in desk.channel.replies] == [LABEL + "\nBEFORE\n\nFiled it."]
-    assert sd.prompt_prefix(DESK_OPERATOR) == (
+    assert sd.prompt_prefix(DESK_BOT, DESK_OPERATOR) == (
         "(front desk) " + LABEL + " answered your reply (1 page).\n\n")
 
 
 def _desk_key():
     from authz_grants import GrantKey, canonical_args_hash
-    return GrantKey(operator_id=DESK_OPERATOR, chat_id=DESK_OPERATOR,
+    return GrantKey(operator_id=DESK_OPERATOR, bot_id=CASA_BOT,
+                    chat_id=DESK_OPERATOR,
                     enforcement_role="finance", artifact_id="artifact-1",
                     tool_name=TOOL, args_hash=canonical_args_hash(ARGS),
                     engagement_id="")
@@ -181,11 +183,22 @@ def _desk_key():
 
 # --- F4: the hook's answers on every build, and a record that cannot raise --------
 
-def _hook_for(role, channel, grants):
+def _hook_for(role, channel, grants, monkeypatch):
+    """The hook over the transport whose only endpoint, Casa's bot, is
+    *channel*, installed where the identity resolves routes: the challenge
+    is posted through the identity's bot."""
+    import tools
+    from telegram_channel_double import make_transport
+    channel.default_agent, channel.bot_id, channel.has_bot_id = (
+        "assistant", CASA_BOT, True)
+    channel.chat_id = "42"
+    manager = make_transport(channel)
+    monkeypatch.setattr(tools, "_channel_manager", manager, raising=False)
+    transport = manager.get("telegram")
     coord = ChallengeCoordinator()
     return make_resident_authz_hook(
         role, PROTECTED,
-        lambda: AuthzDeps(channel=channel, grants=grants, challenges=coord))
+        lambda: AuthzDeps(channel=transport, grants=grants, challenges=coord))
 
 
 async def _posted_then_pending(hook):
@@ -209,9 +222,12 @@ async def test_engagement_and_plugin_job_answers_are_unchanged_and_never_reach_t
     monkeypatch.setattr(verdict_broker, "BROKER", verdict_broker.VerdictBroker())
     ambient = TurnScope(id="t", cid="c", role="finance", display_name="F",
                         channel="telegram", message_type="channel_in")
-    rec = _engagement(kind=kind, role_or_type="finance")
-    hook = _hook_for("finance", _FakeChannel(), GrantStore())
-    with _OriginCtx(_origin(turn_scope=ambient), engagement=rec):
+    rec = _engagement(kind=kind, role_or_type="finance",
+                      origin={"user_id": 100, "chat_id": "42",
+                              "_tg_bot": CASA_BOT})
+    hook = _hook_for("finance", _FakeChannel(), GrantStore(), monkeypatch)
+    with _OriginCtx(_origin(turn_scope=ambient, _tg_bot=CASA_BOT),
+                    engagement=rec):
         reasons = await _posted_then_pending(hook)
     assert reasons == [_DENY_POSTED, _DENY_PENDING]
     assert ambient.approvals == {}
@@ -231,11 +247,15 @@ async def test_a_record_that_raises_changes_no_answer(monkeypatch):
     scope = TurnScope(id="t", cid="c", role="finance", display_name="F",
                       channel="telegram", message_type="channel_in")
     grants = GrantStore()
-    hook = _hook_for("finance", _FakeChannel(), grants)
-    with _OriginCtx(_origin(turn_scope=scope)):
+    hook = _hook_for("finance", _FakeChannel(), grants, monkeypatch)
+    with _OriginCtx(_origin(turn_scope=scope, _tg_bot=CASA_BOT)):
         reasons = await _posted_then_pending(hook)
-        from test_authz_hook import _expected_key
-        grants.mint(_expected_key(dict(ARGS)))
+        from authz_grants import GrantKey, canonical_args_hash
+        from test_authz_hook import ARTIFACT
+        grants.mint(GrantKey(operator_id=100, bot_id=CASA_BOT, chat_id=42,
+                             enforcement_role="finance", artifact_id=ARTIFACT,
+                             tool_name=TOOL,
+                             args_hash=canonical_args_hash(dict(ARGS))))
         allowed = await hook({"tool_name": TOOL, "tool_input": dict(ARGS)}, "c-3", {})
     assert reasons == [_DENY_POSTED, _DENY_PENDING]
     assert allowed == {}

@@ -27,13 +27,15 @@ This page defines no invariant of its own. The contracts the cases rely on are d
 ## Failure behavior
 
 **No secret, or a wrong one, in webhook mode.** The route refuses before parsing. Nothing
-reaches the channel.
+reaches the channel. A secret signed for another bot is a wrong one, and a path naming a bot
+with no endpoint is a 404 ([`telegram-bots.md`](telegram-bots.md)).
 
 **Webhook transport selected without a public URL.** Boot does not fail; the system logs and
 uses polling.
 
 **A duplicate update arrives.** A webhook redelivery is absorbed by a bounded, process-local
-recent-update cache consulted on the webhook path only. Polling updates never pass that
+recent-update cache consulted on the webhook path only, one per bot, so two bots' equal
+update ids are two updates. Polling updates never pass that
 cache, and no equivalent deduplication is established for them here. The route still
 answers 200 with an empty body either way — Telegram's contract — but an `X-Casa-Update`
 response header distinguishes the outcomes for programmatic callers: `accepted` (queued),

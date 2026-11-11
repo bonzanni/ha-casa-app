@@ -89,10 +89,25 @@ class _FakeChannel:
         return self._dispatch_result
 
 
+#: The bot the asking turn came in on (Casa's own, in these tests).
+BOT = 111
+
+
+def _as_endpoint(channel, *, bot_id=BOT, role="assistant"):
+    """Give a channel double the endpoint attributes the Telegram transport
+    reads when it registers one."""
+    channel.default_agent = role
+    channel.has_bot_id = True
+    channel.bot_id = bot_id
+    channel.on_identity = None
+    return channel
+
+
 def _mk_cm(channel):
-    cm = MagicMock()
-    cm.get = MagicMock(return_value=channel)
-    return cm
+    """A channel manager whose ``"telegram"`` is the transport over the
+    double, registered as Casa's endpoint — the way ``casa_core`` does."""
+    from telegram_channel_double import make_transport
+    return make_transport(_as_endpoint(channel))
 
 
 def _payload(res):
@@ -108,6 +123,8 @@ def _set_origin(agent_mod, **overrides):
         "message_type": "channel_in",
         "source": "telegram",
         "execution_role": "assistant",
+        # the route the receiving bot stamped on the DM turn
+        "_tg_bot": BOT,
     }
     origin.update(overrides)
     return agent_mod.origin_var.set(with_scope(origin))
@@ -200,7 +217,7 @@ class TestValidation:
         assert payload["status"] == "error"
         assert payload["kind"] == "invalid_arguments"
         assert channel.calls == []
-        assert _fresh_broker.pending(namespace="resident_ask", scope="dm:500") == []
+        assert _fresh_broker.pending(namespace="resident_ask", scope="dm:111:500") == []
 
     async def test_long_plain_option_refusal_names_the_fix(
         self, monkeypatch, _fresh_broker,
@@ -287,7 +304,7 @@ class TestProvenanceGate:
         assert payload["status"] == "error"
         assert payload["kind"] == "unsupported_origin"
         assert ch.calls == []
-        assert _fresh_broker.pending(namespace="resident_ask", scope="dm:500") == []
+        assert _fresh_broker.pending(namespace="resident_ask", scope="dm:111:500") == []
 
     async def test_button_delegated_rejected(self, monkeypatch, _fresh_broker):
         _res, payload, ch = await _ask(
@@ -369,7 +386,7 @@ class TestRegisterPostReturnOrder:
     async def test_detached_survival(self, monkeypatch, _fresh_broker):
         _res, payload, _ch = await _ask(monkeypatch)
         rid = payload["request_id"]
-        assert rid in _fresh_broker.pending(namespace="resident_ask", scope="dm:500")
+        assert rid in _fresh_broker.pending(namespace="resident_ask", scope="dm:111:500")
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +400,7 @@ class TestSupersession:
     ):
         # Seed a sibling authz: record for the SAME chat — disjoint scope.
         authz_req, created = _fresh_broker.register(
-            namespace="resident_ask", scope="authz:500", request_id="authz-1",
+            namespace="resident_ask", scope="authz:111:500", request_id="authz-1",
             timeout_s=120.0, meta={"kind": "authz", "chat_id": 500},
         )
         assert created is True
@@ -398,21 +415,21 @@ class TestSupersession:
 
         outcome1 = await asyncio.wait_for(
             _fresh_broker.await_result(
-                _first_req_stub(_fresh_broker, "dm:500", rid1),
+                _first_req_stub(_fresh_broker, "dm:111:500", rid1),
             ),
             0.5,
         )
         assert outcome1 == {"outcome": "cancelled", "reason": "superseded"}
 
         # second ask is still live
-        assert rid2 in _fresh_broker.pending(namespace="resident_ask", scope="dm:500")
+        assert rid2 in _fresh_broker.pending(namespace="resident_ask", scope="dm:111:500")
 
         # authz: sibling record is completely untouched — still live, meta unchanged.
         assert "authz-1" in _fresh_broker.pending(
-            namespace="resident_ask", scope="authz:500",
+            namespace="resident_ask", scope="authz:111:500",
         )
         assert _fresh_broker.get_meta(
-            namespace="resident_ask", scope="authz:500", request_id="authz-1",
+            namespace="resident_ask", scope="authz:111:500", request_id="authz-1",
         ) == {"kind": "authz", "chat_id": 500}
         assert authz_req is not None  # keeps the seeded req referenced for clarity
 
@@ -438,14 +455,14 @@ class TestPostFailure:
         _res, payload, _ch = await _ask(monkeypatch, channel=channel)
         assert payload["status"] == "error"
         assert payload["kind"] == "delivery_failed"
-        assert _fresh_broker.pending(namespace="resident_ask", scope="dm:500") == []
+        assert _fresh_broker.pending(namespace="resident_ask", scope="dm:111:500") == []
 
     async def test_post_raises(self, monkeypatch, _fresh_broker):
         channel = _FakeChannel(post_raises=RuntimeError("boom"))
         _res, payload, _ch = await _ask(monkeypatch, channel=channel)
         assert payload["status"] == "error"
         assert payload["kind"] == "delivery_failed"
-        assert _fresh_broker.pending(namespace="resident_ask", scope="dm:500") == []
+        assert _fresh_broker.pending(namespace="resident_ask", scope="dm:111:500") == []
 
     async def test_no_channel_manager(self, monkeypatch, _fresh_broker):
         _res, payload, _ch = await _ask(monkeypatch, no_channel_manager=True)
@@ -485,7 +502,7 @@ class TestFinishHookShape:
         rid = payload["request_id"]
 
         assert deliver(_fresh_broker, 
-            namespace="resident_ask", scope="dm:500", request_id=rid,
+            namespace="resident_ask", scope="dm:111:500", request_id=rid,
             option_index=0, actor_id=999,
         ) == "delivered"
         await _settle(lambda: len(ch.edits) >= 1 and any(
@@ -514,7 +531,7 @@ class TestFinishHookShape:
         rid = payload["request_id"]
 
         deliver(_fresh_broker, 
-            namespace="resident_ask", scope="dm:500", request_id=rid,
+            namespace="resident_ask", scope="dm:111:500", request_id=rid,
             option_index=1, actor_id=999,
         )
         await _settle(lambda: len(ch.edits) >= 2)
@@ -535,7 +552,7 @@ class TestFinishHookShape:
         channel = _FakeChannel()
         _res, payload, ch = await _ask(monkeypatch, channel=channel)
         rid = payload["request_id"]
-        _fresh_broker._on_timeout(("resident_ask", "dm:500", rid))
+        _fresh_broker._on_timeout(("resident_ask", "dm:111:500", rid))
         await _settle(lambda: len(ch.edits) >= 1)
         assert sum("expired" in e[2].lower() for e in ch.edits) == 1
         assert not any(c[0] == "dispatch" for c in ch.calls)
@@ -560,7 +577,7 @@ class TestFinishHookShape:
         channel = _FakeChannel()
         _res, payload, ch = await _ask(monkeypatch, channel=channel)
         assert _fresh_broker.cancel_scope(
-            namespace="resident_ask", scope="dm:500", reason=reason,
+            namespace="resident_ask", scope="dm:111:500", reason=reason,
         ) == 1
         await _settle(lambda: len(ch.edits) >= 1)
 
@@ -646,7 +663,7 @@ class TestDmReadableButtons:
                            f"1. {long_a}\n2. {long_b}\n3. Wait")
         rid = payload["request_id"]
         assert deliver(_fresh_broker,
-            namespace="resident_ask", scope="dm:500", request_id=rid,
+            namespace="resident_ask", scope="dm:111:500", request_id=rid,
             option_index=1, actor_id=999,
         ) == "delivered"
         await _settle(lambda: any(c[0] == "dispatch" for c in ch.calls))
@@ -723,7 +740,7 @@ class TestDmReadableButtons:
         )
         rid = payload["request_id"]
         assert deliver(_fresh_broker, 
-            namespace="resident_ask", scope="dm:500", request_id=rid,
+            namespace="resident_ask", scope="dm:111:500", request_id=rid,
             option_index=0, actor_id=999,
         ) == "delivered"
         await _settle(lambda: len(ch.edits) >= 1 and any(
@@ -756,7 +773,7 @@ class TestTTLExpiry:
         rid = payload["request_id"]
 
         await asyncio.wait_for(
-            _fresh_broker.await_result(_first_req_stub(_fresh_broker, "dm:500", rid)),
+            _fresh_broker.await_result(_first_req_stub(_fresh_broker, "dm:111:500", rid)),
             2.0,
         )
         await _settle(lambda: len(ch.edits) >= 1)
@@ -815,15 +832,16 @@ class TestSameDmTextCancel:
         bus = MessageBus()
         bus.register("assistant", _noop)
         bot = _FakeBot()
-        ch = TelegramChannel(bot_token="T", chat_id="0", default_agent="assistant", bus=bus)
+        ch = TelegramChannel(bot_token="T", chat_id="0", default_agent="assistant", bus=bus,
+                             known_bot_id=111)
         ch._start_typing = lambda *a, **k: None
         ch._app = types.SimpleNamespace(bot=bot)
 
         req, created = _fresh_broker.register(
-            namespace="resident_ask", scope="dm:42", request_id="rid-typed",
+            namespace="resident_ask", scope="dm:111:42", request_id="rid-typed",
             timeout_s=30.0, meta={
                 "options": ["Yes", "No"], "chat_id": 42, "operator_id": 999,
-                "_scope": "dm:42",
+                "_scope": "dm:111:42",
             },
         )
         assert created is True
@@ -839,7 +857,7 @@ class TestSameDmTextCancel:
         await ch._handle(_fake_update("42", "No, actually do it now"), None)
 
         outcome = await asyncio.wait_for(
-            _fresh_broker.await_result(_first_req_stub(_fresh_broker, "dm:42", "rid-typed")),
+            _fresh_broker.await_result(_first_req_stub(_fresh_broker, "dm:111:42", "rid-typed")),
             0.5,
         )
         assert outcome == {"outcome": "cancelled", "reason": "typed_answer"}
@@ -864,13 +882,14 @@ class TestSameDmTextCancel:
         bus = MessageBus()
         bus.register("assistant", _noop)
         bot = _FakeBot()
-        ch = TelegramChannel(bot_token="T", chat_id="0", default_agent="assistant", bus=bus)
+        ch = TelegramChannel(bot_token="T", chat_id="0", default_agent="assistant", bus=bus,
+                             known_bot_id=111)
         ch._app = types.SimpleNamespace(bot=bot)
 
         req, _created = _fresh_broker.register(
-            namespace="resident_ask", scope="dm:42", request_id="rid-new",
+            namespace="resident_ask", scope="dm:111:42", request_id="rid-new",
             timeout_s=30.0, meta={"options": ["Yes", "No"], "chat_id": 42,
-                                   "operator_id": 999, "_scope": "dm:42"},
+                                   "operator_id": 999, "_scope": "dm:111:42"},
         )
         events = []
 
@@ -882,7 +901,7 @@ class TestSameDmTextCancel:
         await ch._handle(_fake_update("42", "/new"), None)
 
         outcome = await asyncio.wait_for(
-            _fresh_broker.await_result(_first_req_stub(_fresh_broker, "dm:42", "rid-new")),
+            _fresh_broker.await_result(_first_req_stub(_fresh_broker, "dm:111:42", "rid-new")),
             0.5,
         )
         assert outcome == {"outcome": "cancelled", "reason": "new_session"}
@@ -954,7 +973,7 @@ class TestRestartStaleToast:
         from channels.telegram import TelegramChannel
 
         bot = _FakeBot()
-        ch = TelegramChannel(bot=bot, chat_id=100)
+        ch = TelegramChannel(bot=bot, chat_id=100, known_bot_id=111)
         cq = types.SimpleNamespace(
             id="cq1", data="v1|resident_ask|old-rid-from-before-restart|0",
             message=types.SimpleNamespace(chat=types.SimpleNamespace(id=42)),
@@ -967,7 +986,7 @@ class TestRestartStaleToast:
         # _live nor _retired — proving this is genuinely a meta-is-None
         # path, distinct from a tombstoned/expired entry.
         assert _fresh_broker.get_meta(
-            namespace="resident_ask", scope="dm:42",
+            namespace="resident_ask", scope="dm:111:42",
             request_id="old-rid-from-before-restart",
         ) is None
 
@@ -998,21 +1017,21 @@ class TestNewCommandOrdering:
 
         orig_purge_chat = _fresh_grants.purge_chat
 
-        def _spy_purge_chat(chat_id):
-            order.append(f"purge_chat:{chat_id}")
-            return orig_purge_chat(chat_id)
+        def _spy_purge_chat(bot_id, chat_id):
+            order.append(f"purge_chat:{bot_id}:{chat_id}")
+            return orig_purge_chat(bot_id, chat_id)
 
         monkeypatch.setattr(_fresh_grants, "purge_chat", _spy_purge_chat)
 
         # Seed both scopes + a REAL int-keyed grant.
         _fresh_broker.register(
-            namespace="resident_ask", scope="dm:42", request_id="r1", timeout_s=30.0,
+            namespace="resident_ask", scope="dm:111:42", request_id="r1", timeout_s=30.0,
         )
         _fresh_broker.register(
-            namespace="resident_ask", scope="authz:42", request_id="r2", timeout_s=30.0,
+            namespace="resident_ask", scope="authz:111:42", request_id="r2", timeout_s=30.0,
         )
         key = GrantKey(
-            operator_id=999, chat_id=42, enforcement_role="finance",
+            operator_id=999, bot_id=111, chat_id=42, enforcement_role="finance",
             artifact_id="art-1", tool_name="invoice_reset", args_hash="deadbeef",
         )
         _fresh_grants.mint(key)
@@ -1022,15 +1041,16 @@ class TestNewCommandOrdering:
                 order.append("send_message")
                 return types.SimpleNamespace(message_id=1)
 
-        ch = TelegramChannel(bot_token="T", chat_id="0", default_agent="assistant")
+        ch = TelegramChannel(bot_token="T", chat_id="0", default_agent="assistant",
+                             known_bot_id=111)
         ch._app = types.SimpleNamespace(bot=_RecordingBot())
 
         await ch._handle(_fake_update("42", "/new"), None)
 
         assert order == [
-            "cancel:dm:42:new_session",
-            "cancel:authz:42:new_session",
-            "purge_chat:42",
+            "cancel:dm:111:42:new_session",
+            "cancel:authz:111:42:new_session",
+            "purge_chat:111:42",
             "send_message",
         ]
         # the grant is gone (a fresh mint's consume would otherwise be True)
@@ -1039,7 +1059,8 @@ class TestNewCommandOrdering:
     async def test_new_with_no_pending_state_is_a_safe_noop(self, monkeypatch, _fresh_broker):
         from channels.telegram import TelegramChannel
 
-        ch = TelegramChannel(bot_token="T", chat_id="0", default_agent="assistant")
+        ch = TelegramChannel(bot_token="T", chat_id="0", default_agent="assistant",
+                             known_bot_id=111)
         bot = _FakeBot()
         ch._app = types.SimpleNamespace(bot=bot)
 

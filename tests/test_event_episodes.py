@@ -979,6 +979,14 @@ _PRESTART = "channels not started yet"
 
 #: variant → (site message prefix, the site's existing ERROR message, n),
 #: where n is how many times ONE measured operation reaches that site.
+@pytest.fixture
+def operator_seam(operator_seam):
+    """The shared seam, with its channel behind the Telegram transport."""
+    from _fixture_d import seam_behind_transport
+
+    return seam_behind_transport(operator_seam)
+
+
 _SITES_930 = {
     # A pass with routing and registry valid scans exhaustion twice.
     "exhaustion": ("event exhaustion note", "event exhaustion note failed", 2),

@@ -31,6 +31,7 @@ from output_boundary_testing import with_scope
 
 OPERATOR = 4242
 LABEL = "cron-invoices"
+CASA_BOT = 111       # the bot the question is posted through
 
 # #933 — the screen copy each cancellation reason produces, for the terminal
 # outcomes suite. Written out rather than matched as a substring: the point of
@@ -69,9 +70,16 @@ def _fresh_store(monkeypatch, tmp_path):
 
 
 class _FakeChannel:
-    """Telegram-channel double: records posts, edits and BOTH dispatchers."""
+    """Telegram endpoint double (Casa's bot): records posts, edits and BOTH
+    dispatchers."""
+
+    default_agent = "assistant"
+    bot_id = CASA_BOT
+    has_bot_id = True
 
     def __init__(self, *, post_result=77, operator=OPERATOR):
+        self.chat_id = operator          # the configured operator chat
+        self.on_identity = None
         self.posts: list[tuple] = []
         self.edits: list[tuple] = []
         self.scheduled_dispatches: list[dict] = []
@@ -119,9 +127,14 @@ class _FakeChannel:
 
 
 def _mk_cm(channel):
-    cm = MagicMock()
-    cm.get = MagicMock(return_value=channel)
-    return cm
+    """The channel manager ``casa_core`` builds: the transport, with
+    *channel* as Casa's endpoint, is its one ``"telegram"`` channel."""
+    from telegram_channel_double import make_transport
+    return make_transport(channel)
+
+
+def _transport(channel):
+    return _mk_cm(channel).get("telegram")
 
 
 def _scheduled_origin(**overrides) -> dict:
@@ -135,6 +148,7 @@ def _scheduled_origin(**overrides) -> dict:
         "source": "scheduler",
         "_scheduled_delivery": True,
         "_scheduled_epoch": "0:0",
+        "_tg_bot": CASA_BOT,
     }
     origin.update(overrides)
     return origin
@@ -188,7 +202,7 @@ class TestAdmission:
         # Delivered to the operator's DM, NOT to the session label.
         assert channel.posts[0][0] == OPERATOR
         assert _fresh_broker.pending(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}") == [
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}") == [
             payload["request_id"]]
 
     @pytest.mark.parametrize("origin_overrides,reason", [
@@ -235,6 +249,7 @@ class TestAdmission:
             "role": "assistant", "execution_role": "assistant",
             "channel": "telegram", "chat_id": "500", "user_id": 500,
             "message_type": "channel_in", "source": "telegram",
+            "_tg_bot": CASA_BOT,
         })
         assert payload["status"] == "awaiting_user"
         assert "delivered_to" not in payload
@@ -256,7 +271,7 @@ class TestLane:
         self, monkeypatch, _fresh_broker,
     ):
         _fresh_broker.register(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}",
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}",
             request_id="human", timeout_s=300, detached=True,
             meta={"operator_id": OPERATOR},
         )
@@ -265,13 +280,13 @@ class TestLane:
         assert channel.posts == []
         # The human question is STILL live — never superseded.
         assert _fresh_broker.pending(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}") == ["human"]
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}") == ["human"]
 
     async def test_refuses_when_an_authz_challenge_is_live(
         self, monkeypatch, _fresh_broker,
     ):
         _fresh_broker.register(
-            namespace="resident_ask", scope=f"authz:{OPERATOR}",
+            namespace="resident_ask", scope=f"authz:{CASA_BOT}:{OPERATOR}",
             request_id="challenge", timeout_s=300, detached=True,
             meta={"operator_id": OPERATOR},
         )
@@ -285,12 +300,12 @@ class TestLane:
         payload, channel = await _ask(monkeypatch)
         rid = payload["request_id"]
 
-        assert scheduled_asks.cancel_for_chat(OPERATOR, "operator_challenge") == 1
+        assert scheduled_asks.cancel_for_chat(CASA_BOT, OPERATOR, "operator_challenge") == 1
         await _fresh_broker.drain_hooks()
         await wait_until(lambda: channel.scheduled_dispatches)
 
         assert _fresh_broker.pending(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}") == []
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}") == []
         assert "operator_challenge" in channel.scheduled_dispatches[0]["text"]
         assert channel.scheduled_dispatches[0]["request_id"] == rid
         assert _fresh_store.all() == []
@@ -299,13 +314,13 @@ class TestLane:
         self, _fresh_broker,
     ):
         _fresh_broker.register(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}",
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}",
             request_id="human", timeout_s=300, detached=True,
             meta={"operator_id": OPERATOR},
         )
-        assert scheduled_asks.cancel_for_chat(OPERATOR, "operator_challenge") == 0
+        assert scheduled_asks.cancel_for_chat(CASA_BOT, OPERATOR, "operator_challenge") == 0
         assert _fresh_broker.pending(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}") == ["human"]
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}") == ["human"]
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +339,7 @@ class TestDurableRecord:
         assert rec["rid"] == payload["request_id"]
         assert rec["session_scope"] == LABEL
         assert rec["chat_id"] == OPERATOR and rec["operator_id"] == OPERATOR
+        assert rec["bot_id"] == CASA_BOT
         # and it is on DISK, not only in memory
         on_disk = json.loads(open(_fresh_store._path).read())
         assert on_disk[rec["rid"]]["state"] == scheduled_asks.STATE_LIVE
@@ -380,7 +396,7 @@ class TestTerminalOutcomes:
         rid = payload["request_id"]
 
         assert deliver(
-            _fresh_broker, namespace="resident_ask", scope=f"dm:{OPERATOR}",
+            _fresh_broker, namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}",
             request_id=rid, option_index=0, actor_id=OPERATOR,
         ) == "delivered"
         await _fresh_broker.drain_hooks()
@@ -406,7 +422,7 @@ class TestTerminalOutcomes:
 
         payload, channel = await _ask(monkeypatch, channel=_WatchingChannel())
         _fresh_broker.cancel(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}",
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}",
             request_id=payload["request_id"], reason="typed_answer",
         )
         await _fresh_broker.drain_hooks()
@@ -421,7 +437,7 @@ class TestTerminalOutcomes:
     ):
         payload, channel = await _ask(monkeypatch)
         _fresh_broker.cancel(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}",
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}",
             request_id=payload["request_id"], reason=reason,
         )
         await _fresh_broker.drain_hooks()
@@ -462,14 +478,14 @@ class TestTerminalOutcomes:
         rid = payload["request_id"]
         body = _record(_fresh_store)["body"]
         assert len(_fresh_broker.pending(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}")) == 1
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")) == 1
 
         if retire is None:
             _fresh_broker._on_timeout(
-                ("resident_ask", f"dm:{OPERATOR}", rid))
+                ("resident_ask", f"dm:{CASA_BOT}:{OPERATOR}", rid))
         else:
             assert _fresh_broker.cancel_scope(
-                namespace="resident_ask", scope=f"dm:{OPERATOR}",
+                namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}",
                 reason=retire,
             ) == 1
         await _fresh_broker.drain_hooks()
@@ -481,7 +497,7 @@ class TestTerminalOutcomes:
         assert sum(e[:2] == (OPERATOR, 77) for e in channel.edits) == 1
         assert len(channel.scheduled_dispatches) == 1
         assert len(_fresh_broker.pending(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}")) == 0
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")) == 0
         assert _fresh_store.all() == []
 
         # Read the recorded WIRE edit, never a renderer's own return value.
@@ -503,7 +519,7 @@ class TestTerminalOutcomes:
         )
         # Fire the broker's own timeout path rather than waiting 30s.
         _fresh_broker._on_timeout(
-            ("resident_ask", f"dm:{OPERATOR}", payload["request_id"]))
+            ("resident_ask", f"dm:{CASA_BOT}:{OPERATOR}", payload["request_id"]))
         await _fresh_broker.drain_hooks()
         await wait_until(lambda: channel.scheduled_dispatches)
         assert "expired without an answer" in channel.scheduled_dispatches[0]["text"]
@@ -563,7 +579,7 @@ class TestTerminalOutcomes:
 
         assert len(channel.posts) == 1
         live = _fresh_broker.pending(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}")
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
         assert len(live) == 1
         original_rid = live[0]
         assert _fresh_broker.cancel_all(reason="casa_shutdown") == 1
@@ -576,7 +592,7 @@ class TestTerminalOutcomes:
 
         # The broker says absent; the durable record says restorable.
         assert len(_fresh_broker.pending(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}")) == 0
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")) == 0
         assert sum(r.get("state") == scheduled_asks.STATE_LIVE
                    for r in store.all()) == 1
         assert sum(p.get("status") == "awaiting_user" for p in [payload]) == 1
@@ -590,10 +606,10 @@ class TestTerminalOutcomes:
         monkeypatch.setattr(verdict_broker, "BROKER", fresh)
         monkeypatch.setattr(scheduled_asks, "_BOOT_RECONCILED", False)
         boot_channel = _FakeChannel()
-        counts = await scheduled_asks.reconcile_at_boot(boot_channel, now=0.0)
+        counts = await scheduled_asks.reconcile_at_boot(_transport(boot_channel), now=0.0)
         assert counts["restored"] == 1
         restored = fresh.pending(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}")
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")
         assert len(restored) == 1
         assert sum(r == original_rid for r in restored) == 1
 
@@ -604,7 +620,7 @@ class TestTerminalOutcomes:
         channel.dispatch_result = False
         payload, _ch = await _ask(monkeypatch, channel=channel)
         _fresh_broker.cancel(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}",
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}",
             request_id=payload["request_id"], reason="superseded",
         )
         await _fresh_broker.drain_hooks()
@@ -628,10 +644,13 @@ class TestAttribution:
                 sent.append(msg)
                 return "accepted"
 
-        channel = tg.TelegramChannel.__new__(tg.TelegramChannel)
-        channel._bus = _Bus()
-        ok = await tg.TelegramChannel._dispatch_scheduled_continuation(
-            channel, session_scope=LABEL, target_role="assistant",
+        # The endpoint that posted the question (the record's bot) carries
+        # the answer, so the continuation's route is that bot.
+        channel = tg.TelegramChannel(bot_token="T", chat_id="0",
+                                     default_agent="assistant", bus=_Bus(),
+                                     known_bot_id=CASA_BOT)
+        ok = await channel._dispatch_scheduled_continuation(
+            session_scope=LABEL, target_role="assistant",
             request_id="rid1", text="[answer to rid1] the operator tapped: Confirm",
             epoch=3,
         )
@@ -641,6 +660,7 @@ class TestAttribution:
         assert msg.context["chat_id"] == LABEL
         assert msg.context["_scheduled_delivery"] is True
         assert msg.context["_scheduled_epoch"] == 3
+        assert msg.context["_tg_bot"] == CASA_BOT
         assert msg.context["button_answer"] == "rid1"
         assert msg.trusted_user_origin is None
         assert "_operator_turn" not in msg.context
@@ -713,7 +733,7 @@ class TestLifecycle:
         await _ask(monkeypatch)
         assert scheduled_asks.revoke_role("butler", "trigger_reloaded") == 0
         assert _fresh_broker.pending(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}") != []
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}") != []
 
     async def test_revoke_trigger_is_scoped_to_one_trigger_name(
         self, monkeypatch, _fresh_broker,
@@ -740,7 +760,7 @@ class TestLifecycle:
         await _fresh_broker.drain_hooks()
         await wait_until(lambda: channel.scheduled_dispatches)
         assert _fresh_broker.pending(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}") == []
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}") == []
         assert channel.scheduled_dispatches[0]["request_id"] == payload["request_id"]
 
 
@@ -754,8 +774,8 @@ class TestBootReconcile:
         rec = {
             "rid": "rid-boot", "state": scheduled_asks.STATE_LIVE,
             "role": "assistant", "session_scope": LABEL,
-            "scope": f"dm:{OPERATOR}", "chat_id": OPERATOR,
-            "operator_id": OPERATOR, "message_id": 77,
+            "scope": f"dm:{CASA_BOT}:{OPERATOR}", "bot_id": CASA_BOT,
+            "chat_id": OPERATOR, "operator_id": OPERATOR, "message_id": 77,
             "options": ["Confirm", "Wrong"], "body": "Send the invoice?",
             "epoch": 0, "created_at": 0.0, "expires_at": 1_000.0,
         }
@@ -767,13 +787,13 @@ class TestBootReconcile:
     ):
         await _fresh_store.put(self._rec())
         channel = _FakeChannel()
-        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
         assert counts["restored"] == 1
         assert channel.edits == [] and channel.scheduled_dispatches == []
 
         # The keyboard on screen is honest again: a tap resolves normally.
         assert deliver(
-            _fresh_broker, namespace="resident_ask", scope=f"dm:{OPERATOR}",
+            _fresh_broker, namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}",
             request_id="rid-boot", option_index=0, actor_id=OPERATOR,
         ) == "delivered"
         await _fresh_broker.drain_hooks()
@@ -786,16 +806,16 @@ class TestBootReconcile:
         self, _fresh_broker, _fresh_store,
     ):
         await _fresh_store.put(self._rec())
-        await scheduled_asks.reconcile_at_boot(_FakeChannel(), now=0.0)
+        await scheduled_asks.reconcile_at_boot(_transport(_FakeChannel()), now=0.0)
         assert deliver(
-            _fresh_broker, namespace="resident_ask", scope=f"dm:{OPERATOR}",
+            _fresh_broker, namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}",
             request_id="rid-boot", option_index=0, actor_id=OPERATOR + 1,
         ) == "forbidden"
 
     async def test_expired_record_is_settled(self, _fresh_store):
         await _fresh_store.put(self._rec(expires_at=10.0))
         channel = _FakeChannel()
-        counts = await scheduled_asks.reconcile_at_boot(channel, now=99.0)
+        counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=99.0)
         assert counts["expired"] == 1
         assert "expired" in channel.edits[-1][2]
         assert "expired without an answer" in channel.scheduled_dispatches[0]["text"]
@@ -807,7 +827,7 @@ class TestBootReconcile:
         await _fresh_store.put(self._rec(
             state=scheduled_asks.STATE_POSTING, message_id=None))
         channel = _FakeChannel()
-        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
         assert counts["unconfirmed"] == 1
         assert channel.edits == []
         assert "delivery_unconfirmed" in channel.scheduled_dispatches[0]["text"]
@@ -826,7 +846,7 @@ class TestBootReconcile:
         """
         await _fresh_store.put(self._rec(state=scheduled_asks.STATE_SETTLING))
         channel = _FakeChannel()
-        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
         assert counts["settled_before_crash"] == 1
         assert channel.scheduled_dispatches == []   # at-most-once
         assert channel.edits == []                  # nothing truthful to say
@@ -845,7 +865,7 @@ class TestBootReconcile:
             state=scheduled_asks.STATE_SETTLING,
             terminal_edit="Send the invoice?\n\nAnswered: Confirm"))
         channel = _FakeChannel()
-        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
         assert counts["settled_before_crash"] == 1
         assert len(channel.edits) == 1
         assert sum(e[2] == "Send the invoice?\n\nAnswered: Confirm"
@@ -863,7 +883,7 @@ class TestBootReconcile:
             state=scheduled_asks.STATE_SETTLING, message_id=None,
             terminal_edit="Send the invoice?\n\n(this question has expired)"))
         channel = _FakeChannel()
-        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
         assert counts["settled_before_crash"] == 1
         assert channel.edits == []
         assert channel.scheduled_dispatches == []
@@ -893,7 +913,7 @@ class TestBootReconcile:
             state=scheduled_asks.STATE_SETTLING,
             terminal_edit="Send the invoice?\n\nAnswered: Confirm"))
         channel = _RefusingChannel()
-        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
 
         assert counts["settled_before_crash"] == 1
         assert len(channel.edits) == 1          # attempted exactly once
@@ -942,14 +962,14 @@ class TestBootReconcile:
         # A reload / reminder-cancel lands before Telegram is ready.
         assert scheduled_asks.revoke_role("assistant", "trigger_reloaded") == 0
         channel = _FakeChannel()
-        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
 
         assert counts.get("restored", 0) == 0
         assert counts["revoked_before_reconcile"] == 1
         assert "trigger_reloaded" in channel.scheduled_dispatches[0]["text"]
         assert _fresh_store.all() == []
         assert _fresh_broker.pending(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}") == []
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}") == []
 
     async def test_boot_revocation_uses_the_first_matching_callers_reason(
         self, _fresh_broker, _fresh_store,
@@ -965,14 +985,14 @@ class TestBootReconcile:
         await _fresh_store.put(self._rec())
         # Both match this record; the chat marker is written first.
         results = [
-            scheduled_asks.cancel_for_chat(OPERATOR, "new_session"),
+            scheduled_asks.cancel_for_chat(CASA_BOT, OPERATOR, "new_session"),
             scheduled_asks.revoke_role("assistant", "trigger_reloaded"),
         ]
         assert sum(n == 0 for n in results) == 2
         assert len(scheduled_asks._BOOT_REVOCATIONS) == 2
 
         channel = _FakeChannel()
-        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
 
         assert counts.get("revoked_before_reconcile", 0) == 1
         assert counts.get("restored", 0) == 0
@@ -986,7 +1006,7 @@ class TestBootReconcile:
                    for d in channel.scheduled_dispatches) == 0
         assert len(_fresh_store.all()) == 0
         assert len(_fresh_broker.pending(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}")) == 0
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")) == 0
 
     @pytest.mark.parametrize("revoke, reason", [
         (lambda: scheduled_asks.revoke_role("assistant", "trigger_reloaded"),
@@ -1012,7 +1032,7 @@ class TestBootReconcile:
         assert revoke() == 0
 
         channel = _FakeChannel()
-        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
 
         assert counts.get("revoked_before_reconcile", 0) == 1
         assert counts.get("restored", 0) == 0
@@ -1029,7 +1049,7 @@ class TestBootReconcile:
         revocation says nothing about this record."""
         await _fresh_store.put(self._rec())
         scheduled_asks.revoke_role("butler", "trigger_reloaded")
-        counts = await scheduled_asks.reconcile_at_boot(_FakeChannel(), now=0.0)
+        counts = await scheduled_asks.reconcile_at_boot(_transport(_FakeChannel()), now=0.0)
         assert counts["restored"] == 1
 
     async def test_cancelling_one_trigger_leaves_the_roles_others_alone(
@@ -1047,12 +1067,12 @@ class TestBootReconcile:
             "assistant", "reminder-abcd", "trigger_cancelled")
 
         channel = _FakeChannel()
-        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
         assert counts["revoked_before_reconcile"] == 1
         assert counts["restored"] == 1
         assert [d["request_id"] for d in channel.scheduled_dispatches] == ["mine"]
         assert _fresh_broker.pending(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}") == ["sibling"]
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}") == ["sibling"]
 
     async def test_a_pre_reconcile_challenge_cancellation_is_honoured(
         self, _fresh_broker, _fresh_store,
@@ -1063,10 +1083,10 @@ class TestBootReconcile:
         the machine question would be restored into a lane it had already
         yielded (INV-JOB-008)."""
         await _fresh_store.put(self._rec())
-        assert scheduled_asks.cancel_for_chat(OPERATOR, "operator_challenge") == 0
+        assert scheduled_asks.cancel_for_chat(CASA_BOT, OPERATOR, "operator_challenge") == 0
 
         channel = _FakeChannel()
-        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
         assert counts["revoked_before_reconcile"] == 1
         assert counts.get("restored", 0) == 0
         assert _fresh_store.all() == []
@@ -1078,17 +1098,17 @@ class TestBootReconcile:
         markers describe nothing invisible any more — a later boot-window
         marker must not settle a question asked afterwards."""
         scheduled_asks.revoke_role("assistant", "trigger_reloaded")
-        await scheduled_asks.reconcile_at_boot(_FakeChannel(), now=0.0)
+        await scheduled_asks.reconcile_at_boot(_transport(_FakeChannel()), now=0.0)
 
         # A revocation after the window records NOTHING — the caller's own
         # broker scan is authoritative from here on, and a marker that kept
         # accumulating would both leak and mis-settle a later record.
         scheduled_asks.revoke_role("assistant", "trigger_reloaded")
-        scheduled_asks.cancel_for_chat(OPERATOR, "operator_challenge")
+        scheduled_asks.cancel_for_chat(CASA_BOT, OPERATOR, "operator_challenge")
         assert scheduled_asks._BOOT_REVOCATIONS == []
 
         await _fresh_store.put(self._rec(rid="later"))
-        counts = await scheduled_asks.reconcile_at_boot(_FakeChannel(), now=0.0)
+        counts = await scheduled_asks.reconcile_at_boot(_transport(_FakeChannel()), now=0.0)
         assert counts["restored"] == 1
 
     def test_the_store_exposes_no_query_surface(self):
@@ -1108,7 +1128,7 @@ class TestBootReconcile:
     async def test_a_changed_operator_is_not_restored(self, _fresh_store):
         await _fresh_store.put(self._rec())
         channel = _FakeChannel(operator=OPERATOR + 1)
-        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
         assert counts["operator_changed"] == 1
         assert "operator_changed" in channel.scheduled_dispatches[0]["text"]
         assert _fresh_store.all() == []
@@ -1116,7 +1136,7 @@ class TestBootReconcile:
     async def test_no_operator_configured_is_not_restored(self, _fresh_store):
         await _fresh_store.put(self._rec())
         counts = await scheduled_asks.reconcile_at_boot(
-            _FakeChannel(operator=None), now=0.0)
+            _transport(_FakeChannel(operator=None)), now=0.0)
         assert counts["operator_changed"] == 1
 
     async def test_a_scheduled_ask_still_posting_keeps_the_lane(
@@ -1137,17 +1157,17 @@ class TestBootReconcile:
         # Exactly what `_ask_user_scheduled` registers: the `scheduled` marker,
         # and no message id until its own post returns one.
         req, _created = _fresh_broker.register(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}",
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}",
             request_id="fresh-scheduled", timeout_s=300, detached=True,
             meta={"operator_id": OPERATOR, "scheduled": True},
         )
         assert req is not None
         assert _fresh_broker.get_meta(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}",
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}",
             request_id="fresh-scheduled").get("message_id") is None
 
         channel = _FakeChannel()
-        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
 
         assert counts["operator_busy"] == 1
         assert counts.get("restored", 0) == 0
@@ -1155,7 +1175,7 @@ class TestBootReconcile:
                    for d in channel.scheduled_dispatches) == 1
         assert len(_fresh_store.all()) == 0
         assert _fresh_broker.pending(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}") == [
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}") == [
             "fresh-scheduled"]
 
     async def test_a_live_human_question_keeps_the_lane(
@@ -1171,17 +1191,17 @@ class TestBootReconcile:
         """
         await _fresh_store.put(self._rec())
         _fresh_broker.register(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}",
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}",
             request_id="human", timeout_s=300, detached=True,
             meta={"operator_id": OPERATOR, "message_id": 4242},
         )
         channel = _FakeChannel()
-        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
         assert counts["operator_busy"] == 1
         assert "operator_busy" in channel.scheduled_dispatches[0]["text"]
         assert _fresh_store.all() == []
         assert _fresh_broker.pending(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}") == ["human"]
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}") == ["human"]
 
     async def test_a_human_question_still_posting_does_not_keep_the_lane(
         self, _fresh_broker, _fresh_store,
@@ -1196,19 +1216,19 @@ class TestBootReconcile:
         """
         await _fresh_store.put(self._rec())
         _fresh_broker.register(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}",
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}",
             request_id="human", timeout_s=300, detached=True,
             meta={"operator_id": OPERATOR},
         )
         channel = _FakeChannel()
-        counts = await scheduled_asks.reconcile_at_boot(channel, now=0.0)
+        counts = await scheduled_asks.reconcile_at_boot(_transport(channel), now=0.0)
         assert counts.get("operator_busy", 0) == 0
         assert counts["restored"] == 1
         assert channel.scheduled_dispatches == []
         assert channel.edits == []
         assert len(_fresh_store.all()) == 1
         assert sorted(_fresh_broker.pending(
-            namespace="resident_ask", scope=f"dm:{OPERATOR}")) == [
+            namespace="resident_ask", scope=f"dm:{CASA_BOT}:{OPERATOR}")) == [
             "human", "rid-boot"]
 
 

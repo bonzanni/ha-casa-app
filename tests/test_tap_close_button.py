@@ -7,6 +7,7 @@ answered" (INV-PROP-011)."""
 from __future__ import annotations
 
 import json
+import types
 
 import pytest
 
@@ -15,8 +16,12 @@ import specialist_desk as sd
 from test_proposal_tap import OPERATOR, RID, _cq, _settle, _tap, env as tap_env  # noqa: F401
 from test_tap_keep_card import CONFIRM, SEE, _call, _deposit, _identity, labels  # noqa: F401
 from test_tap_keep_card import APPLY, SEG
+from two_endpoints import CASA_BOT as BOT
 
 CLOSE = {"label": "Close", "close": True}
+
+#: an endpoint with a bot id and none of the proposal hooks
+_NO_HOOKS = types.SimpleNamespace(bot_id=BOT)
 
 
 # --- the deposit -------------------------------------------------------------------
@@ -59,13 +64,13 @@ async def test_the_registered_kinds_name_the_close_button(labels, monkeypatch):
     parsed, _ = _deposit(CONFIRM, SEE, CLOSE)
     seen = {}
 
-    async def fake_post(chat_id, text, labels_, rid, *, post=None):
-        seen["meta"] = vb.BROKER.get_meta(namespace="proposal", scope=f"proposal:{chat_id}",
+    async def fake_post(to, text, labels_, rid, *, post=None):
+        seen["meta"] = vb.BROKER.get_meta(namespace="proposal", scope=f"proposal:{to.bot_id}:{to.chat_id}",
                                          request_id=rid)
         seen["labels"] = list(labels_)
         return 501
     monkeypatch.setattr(rb, "_post_operator_proposal", fake_post)
-    monkeypatch.setattr(rb, "_telegram_channel", lambda: None)
+    monkeypatch.setattr(rb, "_endpoint_for", lambda target: _NO_HOOKS)
     post = rb.PostRecord(role="finance", operator_id=42, plugin=SEG, slot="proposal",
                          tool_use_id="call-1", owner="d-1", posted_at=1.0, kind="proposal")
     delivered, *_ = await rb._post_proposal(_identity(), SEG, "proposal", _call(), parsed,
@@ -108,7 +113,7 @@ async def test_a_close_tap_removes_the_keyboard_and_leaves_the_text(tap_env, mon
     assert tap_env.taps == [] and reserved == []                     # no desk use, no pinned turn
     assert tap_env.bot.sent == []                                    # no notice
     assert OPERATOR not in tap_env.ch._armings
-    assert sd.drain_echo_lines(OPERATOR) == []                     # the resident learns nothing
+    assert sd.drain_echo_lines(BOT, OPERATOR) == []                     # the resident learns nothing
 
 
 async def test_any_later_tap_on_a_closed_card_is_already_answered_and_runs_nothing(tap_env):
@@ -140,7 +145,7 @@ async def test_a_close_tap_still_runs_the_whole_admission_chain(tap_env):
     assert await _tap(tap_env, _cq(data=f"v1|proposal|{RID}|2")) == "invalid"
     await _settle()
     assert tap_env.bot.markups == [] and tap_env.bot.edited == [] and tap_env.taps == []
-    assert tap_env.broker.pending(namespace="proposal", scope=f"proposal:{OPERATOR}") == [RID]
+    assert tap_env.broker.pending(namespace="proposal", scope=f"proposal:{BOT}:{OPERATOR}") == [RID]
 
 
 async def test_a_failed_keyboard_removal_sends_nothing(tap_env, monkeypatch):

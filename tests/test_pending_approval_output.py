@@ -43,6 +43,7 @@ PROTECTED = {TOOL: {"artifact_id": ARTIFACT, "summary": None}}
 ARGS = {"amount": 10}
 TAIL = "TAIL-A12"
 OPERATOR = 42
+CASA_BOT = 111       # the bot the turn arrived on, and the approval's chat
 
 
 def _text(t: str) -> AssistantMessage:
@@ -62,7 +63,7 @@ def _result(call_id: str, *, error: bool = True) -> UserMessage:
 
 
 def _key(args=None) -> GrantKey:
-    return GrantKey(operator_id=OPERATOR, chat_id=OPERATOR,
+    return GrantKey(operator_id=OPERATOR, bot_id=CASA_BOT, chat_id=OPERATOR,
                     enforcement_role=ROLE, artifact_id=ARTIFACT,
                     tool_name=TOOL,
                     args_hash=canonical_args_hash(ARGS if args is None else args),
@@ -76,6 +77,9 @@ class _Channel:
 
     name = "telegram"
     chat_id = str(OPERATOR)
+    default_agent = "assistant"
+    bot_id = CASA_BOT
+    has_bot_id = True
 
     def __init__(self) -> None:
         self.tokens: list[str] = []
@@ -114,7 +118,9 @@ async def turn(tmp_path, monkeypatch):
     monkeypatch.setattr(verdict_broker, "BROKER", verdict_broker.VerdictBroker())
     agent = _make_agent(tmp_path)
     channel = _Channel()
-    agent._channel_manager.register(channel)
+    from telegram_channel_double import make_transport
+    transport = make_transport(channel).get("telegram")
+    agent._channel_manager.register(transport)
     tools.init_tools(
         channel_manager=agent._channel_manager, bus=MagicMock(),
         specialist_registry=MagicMock(), mcp_registry=MagicMock(),
@@ -122,7 +128,7 @@ async def turn(tmp_path, monkeypatch):
     grants, coord = GrantStore(), ChallengeCoordinator()
     hook = make_resident_authz_hook(
         ROLE, PROTECTED,
-        lambda: AuthzDeps(channel=channel, grants=grants, challenges=coord))
+        lambda: AuthzDeps(channel=transport, grants=grants, challenges=coord))
     yield agent, channel, hook, grants
     await agent.aclose()
 
@@ -138,13 +144,15 @@ async def _prime_challenge(hook) -> None:
     is answered PENDING (an identical challenge is already up)."""
     origin = {"role": ROLE, "channel": "telegram", "chat_id": str(OPERATOR),
               "user_id": OPERATOR, "cid": "prime", "message_type": "channel_in",
-              "source": "telegram", "execution_role": ROLE}
+              "source": "telegram", "execution_role": ROLE,
+              "_tg_bot": CASA_BOT}
     with _OriginCtx(origin):
         assert _deny_reason(await _ask(hook, "prime-1")) == _DENY_POSTED
 
 
 def _msg(transport: str) -> BusMessage:
-    context = {"chat_id": str(OPERATOR), "user_id": OPERATOR, "cid": "probe"}
+    context = {"chat_id": str(OPERATOR), "user_id": OPERATOR, "cid": "probe",
+               "_tg_bot": CASA_BOT}
     if transport == "button":
         context.update(synthetic="button", button_answer="yes")
     elif transport == "setup":

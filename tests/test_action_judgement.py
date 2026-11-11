@@ -18,7 +18,9 @@ from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 import action_judgement as aj
 import operator_calls
+import tools as tools_mod
 from authz_grants import GrantIdentity
+from two_endpoints import CASA_BOT, build_two_endpoints
 
 ARTIFACT = "1" * 64
 DIGEST = "sha256:spec-aa"
@@ -28,7 +30,8 @@ REASON_TEXT = "the confidential reason line"
 ORIGIN = {"role": "assistant", "execution_role": "browser", "channel": "telegram",
           "chat_id": "42", "user_id": 100, "cid": "c", "message_type": "channel_in",
           "source": "telegram", "_operator_turn": True, "_delegation_id": "d-1",
-          "delegation_depth": 1, "_handoff_chain": ("assistant", "browser")}
+          "delegation_depth": 1, "_handoff_chain": ("assistant", "browser"),
+          "_tg_bot": CASA_BOT}
 
 GO = {"verdict": "go", "category": "reading", "reason": "opens the invoice list",
       "look_first": "", "question": None}
@@ -62,6 +65,8 @@ def _canonical(p: dict) -> str:
 
 @pytest.fixture
 def wired(monkeypatch):
+    monkeypatch.setattr(tools_mod, "_channel_manager", build_two_endpoints().manager,
+                        raising=False)
     monkeypatch.setattr(operator_calls, "CALLS", operator_calls.OperatorCalls())
     monkeypatch.setattr(aj, "WORDS", aj.OperatorWords())
     PICTURES.clear()
@@ -84,7 +89,7 @@ def wired(monkeypatch):
 
 def _call(plugin="browser", operator_id=100, client="c1"):
     ident = GrantIdentity(operator_id=operator_id, chat_id=42, enforcement_role="browser",
-                          artifact_id=ARTIFACT, engagement_id="")
+                          artifact_id=ARTIFACT, engagement_id="", bot_id=CASA_BOT)
     return operator_calls.CALLS.open(
         client_id=client, tool_use_id="tu-" + client, tool_name="x", role="browser",
         plugin=plugin, identity=ident, origin={**ORIGIN, "_operator_words": WORDS})
@@ -131,7 +136,7 @@ async def test_a_repeated_key_is_not_a_packet(wired):
 async def test_model_body_is_the_measured_shape(wired):
     seen, replies = wired
     call = _call()
-    aj.WORDS.record(plugin="browser", operator_id=100, spec_digest=DIGEST, words=WORDS)
+    aj.WORDS.record(plugin="browser", bot_id=CASA_BOT, operator_id=100, spec_digest=DIGEST, words=WORDS)
     p = json.loads(_canonical(_packet()))           # the order the app sends
     await aj.judge(call, "action", _canonical(p), DIGEST)
     rulebook, body = seen[-1]
@@ -151,7 +156,7 @@ async def test_model_body_is_the_measured_shape(wired):
 
 async def test_words_attach_only_by_digest_plugin_and_operator(wired):
     seen, _ = wired
-    aj.WORDS.record(plugin="browser", operator_id=100, spec_digest=DIGEST, words=WORDS)
+    aj.WORDS.record(plugin="browser", bot_id=CASA_BOT, operator_id=100, spec_digest=DIGEST, words=WORDS)
     text = _canonical(_packet())
 
     async def words_for(call, digest):
@@ -168,14 +173,14 @@ async def test_words_attach_only_by_digest_plugin_and_operator(wired):
 def test_words_are_bounded_clipped_and_expire():
     now = [0.0]
     store = aj.OperatorWords(now=lambda: now[0])
-    store.record(plugin="p", operator_id=1, spec_digest="d", words="x" * 9000)
-    assert store.get(plugin="p", operator_id=1, spec_digest="d") == "x" * aj.MAX_WORDS_CHARS
+    store.record(plugin="p", bot_id=CASA_BOT, operator_id=1, spec_digest="d", words="x" * 9000)
+    assert store.get(plugin="p", bot_id=CASA_BOT, operator_id=1, spec_digest="d") == "x" * aj.MAX_WORDS_CHARS
     now[0] = aj.WORDS_KEEP_S
-    assert store.get(plugin="p", operator_id=1, spec_digest="d") is None
+    assert store.get(plugin="p", bot_id=CASA_BOT, operator_id=1, spec_digest="d") is None
     for i in range(aj.WORDS_MAX_ENTRIES + 1):
-        store.record(plugin="p", operator_id=1, spec_digest=f"d{i}", words="w")
-    assert store.get(plugin="p", operator_id=1, spec_digest="d0") is None   # oldest out
-    assert store.get(plugin="p", operator_id=1,
+        store.record(plugin="p", bot_id=CASA_BOT, operator_id=1, spec_digest=f"d{i}", words="w")
+    assert store.get(plugin="p", bot_id=CASA_BOT, operator_id=1, spec_digest="d0") is None   # oldest out
+    assert store.get(plugin="p", bot_id=CASA_BOT, operator_id=1,
                      spec_digest=f"d{aj.WORDS_MAX_ENTRIES}") == "w"
 
 
@@ -342,7 +347,7 @@ async def test_route_serves_only_the_in_flight_call(wired):
         client_id="c1", tool_use_id="tu-other", tool_name="x", role="browser",
         plugin="browser", identity=GrantIdentity(
             operator_id=100, chat_id=42, enforcement_role="browser",
-            artifact_id=ARTIFACT, engagement_id=""), origin=ORIGIN)
+            artifact_id=ARTIFACT, engagement_id="", bot_id=CASA_BOT), origin=ORIGIN)
     assert await _post({"client": "c1", **body}) == {"error": "ambiguous_call"}
     assert await _post({**body}) == {"error": "bad_client"}
     assert await _post(["not", "an", "object"]) == {"error": "bad_json"}
@@ -415,7 +420,7 @@ def test_rulebook_files_are_the_measured_bytes():
 
 async def test_log_line_carries_no_packet_text(wired, caplog):
     _, replies = wired
-    aj.WORDS.record(plugin="browser", operator_id=100, spec_digest=DIGEST, words=WORDS)
+    aj.WORDS.record(plugin="browser", bot_id=CASA_BOT, operator_id=100, spec_digest=DIGEST, words=WORDS)
     replies.extend([json.dumps(ASK), RuntimeError(PAGE_TEXT), json.dumps(ASK) + REASON_TEXT])
     caplog.set_level(logging.DEBUG, logger="action_judgement")
     text = _canonical(_packet())
@@ -452,7 +457,7 @@ async def test_login_kinds_send_the_bare_packet_with_their_rulebook(wired):
     """No operator words, no wrapper: the model reads exactly the packet hashed, under the
     kind's own rulebook."""
     seen, replies = wired
-    aj.WORDS.record(plugin="browser", operator_id=100, spec_digest=DIGEST, words=WORDS)
+    aj.WORDS.record(plugin="browser", bot_id=CASA_BOT, operator_id=100, spec_digest=DIGEST, words=WORDS)
     replies.append('{"items": [0], "reason": "the title names the site"}')
     out = await aj.judge(_call(), "login_item", _canonical(LOGIN_ITEM), DIGEST)
     sent = json.loads(_canonical(LOGIN_ITEM))                 # the order the app sends
@@ -575,7 +580,7 @@ SIGN_IN = {"kind": "sign_in",
 
 async def test_the_sign_in_check_sends_the_bare_packet_with_its_rulebook(wired):
     seen, replies = wired
-    aj.WORDS.record(plugin="browser", operator_id=100, spec_digest=DIGEST, words=WORDS)
+    aj.WORDS.record(plugin="browser", bot_id=CASA_BOT, operator_id=100, spec_digest=DIGEST, words=WORDS)
     for verdict in ("sign_in", "not_sign_in"):
         replies.append(json.dumps({"verdict": verdict, "reason": "the page says so",
                                    "fields": {"username": "f1"}}))

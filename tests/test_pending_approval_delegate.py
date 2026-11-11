@@ -40,8 +40,9 @@ from test_chosen_silence_announcements import (
 )
 from test_delegate_to_agent import _caller_cfg, _specialist_cfg
 from test_pending_approval_desk import _Scripted, _Step
+from telegram_channel_double import make_transport
 from test_pending_approval_output import (
-    ARGS, PROTECTED, TOOL, _Channel, _call, _msg, _result, _text,
+    ARGS, CASA_BOT, PROTECTED, TOOL, _Channel, _call, _msg, _result, _text,
 )
 
 pytestmark = [pytest.mark.asyncio]
@@ -81,7 +82,8 @@ async def test_sync_delegate_pending_approval_keeps_resident_prefix(tmp_path):
     import verdict_broker
     agent = _make_agent(tmp_path)
     channel = _Channel()
-    agent._channel_manager.register(channel)
+    transport = make_transport(channel).get("telegram")
+    agent._channel_manager.register(transport)
     registry = MagicMock()
     registry.register_delegation = AsyncMock()
     registry.complete_delegation = AsyncMock()
@@ -91,7 +93,7 @@ async def test_sync_delegate_pending_approval_keeps_resident_prefix(tmp_path):
     grants, coord = GrantStore(), ChallengeCoordinator()
     hook = make_resident_authz_hook(
         SPECIALIST, PROTECTED,
-        lambda: AuthzDeps(channel=channel, grants=grants, challenges=coord))
+        lambda: AuthzDeps(channel=transport, grants=grants, challenges=coord))
     hook_answers: list = []
     delegate_results: list = []
 
@@ -200,7 +202,8 @@ class _Child(_Scripted):
 
 
 def _key(args=None) -> GrantKey:
-    return GrantKey(operator_id=42, chat_id=42, enforcement_role=SPECIALIST,
+    return GrantKey(operator_id=42, bot_id=CASA_BOT, chat_id=42,
+                    enforcement_role=SPECIALIST,
                     artifact_id="artifact-1", tool_name=TOOL,
                     args_hash=canonical_args_hash(dict(ARGS if args is None else args)),
                     engagement_id="")
@@ -212,11 +215,12 @@ class _Turn:
     def __init__(self, tmp_path, *, warm: bool = False) -> None:
         self.agent = _warm_agent(tmp_path) if warm else _make_agent(tmp_path)
         self.channel = _Channel()
-        self.agent._channel_manager.register(self.channel)
+        self.transport = make_transport(self.channel).get("telegram")
+        self.agent._channel_manager.register(self.transport)
         self.grants, self.coord = GrantStore(), ChallengeCoordinator()
         self.hook = make_resident_authz_hook(
             SPECIALIST, PROTECTED,
-            lambda: AuthzDeps(channel=self.channel, grants=self.grants,
+            lambda: AuthzDeps(channel=self.transport, grants=self.grants,
                               challenges=self.coord))
         self.answers: list = []
         self.results: list = []
@@ -342,7 +346,8 @@ async def _prime(turn: _Turn) -> None:
     answered PENDING once that keyboard's post has settled."""
     origin = {"role": SPECIALIST, "channel": "telegram", "chat_id": "42",
               "user_id": 42, "cid": "prime", "message_type": "channel_in",
-              "source": "telegram", "execution_role": SPECIALIST}
+              "source": "telegram", "execution_role": SPECIALIST,
+              "_tg_bot": CASA_BOT}
     with _OriginCtx(origin):
         assert _deny_reason(await turn.hook(
             {"tool_name": TOOL, "tool_input": dict(ARGS)}, "prime-1", {})) \

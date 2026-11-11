@@ -24,6 +24,7 @@ inside the function body, to avoid any import cycle.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 # Keys Casa itself uses to record turn provenance. A caller-supplied
@@ -45,6 +46,14 @@ CASA_PLUGIN_TURN_TARGETS: dict[str, str] = {
 # launches; it is not the turn's speaker and grants nothing. One name, read by
 # every site that stamps, copies or reads it.
 ANSWERED_BY_OPERATOR = "_answered_by_operator"
+
+# The routing facts a Telegram-bound turn carries: the one reserved key naming
+# the bot the turn delivers through (an int bot id, or ``channels.tg_address.
+# CASA`` for Casa's own endpoint). Decided once, where the turn or post is born
+# (the receiving endpoint, the post, or the dispatcher of a turn with no
+# parent), and copied by every builder that derives an origin, context or
+# record from another, so a reply never re-derives its bot from the role.
+ROUTING_KEYS: tuple[str, ...] = ("_tg_bot",)
 
 RESERVED_CONTEXT_KEYS = frozenset({
     "synthetic",
@@ -150,7 +159,25 @@ RESERVED_CONTEXT_KEYS = frozenset({
     # answer; a caller who could set it would have a job it starts say the
     # operator asked.
     ANSWERED_BY_OPERATOR,
+    # The turn's route: stamped by Casa where the turn is born. A caller who
+    # could set it would choose which bot an untrusted turn speaks through.
+    *ROUTING_KEYS,
 })
+
+
+def carry_route(src: Mapping) -> dict:
+    """The routing facts of *src*, to spread into a derived origin, context
+    or record: ``{k: src[k] for k in ROUTING_KEYS if k in src}``. Absent keys
+    stay absent, so a route-less source yields a route-less derivation that
+    fails at delivery instead of being given a guessed bot."""
+    return {k: src[k] for k in ROUTING_KEYS if k in src}
+
+
+def route_context(origin: Mapping) -> dict:
+    """A delivery context carrying nothing but *origin*'s route: for a send
+    whose destination is the route's operator chat and must not be taken from
+    any caller-supplied field of the origin."""
+    return carry_route(origin)
 
 
 def sanitize_external_context(ctx: dict | None) -> dict:

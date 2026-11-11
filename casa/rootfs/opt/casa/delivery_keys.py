@@ -2,16 +2,19 @@
 
 A plugin may give a delivered slot's deposit a ``key`` (its own identifier
 for the post). After a PROVEN delivery the key is remembered per installed
-plugin (its runtime segment) and operator; a later deposit carrying a
-remembered key is not sent again, and its call gets the original delivery's
-receipt. A plugin job cut between posting and recording the post therefore
+plugin (its runtime segment), Telegram bot and operator; a later deposit
+carrying a remembered key is not sent again, and its call gets the original
+delivery's receipt. The bot is part of the identity because one plugin can
+serve agents on two bots, and the operator and the plugin's keys are the same
+on both: a key delivered by one bot never makes the other's a repeat. A plugin job cut between posting and recording the post therefore
 retries without posting twice.
 
 The memory is recorded synchronously at the instant a send is proven —
 first the in-process map, which cannot fail, then the file, whose write
 failure is logged and never undoes the delivery. It survives a restart when
 that write succeeded. Entries are kept ``RETENTION_S`` and at most
-``MAX_PER_SCOPE`` per (plugin, operator), oldest dropped first.
+``MAX_PER_SCOPE`` per (plugin, bot, operator), oldest dropped first. A stored
+entry written without a bot is refused at load.
 """
 from __future__ import annotations
 
@@ -52,14 +55,33 @@ _DETAIL_OK = {
 }
 
 
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _ident_ok(ident: Any) -> bool:
+    """``[seg, bot, operator, key]``: the plugin segment, the bot id, the
+    operator id and the plugin's key."""
     try:
         parts = json.loads(ident)
     except Exception:  # noqa: BLE001
         return False
-    return (isinstance(parts, list) and len(parts) == 3 and isinstance(parts[0], str)
-            and isinstance(parts[1], int) and not isinstance(parts[1], bool)
-            and key_ok(parts[2]))
+    return (isinstance(parts, list) and len(parts) == 4 and isinstance(parts[0], str)
+            and _is_int(parts[1]) and parts[1] > 0 and _is_int(parts[2])
+            and key_ok(parts[3]))
+
+
+def _ident_without_bot(ident: Any) -> bool:
+    """An id in the shape written before entries carried their bot."""
+    try:
+        parts = json.loads(ident)
+    except Exception:  # noqa: BLE001
+        return False
+    return isinstance(parts, list) and len(parts) == 3
+
+
+#: a proposal's broker scope, ``proposal:<bot>:<chat>``
+_PROPOSAL_SCOPE_RE = re.compile(r"^proposal:[1-9][0-9]*:-?[0-9]+$")
 
 
 def _entry_ok(entry: Any) -> bool:
@@ -89,7 +111,8 @@ def _entry_ok(entry: Any) -> bool:
     if kind == "operator_proposal":
         proposal = entry.get("proposal")
         return (isinstance(proposal, list) and len(proposal) == 2
-                and all(isinstance(x, str) and x for x in proposal))
+                and all(isinstance(x, str) and x for x in proposal)
+                and _PROPOSAL_SCOPE_RE.fullmatch(proposal[0]) is not None)
     return True
 
 
@@ -102,8 +125,10 @@ class DeliveryKeys:
         self._locks: dict[str, tuple[asyncio.Lock, int]] = {}
 
     @staticmethod
-    def _id(seg: str, operator_id: int, key: str) -> str:
-        return json.dumps([seg, int(operator_id), key])
+    def _id(seg: str, bot_id: int, operator_id: int, key: str) -> str:
+        if not _is_int(bot_id) or bot_id <= 0:
+            raise ValueError(f"not a Telegram bot id: {bot_id!r}")
+        return json.dumps([seg, bot_id, int(operator_id), key])
 
     # -- persistence ---------------------------------------------------------
     def load(self, path: str) -> None:
@@ -124,7 +149,7 @@ class DeliveryKeys:
         if not isinstance(raw, dict):
             logger.warning("delivery keys malformed; starting empty")
             return
-        dropped = 0
+        dropped = without_bot = 0
         for ident, entry in raw.items():
             try:
                 ok = isinstance(ident, str) and _ident_ok(ident) and _entry_ok(entry)
@@ -132,14 +157,19 @@ class DeliveryKeys:
                 ok = False
             if ok:
                 self._entries[ident] = entry
+            elif isinstance(ident, str) and _ident_without_bot(ident):
+                without_bot += 1
             else:
                 dropped += 1
         # the bounds hold for what was read too: expired out, then the cap
         now = time.time()
         for ident in [i for i, e in self._entries.items() if now - e["at"] > RETENTION_S]:
             del self._entries[ident]
-        for seg, operator_id in {tuple(json.loads(i)[:2]) for i in self._entries}:
-            self._prune(seg, operator_id, now)
+        for seg, bot_id, operator_id in {tuple(json.loads(i)[:3]) for i in self._entries}:
+            self._prune(seg, bot_id, operator_id, now)
+        if without_bot:
+            logger.error("delivery keys: %d entr%s without a bot refused", without_bot,
+                         "y" if without_bot == 1 else "ies")
         if dropped:
             logger.warning("delivery keys: %d malformed entr%s dropped", dropped,
                            "y" if dropped == 1 else "ies")
@@ -155,10 +185,11 @@ class DeliveryKeys:
                            "a restart", type(exc).__name__)
 
     # -- the memory ---------------------------------------------------------
-    def lookup(self, seg: str, operator_id: int, key: str) -> dict | None:
-        """The remembered delivery, or None. An entry that cannot be used is
-        no entry: it is dropped, and the deposit is delivered fresh."""
-        ident = self._id(seg, operator_id, key)
+    def lookup(self, seg: str, bot_id: int, operator_id: int, key: str) -> dict | None:
+        """The remembered delivery of *key* by *bot_id*, or None. An entry that
+        cannot be used is no entry: it is dropped, and the deposit is
+        delivered fresh."""
+        ident = self._id(seg, bot_id, operator_id, key)
         entry = self._entries.get(ident)
         if entry is None:
             return None
@@ -173,33 +204,33 @@ class DeliveryKeys:
             self._entries.pop(ident, None)
             return None
 
-    def record(self, seg: str, operator_id: int, key: str, *, kind: str, detail: dict,
-               proposal: tuple[str, str] | None = None) -> None:
+    def record(self, seg: str, bot_id: int, operator_id: int, key: str, *, kind: str,
+               detail: dict, proposal: tuple[str, str] | None = None) -> None:
         """Synchronous: the map first, then the file (whose failure is logged)."""
         now = time.time()
         entry: dict[str, Any] = {"kind": kind, "detail": dict(detail), "at": now}
         if proposal is not None:
             entry["proposal"] = list(proposal)
-        ident = self._id(seg, operator_id, key)
+        ident = self._id(seg, bot_id, operator_id, key)
         self._entries.pop(ident, None)
         self._entries[ident] = entry
-        self._prune(seg, int(operator_id), now)
+        self._prune(seg, bot_id, int(operator_id), now)
         self._write()
 
-    def _prune(self, seg: str, operator_id: int, now: float) -> None:
+    def _prune(self, seg: str, bot_id: int, operator_id: int, now: float) -> None:
         for ident in [i for i, e in self._entries.items() if now - e["at"] > RETENTION_S]:
             del self._entries[ident]
-        prefix = json.dumps([seg, operator_id])[:-1] + ","
+        prefix = json.dumps([seg, bot_id, operator_id])[:-1] + ","
         scoped = [i for i in self._entries if i.startswith(prefix)]
         for ident in sorted(scoped, key=lambda i: self._entries[i]["at"])[:-MAX_PER_SCOPE]:
             del self._entries[ident]
 
     # -- one delivery per key at a time --------------------------------------
     @contextlib.asynccontextmanager
-    async def hold(self, seg: str, operator_id: int, key: str):
-        """Serialise deliveries of one key; the lock is retired when its last
-        holder or waiter leaves."""
-        ident = self._id(seg, operator_id, key)
+    async def hold(self, seg: str, bot_id: int, operator_id: int, key: str):
+        """Serialise deliveries of one key by one bot; the lock is retired when
+        its last holder or waiter leaves."""
+        ident = self._id(seg, bot_id, operator_id, key)
         lock, users = self._locks.get(ident, (None, 0))
         if lock is None:
             lock = asyncio.Lock()

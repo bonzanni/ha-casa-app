@@ -21,6 +21,7 @@ import tools as tools_mod
 import result_broker as rb
 from authz_grants import GrantIdentity
 from plugin_grants import PluginContract, ResultContractMap, ToolContract
+from _fixture_a import install_casa_bot
 
 ARTIFACT = "1" * 64
 OTHER_ARTIFACT = "2" * 64
@@ -35,8 +36,14 @@ LEGACY = "mcp__plugin_legacy_srv__anything"
 UNKNOWN = "mcp__plugin_nobody_x__y"
 
 
+@pytest.fixture(autouse=True)
+def _casa_bot(monkeypatch):
+    """Bot 111 serves the turns' route: a capability call's identity names it."""
+    install_casa_bot(monkeypatch)
+
+
 def _identity(**over) -> GrantIdentity:
-    base = dict(operator_id=100, chat_id=42, enforcement_role="finance",
+    base = dict(operator_id=100, bot_id=111, chat_id=42, enforcement_role="finance",
                 artifact_id=ARTIFACT, engagement_id="")
     base.update(over)
     return GrantIdentity(**base)
@@ -360,7 +367,7 @@ class _Origin:
 
 DM = {"role": "finance", "channel": "telegram", "chat_id": "42", "user_id": 100,
       "cid": "abc", "message_type": "channel_in", "source": "telegram",
-      "execution_role": "finance"}
+      "execution_role": "finance", "_tg_bot": 111}
 
 
 def _pre(tool, tool_input=None):

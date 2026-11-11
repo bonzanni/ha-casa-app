@@ -235,7 +235,16 @@ async def test_the_end_line_without_a_summary():
 # --- the configurator's step line ------------------------------------------------------
 
 class _DM:
+    # Casa's own endpoint as the transport sees it.
     chat_id = "123"
+    bot_id = 111
+    has_bot_id = True
+    default_agent = "assistant"
+    on_identity = None
+
+    def address(self, chat_id, message_id=None):
+        from channels.tg_address import TgAddress
+        return TgAddress(self.bot_id, int(chat_id), message_id)
 
     async def send_step_line(self, chat_id, text):
         return 77
@@ -250,7 +259,8 @@ class _DM:
 @pytest.mark.parametrize("enabled", [True, False])
 async def test_the_configurators_step_line_moves_to_its_log(monkeypatch, enabled):
     import agent_loader
-    monkeypatch.setattr(tools_mod, "_channel_manager", SimpleNamespace(get=lambda name: _DM()))
+    from telegram_channel_double import make_transport
+    monkeypatch.setattr(tools_mod, "_channel_manager", make_transport(_DM()))
     monkeypatch.setattr(tools_mod, "_agent_logs", RecordingLogs(enabled=enabled))
     line = tools_mod._configurator_step_line(agent_loader.load_configurator(), {})
     if enabled:

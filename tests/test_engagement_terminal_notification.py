@@ -98,7 +98,7 @@ def _row(tombstone, engagement_id: str) -> dict:
 
 
 def _origin(role="assistant", chat="12345", cid="route-1"):
-    return {"role": role, "channel": "telegram", "chat_id": chat,
+    return {"role": role, "channel": "telegram", "_tg_bot": 111, "chat_id": chat,
             "cid": cid, "user_text": "please do the thing"}
 
 

@@ -58,6 +58,7 @@ def make_live_telegram_job(**changes) -> VoiceJob:
         creating_role="assistant", specialist_role="researcher",
         specialist_display_name="Researcher",
         creator_peer="telegram", creator_user_id="user-1",
+        route={"_tg_bot": 111},
         scope_id="chat-1", origin_route_id=None,
         origin_device_id=None,
         task="Find the boiler schedule.", context="",
