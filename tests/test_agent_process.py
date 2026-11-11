@@ -3086,11 +3086,11 @@ class TestIssue666SentinelHold:
         assert result.type is MessageType.RESPONSE
         assert result.content == ""
 
-    async def test_recant_turn_streams_the_whole_text_sentinel_included(
+    async def test_recant_turn_streams_the_words_without_the_sentinel(
         self, tmp_path,
     ):
         """The G-3 recant contract at the turn level: the hold releases, and
-        what it releases is the whole text with the literal intact."""
+        what it releases is the words whole, without the leading marker."""
         FakeClient.reset()
         FakeClient.response_text = "<silent/> actually, meeting at 3pm."
         agent = _make_agent(tmp_path, role="assistant")
@@ -3109,7 +3109,7 @@ class TestIssue666SentinelHold:
         with patch("sdk_client_pool._default_make_client", FakeClient):
             result = await agent.handle_message(msg)
 
-        assert channel.tokens == ["<silent/> actually, meeting at 3pm."]
+        assert channel.tokens == ["actually, meeting at 3pm."]
         assert channel.finalize_response_stream.call_count == 1
         assert channel.turn_finished.call_count == 0
-        assert result.content == "<silent/> actually, meeting at 3pm."
+        assert result.content == "actually, meeting at 3pm."

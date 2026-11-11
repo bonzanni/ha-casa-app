@@ -569,7 +569,9 @@ async def test_t5_a_cancelled_handler_cannot_release_the_library_transaction_ear
         tmp_path: Path, monkeypatch) -> None:
     """T5: a specialist ``persona_apply`` whose worker is paused INSIDE the
     lifecycle lock after its journal ``begin``; the handler task is cancelled
-    (count 1); a direct rollback B started on another thread commits 0 times
+    (count 1, surfacing only once its worker has finished, so the handler is
+    still running while the worker is paused); a direct rollback B started on
+    another thread commits 0 times
     while the worker is paused; after the worker is released it completes
     (1), its journal is terminal (completed 1, in progress 0), B then commits
     exactly once, and boot reconciliation performs 0 rollbacks. RED at base:
@@ -661,12 +663,10 @@ async def test_t5_a_cancelled_handler_cannot_release_the_library_transaction_ear
     await wait_until(lambda: hs.entered.is_set() or task.done(), timeout=_PAUSE_TIMEOUT)
     assert hs.entered_count == 1, (task.result() if task.done() else "not entered")
 
+    # The cancelled handler waits for its worker before the cancellation
+    # surfaces, so it is awaited only after the worker has been released.
     task.cancel()
     cancellations = 0
-    try:
-        await task
-    except asyncio.CancelledError:
-        cancellations += 1
 
     b_out = _Outcome()
     b = threading.Thread(target=b_out.run, name="B", args=(
@@ -677,7 +677,13 @@ async def test_t5_a_cancelled_handler_cannot_release_the_library_transaction_ear
     await asyncio.to_thread(b.join, _B_WINDOW)
     b_commits_while_paused = b_commits["count"]
 
+    handler_done_while_paused = task.done()
+
     hs.release.set()
+    try:
+        await asyncio.wait_for(task, _PAUSE_TIMEOUT)
+    except asyncio.CancelledError:
+        cancellations += 1
     await wait_until(lambda: worker_done["count"] == 1, timeout=_PAUSE_TIMEOUT)
     await asyncio.to_thread(b.join, _PAUSE_TIMEOUT)
 
@@ -689,6 +695,7 @@ async def test_t5_a_cancelled_handler_cannot_release_the_library_transaction_ear
         acks_path=acks.path, agents_specialists_dir=agents_root)
 
     assert cancellations == 1
+    assert handler_done_while_paused is False
     assert b_commits_while_paused == 0
     assert worker_done["count"] == 1
     assert completed.count("persona_override") == 1

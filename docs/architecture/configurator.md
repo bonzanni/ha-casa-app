@@ -98,9 +98,11 @@ declared in `private_state.FILES`); a write that fails is logged and never refus
 A run whose task is still unwinding when the bounded runner's teardown bound passes keeps the
 lease until that task really ends, though the runner itself has returned.
 
-What it does not cover: work a run left behind that outlives its task, such as a plugin
-tool's worker thread still running after its handler was cancelled; only plugin erasers and
-bundle transactions are waited for.
+What it does not cover: work a run left behind that outlives its task, such as a worker
+thread a plugin tool does not wait for after its handler was cancelled (a tool does wait for
+the thread hops it makes under the plugin-mutation lock, INV-TOOL-015 in
+[`plugin-mutation-tools.md`](plugin-mutation-tools.md)); only plugin erasers and bundle
+transactions are waited for.
 
 **INV-CFG-015**: A configurator run that ends while Casa is stopping, whether cancelled or returning after it swallowed the cancellation, leaves its lease record on disk; the next boot removes that record and, once the channels are up, tells the operator once which task was interrupted, unless the job registry's restart recovery announces the same delegation; nothing of the run is replayed.
 

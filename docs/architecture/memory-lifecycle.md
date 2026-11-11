@@ -74,7 +74,10 @@ guard against a starved thread or a stalled disk, not a latency target). A regis
 run goes on: with no crash its captures are durable and nothing is lost, and only a crash on
 top of it lets its transcript follow normal retention (a row that commits after the turn
 stopped waiting is adopted by the run, and one whose run was cancelled while waiting is
-confirmed, since nothing was captured). **The gate is one rule:** while a row is unconfirmed, nothing in its
+confirmed, since nothing was captured — except a job turn's that still owed, or had cut, the
+reserved capture of the operator's message, which stays unconfirmed). A job turn's close runs
+even when its reader is cancelled while waiting for the registration, so a capture the worker
+still makes confirms the run. **The gate is one rule:** while a row is unconfirmed, nothing in its
 directory is deleted — no single session's transcript and not the folder — because which
 session a row names is no evidence of which sessions the run touched (a resumed run names
 its session late, a naming write can fail, a run can move from one session to another). A

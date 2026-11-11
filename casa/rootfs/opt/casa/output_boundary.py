@@ -35,7 +35,10 @@ Obligations are a closed, Casa-owned set; the model can never add one.
   never turned into a visible line; prose after a sentinel is delivered whole
   (the G-3 recant contract, INV-TURN-009). A suppressed admission says whether
   the model CHOSE the silence (``chosen_silence``: at least one sentinel) or
-  merely produced nothing (#1079). On a buffered (``NoStream``) turn, a final
+  merely produced nothing (#1079). On a streaming turn, a final reply and every
+  stream update lose a leading or closing run of sentinels
+  (:func:`without_sentinels`, #1512): the words arrive, the tag never does. On
+  a buffered (``NoStream``) turn, a final
   reply whose LAST message is a closing ``<silent/>`` after earlier text is the
   operator's ruling on #1075: silent after a confirmed send, else the earlier
   text without the tag (:meth:`TurnScope.admit`).
@@ -200,6 +203,18 @@ def may_still_be_silence(text: str | None) -> bool:
     while rest.startswith(SILENCE_SENTINEL):
         rest = rest[len(SILENCE_SENTINEL):].lstrip()
     return SILENCE_SENTINEL.startswith(rest)
+
+
+def without_unfinished_sentinel(text: str) -> str:
+    """*text* without a trailing piece that could still become a
+    ``<silent/>`` marker (``"Sure. <sil"`` → ``"Sure. "``): an in-flight
+    cumulative holds that piece back until the next delta shows whether it
+    completes a marker — then admission drops it — or is ordinary text, which
+    is released whole with that delta (#1512)."""
+    for k in range(len(SILENCE_SENTINEL) - 1, 0, -1):
+        if text.endswith(SILENCE_SENTINEL[:k]):
+            return text[:-k]
+    return text
 
 
 def without_sentinels(text: str) -> str:
@@ -739,6 +754,13 @@ class TurnScope:
                     "closing silence without confirmed sends: role=%s cid=%s "
                     "— earlier text kept, tag dropped", self.role, self.cid)
                 text = kept
+        if (kind in (IntentKind.FINAL_REPLY, IntentKind.STREAM_UPDATE)
+                and self.streaming_allowed):
+            # #1512: a streaming turn shows its words as they are written, so
+            # a leading or closing run of ``<silent/>`` markers around them is
+            # dropped from every stream update and from the final edit — the
+            # tag never reaches the operator, the words still do.
+            text = without_sentinels(text)
         send = None
         if kind in _SENT_INTENTS:
             send = self.open_send(kind.value)

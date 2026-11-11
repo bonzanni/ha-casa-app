@@ -63,8 +63,14 @@ def test_a_final_reply_that_strips_to_silence_is_suppressed(text):
 
 
 def test_prose_after_a_sentinel_is_delivered_whole():
+    """The words after a marker are never suppressed. A streaming turn drops
+    the leading marker; a buffered one delivers the text as written."""
     s = _scope()
     out = s.admit(K.FINAL_REPLY, "<silent/> actually, one thing: the bins.")
+    assert out.suppressed is False
+    assert out == "actually, one thing: the bins."
+    buffered = ob.TurnScope.mint(_msg(MessageType.SCHEDULED), _config())
+    out = buffered.admit(K.FINAL_REPLY, "<silent/> actually, one thing: the bins.")
     assert out.suppressed is False
     assert out == "<silent/> actually, one thing: the bins."
 

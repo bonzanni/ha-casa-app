@@ -53,7 +53,7 @@ from specialist_registry import CLOSING_MARKER, DelegationComplete
 from hooks import read_evidence_matchers, resolve_hooks
 from output_boundary import (
     Admitted, ApprovalCut, IntentKind, TurnScope, casa_text,
-    may_still_be_silence, strips_to_silence,
+    may_still_be_silence, strips_to_silence, without_unfinished_sentinel,
 )
 from log_cid import cid_var
 import sdk_logging
@@ -3773,6 +3773,10 @@ class Agent:
             # so a later cumulative is compared with what was really shown).
             if state["approval_cut"].cut is not None:
                 return
+            if partial:
+                # #1512: an unfinished marker at the end of an in-flight
+                # cumulative is held until the next delta settles it.
+                cum = without_unfinished_sentinel(cum)
             if _may_still_be_silence(cum) if partial else _strips_to_silence(cum):
                 return
             # #1038: a stream update is admitted like any other emission —
@@ -3783,6 +3787,13 @@ class Agent:
             emitted = (scope.admit(IntentKind.STREAM_UPDATE, cum)
                        if scope is not None else cum)
             if emitted == state["last_emitted"]:
+                return
+            # #1512: admission drops a closing ``<silent/>``; on the partial
+            # path the fragments before it were already handed over, and
+            # taking them back would make a voice stream restart and say the
+            # words again — what is already shown stays as it is.
+            if (_SILENCE_SENTINEL in cum
+                    and state["last_emitted"].startswith(emitted)):
                 return
             await on_token(emitted)
             state["last_emitted"] = emitted

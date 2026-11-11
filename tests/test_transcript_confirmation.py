@@ -555,7 +555,9 @@ async def test_a_run_cancelled_during_its_registration_confirms_its_row(
         drv = InCasaDriver()
         rec = _engagement_record()
         session = attach_session(drv, rec, _Client())
-        drv.submit_operator(rec, "m", tg_message=TgAddress(111, 4242, 55))
+        # Casa's own write: the turn owes no capture. A turn that owes the
+        # operator's message is the case below this one.
+        drv.submit_casa(rec, "m")
 
         async def _registration():
             # The engagement turn's run registers on its own task as the
@@ -589,6 +591,107 @@ async def test_a_run_cancelled_during_its_registration_confirms_its_row(
     (row,) = rows(home.store)
     assert row["confirmed_at"] is not None, row
     assert events(home.store) == []
+
+
+def _held_registration(monkeypatch):
+    """Hold every run registration in its worker thread until the returned
+    gate is set; ``entered`` is set once one is held. Its turn waits on it
+    for as long as the test needs."""
+    import threading
+    gate, entered = threading.Event(), threading.Event()
+    real = transcript_runs.register
+
+    def register(*a, **k):
+        entered.set()
+        gate.wait(5)
+        return real(*a, **k)
+    monkeypatch.setattr(transcript_runs, "register", register)
+    monkeypatch.setattr(transcript_runs, "STALL_GUARD_S", 30.0)
+    return gate, entered
+
+
+async def _until(predicate) -> None:
+    async with asyncio.timeout(5):
+        while not predicate():
+            await asyncio.sleep(0)
+
+
+async def _end_job(drv, rec, session) -> None:
+    await drv.cancel(rec)
+    if session.reader is not None and not session.reader.done():
+        session.reader.cancel()
+    pending = [t for t in drv._tasks if not t.done()]
+    if pending:
+        await asyncio.wait(pending, timeout=5)
+    await transcript_runs.settle()
+
+
+async def test_a_registration_cut_while_the_operator_capture_is_owed_stays_unconfirmed(
+        home, monkeypatch):
+    """Shutdown cancels a job turn's registration itself while the delivery
+    worker, having written the operator's message, waits on it to capture
+    that message. The message is never captured, so the row the insert
+    commits anyway is left unconfirmed and the transcript is kept. Red case:
+    the cancelled registration adopted the row and confirmed it with nothing
+    captured."""
+    from drivers.in_casa_driver import TICKET_ADMITTED, InCasaDriver
+    from turn_scripted_session import TurnScriptedSession, attach_session
+
+    gate, entered = _held_registration(monkeypatch)
+
+    class _Client(TurnScriptedSession):
+        async def receive_response(self):
+            await asyncio.Event().wait()   # the turn runs on
+            yield None
+    drv = InCasaDriver()
+    rec = _engagement_record()
+    session = attach_session(drv, rec, _Client())
+    ticket = drv.submit_operator(rec, "m", tg_message=TgAddress(111, 4242, 55))
+    await asyncio.to_thread(entered.wait, 5)
+    segment = session.segment
+    # Written (and taken up): the worker now waits on the registration to
+    # capture it.
+    await _until(lambda: ticket.state != TICKET_ADMITTED)
+    segment.capture_ready.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await segment.capture_ready
+    gate.set()
+    await _end_job(drv, rec, session)
+    assert [r["confirmed_at"] for r in rows(home.store)] == [None]
+    assert events(home.store) == []
+
+
+async def test_a_reader_cancelled_while_waiting_on_registration_still_closes_its_turn(
+        home, monkeypatch):
+    """The turn's result arrives while its registration is still in flight,
+    and the reader is cancelled where it waits on that registration. The
+    worker then captures the operator's message once the row lands, so the
+    run is confirmed. Red case: the turn's capture was never closed and its
+    row stayed unconfirmed for good."""
+    from drivers.in_casa_driver import InCasaDriver
+    from turn_scripted_session import TurnScriptedSession, attach_session
+
+    gate, entered = _held_registration(monkeypatch)
+    sid = str(uuid.uuid4())
+
+    class _Client(TurnScriptedSession):
+        async def receive_response(self):
+            yield _mk_result(sid)
+    drv = InCasaDriver()
+    rec = _engagement_record()
+    session = attach_session(drv, rec, _Client())
+    drv.submit_operator(rec, "topic message",
+                        tg_message=TgAddress(111, 4242, 55))
+    await asyncio.to_thread(entered.wait, 5)
+    # The result is handled; the reader now waits on the registration.
+    assert await drv.wait_turn_end(rec.id, 5) is True
+    session.reader.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await session.reader
+    gate.set()
+    await _end_job(drv, rec, session)
+    assert [r["confirmed_at"] is not None for r in rows(home.store)] == [True]
+    assert [e["text"] for e in events(home.store)] == ["topic message"]
 
 
 async def _with_origin_task(coro):

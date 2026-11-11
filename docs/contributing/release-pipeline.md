@@ -71,15 +71,21 @@ browser app's is the `browser-unit` job (Python 3.13, `venv_browser/` from
 parallel under pytest-xdist, up to 12 workers: Casa's with `--dist loadfile`, which keeps
 each test module on one worker, and the browser app's with `--dist worksteal`, which splits
 its modules across workers, since one module holds a large share of its time. The
-`browser-unit` CI job runs its suite the same way, with the same flags.
+`browser-unit` CI job runs its suite the same way, with the same flags. In CI, Casa's unit
+step fails a test that runs past 120 seconds (pytest-timeout), and that failure lists the
+asyncio tasks still pending with the line each one awaits (`tests/pending_awaits.py`), so an
+intermittent hang names itself instead of holding `tier2-functional` until its 30-minute cap.
 `make test-unit` runs Casa's suite (`make test-casa`) and then `make test-browser`, and
 `make test-unit-serial` runs each of the two suites in one process; each
 pair is two separate invocations under the suite lock and memory cage, so the lock is never
 taken while held. `make test-browser-integration` runs the browser app's
 integration tests in its built test image; the `browser-integration` job runs the same script
 (`casa_browser/test/run-integration.sh`) only on the nightly schedule (04:00 UTC) and on a
-manual dispatch, never on a push or a pull request, since it takes about 40 minutes; a red
-night wakes `nightly-alarm`, which files or comments on the tracking issue. It starts the app
+manual dispatch, never on a push or a pull request, since it takes about an hour of test
+time; a red night wakes `nightly-alarm`, which files or comments on the tracking issue. Its
+tests run one at a time inside one container, since each takes over the container's proxy
+ports, so the job is split in two parts on two runners (the action gate and run lifecycle
+files, and every other file), each well inside the job's 60-minute cap. It starts the app
 container as Supervisor starts it (`NET_ADMIN` only, `seccomp=unconfined`), then runs the
 live view's viewer in WebKit and Chromium (`run-viewer-engines.sh`, Playwright's image). The app linter in `.github/workflows/lint.yml`
 runs once per app. Until `casa_browser/` exists, every browser lane and target states that

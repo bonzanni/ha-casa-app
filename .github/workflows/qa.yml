@@ -30,6 +30,8 @@ jobs:
 
   tier2-functional:
     runs-on: ubuntu-latest
+    # A green run takes 7 to 11 minutes. Without a cap a hang held the job for hours.
+    timeout-minutes: 30
     if: >
       github.event_name == 'push'
       || github.event_name == 'pull_request'
@@ -43,8 +45,11 @@ jobs:
       # without it — a skipped guard would not have caught the v0.125.0
       # boot-path NameError, so it must be installed here, not just locally.
       - run: pip install -r casa/requirements.txt -r casa/requirements-test.txt
+      # --timeout: the slowest unit test takes under 30 s here; one that hangs fails after
+      # 120 s instead of holding the job, and its report lists the awaits its event loop was
+      # parked on (tests/pending_awaits.py), since xdist prints only finished tests.
       - name: Unit pytest (opt-out gate — everything except docker/slow)
-        run: python -m pytest tests/ -m "not docker and not slow" -v -n auto --maxprocesses=12 --dist loadfile --tb=short
+        run: python -m pytest tests/ -m "not docker and not slow" -v -n auto --maxprocesses=12 --dist loadfile --tb=short --timeout=120
       # GHSA-569r-7crq-xr43's guarantee is about what an unprivileged uid can
       # READ, so the pinning test forks and setuid()s to check it for real
       # instead of asserting mode bits. That needs to start as root, which this
@@ -151,16 +156,33 @@ jobs:
   # as Supervisor starts it — NET_ADMIN only and seccomp unconfined (Chrome's namespace
   # sandbox needs user namespaces) — on a user-defined network, with synthetic fixtures only
   # (casa_browser/test/run-integration.sh, the same script as `make test-browser-integration`).
-  # It takes about 40 minutes, so it runs only on the nightly schedule and on a manual
-  # dispatch, never on a push or a pull request; a red night wakes `nightly-alarm`. The script
-  # exits nonzero on any failure and pytest prints the counts; a run that collects no test fails.
+  # Its tests run one at a time, since each takes over the container's proxy ports, so its
+  # time grows with every test it gains; it is split in two parts, each on its own runner with
+  # its own container, at about half an hour each. The second part runs every file the first
+  # does not name, so a new test file always runs; move a file between the parts when one of
+  # them nears the job cap. It runs only on the nightly schedule and on a manual dispatch,
+  # never on a push or a pull request; a red night wakes `nightly-alarm`. The script exits
+  # nonzero on any failure and pytest prints the counts; a run that collects no test fails.
   browser-integration:
-    name: Browser app integration tests (casa_browser image)
+    name: Browser app integration tests (casa_browser image, ${{ matrix.part }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
     if: >
       github.event_name == 'schedule'
       || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - part: action gate and run lifecycle
+            tests: tests/integration/test_action_gate.py tests/integration/test_run_lifecycle.py
+            viewer: true
+          - part: the other files
+            tests: >-
+              tests/integration
+              --ignore=tests/integration/test_action_gate.py
+              --ignore=tests/integration/test_run_lifecycle.py
+            viewer: false
     steps:
       - uses: actions/checkout@v7
       - name: Is the app in this tree?
@@ -177,9 +199,9 @@ jobs:
         env:
           DOCKER_PULL: --pull
           CASA_IT_TAG: ci-${{ github.run_id }}
-        run: bash casa_browser/test/run-integration.sh
+        run: bash casa_browser/test/run-integration.sh ${{ matrix.tests }}
       - name: The live view's viewer in WebKit and Chromium with touch (Playwright's image)
-        if: steps.present.outputs.present == 'true'
+        if: steps.present.outputs.present == 'true' && matrix.viewer
         run: bash casa_browser/test/run-viewer-engines.sh
 
   tier3-hardening:

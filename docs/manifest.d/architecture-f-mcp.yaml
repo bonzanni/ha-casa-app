@@ -86,11 +86,13 @@
     - tests/test_specialist_tool_ceiling.py
     - tests/test_cross_session_tools.py
     - tests/test_n8n_registration.py
+    - tests/test_specialist_casa_server_attach.py
   related: [architecture/plugins.md, architecture/hook-resolution.md, architecture/http-surface.md]
-  defines_invariants: [INV-MCP-002, INV-MCP-003, INV-MCP-009, INV-MCP-013, INV-MCP-014]
+  defines_invariants: [INV-MCP-002, INV-MCP-003, INV-MCP-009, INV-MCP-013, INV-MCP-014, INV-MCP-015]
   invariant_tests:
     INV-MCP-002: [tests/test_unix_socket_runner.py::test_unix_runner_creates_socket_with_mode_0600]
     INV-MCP-003: [tests/test_role_scoped_mcp.py::test_casa_framework_factory_exposes_only_granted_tools]
+    INV-MCP-015: [tests/test_specialist_casa_server_attach.py::test_launch_grants_come_with_the_server_that_exposes_them, tests/test_handoff.py::test_a_specialist_with_no_servers_gets_the_server_that_exposes_hand_off]
     INV-MCP-009: [tests/test_specialist_tool_ceiling.py::TestDispatchCeiling::test_specialist_record_cannot_reach_forbidden_casa_tool, tests/test_specialist_tool_ceiling.py::TestDispatchCeiling::test_specialist_record_keeps_allowlisted_tool, tests/test_specialist_tool_ceiling.py::TestDispatchCeiling::test_executor_record_is_not_ceilinged, tests/test_specialist_tool_ceiling.py::TestDispatchCeiling::test_unbound_caller_is_not_ceilinged]
     INV-MCP-013: [tests/test_cross_session_tools.py::test_shared_constants_name_the_three_tools_and_refuse, tests/test_cross_session_tools.py::test_resident_options, tests/test_cross_session_tools.py::test_restricted_webhook_options, tests/test_cross_session_tools.py::test_specialist_and_executor_options, tests/test_cross_session_tools.py::test_engagement_resume_options, tests/test_plugin_job_launch.py::test_worker_options_record_and_topic, tests/test_cross_session_tools.py::test_query_engager_synthesis_options, tests/test_cross_session_tools.py::test_tier_classifier_options, tests/test_cross_session_tools.py::test_pinned_sdk_forwards_the_denial_and_the_refusal_to_the_cli, tests/test_cross_session_tools.py::test_every_production_claude_options_passes_denial_and_settings]
     INV-MCP-014: [tests/test_cross_session_tools.py::test_shared_constants_name_the_three_tools_and_refuse, tests/test_cross_session_tools.py::test_resident_options, tests/test_cross_session_tools.py::test_restricted_webhook_options, tests/test_cross_session_tools.py::test_specialist_and_executor_options, tests/test_cross_session_tools.py::test_engagement_resume_options, tests/test_plugin_job_launch.py::test_worker_options_record_and_topic, tests/test_cross_session_tools.py::test_query_engager_synthesis_options, tests/test_cross_session_tools.py::test_tier_classifier_options, tests/test_cross_session_tools.py::test_pinned_sdk_forwards_the_denial_and_the_refusal_to_the_cli, tests/test_cross_session_tools.py::test_every_production_claude_options_passes_denial_and_settings]

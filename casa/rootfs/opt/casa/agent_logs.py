@@ -4,10 +4,10 @@ When the operator configures a forum supergroup and makes the bot an
 administrator with the "Manage topics" right, every agent that works in the
 background gets one read-only topic there. Each topic holds rolling plain-text
 messages, one line per entry, every line prefixed with the name of the run it
-belongs to::
+belongs to; an entry repeated in a row is shown once with its count::
 
     Q3 accounting · ▶ started
-    Q3 accounting · 🔧 Searching memory
+    Q3 accounting · 🔧 Searching memory ×3
 
 The module has three parts, all owned by one process-wide :class:`AgentLogs`:
 
@@ -242,6 +242,9 @@ class _KeyState:
     skipped: int = 0
     message_id: int | None = None
     message_text: str = ""
+    #: The line the rolling message ends with and how many times in a row it
+    #: was logged, so a repeat of it is counted in place.
+    tail: tuple[str, int] | None = None
     message_started: float = 0.0
     message_touched: float = 0.0
     topic_retried: bool = False
@@ -252,6 +255,7 @@ class _KeyState:
     def forget_message(self) -> None:
         self.message_id = None
         self.message_text = ""
+        self.tail = None
 
 
 @dataclass
@@ -263,6 +267,12 @@ class _Plan:
     skip_taken: int
     seqs: set[int]
     split: tuple[int, str] | None
+    tail: tuple[str, int] | None = None
+
+
+def _counted(line: str, count: int) -> str:
+    """A line logged *count* times in a row, as it is shown."""
+    return line if count == 1 else f"{line} ×{count}"
 
 
 async def _to_thread_uncancellable(fn: Callable[..., Any], *args: Any) -> Any:
@@ -589,6 +599,7 @@ class AgentLogs:
             self._posts.append([message.message_id, self._wall()])
             self._dirty = True
         state.message_text = plan.text
+        state.tail = plan.tail
         state.message_touched = now
         state.topic_retried = False
         self._consume(state, plan)
@@ -603,11 +614,27 @@ class AgentLogs:
             disable_notification=True)
 
     def _plan(self, state: _KeyState, now: float) -> _Plan:
-        lines: list[tuple[int | None, str]] = []
-        if state.skipped:
-            noun = "line" if state.skipped == 1 else "lines"
-            lines.append((None, f"{_ELLIPSIS} {state.skipped} {noun} skipped"))
-        lines.extend((e.seq, e.text) for e in state.pending)
+        # A line logged several times in a row (a step repeated call after
+        # call) is shown once with its count; one that repeats the line the
+        # rolling message ends with is counted there, in place.
+        groups: list[tuple[set[int], str, int]] = []
+        for e in state.pending:
+            if groups and groups[-1][1] == e.text:
+                groups[-1][0].add(e.seq)
+                groups[-1] = (groups[-1][0], e.text, groups[-1][2] + 1)
+            else:
+                groups.append(({e.seq}, e.text, 1))
+
+        def lines(tail: tuple[str, int] | None) -> list[tuple[set[int] | None, str]]:
+            out: list[tuple[set[int] | None, str]] = []
+            if state.skipped:
+                noun = "line" if state.skipped == 1 else "lines"
+                out.append((None, f"{_ELLIPSIS} {state.skipped} {noun} skipped"))
+            for i, (seqs, text, count) in enumerate(groups):
+                if i == 0 and tail is not None:
+                    count += tail[1]
+                out.append((seqs, _counted(text, count)))
+            return out
 
         can_edit = (
             state.message_id is not None
@@ -615,38 +642,61 @@ class AgentLogs:
             and now - state.message_started < ROLL_AGE_SECONDS
         )
         if can_edit:
-            plan = self._fill(state.message_text, lines, edit=True,
+            base, tail = state.message_text, None
+            if (state.tail is not None and not state.skipped and groups
+                    and groups[0][1] == state.tail[0]):
+                shown = _counted(*state.tail)
+                if base == shown:
+                    base, tail = "", state.tail
+                elif base.endswith("\n" + shown):
+                    base, tail = base[: -len(shown) - 1], state.tail
+            plan = self._fill(base, lines(tail), edit=True,
                               skipped=state.skipped)
             if plan is not None:
-                return plan
-        plan = self._fill("", lines, edit=False, skipped=state.skipped)
+                return self._with_tail(plan, groups, tail)
+        plan = self._fill("", lines(None), edit=False, skipped=state.skipped)
         if plan is not None:
-            return plan
-        # The first line alone is longer than a message: send it in pieces.
-        seq, text = lines[0]
+            return self._with_tail(plan, groups, None)
+        # The first line alone is longer than a message: send it in pieces
+        # (never the skip line, which is always short).
+        seq, text = state.pending[0].seq, state.pending[0].text
         head, rest = _split_at(text, MESSAGE_LIMIT)
-        assert seq is not None  # the skip line is always short
         if rest.strip():
             return _Plan(False, head, 0, set(), (seq, rest))
         return _Plan(False, head, 0, {seq}, None)
 
     @staticmethod
-    def _fill(base: str, lines: list[tuple[int | None, str]], *, edit: bool,
+    def _with_tail(plan: _Plan, groups: list[tuple[set[int], str, int]],
+                   tail: tuple[str, int] | None) -> _Plan:
+        """*plan* with the line its text ends with, when that is a whole
+        group of queued lines."""
+        for i, (seqs, text, count) in enumerate(groups):
+            if not seqs <= plan.seqs:
+                break
+            if i == len(groups) - 1 or not groups[i + 1][0] <= plan.seqs:
+                if i == 0 and tail is not None:
+                    count += tail[1]
+                plan.tail = (text, count)
+                break
+        return plan
+
+    @staticmethod
+    def _fill(base: str, lines: list[tuple[set[int] | None, str]], *, edit: bool,
               skipped: int) -> _Plan | None:
         text = base
         units = _tg_len(base)
         seqs: set[int] = set()
         skip_taken = 0
-        for seq, line in lines:
+        for group, line in lines:
             added = _tg_len(line) + (1 if text else 0)
             if units + added > MESSAGE_LIMIT:
                 break
             text = f"{text}\n{line}" if text else line
             units += added
-            if seq is None:
+            if group is None:
                 skip_taken = skipped
             else:
-                seqs.add(seq)
+                seqs |= group
         if not seqs and not skip_taken:
             return None
         return _Plan(edit, text, skip_taken, seqs, None)
@@ -670,6 +720,7 @@ class AgentLogs:
             return
         if plan.edit and _matches(exc, _NOT_MODIFIED):
             state.message_text = plan.text
+            state.tail = plan.tail
             state.message_touched = self._monotonic()
             self._consume(state, plan)
             return

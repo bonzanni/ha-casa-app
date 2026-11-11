@@ -90,7 +90,11 @@ a post echo says the posts went to the person there and asks the requester to cl
 loop in its own words (`OWN_CHAT_ECHO_NOTE`), a closing silence is said without steering it
 to silence (`OWN_CHAT_SILENT_CLOSE_NOTE`), and a closing message that posts is said to be
 already read there, so the requester closes in a line or two instead of retelling it
-(`OWN_CHAT_ANSWER_NOTE`). That prediction is the post's own rule: an endpoint still serves
+(`OWN_CHAT_ANSWER_NOTE`). A delegation still running when its call returns (`async`, or a
+`sync` one past its 60-second wait) carries `own_chat_note` on its `pending` result
+(`OWN_CHAT_PENDING_NOTE`): the person sees the work and will get the answer in that chat,
+so the requester owes no "still on it" line — one written while the answer was landing
+reached the person after it. That prediction is the post's own rule: an endpoint still serves
 the task's delivery (`tools._task_endpoint`, the lookup the post makes, so an answer whose
 bot was released meanwhile is not called read), and the whole closing message is no
 silence — the same text both silence notes judge, so the notes never contradict each other

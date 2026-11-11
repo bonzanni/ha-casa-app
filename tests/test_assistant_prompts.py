@@ -1217,11 +1217,25 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # compiled text, word by word: five non-equal opcodes on each `assistant:*`
 # carrier, all inside that sentence; the six other carriers byte-identical. No
 # retention claim.
+# MOVED (a delegate asked about its own job), `assistant:text` only: the
+# background-jobs paragraph ends with one sentence telling her to put what she
+# already knows of the job's state (whether it ended, how, and when) in the
+# delegation's `context=`, since the delegate starts fresh and a job's end is
+# told to her. Measured with `difflib` over base-vs-new compiled text, word by
+# word: exactly ONE `insert` on `assistant:text`, that sentence; the eight
+# other carriers byte-identical. No retention claim.
+# MOVED (a pending delegation the person can watch), `assistant:text` only:
+# the pending-delegation sentence is followed by one sentence saying the
+# "still on it" line is only for work the person cannot see, and that when
+# Casa's note says they are watching it in the delegate's own chat she writes
+# nothing about it. Measured with `difflib` over base-vs-new compiled text,
+# word by word: exactly ONE `insert` on `assistant:text`, that sentence; the
+# eight other carriers byte-identical. No retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "f7f8d0dcbbc197ff0349557cbebe0f95e5e360377030dacd09f38cf61ab7e335",
     "assistant:text":
-        "abe92176aace039a3eed53517f50596a437d2423f48d44f6f8767273c4525fd0",
+        "b21de43208ce72a950f5f510ba1d46df07d561f8610b30e0df76f0a61bd2e511",
     "assistant:voice":
         "71805d1c8fd3a8ef47a7de718e60db1123752388d8203a66e358eedac7b007d1",
     "butler:restricted_webhook":
@@ -1871,7 +1885,10 @@ _LATE_ANSWER_DOCTRINE = (
     "When a delegation comes back pending, the person would otherwise wait in "
     "silence: say only that it is still running, in one short line such as "
     "\"Alex is still on it.\", with nothing added: not the task again, not "
-    "what you have done, not what will happen next. When `ask_user` has "
+    "what you have done, not what will happen next. "
+    "That line is only for work the person cannot see: when Casa's note "
+    "says they are watching it in the delegate's own chat, write nothing "
+    "about it. When `ask_user` has "
     "posted a question, the "
     "person already sees it with its buttons: write nothing about it, and "
     "when you have nothing else for them, stay silent exactly as Casa's note "

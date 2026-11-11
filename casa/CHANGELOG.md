@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.361.1] - 2026-11-11
+
+### Fixed
+
+- A streamed chat reply that wrote some text, used a tool and then ended in silence showed a stray `<silent/>` tag after the words you had already seen. The tag no longer appears; the words still arrive as written.
+- The assistant no longer tells you a specialist is still working when you can watch it, and get its answer, in the specialist's own chat.
+- When the assistant asks a specialist about one of its background jobs, she is now told to pass on what she already knows of the job's state (whether it ended, how, and when), so the specialist no longer has to guess and say that a finished job is still running.
+- An agent's log no longer repeats the same step line call after call: a line repeated in a row shows once, with its count (for example "🔧 Searching memory ×3").
+- A plugin change cut off mid-way (by a cancel, a time limit or a restart) could let a second plugin change start while the first was still writing, and the second change could then be lost. The next change now waits until the cut one has finished.
+- A specialist whose role declares no MCP servers can now use its task and background-job tools (progress reports, questions, completion) instead of reporting that they are missing.
+- A background job cut off mid-turn (at shutdown, for example) could mark its conversation log for the usual 30-day clean-up although your last message to it had not been saved to memory, or keep the log for good although it had. The log now ends up in the right state either way.
+
 ## [0.361.0] - 2026-11-11
 
 Not backward compatible. Approvals you gave an earlier version to install or update a specialist, or to install a persona, are not carried over: asking again posts a new card. A specialist install or upgrade that the update cuts off half-way is normally undone, or finished, at startup; if Casa cannot do that (it may not, for one begun under an earlier version), the specialist is set aside — its plugins stay off and the plugin health report lists it — until you install, update or roll it back again. Let any install or upgrade finish before you update.
