@@ -357,43 +357,56 @@ class Run:
         captures nothing (*confirmed*) registers confirmed. A registration
         that fails is logged once and the run goes on unprotected."""
         run = cls(kind, role, directory, session_id)
+        try:
+            await run.register_row(confirmed=confirmed)
+        except asyncio.CancelledError:
+            # The run is cancelled before it captured anything, and its
+            # caller never holds it to close it: closed here, so a row the
+            # insert commits anyway is confirmed, never left holding its
+            # directory.
+            run.close()
+            raise
+        return run
+
+    async def register_row(self, *, confirmed: bool = False) -> None:
+        """Register this new run's row (what :meth:`start` does), for a
+        caller that must hold the run even when the registration is
+        cancelled: a row the insert commits anyway is then adopted by this
+        run and settles as its holder closes or interrupts it."""
         store = _store()
         if store is None:
-            return run
+            return
         loop = asyncio.get_running_loop()
         insert = loop.run_in_executor(_turn_pool, functools.partial(
-            register, store, kind=kind, role=role, directory=run.directory,
-            session_id=session_id, confirmed=confirmed))
+            register, store, kind=self.kind, role=self.role,
+            directory=self.directory, session_id=self.session_id,
+            confirmed=confirmed))
         try:
             run_id = await asyncio.wait_for(asyncio.shield(insert),
                                             STALL_GUARD_S)
         except asyncio.CancelledError:
-            # The run is cancelled before it captured anything: a row the
-            # insert commits anyway is adopted and confirmed, never left
-            # holding its directory.
-            run._closed = True
-            _late.add(insert)
-            insert.add_done_callback(_late.discard)
-            insert.add_done_callback(
-                lambda fut: run._late_row(fut, store, confirmed))
+            self._adopt_late(insert, store, confirmed)
             raise
         except Exception as exc:  # noqa: BLE001 — never blocks the run
             logger.warning("%s run of %s not registered (%s: %s); its "
-                           "transcript is not protected", kind, role,
-                           type(exc).__name__, exc)
+                           "transcript is not protected", self.kind,
+                           self.role, type(exc).__name__, exc)
             # An insert still in flight may yet commit: its row is then
             # adopted by the run, or confirmed once the run has closed, so
             # no row this run never owned is left holding a directory.
-            _late.add(insert)
-            insert.add_done_callback(_late.discard)
-            insert.add_done_callback(
-                lambda fut: run._late_row(fut, store, confirmed))
-            return run
-        run.run_ids = [run_id]
-        run._store = store
-        run._closed = confirmed
-        run._settled = confirmed
-        return run
+            self._adopt_late(insert, store, confirmed)
+            return
+        self.run_ids = [run_id]
+        self._store = store
+        self._closed = confirmed
+        self._settled = confirmed
+
+    def _adopt_late(self, insert: asyncio.Future, store: MemoryStore,
+                    confirmed: bool) -> None:
+        _late.add(insert)
+        insert.add_done_callback(_late.discard)
+        insert.add_done_callback(
+            lambda fut: self._late_row(fut, store, confirmed))
 
     def _late_row(self, fut: asyncio.Future, store: MemoryStore,
                   confirmed: bool) -> None:

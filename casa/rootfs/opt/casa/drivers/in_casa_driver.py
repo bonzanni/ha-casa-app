@@ -182,12 +182,23 @@ class _EngagementCapture:
             directory = transcript_cwd(self._engagement)
         except Exception:  # noqa: BLE001 — the row then names no directory
             directory = None
-        self.run = await transcript_runs.Run.start(
-            transcript_runs.ENGAGEMENT, role=self._engagement.role_or_type,
-            directory=directory, session_id=session_id)
-        # A close or a cut that came while the row was being registered was
-        # applied to the placeholder; apply it to the registered run.
-        self._settle()
+        run = transcript_runs.Run(
+            transcript_runs.ENGAGEMENT, self._engagement.role_or_type,
+            directory, session_id)
+        try:
+            await run.register_row()
+        except asyncio.CancelledError:
+            # Every capture waits on this registration, so nothing more is
+            # captured: the turn is over for its run. A row the insert
+            # commits anyway is confirmed only once every reserved capture
+            # is paid, and never when one was cut.
+            self._closing = True
+            raise
+        finally:
+            # A close or a cut that came while the row was being registered
+            # was applied to the placeholder; apply it to this run.
+            self.run = run
+            self._settle()
 
     async def _record(self, source, text: str, **fields) -> None:
         await self.run.kept(self._kept(source, text, **fields))
@@ -1371,7 +1382,10 @@ class InCasaDriver(DriverProtocol):
                 await asyncio.shield(segment.capture_ready)
             except Exception:  # noqa: BLE001
                 pass
-            segment.capture.close()
+            finally:
+                # Also when the reader is cancelled here: the worker can still
+                # capture what it owes, and the run settles once it has.
+                segment.capture.close()
         if result is None:
             return
         api_error = segment.api_error or result_api_error_kind(result)
