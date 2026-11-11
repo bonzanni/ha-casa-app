@@ -120,7 +120,7 @@ queues every update through `_IntakeQueue`, which asks `own_voice.intake` before
 queued: an update held or answered there reaches no handler; the lifecycle later replays held
 ones through `release_update`. On such a bot `/start` is an ordinary turn; the operator's first
 turn there, whatever it says, carries the reserved `_chat_opening` key that has the agent
-say hello, and marks the chat open once its queue takes it (`TelegramChannel._send_turn`,
+say hello (`"moved"` in an agent's new chat after a move to a new bot), and marks the chat open once its queue takes it (`TelegramChannel._send_turn`,
 a retry after a hand-back included); `/new` resets that agent's own
 conversation, and Casa's lines name the agent plainly, without the `📊` label. The bot's
 lifecycle is [`own-voice-lifecycle.md`](own-voice-lifecycle.md), the rest
