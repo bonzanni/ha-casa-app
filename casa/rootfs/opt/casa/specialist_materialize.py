@@ -493,8 +493,8 @@ def _map_session(session: dict) -> dict:
         out["idle_timeout"] = session["idle_timeout_seconds"]
     elif "idle_timeout" in session:
         out["idle_timeout"] = session["idle_timeout"]
-    if "desk_context" in session:
-        out["desk_context"] = session["desk_context"]
+    if "long_runs" in session:
+        out["long_runs"] = session["long_runs"]
     return out
 
 
@@ -587,6 +587,8 @@ def _render_specialist_operational_files(
         "session": _map_session(dict(normalized.get("session", {}))), "tts": tts,
         "voice_errors": voice_errors, "cwd": "", "requires": dict(normalized.get("requires", {})),
     }
+    if "own_chat" in normalized:
+        runtime["own_chat"] = dict(normalized["own_chat"])
     files["runtime.yaml"] = yaml.safe_dump(runtime, sort_keys=False)
     return {name: text.encode("utf-8") for name, text in files.items()}
 

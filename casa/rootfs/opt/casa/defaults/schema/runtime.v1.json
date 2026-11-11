@@ -4,6 +4,8 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "kind", "model"],
+  "if": {"properties": {"kind": {"const": "specialist"}}},
+  "else": {"not": {"required": ["own_chat"]}},
   "properties": {
     "schema_version": {"const": 1},
     "kind": {"enum": ["resident", "specialist", "executor"]},
@@ -41,7 +43,16 @@
       "properties": {
         "strategy":     {"type": "string", "enum": ["persistent", "pooled", "ephemeral"], "default": "ephemeral"},
         "idle_timeout": {"type": "integer", "minimum": 0, "default": 300},
-        "desk_context": {"type": "boolean"}
+        "long_runs":    {"type": "boolean"}
+      }
+    },
+    "own_chat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["short_description", "description"],
+      "properties": {
+        "short_description": {"type": "string", "minLength": 1, "maxLength": 120},
+        "description":       {"type": "string", "minLength": 1, "maxLength": 512}
       }
     },
     "tts": {

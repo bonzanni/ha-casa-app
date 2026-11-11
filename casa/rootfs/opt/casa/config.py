@@ -456,9 +456,19 @@ class MemoryConfig:
 class SessionConfig:
     strategy: str = "ephemeral"
     idle_timeout: int = 300
-    # Browser executor §5.4 ("each run is a fresh specialist context"): False
-    # keeps the desk's earlier exchanges out of every desk use of this role.
-    desk_context: bool = True
+    # True for a role whose requests are each one long conversation (a browser
+    # run): its delegated runs compact at a larger window, and a desk use of it
+    # is shown none of the desk's earlier exchanges.
+    long_runs: bool = False
+
+
+@dataclass(frozen=True)
+class OwnChatConfig:
+    """A specialist's own Telegram chat, declared in its role.yaml
+    ``own_chat`` block. Its presence means the agent may talk to the operator
+    from its own bot; the two texts are the bot's profile descriptions."""
+    short_description: str
+    description: str
 
 
 _VALID_TAG_DIALECTS = ("square_brackets", "parens", "none")
@@ -648,3 +658,7 @@ class AgentConfig:
     # override) carries no component_root; for a resident tuple a root is only a
     # label, and the resident activation never sets this.
     active_tuple_root: "str | None" = dataclasses.field(default=None, kw_only=True)
+    # The role's ``own_chat`` declaration; None when it declares none. Only a
+    # specialist may carry one (the role and runtime schemas refuse it on any
+    # other kind).
+    own_chat: "OwnChatConfig | None" = dataclasses.field(default=None, kw_only=True)

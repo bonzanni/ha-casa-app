@@ -23,7 +23,12 @@ from markdown_sections import sections
 from yaml_safety import load_yaml_no_aliases
 
 _REQUIRED = {"persona.yaml", "persona.md"}
-_OPTIONAL = {"examples.yaml"}
+AVATAR_FILE = "avatar.jpg"
+_OPTIONAL = {"examples.yaml", AVATAR_FILE}
+# The avatar is the one binary file a pack may carry: read as raw bytes,
+# never decoded or canonicalized, and checksummed as they are.
+_BINARY = {AVATAR_FILE}
+_JPEG_MAGIC = b"\xff\xd8\xff"
 
 # Byte-size caps checked BEFORE read_text, so a hostile pack can't force an
 # unbounded allocation — mirrors role_artifact.py's MAX_ROLE_YAML_BYTES /
@@ -33,6 +38,7 @@ _OPTIONAL = {"examples.yaml"}
 MAX_PERSONA_YAML_BYTES = 65536
 MAX_PERSONA_MD_BYTES = 262144
 MAX_EXAMPLES_BYTES = 65536
+MAX_AVATAR_BYTES = 1048576
 # J1 (foundation review r6): checked via stat() BEFORE read/parse, so a
 # fetched manifest.json can't force an unbounded read/parse allocation —
 # mirrors the pack-file size caps above.
@@ -41,6 +47,7 @@ _FILE_SIZE_CAPS: dict[str, int] = {
     "persona.yaml": MAX_PERSONA_YAML_BYTES,
     "persona.md": MAX_PERSONA_MD_BYTES,
     "examples.yaml": MAX_EXAMPLES_BYTES,
+    AVATAR_FILE: MAX_AVATAR_BYTES,
 }
 _AXES = {
     "warmth", "formality", "candor", "attunement",
@@ -72,6 +79,10 @@ class PersonaPack:
     examples: tuple[Mapping[str, str], ...]
     manifest: PersonaManifest
     checksum: str
+    # The pack's avatar image (a JPEG, in the pack directory it was loaded
+    # from), or None when the pack carries none. Its bytes are in the
+    # manifest, so they are part of ``checksum``.
+    avatar_path: Path | None = None
 
 
 def _admit_files(pack_dir: Path) -> tuple[Path, ...]:
@@ -126,7 +137,27 @@ def load_persona_pack(pack_dir: Path, manifest_path: Path) -> PersonaPack:
     files = _admit_files(pack_dir)
     canonical_files = {}
     manifest_rows = []
+    avatar_path = None
     for path in files:
+        if path.name in _BINARY:
+            try:
+                data = path.read_bytes()
+            except OSError as exc:
+                raise PersonaPackError(f"persona file unreadable: {path.name}") from exc
+            # The admitted size was checked before the read; re-check what was
+            # actually read, since the file can change in between.
+            if len(data) > _FILE_SIZE_CAPS[path.name]:
+                raise PersonaPackError(f"persona file too large: {path.name}")
+            if not data.startswith(_JPEG_MAGIC):
+                raise PersonaPackError(f"persona avatar is not a JPEG image: {path.name}")
+            avatar_path = path
+            manifest_rows.append({
+                "path": path.name,
+                "type": "file",
+                "executable": False,
+                "checksum": checksum_bytes(data),
+            })
+            continue
         # H2 (foundation review r5): the read/decode itself sat OUTSIDE any
         # exception boundary, so an admitted file containing an invalid
         # UTF-8 byte raised a raw UnicodeDecodeError instead of folding
@@ -306,4 +337,5 @@ def load_persona_pack(pack_dir: Path, manifest_path: Path) -> PersonaPack:
             checksum=manifest_checksum,
         ),
         checksum=manifest_checksum,
+        avatar_path=avatar_path,
     )
