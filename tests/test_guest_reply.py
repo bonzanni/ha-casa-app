@@ -173,6 +173,24 @@ async def test_the_ticker_rotates_words_and_stops_at_finish(monkeypatch):
     assert ticks.waits == [3.0] * 7              # the cancelled ticker never slept again
 
 
+async def test_the_ticker_stops_by_itself_after_twice_the_terminal_budget(monkeypatch):
+    """A reply no turn ever finishes (its route lost) must not tick forever:
+    after twice the terminal budget without a terminal the ticker ends on its
+    own, and the message keeps the last word it showed."""
+    ticks = _Ticks(monkeypatch)
+    bot = _Bot()
+    r = await _opened(bot, tick_s=3.0, terminal_budget_s=6.0)
+    r.start_ticker()
+    await ticks.tick(8)
+    # ticks at 3, 6, 9 and 12 s edit; the one that would wake at 15 s > 12 s ends it
+    assert len(bot.edits) == 4
+    assert ticks.waits == [3.0] * 5
+    assert r.terminal is False                   # nothing terminal happened
+    await ticks.tick(3)
+    assert len(bot.edits) == 4 and ticks.waits == [3.0] * 5
+    assert await r.finish(admitted("late")) is DeliveryOutcome.DELIVERED
+
+
 async def test_finish_is_the_only_terminal_edit():
     bot = _Bot()
     r = await _opened(bot)

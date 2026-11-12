@@ -145,6 +145,12 @@ class GuestReply:
         while True:
             await _sleep(self.tick_s)
             i += 1
+            # A reply no turn ever finishes must not tick forever: past twice
+            # the terminal budget the ticker ends on its own.
+            if i * self.tick_s > 2 * self.terminal_budget_s:
+                logger.info("guest reply ticker for %s ended: no terminal edit within "
+                            "%.0f s", self.name, 2 * self.terminal_budget_s)
+                return
             async with self._lane:
                 if self._done:
                     return

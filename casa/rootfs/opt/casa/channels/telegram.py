@@ -1805,11 +1805,101 @@ class TelegramChannel(Channel):
         logger.debug("guest summons in chat %s for %s dropped", chat_id, self.default_agent)
 
     async def _dispatch_summoned_turn(self, update: Any) -> bool:
-        """The operator's summons of this bot in a group, as a turn of its
-        agent. ``True`` when a turn was dispatched. Not answered yet: the
-        summons is logged and nothing is sent."""
-        logger.info("operator summons received; not answered yet")
+        """The operator's summons of this bot in a group, as a turn of the
+        agent's own chat whose final text is shown in the group. ``True``
+        when the agent's queue took the turn.
+
+        The guest query is answered first, with the placeholder of a
+        :class:`GuestReply` bound under the turn's cid; then ONE bus message
+        goes to the agent, built as :meth:`_dispatch_dm_turn` builds the
+        operator's direct message — his chat as ``chat_id``, this bot as the
+        route, his identity and markers — plus the two reserved markers that
+        make it a summoned turn: the group (``_guest_chat``) and the reply's
+        key (``_guest_query``). The group is never a chat id, a route or a
+        delivery: everything but the final text goes to the own chat. No
+        typing lease (the placeholder stands in for it) and no hand-back: a
+        turn the queue cannot take fails the reply there and then. The rate
+        decision was made by the caller."""
+        from channels.guest_reply import GuestReply
+        import tools as tools_mod
+        gm = update.guest_message
+        chat = gm.chat
+        user = update.effective_user
+        operator = self.operator_user_id()
+        if operator is None or user is None or self._app is None:
+            return False
+        key = new_cid()
+        reply = GuestReply(
+            self._app.bot, guest_query_id=gm.guest_query_id,
+            name=tools_mod._display_name_for_role(self.default_agent), key=key)
+        title = chat.title or ""
+        reply.meta = {"role": self.default_agent, "caller_id": user.id, "chat_id": chat.id,
+                      "title": title, "t0": time.monotonic()}
+        if not await reply.open():
+            return False
+        self._guest_replies[key] = reply
+        reply.start_ticker()
+
+        user_name = getattr(user, "first_name", None) or "unknown"
+        trusted_origin = ingress_identity(
+            "telegram", sender_id=str(user.id), sender_display_name=user_name,
+            sender_is_operator=True)
+        # The turn's route: the bot the summons arrived on, as for a direct message.
+        route = self.bot_id
+        context = sanitize_external_context({
+            "chat_id": str(operator),
+            "user_id": user.id,
+            "user_name": user_name,
+            "message_id": str(gm.message_id),
+            "cid": key,
+        })
+        context["_origin_route"] = "telegram"
+        context["_origin_clearance"] = trusted_origin.server_origin.clearance
+        context["_tg_bot"] = route
+        opening = self._opening_marker(user)
+        if opening is not None:
+            context["_chat_opening"] = opening
+        context["_operator_turn"] = True
+        context["_operator_words"] = gm.text or ""
+        context["_guest_chat"] = {"id": chat.id, "title": title, "type": chat.type}
+        context["_guest_query"] = key
+        earlier = self._guest_reply_note_for(gm, title)
+        if earlier is not None:
+            context["_guest_reply_note"] = earlier
+
+        msg = BusMessage(
+            type=MessageType.CHANNEL_IN,
+            source="telegram",
+            target=self.default_agent,
+            content=gm.text or "",
+            channel="telegram",
+            context=context,
+            trusted_user_origin=trusted_origin,
+        )
+        if await self._send_turn(msg) == "accepted":
+            return True
+        logger.error("role %r has no queue; the operator's summons in group %s is not "
+                     "answered", self.default_agent, chat.id)
+        await reply.fail()
+        self._guest_replies.pop(key, None)
         return False
+
+    def _guest_reply_note_for(self, gm: Any, title: str) -> str | None:
+        """Casa's note when a summons replied to this bot's own earlier
+        message in the group — the agent's previous answer there, quoted as
+        a reply's quote is clipped — or ``None``."""
+        quoted = getattr(gm, "reply_to_message", None)
+        quoted_from = getattr(quoted, "from_user", None)
+        if quoted is None or quoted_from is None or not self.has_bot_id:
+            return None
+        if quoted_from.id != self.bot_id:
+            return None
+        text = getattr(quoted, "text", None) or getattr(quoted, "caption", None)
+        if not text:
+            return None
+        import chat_notes
+        return (f"You answered earlier in «{title}»: "
+                f"{chat_notes.clip(text, REPLY_QUOTE_CHARS)}")
 
     async def _own_intake(self, update: Any) -> bool:
         """Offer one update that reached this agent's own bot to its chat's
@@ -2469,21 +2559,9 @@ class TelegramChannel(Channel):
         # change. The chat is marked open only once its queue takes the turn
         # (:meth:`_send_turn`); a turn refused here decides again when it is
         # delivered.
-        if not self.is_casa and self._sender_is_operator(user):
-            import own_voice
-            try:
-                opening = own_voice.chat_opening(self.bot_id)
-            except Exception:  # noqa: BLE001 — the turn goes on without the opening
-                logger.warning("own chat opening not read", exc_info=True)
-                opening = False
-            if opening:
-                try:
-                    moved = own_voice.chat_moved(self.bot_id)
-                except Exception:  # noqa: BLE001 — it opens as a first chat
-                    logger.warning("own chat: whether the chat moved was not read; "
-                                   "it opens as a first chat", exc_info=True)
-                    moved = False
-                context["_chat_opening"] = "moved" if moved else True
+        opening = self._opening_marker(user)
+        if opening is not None:
+            context["_chat_opening"] = opening
         # #283: live-operator marker — reserved (sanitize strips it from
         # every external context), stamped ONLY for the authenticated
         # operator sender. The agent-spawn cap exempts exactly these turns;
@@ -2524,6 +2602,31 @@ class TelegramChannel(Channel):
         if received_file is None:
             await self._hand_back(update, msg)
         return False
+
+    def _opening_marker(self, user: Any) -> "bool | str | None":
+        """The ``_chat_opening`` mark the operator's turn carries on this
+        agent's own bot: ``True`` when it opens the chat, ``"moved"`` when it
+        opens the agent's new chat after a handle change, else ``None`` —
+        Casa's own bot, another sender, or a chat already open. A lifecycle
+        that cannot be read opens nothing; one that cannot say whether the
+        chat moved opens it as a first chat."""
+        if self.is_casa or not self._sender_is_operator(user):
+            return None
+        import own_voice
+        try:
+            opening = own_voice.chat_opening(self.bot_id)
+        except Exception:  # noqa: BLE001 — the turn goes on without the opening
+            logger.warning("own chat opening not read", exc_info=True)
+            return None
+        if not opening:
+            return None
+        try:
+            moved = own_voice.chat_moved(self.bot_id)
+        except Exception:  # noqa: BLE001 — it opens as a first chat
+            logger.warning("own chat: whether the chat moved was not read; "
+                           "it opens as a first chat", exc_info=True)
+            moved = False
+        return "moved" if moved else True
 
     def _reply_note_for(self, update: Update, chat_id: str, *,
                         ended_task: Any = None) -> str | None:
@@ -4749,6 +4852,7 @@ class TelegramChannel(Channel):
                     "post_dm_keyboard send failed (chat=%s): %s", chat_id, exc,
                 )
                 return None
+            await self._guest_waiting()
             return msg.message_id
         display, entities = render(text)
         try:
@@ -4775,7 +4879,20 @@ class TelegramChannel(Channel):
                 "post_dm_keyboard send failed (chat=%s): %s", chat_id, exc,
             )
             return None
+        await self._guest_waiting()
         return msg.message_id
+
+    async def _guest_waiting(self) -> None:
+        """A keyboard just reached the operator's chat — a question, a card,
+        a protected call's challenge, all through :meth:`post_dm_keyboard`.
+        When the turn that posted it was summoned in a group (its origin
+        carries ``_guest_query``) and the group's message is still live, that
+        message says the agent is waiting in the chat. Informational: a turn
+        that goes on to answer still makes its one terminal edit."""
+        import agent as agent_mod
+        reply = self.guest_reply_for(agent_mod.origin_var.get(None))
+        if reply is not None and not reply.terminal:
+            await reply.waiting()
 
     async def clear_dm_keyboard(self, chat_id: int, message_id: int) -> bool:
         """#1375: remove a posted DM message's inline keyboard by a markup-only edit

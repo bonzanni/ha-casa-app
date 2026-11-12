@@ -457,6 +457,12 @@ class TurnScope:
     # by the handler before it returns, and read only by this turn's fold at
     # that delegate call's result.
     delegated_approvals: dict[str, tuple] = field(default_factory=dict)
+    # The turn asked the operator a question that outlives it (``ask_user``,
+    # set once its request is confirmed live). A turn summoned in a group
+    # that ends with nothing to say then points the group at that chat
+    # instead of declining. A card or a protected call's challenge, which
+    # the turn waits for, never sets it.
+    detached_ask: bool = False
 
     # -- minting ------------------------------------------------------------
 

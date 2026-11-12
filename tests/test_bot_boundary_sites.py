@@ -201,6 +201,7 @@ ORIGIN_SITES = {
     ("origin-builders", "casa_core.py", "notify_config_sync"): (1, RULE_C, "test_bot_boundary_invariants.py::test_casas_own_cards_and_notices_post_only_on_casas_bot"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._dispatch_button_continuation"): (3, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._dispatch_dm_turn"): (3, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
+    ("origin-builders", "channels/telegram.py", "TelegramChannel._dispatch_summoned_turn"): (4, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._dispatch_scheduled_continuation"): (3, INBOUND, "test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._on_non_text_message.reply"): (1, OUTBOUND, "a Bot API call on this endpoint's own bot"),
     ("origin-builders", "channels/telegram.py", "TelegramChannel._on_proposal_callback"): (1, INBOUND, "test_endpoint_isolation.py::test_a_proposal_naming_bot_111_is_refused_on_222"),
@@ -849,6 +850,7 @@ ROUTE_READERS = {
     ("casa_core.py", "build_invoke_message"): (1, ROUTE, "stamped where an /invoke, webhook or setup turn is born"),
     ("channels/telegram.py", "TelegramChannel._dispatch_button_continuation"): (1, ROUTE, "stamped with the receiving endpoint's bot"),
     ("channels/telegram.py", "TelegramChannel._dispatch_dm_turn"): (1, ROUTE, "stamped with the receiving endpoint's bot"),
+    ("channels/telegram.py", "TelegramChannel._dispatch_summoned_turn"): (1, ROUTE, "stamped with the receiving endpoint's bot"),
     ("channels/telegram.py", "TelegramChannel._dispatch_scheduled_continuation"): (1, ROUTE, "stamped with the receiving endpoint's bot"),
     ("channels/telegram.py", "TelegramChannel.speak_first"): (1, ROUTE, "stamped with the endpoint's own bot, where its agent's greeting is born"),
     ("channels/telegram_transport.py", "TelegramTransport"): (1, ROUTE, "resolution"),
@@ -897,7 +899,10 @@ BOT_ID_READS = {
     ("callback_episodes.py", "_run_nudge"): (1, FIELD, "the sign-in link's delivery's own bot"),
     ("channels/telegram.py", "TelegramChannel._card_agent"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._dispatch_button_continuation"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
-    ("channels/telegram.py", "TelegramChannel._dispatch_dm_turn"): (4, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
+    ("channels/telegram.py", "TelegramChannel._dispatch_dm_turn"): (2, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
+    ("channels/telegram.py", "TelegramChannel._dispatch_summoned_turn"): (1, RECEIPT, "the endpoint's own bot, where the operator's summons arrived"),
+    ("channels/telegram.py", "TelegramChannel._guest_reply_note_for"): (1, RECEIPT, "the endpoint's own bot, whose earlier message in the group the summons replied to"),
+    ("channels/telegram.py", "TelegramChannel._opening_marker"): (2, RECEIPT, "the endpoint's own bot, whose chat the operator's turn opens"),
     ("channels/telegram.py", "TelegramChannel._dispatch_proposal_tap"): (3, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._dispatch_scheduled_continuation"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._guest_decision"): (1, RECEIPT, "the endpoint's own bot, where a summons arrived, whose binding decides whether it is answered"),
@@ -1286,6 +1291,8 @@ TURN_CONTEXTS = {
     ("casa_core.py", "notify_config_sync"): "a notice for Casa's own endpoint, not a turn",
     ("channels/telegram.py", "TelegramChannel._dispatch_dm_turn"): "stamped with the "
                                                                    "receiving bot",
+    ("channels/telegram.py", "TelegramChannel._dispatch_summoned_turn"): "stamped with the "
+                                                                         "receiving bot",
     ("tools.py", "send_engagement_outcome"): "carries the engagement origin's route",
 }
 

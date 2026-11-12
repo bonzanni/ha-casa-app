@@ -84,6 +84,13 @@ OWNER_PASS_KEY = "_owner_pass"
 # naming the approval record (:mod:`approval_records`) the run commits under.
 APPROVAL_KEY = "_approval"
 
+# A summoned turn's two markers: the group the operator summoned the
+# specialist's bot in (``{"id", "title", "type"}``) and the key of the inline
+# message bound to the turn. They belong to that one turn: a run or a turn
+# derived from it (a delegation, a hand-off, a job's narration) was not
+# summoned and must not carry them.
+GUEST_KEYS = ("_guest_chat", "_guest_query")
+
 RESERVED_CONTEXT_KEYS = frozenset({
     "synthetic",
     "button_answer",
@@ -187,6 +194,11 @@ RESERVED_CONTEXT_KEYS = frozenset({
     # the turn's own file. Stamped only by the channel; a caller who could set
     # it would put Casa's words in the turn and arm it over a file of its choice.
     "_received_file",
+    # The group a specialist's bot was summoned in, and the inline message its
+    # turn answers there. Stamped only by the channel, on the operator's
+    # summons; a caller who could set them would have a turn allow a group it
+    # was never summoned in, or write its text into another turn's message.
+    *GUEST_KEYS,
     # #1277: stamped only by the scheduled-ask continuation for the operator's
     # answer; a caller who could set it would have a job it starts say the
     # operator asked.
@@ -210,6 +222,14 @@ def carry_route(src: Mapping) -> dict:
     stay absent, so a route-less source yields a route-less derivation that
     fails at delivery instead of being given a guessed bot."""
     return {k: src[k] for k in ROUTING_KEYS if k in src}
+
+
+def drop_guest_markers(ctx: dict) -> dict:
+    """Remove the summoned turn's markers (``GUEST_KEYS``) from *ctx*, a copy
+    of an origin a derived run or turn is being built from, and return it."""
+    for key in GUEST_KEYS:
+        ctx.pop(key, None)
+    return ctx
 
 
 def task_delivery_marker(delivery: "TgAddress | None") -> dict:

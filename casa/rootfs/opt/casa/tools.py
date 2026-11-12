@@ -72,7 +72,9 @@ from channels.tg_address import (
     AddressError, EndpointNotReady, EndpointUnavailable, RouteMissing, TgAddress,
     scope as tg_scope,
 )
-from provenance import carry_route, route_context, task_delivery_marker
+from provenance import (
+    carry_route, drop_guest_markers, route_context, task_delivery_marker,
+)
 from output_boundary import (
     Admitted, ApprovalCut, IntentKind, ReadBeforeDescribe, TurnScope,
     UnadmittedText, casa_text, resolve_scope,
@@ -2125,6 +2127,9 @@ async def ask_user(args: dict) -> dict:
     if not live:
         return _result({"status": "settled", "request_id": rid,
                         "message": _SETTLED_ASK_MESSAGE})
+    # The question is on the screen and still open: the turn now has a
+    # question that outlives it, a fact its scope keeps for the turn's end.
+    _scope.detached_ask = True
     scheduled_asks.displace_scheduled_for_chat(bot_id, chat_id, "superseded")
     return _result({"status": "awaiting_user", "request_id": rid,
                     "note": ASK_USER_SILENCE_NOTE,
@@ -2757,7 +2762,8 @@ def _launch_note(origin: dict, text: str) -> "tuple[dict, str]":
     owed, and a launch with no scope bound owes nothing here — its child's
     own emissions are what refuse."""
     scope = origin.get("turn_scope")
-    out = dict(origin)
+    # The brief's run was not summoned: the summons markers stay with the turn.
+    out = drop_guest_markers(dict(origin))
     if not isinstance(scope, TurnScope):
         return out, ""
     note = scope.admit(IntentKind.STORED, text).note
@@ -4702,7 +4708,9 @@ async def _run_delegated_agent(
     # AR-2: snapshot BEFORE any await — this coroutine outlives the parent
     # turn (async delegations especially), and a pooled client's origin_var
     # holder can be rewritten by the NEXT turn while this one is in flight.
-    parent = _snapshot_origin()
+    # A run was not summoned in a group, whatever turn launched it: the
+    # summons markers stay with that turn.
+    parent = drop_guest_markers(_snapshot_origin())
     run = await _register_delegated_run(cfg, parent)
     try:
         return await _run_delegated_turn(
@@ -7353,7 +7361,7 @@ async def _start_voice_async_job(
                 "specialist_role": specialist_role,
                 "task_text": task_text,
                 "context_text": context_text,
-                "origin": dict(origin),
+                "origin": drop_guest_markers(dict(origin)),
                 "resolution": resolution,
                 "started_at": started_at,
             },
@@ -8365,7 +8373,7 @@ async def delegate_to_agent(args: dict) -> dict:
         # quota key above — so the child's context binds the copy (with its
         # scope view), never the pooled holder the next turn rewrites.
         import agent as _agent_mod
-        _child_origin = dict(origin)
+        _child_origin = drop_guest_markers(dict(origin))
         if _launch_scope is not None:
             _child_origin["turn_scope"] = TurnScope.for_child(
                 _launch_scope, _note, synchronous=(mode != "async"))
@@ -8888,7 +8896,7 @@ async def hand_off(args: dict) -> dict:
         _launch_scope = origin.get("turn_scope")
         _, _note = _launch_note(origin, task_text)
         import agent as _agent_mod
-        _child_origin = dict(origin)
+        _child_origin = drop_guest_markers(dict(origin))
         if isinstance(_launch_scope, TurnScope):
             _child_origin["turn_scope"] = TurnScope.for_child(
                 _launch_scope, _note, synchronous=True)

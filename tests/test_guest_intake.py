@@ -218,13 +218,6 @@ async def test_two_groups_share_the_operators_limiter(world, caplog):
     assert any("rate limit" in r.getMessage() for r in caplog.records)
 
 
-async def test_the_summoned_turn_stub_answers_nothing(world):
-    ch, bus = _endpoint()
-    assert await ch._dispatch_summoned_turn(_guest(OPERATOR)) is False
-    assert ch._app.bot.mock_calls == []
-    assert bus.queues["finance"].empty()
-
-
 # ---------------------------------------------------------------------------
 # registration
 # ---------------------------------------------------------------------------

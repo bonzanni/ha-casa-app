@@ -198,6 +198,11 @@ COPIED_CONTEXT_MARKERS = (
     # Browser executor §5.5: the operator's own typed words (Telegram
     # ingress); read only by handoff.operator_words.
     "_operator_words",
+    # A summoned turn's group and its inline message (``provenance.GUEST_KEYS``):
+    # read by the guest_access tool and by the keyboard seam that puts the
+    # group's message in waiting. Dropped again wherever a run or a turn is
+    # derived from this one (``provenance.drop_guest_markers``).
+    "_guest_chat", "_guest_query",
     # The turn's route: the bot its replies go out through, decided where the
     # turn was born and carried by every turn derived from it.
     *ROUTING_KEYS,
@@ -249,6 +254,12 @@ CHAT_MOVED_NOTE = "(Casa) The operator just opened your new chat; your previous 
 #: in this chat for others, to recall as its own memory.
 CHAT_NOTES_FRAME = ("What you did in this chat for others since you last spoke here — "
                     "your own memory, so recall it naturally, never as a note or a record:")
+
+#: Casa's line on a turn the operator summoned in a group (``_guest_chat``):
+#: where the answer shows, and where everything else goes.
+GUEST_CALL_NOTE = ("The person summoned you in the group «{title}». Your text answer is "
+                   "posted there; a card, a file or anything else you send goes to your "
+                   "chat with them.")
 
 
 def _projection_name_for_turn(channel: str, origin_route: str | None) -> str:
@@ -2391,6 +2402,17 @@ class Agent:
                 received = msg.context.get("_received_file")
                 if isinstance(received, dict) and isinstance(received.get("note"), str):
                     notes.append(received["note"])
+                # A turn the operator summoned in a group: the frame, then
+                # (when the summons replied to the agent's earlier answer
+                # there) what that answer said. Both are the channel's,
+                # the second read only under the first's reserved marker.
+                guest_chat = msg.context.get("_guest_chat")
+                if isinstance(guest_chat, dict):
+                    notes.append(GUEST_CALL_NOTE.format(
+                        title=str(guest_chat.get("title") or "")))
+                    earlier = msg.context.get("_guest_reply_note")
+                    if isinstance(earlier, str) and earlier.strip():
+                        notes.append(earlier)
             if memory_note:
                 notes.append(memory_note)
             prompt_text = (
