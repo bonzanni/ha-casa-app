@@ -14,7 +14,10 @@ Everything that touches the message is serialized on one lock, the terminal
 edit is attempted once per reply however many terminal methods are called,
 and a terminal method never raises (``asyncio.CancelledError`` aside): the
 ticker is always stopped and an outcome always established, so the caller
-can treat the result like any other delivery outcome.
+can treat the result like any other delivery outcome. The terminal edit
+runs as the reply's own task: a caller cancelled while it waits (a turn torn
+down during a flood wait) lets the edit land, or spend its budget, before
+the cancellation goes on — the group is never left with the placeholder.
 
 Text length is Telegram's: 4096 UTF-16 units for the message. The source is
 cut before rendering — the renderer drops every entity of a text whose
@@ -107,6 +110,9 @@ class GuestReply:
         self.meta: dict[str, Any] = {}
         self._lane = asyncio.Lock()
         self._ticker: asyncio.Task | None = None
+        # The terminal edit, once started: the reply's own task, so that a
+        # caller's cancellation cannot abandon it (see ``_terminal``).
+        self._terminal_task: asyncio.Task | None = None
         self._done = False
         self._outcome: DeliveryOutcome | None = None
 
@@ -212,12 +218,29 @@ class GuestReply:
 
     async def _terminal(self, text: str) -> DeliveryOutcome:
         """One terminal edit per reply: the first call makes it, every later
-        call returns its outcome. Never raises except on cancellation."""
-        if self._done:
-            async with self._lane:        # a terminal still in flight finishes first
-                return self._outcome or DeliveryOutcome.NOT_DELIVERED
-        self._done = True
-        self._outcome = DeliveryOutcome.NOT_DELIVERED
+        call waits for it and returns its outcome. Never raises except on
+        cancellation, and then only once the edit has landed or spent its
+        budget: the edit runs as the reply's own task, out of reach of a
+        caller cancelled mid-wait (a turn torn down during a flood wait), so
+        the caller can remove its binding knowing the group's message is
+        final."""
+        if not self._done:
+            self._done = True
+            self._outcome = DeliveryOutcome.NOT_DELIVERED
+            self._terminal_task = asyncio.get_running_loop().create_task(
+                self._deliver_terminal(text))
+        task = self._terminal_task
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if not task.done():
+                await asyncio.wait({task})
+            raise
+        return self._outcome or DeliveryOutcome.NOT_DELIVERED
+
+    async def _deliver_terminal(self, text: str) -> None:
+        """The terminal edit itself: the ticker stopped, then the edit on the
+        lane, its outcome recorded (an edit that raises records a failure)."""
         await self._stop_ticker()
         async with self._lane:
             try:
@@ -227,7 +250,6 @@ class GuestReply:
             except Exception as exc:  # noqa: BLE001 — the outcome stands in for the raise
                 logger.warning("guest reply for %s: terminal edit failed: %s: %s",
                                self.name, type(exc).__name__, exc)
-        return self._outcome
 
     def _forms(self, text: str) -> tuple[str, Any, str]:
         """``(display, entities, plain)``: the rendered form of the cut source

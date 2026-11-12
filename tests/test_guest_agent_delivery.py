@@ -9,13 +9,17 @@ plugin-health notice, the turn-limit line — keep going to the DM.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from telegram.error import RetryAfter
 
+import channels.guest_reply as guest_reply
 import plugin_health
-from bus import BusMessage, MessageType
+from bus import BusMessage, MessageBus, MessageType
 from channels import DeliveryOutcome
 from error_kinds import ErrorKind, _USER_MESSAGES
 from ingress_identity import ingress_identity
@@ -89,6 +93,49 @@ async def test_text_reaches_the_group_through_the_transport(tmp_path, monkeypatc
     assert bot.sent == []
     assert KEY not in ep._guest_replies
     assert reply.terminal is True
+
+
+async def test_a_turn_cancelled_during_a_flood_wait_still_lands_the_terminal_edit(
+        tmp_path, monkeypatch):
+    """The turn's dispatch is torn down (its role evicted) while the terminal
+    edit waits out a ``RetryAfter``: the edit still lands before the binding
+    goes, the cancellation still ends the dispatch, and a later teardown
+    edits nothing."""
+    bot = _Bot(edits=[RetryAfter(30), None])
+    agent, ep, reply = await _summoned(tmp_path, bot)
+    waits: list[float] = []
+    waiting, release = asyncio.Event(), asyncio.Event()
+
+    async def sleep(s):
+        waits.append(s)
+        waiting.set()
+        await release.wait()
+    monkeypatch.setattr(guest_reply, "_sleep", sleep)
+
+    bus = MessageBus()
+    bus.register("finance", agent.handle_message)
+    bus.start_agent_loop("finance")
+    with patch.object(agent, "_process", AsyncMock(return_value="the answer")):
+        await bus.send(_turn())
+        await asyncio.wait_for(waiting.wait(), timeout=5)
+        [dispatch] = bus.dispatch_tasks_for("finance")
+        assert [e["text"] for e in bot.edits] == ["the answer"]      # the rejected edit
+        evicted = asyncio.create_task(bus.unregister_and_wait("finance"))
+        for _ in range(10):
+            await asyncio.sleep(0)
+        # the turn is cancelled; the edit still waits and the binding stands
+        assert not evicted.done()
+        assert KEY in ep._guest_replies and len(bot.edits) == 1
+        release.set()
+        await asyncio.wait_for(evicted, timeout=5)
+    assert dispatch.cancelled()                                      # the cancellation went on
+    assert waits == [30.0]
+    assert [e["text"] for e in bot.edits] == ["the answer", "the answer"]
+    assert reply.terminal is True
+    assert KEY not in ep._guest_replies
+    ctx = {**_turn().context, "_turn_scope": NS(detached_ask=False)}
+    await ep.turn_finished(ctx)                                       # nothing left to edit
+    assert len(bot.edits) == 2
 
 
 async def test_an_agent_exception_fails_the_reply_with_the_guest_error_line(tmp_path):

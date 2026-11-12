@@ -69,6 +69,43 @@ class _Bot:
         return NS(message_id=len(self.sent))
 
 
+class _SlowBot(_Bot):
+    """A bot whose edits are issued at once (recorded in ``edits``, as
+    Telegram receives them) but answered only when the test says so:
+    ``in_flight`` counts edits issued and not yet answered, ``most_in_flight``
+    the most there ever were at once. A cancelled caller abandons its wait,
+    as an abandoned request does; the edit stays issued."""
+
+    def __init__(self):
+        super().__init__()
+        self.in_flight = 0
+        self.most_in_flight = 0
+        self._pending: list[asyncio.Future] = []
+
+    async def edit_message_text(self, **kw):
+        self.edits.append(kw)
+        self.in_flight += 1
+        self.most_in_flight = max(self.most_in_flight, self.in_flight)
+        fut = asyncio.get_running_loop().create_future()
+        self._pending.append(fut)
+        try:
+            await fut
+        finally:
+            self.in_flight -= 1
+            if fut in self._pending:
+                self._pending.remove(fut)
+        return True
+
+    def answer(self):
+        """Answer the oldest edit still awaiting its response."""
+        self._pending.pop(0).set_result(True)
+
+
+async def _settle(n: int = 5):
+    for _ in range(n):
+        await asyncio.sleep(0)
+
+
 def _reply(bot, *, key="q1", **kw) -> GuestReply:
     return GuestReply(bot, guest_query_id=f"gq-{key}", name=NAME, key=key, **kw)
 
@@ -307,6 +344,121 @@ async def test_a_non_telegram_exception_is_contained(caplog):
     with caplog.at_level(logging.WARNING):
         assert await r.fail() is DeliveryOutcome.NOT_DELIVERED
     assert len(_warnings(caplog)) == 1
+
+
+# ---------------------------------------------------------------------------
+# the terminal edit under cancellation and concurrency
+# ---------------------------------------------------------------------------
+
+async def test_a_cancelled_caller_lets_the_terminal_land_before_the_cancellation_goes_on(
+        monkeypatch):
+    """A turn torn down while its terminal edit waits out a flood wait must
+    not leave the placeholder: the edit lands (within its budget), then the
+    caller's cancellation goes on."""
+    waits: list[float] = []
+    waiting, release = asyncio.Event(), asyncio.Event()
+
+    async def sleep(s):
+        waits.append(s)
+        waiting.set()
+        await release.wait()
+    monkeypatch.setattr(guest_reply, "_sleep", sleep)
+    bot = _Bot(edits=[RetryAfter(30), None])
+    r = await _opened(bot)
+    caller = asyncio.create_task(r.finish(admitted("the answer")))
+    await asyncio.wait_for(waiting.wait(), timeout=5)
+    caller.cancel()
+    await _settle()
+    assert not caller.done()                    # the cancellation waits for the edit
+    assert [e["text"] for e in bot.edits] == ["the answer"]        # the rejected one
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    assert waits == [30.0]
+    assert [e["text"] for e in bot.edits] == ["the answer", "the answer"]
+    assert r.terminal is True
+    assert await r.decline() is DeliveryOutcome.DELIVERED        # the landed edit's outcome
+    assert len(bot.edits) == 2
+
+
+async def test_turn_finished_cancelled_during_its_edit_still_lands_it():
+    bot = _SlowBot()
+    ch = _channel(bot)
+    _, ctx = await _bound(ch, bot, key="d")
+    ctx["_turn_scope"] = NS(detached_ask=False)
+    teardown = asyncio.create_task(ch.turn_finished(ctx))
+    await _settle()
+    assert bot.in_flight == 1
+    teardown.cancel()
+    await _settle()
+    assert not teardown.done() and "d" in ch._guest_replies     # the binding waits too
+    bot.answer()
+    with pytest.raises(asyncio.CancelledError):
+        await teardown
+    assert [e["text"] for e in bot.edits] == [DECLINE]
+    assert "d" not in ch._guest_replies
+
+
+async def test_two_terminal_calls_at_once_make_one_edit_and_share_its_outcome():
+    bot = _SlowBot()
+    r = await _opened(bot)
+    finish = asyncio.create_task(r.finish(admitted("the answer")))
+    decline = asyncio.create_task(r.decline())
+    await _settle()
+    assert [e["text"] for e in bot.edits] == ["the answer"]
+    assert bot.in_flight == 1
+    assert not decline.done()                   # the second waits for the first's edit
+    bot.answer()
+    assert await finish is DeliveryOutcome.DELIVERED
+    assert await decline is DeliveryOutcome.DELIVERED
+    assert [e["text"] for e in bot.edits] == ["the answer"]
+    assert bot.most_in_flight == 1
+
+
+async def test_a_terminal_waits_for_an_edit_still_in_flight():
+    """Never two edits of the message in flight at once: a terminal that
+    starts while the waiting line's edit is still unanswered issues its own
+    only once that one has returned, so the final text is what stays."""
+    bot = _SlowBot()
+    r = await _opened(bot)
+    waiting = asyncio.create_task(r.waiting())
+    await _settle()
+    assert [e["text"] for e in bot.edits] == [WAITING] and bot.in_flight == 1
+    finish = asyncio.create_task(r.finish(admitted("the answer")))
+    await _settle()
+    assert [e["text"] for e in bot.edits] == [WAITING]       # the final edit not issued yet
+    assert bot.in_flight == 1
+    bot.answer()                                            # the waiting edit returns
+    await waiting
+    await _settle()
+    assert [e["text"] for e in bot.edits] == [WAITING, "the answer"]
+    bot.answer()
+    assert await finish is DeliveryOutcome.DELIVERED
+    assert bot.most_in_flight == 1
+
+
+async def test_a_terminal_during_a_tick_in_flight_ends_the_ticker_and_lands_last(monkeypatch):
+    """A tick whose edit is still unanswered when the terminal starts: the
+    ticker is gone by the time the terminal returns, the final text is the
+    last edit issued, and the two were never in flight together."""
+    ticks = _Ticks(monkeypatch)
+    bot = _SlowBot()
+    r = await _opened(bot, tick_s=3.0)
+    r.start_ticker()
+    ticker = r._ticker
+    await ticks.tick()
+    assert len(bot.edits) == 1 and bot.in_flight == 1       # the tick's edit, unanswered
+    finish = asyncio.create_task(r.finish(admitted("the answer")))
+    await _settle()
+    assert ticker.done()
+    assert [e["text"] for e in bot.edits][-1] == "the answer"
+    assert bot.in_flight == 1 and bot.most_in_flight == 1
+    bot.answer()
+    assert await finish is DeliveryOutcome.DELIVERED
+    assert ticker.done() and r._ticker is None
+    n = len(bot.edits)
+    await ticks.tick(3)
+    assert len(bot.edits) == n
 
 
 # ---------------------------------------------------------------------------

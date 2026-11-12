@@ -6037,7 +6037,10 @@ class TelegramChannel(Channel):
         """The summoned turn's one terminal edit: the agent's final text, or
         Casa's failure line when the turn ended in a classified error (the
         error's own wording never reaches the group). The binding is removed
-        once the edit has been made, whatever its outcome."""
+        once the edit has been made, whatever its outcome — also when this
+        turn is cancelled while the edit waits out a flood wait: the reply
+        lands the edit (within its budget) before the cancellation goes on,
+        so the group never keeps the placeholder."""
         reply = self.guest_reply_for(context)
         if reply is None:
             logger.warning("guest_finish: no inline message bound for %r",
@@ -6066,7 +6069,9 @@ class TelegramChannel(Channel):
 
         A summoned turn that ends with nothing to say still owes the group
         its one edit: a decline, or — when the agent asked its question in
-        the chat instead — a pointer there.
+        the chat instead — a pointer there. As in :meth:`guest_finish`, a
+        cancellation during that edit's wait lets the edit land first; the
+        binding goes only once the message is final.
         """
         reply = self.guest_reply_for(context)
         if reply is not None:
