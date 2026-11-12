@@ -284,7 +284,8 @@ async def test_settled_during_the_send_is_retired_as_today(
 
     assert len(channel.posts) == 1
     assert channel.edits == [
-        (OPERATOR, 77, "🚫 Cancelled — send_email was cancelled by /new")]
+        (OPERATOR, 77, "🚫 Cancelled — the request to send an email to "
+                       "Marco was cancelled by /new.")]
 
 
 async def test_entity_offsets_survive_an_admission_prefix(monkeypatch, _fresh_broker):

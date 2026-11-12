@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.364.0] - 2026-11-12
+
+### Fixed
+
+- After you answer an approval card, or it expires or is withdrawn, the card's last line now says what was asked, for example "✅ Approved — Ellen can send an email to anna@example.com, once, in the next 5 minutes." or "🚫 Withdrawn — the request to send an email to anna@example.com was withdrawn before you answered.", instead of naming the internal tool (#1549).
+
 ## [0.363.0] - 2026-11-12
 
 ### Changed

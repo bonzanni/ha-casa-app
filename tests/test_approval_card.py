@@ -57,6 +57,14 @@ def test_reply_builds_the_title_from_who_and_action_unless_given():
     assert card_from_reply(reply, who="Ellen", title="🔐 Erase?").title == "🔐 Erase?"
 
 
+def test_a_model_card_keeps_its_action_and_a_fallback_has_none():
+    reply = json.dumps({"action": "send an email to Marco", "summary": "s", "lines": []})
+    assert card_from_reply(reply, who="Ellen").action == "send an email to Marco"
+    assert card_from_reply(reply, who="Ellen", title="🔐 Erase?").action == "send an email to Marco"
+    assert tool_fallback(who="Ellen", plugin="gmail", args={"to": "a@b.c"}).action == ""
+    assert text_fallback("🔐 Install?\nbody").action == ""
+
+
 def test_reply_line_bounds_and_shape_are_checked():
     def line(**kw):
         return json.dumps({"action": "x", "summary": "s", "lines": [kw]})

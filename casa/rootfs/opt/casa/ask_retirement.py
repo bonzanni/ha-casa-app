@@ -126,12 +126,17 @@ def retirement_headline(
     subject: str, kind: str | None, reason: str | None, *,
     expired_clause: str = "was not answered",
     consequence: str | None = None,
+    clauses: dict[str, str] | None = None,
 ) -> str:
     """The `authz:` lane's edit: one line that replaces the keyboard.
 
     *subject* names what was asked ("persona install consent for 'judge'"),
     *consequence* what follows from nobody answering ("nothing was installed").
+    *clauses* rewords the clause of a listed reason for one site; the
+    headline's icon and label stay those of the reason.
     """
     (icon, label), clause = _resolve(kind, reason, expired_clause)
+    if clauses and kind != "no_answer" and reason in clauses:
+        clause = clauses[reason]
     text = f"{icon} {label} — {subject} {clause}"
     return f"{text}; {consequence}" if consequence else text

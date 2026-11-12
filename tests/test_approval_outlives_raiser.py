@@ -122,8 +122,8 @@ def _approve(broker, coord, key):
 # Shape 1 — an ended engagement retires its own unanswered challenges
 # ---------------------------------------------------------------------------
 
-WITHDRAWN = ("🚫 Withdrawn — purge was withdrawn when the engagement that "
-             "asked for it ended")
+WITHDRAWN = ("🚫 Withdrawn — this request was withdrawn when the engagement "
+             "that asked for it ended.")
 
 
 class TestEngagementEndRetiresItsChallenges:
@@ -205,8 +205,7 @@ class TestEngagementEndRetiresItsChallenges:
         _approve(broker, coord, key)
         await _settle()
         assert channel.edits[-1] == (
-            "⚠️ Approved, but engagement E1 could not be resumed to use it — "
-            "ask for it again")
+            "⚠️ Approved, but finance couldn't be reached to do it — ask again.")
 
 
 # ---------------------------------------------------------------------------
@@ -266,8 +265,8 @@ class TestApprovalWaitsForTheSlot:
         _approve(broker, coord, key)
         await _settle()
         assert channel.edits == [
-            "✅ Approved — finance (finance) may run purge once with exactly "
-            "these arguments in the next 5 minutes"]
+            "✅ Approved — finance can go ahead with this request once, in the "
+            "next 5 minutes."]
         assert channel.dispatches == []
         permit.release()
         await _settle()

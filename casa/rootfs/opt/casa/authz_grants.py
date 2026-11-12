@@ -513,17 +513,27 @@ def render_challenge_message(
     )
 
 
+def _card_subject(action: str) -> str:
+    """What a settled card's line calls the request: the card's own action
+    when the model wrote the card, else a neutral "this request" (never the
+    tool's name)."""
+    return f"the request to {action}" if action else "this request"
+
+
 def _challenge_retired_text(
-    tool_name: str, kind: str | None, reason: str | None,
+    action: str, kind: str | None, reason: str | None,
 ) -> str:
     """#933 — a challenge withdrawn by `cancel_matching`, by `/new` or by a
     shutdown is not a challenge that timed out, and the operator who withdrew
-    it should not be told it did. The unanswered wording is unchanged."""
+    it should not be told it did. *action* is the posted card's action phrase
+    ("" for Casa's own fallback card)."""
     import ask_retirement
 
     return ask_retirement.retirement_headline(
-        short_tool_name(tool_name), kind, reason,
-        expired_clause="was not approved in time")
+        _card_subject(action), kind, reason,
+        expired_clause="was not approved in time",
+        clauses={"challenge_cancelled": "was withdrawn before you answered"},
+    ) + "."
 
 
 def _broker() -> Any:
@@ -754,6 +764,10 @@ class ChallengeCoordinator:
 
             card = await approval_card.write_card(card_req)
             display, entities = approval_card.render_card(card)
+            # The card's status lines after a tap or a retirement reuse its
+            # action; recorded on the broker-owned meta, which the finish hook
+            # reads, before anything is posted.
+            req.meta["card_action"] = card.action
             # A tap, a timeout or a cancellation may have settled the request
             # while the card was being written. Nothing is admitted or posted
             # for it then: admission opens a send record that only a delivered
@@ -998,10 +1012,28 @@ class ChallengeCoordinator:
         display_name: "str | None" = None, engagement_id: str = "",
         inbound_reservation: Any | None = None,
     ) -> Callable[[dict], Any]:
-        short = short_tool_name(tool_name)
         # Same render-time guard as the challenge headline (W2): the approved
-        # settlement names the agent; deny/expired are name-free by decision.
+        # and denied settlements name the agent; withdrawn/expired do not.
         display = _resolve_display_name(display_name, enforcement_role)
+
+        def _action() -> str:
+            # The posted card's action, recorded on the request before the
+            # post; "" when Casa posted its own fallback card.
+            action = req.meta.get("card_action")
+            return action if isinstance(action, str) else ""
+
+        def _reached() -> str:
+            # Who a failed continuation did not reach, by name: the agent
+            # that raised the call, or for a delegated call the resident that
+            # delegated it (the continuation goes back to that resident).
+            if engagement_id or target_role == enforcement_role:
+                return display
+            try:
+                import tools as tools_mod
+                name = tools_mod._display_name_for_role(target_role)
+            except Exception:  # noqa: BLE001 — a name only; fall back to the role
+                name = None
+            return _resolve_display_name(name, target_role)
 
         # #400: an engagement-origin challenge resumes the SPECIALIST ENGAGEMENT
         # (the finish hook re-delivers a system turn into rec.id via the
@@ -1102,11 +1134,12 @@ class ChallengeCoordinator:
                 await channel.edit_dm_message(
                     chat_id, message_id,
                     _challenge_retired_text(
-                        tool_name, o, outcome.get("reason")
+                        _action(), o, outcome.get("reason")
                         if isinstance(outcome, dict) else None),
                     literal=True,
                 )
                 return
+            action = _action()
             idx = outcome.get("option_index")
             if idx == 0:
                 if not req.meta.get("minted"):
@@ -1124,9 +1157,11 @@ class ChallengeCoordinator:
                 # ONLY on dispatch failure (ordered inside this one hook task).
                 await channel.edit_dm_message(
                     chat_id, message_id,
-                    f"✅ Approved — {display} ({enforcement_role}) may run "
-                    f"{short} once with exactly these arguments in the next "
-                    f"{_GRANT_TTL_MINUTES} minutes",
+                    f"✅ Approved — {display} can {action}, once, in the next "
+                    f"{_GRANT_TTL_MINUTES} minutes."
+                    if action else
+                    f"✅ Approved — {display} can go ahead with this request "
+                    f"once, in the next {_GRANT_TTL_MINUTES} minutes.",
                     literal=True,
                 )
                 await _hand_over(
@@ -1134,17 +1169,21 @@ class ChallengeCoordinator:
                     f"{enforcement_role} call {tool_name} with EXACTLY "
                     f"these arguments:\n{canonical_json}",
                     # #1049: an engagement-bound grant can be used only by that
-                    # engagement, so "say 'retry' in chat" was false advice
-                    # there; the DM-path grant does serve an identical retry.
-                    f"⚠️ Approved, but {_target_desc} could not be "
-                    "resumed to use it — ask for it again"
+                    # engagement, so "say retry" would be false advice there;
+                    # the DM-path grant does serve an identical retry, said in
+                    # this chat (the one the card is in).
+                    f"⚠️ Approved, but {display} couldn't be reached to do "
+                    "it — ask again."
                     if engagement_id else
-                    f"⚠️ Approved, but delivery to {_target_desc} "
-                    "failed — say 'retry' in chat",
+                    f"⚠️ Approved, but {_reached()} couldn't be reached to do "
+                    'it — say "retry" in this chat.',
                 )
             else:
                 await channel.edit_dm_message(
-                    chat_id, message_id, f"❌ Denied — {short} will not run",
+                    chat_id, message_id,
+                    f"❌ Denied — {display} won't {action}."
+                    if action else
+                    f"❌ Denied — {display} won't go ahead with this request.",
                     literal=True,
                 )
                 # #1071: bound to the one call refused, as the approval is —
@@ -1158,8 +1197,10 @@ class ChallengeCoordinator:
                     f"from the operator for {tool_name} is a new request: make "
                     "or delegate the call and follow Casa's authorization "
                     "result.",
-                    f"⚠️ Denied, but delivery to {_target_desc} "
-                    "failed — say 'retry' in chat",
+                    # The denial stands; only the agent's notice of it
+                    # failed, so nothing runs either way.
+                    f"⚠️ Denied — {_reached()} couldn't be told; nothing will "
+                    "run.",
                 )
 
         return _finish
