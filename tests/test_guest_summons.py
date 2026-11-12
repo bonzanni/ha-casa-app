@@ -260,7 +260,10 @@ def summoned(tmp_path, world, opening, names):
     agent._channel_manager.register(h.transport)
     tools.init_tools(channel_manager=h.manager, bus=MagicMock(),
                      specialist_registry=MagicMock(), mcp_registry=MagicMock())
-    _Capturing.reset()
+    # FakeClient reads its knobs (response_text, failure_schedule, ...) off the
+    # base class, so reset the base: ``_Capturing.reset()`` would only shadow
+    # them on the subclass and leave another file's leftovers in force.
+    FakeClient.reset()
     _Capturing.prompts, _Capturing.origins = [], []
     return NS(ch=ch, bus=bus, bot=bot, agent=agent, h=h, opening=opening)
 
