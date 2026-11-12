@@ -122,6 +122,24 @@ def _unadmitted(method: str, text: Any) -> bool:
     return True
 
 
+#: The one line each guest summons leaves in the log, written by whichever
+#: step learns its outcome: the terminal edit of a summoned turn
+#: (``operator_answered`` / ``operator_declined`` / ``operator_asked_elsewhere``
+#: / ``operator_failed``), the dispatcher when the turn never starts
+#: (``operator_failed``), or the intake for a summons it does not answer
+#: (``guest_not_answered``; ``dropped`` at DEBUG).
+GUEST_SUMMONS_LOG = "guest summons: role=%s caller=%s chat=%s (%s) outcome=%s ms=%d"
+
+
+def _log_summons(outcome: str, level: int = logging.INFO, *, role: Any = None,
+                 caller_id: Any = None, chat_id: Any = None, title: Any = None,
+                 t0: Any = None) -> None:
+    """Log one summons from its facts (a ``GuestReply.meta`` spreads into
+    them), with the milliseconds since it arrived."""
+    ms = int((time.monotonic() - t0) * 1000) if isinstance(t0, (int, float)) else 0
+    logger.log(level, GUEST_SUMMONS_LOG, role, caller_id, chat_id, title, outcome, ms)
+
+
 def _proposal_keyboard(labels: list, rid: str, urls: "list | None" = None):
     """A proposal's keyboard: one button per label, ``callback_data = v1|proposal|<rid>|<i>``,
     or (slice 5f) the link button's https address where *urls* has one at that index."""
@@ -1781,17 +1799,16 @@ class TelegramChannel(Channel):
         by the group, so summoning across groups shares one allowance); a
         refused one is not answered in the group. A summons from anyone else
         is not answered yet. Everything else is dropped without a word."""
+        t0 = time.monotonic()
         decision = self._guest_decision(update)
         chat_id = getattr(update.effective_chat, "id", None)
         if decision == "guest":
-            logger.info("guest summons in allowed group %s for %s: not answered in this release",
-                        chat_id, self.default_agent)
+            self._log_unanswered(update, t0, "guest_not_answered")
             return
         if decision == "operator":
             operator = self.operator_user_id()
             if operator is None:
-                logger.debug("guest summons for %s dropped: no operator identity",
-                             self.default_agent)
+                self._log_unanswered(update, t0, "dropped", logging.DEBUG)
                 return
             if self._rate_limiter is not None and self._rate_limiter.enabled:
                 rate = self._rate_limiter.check(str(operator))
@@ -1802,7 +1819,16 @@ class TelegramChannel(Channel):
                     return
             await self._dispatch_summoned_turn(update)
             return
-        logger.debug("guest summons in chat %s for %s dropped", chat_id, self.default_agent)
+        self._log_unanswered(update, t0, "dropped", logging.DEBUG)
+
+    def _log_unanswered(self, update: Any, t0: float, outcome: str,
+                        level: int = logging.INFO) -> None:
+        """The summons line for a summons that never reaches the dispatcher."""
+        group = update.effective_chat
+        _log_summons(outcome, level, role=self.default_agent,
+                     caller_id=getattr(update.effective_user, "id", None),
+                     chat_id=getattr(group, "id", None),
+                     title=getattr(group, "title", None) or "", t0=t0)
 
     async def _dispatch_summoned_turn(self, update: Any) -> bool:
         """The operator's summons of this bot in a group, as a turn of the
@@ -1836,6 +1862,7 @@ class TelegramChannel(Channel):
         reply.meta = {"role": self.default_agent, "caller_id": user.id, "chat_id": chat.id,
                       "title": title, "t0": time.monotonic()}
         if not await reply.open():
+            _log_summons("operator_failed", **reply.meta)
             return False
         self._guest_replies[key] = reply
         reply.start_ticker()
@@ -1882,6 +1909,7 @@ class TelegramChannel(Channel):
                      "answered", self.default_agent, chat.id)
         await reply.fail()
         self._guest_replies.pop(key, None)
+        _log_summons("operator_failed", **reply.meta)
         return False
 
     def _guest_reply_note_for(self, gm: Any, title: str) -> str | None:
@@ -6015,12 +6043,16 @@ class TelegramChannel(Channel):
             logger.warning("guest_finish: no inline message bound for %r",
                            context.get("_guest_query"))
             return DeliveryOutcome.NOT_DELIVERED
+        answered = False
         try:
             if error_kind is not None or _unadmitted("guest_finish", text):
                 return await reply.fail()
-            return await reply.finish(text)
+            outcome = await reply.finish(text)
+            answered = outcome is DeliveryOutcome.DELIVERED
+            return outcome
         finally:
             self._guest_replies.pop(reply.key, None)
+            _log_summons("operator_answered" if answered else "operator_failed", **reply.meta)
 
     async def turn_finished(self, context: dict[str, Any]) -> None:
         """L7 (v0.52.0): teardown for turns that end WITHOUT delivery.
@@ -6039,13 +6071,16 @@ class TelegramChannel(Channel):
         reply = self.guest_reply_for(context)
         if reply is not None:
             scope = context.get("_turn_scope")
+            said = "operator_failed"
             try:
                 if getattr(scope, "detached_ask", False):
-                    await reply.asked_elsewhere()
-                else:
-                    await reply.decline()
+                    if await reply.asked_elsewhere() is DeliveryOutcome.DELIVERED:
+                        said = "operator_asked_elsewhere"
+                elif await reply.decline() is DeliveryOutcome.DELIVERED:
+                    said = "operator_declined"
             finally:
                 self._guest_replies.pop(reply.key, None)
+                _log_summons(said, **reply.meta)
         target_chat = _resolve_chat_id(context, self.chat_id)
         self._release_typing(context, target_chat)
         if context.get("synthetic") == "chat_opening":

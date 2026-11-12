@@ -184,7 +184,7 @@ async def test_a_friend_in_an_allowed_group_is_dropped_in_this_release(world, ca
     ch._dispatch_summoned_turn.assert_not_awaited()
     assert ch._app.bot.mock_calls == []  # no answer_guest_query, nothing sent
     assert bus.queues["finance"].empty()
-    assert any("not answered in this release" in r.getMessage() for r in caplog.records)
+    assert any("outcome=guest_not_answered" in r.getMessage() for r in caplog.records)
 
 
 async def test_a_drop_makes_no_telegram_call(world):
