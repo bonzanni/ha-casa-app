@@ -535,7 +535,7 @@ tokens if they change. To change it:
 6. Ask the new assistant to give each specialist a new handle (above), then
    delete the old bots, the assistant's old bot included, in BotFather.
 
-### Guests: asking a specialist in a group (v0.369.0)
+### Guests: asking a specialist in a group (v0.370.0)
 
 A specialist with its own chat can be asked in a chat its bot is not a member
 of, such as a group with friends: mention its bot (`@…`), or reply to its
