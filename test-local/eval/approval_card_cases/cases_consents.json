@@ -111,7 +111,7 @@
         "Bank-feed's accounting tags and notes stay",
         "Home Assistant backups taken before now still contain the data either way"
       ],
-      "warning": {"expected": "no", "on": ""}
+      "warning": {"expected": "optional", "on": "erasing the whole accounting store cannot be undone"}
     }
   ]
 }

@@ -1,5 +1,5 @@
 {
-  "about": "One case per protected tool call: arguments valid against the tool's input schema (tools_*.json), the facts a correct card must carry, and whether a warning line is expected. warning.expected: yes = exactly this should carry the warning; no = nothing should; optional = no warning is fine, a warning is fine only when it is on what 'on' names.",
+  "about": "One case per protected tool call: arguments valid against the tool's input schema (tools_*.json), the facts a correct card must carry, and whether a warning line is expected. An irreversible wipe or loss may carry a warning even when deleting is what was asked, so such a case expects optional or yes, never no. warning.expected: yes = exactly this should carry the warning; no = nothing should; optional = no warning is fine, a warning is fine only when it is on what 'on' names.",
   "cases": [
     {
       "id": "gmail.send_email.everyday",
@@ -88,7 +88,7 @@
         "Deletes the sent log and the saved attachments",
         "Keeps the Gmail sign-in, so a reinstall stays connected"
       ],
-      "warning": {"expected": "no", "on": ""}
+      "warning": {"expected": "optional", "on": "the sent log and saved attachments are deleted for good"}
     },
     {
       "id": "quarterly.reset_store",
