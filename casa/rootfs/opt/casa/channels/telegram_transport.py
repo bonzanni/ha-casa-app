@@ -423,6 +423,14 @@ class TelegramTransport(Channel):
         ep = self.endpoint_for_route(context, site="turn_finished")
         return await ep.turn_finished(context)
 
+    async def guest_finish(self, text: str, error_kind: Any,
+                           context: dict[str, Any]) -> DeliveryOutcome:
+        """A summoned turn's final text (or Casa's failure line, when
+        *error_kind* names an error) into the group's one inline message,
+        through the bot the summons arrived on."""
+        ep = self.endpoint_for_route(context, site="guest_finish")
+        return await ep.guest_finish(text, error_kind, context)
+
     def create_on_token(self, context: dict[str, Any]) -> Any:
         ep = self.endpoint_for_route(context, site="create_on_token")
         return ep.create_on_token(context)

@@ -238,6 +238,28 @@ def _install_telegram_stubs() -> None:
 
     tg.LinkPreviewOptions = _FakeLinkPreviewOptions
 
+    # A guest query's answer: the inline result wrapping the message content
+    # (kwargs kept for inspection) and what Telegram returns for it.
+    class _FakeInputTextMessageContent:
+        def __init__(self, message_text, parse_mode=None, entities=None, **kw):
+            self.message_text = message_text
+            self.parse_mode = parse_mode
+            self.entities = entities
+
+    class _FakeInlineQueryResultArticle:
+        def __init__(self, id, title, input_message_content, **kw):
+            self.id = id
+            self.title = title
+            self.input_message_content = input_message_content
+
+    class _FakeSentGuestMessage:
+        def __init__(self, inline_message_id, **kw):
+            self.inline_message_id = inline_message_id
+
+    tg.InputTextMessageContent = _FakeInputTextMessageContent
+    tg.InlineQueryResultArticle = _FakeInlineQueryResultArticle
+    tg.SentGuestMessage = _FakeSentGuestMessage
+
     tg_ext = types.ModuleType("telegram.ext")
     tg_ext.Application = MagicMock()
     # ``builder`` must be a REAL attribute of the stub (a plain function, so

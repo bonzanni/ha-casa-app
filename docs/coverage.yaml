@@ -69,6 +69,8 @@
   doc: architecture/telegram.md
 - item: casa/rootfs/opt/casa/channels/telegram_supervisor.py
   doc: architecture/telegram.md
+- item: casa/rootfs/opt/casa/channels/guest_reply.py
+  doc: architecture/own-voice.md
 - item: casa/rootfs/opt/casa/channels/telegram_transport.py
   doc: architecture/telegram-bots.md
 - item: casa/rootfs/opt/casa/channels/tg_address.py

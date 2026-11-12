@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
 from collections.abc import Collection
-from typing import Any, Awaitable, Callable, Literal
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
 from telegram import InputFile, Update
 from telegram.constants import ChatAction
@@ -100,6 +100,10 @@ from provenance import (
 )
 from rate_limit import RateLimiter
 from timekeeping import resolve_tz
+
+if TYPE_CHECKING:
+    from channels.guest_reply import GuestReply
+    from error_kinds import ErrorKind
 
 logger = logging.getLogger(__name__)
 
@@ -1208,6 +1212,10 @@ class TelegramChannel(Channel):
         self._job_cancels: set[str] = set()
         # Tasks retiring ended jobs' keyboards (strong references).
         self._job_ui_tasks: set[asyncio.Task] = set()
+        # The inline messages of turns this bot was summoned to in groups it
+        # is not a member of, by the key the turn's context carries
+        # (``_guest_query``); each is removed by its terminal edit.
+        self._guest_replies: dict[str, GuestReply] = {}
         # Default routing: forward to the existing PTB handler.
         self._route_to_assistant = self._route_to_assistant_default
 
@@ -5862,6 +5870,41 @@ class TelegramChannel(Channel):
                 logger.warning("Final stream overflow send failed: %s", exc)
         return outcome
 
+    # ------------------------------------------------------------------
+    # Outbound: a turn this bot was summoned to in a group it is not a
+    # member of. Telegram allows one inline message there, opened before the
+    # turn and edited once at its end; the turn's context names it by
+    # ``_guest_query``. Only the final text goes to the group — the
+    # ``send_message`` tool, Casa's own lines and the health notice keep
+    # going to the DM through ``send`` as on any other turn, and once the
+    # terminal edit is made the key is gone, so the context is an ordinary
+    # DM context for anything sent after it.
+    # ------------------------------------------------------------------
+
+    def guest_reply_for(self, context: Any) -> "GuestReply | None":
+        """The inline message bound to *context*'s summoned turn, if any."""
+        key = context.get("_guest_query") if isinstance(context, dict) else None
+        return self._guest_replies.get(key) if key else None
+
+    async def guest_finish(
+        self, text: str, error_kind: "ErrorKind | None", context: dict[str, Any],
+    ) -> DeliveryOutcome:
+        """The summoned turn's one terminal edit: the agent's final text, or
+        Casa's failure line when the turn ended in a classified error (the
+        error's own wording never reaches the group). The binding is removed
+        once the edit has been made, whatever its outcome."""
+        reply = self.guest_reply_for(context)
+        if reply is None:
+            logger.warning("guest_finish: no inline message bound for %r",
+                           context.get("_guest_query"))
+            return DeliveryOutcome.NOT_DELIVERED
+        try:
+            if error_kind is not None or _unadmitted("guest_finish", text):
+                return await reply.fail()
+            return await reply.finish(text)
+        finally:
+            self._guest_replies.pop(reply.key, None)
+
     async def turn_finished(self, context: dict[str, Any]) -> None:
         """L7 (v0.52.0): teardown for turns that end WITHOUT delivery.
 
@@ -5871,7 +5914,21 @@ class TelegramChannel(Channel):
         (permanent 'typing…' plus one Bot API call every 4s). The agent calls
         this hook on the suppressed-turn path to stop it. In block mode the
         streaming first-token teardown never runs, so this is the only stop.
+
+        A summoned turn that ends with nothing to say still owes the group
+        its one edit: a decline, or — when the agent asked its question in
+        the chat instead — a pointer there.
         """
+        reply = self.guest_reply_for(context)
+        if reply is not None:
+            scope = context.get("_turn_scope")
+            try:
+                if getattr(scope, "detached_ask", False):
+                    await reply.asked_elsewhere()
+                else:
+                    await reply.decline()
+            finally:
+                self._guest_replies.pop(reply.key, None)
         target_chat = _resolve_chat_id(context, self.chat_id)
         self._release_typing(context, target_chat)
         if context.get("synthetic") == "chat_opening":
@@ -5881,7 +5938,7 @@ class TelegramChannel(Channel):
     # Outbound: streaming
     # ------------------------------------------------------------------
 
-    def create_on_token(self, context: dict[str, Any]) -> OnTokenCallback:
+    def create_on_token(self, context: dict[str, Any]) -> "OnTokenCallback | None":
         """Return a callback for streaming tokens to this chat.
 
         The callback receives the *accumulated* response text on each token and
@@ -5889,7 +5946,12 @@ class TelegramChannel(Channel):
         ``telegram_delivery_mode`` option and with it the ``block`` mode, whose
         only behaviour was to make this a no-op and let the final send deliver
         everything at once.
+
+        ``None`` for a summoned turn: its one inline message takes only the
+        final text (:meth:`guest_finish`), so nothing streams.
         """
+        if self.guest_reply_for(context) is not None:
+            return None
         target_chat = str(_resolve_chat_id(context, self.chat_id))
         # r1-1: release THIS turn's lease by its cid on first-token teardown
         # (captured once — the context is fixed for this callback's turn).
