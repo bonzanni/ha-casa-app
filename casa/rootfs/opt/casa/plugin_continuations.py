@@ -590,8 +590,9 @@ async def list_plugin_tools(server: dict, *, timeout_s: float = 20.0) -> list[di
     inputSchema}]``. It runs ``initialize`` and ``list_tools`` and nothing else, never a tool,
     inside one overall budget of *timeout_s* (``TimeoutError`` when it is spent). The budget
     bounds the listing, not the return: once it fires, the MCP stdio client still shuts the
-    server down (it closes stdin, waits about two seconds, then terminates the process), so
-    the call returns up to roughly two seconds after *timeout_s*."""
+    server down (it closes stdin and waits about two seconds, then terminates the process and
+    waits about two more before it kills it), so the call returns up to about four seconds
+    after *timeout_s*."""
     from mcp import ClientSession
     from mcp.client.stdio import StdioServerParameters, stdio_client
 

@@ -116,22 +116,25 @@ async def test_list_plugin_tools_gives_up_after_its_budget(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_list_plugin_tools_stops_a_silent_real_server(tmp_path):
-    """A real server that never answers: the call times out, returns within a few seconds
-    (the budget plus the MCP client's own shutdown wait), and the process is gone."""
+@pytest.mark.parametrize("ignore_sigterm", [False, True], ids=["silent", "ignores_sigterm"])
+async def test_list_plugin_tools_stops_a_silent_real_server(tmp_path, ignore_sigterm):
+    """A real server that never answers: the call times out, returns within the budget plus
+    the MCP client's own shutdown waits (about two seconds after stdin closes, two more after
+    SIGTERM before the kill), and the process is gone, also when it ignores SIGTERM."""
     import os
     import sys
     import time
 
     pid_file = tmp_path / "pid"
-    code = ("import os, time, pathlib, sys; "
+    ignore = "import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN); " if ignore_sigterm else ""
+    code = (ignore + "import os, time, pathlib, sys; "
             "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(60)")
     server = {"command": sys.executable, "args": ["-c", code, str(pid_file)],
               "env": {}, "cwd": str(tmp_path)}
     started = time.monotonic()
     with pytest.raises(TimeoutError):
         await pc.list_plugin_tools(server, timeout_s=1.0)
-    assert time.monotonic() - started < 5
+    assert time.monotonic() - started < 8
     pid = int(pid_file.read_text())
     try:
         os.kill(pid, 0)

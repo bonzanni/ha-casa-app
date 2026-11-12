@@ -34,7 +34,9 @@ binds exactly those all the same.
 **A separate model writes the card from the request's facts** (`approval_card.write_card`).
 It is one query with no tools and no session (`_ask`: built-in tools removed, Bash, Task,
 Agent and the cross-session tools denied, ephemeral settings), on Sonnet, under one budget of
-15 seconds that covers waiting for a slot, the query, parsing and one retry. At most three run
+15 seconds that covers waiting for a slot, the query, parsing and one retry; when it expires the
+model's process is shut down before the fallback is posted, which can add about five seconds
+(measured about 20 seconds in all). At most three run
 at once. The facts are JSON bounded at 20,000 characters (`facts_json`): past that it drops the
 input schema, cuts the tool description to 1,000 characters, halves the string cap step by
 step, then replaces the arguments with a note, and at worst sends the request's kind and
@@ -104,7 +106,8 @@ thread it runs on. For each resolved plugin that declares protected tools and ha
 server (`plugin_continuations.sweep_server`), a background task starts that server, runs
 `initialize` and `list_tools` and nothing else (`plugin_continuations.list_plugin_tools`,
 a 20 second budget for the listing; a server that does not answer is stopped afterwards, which
-can take about two seconds more), and keeps the protected tools' descriptions and input schemas in memory under
+can take up to about four seconds more: two after its stdin is closed, two more after it is
+terminated, before it is killed), and keeps the protected tools' descriptions and input schemas in memory under
 the artifact id and the declared tool name, so a replacement artifact never reads another's
 entry. Each artifact is listed once per process; a failed listing is tried again after five
 minutes, at most three times. A miss is normal and logged: the card goes without.
@@ -138,12 +141,14 @@ retired by the finish hook installed on its message id, as for any keyboard.
 
 ## Failure behavior
 
-**The card model is slow, down, refuses or answers badly.** The fallback is posted within the
-budget, with a warning logged; the approval works the same.
+**The card model is slow, down, refuses or answers badly.** The fallback is posted when the
+budget runs out or the reply is unusable, with a warning logged; after a timeout the model's
+process is shut down first, so the fallback can come about 20 seconds after the request. The
+approval works the same.
 
 **A burst of approvals.** Three are written at a time; the rest wait for a slot inside their
 own budget and fall back when it runs out, so no request waits for its card past its
-fifteen-second budget.
+fifteen-second budget plus that shutdown (about 20 seconds in all).
 
 **The tool's description was never listed.** The model is told the tool's name, the plugin's
 declared summary and the arguments; an info line names the missing description.

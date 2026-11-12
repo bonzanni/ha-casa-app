@@ -12,8 +12,9 @@ them); the replacement keeps one unit per code point, so measurements and
 offsets taken afterwards stay valid.
 
 Rendering and fallbacks are pure. The one model call lives in ``_ask``; it
-runs with no tools and no session, under a time budget and a concurrency cap,
-and every failure ends in the card the caller already holds.
+runs with no tools and no session, under a time budget (15 s, plus up to about
+five seconds to shut the model's process down when it expires) and a concurrency
+cap, and every failure ends in the card the caller already holds.
 """
 
 from __future__ import annotations
@@ -566,7 +567,9 @@ async def _write(req: CardRequest) -> Card:
 async def write_card(req: CardRequest) -> Card:
     """The card the model writes for *req*, or ``req.fallback``. Never raises:
     a timeout, a backend error, a refusal and two invalid replies all end in
-    the fallback."""
+    the fallback. The budget is ``BUDGET_S`` (15 s); when it expires the model call is
+    cancelled and its process shut down before the fallback is returned, which can add
+    about five seconds (measured about 20 s in all)."""
     try:
         return await _write(req)
     except Exception as exc:  # noqa: BLE001 -- an approval must never fail for want of a nicer card

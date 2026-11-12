@@ -907,7 +907,7 @@ to the conversation and no tools, in plain words: addresses, amounts, dates,
 file names and versions are shown exactly, technical names are translated. It
 is told to include every recipient, amount, deletion, granted power and secret;
 like any model it can occasionally leave a detail out. If it cannot write the
-card within a few seconds, Casa posts its own plain card instead: one line per
+card in time (about 15–20 seconds), Casa posts its own plain card instead: one line per
 argument for a tool call, or the full consent text for an install, webhook,
 callback or event.
 
