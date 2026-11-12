@@ -105,10 +105,14 @@ another restart, with no new bot to create. Otherwise it **retires** the old bot
 record, its held journal and its stored token (1Password item or file) — and hands the new
 bot to the ordinary binding as `binding`; every step is persisted and idempotent, so a
 crash re-runs it from what is on disk. The agent keeps the old handle (`moved_from`) until
-its new chat opens: the ready card says "Alex's new chat is ready: @…. Open it and say
-hi.", the opening turn tells the agent the chat is its new one, and the card then becomes
-"Alex has moved to @new. You can delete @old now." with a "Delete @old" button opening
-BotFather's delete flow. Nothing moves from the old chat: its history stays there, and what
+its new chat opens. The move's cards are new messages, since the offer card is far up the
+resident's chat by then and an edit there goes unnoticed: the switch clears the agent's
+offer card, so the binding posts the ready card ("Alex's new chat is ready: @…. Open it and
+say hi.") as a new message, which later restarts edit; a bound agent whose chat is not
+open and whose card is missing (a post that failed) gets it posted at the next restart. The opening turn tells the agent the
+chat is its new one, and Casa posts "Alex has moved to @new. You can delete @old now." with
+a "Delete @old" button opening BotFather's delete flow, and edits the ready card to "Alex's
+new chat is open." (a post that fails puts that text and button on the ready card instead). Nothing moves from the old chat: its history stays there, and what
 was sent to either bot around the restart may be lost. An uninstall drops a pending change
 whose bot does not exist yet; a pending switch whose bot exists still applies at boot, and
 the new bot then goes dormant through the ordinary binding.

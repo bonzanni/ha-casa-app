@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.362.3] - 2026-11-12
+
+### Fixed
+
+- After a specialist moves to a new bot handle, the assistant's chat gets new messages for "the new chat is ready" and "you can delete the old bot", with their buttons. Before, Casa edited the original offer card, which by then sat far up the chat with no notification.
+
 ## [0.362.2] - 2026-11-12
 
 ### Fixed
