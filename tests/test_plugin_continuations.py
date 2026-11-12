@@ -839,10 +839,11 @@ async def test_only_the_exact_sentinel_declares_progress(roles, lanes, announce,
 
 
 @pytest.mark.asyncio
-async def test_a_requesters_own_silence_never_hides_the_result(roles, lanes, announce,
-                                                               monkeypatch):
-    """p3r5c: quiet is the continuation turn's own declaration only — a relay
-    requester answering ``<silent/>`` to a real result is still announced."""
+async def test_a_requester_that_closes_silent_ends_the_relay_as_progress(roles, lanes, announce,
+                                                                         monkeypatch):
+    """A specialist requester that closes its relay turn with exactly
+    ``<silent/>`` has more work coming back to it: the record completes quiet
+    and the requester above it is told nothing."""
     seen: list = []
     _recording_runner(monkeypatch, seen, says={"finance": "<silent/>"})
     reg, announced = announce
@@ -850,7 +851,48 @@ async def test_a_requesters_own_silence_never_hides_the_result(roles, lanes, ann
     await pc.run_continuation(pc.Pending(b, "r-8", "sweep", 0.0, bot_id=BOT), on_start=lambda: None)
     out = await announced[0][0]
     assert [x[0] for x in seen] == ["browser", "finance"] and out.text == "<silent/>"
+    assert reg.quiet[0](out) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("said", [
+    "done <silent/> more",
+    DelegatedOutput(text="<silent/>", run_subtype="error_max_turns"),
+], ids=["marker-inside-an-answer", "aborted-turn"])
+async def test_a_requesters_answer_is_announced_unless_it_closes_silent(roles, lanes, announce,
+                                                                        monkeypatch, said):
+    """Only a completed relay turn whose closing message is the marker alone is
+    progress: an answer that merely contains it, and an aborted turn, are
+    announced."""
+    seen: list = []
+    _recording_runner(monkeypatch, seen, says={"finance": said})
+    reg, announced = announce
+    b = _binding(("assistant", "finance", "browser"))
+    await pc.run_continuation(pc.Pending(b, "r-8", "sweep", 0.0, bot_id=BOT), on_start=lambda: None)
+    out = await announced[0][0]
+    assert [x[0] for x in seen] == ["browser", "finance"]
     assert reg.quiet[0](out) is False
+
+
+@pytest.mark.asyncio
+async def test_a_silent_requester_stops_the_relay_below_the_requesters_above_it(
+        roles, lanes, announce, monkeypatch):
+    """With two specialist requesters in the chain, the nearer one closing
+    silent means the farther one gets no turn at all."""
+    roles["legal"] = _cfg("legal", "Lena")
+    seen: list = []
+    _recording_runner(monkeypatch, seen, says={"legal": "<silent/>"})
+    reg, announced = announce
+    b = _binding(("assistant", "finance", "legal", "browser"))
+    await pc.run_continuation(pc.Pending(b, "r-8", "sweep", 0.0, bot_id=BOT), on_start=lambda: None)
+    out = await announced[0][0]
+    assert [x[0] for x in seen] == ["browser", "legal"]
+    assert reg.quiet[0](out) is True
+
+
+def test_the_relay_task_says_when_to_close_silent():
+    assert ("If you have just started more work whose end will come back to you, close "
+            "with exactly <silent/> instead; otherwise answer.") in pc.RELAY_TASK
 
 
 class _Registry:
