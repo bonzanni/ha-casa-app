@@ -291,9 +291,8 @@ async def test_crash_after_settling_cas_replays_exact_edit_once_without_dispatch
 
 
 async def test_pin_inv_tg_007_a_settle_that_names_its_buttons_keeps_exactly_those():
-    """The one settle that keeps a keyboard: the browsing start card's answered Start keeps
-    its Stop (``operator_calls.post_question(after_choice=...)``). The edit carries exactly
-    the named buttons; every other settle still sends the empty keyboard."""
+    """An edit that names its buttons keeps exactly those (``edit_dm_message(buttons=...)``);
+    every other settle still sends the empty keyboard."""
     ch, bot = _mk_channel()
 
     ok = await ch.edit_dm_message(CHAT, MESSAGE_ID, PLAIN_TEXT,

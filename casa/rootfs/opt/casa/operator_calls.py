@@ -181,7 +181,6 @@ def requester_facts(call: OperatorCall) -> dict:
 async def post_question(*, endpoint: Any, identity: Any, role: str, text: str,
                         options: list[str], timeout_s: float,
                         on_settle: Callable[[dict], Awaitable[None]],
-                        after_choice: "dict[int, list[tuple[str, str]]] | None" = None,
                         chat_id: "int | None" = None, post: Any = None) -> bool:
     """Post *text* under *role*'s label with one button per option, through
     the Telegram *endpoint* the caller resolved (the call's delivery for a run
@@ -200,12 +199,9 @@ async def post_question(*, endpoint: Any, identity: Any, role: str, text: str,
     before anything is registered; an endpoint with no id yet posts nothing
     and returns False, as a failed post does.
 
-    ``after_choice``: for an answered choice with an entry, the settled card
-    keeps that keyboard (``(label, callback data)`` buttons) instead of none
-    (the start card's Stop). That choice's ``on_settle`` runs BEFORE the edit
-    that shows the keyboard, and is also given the card's ``message_id``, its
-    ``address`` and its settled ``text``, so what the buttons act on is saved
-    before they appear.
+    The settled card keeps no buttons. An answered outcome is also given the
+    card's ``message_id``, its ``address`` and its settled ``text`` (the run
+    admission's start card, which a Stop marks later).
 
     ``post``: the post record the landed question is filed under (a task's
     question is filed under that task, so a reply to it reaches the task).
@@ -246,23 +242,20 @@ async def post_question(*, endpoint: Any, identity: Any, role: str, text: str,
             if answered:
                 choice = int(outcome["option_index"])
                 shown = f"{body}\n\n☑ {options[choice]}"
-                keep = (after_choice or {}).get(choice)
-                if keep:
-                    await on_settle({"outcome": "answered", "choice": choice,
-                                     "message_id": message_id,
-                                     "address": TgAddress(bot_id, int(chat_id), message_id),
-                                     "text": shown})
-                    await channel.edit_dm_message(chat_id, message_id, shown,
-                                                  buttons=list(keep))
-                    return
             else:
                 import ask_retirement
                 shown = ask_retirement.retired_body(
                     body, outcome.get("outcome"), outcome.get("reason"))
-            await channel.edit_dm_message(chat_id, message_id, shown)
-            await on_settle({"outcome": "answered", "choice": int(outcome["option_index"])}
-                            if answered else {"outcome": str(outcome.get("outcome")
-                                                             or "cancelled")})
+            try:
+                await channel.edit_dm_message(chat_id, message_id, shown)
+            finally:
+                # the answer is settled whether or not the card could be edited
+                await on_settle({"outcome": "answered", "choice": choice,
+                                 "message_id": message_id,
+                                 "address": TgAddress(bot_id, int(chat_id), message_id),
+                                 "text": shown}
+                                if answered else {"outcome": str(outcome.get("outcome")
+                                                                 or "cancelled")})
         return _finish
 
     await BROKER.ensure_posted(req, _post, _finish_factory)

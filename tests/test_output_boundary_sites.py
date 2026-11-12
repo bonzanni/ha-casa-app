@@ -98,6 +98,7 @@ EDIT_DM_MESSAGE_CALLERS = {
     ("own_voice_lifecycle.py", "edit_card"): {"status"},           # an own-chat card's fixed Casa lines (asked again, bound, released)
     ("operator_calls.py", "_finish"): {"plugin"},                  # browser executor: a plugin's question, ☑ label / retired
     ("plugin_stop.py", "settle_run_card"): {"status"},             # the Stop: the card's stored text + ☑ Stopped / Ended / Stop asked
+    ("run_admission.py", "_on_settle"): {"status"},                # a started card's stored text again, with a Stop button, when its key line did not land
     ("channels/telegram.py", "_retire_job_post"): {"status"},      # an ended job's start line: its outcome mark, Casa template
     ("channels/telegram.py", "refresh_job_start_line"): {"status"},  # a live job's start line: elapsed time and cost, Casa template
 }
@@ -129,11 +130,12 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "replace_operator_proposal"): "notice", # #1339: that proposal edited in place, as a tap's next card
     ("channels/telegram.py", "deliver_casa_notice"): "notice",       # a tap's or a task's outcome line, Casa-composed
     ("channels/telegram.py", "deliver_run_card"): "notice",          # the Stop: a browsing request's status card, Casa-composed
-    ("channels/telegram.py", "send_reply_line"): "notice",           # the Stop: its one outcome line, Casa-composed
+    ("channels/telegram.py", "send_reply_line"): "notice",           # the Stop: a request's start, stop or end line, Casa-composed
+    ("channels/telegram.py", "_send_key_line"): "notice",            # the Stop keys: a job's end line and a stale key's answer, Casa templates
     ("channels/telegram.py", "notify_operator"): "notice",           # the memory wipe's restart and done lines
     ("channels/telegram.py", "_send_plain_line"): "notice",          # the memory wipe's courtesy line
     ("channels/telegram.py", "send_step_line"): "notice",            # the configurator's step line, Casa template
-    ("channels/telegram.py", "post_job_start_line"): "notice",       # a job's start line with its Cancel, Casa template
+    ("channels/telegram.py", "post_job_start_line"): "notice",       # a job's start line raising its Stop key, Casa template
     ("channels/telegram.py", "post_job_parked"): "notice",           # a parked job's line with its Cancel, Casa template quoting the job's last progress report
     ("channels/telegram.py", "_send_dm_reply"): "notice",            # a lost-message / turn notice in reply to the operator, Casa-composed
 }

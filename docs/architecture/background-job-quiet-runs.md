@@ -73,7 +73,7 @@ ends through the finalize funnel, which tells a cancelled or failed end through 
 A second start while a quiet run is live is refused with `job_busy`, saying the run is in
 progress on its schedule and to wait.
 
-What it does not cover: a quiet run has no start line, so no Cancel button; the operator can
+What it does not cover: a quiet run has no start line, so no Stop key; the operator can
 ask the resident to cancel it. A reply to one of its plugin's posts, or a tap on its question,
 goes into it and ends its quietness (INV-BGJOB-015).
 

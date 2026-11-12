@@ -52,6 +52,7 @@ class _Channel:
         self.cards: list[tuple] = []
         self.card_options: list[dict] = []
         self.card_lands = True
+        self.lines: list[tuple] = []
 
     async def deliver_operator_question(self, chat_id, text, labels, rid, *, post=None):
         self.posted.append((chat_id, text, labels, rid))
@@ -62,10 +63,14 @@ class _Channel:
         self.edit_buttons.append(list(buttons or []))
         return True
 
-    async def deliver_run_card(self, chat_id, text, buttons, *, post=None, **options):
-        self.cards.append((chat_id, text, list(buttons)))
+    async def deliver_run_card(self, chat_id, text, *, starting=None, post=None, **options):
+        self.cards.append((chat_id, text, starting))
         self.card_options.append(options)
         return 556 if self.card_lands else None
+
+    async def send_reply_line(self, chat_id, text, reply_to, *, post=None, silent=False):
+        self.lines.append((chat_id, text, reply_to, silent))
+        return True
 
 
 @pytest.fixture
@@ -463,20 +468,61 @@ async def test_overlapping_requests_with_one_key_are_decided_once(wired, monkeyp
     assert len(readings) == 1 and len(channel.posted) == 1
 
 
-# -- the Stop on the start and status cards -----------------------------------------------
+# -- the start and status cards, and the line that raises the Stop key ---------------------
 
 @pytest.mark.asyncio
-async def test_his_start_leaves_the_card_with_exactly_its_stop(wired, monkeypatch):
+async def test_his_start_leaves_the_card_without_buttons_and_posts_one_started_line(
+        wired, monkeypatch):
+    """The settled start card keeps no button; one silent line in reply to it, under the
+    browsing agent's label, raises the Stop key (the keyboard itself is the channel's)."""
     channel, _continued = wired
     ask, _ = _model('{"runs": []}')
     monkeypatch.setattr(run_admission, "_ask_model", ask)
     out = await run_admission.request_admission(_call(words="yes"), [RUNPOD], "k1")
     cid = out["confirmation_id"]
     await _tap(channel, 0)
-    assert channel.edit_buttons == [[("Stop", f"v1|run_stop|{cid}|0")]]
-    assert len(f"v1|run_stop|{cid}|0".encode()) <= 64
+    assert channel.edit_buttons == [[]]
     c = run_admission.CONFIRMATIONS.peek(cid)
+    assert c.status == "admitted"
     assert c.card == [CASA_BOT, 42, 555] and c.card_text.endswith("☑ Start")
+    assert channel.lines == [(42, "📊 Fido\nStarted.", 555, True)]
+
+
+@pytest.mark.asyncio
+async def test_a_started_line_that_does_not_land_puts_a_stop_button_on_the_card(
+        wired, monkeypatch):
+    """No line, no key: the admitted runs must not go without a Stop, so the card gets the
+    Stop button its callback still serves."""
+    channel, _continued = wired
+    ask, _ = _model('{"runs": []}')
+    monkeypatch.setattr(run_admission, "_ask_model", ask)
+
+    async def _no_line(chat_id, text, reply_to, *, post=None, silent=False):
+        return False
+    channel.send_reply_line = _no_line
+    out = await run_admission.request_admission(_call(words="yes"), [RUNPOD], "k1")
+    cid = out["confirmation_id"]
+    await _tap(channel, 0)
+    assert run_admission.CONFIRMATIONS.peek(cid).status == "admitted"
+    assert channel.edit_buttons == [[], [("Stop", f"v1|run_stop|{cid}|0")]]
+
+
+@pytest.mark.asyncio
+async def test_a_card_edit_that_raises_still_settles_his_start(wired, monkeypatch):
+    channel, _continued = wired
+    ask, _ = _model('{"runs": []}')
+    monkeypatch.setattr(run_admission, "_ask_model", ask)
+
+    async def _boom(chat_id, message_id, text, buttons=None):
+        raise RuntimeError("edit refused")
+    channel.edit_dm_message = _boom
+    out = await run_admission.request_admission(_call(words="yes"), [RUNPOD], "k1")
+    try:
+        await _tap(channel, 0)
+    except RuntimeError:
+        pass
+    assert run_admission.CONFIRMATIONS.peek(out["confirmation_id"]).status == "admitted"
+    assert channel.lines == [(42, "📊 Fido\nStarted.", 555, True)]
 
 
 @pytest.mark.asyncio
@@ -487,6 +533,7 @@ async def test_not_now_settles_the_card_with_no_buttons(wired, monkeypatch):
     await run_admission.request_admission(_call(words="yes"), [RUNPOD], "k1")
     await _tap(channel, 1)
     assert channel.edit_buttons == [[]]
+    assert channel.lines == []                  # nothing started: no line, no key
 
 
 async def _cards_settle():
@@ -532,7 +579,8 @@ async def test_a_card_for_the_agents_own_run_asks_without_a_requester(wired, mon
 
 
 @pytest.mark.asyncio
-async def test_runs_his_words_admitted_get_one_status_card_with_its_stop(wired, monkeypatch):
+async def test_runs_his_words_admitted_get_one_status_card_that_raises_its_stop_key(
+        wired, monkeypatch):
     channel, _continued = wired
     ask, _ = _model('{"runs": [{"site": "RunPod"}]}')
     monkeypatch.setattr(run_admission, "_ask_model", ask)
@@ -541,7 +589,8 @@ async def test_runs_his_words_admitted_get_one_status_card_with_its_stop(wired, 
     assert out["status"] == "admitted" and channel.posted == []
     (card,) = channel.cards
     cid = out["confirmation_id"]
-    assert card[2] == [("Stop", f"v1|run_stop|{cid}|0")]
+    # no button: the card raises the request's Stop key, named by the site it opens
+    assert (card[2].kind, card[2].key, card[2].title) == ("run", cid, "RunPod")
     assert "On it for Ellen:\n• RunPod — download invoice" in card[1]
     assert "Asked for by" not in card[1]
     c = run_admission.CONFIRMATIONS.peek(cid)
@@ -571,7 +620,7 @@ async def test_a_colleagues_request_under_the_operators_task_starts_without_a_ca
         wired, monkeypatch):
     """A specialist asked the browsing agent, in a turn that belongs to a task
     the operator started: the runs are admitted with no question, on sites no
-    words name, and the status card with its Stop is posted."""
+    words name, and the status card that raises its Stop key is posted."""
     channel, continued = wired
     ask, seen = _model(AssertionError("nothing is read: the call has no words"))
     monkeypatch.setattr(run_admission, "_ask_model", ask)
@@ -584,7 +633,7 @@ async def test_a_colleagues_request_under_the_operators_task_starts_without_a_ca
     assert channel.posted == [] and continued == [] and seen == []
     (card,) = channel.cards
     cid = out["confirmation_id"]
-    assert card[2] == [("Stop", f"v1|run_stop|{cid}|0")]
+    assert (card[2].kind, card[2].key, card[2].title) == ("run", cid, "RunPod, LinkedIn")
     assert "On it for Alex (2 runs):\n• RunPod — download invoice" in card[1]
     assert run_admission.confirmation_status(call, cid)["status"] == "admitted"
     # the same request again is the same answer: no second card of either kind

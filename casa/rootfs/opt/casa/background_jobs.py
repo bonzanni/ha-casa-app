@@ -292,8 +292,8 @@ def _job_busy_refusal(plugin: str, job: str, title: str, rec: Any | None) -> dic
     return {"status": "error", "kind": "job_busy", "plugin": plugin, "job": job,
             "engagement_id": rec.id,
             "message": (f"{plugin} already has a running job: {title}. "
-                        "Wait for it to finish, or cancel it with the Cancel "
-                        "button on its start line or by asking me.")}
+                        "Wait for it to finish, or cancel it with its Stop "
+                        "key at the keyboard or by asking me.")}
 
 
 def claim_job_start(host: "JobHost", registry: Any) -> dict | None:

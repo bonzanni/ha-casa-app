@@ -9,7 +9,7 @@ last_reviewed: 2026-11-10
 ## Scope
 
 What a background job puts in the operator's direct chat and what they can do there: the start
-line and its Cancel button, a specialist job's questions (`ask_operator`) and their buttons,
+line, the job's Stop key at the reply keyboard and its end line, a specialist job's questions (`ask_operator`) and their buttons,
 replies into a live job, the line a parked job posts, and how those keyboards are retired when
 the job ends. What a job is is [`background-jobs.md`](background-jobs.md), and how its session
 runs, parks and shows its cost is [`background-job-session.md`](background-job-session.md); the
@@ -19,7 +19,9 @@ the job never took up draws is
 run changes, and how interacting with one ends its quietness, is
 [`background-job-quiet-runs.md`](background-job-quiet-runs.md); how a reply to a post that is
 no task's carries Casa's reply note is [`telegram.md`](telegram.md); the optional agent log,
-where a job can be watched, is [`agent-logs.md`](agent-logs.md).
+where a job can be watched, is [`agent-logs.md`](agent-logs.md); the Stop keys themselves —
+their labels, the messages that carry them, how a press is matched — are
+[`plugin-stop.md`](plugin-stop.md).
 
 ## Mental model
 
@@ -27,9 +29,11 @@ where a job can be watched, is [`agent-logs.md`](agent-logs.md).
 running job says nothing in the DM unless it needs a decision or has its result. Everything
 here works with no log group configured, and nothing here reads one (INV-BGJOB-023). A job the operator
 started (directly, or through an agent acting on their message — the record's starter is
-`operator`) gets one silent line, `📊 <Agent> started «<title>».`, with a **Cancel** button,
-edited while the job runs to show its running time and cost (INV-BGJOB-020); a scheduled job,
-or one an agent started on its own, gets none. A job Casa parks posts one line with a
+`operator`) gets one silent line, `📊 <Agent> started «<title>».`, with no button: it raises
+the job's red key, `⏹ Stop «<title>»`, at the reply keyboard, which stays there while the job
+is live and its start line filed. The line is edited, still without buttons, while the job
+runs to show its running time and cost (INV-BGJOB-020); a scheduled job, or one an agent
+started on its own, gets none, and so has no key. A job Casa parks posts one line with a
 **Cancel** button — in reply to the start line when there is one — and a reply to it continues
 the job (INV-BGJOB-017). A specialist's job asks with
 `ask_operator(question, options?)`: a plain post under its label, one button per option and a
@@ -96,7 +100,11 @@ stored and acknowledged, like every captionless file, and no turn starts.
 observer — told by every in-process terminal winner: the finalize funnel, the launch-death
 report, the reap, the legacy direct mutators — has the channel take the record's keyboard posts
 in one synchronous step and edit them away: the start line to `✅`/`🛑`/`❌ <Agent> «<title>»`
-(without the agent's name in the host's own chat) with the job's running time and cost, a question or parking line to no buttons. A job that
+(without the agent's name in the host's own chat) with the job's running time and cost, a question or parking line to no buttons.
+An edit cannot take a reply keyboard down, so the start line's edit is followed by one silent
+end line in reply to it (`stop_keys.job_end_line`: `Finished «<title>».`, `Stopped
+«<title>».` or `«<title>» failed.`), carrying the chat's Stop keys still live, or the
+keyboard's removal when none is; it is posted even when the edit fails. A job that
 completes from inside a running turn is the one exception to the timing: the observer leaves its
 keyboards to the completion's finalize tail, which retires them once that turn has ended (or a
 bounded wait passed), so the end paint carries the completing turn's cost. A keyboard post that lands after the terminal write settled is
@@ -136,16 +144,21 @@ The payloads are `v1|job_q|<eid>|<qid>|<n>` (at most 53 bytes) and `v1|job_cance
 seam; the question post is the turn's notice target. A second tap, or a tap and a typed reply,
 is a second answer. A Cancel tap on a live record answers "Cancelling…" and runs the cancel
 funnel on a task of its own; a second tap while it runs answers "already finishing", one on an
-ended job "already finished". A tap while another terminal write of the job is still pending —
+ended job "already finished". A press of the job's Stop key (`TelegramChannel._press_stop_key`,
+`_cancel_job_by_key`) runs the same funnel with the same checks — the operator who started it,
+a record that counts as live, one cancel at a time — and answers nothing: his message is
+deleted, no turn starts, and a press while the cancel runs does nothing more. A tap while another terminal write of the job is still pending —
 a completion's, say — is a cancellation like any other: its transition waits for that write,
 cancels the job if it rolled back, and ends with nothing more if it committed. When the funnel's write rolls back, the record stays live, the
-button stays, and one line in reply to the tapped message asks to tap again.
+button and the key stay, and one line in reply to the tapped message — the start line, for a
+press — says "The job could not be stopped just now — try again."
 
 **INV-BGJOB-014**: Every in-process terminal winner retires the job's direct-chat keyboards — through the registry's terminal observer, which takes them off the record in one synchronous step before the record leaves the pending-terminal set, or, for a completion from inside a running turn, through that completion's finalize tail once the turn has ended or its bounded wait passed; a keyboard post that lands after the terminal write settled is retired by its filer; and at boot every terminal record still carrying keyboard posts has them retired once.
 
 ## Failure behavior
 
-**A start line or question send fails.** The start line is logged and the job runs on; the
+**A start line or question send fails.** The start line is logged and the job runs on, with
+no Stop key (nothing filed raises one); the
 question tool returns `delivery_failed` and the job may ask again. A send that timed out but
 landed has no known message id: its taps still work while the record holds the question, a typed
 reply to it takes the routes it took before, and it keeps its buttons after the end.
@@ -155,7 +168,9 @@ the scheduled write loses that post's ownership, and a reply to it then takes th
 before.
 
 **A keyboard edit fails.** The keyboard stays; the record no longer lists it, so nothing retries
-it. Its taps read the terminal record.
+it. Its taps read the terminal record. A start line's end line is posted all the same, so the
+job's Stop key goes; a press of a key last shown for a job that has ended gets "It had already
+ended." ([`plugin-stop.md`](plugin-stop.md)).
 
 ## Extension points
 
@@ -175,6 +190,7 @@ parser.
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.deliver_operator_reply`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._route_task_reply`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_start_line`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._cancel_job_by_key`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_question`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_job_question_callback`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_job_cancel_callback`
@@ -194,6 +210,7 @@ parser.
 - `tests/test_job_dm_attention.py`
 - `tests/test_job_dm_posts_registry.py`
 - `tests/test_ended_job_replies.py`
+- `tests/test_stop_keys.py`
 
 **Related**
 - [`architecture/agent-logs.md`](../architecture/agent-logs.md)
@@ -202,4 +219,5 @@ parser.
 - [`architecture/engagement-inbound-disclosure.md`](../architecture/engagement-inbound-disclosure.md)
 - [`architecture/background-job-quiet-runs.md`](../architecture/background-job-quiet-runs.md)
 - [`architecture/telegram.md`](../architecture/telegram.md)
+- [`architecture/plugin-stop.md`](../architecture/plugin-stop.md)
 <!-- END SOURCEMAP -->

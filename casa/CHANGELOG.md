@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.368.0] - 2026-11-12
+
+### Changed
+
+- The Stop of a running job or of a browsing request is now a red key at your keyboard, "⏹ Stop «…»", in place of the button on its card. The card scrolls away as the chat goes on; the key stays in reach for as long as the work runs. Two things running in one chat show two keys.
+- Pressing the key stops the work at once, as the button did. Your key press is removed from the chat and the usual "Stopped." line follows.
+- When a job ends, one silent line ("Finished «…».", "Stopped «…»." or "«…» failed.") follows its start line and takes the key away. A browsing request that ends by itself gets a silent "Ended." line for the same reason.
+- A browsing request you start with **Start** gets one silent "Started." line under its card; that line puts the key up.
+- Start lines and run cards no longer carry a button. Cards already in your chat keep theirs, and they still work. A job's question and its "stopped without finishing" line keep their **Cancel** button.
+- Not backward compatible for a job that is running while Casa is upgraded: its start line loses its **Cancel** button a few minutes after the upgrade and it gets no key. Ask the assistant to cancel such a job, or upgrade while no job is running.
+
 ## [0.367.6] - 2026-11-12
 
 ### Added

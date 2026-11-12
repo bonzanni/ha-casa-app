@@ -482,8 +482,8 @@ Casa's own cards keep using the specialist's name.
 - **The specialist's own chat** holds your conversation with it — write to it
   there directly, and `/new` starts a fresh conversation with that specialist
   only — and everything it shows you: cards and their buttons, links you must
-  open, reports, files, its job lines with **Cancel**, and its run cards with
-  **Stop**. Its messages there carry no `📊` label: the chat is the
+  open, reports, files, its job lines and run cards, and their **Stop** keys at
+  your keyboard. Its messages there carry no `📊` label: the chat is the
   specialist.
 - **Work the assistant hands over** also appears there: a line "Ellen asked
   me: …" when it starts (her request as she wrote it; work Casa itself starts,
@@ -543,14 +543,16 @@ straight away. The job runs as one long session: it keeps working until it is
 finished. Everything that needs you happens in your DM; if you set up a log group,
 you can also watch the job work there (see [Optional: agent logs](#optional-agent-logs)).
 A job you asked for puts one
-silent line in your DM — "📊 Finance started «…»." — with a **Cancel** button; the
+silent line in your DM — "📊 Finance started «…»." — and a red **⏹ Stop «…»** key
+at your keyboard, which stays there while the job runs however far the chat moves on; the
 line shows how long the job has been running and, once its first stretch of work
 has ended, what it has cost so far ("· 40 min · $2.40"). When a specialist's job
 needs a decision from you it asks in your DM, with a button per choice: tap one,
 or reply to the question in words. To steer a running job, reply in your DM to any
 of its messages there (its start line, a question, something its plugin posted);
-your words reach the job while it works, at its next step. To stop it, tap
-**Cancel**, or ask the assistant to cancel it. If the job ended before it read your
+your words reach the job while it works, at its next step. To stop it, press its
+**Stop** key, or ask the assistant to cancel it. When the job ends, one silent line
+("Finished «…».", "Stopped «…»." or "«…» failed.") takes its key away. If the job ended before it read your
 message, Casa answers it once: "The job had just finished, so your message didn't
 get through. Could you send it again?" A reply to a message of a job that has already ended goes to the assistant,
 with a note saying which job it was and how and when it ended.
@@ -586,7 +588,7 @@ that finds something new can still say so. An approval it needs still reaches yo
 DM, and a run that is cancelled or fails is still reported. A quiet run that asks you
 something, or that you answer — a reply to one of its messages, a tap on its question
 — stops being quiet, and its end is then reported like any job's. A quiet run has no
-start line, so no Cancel button: ask the assistant to cancel it. Runs you or the
+start line, so no Stop key: ask the assistant to cancel it. Runs you or the
 assistant start are unchanged.
 
 A specialist can also start its own plugins' jobs itself (v0.344.0). When you reply
@@ -607,8 +609,8 @@ with the specialist's answer in place of the bare result. If that follow-up
 cannot run, you still get the job's result, with a line saying the follow-up did
 not run. A job started in the specialist's own chat ends as before. While a
 specialist works on a task you started this way, its request to the browsing
-specialist starts without a start card: the status card with **Stop** still
-appears, and it and the browsing specialist's progress messages arrive without
+specialist starts without a start card: the status card and its **Stop** key still
+appear, and the card and the browsing specialist's progress messages arrive without
 a notification. Links, files, questions and cards that need you still notify,
 and every step that changes, pays or sends something is still asked.
 
@@ -962,7 +964,7 @@ Q3 accounting · ✅ completed — Tagged 41 rows; 2 need your decision.
 ```
 
 Everything that needs you stays in your direct chat: a job's start line and its
-**Cancel** button, its questions, approvals, its result. Reply to a job's message
+**Stop** key, its questions, approvals, its result. Reply to a job's message
 there to steer it. Nothing you write in the log group reaches an agent: anyone who
 writes there gets one pointer back to the direct chat.
 
@@ -1762,7 +1764,7 @@ instructions say to show you before asking you to confirm; of each one it says:
 
 > When it resumes, it picks up Casa's updated settings, but it keeps its
 > personality and the plugin versions it started with. To get everything new,
-> cancel it (with its Cancel button, or ask Ellen) and start it again.
+> cancel it (with its Stop key, or ask Ellen) and start it again.
 
 Saying no changes nothing. New conversations get the new setup once Casa has
 loaded it: an upgrade or a rollback that completes loads it during the change,

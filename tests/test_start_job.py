@@ -216,13 +216,13 @@ async def test_second_engagement_from_another_chat_names_open_job(runtime, secon
         assert result['plugin'] == 'ledger'
         assert result['message'] == (
             f"ledger already has a running job: {DECL.title}. Wait for it to "
-            "finish, or cancel it with the Cancel button on its start line or "
+            "finish, or cancel it with its Stop key at the keyboard or "
             "by asking me.")
     else:
         assert result['kind'] == 'engagement_busy'
         assert result['agent'] == 'finance'
         assert DECL.title in result['message'] and 'Alex' in result['message']
-        assert 'Cancel button' in result['message'] and 'topic' not in result['message']
+        assert 'Stop key' in result['message'] and 'topic' not in result['message']
     assert runtime.bot.create_forum_topic.await_count == 0
 
 
@@ -328,6 +328,6 @@ async def test_a_job_starts_acts_and_is_busy_refused_with_no_group(runtime):
     again = await call()
     assert again['kind'] == 'job_busy'
     assert again['message'].endswith(
-        "Wait for it to finish, or cancel it with the Cancel button on its "
-        "start line or by asking me.")
+        "Wait for it to finish, or cancel it with its Stop key at the "
+        "keyboard or by asking me.")
     assert runtime.bot.create_forum_topic.await_count == 0

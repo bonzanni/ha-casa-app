@@ -399,21 +399,25 @@ class TestDeliveriesThatDoNotNotify:
         assert not any("disable_notification" in call.kwargs
                        for call in bot.send_message.await_args_list)
 
-    async def test_a_silent_run_card_keeps_its_buttons(self):
+    async def test_a_silent_run_card_keeps_its_stop_key(self):
+        import stop_keys
+        stop_keys.reset()
         ch, bot = _mk_channel_with_fake_bot()
+        ch._known_bot_id = 111                  # the keys belong to this bot's chat
+        starting = stop_keys.Item("run", "conf-x", "Runpod", 1.0)
         assert await ch.deliver_run_card(
-            42, "Browsing: Runpod", [("Stop", "v1|stop|abc")], silent=True) == 12345
+            42, "Browsing: Runpod", starting=starting, silent=True) == 12345
         assert bot.send_message.await_count == 1
         sent = bot.send_message.await_args.kwargs
         assert sent["disable_notification"] is True
         assert (sent["chat_id"], sent["text"]) == (42, "Browsing: Runpod")
-        (button,), = sent["reply_markup"].inline_keyboard
-        assert (button.text, button.callback_data) == ("Stop", "v1|stop|abc")
+        (key,), = sent["reply_markup"].keyboard
+        assert (key.text, key.style) == ("⏹ Stop «Runpod»", "danger")
 
     async def test_a_run_card_that_is_not_silent_names_no_notification_setting(self):
         ch, bot = _mk_channel_with_fake_bot()
-        assert await ch.deliver_run_card(42, "Browsing: Runpod", [("Stop", "v1|stop|abc")]) == 12345
-        assert await ch.deliver_run_card(
-            42, "Browsing: Runpod", [("Stop", "v1|stop|abc")], silent=False) == 12345
+        ch._known_bot_id = 111
+        assert await ch.deliver_run_card(42, "Browsing: Runpod") == 12345
+        assert await ch.deliver_run_card(42, "Browsing: Runpod", silent=False) == 12345
         assert [set(call.kwargs) for call in bot.send_message.await_args_list] == [
             {"chat_id", "text", "reply_markup"}] * 2

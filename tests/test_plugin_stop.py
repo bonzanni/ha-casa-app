@@ -420,9 +420,11 @@ async def test_a_tap_and_ellen_at_once_tell_him_once(env):
     assert "already stopped and the person has been told" in typed
 
 
-async def test_the_start_tap_ordering_is_admitted_before_the_stop_shows(env, monkeypatch):
-    """7b: his Start settles the Confirmation — admitted, saved with its card's message id —
-    BEFORE the edit that shows the Stop button."""
+async def test_the_start_tap_is_admitted_before_the_line_that_raises_the_stop_key(
+        env, monkeypatch):
+    """7b: his Start edits the card to no buttons, then settles the Confirmation — admitted,
+    saved with its card's message id — and only then posts the one silent ``Started.`` line
+    that raises the Stop key, so the key never shows for a request not yet admitted."""
     order: list = []
     ch = types.SimpleNamespace(default_agent="assistant", bot_id=BOT, has_bot_id=True)
 
@@ -431,14 +433,21 @@ async def test_the_start_tap_ordering_is_admitted_before_the_stop_shows(env, mon
 
     async def edit_dm_message(chat_id, message_id, text, buttons=None):
         c = run_admission.CONFIRMATIONS.peek(cid_box[0])
-        order.append(("edit", c.status, c.card, [d for _, d in (buttons or [])]))
+        order.append(("edit", c.status, list(buttons or [])))
+        return True
+
+    async def send_reply_line(chat_id, text, reply_to, *, post=None, silent=False):
+        c = run_admission.CONFIRMATIONS.peek(cid_box[0])
+        order.append(("line", c.status, c.card, text, reply_to, silent))
         return True
     ch.deliver_operator_question, ch.edit_dm_message = deliver_operator_question, edit_dm_message
+    ch.send_reply_line = send_reply_line
     monkeypatch.setattr(tools_mod, "_channel_manager", make_transport(ch), raising=False)
     cid_box = await _pending_card(env, monkeypatch)
     await _answer_card(0)
-    assert order == [("edit", "admitted", [BOT, OPERATOR, CARD_MID],
-                      [f"v1|run_stop|{cid_box[0]}|0"])]
+    assert order == [("edit", "pending", []),
+                     ("line", "admitted", [BOT, OPERATOR, CARD_MID], "📊 Fido\nStarted.",
+                      CARD_MID, True)]
     c = run_admission.CONFIRMATIONS.peek(cid_box[0])
     reread = run_admission.Confirmations(str(env.tmp / "admissions.json")).peek(cid_box[0])
     assert reread.card_address() == TgAddress(BOT, OPERATOR, CARD_MID)
@@ -767,7 +776,14 @@ async def test_stop_work_by_a_listed_ref_stops_it_and_marks_the_card(env):
     assert text == ("Stopped: invoice: get the RunPod invoice. Tell the person in one plain line "
                     "what stopped, in his words, and nothing about how you found it.")
     (edit,) = _card_edits(env)
-    assert edit["text"].endswith("☑ Stopped") and _lines(env) == []      # her reply is the line
+    assert edit["text"].endswith("☑ Stopped")
+    # her reply tells him; one silent fixed line under the card takes the Stop key away
+    (line,) = _lines(env)
+    assert line["text"] == "📊 Fido\nStopped." and line["reply_to_message_id"] == CARD_MID
+    assert line["disable_notification"] is True
+    assert line["reply_markup"].remove_keyboard is True                 # nothing else is live
+    assert run_admission.CONFIRMATIONS.peek(CID).card is None
+    assert chat_notes.drain(BOT, OPERATOR) == []                         # she knows already
 
 
 async def test_stop_work_neither_lists_nor_stops_another_operators_request(env):
@@ -897,9 +913,14 @@ async def test_a_request_that_ended_on_its_own_marks_its_card_once(env, monkeypa
     edits = _card_edits(env)
     assert len(edits) == 1 and edits[0]["text"] == f"{CARD_TEXT}\n☑ Ended"
     assert _buttons(edits[0]) == []                      # no Stop left on it
-    assert _lines(env) == [] and env.turns == [] and env.lane_uses == []
+    # one silent line in reply to the card takes the Stop key off the keyboard
+    (line,) = _lines(env)
+    assert line["text"] == "📊 Fido\nEnded." and line["reply_to_message_id"] == CARD_MID
+    assert line["disable_notification"] is True and line["reply_markup"].remove_keyboard
+    assert env.turns == [] and env.lane_uses == []
     await pc.sweep_once()                                # named again on the next pass
     assert len(passes) == 2 and len(_card_edits(env)) == 1
+    assert len(_lines(env)) == 1                         # the line, like the edit, once
     reloaded = run_admission.Confirmations(str(env.tmp / "admissions.json"))
     assert reloaded.peek(CID).card is None               # forgotten durably, text kept
     assert reloaded.peek(CID).card_text == CARD_TEXT
@@ -1007,7 +1028,8 @@ async def test_a_stop_tap_after_the_natural_end_still_says_it_had_ended(env, mon
     await _tap(env)
     await _quiet(env)
     assert len(_card_edits(env)) == 1
-    assert [m["text"] for m in _lines(env)] == ["📊 Fido\nIt had already ended."]
+    assert [m["text"] for m in _lines(env)] == ["📊 Fido\nEnded.",
+                                                 "📊 Fido\nIt had already ended."]
 
 
 

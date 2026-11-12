@@ -13,13 +13,16 @@ refusing to drive the request and retries by itself) or ``unknown``; a
 ``stopped`` answer carries ``refs``, every continuation reference naming the
 request, and Casa drops the continuations still queued for them.
 
-Three paths reach it, all bound to the configured operator: the Stop on the
-request's start or status card (``channels.telegram``'s ``run_stop`` callback),
-the Stop of a plugin's own card whose stored call names the stop tool
-(``TelegramChannel._dispatch_proposal_tap``), and the resident's ``stop_work``
-tool on the operator's own live turn. One request is stopped by one path at a
-time (``in_flight``); the path that holds the flight marks the card
-(``settle_run_card``) and tells him, while it still holds it.
+Four paths reach it, all bound to the configured operator: the request's Stop key
+at the keyboard (``stop_keys``, ``TelegramChannel._press_stop_key``), the Stop on a
+start or status card posted before the key existed (``channels.telegram``'s
+``run_stop`` callback), the Stop of a plugin's own card whose stored call names the
+stop tool (``TelegramChannel._dispatch_proposal_tap``), and the resident's
+``stop_work`` tool on the operator's own live turn. One request is stopped by one
+path at a time (``in_flight``); the path that holds the flight marks the card
+(``settle_stop``) and tells him, while it still holds it. Every line posted in reply
+to a card carries the chat's Stop keys still live, so a request that no longer runs
+loses its key with its line.
 
 Every lookup names the Telegram bot the Stop came through as well as the plugin
 and the operator: one plugin can serve agents on two bots, and its request keys
@@ -196,6 +199,11 @@ MARKS = {"stopped": "☑ Stopped", "ended": "☑ Ended", "already_stopped": "☑
 LINES = {"stopped": "Stopped.", "ended": "It had already ended.",
          "not_taken": "The browser isn't answering yet; I'll stop as soon as it does.",
          "unavailable": "I couldn't stop it: my browser isn't set up any more."}
+#: the outcomes after which the request no longer runs: its card is forgotten
+#: (``Confirmations.clear_card``), which takes its Stop key off the keyboard (``stop_keys``)
+ENDS = frozenset({"stopped", "ended", "already_stopped"})
+#: the silent line a request that ended on its own gets, to take its Stop key away
+ENDED_LINE = "Ended."
 
 
 def line_for(outcome: str, role: str) -> "str | None":
@@ -222,14 +230,32 @@ async def settle_run_card(c: Any, mark: str) -> bool:
         card.chat_id, card.message_id, f"{c.card_text}\n{mark}"))
 
 
+async def settle_stop(c: Any, outcome: "str | None") -> None:
+    """A stop's mark on the request's card (``settle_run_card``) for *outcome*, and, when
+    the request no longer runs (``ENDS``), its card forgotten — even when the edit fails —
+    so its Stop key goes with the line that follows. Nothing for an outcome with no mark
+    or a request Casa does not hold."""
+    import run_admission
+    mark = MARKS.get(outcome or "")
+    if c is None or mark is None:
+        return
+    try:
+        await settle_run_card(c, mark)
+    finally:
+        if outcome in ENDS:
+            run_admission.CONFIRMATIONS.clear_card(c.cid)
+
+
 async def settle_ended(seg: str, bot_id: int, operator_id: int, ref: str) -> bool:
     """The plugin says the request *ref* ended on its own (its driver sweep's ``ended``): its
     card is marked ``☑ Ended`` and loses its Stop — the mark a Stop that finds it ended gives
-    it. Nothing while a Stop of it is in flight (that path marks the card), and nothing for a
-    request Casa did not admit or whose card this has already marked. The plugin names the
-    request on every pass for a day, so the card is forgotten after one attempt
-    (``Confirmations.clear_card``), even when the edit fails: a card that cannot be edited is
-    not retried every pass, and its Stop then answers that it had already ended."""
+    it — and one silent ``Ended.`` line, in reply to the card, takes its Stop key off the
+    keyboard. Nothing while a Stop of it is in flight (that path marks the card), and nothing
+    for a request Casa did not admit or whose card this has already marked. The plugin names
+    the request on every pass for a day, so the card is forgotten after one attempt
+    (``Confirmations.clear_card``), even when the edit fails, and before the line is posted:
+    a card that cannot be edited is not retried every pass, the line is posted once, and the
+    card's Stop then answers that it had already ended."""
     import run_admission
     from plugin_bindings import BINDINGS
     if (seg, int(bot_id), ref) in _FLIGHTS:
@@ -240,43 +266,63 @@ async def settle_ended(seg: str, bot_id: int, operator_id: int, ref: str) -> boo
         return False
     transport = _transport()
     channel = transport.endpoint(card) if transport is not None else None
-    if (BINDINGS.peek(c.binding_ref) is None or channel is None
-            or getattr(channel, "bot", None) is None):
+    b = BINDINGS.peek(c.binding_ref)
+    if b is None or channel is None or getattr(channel, "bot", None) is None:
         return False                    # no edit can be tried yet (no channel, or its bot is
         #                                 being rebuilt): the next pass tries
-    landed = await settle_run_card(c, MARKS["ended"])
-    run_admission.CONFIRMATIONS.clear_card(c.cid)
+    try:
+        landed = await settle_run_card(c, MARKS["ended"])
+    finally:
+        run_admission.CONFIRMATIONS.clear_card(c.cid)
     logger.info("request of %s ended on its own: card %s", seg,
                 "marked" if landed else "not marked")
+    await post_line(card.bot_id, card.chat_id, b.chain[-1], ENDED_LINE,
+                    reply_to=card.message_id)
     return landed
+
+
+async def post_line(bot_id: int, chat_id: int, role: str, line: str, *,
+                    reply_to: "int | None", silent: bool = True) -> bool:
+    """One line of Casa's fixed text under the specialist's label (none in the agent's own
+    chat), as a reply to the request's card, through the bot *bot_id* that holds it, carrying
+    the chat's Stop keys (``TelegramChannel.send_reply_line``). The line is filed under the
+    card's task, live or ended, so a reply to it reaches whatever a reply to the card
+    reaches. Never raises: a failure is logged. True when it landed."""
+    import time
+
+    import task_posts
+    from channels.tg_address import TgAddress
+    from result_broker import PostRecord, compose_operator_message, label_at
+    transport = _transport()
+    if transport is None:
+        return False
+    try:
+        endpoint = transport.endpoint(int(bot_id))
+        card_at = (TgAddress(int(bot_id), int(chat_id), reply_to)
+                   if isinstance(reply_to, int) and not isinstance(reply_to, bool) else None)
+        ref = ((task_posts.owner(card_at) or task_posts.ended_owner(card_at))
+               if card_at else None)
+        post = (PostRecord(role="", operator_id=int(chat_id), plugin="", slot="stop_line",
+                           tool_use_id="", owner=ref.task_id, posted_at=time.time())
+                if ref is not None else None)
+        return bool(await endpoint.send_reply_line(
+            int(chat_id), compose_operator_message(line, label_at(role, endpoint)), reply_to,
+            post=post, silent=silent))
+    except Exception as exc:  # noqa: BLE001 — a line is never the stop's fault
+        logger.warning("stop line not posted (%s)", type(exc).__name__)
+        return False
 
 
 async def tell_line(bot_id: int, chat_id: int, role: str, outcome: str, *,
                     reply_to: "int | None") -> None:
-    """The one line, Casa's fixed text under the specialist's label (none in the agent's own
-    chat), as a reply to the card, through the bot *bot_id* that holds it; the chat's agent
-    hears it at its next turn, as every Casa line. The line is filed under the card's task,
-    live or ended, so a reply to it reaches whatever a reply to the card reaches."""
-    import time
-
+    """The one line of a stop's *outcome* (``LINES``), posted by ``post_line`` with a
+    notification; the chat's agent hears it at its next turn, as every Casa line."""
     import chat_notes
-    import task_posts
-    from channels.tg_address import TgAddress
-    from result_broker import PostRecord, compose_operator_message, label_at, post_label
+    from result_broker import post_label
     line = line_for(outcome, role)
-    transport = _transport()
-    if line is None or transport is None:
+    if line is None or _transport() is None:
         return
-    endpoint = transport.endpoint(int(bot_id))
-    card_at = (TgAddress(int(bot_id), int(chat_id), reply_to)
-               if isinstance(reply_to, int) and not isinstance(reply_to, bool) else None)
-    ref = (task_posts.owner(card_at) or task_posts.ended_owner(card_at)) if card_at else None
-    post = (PostRecord(role="", operator_id=int(chat_id), plugin="", slot="stop_line",
-                       tool_use_id="", owner=ref.task_id, posted_at=time.time())
-            if ref is not None else None)
-    await endpoint.send_reply_line(
-        int(chat_id), compose_operator_message(line, label_at(role, endpoint)), reply_to,
-        post=post)
+    await post_line(bot_id, chat_id, role, line, reply_to=reply_to, silent=False)
     chat_notes.record(int(bot_id), int(chat_id), f"{post_label(role)}: {line}")
 
 

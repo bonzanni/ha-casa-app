@@ -1394,8 +1394,8 @@ SURFACE_POSTS = {
     # a file the agent sends, at the task's delivery
     ("tools.py", "_classify_send", "send_media"): B,
     ("channels/telegram_transport.py", "TelegramTransport.send_media", "send_media"): B,
-    # the Stop's one line, a reply to the card it stops (a card admitted at A)
-    ("plugin_stop.py", "tell_line", "send_reply_line"): A,
+    # the Stop's lines, a reply to the card they answer (a card admitted at A)
+    ("plugin_stop.py", "post_line", "send_reply_line"): A,
     # the configurator's Restart now button: Casa's own, on Casa's endpoint
     ("configurator_run.py", "offer_restart", "post_question"): CASA,
 }
@@ -1478,7 +1478,7 @@ POST_RECORDS = {
     ("run_admission.py", "_card_post"):
         "the call's executing agent; its question and status card are posted at "
         "the call's delivery, as every capability post of the call",
-    ("plugin_stop.py", "tell_line"):
+    ("plugin_stop.py", "post_line"):
         "no agent: Casa's own Stop line, in the chat of the card it answers; the "
         "record only files the line under that card's task",
 }
