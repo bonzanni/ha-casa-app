@@ -188,6 +188,22 @@ async def test_a_bindings_chain_ends_with_the_agent_that_made_the_call():
         assert call.chain == chain, (origin, role)
 
 
+def test_a_recorded_call_keeps_the_task_proof_and_its_chain():
+    """A recorded call's origin keeps scalars only, so it has no stamped
+    chain; the proof is read from the origin and the chain from the call."""
+    import handoff
+    handed = {**FIDO_RUN, "_handoff_chain": ("assistant", "finance"),
+              "execution_role": "finance", "_operator_task": True}
+    call = _open(handed)
+    assert "_handoff_chain" not in call.origin
+    assert call.chain == ("assistant", "finance", "browser")
+    assert handoff.helper_under_operator_task(call.origin, call.chain) is True
+    direct = _open({**FIDO_RUN, "_operator_task": True}, tu="tu-2")
+    assert handoff.helper_under_operator_task(direct.origin, direct.chain) is False
+    plain = _open({**handed, "_operator_task": None}, tu="tu-3")
+    assert handoff.helper_under_operator_task(plain.origin, plain.chain) is False
+
+
 @pytest.mark.asyncio
 async def test_failure_hook_forgets_the_call():
     hook = rb.make_plugin_admission_hook("browser", _map(), client_id="c1",

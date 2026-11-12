@@ -10,6 +10,7 @@ import pytest
 
 import agent as agent_mod
 import tools as tools_mod
+import provenance
 from provenance import (
     RESERVED_CONTEXT_KEYS,
     ROUTING_KEYS,
@@ -99,12 +100,35 @@ def test_reserved_context_keys_are_exactly_the_spec_set():
         # The approval a configurator run commits under: a caller who could
         # set it would commit under an approval the operator gave elsewhere.
         "_approval",
+        # The proof that the operator started the task a turn belongs to, and
+        # how many times a job's owner has heard an end along it: a caller who
+        # could set either would start a helper's runs in the operator's name.
+        "_operator_task", "_owner_pass",
     })
 
 
 def test_the_route_is_the_one_routing_key_and_reserved():
     assert ROUTING_KEYS == ("_tg_bot",)
     assert set(ROUTING_KEYS) <= RESERVED_CONTEXT_KEYS
+
+
+def test_task_proof_keys_are_reserved():
+    assert {"_operator_task", "_owner_pass"} <= provenance.RESERVED_CONTEXT_KEYS
+    assert provenance.OPERATOR_TASK_KEY == "_operator_task"
+    assert provenance.OWNER_PASS_KEY == "_owner_pass"
+
+
+@pytest.mark.parametrize("src,want", [
+    ({"_operator_task": True, "_owner_pass": 2}, {"_operator_task": True, "_owner_pass": 2}),
+    ({"_operator_task": "yes", "_owner_pass": True}, {}),
+    ({"_operator_task": 1, "_owner_pass": 0}, {}),
+    ({"_operator_task": True}, {"_operator_task": True}),
+    ({"_owner_pass": 3, "chat_id": 7}, {"_owner_pass": 3}),
+    ({"_owner_pass": "2"}, {}),
+    ({}, {}),
+])
+def test_carry_task_proof_keeps_only_well_formed_values(src, want):
+    assert provenance.carry_task_proof(src) == want
 
 
 # ---------------------------------------------------------------------------

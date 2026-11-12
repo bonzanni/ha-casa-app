@@ -60,13 +60,19 @@ STATES = ("not_declared", "no_bot", "not_open", "open", "dormant")
 class Endpoint(FakeEndpoint):
     """The harness endpoint, with the operator-surface methods Casa posts through."""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # (method, options) of each post that can be sent without a notification
+        self.options: list[tuple[str, dict]] = []
+
     async def deliver_operator_link(self, chat_id, text, entities, plain, *, post=None,
                                     button=None):
         self._record("deliver_operator_link", chat_id, text)
         return DeliveryOutcome.DELIVERED
 
-    async def deliver_operator_message(self, chat_id, text, *, post=None):
+    async def deliver_operator_message(self, chat_id, text, *, post=None, **options):
         self._record("deliver_operator_message", chat_id, text)
+        self.options.append(("deliver_operator_message", options))
         return DeliveryOutcome.DELIVERED
 
     async def deliver_operator_page(self, chat_id, text, *, post=None):
@@ -82,8 +88,9 @@ class Endpoint(FakeEndpoint):
         self._record("deliver_operator_question", chat_id, text)
         return self._mid()
 
-    async def deliver_run_card(self, chat_id, text, buttons, *, post=None):
+    async def deliver_run_card(self, chat_id, text, buttons, *, post=None, **options):
         self._record("deliver_run_card", chat_id, text)
+        self.options.append(("deliver_run_card", options))
         return self._mid()
 
     async def send_reply_line(self, chat_id, text, reply_to, *, post=None):
@@ -130,6 +137,13 @@ def ellen_delegates(executor: str, delivery: "TgAddress | None") -> dict:
     return _base("assistant", executor, CASA_BOT, _delegation_id="d-1",
                  delegation_depth=1, _handoff_chain=("assistant", executor),
                  **task_delivery_marker(delivery))
+
+
+def colleague_asks(executor: str, delivery: "TgAddress | None", **extra) -> dict:
+    """A task Ellen handed to Tina, who asked *executor* for help with it."""
+    return _base("assistant", executor, CASA_BOT, _delegation_id="d-2",
+                 delegation_depth=2, _handoff_chain=("assistant", "butler", executor),
+                 **task_delivery_marker(delivery), **extra)
 
 
 def own_turn(role: str, bot: int) -> dict:
@@ -400,6 +414,97 @@ async def test_run_admission_with_no_delivery_posts_nothing(world):
     out = await run_admission.request_admission(call, [RUN], "k1")
     assert (out["status"], out["reason"]) == ("refused", "not_delivered")
     assert sends(world.casa) == [] and sends(world.alex) == []
+
+
+# -- a helper's posts under a task the operator started do not notify --------------------------
+
+UNDER_HIS_TASK = {"_operator_task": True}
+TURNS = [
+    pytest.param(lambda: colleague_asks("finance", ALEX_CHAT, **UNDER_HIS_TASK), True,
+                 id="a-colleague-asked-under-the-operators-task"),
+    pytest.param(lambda: colleague_asks("finance", ALEX_CHAT), False,
+                 id="a-colleague-asked-outside-it"),
+    pytest.param(lambda: colleague_asks("finance", ALEX_CHAT, _operator_task="yes"), False,
+                 id="a-mark-that-is-not-true"),
+    pytest.param(lambda: ellen_delegates("finance", ALEX_CHAT) | UNDER_HIS_TASK, False,
+                 id="the-resident-asked-under-the-operators-task"),
+    pytest.param(lambda: own_turn("finance", FINANCE_BOT), False, id="its-own-chat"),
+]
+
+
+@pytest.fixture
+def message_posts(monkeypatch):
+    """What the result broker hands its message poster: ``(to, post, options)``."""
+    seen: list[tuple] = []
+    real = rb._post_operator_message
+
+    async def _spy(to, text, post=None, **options):
+        seen.append((to, post, options))
+        return await real(to, text, post, **options)
+
+    monkeypatch.setattr(rb, "_post_operator_message", _spy)
+    return seen
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("turn,silent", TURNS)
+async def test_a_plugin_message_notifies_unless_a_colleague_asked_under_the_operators_task(
+        world, message_posts, turn, silent):
+    """The message is delivered and filed the same either way; only the
+    notification differs."""
+    outcome, detail = await call_tool("finance", turn(), NOTE)
+    assert outcome == "delivered" and detail["casa_delivery"]["status"] == "delivered"
+    [(to, post, options)] = message_posts
+    assert options == {"silent": silent}
+    assert to == ALEX_CHAT
+    assert (post.role, post.operator_id, post.plugin, post.slot, post.tool_use_id,
+            post.kind) == ("finance", OPERATOR, PLUGIN, "note", "tu-1", "operator_message")
+    assert world.alex.options == [("deliver_operator_message", {"silent": silent})]
+    [(name, (chat, _text))] = sends(world.alex)
+    assert (name, chat) == ("deliver_operator_message", OPERATOR)
+    assert sends(world.casa) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool,method", [(LINK, "deliver_operator_link"),
+                                         (CARD, "deliver_operator_proposal")])
+async def test_a_helpers_link_and_question_notify_as_before(world, message_posts, tool, method):
+    """A sign-in link and a card with buttons need the operator: they are sent
+    exactly as on any other turn."""
+    outcome, _ = await call_tool(
+        "finance", colleague_asks("finance", ALEX_CHAT, **UNDER_HIS_TASK), tool)
+    assert outcome == "delivered"
+    [(name, (chat, _text))] = sends(world.alex)
+    assert (name, chat) == (method, OPERATOR)
+    assert world.alex.options == [] and message_posts == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("turn,silent", TURNS[:2])
+async def test_a_helpers_run_status_card_does_not_notify_under_the_operators_task(
+        world, monkeypatch, turn, silent):
+    """The call is recorded by the real admission hook, with the facts of its
+    turn; the status card of the runs it starts reads them."""
+    monkeypatch.setattr(pc, "CONTINUATIONS", SimpleNamespace(request=lambda *a: "queued"))
+    assert (await call_tool("finance", turn(), RUNS))[0] == "admitted"
+    call, err = operator_calls.CALLS.find("c1")
+    assert err is None
+    out = await run_admission.request_admission(call, [RUN], "k1")
+    for _ in range(200):
+        if not run_admission._CARD_TASKS:
+            break
+        await asyncio.sleep(0)
+    if silent:
+        assert out["status"] == "admitted"
+        [(name, (chat, _text))] = sends(world.alex)
+        assert (name, chat) == ("deliver_run_card", OPERATOR)
+        assert world.alex.options == [("deliver_run_card", {"silent": True})]
+    else:
+        # outside his task a colleague's request is still put to the operator
+        assert out["status"] == "confirmation_pending"
+        [(name, _args)] = sends(world.alex)
+        assert name == "deliver_operator_question" and world.alex.options == []
+    assert sends(world.casa) == []
 
 
 # -- job lines ---------------------------------------------------------------------------------

@@ -674,6 +674,12 @@ class TestBootReplay:
         assert sum(ANSWER_KEY in m.context for m in turns.bus.sent) == 0
 
 
+def test_started_by_follows_the_task_proof_but_scheduled_wins():
+    assert jobs.job_started_by({"_operator_task": True}) == "operator"
+    assert jobs.job_started_by({"_operator_task": True, "_scheduled_job": True}) == "scheduled"
+    assert jobs.job_started_by({"_operator_task": "x"}) == "agent"
+
+
 class TestIngress:
     """L-11d(1): no ingress context can carry the marker in; it is treated
     exactly as ``_operator_turn`` is."""
@@ -690,6 +696,14 @@ class TestIngress:
         msg = build_invoke_message("assistant", "hi", {"context": dict(self.FORGED)})
         assert "_operator_turn" not in msg.context
         assert ANSWER_KEY not in msg.context
+        assert msg.context["note"] == "kept"
+
+    def test_invoke_strips_the_task_proof(self):
+        from casa_core import build_invoke_message
+        msg = build_invoke_message("assistant", "hi", {"context": {
+            "_operator_task": True, "_owner_pass": 2, "note": "kept"}})
+        assert "_operator_task" not in msg.context
+        assert "_owner_pass" not in msg.context
         assert msg.context["note"] == "kept"
 
 

@@ -36,7 +36,9 @@ to the run's binding (``plugin_bindings``):
   (INV-MEM-032: only a resident's own task on a turn Casa did not compose is).
   A continuation answer that is exactly ``<silent/>`` (an empty one is not) is the specialist's own
   declaration of progress: it climbs no further and is announced to nobody
-  (C4a, INV-PLUG-054). A resumed turn that raises is quiet the same way: the sweep
+  (C4a, INV-PLUG-054). A specialist requester that closes its relay turn the
+  same way declares the same: more work is coming back to it, so no requester
+  above it is told. A resumed turn that raises is quiet the same way: the sweep
   carries the run on (operator ruling 2026-11-06).
 * **The sweep (C11).** Once a minute Casa calls, for every resolved plugin
   that declares ``casa.driverSweep``, that tool directly — Casa starts the
@@ -68,7 +70,7 @@ from pathlib import Path
 from typing import Any
 
 from output_boundary import SILENCE_SENTINEL
-from provenance import carry_route, task_delivery_marker
+from provenance import carry_route, carry_task_proof, task_delivery_marker
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +95,9 @@ MAX_RESUME_FAILURES = 2
 RELAY_TASK = (
     "{name} has finished part of the work you handed it earlier (its run "
     "{run_ref}). Its answer:\n\n{answer}\n\nUse it to finish your part of that "
-    "request, and answer as you would have.")
+    "request, and answer as you would have. If you have just started more work "
+    "whose end will come back to you, close with exactly <silent/> instead; "
+    "otherwise answer.")
 
 
 @dataclasses.dataclass
@@ -222,6 +226,7 @@ def continuation_origin(binding, *, executing: str | None = None) -> dict:
         "_handoff_chain": tuple(upto) or (chain[0],),
         "_binding_ref": binding.ref,
         **carry_route(stored),
+        **carry_task_proof(stored),
         **task_delivery_marker(_delivery_for_turn(binding, executing)),
     }
     return origin
@@ -265,7 +270,8 @@ async def _lane_turn(chat_id: int, role: str, *, deadline: float):
     """One use of *role*'s lane (``agent_lane``) with a concurrency permit
     for it in *chat_id*: waits for the queue and the lock (bounded by
     *deadline*), rechecks the fault under the lock, takes the permit after the
-    lock as every use of the lane does."""
+    lock as every use of the lane does. A lane still busy at *deadline* drops
+    the turn, and the place it held in the queue is given back."""
     import agent_lane
     import tools as tools_mod
     lane = agent_lane.LANES.get(role)
@@ -280,7 +286,9 @@ async def _lane_turn(chat_id: int, role: str, *, deadline: float):
     permit = None
     runs: list = []
     try:
-        async with lane.use(reservation):
+        async with lane.use(reservation, deadline) as admitted:
+            if not admitted:
+                raise ContinuationDropped(f"{role}'s lane stayed busy")
             if lane.faulted is not None:
                 raise ContinuationDropped(f"{role} faulted while it waited")
             limiter = tools_mod._specialist_limiter
@@ -299,6 +307,7 @@ async def _lane_turn(chat_id: int, role: str, *, deadline: float):
                 tools_mod._lane_run_sink.reset(sink_tok)
                 lane.hold_unwinding(runs)
     finally:
+        reservation.release()
         if permit is not None:
             permit.release()
 
@@ -315,9 +324,14 @@ async def _run_turn_cancellable(cfg, task: str, origin: dict, *, quota_key: str)
         raise
 
 
-async def _relay_up(binding, run_ref: str, output, *, deadline: float):
+async def _relay_up(binding, run_ref: str, output, *, deadline: float,
+                    progress_only: list | None = None):
     """One turn per specialist requester, nearest first, each its own use of
-    that requester's lane; returns the output the requester is told."""
+    that requester's lane; returns the output the requester is told.
+
+    A requester whose completed turn closes with exactly ``<silent/>`` declared
+    progress only: its output is recorded in *progress_only* (when given) and
+    returned at once, so no requester above it gets a turn."""
     import tools as tools_mod
     chain = list(binding.chain)
     for i in range(len(chain) - 2, 0, -1):
@@ -335,6 +349,11 @@ async def _relay_up(binding, run_ref: str, output, *, deadline: float):
                                            run_ref=run_ref, answer=answer),
                 continuation_origin(binding, executing=requester),
                 quota_key="relay-" + uuid.uuid4().hex)
+        if (not output.run_aborted
+                and tools_mod._closing_text(output).strip() == SILENCE_SENTINEL):
+            if progress_only is not None:
+                progress_only.append(output)
+            return output
     return output
 
 
@@ -480,7 +499,8 @@ async def run_continuation(pending: Pending, *, on_start) -> None:
                                 _knowledge_line(requester.role, task_text, out))
                 try:
                     return await _relay_up(binding, pending.run_ref, out,
-                                           deadline=time.monotonic() + GIVE_UP_AFTER_S)
+                                           deadline=time.monotonic() + GIVE_UP_AFTER_S,
+                                           progress_only=progress_only)
                 except asyncio.CancelledError:
                     if len(binding.chain) <= 2:
                         raise
@@ -493,8 +513,8 @@ async def run_continuation(pending: Pending, *, on_start) -> None:
             if input_open:
                 task.add_done_callback(
                     functools.partial(tools_mod._end_task_input, record.id))
-            # quiet only when THIS turn declared progress — never inferred
-            # from a relay requester's own answer
+            # quiet only when a turn of this chain declared progress: the
+            # continuation's own, or a relay requester's
             tools_mod._attach_completion_callback(
                 task, record, quiet_if=lambda out: any(o is out for o in progress_only))
             waiter = asyncio.ensure_future(fido_done.wait())

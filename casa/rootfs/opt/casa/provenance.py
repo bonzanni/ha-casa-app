@@ -70,6 +70,16 @@ ROUTING_KEYS: tuple[str, ...] = ("_tg_bot",)
 TASK_DELIVERY_KEY = "_task_delivery"
 TASK_KEYS: tuple[str, ...] = (TASK_DELIVERY_KEY,)
 
+# The proof that the operator started the task a turn belongs to, and how
+# many times a job's owner has heard an end along that task. ``_operator_task``
+# is the literal ``True`` only, set by Casa when it gives a job's end to the
+# specialist that started it, from the job's recorded starter; ``_owner_pass``
+# is that turn's count (an int, 1 or more). Both travel with the origin: down
+# a hand-off, into a plugin binding and the turns rebuilt from it, and into a
+# job started from such a turn (:func:`carry_task_proof`).
+OPERATOR_TASK_KEY = "_operator_task"
+OWNER_PASS_KEY = "_owner_pass"
+
 # The approval a configurator run carries: ``{"rid": str, "generation": int}``,
 # naming the approval record (:mod:`approval_records`) the run commits under.
 APPROVAL_KEY = "_approval"
@@ -187,6 +197,10 @@ RESERVED_CONTEXT_KEYS = frozenset({
     # A task's delivery: stamped by the task's launcher. A caller who could
     # set it would choose which chat a task's posts land in.
     *TASK_KEYS,
+    # Stamped only by Casa at a job's end; a caller who could set either would
+    # have a helper's runs start in the operator's name.
+    OPERATOR_TASK_KEY,
+    OWNER_PASS_KEY,
 })
 
 
@@ -209,6 +223,19 @@ def carry_task_delivery(src: Mapping) -> dict:
     :func:`carry_route`: the key copied as it is (``None`` included), or
     nothing when *src* is not a task's origin."""
     return {k: src[k] for k in TASK_KEYS if k in src}
+
+
+def carry_task_proof(src: Mapping) -> dict:
+    """*src*'s task proof, to spread into an origin derived from it: the
+    operator-task mark only when it is the literal ``True``, the owner's pass
+    count only when it is an int of 1 or more. Anything else is dropped."""
+    out: dict = {}
+    if src.get(OPERATOR_TASK_KEY) is True:
+        out[OPERATOR_TASK_KEY] = True
+    n = src.get(OWNER_PASS_KEY)
+    if isinstance(n, int) and not isinstance(n, bool) and n >= 1:
+        out[OWNER_PASS_KEY] = n
+    return out
 
 
 def task_delivery(origin: Mapping) -> "tuple[bool, TgAddress | None]":

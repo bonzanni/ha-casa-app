@@ -599,6 +599,19 @@ start from a voice call: ask in text. A button on a specialist's proposal never 
 a job: ask for the work in words. When the specialist has already posted its answer
 to your chat, the assistant does not repeat it.
 
+When the assistant passed the request on and the specialist started the job,
+the specialist hears the job's result first (v0.366.0). It checks what is still
+open, can finish the work itself — asking another specialist for what it cannot
+do, then starting the next job if needed — and only then is the assistant told,
+with the specialist's answer in place of the bare result. If that follow-up
+cannot run, you still get the job's result, with a line saying the follow-up did
+not run. A job started in the specialist's own chat ends as before. While a
+specialist works on a task you started this way, its request to the browsing
+specialist starts without a start card: the status card with **Stop** still
+appears, and it and the browsing specialist's progress messages arrive without
+a notification. Links, files, questions and cards that need you still notify,
+and every step that changes, pays or sends something is still asked.
+
 **A scheduled job (v0.343.0).** A schedule can start a plugin job directly instead of
 asking the assistant to. In the assistant's `triggers.yaml`, a `cron`, `interval` or
 `date` entry carries `job: <plugin>:<job>` in place of a prompt, with an optional `task`

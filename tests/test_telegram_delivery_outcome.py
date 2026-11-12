@@ -325,3 +325,95 @@ class TestFinalizeResponseStream:
             admitted("plain text"), ctx, on_token) is sentinel
         assert called == ["plain text"]
 
+
+
+THREE_RICH_PAGES = "\n".join(f"row {i} **bold**" for i in range(280))
+THREE_PLAIN_PAGES = "\n".join(f"row {i} plain words" for i in range(500))
+
+
+def _silenced(bot) -> list:
+    return [call.kwargs.get("disable_notification")
+            for call in bot.send_message.await_args_list]
+
+
+class TestDeliveriesThatDoNotNotify:
+    """A plugin's message and the run status card can be sent without a
+    notification. Every physical message of the delivery carries the flag, and
+    a delivery that is not silent sends exactly what it sent before."""
+
+    @pytest.mark.parametrize("text", [THREE_RICH_PAGES, THREE_PLAIN_PAGES],
+                             ids=["rich-pages", "plain-pages"])
+    async def test_every_page_of_a_silent_message_is_sent_without_a_notification(self, text):
+        from channels.tg_richtext import render_paged
+
+        assert len(render_paged(text)) == 3
+        loud, loud_bot = _mk_channel_with_fake_bot()
+        assert await loud.deliver_operator_message(42, text) is DeliveryOutcome.DELIVERED
+        ch, bot = _mk_channel_with_fake_bot()
+        assert await ch.deliver_operator_message(
+            42, text, silent=True) is DeliveryOutcome.DELIVERED
+        assert bot.send_message.await_count == loud_bot.send_message.await_count == 3
+        assert _silenced(bot) == [True, True, True]
+        # the flag is the only difference
+        for quiet, heard in zip(bot.send_message.await_args_list,
+                                loud_bot.send_message.await_args_list):
+            assert {k: v for k, v in quiet.kwargs.items()
+                    if k != "disable_notification"} == heard.kwargs
+
+    async def test_the_plain_resend_of_a_refused_page_and_its_tail_are_silent_too(self):
+        """The platform refuses a page's entities: the page is resent plain,
+        and what did not fit follows as its own message."""
+        from telegram.error import BadRequest
+        from channels.tg_richtext import render_paged
+
+        url = "https://e.example/" + "q" * 60
+        text = "a" * 4050 + f"[t]({url})"
+        (display, _entities), = render_paged(text)
+        ch, bot = _mk_channel_with_fake_bot()
+        bot.send_message.side_effect = [
+            BadRequest("can't parse entities"), MagicMock(message_id=1),
+            MagicMock(message_id=2)]
+        assert await ch.deliver_operator_message(
+            42, text, silent=True) is DeliveryOutcome.DELIVERED
+        assert [c.kwargs["text"] for c in bot.send_message.await_args_list] == [
+            display, display, url]
+        assert _silenced(bot) == [True, True, True]
+
+    @pytest.mark.parametrize("silent", [{}, {"silent": False}],
+                             ids=["not-asked", "asked-not-to"])
+    async def test_a_message_that_is_not_silent_names_no_notification_setting(self, silent):
+        from telegram.error import BadRequest
+
+        ch, bot = _mk_channel_with_fake_bot()
+        assert await ch.deliver_operator_message(
+            42, THREE_RICH_PAGES, **silent) is DeliveryOutcome.DELIVERED
+        assert await ch.deliver_operator_message(
+            42, THREE_PLAIN_PAGES, **silent) is DeliveryOutcome.DELIVERED
+        bot.send_message.side_effect = [
+            BadRequest("can't parse entities"), MagicMock(message_id=1),
+            MagicMock(message_id=2)]
+        url = "https://e.example/" + "q" * 60
+        assert await ch.deliver_operator_message(
+            42, "a" * 4050 + f"[t]({url})", **silent) is DeliveryOutcome.DELIVERED
+        assert bot.send_message.await_count == 9
+        assert not any("disable_notification" in call.kwargs
+                       for call in bot.send_message.await_args_list)
+
+    async def test_a_silent_run_card_keeps_its_buttons(self):
+        ch, bot = _mk_channel_with_fake_bot()
+        assert await ch.deliver_run_card(
+            42, "Browsing: Runpod", [("Stop", "v1|stop|abc")], silent=True) == 12345
+        assert bot.send_message.await_count == 1
+        sent = bot.send_message.await_args.kwargs
+        assert sent["disable_notification"] is True
+        assert (sent["chat_id"], sent["text"]) == (42, "Browsing: Runpod")
+        (button,), = sent["reply_markup"].inline_keyboard
+        assert (button.text, button.callback_data) == ("Stop", "v1|stop|abc")
+
+    async def test_a_run_card_that_is_not_silent_names_no_notification_setting(self):
+        ch, bot = _mk_channel_with_fake_bot()
+        assert await ch.deliver_run_card(42, "Browsing: Runpod", [("Stop", "v1|stop|abc")]) == 12345
+        assert await ch.deliver_run_card(
+            42, "Browsing: Runpod", [("Stop", "v1|stop|abc")], silent=False) == 12345
+        assert [set(call.kwargs) for call in bot.send_message.await_args_list] == [
+            {"chat_id", "text", "reply_markup"}] * 2

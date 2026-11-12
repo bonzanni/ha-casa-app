@@ -56,11 +56,11 @@ def roles(monkeypatch, tmp_path):
     return m
 
 
-def _binding(chain=("assistant", "browser"), plugin="browser"):
+def _binding(chain=("assistant", "browser"), plugin="browser", origin=ORIGIN, turn_key="d-1"):
     ident = GrantIdentity(operator_id=100, chat_id=42, enforcement_role=chain[-1],
                           artifact_id="1" * 64, engagement_id="", bot_id=BOT)
-    return plugin_bindings.BINDINGS.for_turn(plugin=plugin, turn_key="d-1", identity=ident,
-                                             chain=chain, origin=ORIGIN)
+    return plugin_bindings.BINDINGS.for_turn(plugin=plugin, turn_key=turn_key, identity=ident,
+                                             chain=chain, origin=origin)
 
 
 def test_a_continuation_origin_is_rebuilt_from_the_binding_alone(roles):
@@ -75,6 +75,24 @@ def test_a_continuation_origin_is_rebuilt_from_the_binding_alone(roles):
     assert relay["_handoff_chain"] == ("assistant",) and relay["synthetic"] == "continuation"
     import handoff
     assert handoff.operator_words({**o, "execution_role": "browser"}) is None
+
+
+def test_a_binding_carries_the_task_proof_into_its_continuation_and_relay_turns(roles):
+    chain = ("assistant", "finance", "browser")
+    b = _binding(chain, origin={**ORIGIN, "_operator_task": True, "_owner_pass": 2})
+    assert (b.origin["_operator_task"], b.origin["_owner_pass"]) == (True, 2)
+    for o in (pc.continuation_origin(b), pc.continuation_origin(b, executing="finance")):
+        assert o["_operator_task"] is True and o["_owner_pass"] == 2
+    # it survives a restart with the binding
+    reloaded = plugin_bindings.BindingStore(plugin_bindings.BINDINGS._path).peek(b.ref)
+    assert pc.continuation_origin(reloaded)["_operator_task"] is True
+    plain = _binding(chain, turn_key="d-2")
+    for o in (pc.continuation_origin(plain), pc.continuation_origin(plain, executing="finance")):
+        assert "_operator_task" not in o and "_owner_pass" not in o
+    # a value that is not the literal proof is not carried
+    odd = _binding(chain, turn_key="d-3",
+                   origin={**ORIGIN, "_operator_task": "yes", "_owner_pass": True})
+    assert not {"_operator_task", "_owner_pass"} & set(pc.continuation_origin(odd))
 
 
 @pytest.mark.asyncio
@@ -821,10 +839,11 @@ async def test_only_the_exact_sentinel_declares_progress(roles, lanes, announce,
 
 
 @pytest.mark.asyncio
-async def test_a_requesters_own_silence_never_hides_the_result(roles, lanes, announce,
-                                                               monkeypatch):
-    """p3r5c: quiet is the continuation turn's own declaration only — a relay
-    requester answering ``<silent/>`` to a real result is still announced."""
+async def test_a_requester_that_closes_silent_ends_the_relay_as_progress(roles, lanes, announce,
+                                                                         monkeypatch):
+    """A specialist requester that closes its relay turn with exactly
+    ``<silent/>`` has more work coming back to it: the record completes quiet
+    and the requester above it is told nothing."""
     seen: list = []
     _recording_runner(monkeypatch, seen, says={"finance": "<silent/>"})
     reg, announced = announce
@@ -832,7 +851,48 @@ async def test_a_requesters_own_silence_never_hides_the_result(roles, lanes, ann
     await pc.run_continuation(pc.Pending(b, "r-8", "sweep", 0.0, bot_id=BOT), on_start=lambda: None)
     out = await announced[0][0]
     assert [x[0] for x in seen] == ["browser", "finance"] and out.text == "<silent/>"
+    assert reg.quiet[0](out) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("said", [
+    "done <silent/> more",
+    DelegatedOutput(text="<silent/>", run_subtype="error_max_turns"),
+], ids=["marker-inside-an-answer", "aborted-turn"])
+async def test_a_requesters_answer_is_announced_unless_it_closes_silent(roles, lanes, announce,
+                                                                        monkeypatch, said):
+    """Only a completed relay turn whose closing message is the marker alone is
+    progress: an answer that merely contains it, and an aborted turn, are
+    announced."""
+    seen: list = []
+    _recording_runner(monkeypatch, seen, says={"finance": said})
+    reg, announced = announce
+    b = _binding(("assistant", "finance", "browser"))
+    await pc.run_continuation(pc.Pending(b, "r-8", "sweep", 0.0, bot_id=BOT), on_start=lambda: None)
+    out = await announced[0][0]
+    assert [x[0] for x in seen] == ["browser", "finance"]
     assert reg.quiet[0](out) is False
+
+
+@pytest.mark.asyncio
+async def test_a_silent_requester_stops_the_relay_below_the_requesters_above_it(
+        roles, lanes, announce, monkeypatch):
+    """With two specialist requesters in the chain, the nearer one closing
+    silent means the farther one gets no turn at all."""
+    roles["legal"] = _cfg("legal", "Lena")
+    seen: list = []
+    _recording_runner(monkeypatch, seen, says={"legal": "<silent/>"})
+    reg, announced = announce
+    b = _binding(("assistant", "finance", "legal", "browser"))
+    await pc.run_continuation(pc.Pending(b, "r-8", "sweep", 0.0, bot_id=BOT), on_start=lambda: None)
+    out = await announced[0][0]
+    assert [x[0] for x in seen] == ["browser", "legal"]
+    assert reg.quiet[0](out) is True
+
+
+def test_the_relay_task_says_when_to_close_silent():
+    assert ("If you have just started more work whose end will come back to you, close "
+            "with exactly <silent/> instead; otherwise answer.") in pc.RELAY_TASK
 
 
 class _Registry:

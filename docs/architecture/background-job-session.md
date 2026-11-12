@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-10
+last_reviewed: 2026-11-12
 ---
 
 # Background jobs: one long session
@@ -110,14 +110,16 @@ read only that field.
 - `operator`: the job was started in a turn Casa attributes to an authenticated act of the
   operator: their own message; their tap on a button the assistant offered, on a question asked
   in the DM or from a scheduled turn; their Approve tap on a protected call; a specialist's own start in a delegation made in such
-  a turn. It attributes the TURN, not which option was tapped or what drove the
-  start inside it.
+  a turn; a turn of a task the operator started, which Casa marks when it hands a job's end to
+  the specialist that started it ([`specialist-handoff.md`](specialist-handoff.md)). It attributes
+  the TURN, not which option was tapped or what drove the start inside it.
 - `agent`: an agent's turn that the operator did not author or answer started the job: the
   assistant's own scheduled turns, webhooks, an unanswered or cancelled question, setup or
   consent turns.
 
-The evidence is the turn's reserved markers: `_scheduled_job` first, then `_operator_turn` or the
-scheduled ask's `_answered_by_operator` ([`scheduled-asks.md`](scheduled-asks.md)), else `agent`.
+The evidence is the turn's reserved markers: `_scheduled_job` first, then the operator-task proof
+`_operator_task`, `_operator_turn` or the scheduled ask's `_answered_by_operator`
+([`scheduled-asks.md`](scheduled-asks.md)), else `agent`.
 A delegated start reads the token of the turn that delegated. A record without the field renders
 no line; nothing is inferred for it. A look-alike inside `Request:` or `Context:` is model text:
 a reader takes the line after the first `Job id:` line, never the first `Started by:` it finds.

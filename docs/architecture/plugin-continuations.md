@@ -52,7 +52,10 @@ specialist, resuming its binding's conversation, through the bounded runner, wit
 binding's chain, chat and operator and Casa's `synthetic: "continuation"` marker, which
 gives the turn the operator's grant identity (`provenance.turn_provenance`'s
 `continuation` transport) and no operator words: a run it starts goes to the operator's
-tap ([`plugin-operator-calls.md`](plugin-operator-calls.md)). It also carries the binding's
+tap ([`plugin-operator-calls.md`](plugin-operator-calls.md)) — unless the binding kept Casa's
+proof that the work belongs to a task the operator started (`provenance.carry_task_proof`,
+[`specialist-handoff.md`](specialist-handoff.md)), which the continuation and every relay turn
+rebuilt from that binding carry on. It also carries the binding's
 **delivery** as its task delivery, so the turn posts exactly where the work it continues
 posted, or nowhere when that work had none; a relay turn of an agent that asked on the way
 posts nothing ([`own-voice.md`](own-voice.md)). In the executor's own chat the continuation
@@ -95,8 +98,12 @@ specialist declares it itself: a continuation turn whose closing message, whole,
 (`output_boundary.SILENCE_SENTINEL`; an empty answer is not a declaration, and notes written before that message do not stop it being one) has nothing for a requester — the browsing
 specialist's own progress card already told the operator. No relay turn runs, and the
 record is attached with `quiet_if` naming that turn's own output, so it completes with no
-announcement owed (through the same reconciled terminal write); a relay requester's own
-`<silent/>` never hides the result it was given.
+announcement owed (through the same reconciled terminal write). A specialist requester
+declares the same in its relay turn: one whose completed turn closes with exactly `<silent/>`
+has started more work whose end will come back to it (the relay task tells it so), so the
+climb stops there — no requester above it gets a turn — and the record completes quiet
+(`_relay_up`'s `progress_only`, which `quiet_if` reads). An answer that merely contains the
+marker, and an aborted relay turn, climb on and are announced.
 Any other answer is a result or a question and climbs as above; an aborted or failed run
 is announced as always.
 
@@ -176,12 +183,14 @@ What it does not cover: what compaction keeps of the conversation, which is the 
 not a record; and a transcript retention deletes at its oldest row's age while its request still
 runs, which costs that memory and starts fresh.
 
-**INV-PLUG-054**: A continuation turn whose answer is exactly `<silent/>` reaches no requester — no relay turn runs and its delegation record completes with no announcement owed — while any other answer, and every aborted or failed run, is announced as before.
+**INV-PLUG-054**: A continuation turn whose answer is exactly `<silent/>`, or a specialist requester's completed relay turn whose closing message is exactly `<silent/>`, reaches no requester above it — no further relay turn runs and the delegation record completes with no announcement owed — while any other answer, and every aborted or failed run, is announced as before.
 
 Enforced by `_chain` in `run_continuation` returning before `_relay_up` on such an answer,
-and by `tools._attach_completion_callback(..., quiet_if=...)` — true only for that turn's
-own output — completing the row with `_complete_delegation_durably(id, "",
-announce_creator=False)` instead of the announcing settle.
+by `_relay_up` returning at a requester's silent close and recording that output in
+`progress_only`, and by `tools._attach_completion_callback(..., quiet_if=...)` — true only
+for an output of this chain that declared progress — completing the row with
+`_complete_delegation_durably(id, "", announce_creator=False)` instead of the announcing
+settle.
 
 What it does not cover: a quiet terminal write that fails and is not retried before Casa
 restarts — the row is then still running at boot and is reported to the resident as lost,

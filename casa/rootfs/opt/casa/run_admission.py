@@ -22,6 +22,14 @@ for them:
    continuation turn (``admission:<id>``) whose plugin call reads it
    (``POST /internal/broker/run-admission-status``).
 
+One kind of request skips all three: a specialist asking for the runs in a
+turn that belongs to a task the operator started
+(``handoff.helper_under_operator_task``: the turn carries Casa's mark of that
+task and the requester is a specialist, not the resident). Those runs are
+admitted without a reading or a question and get the status card with its
+Stop. A resident's own request, the agent's own run, and scheduled or
+agent-started work keep the steps above.
+
 The kind of task is shown on the card but not compared: admission stays
 site-based because every change a run would make is asked per action (the
 action check, ``action_judgement``), so a kind compare would add taps without
@@ -535,11 +543,25 @@ async def request_admission(call, runs: list[dict], request_key: str) -> dict:
 
 async def _decide(call, runs: list[dict], request_key: str, binding, endpoint,
                   bot_id: int, chat_id: int) -> dict:
+    from handoff import helper_under_operator_task
     from operator_calls import post_question
 
     started = time.monotonic()
     extract_ms = None
     cid = "conf-" + uuid.uuid4().hex
+    if helper_under_operator_task(call.origin, call.chain):
+        # a colleague asked, in a turn of a task the operator started: no
+        # question, no reading; the status card with its Stop is posted
+        conf = Confirmation(cid=cid, plugin=call.plugin, bot_id=bot_id,
+                            operator_id=int(call.identity.operator_id),
+                            binding_ref=binding.ref, request_key=request_key,
+                            status="admitted", admissions=_admissions(runs),
+                            created_at=CONFIRMATIONS._now())
+        CONFIRMATIONS.add(conf)
+        logger.info("run admission: %d run(s) admitted for a colleague under the "
+                    "operator's task", len(runs))
+        _spawn_status_card(call, runs, binding, cid, endpoint, chat_id)
+        return _answer(conf)
     if call.operator_words is not None:
         from action_judgement import WORDS
         for r in runs:      # his words for the task, admitted by them or not
@@ -620,17 +642,20 @@ def _card_post(call, cid: str):
 
 def _spawn_status_card(call, runs: list[dict], binding, cid: str, endpoint,
                        chat_id: int) -> None:
-    """His words admitted the runs, so no start card exists: one status card with the Stop
-    button is posted beside the answer (never awaited by it), through *endpoint* in
-    *chat_id*, the call's delivery. A failed post is logged and nothing else — Ellen's
-    ``stop_work`` remains."""
+    """The runs were admitted without a start card (by his words, or for a colleague
+    under his task): one status card with the Stop button is posted beside the answer
+    (never awaited by it), through *endpoint* in *chat_id*, the call's delivery. A
+    colleague's card under his task is sent without a notification. A failed post is
+    logged and nothing else — Ellen's ``stop_work`` remains."""
     async def _post() -> None:
+        from handoff import helper_under_operator_task
         from result_broker import compose_operator_message, label_at
         text = compose_operator_message(
             compose_status(runs, _requester_name(binding, call.role)),
             label_at(call.role, endpoint))
+        silent = helper_under_operator_task(call.origin, call.chain)
         mid = await endpoint.deliver_run_card(chat_id, text, [stop_button(cid)],
-                                              post=_card_post(call, cid))
+                                              post=_card_post(call, cid), silent=silent)
         if isinstance(mid, int) and not isinstance(mid, bool):
             CONFIRMATIONS.set_card(cid, TgAddress(endpoint.bot_id, chat_id, mid), text)
         else:

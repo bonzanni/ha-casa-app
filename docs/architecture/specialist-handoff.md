@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-18
+last_reviewed: 2026-11-12
 ---
 
 # Specialist hand-off
@@ -39,6 +39,23 @@ the second stamper). A child origin copies its parent's, so the words of the tur
 started the chain reach every run in it. `handoff.operator_words` reads that key only, on
 an `_operator_turn` Telegram origin, and run admission reads nothing else
 ([`plugin-operator-calls.md`](plugin-operator-calls.md)).
+
+**A task the operator started is marked as his along its whole path.** Two reserved origin
+keys (`provenance.OPERATOR_TASK_KEY`, `_operator_task`, and `OWNER_PASS_KEY`, `_owner_pass`)
+are set only by Casa, when it gives a job's end to the specialist that started the job
+([`specialist-job-start.md`](specialist-job-start.md)): the first only when the job's recorded
+starter is `operator`, the second as the count of such turns along the task. A child origin
+copies its parent's, so a hand-off from that turn carries them; a plugin binding keeps them
+among its plain markers and the continuation and relay turns rebuilt from it carry them on
+([`plugin-continuations.md`](plugin-continuations.md)); a job started from such a turn keeps
+them. Every origin built from a stored one takes them through `provenance.carry_task_proof`,
+which keeps the mark only as the literal `True` and the count only as an int of one or more.
+`background_jobs.job_started_by` reads the mark as `operator` (a schedule's fire still reads
+`scheduled`), and `handoff.helper_under_operator_task` — the mark on the origin and a chain
+longer than the resident and the agent itself, so the requester is a specialist — is what run
+admission and the result broker read for a helper's runs and posts
+([`plugin-operator-calls.md`](plugin-operator-calls.md)). The chain is the caller's own: a
+recorded call's origin keeps scalars only.
 
 **A hand-off is a tool call that waits.** `hand_off` is offered to every specialist's
 delegated or pinned build in code (`tools._handoff_grants`), never declared by a bundle —
@@ -86,6 +103,16 @@ What it does not cover: a pinned stored-call turn, which keeps its own ceiling; 
 target's ceiling, which is the module default like any delegation's; and a chain whose
 every link waits, which is bounded by the deepest run's ceiling, not by a chain-wide
 clock.
+
+**INV-ENG-032**: The operator-task proof keys `_operator_task` and `_owner_pass` are reserved context keys no external context can carry in, and an origin derived from a stored one carries them only as the literal `True` and an int of one or more; Casa sets the mark at a job's end only when that job's recorded starter is `operator`.
+
+Enforced by `provenance.RESERVED_CONTEXT_KEYS` (which `sanitize_external_context` strips), by
+`carry_task_proof`, used by `plugin_continuations.continuation_origin`, by the binding store's
+origin keys, and by `job_owner_turn.owner_origin`, which reads the starter from the job's state.
+
+What it does not cover: whether the operator still wants the work — the mark lasts as long as
+the task's path does, bounded only by the owner-turn count (INV-BGJOB-027) and the hand-off
+bounds (INV-ENG-025).
 
 ## Failure behavior
 

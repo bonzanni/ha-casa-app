@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-10
+last_reviewed: 2026-11-12
 ---
 
 # Engagement finalization
@@ -56,7 +56,12 @@ the registry a decision it evaluates under its lock, from the record as the tran
 it: every outcome is owed except a quiet scheduled run's completed end, and an operator's
 interaction with a quiet run ends its quietness under that same lock
 ([`background-job-quiet-runs.md`](background-job-quiet-runs.md), INV-BGJOB-015). The tail sends
-the notification on that same decision.
+the notification on that same decision, after one possible wait: a completed job its host
+specialist started for someone else is first handed to that specialist, whose turn may replace
+the notice's text or, by closing with `<silent/>`, settle the telling with nothing sent
+([`specialist-job-start.md`](specialist-job-start.md), INV-BGJOB-027). A cancellation during that
+turn still sends the job's own result, shielded, and is raised again after the send, before the
+finalized log line.
 
 ## Contracts & invariants
 

@@ -398,3 +398,145 @@ class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
             if r["status"] in ("completed", "cancelled", "error")}
         assert surviving_terminals == {owing.id}, _rows(tombstone)
         assert _row(tombstone, owing.id)["terminal_notification_pending"] is True
+
+
+def _specialist_started(**job):
+    """The origin of a job a specialist started while it worked for the
+    resident: the specialist's delegated turn, plus the job's own state."""
+    return {**_origin(), "execution_role": "finance",
+            "_handoff_chain": ("assistant", "finance"),
+            "job": {"name": "ledger:classify", "title": "Quarter",
+                    "self_host": True, "started_by": "operator", **job}}
+
+
+def _owner_says(monkeypatch, result):
+    """Replace the owner's turn; returns the ``(engagement id, text)`` of
+    each call. *result* is what the turn ends with, or what it raises."""
+    import job_owner_turn
+
+    calls: list = []
+
+    async def _turn(frozen, result_text):
+        calls.append((frozen["id"], result_text))
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.setattr(job_owner_turn, "run_owner_turn", _turn)
+    return calls
+
+
+class TestTheSpecialistThatStartedAJobHearsItsEndFirst:
+    """The end of a job a specialist started for someone else is first handed
+    to that specialist; what the requester is told follows from how that turn
+    ends, and the obligation to tell them is settled only then."""
+
+    async def _finish(self, tmp_path, *, origin=None, outcome="completed"):
+        from tools import _finalize_engagement
+
+        reg, bus, tombstone = await _build(tmp_path)
+        rec = await reg.create(
+            kind="specialist", role_or_type="finance", driver="in_casa",
+            task="t", origin=_specialist_started() if origin is None else origin)
+        try:
+            await _finalize_engagement(
+                rec, outcome=outcome, text="the answer",
+                next_steps=[], driver=_driver_double())
+        finally:
+            self.reg, self.bus, self.tombstone, self.rec = reg, bus, tombstone, rec
+        return rec, bus, tombstone
+
+    async def test_the_owners_answer_is_what_the_requester_is_told(
+            self, tmp_path, monkeypatch):
+        from job_owner_turn import OwnerResult
+
+        calls = _owner_says(monkeypatch, OwnerResult("answer", "Filed 4."))
+        rec, bus, tombstone = await self._finish(tmp_path)
+
+        assert calls == [(rec.id, "the answer")]
+        assert len(bus.sent) == 1
+        complete = bus.sent[0].content
+        assert complete.text == "Filed 4.\n\nJob ran 1 min"
+        assert (complete.delegation_id, complete.agent, complete.status) == (
+            rec.id, "finance", "ok")
+        # Still owed until the notice is delivered, and the acknowledgement
+        # it carries is this job's.
+        assert _row(tombstone, rec.id)["terminal_notification_pending"] is True
+        await _ack_through_the_real_seam(bus.sent[0])
+        assert _row(tombstone, rec.id)["terminal_notification_pending"] is False
+
+    async def test_an_owner_that_closes_silent_leaves_nothing_owed(
+            self, tmp_path, monkeypatch):
+        from engagement_registry import EngagementRegistry
+        from job_owner_turn import OwnerResult
+
+        calls = _owner_says(monkeypatch, OwnerResult("silent"))
+        rec, bus, tombstone = await self._finish(tmp_path)
+
+        assert calls == [(rec.id, "the answer")]
+        assert bus.sent == []
+        row = _row(tombstone, rec.id)
+        assert (row["status"], row["terminal_notification_pending"]) == (
+            "completed", False), row
+        assert self.reg.records_owing_terminal_notification() == []
+        reloaded = EngagementRegistry(tombstone_path=str(tombstone))
+        await reloaded.load()
+        assert list(reloaded.records_owed_at_load()) == []
+
+    async def test_a_follow_up_that_did_not_run_sends_the_jobs_own_result(
+            self, tmp_path, monkeypatch):
+        from job_owner_turn import FOLLOW_UP_FAILED_LINE, OwnerResult
+
+        _owner_says(monkeypatch, OwnerResult("failed"))
+        rec, bus, tombstone = await self._finish(tmp_path)
+
+        assert len(bus.sent) == 1
+        assert bus.sent[0].content.text == (
+            "the answer\n\n" + FOLLOW_UP_FAILED_LINE + "\n\nJob ran 1 min")
+        assert _row(tombstone, rec.id)["terminal_notification_pending"] is True
+
+    async def test_a_cancelled_follow_up_still_sends_the_jobs_own_result(
+            self, tmp_path, monkeypatch):
+        import asyncio
+
+        from job_owner_turn import FOLLOW_UP_FAILED_LINE
+
+        _owner_says(monkeypatch, asyncio.CancelledError())
+        with pytest.raises(asyncio.CancelledError):
+            await self._finish(tmp_path)
+
+        assert len(self.bus.sent) == 1
+        assert self.bus.sent[0].content.text == (
+            "the answer\n\n" + FOLLOW_UP_FAILED_LINE + "\n\nJob ran 1 min")
+        row = _row(self.tombstone, self.rec.id)
+        assert (row["status"], row["terminal_notification_pending"]) == (
+            "completed", True), row
+
+    @pytest.mark.parametrize("origin, outcome, told", [
+        # a resident started the job on the specialist
+        ({**_origin(), "job": {"name": "ledger:classify", "title": "Quarter",
+                               "started_by": "operator"}},
+         "completed", "the answer\n\nJob ran 1 min"),
+        # no job at all: a specialist engagement
+        (_origin(), "completed", "the answer"),
+        # started in the specialist's own chat
+        ({**_specialist_started(), "role": "finance"},
+         "completed", "the answer\n\nJob ran 1 min"),
+        (_specialist_started(), "cancelled", "the answer\n\nJob ran 1 min"),
+        (_specialist_started(), "error", "the answer\n\nJob ran 1 min"),
+        # a quiet scheduled run that completed is told to no one
+        (_specialist_started(quiet=True, started_by="scheduled"), "completed", None),
+    ], ids=["resident-started", "not-a-job", "own-chat", "cancelled", "error",
+            "quiet-run"])
+    async def test_every_other_end_is_told_as_before_without_an_owners_turn(
+            self, tmp_path, monkeypatch, origin, outcome, told):
+        from job_owner_turn import OwnerResult
+
+        calls = _owner_says(monkeypatch, OwnerResult("answer", "never used"))
+        rec, bus, tombstone = await self._finish(
+            tmp_path, origin=origin, outcome=outcome)
+
+        assert calls == []
+        assert [m.content.text for m in bus.sent] == ([] if told is None else [told])
+        assert _row(tombstone, rec.id)["terminal_notification_pending"] is (
+            told is not None)

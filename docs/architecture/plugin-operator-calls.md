@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-04
+last_reviewed: 2026-11-12
 ---
 
 # Plugin operator calls and run admission
@@ -46,7 +46,8 @@ reference, the requester (the chain's element before the plugin's role), its kin
 (`operator_resident` when the resident asked directly, else `specialist`) and the chain.
 One binding is minted per plugin and turn; a continuation turn answers the binding it was
 queued for. Bindings are durable (`/data/plugin-bindings.json`, `0600`) because a run can
-outlive a restart, keep only plain origin markers — never the operator's words, always the
+outlive a restart, keep only plain origin markers — never the operator's words, the
+operator-task proof when the turn carried it ([`specialist-handoff.md`](specialist-handoff.md)), always the
 turn's Telegram route (`_tg_bot`) and the call's **delivery** (`GrantIdentity.delivery`, `null`
 when the work posts nothing; a stored binding without either is refused at load) — and age
 out thirty days after their last use. The delivery is where every post of the work goes: its
@@ -111,6 +112,24 @@ what it does is [`plugin-stop.md`](plugin-stop.md). A request that ends on its o
 card marked ended there too, after which the admission forgets the card
 (`Confirmations.clear_card`) so no later pass edits it again.
 
+**A colleague's request under the operator's task starts without a card.** When the call's
+turn carries Casa's operator-task proof and its requester is a specialist, not the resident
+(`handoff.helper_under_operator_task` over the call's origin and its own chain), every
+requested run is admitted at once: no reading, no question, and none of his words kept for the
+action check; the admission is recorded and replayed by its key like any other, and the status
+card with its Stop is posted as above, without a notification (`deliver_run_card(silent=True)`).
+The operator started that task and the specialist asking is working on it; every change a run
+would make is still asked per action. A resident's own request, the agent's own run, and any
+turn without the proof — scheduled or agent-started work — keep the steps above, and so does a
+proof that is not the literal `True`.
+
+**A helper's own posts under that task do not buzz.** The admission hook opens such a call quiet
+(`ReferenceStore.open_call(quiet=True)`, `_InFlight.quiet`), and an `operator_message` slot it
+delivers is posted with every page, plain resend and tail chunk sent without a notification
+(`TelegramChannel.deliver_operator_message(silent=True)`); the message is delivered, filed and
+receipted exactly as otherwise. A link, a file, a question and a proposal card need the
+operator and notify as on any other turn.
+
 **The action check judges one browsing action, bound to the bytes it judged.**
 `POST /internal/broker/action-judgement` takes `{"kind", "packet", "spec_digest",
 "picture"}`: the kind (`action`, or `rejudge` at a tapped question; `login_item`, `signin` and `sign_in` for the
@@ -164,9 +183,10 @@ What it does not cover: a plugin whose own code misuses what it is told — the 
 the trust boundary the result contract already accepts; and a call whose PostToolUse
 never arrives, which stays answerable until the hour's cap.
 
-**INV-PLUG-052**: Run admission sends the clean-context reading only the operator's own current words, admits with no prompt only when every requested run is named by what those words ask for, and otherwise admits nothing unless the operator taps Start on one question listing every requested run.
+**INV-PLUG-052**: Run admission sends the clean-context reading only the operator's own current words, admits with no prompt only when every requested run is named by what those words ask for or when a specialist requester asks in a turn carrying Casa's operator-task proof, and otherwise admits nothing unless the operator taps Start on one question listing every requested run.
 
-Enforced in `run_admission.request_admission`: `_ask_model` is called with
+Enforced in `run_admission.request_admission`: the proof check
+(`handoff.helper_under_operator_task`) comes first and reads nothing; `_ask_model` is called with
 `OperatorCall.operator_words` and nothing else, and not at all when there are none; a
 reading that cannot be parsed or a model failure reads as nothing named; the question's
 text is `compose_question` over the validated fields; only the tap's first option settles

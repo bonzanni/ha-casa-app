@@ -25,6 +25,8 @@
   doc: architecture/plugin-authorization.md
 - item: casa/rootfs/opt/casa/background_jobs.py
   doc: architecture/background-jobs.md
+- item: casa/rootfs/opt/casa/job_owner_turn.py
+  doc: architecture/specialist-job-start.md
 - item: casa/rootfs/opt/casa/callback_owner.py
   doc: architecture/own-voice.md
 - item: casa/rootfs/opt/casa/chat_notes.py

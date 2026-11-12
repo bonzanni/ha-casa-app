@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-08
+last_reviewed: 2026-11-12
 ---
 
 # Plugin delivered slots
@@ -108,7 +108,9 @@ across two messages — refusing with zero sends when the plan has more than six
 element would not reach the operator complete. It then sends every page the way the multi-page
 response loop does (the single-page authored-text retry is never used) and reports
 delivered only when every page and every fallback chunk returned normally; a refused plan
-is not delivered, and an exception on any page or chunk propagates (INV-PLUG-045). For
+is not delivered, and an exception on any page or chunk propagates (INV-PLUG-045). A call
+opened quiet sends all of them without a notification
+([`plugin-operator-calls.md`](plugin-operator-calls.md)). For
 `operator_file` the channel sends bytes the broker has already claimed from the plugin
 outbox and passed through the kind's media policy, through the kind's method with the
 composed caption as plain text — no rendering, no entities, no thread id (INV-PLUG-046).

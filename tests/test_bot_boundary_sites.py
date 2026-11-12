@@ -219,6 +219,7 @@ ORIGIN_SITES = {
     ("origin-builders", "job_registry.py", "JobRegistry._has_trusted_voice_delivery_provenance"): (1, NOISE, "compares a job's creating peer kind"),
     ("origin-builders", "job_registry.py", "JobRegistry._owes_announcement"): (1, NOISE, "compares a job's creating peer kind"),
     ("origin-builders", "job_registry.py", "JobRegistry.recover_after_restart"): (1, NOISE, "compares a job's creating peer kind"),
+    ("origin-builders", "job_owner_turn.py", "owner_origin"): (2, DERIVED, "owner_turn_origin"),
     ("origin-builders", "job_registry.py", "VoiceJob"): (1, NOISE, "the creating peer field"),
     ("origin-builders", "memory/maintenance.py", "send_operator_line"): (1, RULE_C, "test_bot_boundary_invariants.py::test_the_maintenance_line_before_boot_is_sent_with_casas_own_token"),
     ("origin-builders", "operator_calls.py", "post_question"): (1, PRE_POST, "test_plugin_identities.py::test_before_casas_bot_has_an_id_nothing_is_keyed_stored_or_posted"),

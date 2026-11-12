@@ -73,6 +73,16 @@ def test_the_words_marker_is_reserved_and_copied():
         {"_operator_words": "forged", "chat_id": 1})
 
 
+def test_helper_under_operator_task_needs_the_proof_and_a_specialist_requester():
+    proof = {"_operator_task": True}          # no _handoff_chain: a recorded call's origin has none
+    three, two = ("assistant", "finance", "browser"), ("assistant", "browser")
+    assert handoff.helper_under_operator_task(proof, three) is True
+    assert handoff.helper_under_operator_task(proof, two) is False
+    assert handoff.helper_under_operator_task({"_operator_task": "x"}, three) is False
+    assert handoff.helper_under_operator_task({}, three) is False
+    assert handoff.helper_under_operator_task(None, three) is False
+
+
 def test_bounds_refuse_a_cycle_and_a_fourth_handoff():
     assert handoff.handoff_refusal(("assistant", "finance"), "finance")["kind"] == "handoff_cycle"
     assert handoff.handoff_refusal(("assistant", "finance"), "assistant")["kind"] == "handoff_cycle"

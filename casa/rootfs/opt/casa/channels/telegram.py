@@ -5224,7 +5224,7 @@ class TelegramChannel(Channel):
         return plan
 
     async def deliver_operator_message(self, chat_id: int, text: str, *,
-                                       post=None) -> DeliveryOutcome:
+                                       post=None, silent: bool = False) -> DeliveryOutcome:
         """S3: post *text* — Casa's label line and the plugin's body, as the
         result broker composed it — to *chat_id*, the chat of a capability
         call's grant identity, for a slot declared ``operator_message``.
@@ -5238,7 +5238,8 @@ class TelegramChannel(Channel):
         only when every page and every fallback chunk it needed returned
         normally; a refused plan is ``NOT_DELIVERED`` with zero sends; any
         exception, on a page or on a tail chunk, propagates and the broker
-        reads it as not proven."""
+        reads it as not proven. ``silent`` sends every one of those messages
+        (rendered page, plain resend, tail chunk) without a notification."""
         if self._app is None:
             logger.warning(
                 "Telegram channel not started; cannot deliver operator message")
@@ -5249,15 +5250,18 @@ class TelegramChannel(Channel):
         # S4 §2: every physical message is filed under ``post`` as it lands.
         def _landed(sent):
             self._record_post(chat_id, sent, post)
+        quiet = {"disable_notification": True} if silent else {}
         for display, entities, chunks in plan:
             if not entities:
-                _landed(await self._app.bot.send_message(chat_id=chat_id, text=display))
+                _landed(await self._app.bot.send_message(
+                    chat_id=chat_id, text=display, **quiet))
                 continue
             fell_back = await self._send_one(chat_id, chunks[0], display, entities,
-                                             record=_landed)
+                                             record=_landed, **quiet)
             if fell_back:
                 for chunk in chunks[1:]:
-                    _landed(await self._app.bot.send_message(chat_id=chat_id, text=chunk))
+                    _landed(await self._app.bot.send_message(
+                        chat_id=chat_id, text=chunk, **quiet))
         return DeliveryOutcome.DELIVERED
 
     async def deliver_operator_page(self, chat_id: int, text: str, *,
@@ -5312,11 +5316,12 @@ class TelegramChannel(Channel):
 
     async def deliver_run_card(self, chat_id: int, text: str,
                                buttons: "list[tuple[str, str]]", *,
-                               post=None) -> "int | None":
-        """The status card of browsing his own words started (``run_admission``): Casa's
-        label line and its fixed text, with ``(label, callback data)`` buttons — the
-        request's Stop. Filed under *post* as it lands. Returns the message id, or
-        ``None`` when nothing landed."""
+                               post=None, silent: bool = False) -> "int | None":
+        """The status card of browsing that started without a start question
+        (``run_admission``): Casa's label line and its fixed text, with ``(label,
+        callback data)`` buttons — the request's Stop. Filed under *post* as it lands.
+        ``silent`` sends it without a notification. Returns the message id, or ``None``
+        when nothing landed."""
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
         if self._app is None:
@@ -5325,8 +5330,10 @@ class TelegramChannel(Channel):
         kbd = InlineKeyboardMarkup([
             [InlineKeyboardButton(text=str(label), callback_data=str(data))]
             for label, data in buttons])
+        quiet = {"disable_notification": True} if silent else {}
         try:
-            msg = await self._app.bot.send_message(chat_id=chat_id, text=text, reply_markup=kbd)
+            msg = await self._app.bot.send_message(
+                chat_id=chat_id, text=text, reply_markup=kbd, **quiet)
         except Exception as exc:  # noqa: BLE001 — not proven
             logger.warning("deliver_run_card send failed (chat=%s): %s",
                            chat_id, type(exc).__name__)

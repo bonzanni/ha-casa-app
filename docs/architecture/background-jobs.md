@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-09
+last_reviewed: 2026-11-12
 ---
 
 # Background jobs
@@ -37,7 +37,8 @@ that delegate for with a sync delegation
 ([`specialist-job-start.md`](specialist-job-start.md)). The job runs as an engagement of the
 host specialist, with three differences: the record carries the job's state under
 `origin["job"]` (`background_jobs.initial_job_state`: name, title, skill, the brief's uuid,
-the launch context, the last progress, the starter, and the quiet stamp), the specialist's
+the launch context, the last progress, the starter, the quiet stamp, and `self_host` when the
+host started the job itself), the specialist's
 session is built as a job session (`background_jobs.job_session_options`) with the
 `report_job_progress` and `ask_operator` grants, and the first thing written into it is the
 job's brief.
@@ -67,7 +68,10 @@ finishing, Casa continues it, nudges it once, or parks it to wait for the operat
 ([`background-job-session.md`](background-job-session.md)). The job ends when it calls
 `emit_completion`, when the operator cancels it (the Cancel button in their direct chat, or
 through the resident's `cancel_engagement`), when the stale-job reap
-ends it, or when its session cannot be resumed (INV-BGJOB-022). A job declaring
+ends it, or when its session cannot be resumed (INV-BGJOB-022). Its end is told to its
+requester, except that a completed job a specialist started on itself for someone else is first
+handed to that specialist, whose turn decides what the requester hears (INV-BGJOB-027 in
+[`specialist-job-start.md`](specialist-job-start.md)). A job declaring
 `quietWhenScheduled` says nothing in the direct chat when its schedule started it, until it
 interacts with the operator
 ([`background-job-quiet-runs.md`](background-job-quiet-runs.md)).

@@ -72,7 +72,7 @@ class _Recorder:
         self.entered = asyncio.Event()
         self.chat_id = "42"
 
-    async def deliver_operator_message(self, chat_id, text, *, post=None):
+    async def deliver_operator_message(self, chat_id, text, *, post=None, silent=False):
         self.deliveries.append((chat_id, text))
         self.entered.set()
         if self.block is not None:
