@@ -186,7 +186,7 @@ not authorized no fetch is tried and the log says so once. An uninstall's result
 
 **INV-OWN-008**: Every lifecycle effect finds its phase on disk, every phase has a boot reconciliation, and a bot is released only on the token fetch failure that establishes its deletion; every other failure keeps it recovering.
 
-**INV-OWN-011**: A binding that completes greets once: Casa hands the bound agent one turn of its own, marked `synthetic: "chat_opening"` with no operator identity, carrying the opening line, unless the chat is open by then — read under the chat's serial lock — and the boot of an already-bound bot greets nobody; that turn opens the chat only once its reply reached Telegram, and a reply Telegram refuses leaves it unopened. Otherwise the operator's first turn in an agent's own chat that the agent's queue accepts, whatever it says, opens the chat: that turn alone carries Casa's line that the operator just opened it — in an agent's new chat after a move to a new bot, the line that it is the new chat — and `chat_open_at` is persisted only after the acceptance, on a first send and on a retry after a hand-back alike; a delivery refused or interrupted, across a restart included, and a file sent without a caption open nothing, and the chat's next accepted operator turn carries the line.
+**INV-OWN-011**: A binding that completes greets once: Casa hands the bound agent one turn of its own, marked `synthetic: "chat_opening"` with no operator identity, carrying the opening line, unless the chat is open by then — read under the chat's serial lock — and the boot of an already-bound bot greets nobody; that turn opens the chat only once its reply reached Telegram, and a reply Telegram refuses leaves it unopened, and an operator `/start` that arrives while that greeting is on its way is held: the delivered greeting answers it, and a greeting refused, ended in silence or undelivered when its window runs out replays it as his own turn. Otherwise the operator's first turn in an agent's own chat that the agent's queue accepts, whatever it says, opens the chat: that turn alone carries Casa's line that the operator just opened it — in an agent's new chat after a move to a new bot, the line that it is the new chat — and `chat_open_at` is persisted only after the acceptance, on a first send and on a retry after a hand-back alike; a delivery refused or interrupted, across a restart included, and a file sent without a caption open nothing, and the chat's next accepted operator turn carries the line.
 
 **INV-OWN-012**: A bot is registered only from the operator's own `managed_bot_created` message to Casa's bot in his chat, and bound to an agent only when its username equals that agent's current suggestion (a waiting agent's first bot, or a pending change) or the operator names a waiting agent or one with a pending change; a bot is never rebound to another agent, and an agent has one bound bot at a time.
 
@@ -234,9 +234,13 @@ whether it opens a moved chat is logged and opens it as a first chat.
 **Telegram refuses the greeting.** The operator has not pressed Start in the bot's chat: one
 info line, the chat stays unopened, and his first message there opens it with the opening
 line as before (the agent's session already holds the greeting it could not send). A
-greeting whose turn fails or ends in silence opens nothing either; a greeting and an
-operator message that both reach the agent while the chat is unopened may both carry the
-opening line, but the chat is marked open, and its cards posted, once.
+greeting whose turn fails or ends in silence opens nothing either. While the greeting is on
+its way (taken by the agent's queue, not yet delivered, refused or ended silently, and for at
+most `GREETING_IN_FLIGHT_S`), an operator's bare `/start` in that chat adds no turn of its
+own: it is held, the delivered greeting answers it, and a greeting refused, ended in silence
+or still undelivered when the window runs out replays it as his turn
+(`TelegramChannel._end_greeting`, which every end of the window goes through). Any other operator message that reaches the agent in that window may still carry
+the opening line too, but the chat is marked open, and its cards posted, once.
 
 ## Extension points
 

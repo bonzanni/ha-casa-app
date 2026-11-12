@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.364.2] - 2026-11-12
+
+### Fixed
+
+- A specialist no longer greets you twice when you press Start while its own hello is on its way; the hello is the answer.
+
 ## [0.364.1] - 2026-11-12
 
 ### Changed

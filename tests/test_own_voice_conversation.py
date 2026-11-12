@@ -452,6 +452,10 @@ async def test_the_greeting_opens_the_chat_only_once_its_reply_landed(
         sent = [c[0] for c in calls(world.eps.finance)]
         assert "create_on_token" not in sent and sent[-1] == "send_response"
         assert lc.state("finance") == ("open" if lands else "not_open")
+        # In Casa the bot's endpoint that sent the greeting is the one that
+        # ends its window (refusal or delivery); here the reply went through
+        # this test's endpoint double, so the window is closed by hand.
+        ch._end_greeting()
         await _handle(ch, _text("/start"))
         [turn] = _turns(bus, "finance")
         assert turn.context.get("_chat_opening") is (None if lands else True)
@@ -480,6 +484,7 @@ async def test_a_silent_greeting_opens_nothing(world, tmp_path, monkeypatch):
         _Client.reply = "<silent/>"
         await world.alex.handle_message(greeting)
         assert lc.state("finance") == "not_open"
+        await ch.turn_finished({"chat_id": str(OPERATOR), "synthetic": "chat_opening"})
         await _handle(ch, _text("/start"))
         [turn] = _turns(bus, "finance")
         assert turn.context.get("_chat_opening") is True

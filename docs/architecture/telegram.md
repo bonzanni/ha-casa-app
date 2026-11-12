@@ -123,7 +123,8 @@ turn there, whatever it says, carries the reserved `_chat_opening` key that has 
 say hello (`"moved"` in an agent's new chat after a move to a new bot), and marks the chat open once its queue takes it (`TelegramChannel._send_turn`,
 a retry after a hand-back included). Once the bot is bound, the agent also greets the operator
 by itself (`TelegramChannel.speak_first`, a turn Casa starts with no operator identity), which
-opens the chat only once Telegram took its reply; `/new` resets that agent's own
+opens the chat only once Telegram took its reply, and a bare `/start` sent while that greeting is
+on its way is held for it (replayed if the greeting does not reach him); `/new` resets that agent's own
 conversation, and Casa's lines name the agent plainly, without the `📊` label. The bot's
 lifecycle is [`own-voice-lifecycle.md`](own-voice-lifecycle.md), the rest
 [`own-voice.md`](own-voice.md).

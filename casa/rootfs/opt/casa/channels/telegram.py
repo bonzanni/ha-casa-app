@@ -205,6 +205,9 @@ _RATE_LIMIT_REPLY = "Slow down — try again in a minute."
 
 # Stream edit throttle (seconds between editMessageText calls).
 _STREAM_THROTTLE = 1.0
+# How long an agent's own greeting (TelegramChannel.speak_first) counts as on
+# its way when no delivery or refusal ends it sooner (a silent or failed turn).
+GREETING_IN_FLIGHT_S = 120.0
 
 
 def _resolve_chat_id(context: dict[str, Any], default: int | str) -> int | str:
@@ -1058,6 +1061,10 @@ class TelegramChannel(Channel):
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.is_casa = bool(is_casa)
+        # monotonic deadline while this agent's greeting is on its way, and
+        # the operator's Start that the greeting is meant to answer
+        self._greeting_timer: "asyncio.TimerHandle | None" = None
+        self._held_start: Any = None
         # The bot id: the one getMe verified for this token in this process,
         # else the one known in advance. Never a guess (see ``bot_id``).
         self._known_bot_id: int | None = known_bot_id
@@ -1801,6 +1808,7 @@ class TelegramChannel(Channel):
             moved = own_voice.chat_moved(bot_id)
 
             async def _delivered() -> None:
+                self._end_greeting(delivered=True)
                 await own_voice.mark_open(bot_id)
             msg = BusMessage(
                 type=MessageType.CHANNEL_IN, source="telegram", target=self.default_agent,
@@ -1809,7 +1817,28 @@ class TelegramChannel(Channel):
                          "synthetic": "chat_opening", "_tg_bot": bot_id,
                          "_chat_opening": "moved" if moved else True},
                 on_delivery=_delivered)
-            return await self._bus.send_checked(msg) == "accepted"
+            taken = await self._bus.send_checked(msg) == "accepted"
+            if taken:
+                # The greeting answers the operator's Start: one pressed while
+                # it is on its way adds no turn of its own (see _handle_serialized).
+                if self._greeting_timer is not None:
+                    self._greeting_timer.cancel()
+                self._greeting_timer = asyncio.get_running_loop().call_later(
+                    GREETING_IN_FLIGHT_S, self._end_greeting)
+            return taken
+
+    def _end_greeting(self, *, delivered: bool = False) -> None:
+        """The agent's greeting reached the operator, or will not (refused,
+        silent, or still not delivered after ``GREETING_IN_FLIGHT_S``): a
+        Start he sent while it was on its way is then answered, or replayed
+        as his own turn."""
+        if self._greeting_timer is not None:
+            self._greeting_timer.cancel()
+            self._greeting_timer = None
+        held, self._held_start = self._held_start, None
+        if held is not None and not delivered:
+            self._start_replay = asyncio.get_running_loop().create_task(
+                self._handle(held, None))
 
     async def release_update(self, update_json: dict) -> str:
         """Deliver one update the chat's lifecycle held for this agent's bot,
@@ -2125,6 +2154,14 @@ class TelegramChannel(Channel):
         # /new is a DM command and private clients don't append it, but a
         # forwarded/group-origin update could).
         _first = text.split()[0].lower() if text else ""
+        if (text.lower() == "/start"
+                and self._greeting_timer is not None
+                and self._sender_is_operator(update.effective_user)):
+            # held, not dropped: a greeting that never reaches him replays it
+            self._held_start = update
+            logger.info("own chat of %s: Start while its greeting is on its way; "
+                        "the greeting answers it", self.default_agent)
+            return
         if _first.split("@", 1)[0] == "/new":
             # v0.76.0 (W5b, r1-B4): cancel any pending resident_ask/authz
             # records and purge authorization grants for this chat
@@ -5498,6 +5535,7 @@ class TelegramChannel(Channel):
         except (Forbidden, BadRequest) as exc:
             if context.get("synthetic") != "chat_opening":
                 raise
+            self._end_greeting(delivered=False)
             logger.info("own chat of %s: Telegram did not take the greeting (%s); "
                         "the chat opens at the operator's first message",
                         self.default_agent, type(exc).__name__)
@@ -5613,6 +5651,8 @@ class TelegramChannel(Channel):
         """
         target_chat = _resolve_chat_id(context, self.chat_id)
         self._release_typing(context, target_chat)
+        if context.get("synthetic") == "chat_opening":
+            self._end_greeting(delivered=False)     # a silent greeting answers no Start
 
     # ------------------------------------------------------------------
     # Outbound: streaming
