@@ -1034,6 +1034,42 @@ class TestChallengeAtomicRegistration:
         assert channel.posts[0][3] == ("Approve", "Deny")
         assert "mcp__" not in text and canonical not in text
 
+    async def test_a_call_without_arguments_falls_back_to_the_plugins_description(
+        self, monkeypatch,
+    ):
+        """No model card for an argument-free call: Casa's own card carries
+        the plugin's summary of the tool, or else the first sentence of the
+        tool's listed description -- never an empty "{}"."""
+        import approval_card
+        import tool_descriptions
+
+        async def _fails(system, user):
+            raise RuntimeError("model unavailable")
+        monkeypatch.setattr(approval_card, "_ask", _fails)
+
+        broker, coord, channel = _fresh_env(monkeypatch)
+        _key_, handle = _create(
+            coord, channel, tool_name="mcp__plugin_gmail_gmail__erase_gmail",
+            canonical_json="{}", display_name="Ellen", plugin="gmail",
+            summary="Revokes Gmail's access at Google and deletes the stored sign-in.")
+        assert await handle.settled_post() == "posted"
+        assert channel.posts[-1][2] == (
+            "🔐 Allow Ellen to use gmail?\n\n"
+            "Revokes Gmail's access at Google and deletes the stored sign-in.")
+
+        broker, coord, channel = _fresh_env(monkeypatch)
+        key = _key(tool_name="mcp__plugin_bank_bank__delete_all_data")
+        tool_descriptions._cache[(key.artifact_id, "delete_all_data")] = {
+            "description": "Erase the entire local ledger. Protected: asks first.",
+            "inputSchema": {"type": "object", "properties": {}}}
+        _key_, handle = _create(
+            coord, channel, key, tool_name="mcp__plugin_bank_bank__delete_all_data",
+            canonical_json="{}", display_name="Alex", plugin="bank")
+        assert await handle.settled_post() == "posted"
+        text = channel.posts[-1][2]
+        assert text == "🔐 Allow Alex to use bank?\n\nErase the entire local ledger."
+        assert "{}" not in text
+
     async def test_cached_description_reaches_the_model(self, monkeypatch):
         """The tool's own description and schema, listed ahead of time under
         the grant key's artifact id, are in the facts the model is shown, next

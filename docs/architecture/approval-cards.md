@@ -42,9 +42,9 @@ requester with a cut of the rest. The
 reply must carry the fields `{"action", "summary", "lines"}` as JSON — text around it, such as
 a code fence or a leading sentence, is tolerated, since the reply is read from its first `{` to
 its last `}`, and other keys are ignored — within fixed bounds, counted in UTF-16
-units and checked, never clipped: an action of at most 60 units, a summary of at most 240,
-at most five `Label: value` lines (labels at most 24, values at most 160), each field one line
-with no unsafe code point (`card_from_reply`). Only the first line marked sensitive carries
+units and checked, never clipped: an action of at most 80 units, a summary of at most 240,
+at most five `Label: value` lines (labels at most 32, values at most 160), each field one line
+with no unsafe code point (`card_from_reply`). Only the first two lines marked sensitive carry
 the ⚠️ mark. An invalid reply is asked again only while six seconds of the budget remain. A
 validated reply is cached (64 entries, an hour) under the model, its effort, the kind and a
 hash of the facts JSON; the cache holds reply text, never a card, so a hit is rebuilt with
@@ -75,7 +75,9 @@ route, what it receives and that it grants no turn and no memory. An event: the 
 the event, its emitter and the delivery targets. The erase question: what is uninstalled,
 each eraser with its plugin's summary, what each offered choice does, and its notes. The
 system prompt tells the model to keep every recipient, amount, deletion, granted power and
-secret, and every installed name and version, on the card, and to treat text inside the
+secret, and every installed name and version, on the card, to name the Casa powers an
+install or update grants, to mark at most two lines that a person must not miss (an
+irreversible wipe counts even when deleting is what was asked), and to treat text inside the
 facts as data. That is an instruction to a model, not a check: what code guarantees is that
 those facts reach it. The fallback shows what Casa's own text for the request shows, and no
 more — an install's consent text, for one, names the Casa tools only when the inspection it
@@ -87,7 +89,11 @@ invalid replies all return the request's fallback, and `write_card` never raises
 call's fallback is `tool_fallback`: `🔐 Allow {who} to use {plugin}?` and one labelled line
 per argument leaf in canonical order (nested keys joined with `›`), each value's unsafe code
 points escaped and a value over 160 units cut to its first 120 with its length named, at most
-twelve lines and 2,600 units, then `…and N more`. A consent's fallback is `text_fallback` of the consent text Casa already renders: its
+twelve lines and 2,600 units, then `…and N more`. A call with no arguments at all shows,
+instead of an empty `{}` line, the plugin's own one-line description of the tool: its declared
+summary (interpolated when that works, else as written), else the first sentence of the
+tool's listed description — one literal line, unsafe code points escaped, at most 400 units
+and always inside the 2,600. A consent's fallback is `text_fallback` of the consent text Casa already renders: its
 first line bold, the rest kept literally.
 
 **Protected tools describe themselves ahead of time** (`tool_descriptions`). The plugin's

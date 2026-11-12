@@ -40,9 +40,9 @@ def test_field_content_never_shapes_an_entity():
 
 
 def test_reply_bounds_are_checked_in_utf16_and_never_clipped():
-    ok = json.dumps({"action": "a" * 60, "summary": "s", "lines": []})
+    ok = json.dumps({"action": "a" * 80, "summary": "s", "lines": []})
     assert card_from_reply(ok, who="Ellen") is not None
-    assert card_from_reply(json.dumps({"action": "😀" * 31, "summary": "s", "lines": []}), who="Ellen") is None  # 62 units
+    assert card_from_reply(json.dumps({"action": "😀" * 41, "summary": "s", "lines": []}), who="Ellen") is None  # 82 units
     for bad in ({"action": "x", "summary": "s" * 241, "lines": []},
                 {"action": "x", "summary": "s", "lines": [{"label": "l", "value": "v"}] * 6},
                 {"action": "x", "summary": "a\nb", "lines": []},
@@ -60,8 +60,8 @@ def test_reply_builds_the_title_from_who_and_action_unless_given():
 def test_reply_line_bounds_and_shape_are_checked():
     def line(**kw):
         return json.dumps({"action": "x", "summary": "s", "lines": [kw]})
-    assert card_from_reply(line(label="l" * 24, value="v" * 160), who="E") is not None
-    assert card_from_reply(line(label="l" * 25, value="v"), who="E") is None
+    assert card_from_reply(line(label="l" * 32, value="v" * 160), who="E") is not None
+    assert card_from_reply(line(label="l" * 33, value="v"), who="E") is None
     assert card_from_reply(line(label="l", value="v" * 161), who="E") is None
     assert card_from_reply(line(label="l", value="a\nb"), who="E") is None
     assert card_from_reply(line(label="l", value=3), who="E") is None
@@ -69,19 +69,25 @@ def test_reply_line_bounds_and_shape_are_checked():
     assert card_from_reply(json.dumps({"action": "x", "summary": "s"}), who="E") is None
 
 
-def test_only_the_first_sensitive_line_is_flagged():
-    reply = json.dumps({"action": "x", "summary": "s", "lines": [
-        {"label": "A", "value": "1", "sensitive": True}, {"label": "B", "value": "2", "sensitive": True}]})
-    card = card_from_reply(reply, who="Ellen")
-    assert [l.sensitive for l in card.lines] == [True, False]
+def test_only_the_first_two_sensitive_lines_are_flagged():
+    def flags(*marks):
+        reply = json.dumps({"action": "x", "summary": "s", "lines": [
+            {"label": str(i), "value": "v", "sensitive": m} for i, m in enumerate(marks)]})
+        return [l.sensitive for l in card_from_reply(reply, who="Ellen").lines]
+    assert flags(True, True) == [True, True]
+    assert flags(True, True, True) == [True, True, False]
+    assert flags(False, True, False, True, True) == [False, True, False, True, False]
 
 
 def test_worst_case_model_card_fits():
+    # Every field at its bound in astral characters (two units each), two
+    # warning marks: title 2 + 7 + 128 + 4 + 80 + 1 = 222, summary 2 + 240,
+    # line separators 2 + 4, marks 2 * 3, labels 5 * (32 + 2), values 5 * 160.
     who = "😀" * 64                                 # display names are capped at 64 code points
-    reply = {"action": "😀" * 30, "summary": "😀" * 120,
-             "lines": [{"label": "😀" * 12, "value": "😀" * 80, "sensitive": i == 0} for i in range(5)]}
+    reply = {"action": "😀" * 40, "summary": "😀" * 120,
+             "lines": [{"label": "😀" * 16, "value": "😀" * 80, "sensitive": True} for _ in range(5)]}
     display, _ = render_card(card_from_reply(json.dumps(reply), who=who))
-    assert utf16_len(display) <= 1500
+    assert utf16_len(display) == 1446
 
 
 def test_tool_fallback_respects_every_budget():
@@ -95,6 +101,27 @@ def test_tool_fallback_respects_every_budget():
     assert all(utf16_len(l.label) <= 40 for l in card.lines)
     assert card.lines[0].value.endswith("(5000 characters)")
     assert len(card.lines) == 13 and card.lines[-1].value == "…and 2 more"
+
+
+def test_tool_fallback_of_a_call_without_arguments_shows_the_plugins_description():
+    card = tool_fallback(who="Ellen", plugin="gmail", args={},
+                         summary="Revokes Gmail's access at Google.\nReconnecting needs a new sign-in.")
+    display, ents = render_card(card)
+    assert display == ("🔐 Allow Ellen to use gmail?\n\n"
+                       "Revokes Gmail's access at Google. Reconnecting needs a new sign-in.")
+    assert len(ents) == 1                               # the title only: the text stays literal
+    # Without a description the empty call is shown as before; with arguments
+    # the description is not used.
+    assert render_card(tool_fallback(who="E", plugin="p", args={}))[0].endswith("\n\n{}")
+    assert tool_fallback(who="E", plugin="p", args={"a": "1"}, summary="S").summary == ""
+
+
+def test_tool_fallback_description_is_literal_and_within_budget():
+    card = tool_fallback(who="E", plugin="p" * 2500, args={}, summary="**x‮**" + "y" * 900)
+    display, _ = render_card(card)
+    assert utf16_len(display) <= 2600
+    assert card.summary.startswith("**x\\u202e**") and card.summary.endswith("…")
+    assert utf16_len(tool_fallback(who="E", plugin="p", args={}, summary="y" * 900).summary) == 400
 
 
 def test_tool_fallback_joins_a_scalar_list():

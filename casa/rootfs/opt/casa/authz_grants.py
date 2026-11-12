@@ -443,6 +443,26 @@ def _interpolated_summary_or_none(
     return _interpolate_summary(summary, args)
 
 
+def _first_sentence(text: "str | None") -> "str | None":
+    """The first sentence of *text* (up to its first ". " or line break)."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    head = text.strip().split("\n", 1)[0]
+    end = head.find(". ")
+    return head[:end + 1] if end >= 0 else head
+
+
+def _fallback_summary(summary: "str | None", canonical_json: str,
+                      description: "str | None") -> "str | None":
+    """The plugin's own one-line description of a call, for the fallback
+    card: its manifest summary (interpolated when that works cleanly, else
+    the template as written), else the first sentence of the tool's listed
+    description, else None."""
+    if summary:
+        return _interpolated_summary_or_none(summary, canonical_json) or summary
+    return _first_sentence(description)
+
+
 def render_challenge_message(
     *, tool_name: str, enforcement_role: str, canonical_json: str,
     summary: "str | None" = None, display_name: "str | None" = None,
@@ -899,7 +919,10 @@ class ChallengeCoordinator:
                 "what_the_plugin_says_it_does": summary,
                 "arguments": args,
             },
-            fallback=approval_card.tool_fallback(who=who, plugin=plugin, args=args),
+            fallback=approval_card.tool_fallback(
+                who=who, plugin=plugin, args=args,
+                summary=_fallback_summary(summary, canonical_json,
+                                          described.get("description"))),
         )
 
     # -- owned setup driver -------------------------------------------------
