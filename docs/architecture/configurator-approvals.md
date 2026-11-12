@@ -52,8 +52,12 @@ unanswered card close the record; nothing runs.
 approval's launch slot and spawns one task. That task takes the configurator's permit, a
 place on its lane and its lease, in that order, registers one durable delegation on the
 resident's behalf with the operator's words as its task, and runs the configurator with a
-task text that names the call to make and ends with the approved values
-(`configurator_continue.continuation_text`). The card is edited when the task tells whether
+task text that names the call to make, quotes the operator's words that led to the request,
+and ends with the approved values (`configurator_continue.continuation_text`, `asked_line`).
+The words carry what the card does not, such as a plugin setting the operator gave for the
+steps after the commit, so the run does not ask for it again. Only words the operator
+typed are recorded (`handoff.operator_words`); a request made from any other root, such as an
+event wake, records none. The card is edited when the task tells whether
 the run started: "✅ Approved — the Configurator is carrying on with …", or "Approved and saved
 — but the configurator could not be started. Ask Ellen again; the approval is kept." The run's
 result reaches the resident as any delegation's does.

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.367.2] - 2026-11-12
+
+### Fixed
+
+- After you approve a specialist install or upgrade, the configurator now has what you asked for in your own words. Before, it lost settings you had given in the same request, such as a plugin's address or token, and asked you for them again (#1565).
+
 ## [0.367.1] - 2026-11-12
 
 ### Fixed

@@ -15262,7 +15262,10 @@ async def specialist_install_request_approval(args: dict) -> dict:
         card_facts = {}
     origin = _snapshot_origin() or {}
     requester_name = _requester_name(origin)
-    asked = str(origin.get("user_text") or "")[:approval_records.ASKED_MAX]
+    # #1565: only the operator's own server-stamped words; any other root (an
+    # event wake, a narration) records none, so its run is never told them as the
+    # operator's
+    asked = (operator_words(origin) or "")[:approval_records.ASKED_MAX]
     carrying = origin.get(approval_records.APPROVAL_KEY)
     carrying_rid = str(carrying.get("rid") or "") if isinstance(carrying, dict) else ""
     async with _plugin_tools_guard():
@@ -16283,7 +16286,10 @@ async def persona_install_inspect(args: dict) -> dict:
         persona_id=result.persona_id, version=result.version, checksum=result.checksum,
         values_digest=approval_records.values_digest(values))
     origin = _snapshot_origin() or {}
-    asked = str(origin.get("user_text") or "")[:approval_records.ASKED_MAX]
+    # #1565: only the operator's own server-stamped words; any other root (an
+    # event wake, a narration) records none, so its run is never told them as the
+    # operator's
+    asked = (operator_words(origin) or "")[:approval_records.ASKED_MAX]
     carrying = origin.get(approval_records.APPROVAL_KEY)
     carrying_rid = str(carrying.get("rid") or "") if isinstance(carrying, dict) else ""
     async with _plugin_tools_guard():

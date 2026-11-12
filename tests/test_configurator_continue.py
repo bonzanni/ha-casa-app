@@ -190,7 +190,10 @@ async def test_the_run_carries_the_approval_its_frozen_task_and_its_own_run_key(
     assert run.origin[approval_records.APPROVAL_KEY] == {"rid": record.rid,
                                                           "generation": record.generation}
     assert run.origin["_task_delivery"] is None
-    assert run.task == CONTINUATION + cc.values_line(record.values)
+    # #1565: the operator's own words travel into the run, before the frozen values
+    assert run.task == (CONTINUATION + cc.asked_line(ASKED)
+                        + cc.values_line(record.values))
+    assert cc.ASKED_LINE + json.dumps(ASKED, ensure_ascii=False) in run.task
     assert cc.APPROVED_VALUES_LINE + json.dumps(record.values, sort_keys=True) in run.task
     assert run.holder["run_key"] == job.id == run.quota     # the lease's key is the row's id
     assert run.holder["via"] == "delegation"
@@ -422,6 +425,7 @@ async def test_a_launch_that_fails_leaves_nothing_and_a_retry_launches(env, monk
 
 
 async def test_a_permit_wait_past_the_deadline_is_busy_and_leaves_nothing(env, monkeypatch):
+    real_wait = configurator_run.LEASE_WAIT_S
     monkeypatch.setattr(configurator_run, "LEASE_WAIT_S", 0.1)
     record = await _approved()
     permit = tools_mod._specialist_limiter.try_acquire(f"{OPERATOR}:configurator")
@@ -432,6 +436,9 @@ async def test_a_permit_wait_past_the_deadline_is_busy_and_leaves_nothing(env, m
     assert agent_lane.LANES.get("configurator").waiting == 0
     assert approval_records.get(record.rid).state == "approved"
     permit.release()
+    # the relaunch gets the real window: a 0.1 s one is spent by a slow CI runner
+    # before the run reaches the lease, and the run is refused as busy
+    monkeypatch.setattr(configurator_run, "LEASE_WAIT_S", real_wait)
     assert cc.start(CONTINUATION, key=record.rid, approval=record) == "started"
     await _settled(env)
     assert len(env.runs.seen) == 1
@@ -476,3 +483,12 @@ async def test_a_superseded_approval_does_not_start(env):
                                  {"config": {}, "secrets": []})
     assert cc.start(CONTINUATION, key=record.rid, approval=record) == "superseded"
     assert cc._SLOTS == {} and _jobs(env) == []
+
+
+async def test_an_approval_without_words_runs_on_its_values_alone(env):
+    record = await _approved(asked="")
+    cc.start(CONTINUATION, key=record.rid, approval=record)
+    await _settled(env)
+    (run,) = env.runs.seen
+    assert run.task == CONTINUATION + cc.values_line(record.values)
+    assert cc.ASKED_LINE not in run.task
