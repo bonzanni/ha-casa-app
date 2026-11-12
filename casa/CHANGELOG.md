@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.369.0] - 2026-11-12
+
+### Changed
+
+- Uninstalling a specialist that has its own chat now also lets go of its bot. Casa stops answering it, forgets its token (in 1Password, or on disk without 1Password), and posts one message: "… was uninstalled, so @… is no longer used. You can delete it now.", with a **Delete @…** button that opens BotFather. Telegram gives Casa no way to delete the bot itself, so the delete is one tap of yours; until then the bot exists but nobody answers it.
+- Installing that specialist again offers a new chat, as a first install does.
+- An upgrade that drops a specialist's own chat still keeps its bot, which answers that the chat is gone; a later upgrade that brings the chat back uses the same bot again.
+
 ## [0.368.1] - 2026-11-12
 
 ### Fixed

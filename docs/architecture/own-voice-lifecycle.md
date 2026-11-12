@@ -24,7 +24,7 @@ chosen for its bot, if any), every handle it was ever offered, its bot, a
 pending change to a new bot, the handle it moved from, when its chat opened; one per bot:
 its phase, role, username, name, the open question about it, the digest of its last
 self-setup). A bot's phases are `seen → unbound → binding → bound`, with `recovering`,
-`dormant`, `releasing`, `released` and `switching` beside them. Every transition persists
+`dormant`, `releasing`, `retiring`, `released` and `switching` beside them. Every transition persists
 the phase that names its effect before the effect, every effect is idempotent or reconciled
 by lookup, and every phase has a boot step (`BOOT_STEPS`) that completes or rolls it back.
 A per-bot lock covers intake, every phase change and the journal's release; a registry lock
@@ -117,8 +117,8 @@ chat is its new one, and Casa posts "Alex has moved to @new. You can delete @old
 a "Delete @old" button opening BotFather's delete flow, and edits the ready card to "Alex's
 new chat is open." (a post that fails puts that text and button on the ready card instead). Nothing moves from the old chat: its history stays there, and what
 was sent to either bot around the restart may be lost. An uninstall drops a pending change
-whose bot does not exist yet; a pending switch whose bot exists still applies at boot, and
-the new bot then goes dormant through the ordinary binding.
+whose bot does not exist yet, and retires a pending switch's new bot together with the old
+one (below).
 
 **Back to an earlier bot.** A released bot is no agent's bot: `bot_of`, the chat-opening
 reads (`_role_of`), the boot steps and intake all pass it by. For the agent it was moved
@@ -192,18 +192,24 @@ refused one keeps itself and every later record held. A text the agent's queue c
 after delivery goes back to the lifecycle (`_hand_back`), never dropped. An unbound or
 switching bot answers the operator once per boot that the chat is being set up.
 
-**Dormancy, recovery, release.** A bound bot whose role stops being eligible (uninstalled,
-or an upgrade that drops the declaration) holds its intake and goes `dormant`: each
-operator message gets one line — "Alex no longer has a separate chat — talk to Ellen." or
-"Alex isn't installed right now." — and the journal is dropped; eligible again, it is bound
-again. A `managed_bot` update for a known bot, or a token Telegram no longer accepts, puts
+**Dormancy, recovery, release.** A bound bot whose role stops declaring a chat (an upgrade
+or rollback that drops the declaration, or a boot that finds its role gone) holds its intake
+and goes `dormant`: each operator message gets one line — "Alex no longer has a separate
+chat — talk to Ellen." or "Alex isn't installed right now." — and the journal is dropped;
+eligible again, it is bound again. A committed **uninstall** instead retires every bot still
+its agent's, a pending switch's new bot included (`Lifecycle.on_uninstall`): each goes
+`retiring`, its endpoint stops, its journal and stored token go, the agent has no bot, and
+Casa posts "Alex was uninstalled, so @… is no longer used. You can delete it now." with a
+"Delete @…" BotFather button; the record stays `released`, as after a move. A token that
+cannot be deleted keeps it `retiring`, retried. Telegram cannot delete a managed bot, so it
+exists, unanswered, until the operator deletes it. A later install offers a new chat. A `managed_bot` update for a known bot, or a token Telegram no longer accepts, puts
 it in `recovering`: any successful fetch is authoritative, and the bot returns to `bound`
 or `dormant`. Only `getManagedBotToken` failing with 403 Forbidden "user is deactivated"
 (`RELEASE_ON`, what Telegram answers for a bot deleted in BotFather) releases a bot: its
 endpoint stops, its journal goes, the agent waits for a new bot and its card says so. Every
 other failure is retried with backoff (30 s to one hour). While the resident's own bot is
 not authorized no fetch is tried and the log says so once. An uninstall's result carries
-`own_chat: {bot, delete_link}` so the operator can delete the bot in BotFather.
+`own_chat: {bot, released}`.
 
 ## Contracts & invariants
 

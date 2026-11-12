@@ -149,7 +149,7 @@ async def on_rollback_committed(role: str) -> None:
 
 
 async def on_uninstall_committed(role: str) -> None:
-    await _lifecycle().reconcile_role(role)
+    await _lifecycle().on_uninstall(role)
 
 
 async def on_persona_applied(role: str) -> None:
@@ -347,6 +347,7 @@ def chat_moved(bot_id: int) -> bool:
 
 
 def own_chat_disclosure(role: str) -> "dict | None":
-    """For an uninstall's result: *role*'s bot and the BotFather link to
-    delete it, or ``None`` when it has no bot."""
+    """For an uninstall's result: *role*'s bot, which the uninstall releases
+    (Casa posts the card that offers its deletion), or ``None`` when it has
+    no bot."""
     return _lifecycle().disclosure(role)

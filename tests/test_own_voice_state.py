@@ -208,7 +208,7 @@ async def test_the_uninstall_disclosure(lc, world):
     assert own_voice.own_chat_disclosure("finance") is None
     await _to(lc, world, "not_open")
     assert own_voice.own_chat_disclosure("finance") == {
-        "bot": "@HeyAlexTestBot", "delete_link": "https://t.me/BotFather?start=deletebot"}
+        "bot": "@HeyAlexTestBot", "released": True}
     # the uninstall result names the bot from these records, not from an
     # endpoint that may already be stopped
     import tools as tools_mod
@@ -233,12 +233,12 @@ async def test_the_entry_points_reach_the_lifecycle(lc, world):
     await own_voice.on_queue_registered("finance")
     del world.configs["finance"]
     await own_voice.on_uninstall_committed("finance")
-    assert own_voice.own_chat_state("finance") == "dormant"
+    assert own_voice.own_chat_state("finance") == "not_declared"
     world.configs["finance"] = specialist("Alex")
     await own_voice.on_install_committed("finance")
-    assert own_voice.own_chat_state("finance") == "open"
+    assert own_voice.own_chat_state("finance") == "no_bot"     # a new chat is offered
     await own_voice.boot_reconcile()
-    assert own_voice.own_chat_state("finance") == "open"
+    assert own_voice.own_chat_state("finance") == "no_bot"
 
 
 def test_without_a_lifecycle_configured_every_agent_is_not_declared(tmp_path, monkeypatch):

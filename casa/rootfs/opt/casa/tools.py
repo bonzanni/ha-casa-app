@@ -16244,8 +16244,8 @@ async def specialist_uninstall(args: dict) -> dict:
     own_chat = _own_chat_disclosure(slug)
     outcome = await _run_bundle_transaction(_txn)
     if isinstance(outcome, dict) and outcome.get("ok") is True:
-        # the agent's own bot, if it has one, goes dormant; the operator may
-        # delete it in BotFather, which the result names so it can be offered
+        # the agent's own bot, if it has one, is released, and Casa posts the
+        # card that offers its deletion in BotFather
         await _own_chat_hook("on_uninstall_committed", slug)
         if own_chat is not None:
             outcome["own_chat"] = own_chat
@@ -16762,9 +16762,9 @@ def _bound_persona(slug: str) -> "str | None":
 
 
 def _own_chat_disclosure(role: str) -> "dict | None":
-    """The bot *role* speaks through and the BotFather link that deletes
-    it (``{"bot": "@name", "delete_link": ...}``), as the own-chat records
-    hold them, or ``None`` when it has no bot."""
+    """The bot *role* speaks through, which the uninstall releases
+    (``{"bot": "@name", "released": True}``), as the own-chat records hold
+    it, or ``None`` when it has no bot."""
     import own_voice
     try:
         return own_voice.own_chat_disclosure(role)
