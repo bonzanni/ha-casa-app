@@ -95,6 +95,26 @@ def _patch_waits(monkeypatch):
     return waits
 
 
+class _Ticks:
+    """Drives the ticker by hand: the module's ``_sleep`` records its wait and
+    blocks until the test grants one permit, so no real time elapses."""
+
+    def __init__(self, monkeypatch):
+        self.waits: list[float] = []
+        self._permits = asyncio.Semaphore(0)
+        monkeypatch.setattr(guest_reply, "_sleep", self._sleep)
+
+    async def _sleep(self, s):
+        self.waits.append(s)
+        await self._permits.acquire()
+
+    async def tick(self, n: int = 1):
+        for _ in range(n):
+            self._permits.release()
+            for _ in range(5):          # the ticker wakes, edits, sleeps again
+                await asyncio.sleep(0)
+
+
 def _warnings(caplog) -> list[logging.LogRecord]:
     return [r for r in caplog.records
             if r.name == "channels.guest_reply" and r.levelno >= logging.WARNING]
@@ -133,22 +153,24 @@ async def test_open_reports_a_refused_answer(caplog):
     assert len(_warnings(caplog)) == 1
 
 
-async def test_the_ticker_rotates_words_and_stops_at_finish():
+async def test_the_ticker_rotates_words_and_stops_at_finish(monkeypatch):
+    ticks = _Ticks(monkeypatch)
     bot = _Bot()
-    r = await _opened(bot, tick_s=0.01)
+    r = await _opened(bot, tick_s=3.0)
     r.start_ticker()
-    await asyncio.sleep(0.1)
-    ticks = [e["text"] for e in bot.edits]
-    assert len(ticks) >= 3
-    words = {t[len("Judge · "):-1] for t in ticks}
-    assert words <= set(THINKING_WORDS)
-    assert len(words) >= 3
+    await ticks.tick(6)
+    assert ticks.waits == [3.0] * 7              # six ticks made, the seventh pending
+    texts = [e["text"] for e in bot.edits]
+    assert len(texts) == 6
+    words = [t[len("Judge · "):-1] for t in texts]
+    assert words == list(THINKING_WORDS[1:]) + [THINKING_WORDS[0], THINKING_WORDS[1]]
     assert all(e["inline_message_id"] == "inl-1" for e in bot.edits)
     assert await r.finish(admitted("done")) is DeliveryOutcome.DELIVERED
-    n = len(bot.edits)
     assert bot.edits[-1]["text"] == "done"
-    await asyncio.sleep(0.05)
+    n = len(bot.edits)
+    await ticks.tick(3)
     assert len(bot.edits) == n
+    assert ticks.waits == [3.0] * 7              # the cancelled ticker never slept again
 
 
 async def test_finish_is_the_only_terminal_edit():
@@ -162,15 +184,18 @@ async def test_finish_is_the_only_terminal_edit():
     assert r.terminal is True
 
 
-async def test_waiting_is_not_terminal():
+async def test_waiting_is_not_terminal(monkeypatch):
+    ticks = _Ticks(monkeypatch)
     bot = _Bot()
-    r = await _opened(bot, tick_s=0.01)
+    r = await _opened(bot)
     r.start_ticker()
+    await ticks.tick(1)
+    assert len(bot.edits) == 1
     await r.waiting()
     assert bot.edits[-1]["text"] == WAITING
     assert r.terminal is False
     n = len(bot.edits)
-    await asyncio.sleep(0.05)
+    await ticks.tick(3)
     assert len(bot.edits) == n            # the ticker stopped at waiting()
     assert await r.finish(admitted("final text")) is DeliveryOutcome.DELIVERED
     assert bot.edits[-1]["text"] == "final text"
@@ -300,6 +325,21 @@ async def test_a_bold_span_across_the_cut_point_stays_within_bounds():
     assert all(e.offset + e.length <= utf16_len(display) for e in entities)
     # the cut landed at the last whitespace before the limit: whole words only
     assert display[:-1].rstrip() == ("x " * 2040).rstrip()
+
+
+async def test_a_single_long_word_is_cut_at_the_limit_not_at_an_early_space():
+    bot = _Bot()
+    r = await _opened(bot)
+    # one 4 000-character word of astral symbols (8 000 UTF-16 units) after a
+    # short lead: the last whitespace lies far before 75 % of the limit, so
+    # the cut lands at the limit itself rather than discarding the word
+    source = "**Here:** " + "𝄞" * 4000
+    assert await r.finish(admitted(source)) is DeliveryOutcome.DELIVERED
+    display = bot.edits[-1]["text"]
+    assert 3072 <= utf16_len(display) <= GUEST_TEXT_LIMIT
+    assert display.endswith("…")
+    assert _no_split_surrogate(display)
+    assert (0, 5) in _bold(bot.edits[-1].get("entities"))
 
 
 async def test_a_table_that_renders_oversized_falls_back_to_plain():

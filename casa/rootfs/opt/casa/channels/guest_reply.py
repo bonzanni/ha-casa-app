@@ -57,13 +57,18 @@ FAIL_LINE = "Something went wrong on my side — ask me again in a bit."
 
 # The first wait after a network error; each further one doubles it.
 _NETWORK_BACKOFF_S = 1.0
+# A cut at a whitespace keeps whole words, unless the last whitespace lies
+# so early that it would discard more than a quarter of the message — then
+# the cut lands at the limit itself.
+_WHITESPACE_CUT_FLOOR = int(GUEST_TEXT_LIMIT * 0.75)
 
 
 def _cut(text: str) -> str:
     """*text* shortened to fit one message with room for the ellipsis: cut
     at the last whitespace at or before ``GUEST_TEXT_LIMIT - 1`` UTF-16
-    units (never inside a surrogate pair), with "…" appended. A text that
-    fits is returned unchanged."""
+    units when that keeps at least ``_WHITESPACE_CUT_FLOOR`` units, else at
+    the limit itself (never inside a surrogate pair), with "…" appended. A
+    text that fits is returned unchanged."""
     budget = GUEST_TEXT_LIMIT - 1
     if utf16_len(text) <= budget:
         return text
@@ -71,7 +76,8 @@ def _cut(text: str) -> str:
     cut = end
     for i in range(end - 1, -1, -1):
         if text[i].isspace():
-            cut = i
+            if utf16_len(text[:i]) >= _WHITESPACE_CUT_FLOOR:
+                cut = i
             break
     return text[:cut].rstrip() + "…"
 
