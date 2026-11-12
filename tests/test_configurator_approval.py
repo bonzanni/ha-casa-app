@@ -250,3 +250,33 @@ async def test_an_attempt_that_failed_means_a_new_card(env, comparing, cards):
     assert approval_records.get(record.rid).state == "used"
     assert (await _ask())["approval"] == "requested"
     assert len(cards.cards) == 2
+
+
+# -- #1565: whose words the run is told -------------------------------------------------
+
+async def test_the_operators_own_words_reach_the_run_after_approve(env, cards):
+    words = "install weather; its feed is at https://x.example/feed, sha abc"
+    origin = {**ELLEN, "source": "telegram", "_operator_turn": True,
+              "_operator_words": words, "user_text": words}
+    await _with_origin(tools_mod.specialist_install_request_approval.handler(
+        _request_args()), origin)
+    (record,) = cards.cards
+    assert record.asked == words
+    _tap_approve(cards, record)
+    await _settled(env)
+    (run,) = env.runs.seen
+    assert cc.ASKED_LINE + json.dumps(words, ensure_ascii=False) in run.task
+
+
+async def test_a_root_that_is_not_the_operators_words_is_never_quoted(env, cards):
+    """An event wake or any other Casa-written root carries ``user_text`` but no
+    operator stamp: the run is not told it as the operator's request."""
+    wake = "[event] plugin x reported y. Handle it, then ack_event; <silent/> if nothing."
+    await _with_origin(tools_mod.specialist_install_request_approval.handler(
+        _request_args()), {**ELLEN, "user_text": wake})
+    (record,) = cards.cards
+    assert record.asked == ""
+    _tap_approve(cards, record)
+    await _settled(env)
+    (run,) = env.runs.seen
+    assert cc.ASKED_LINE not in run.task and wake not in run.task

@@ -2176,7 +2176,10 @@ def _request_world(monkeypatch, tmp_path, *, handle=None, raises=None, target=Tr
 async def _request(args, origin=None):
     import agent as agent_mod
     from tools import specialist_install_request_approval
+    # the operator's own message, as the Telegram ingress stamps it (#1565)
     token = agent_mod.origin_var.set(origin or {"role": "assistant", "user_text": "add mtg",
+                                                "channel": "telegram", "_operator_turn": True,
+                                                "_operator_words": "add mtg",
                                                 "_delegation_id": "deleg-7"})
     try:
         return _payload(await specialist_install_request_approval.handler(dict(args)))

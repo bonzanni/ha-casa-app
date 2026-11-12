@@ -571,7 +571,9 @@ async def test_persona_inspect_happy_path_posts_keyboard(monkeypatch, tmp_path) 
 
     import agent as agent_mod
     token = agent_mod.origin_var.set({"execution_role": "configurator",
-                                      "_delegation_id": "deleg-p", "user_text": "add Ada"})
+                                      "_delegation_id": "deleg-p", "user_text": "add Ada",
+                                      "channel": "telegram", "_operator_turn": True,
+                                      "_operator_words": "add Ada"})
     try:
         payload = _payload(await persona_install_inspect.handler(
             {"repo": "owner/repo", "ref": "main"}))

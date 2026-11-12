@@ -80,6 +80,22 @@ def values_line(values: dict) -> str:
     return "\n\n" + APPROVED_VALUES_LINE + json.dumps(values, sort_keys=True)
 
 
+#: #1565: the operator's words that led to the request. The approved values are
+#: only what the card showed; what the operator also gave for the steps after the
+#: commit (a plugin setting to wire, say) is in their words, and the run Casa
+#: starts after Approve would otherwise have to ask for it again.
+ASKED_LINE = ("What the operator asked for, in their words (use it for anything the "
+              "approved values do not cover): ")
+
+
+def asked_line(asked: str) -> str:
+    """The line that carries the operator's request into an approval's run;
+    empty when the record kept no words."""
+    if not asked.strip():
+        return ""
+    return "\n\n" + ASKED_LINE + json.dumps(asked, ensure_ascii=False)
+
+
 def continuation_text(kind: str, *, slug: str = "", component_id: str = "",
                       version: str = "", root_digest: str = "", staged_dir: str = "",
                       receipt_id: str = "", persona_id: str = "", checksum: str = "",
@@ -194,7 +210,8 @@ async def _continuation(key: str, slot: _Slot, continuation: str, approval, aske
             return
         if approval is not None:                                 # the frozen task text
             asked = approval.asked
-            task_text = continuation + values_line(approval.values)
+            task_text = (continuation + asked_line(approval.asked)
+                         + values_line(approval.values))
         else:
             task_text = continuation
         delegation_id = str(uuid.uuid4())                        # the durable row
