@@ -11,8 +11,8 @@ last_reviewed: 2026-11-02
 How one inbound message becomes one agent turn: what is assembled before the model is
 called and how the call is retried. What bounds the turn — a resident turn's stop at its
 turn limit, the one line Casa adds about it, and the limits the residents run with — is
-[`architecture/turn-limits.md`](turn-limits.md). It does not cover the life of
-the warm client the turn runs on ([`architecture/sdk-client-pool.md`](sdk-client-pool.md)),
+[`turn-limits.md`](turn-limits.md). It does not cover the life of
+the warm client the turn runs on ([`sdk-client-pool.md`](sdk-client-pool.md)),
 where the message came from (the channels), what the model is allowed to do inside the turn
 (authorization), or how memory is stored and recalled — only the point at which memory is
 read into a turn.
@@ -27,7 +27,7 @@ the memory store as they happen ([`memory-capture.md`](memory-capture.md)).
 
 The client the turn calls is usually a warm one the pool hands it rather than one this turn
 created; what that reuse guarantees, and what a close or a reset owes it, is
-[`architecture/sdk-client-pool.md`](sdk-client-pool.md).
+[`sdk-client-pool.md`](sdk-client-pool.md).
 
 **One scope per turn, minted before anything streams.** `handle_message` mints a
 `TurnScope` after delegation synthesis has rebound the message and before the streaming
@@ -41,39 +41,38 @@ passes through `scope.admit(FINAL_REPLY, …)`, which judges closing silence its
 unannotated text, so a `<silent/>` turn is suppressed before any line could be added and
 prose after a sentinel is delivered whole; a classified-error reply is Casa's own text; the
 plugin-health notice is prepended outermost over the admitted value, except on a
-`deliver: operator` or `operator_always` webhook turn, whose reply goes to the operator's
-Telegram through one fresh delivery context on every output path (INV-TRIG-018 in
-[`webhook-delivery.md`](webhook-delivery.md)); and every streamed
+`deliver: operator` or `operator_always` webhook turn, whose reply reaches the operator
+through one fresh delivery context on every path (INV-TRIG-018 in
+[`webhook-delivery.md`](webhook-delivery.md)), and on a summoned turn, whose notice is its
+own message to the operator ([`guest-summons.md`](guest-summons.md)); and every streamed
 cumulative `_emit` releases is admitted too, after the INV-TURN-009 hold has judged the
 unannotated cumulative with the same predicates. Options assembly is where the
 read-evidence matchers join every resident's hook bundle. What the scope does with the text
-is [`output-boundary.md`](output-boundary.md) (INV-OUT-006 in
-[`output-scope-properties.md`](output-scope-properties.md) for the three decisions that
-used to be inline checks here and in `send_message`).
+is [`output-boundary.md`](output-boundary.md) (its three decisions: INV-OUT-006 in
+[`output-scope-properties.md`](output-scope-properties.md)).
 
 **The origin snapshot records the turn's question, which is usually its text.** The prompt
 is built from the message's own text, and the options from the session's frozen memory view
 ([`memory-serving.md`](memory-serving.md)); the query sent
 puts `compose_turn_preamble` ahead of it — the `<current_time>` envelope, then, on a turn
-that has any, one `<casa_notes>` block of Casa's per-turn notes (on Telegram the drained
-chat notes: [`own-voice.md`](own-voice.md), then a reply's
-note: [`telegram.md`](telegram.md); then a
-captioned file's note: [`inbound-files.md`](inbound-files.md); on every turn of a memory
-role, the correction note), which retention
+that has any, one `<casa_notes>` block of Casa's per-turn notes (on Telegram, in order,
+the drained chat notes, a reply's note, a captioned file's note, and a summons' group and the
+answer it replied to: [`own-voice.md`](own-voice.md), [`telegram.md`](telegram.md),
+[`inbound-files.md`](inbound-files.md), [`guest-summons.md`](guest-summons.md); on every
+turn of a memory role, the correction note), which retention
 strips with the envelope (INV-MEM-022 in [`memory-labelling.md`](memory-labelling.md)). The origin's
-`user_text` normally holds that same text, and it is what a delegation launched from the turn
+`user_text` normally holds that same text, which a delegation launched from the turn
 records and quotes back. The one exception is a turn `handle_message` synthesized from a
-delegation completion. For that turn it passes `_process` the completion's own question as the
+delegation completion: it passes `_process` the completion's own question as the
 keyword-only `origin_question`, and the origin records that instead of the notice (INV-JOB-017
 in [`delegation-announcements.md`](delegation-announcements.md)). No other caller passes it.
 
 **A specialist with its own chat runs this loop too.** Its conversation is an `Agent` for its
 role, on the same session machinery, but its options come from the specialist builder
-(`Agent._build_specialist_session_options`) with its session extras, never the resident's
-builder; a turn drains Casa's notes for its chat (`chat_notes`) into its notes block, under
+(`Agent._build_specialist_session_options`) with its session extras, never the resident's; a turn drains Casa's notes for its chat (`chat_notes`) into its notes block, under
 one frame line that hands them to the agent as its own memory, each line prefixed `(Casa) `;
-the turn that opens its chat is told so on its own line (`agent.CHAT_OPENING_NOTE`)
-([`own-voice.md`](own-voice.md)).
+the turn that opens its chat is told so on its own line (`agent.CHAT_OPENING_NOTE`;
+[`own-voice.md`](own-voice.md)).
 
 ## Contracts & invariants
 
@@ -150,7 +149,7 @@ store as it is observed, while the gate and the client lock are still held, so a
 queued behind that turn finds the row settled rather than asking for the setup again. When
 that handover clears a failed obligation, the handler also regenerates the plugin-health
 report before it reads the next message, so the reply's health notice reads the new report.
-These are [`architecture/plugin-setup-turn.md`](plugin-setup-turn.md)'s (INV-PLUG-023,
+These are [`plugin-setup-turn.md`](plugin-setup-turn.md)'s (INV-PLUG-023,
 INV-PLUG-030); the loop only orders them. A third is an ordering fact: the setup-outcome
 report the loop makes in its `finally` runs before the message handler admits, suppresses
 or delivers the reply, so it carries the turn's tool evidence and never what the operator
@@ -240,8 +239,7 @@ upstream order moves nothing — and the turn captures each published server tog
 that digest when it arms its surface. The digest joins the surface's, and the options build
 connects with exactly the captured servers, so a publication landing mid-turn never pairs
 new tools with the old identity; the next turn picks it up. A role with no published tool
-surface digests exactly as before, so its conversations are not retired by this. The butler's
-conversations restart once, retained, on the upgrade that introduces it.
+surface digests exactly as before, so its conversations are not retired by this.
 
 The turn's read clearance joins the surface the same way, because the session's prompt — its
 memory view, its channel context — was written for one reader. A turn read at another
@@ -320,7 +318,7 @@ in the options assembly, which is the one place that sees the fully-resolved con
 
 Retry and the resume-fault streak are tuned by environment, alongside the pool's own
 bounds and in the same place a new bound belongs; the knobs and their defaults are
-listed in [`architecture/sdk-client-pool.md`](sdk-client-pool.md).
+listed in [`sdk-client-pool.md`](sdk-client-pool.md).
 
 ## Source & test map
 
