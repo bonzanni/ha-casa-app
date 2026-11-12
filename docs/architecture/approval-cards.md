@@ -87,6 +87,21 @@ more — an install's consent text, for one, names the Casa tools only when the 
 is rendered from carries them, and the one the request tool rebuilds does not
 ([`specialist-lifecycle.md`](specialist-lifecycle.md)).
 
+**A settled card says what was asked, in the card's own words.** When a protected tool call's
+card is answered, withdrawn, expires or its approval cannot be delivered, the keyboard is
+replaced by one literal line (the finish hook `ChallengeCoordinator._make_finish_hook`). The
+post driver records the posted card's action (`Card.action`, set only by `card_from_reply`) on
+the request before the send, and the line reuses it: `✅ Approved — {who} can {action}, once, in
+the next 5 minutes.`, `❌ Denied — {who} won't {action}.`, and for a retirement
+(`authz_grants._challenge_retired_text`) the cause's own icon and label with "the request to
+{action}" as its subject — `⌛ Expired — the request to {action} was not approved in time.`,
+`🚫 Withdrawn — the request to {action} was withdrawn before you answered.` A fallback card has
+no action, so its lines say "this request" (`✅ Approved — {who} can go ahead with this request
+once, in the next 5 minutes.`). An approval whose continuation cannot be delivered reads
+`⚠️ Approved, but {who} couldn't be reached to do it — say "retry" in this chat.`, or for an
+engagement-bound grant `… — ask again.`, where `{who}` is, for a delegated call, the resident
+the decision goes back to. No such line names the tool, its id or an engagement id.
+
 **Every failure ends in Casa's own card.** A timeout, a backend error, a refusal and two
 invalid replies all return the request's fallback, and `write_card` never raises. A tool
 call's fallback is `tool_fallback`: `🔐 Allow {who} to use {plugin}?` and one labelled line

@@ -699,14 +699,18 @@ class TestDisplayNameRenderGuard:
 
 
 class TestChallengeRetiredText:
-    def test_uses_short_name_only(self):
-        text = _challenge_retired_text(
-            "mcp__plugin_p_s__invoice_reset", "no_answer", None)
-        assert text == "⌛ Expired — invoice_reset was not approved in time"
+    _ACTION = "send an email to anna@example.com"
 
-    def test_plain_tool_name_matches_settlement_pattern(self):
-        assert _challenge_retired_text("invoice_reset", "no_answer", None) == (
-            "⌛ Expired — invoice_reset was not approved in time"
+    def test_an_expiry_names_the_cards_action(self):
+        text = _challenge_retired_text(self._ACTION, "no_answer", None)
+        assert text == (
+            "⌛ Expired — the request to send an email to anna@example.com "
+            "was not approved in time."
+        )
+
+    def test_an_expiry_of_a_fallback_card_says_this_request(self):
+        assert _challenge_retired_text("", "no_answer", None) == (
+            "⌛ Expired — this request was not approved in time."
         )
 
     def test_a_withdrawn_challenge_does_not_claim_it_timed_out(self):
@@ -714,14 +718,39 @@ class TestChallengeRetiredText:
         raised it is removed or its ack revoked. Saying it was not approved in
         time is false, and the operator who withdrew it is the one reading."""
         assert _challenge_retired_text(
-            "invoice_reset", "cancelled", "challenge_cancelled") == (
-            "🚫 Withdrawn — invoice_reset was withdrawn before it was answered"
+            self._ACTION, "cancelled", "challenge_cancelled") == (
+            "🚫 Withdrawn — the request to send an email to anna@example.com "
+            "was withdrawn before you answered."
+        )
+        assert _challenge_retired_text(
+            "", "cancelled", "challenge_cancelled") == (
+            "🚫 Withdrawn — this request was withdrawn before you answered."
+        )
+
+    def test_other_reasons_keep_their_label_and_clause(self):
+        assert _challenge_retired_text(
+            "", "cancelled", "engagement_ended") == (
+            "🚫 Withdrawn — this request was withdrawn when the engagement "
+            "that asked for it ended."
+        )
+        assert _challenge_retired_text(
+            self._ACTION, "cancelled", "new_session") == (
+            "🚫 Cancelled — the request to send an email to anna@example.com "
+            "was cancelled by /new."
+        )
+
+    def test_the_authz_wording_leaves_the_other_lanes_alone(self):
+        import ask_retirement
+        assert ask_retirement.retirement_headline(
+            "x", "cancelled", "challenge_cancelled") == (
+            "🚫 Withdrawn — x was withdrawn before it was answered"
         )
 
     def test_an_unrecognised_reason_falls_back_to_a_plain_cancellation(self):
         assert _challenge_retired_text(
-            "invoice_reset", "cancelled", "a_reason_nobody_has_mapped") == (
-            "🚫 Cancelled — invoice_reset was cancelled"
+            self._ACTION, "cancelled", "a_reason_nobody_has_mapped") == (
+            "🚫 Cancelled — the request to send an email to anna@example.com "
+            "was cancelled."
         )
 
 
@@ -1486,7 +1515,7 @@ class TestAuthzFinishHook:
         assert channel.dispatches, "dispatch was attempted"
         # last edit is the visible-failure overwrite
         last = channel.edits[-1][2].lower()
-        assert "delivery to finance-full failed" in last
+        assert "finance-full couldn't be reached" in last
         assert "retry" in last
 
     async def test_deny_dispatch_exhaustion_overwrites_failure(
@@ -1555,9 +1584,10 @@ class TestAuthzFinishHook:
         _tap(broker, ch, 0)
         await _settle()
         # No display name threaded ⇒ render-time guard substitutes the role.
+        # No model in tests ⇒ Casa's own fallback card ⇒ "this request".
         assert channel.edits[-1][2] == (
-            "✅ Approved — finance (finance) may run invoice_reset once with "
-            "exactly these arguments in the next 5 minutes"
+            "✅ Approved — finance can go ahead with this request once, in "
+            "the next 5 minutes."
         )
 
     async def test_approved_edit_names_display_name_when_threaded(
@@ -1571,8 +1601,8 @@ class TestAuthzFinishHook:
         _tap(broker, ch, 0)
         await _settle()
         assert channel.edits[-1][2] == (
-            "✅ Approved — Alex (finance) may run invoice_reset once with "
-            "exactly these arguments in the next 5 minutes"
+            "✅ Approved — Alex can go ahead with this request once, in the "
+            "next 5 minutes."
         )
 
     async def test_denied_edit_uses_humanized_settlement_copy(
@@ -1584,7 +1614,8 @@ class TestAuthzFinishHook:
         ch = coord._entries[key]
         _tap(broker, ch, 1)
         await _settle()
-        assert channel.edits[-1][2] == "❌ Denied — invoice_reset will not run"
+        assert channel.edits[-1][2] == (
+            "❌ Denied — finance won't go ahead with this request.")
 
     async def test_no_answer_edit_uses_humanized_expired_copy(
         self, monkeypatch,
@@ -1600,7 +1631,7 @@ class TestAuthzFinishHook:
         broker._on_timeout(("resident_ask", ch.scope, ch.rid))
         await _settle()
         assert channel.edits[-1][2] == (
-            "⌛ Expired — invoice_reset was not approved in time"
+            "⌛ Expired — this request was not approved in time."
         )
 
     async def test_a_cancelled_challenge_edit_does_not_claim_an_expiry(
@@ -1617,7 +1648,7 @@ class TestAuthzFinishHook:
             reason="new_session") == 1
         await _settle()
         assert channel.edits[-1][2] == (
-            "🚫 Cancelled — invoice_reset was cancelled by /new"
+            "🚫 Cancelled — this request was cancelled by /new."
         )
 
     async def test_approved_dispatch_failure_overwrite_uses_humanized_copy(
@@ -1630,9 +1661,11 @@ class TestAuthzFinishHook:
         ch = coord._entries[key]
         _tap(broker, ch, 0)
         await _settle()
+        # The continuation goes back to finance-full, which has no persona
+        # name here, so the role stands in (the same render-time fallback).
         assert channel.edits[-1][2] == (
-            "⚠️ Approved, but delivery to finance-full failed — "
-            "say 'retry' in chat"
+            "⚠️ Approved, but finance-full couldn't be reached to do it — "
+            'say "retry" in this chat.'
         )
 
     async def test_denied_dispatch_failure_overwrite_uses_humanized_copy(
@@ -1654,9 +1687,13 @@ class TestAuthzFinishHook:
         self, monkeypatch,
     ):
         """r3-2: the delivery-failure overwrite reports failure to
-        ``target_role`` — the ORIGINATING resident (e.g. Ellen) — verbatim
-        v0.77 bytes, and the EXECUTING specialist's display name ('Alex') does
+        ``target_role`` — the ORIGINATING resident, by its persona name
+        (Ellen) — and the EXECUTING specialist's display name ('Alex') does
         NOT appear in it."""
+        import tools
+        monkeypatch.setattr(
+            tools, "_display_name_for_role",
+            lambda role: {"assistant": "Ellen"}.get(role, role))
         broker, coord, channel = _fresh_env(monkeypatch)
         channel.dispatch_result = False
         key, handle = _create(
@@ -1669,9 +1706,161 @@ class TestAuthzFinishHook:
         _tap(broker, ch, 0)
         await _settle()
         assert channel.edits[-1][2] == (
-            "⚠️ Approved, but delivery to assistant failed — say 'retry' in chat"
+            "⚠️ Approved, but Ellen couldn't be reached to do it — "
+            'say "retry" in this chat.'
         )
         assert "Alex" not in channel.edits[-1][2]
+
+
+    # -- the settled card reuses the model-written card's action ------------
+
+    _EMAIL_TOOL = "mcp__plugin_lantern-mail_mail__send_email"
+
+    async def _model_card_challenge(self, monkeypatch, *, engagement_id=""):
+        import approval_card
+
+        async def _ask(system, user):
+            return json.dumps({
+                "action": "send an email to anna@example.com",
+                "summary": "A short note about Friday.",
+                "lines": [{"label": "To", "value": "anna@example.com"}],
+            })
+
+        monkeypatch.setattr(approval_card, "_ask", _ask)
+        broker, coord, channel = _fresh_env(monkeypatch)
+        key = _key(chat_id=100, enforcement_role="assistant",
+                   tool_name=self._EMAIL_TOOL,
+                   args_hash=canonical_args_hash({"x": 1}),
+                   engagement_id=engagement_id)
+        key, handle = _create(
+            coord, channel, key, tool_name=self._EMAIL_TOOL,
+            enforcement_role="assistant", target_role="assistant",
+            display_name="Ellen", engagement_id=engagement_id,
+            canonical_json='{"to":"anna@example.com"}',
+        )
+        assert await handle.settled_post() == "posted"
+        assert channel.posts[0][2].startswith(
+            "🔐 Allow Ellen to send an email to anna@example.com?")
+        return broker, coord, channel, coord._entries[key]
+
+    @pytest.mark.parametrize("scenario,expected", [
+        ("approve", "✅ Approved — Ellen can send an email to "
+                    "anna@example.com, once, in the next 5 minutes."),
+        ("deny", "❌ Denied — Ellen won't send an email to anna@example.com."),
+        ("withdraw", "🚫 Withdrawn — the request to send an email to "
+                     "anna@example.com was withdrawn before you answered."),
+        ("expire", "⌛ Expired — the request to send an email to "
+                   "anna@example.com was not approved in time."),
+    ])
+    async def test_a_model_card_settles_with_its_own_action(
+        self, monkeypatch, scenario, expected,
+    ):
+        broker, coord, channel, ch = await self._model_card_challenge(
+            monkeypatch)
+        if scenario == "approve":
+            _tap(broker, ch, 0)
+        elif scenario == "deny":
+            _tap(broker, ch, 1)
+        elif scenario == "withdraw":
+            assert coord.cancel_matching(role="assistant") == 1
+        else:
+            broker._on_timeout(("resident_ask", ch.scope, ch.rid))
+        await _settle()
+        assert [e[2] for e in channel.edits] == [expected]
+        assert channel.edit_literals == [True]
+
+    @pytest.mark.parametrize("scenario,expected", [
+        ("approve", "✅ Approved — finance can go ahead with this request "
+                    "once, in the next 5 minutes."),
+        ("deny", "❌ Denied — finance won't go ahead with this request."),
+        ("withdraw", "🚫 Withdrawn — this request was withdrawn before you "
+                     "answered."),
+        ("expire", "⌛ Expired — this request was not approved in time."),
+    ])
+    async def test_a_fallback_card_settles_as_this_request(
+        self, monkeypatch, scenario, expected,
+    ):
+        broker, coord, channel = _fresh_env(monkeypatch)
+        key, handle = _create(coord, channel, target_role="finance")
+        assert await handle.settled_post() == "posted"
+        ch = coord._entries[key]
+        if scenario == "approve":
+            _tap(broker, ch, 0)
+        elif scenario == "deny":
+            _tap(broker, ch, 1)
+        elif scenario == "withdraw":
+            assert coord.cancel_matching(role="finance") == 1
+        else:
+            broker._on_timeout(("resident_ask", ch.scope, ch.rid))
+        await _settle()
+        assert [e[2] for e in channel.edits] == [expected]
+
+    async def test_an_undelivered_dm_approval_says_retry_in_this_chat(
+        self, monkeypatch,
+    ):
+        broker, coord, channel, ch = await self._model_card_challenge(
+            monkeypatch)
+        channel.dispatch_result = False
+        _tap(broker, ch, 0)
+        await _settle()
+        assert [e[2] for e in channel.edits] == [
+            "✅ Approved — Ellen can send an email to anna@example.com, once, "
+            "in the next 5 minutes.",
+            "⚠️ Approved, but Ellen couldn't be reached to do it — "
+            'say "retry" in this chat.',
+        ]
+
+    async def test_an_undelivered_engagement_approval_says_ask_again(
+        self, monkeypatch,
+    ):
+        """An engagement-bound grant serves only that engagement, so the
+        line never offers a retry in chat, and names no engagement id."""
+        broker, coord, channel, ch = await self._model_card_challenge(
+            monkeypatch, engagement_id="1a2b3c4d-eng")
+        channel.dispatch_result = False
+        _tap(broker, ch, 0)
+        await _settle()
+        assert channel.eng_dispatches, "the engagement was resumed"
+        assert channel.edits[-1][2] == (
+            "⚠️ Approved, but Ellen couldn't be reached to do it — ask again.")
+        assert "1a2b3c4d" not in channel.edits[-1][2]
+
+    @pytest.mark.parametrize("scenario", [
+        "approve", "deny", "withdraw", "expire", "new_session",
+        "approve_undelivered",
+    ])
+    @pytest.mark.parametrize("model_card", [True, False])
+    async def test_no_settled_line_names_the_tool(
+        self, monkeypatch, scenario, model_card,
+    ):
+        if model_card:
+            broker, coord, channel, ch = await self._model_card_challenge(
+                monkeypatch)
+        else:
+            broker, coord, channel = _fresh_env(monkeypatch)
+            key, handle = _create(coord, channel, tool_name=self._EMAIL_TOOL,
+                                  enforcement_role="assistant",
+                                  target_role="assistant")
+            assert await handle.settled_post() == "posted"
+            ch = coord._entries[key]
+        if scenario == "approve_undelivered":
+            channel.dispatch_result = False
+        if scenario.startswith("approve"):
+            _tap(broker, ch, 0)
+        elif scenario == "deny":
+            _tap(broker, ch, 1)
+        elif scenario == "withdraw":
+            assert coord.cancel_matching(role="assistant") == 1
+        elif scenario == "new_session":
+            assert broker.cancel_scope(namespace="resident_ask",
+                                       scope=ch.scope,
+                                       reason="new_session") == 1
+        else:
+            broker._on_timeout(("resident_ask", ch.scope, ch.rid))
+        await _settle()
+        assert channel.edits
+        for _chat, _mid, text in channel.edits:
+            assert "send_email" not in text and "mcp__" not in text, text
 
 
 class TestTwoLatchCleanup:
@@ -1776,8 +1965,8 @@ class TestCancelMatching:
         assert n == 1
         # #933: `cancel_matching` withdraws the challenge; it did not time out.
         assert sum("expired" in e[2].lower() for e in channel.edits) == 0
-        assert sum(e[2] == "🚫 Withdrawn — a was withdrawn before it was "
-                   "answered" for e in channel.edits) == 1
+        assert sum(e[2] == "🚫 Withdrawn — this request was withdrawn "
+                   "before you answered." for e in channel.edits) == 1
         assert k1 not in coord._entries
         assert k2 in coord._entries
 
@@ -2014,7 +2203,8 @@ class TestC1EngagementContinuationReservation:
         texts = [e[2] for e in channel.edits]
         facts = (len(texts),
                  "approved" in texts[0].lower() if texts else None,
-                 "could not be resumed" in texts[-1].lower() if len(texts) > 1 else False,
+                 "couldn't be reached to do it — ask again" in texts[-1].lower()
+                 if len(texts) > 1 else False,
                  sum(l.releases for l in channel.leases))
         assert facts == (2, True, True, 1), f"authz raise facts: {facts!r}"
 

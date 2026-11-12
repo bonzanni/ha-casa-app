@@ -86,6 +86,9 @@ class Card:
     # Appended to the title verbatim (it carries its own leading newline);
     # used only by the text fallback.
     body: str = ""
+    # The model's validated action phrase ("send an email to Marco"), which
+    # the card's later status lines reuse; empty on every fallback card.
+    action: str = ""
 
 
 def _clean(text: str) -> str:
@@ -186,7 +189,7 @@ def card_from_reply(text: str, *, who: str, title: str | None = None) -> Card | 
         flagged += mark
     if title is None:
         title = f"🔐 Allow {_clean(who)} to {action}?"
-    return Card(title=title, summary=summary, lines=tuple(lines))
+    return Card(title=title, summary=summary, lines=tuple(lines), action=action)
 
 
 def text_fallback(body: str) -> Card:

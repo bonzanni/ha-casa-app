@@ -55,7 +55,7 @@ continuation, or ends without reading it, the seam or the job's message journal 
 in reply to the card ([`engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md),
 INV-ENG-029), and the card itself adds no failure line, so the operator is told once. Only when
 the channel does not know the engagement, and so no seam tells it, is the card corrected to say
-that the engagement could not be resumed to use the approval and to ask for it again, because
+that the agent couldn't be reached to do it and to ask again — never to retry in chat — because
 that grant can serve no other caller. An
 engagement that ends before the tap takes its unanswered
 challenges with it (INV-PLUG-033).
@@ -161,7 +161,7 @@ engagement id of the DM path is never a filter, so resident and delegated challe
 untouched.
 
 What it does not cover: a tap that committed before the transition — its continuation meets
-a terminal record and the DM is corrected to "ask for it again"; an engagement that ended
+a terminal record and the DM is corrected to "ask again"; an engagement that ended
 in an earlier process, whose challenges a restart already dropped with every grant
 (INV-PLUG-005); and challenges not bound to an engagement.
 
