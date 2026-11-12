@@ -29,13 +29,15 @@ from atomic_io import PRIVATE, atomic_write_json
 logger = logging.getLogger(__name__)
 
 # How often a guest reply's progress message is refreshed, in seconds.
-GUEST_TICK_S = 2.0
+GUEST_TICK_S = 3.0
 # How long a guest turn may take to reach a final answer, in seconds.
-GUEST_TERMINAL_BUDGET_S = 120.0
-# The longest guest reply text sent in one message (Telegram's message limit).
+GUEST_TERMINAL_BUDGET_S = 300.0
+# The longest guest reply text sent in one message (Telegram's message limit,
+# counted in UTF-16 code units).
 GUEST_TEXT_LIMIT = 4096
 # Words shown while a guest reply is being prepared.
-THINKING_WORDS = ("Thinking", "Working on it", "Looking into it", "Almost there")
+THINKING_WORDS = ("thinking", "looking that up", "checking", "weighing it",
+                  "nearly there")
 
 _ENTRY_KEYS = {"title", "type", "component_id", "allowed_at"}
 _DEFAULT_PATH = Path("/data/agent-voices-guests.json")
