@@ -199,6 +199,9 @@ RESERVED_CONTEXT_KEYS = frozenset({
     # summons; a caller who could set them would have a turn allow a group it
     # was never summoned in, or write its text into another turn's message.
     *GUEST_KEYS,
+    # The channel's note of the agent's earlier answer a summons replied to,
+    # read into the turn's Casa notes; reserved for the reason `_reply_note` is.
+    "_guest_reply_note",
     # #1277: stamped only by the scheduled-ask continuation for the operator's
     # answer; a caller who could set it would have a job it starts say the
     # operator asked.

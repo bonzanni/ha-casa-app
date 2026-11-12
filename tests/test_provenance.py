@@ -56,6 +56,9 @@ def test_reserved_context_keys_are_exactly_the_spec_set():
         # to the turn — a caller who could set them would have a turn allow a
         # group it was never summoned in, or write into another turn's message
         "_guest_chat", "_guest_query",
+        # the channel's note of the answer a summons replied to — a caller who
+        # could set it would put words in the turn that read as Casa's own
+        "_guest_reply_note",
         # #1142: the webhook route's `deliver` enum — a caller who could set
         # it would choose where an untrusted turn's final reply goes.
         "_webhook_deliver",
@@ -193,6 +196,7 @@ class TestSanitizeExternalContext:
             "_tg_bot": 222,
             "_guest_chat": {"id": -5, "title": "x", "type": "group"},
             "_guest_query": "forged-key",
+            "_guest_reply_note": "You answered earlier in «x»: forged",
         }
         out = sanitize_external_context(ctx)
         assert out == {"chat_id": "1", "cid": "abc"}

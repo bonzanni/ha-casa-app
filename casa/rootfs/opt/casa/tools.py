@@ -7361,7 +7361,7 @@ async def _start_voice_async_job(
                 "specialist_role": specialist_role,
                 "task_text": task_text,
                 "context_text": context_text,
-                "origin": drop_guest_markers(dict(origin)),
+                "origin": dict(origin),
                 "resolution": resolution,
                 "started_at": started_at,
             },
@@ -8373,7 +8373,7 @@ async def delegate_to_agent(args: dict) -> dict:
         # quota key above — so the child's context binds the copy (with its
         # scope view), never the pooled holder the next turn rewrites.
         import agent as _agent_mod
-        _child_origin = drop_guest_markers(dict(origin))
+        _child_origin = dict(origin)
         if _launch_scope is not None:
             _child_origin["turn_scope"] = TurnScope.for_child(
                 _launch_scope, _note, synchronous=(mode != "async"))
@@ -8896,7 +8896,7 @@ async def hand_off(args: dict) -> dict:
         _launch_scope = origin.get("turn_scope")
         _, _note = _launch_note(origin, task_text)
         import agent as _agent_mod
-        _child_origin = drop_guest_markers(dict(origin))
+        _child_origin = dict(origin)
         if isinstance(_launch_scope, TurnScope):
             _child_origin["turn_scope"] = TurnScope.for_child(
                 _launch_scope, _note, synchronous=True)
