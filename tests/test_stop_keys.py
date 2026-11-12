@@ -286,7 +286,7 @@ async def test_before_the_bot_has_an_id_nothing_that_carries_the_keys_is_posted(
     assert await rig.ch.post_job_start_line(rec) is None
     assert await rig.ch.deliver_run_card(OPERATOR, CARD_TEXT) is None
     assert await rig.ch.send_reply_line(OPERATOR, "Stopped.", CARD_MID) is False
-    assert await rig.ch._send_key_line(OPERATOR, "Finished «x».") is False
+    assert await rig.ch._send_key_line(OPERATOR, "✅ Finished «x»") is False
     assert rig.bot.sent == []
 
 
@@ -364,23 +364,76 @@ async def test_after_a_restart_a_stale_key_is_an_ordinary_message(rig):
 
 # -- the end lines -----------------------------------------------------------------------
 
+@pytest.mark.parametrize("cost,suffix", [(0.12, " · 1 min · $0.12"), (None, " · 1 min")])
 @pytest.mark.parametrize("status,line", [
-    ("completed", "Finished «Accounting check»."),
-    ("cancelled", "Stopped «Accounting check»."),
-    ("error", "«Accounting check» failed."),
+    ("completed", "✅ Alex finished «Accounting check»"),
+    ("cancelled", "🛑 Stopped Alex's «Accounting check»"),
+    ("error", "❌ Alex's «Accounting check» failed"),
 ])
-async def test_a_jobs_end_line_carries_the_keys_still_live(rig, status, line):
+async def test_a_jobs_end_line_carries_its_outcome_cost_and_the_keys_still_live(
+        rig, status, line, cost, suffix):
+    """In Casa's chat the end line names the agent, as the start line does; its
+    running time and cost ride on it, and the start line is left as it is."""
     rec = await rig.job()
+    if cost is not None:
+        rec.origin["job"]["cost_usd"] = cost
     rig.run()
     await rig.reg.try_transition_terminal(rec.id, status, strict=True)
     posts = rig.reg.take_ui_posts(rec.id)
     await rig.ch._retire_job_posts(rec, posts)
-    (edit,) = rig.bot.edited
-    assert edit["message_id"] == START_MID
+    assert rig.bot.edited == []
     (sent,) = rig.bot.sent
-    assert sent["text"] == line and sent["disable_notification"] is True
+    assert sent["text"] == line + suffix and sent["disable_notification"] is True
     assert sent["reply_parameters"].message_id == START_MID
     assert keys(sent["reply_markup"]) == [[("⏹ Stop «RunPod»", "danger")]]
+
+
+async def test_a_jobs_start_line_is_never_edited_for_its_whole_life(rig):
+    """Start, a turn's end, the end: the start line (sent with the Stop key, which
+    Telegram never lets be edited) is never passed to an edit; one line ends the job."""
+    import background_jobs as bj
+    from claude_agent_sdk import ResultMessage
+    rec = await rig.job(filed=False)
+    start = await rig.ch.post_job_start_line(rec)
+
+    class _Driver:
+        def submit_casa(self, rec, text):
+            pass
+
+    runner = bj.JobRunner(registry=rig.reg, channel=tools_mod._channel_manager,
+                          driver=_Driver())
+    rec.origin["job"]["cost_usd"] = 0.12
+    runner.turn_ended(rec, ResultMessage(
+        subtype="success", duration_ms=1, duration_api_ms=1, is_error=False, num_turns=1,
+        session_id="s", total_cost_usd=0.12, usage={}, result=""))
+    await asyncio.gather(*runner._tasks)
+    await rig.reg.try_transition_terminal(rec.id, "completed", strict=True)
+    rig.ch.retire_job_keyboards(rec)
+    await asyncio.gather(*rig.ch._job_ui_tasks)
+    assert rig.bot.edited == []
+    assert [(m["text"], getattr(m.get("reply_parameters"), "message_id", None))
+            for m in rig.bot.sent] == [
+        ("📊 Alex started «Accounting check».", None),
+        ("✅ Alex finished «Accounting check» · 1 min · $0.12", start)]
+
+
+async def test_a_message_that_cannot_be_edited_is_a_quiet_false(rig, caplog):
+    """Telegram refuses any edit of a message sent with a reply keyboard: the edit
+    reports False, once, with no warning."""
+    import logging
+    from telegram.error import BadRequest
+    tries: list = []
+
+    async def _refuse(**kwargs):
+        tries.append(kwargs)
+        raise BadRequest("Message can't be edited")
+    rig.bot.edit_message_text = _refuse
+    with caplog.at_level(logging.INFO):
+        assert await rig.ch.edit_dm_message(OPERATOR, CARD_MID, "x\n☑ Stopped") is False
+        assert await rig.ch.edit_dm_message(OPERATOR, CARD_MID, "**x**") is False
+    assert len(tries) == 2
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+    assert sum("can't be edited" in r.getMessage() for r in caplog.records) == 2
 
 
 async def test_the_last_end_line_removes_the_keyboard(rig):

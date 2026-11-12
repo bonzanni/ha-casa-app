@@ -99,8 +99,6 @@ EDIT_DM_MESSAGE_CALLERS = {
     ("operator_calls.py", "_finish"): {"plugin"},                  # browser executor: a plugin's question, ☑ label / retired
     ("plugin_stop.py", "settle_run_card"): {"status"},             # the Stop: the card's stored text + ☑ Stopped / Ended / Stop asked
     ("run_admission.py", "_on_settle"): {"status"},                # a started card's stored text again, with a Stop button, when its key line did not land
-    ("channels/telegram.py", "_retire_job_post"): {"status"},      # an ended job's start line: its outcome mark, Casa template
-    ("channels/telegram.py", "refresh_job_start_line"): {"status"},  # a live job's start line: elapsed time and cost, Casa template
 }
 
 RAW_TRANSPORT_FUNCTIONS = {

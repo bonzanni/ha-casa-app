@@ -450,16 +450,6 @@ class TelegramTransport(Channel):
         ep = self._job_endpoint(rec)
         return None if ep is None else await ep.post_job_start_line(rec)
 
-    async def refresh_job_start_line(self, rec: Any) -> None:
-        """Edit the job's start line through the bot that posted it. A job
-        with no start line filed has nothing to edit."""
-        from engagement_registry import JOB_POST_START
-        for post in getattr(rec, "ui_posts", None) or ():
-            parts = _post_parts(post)
-            if parts is not None and parts[1] == JOB_POST_START:
-                await self.endpoint(parts[0]).refresh_job_start_line(rec)
-                return
-
     async def post_job_parked(self, rec: Any, text: str) -> "int | None":
         ep = self._job_endpoint(rec)
         return None if ep is None else await ep.post_job_parked(rec, text)

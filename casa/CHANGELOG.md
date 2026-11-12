@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.368.1] - 2026-11-12
+
+### Fixed
+
+- A job's start line no longer tries to update itself. Since 0.368.0 it raises the Stop key, and Telegram does not allow editing such a message, so its running time, cost and final mark never appeared. The line that ends the job now carries them: "✅ Finished «…» · 40 min · $2.40", "🛑 Stopped «…» · …" or "❌ «…» failed · …".
+
+### Changed
+
+- A running job's start line no longer shows its running time and cost while it works; you see both when it ends. The agent's log still shows progress.
+
 ## [0.368.0] - 2026-11-12
 
 ### Changed

@@ -582,13 +582,15 @@ class TestStartLineCancelAndRetirement:
         await _drain(r)
         assert cq.answers == ["Cancelling…"]
         assert r.rec.status == "cancelled"
-        assert [e["text"] for e in r.bot.edits if e["message_id"] == start_mid] == [
-            "🛑 finance «Process rows» · 1 min"]
+        # the start line is never edited: it carries the Stop key
+        assert [e for e in r.bot.edits if e["message_id"] == start_mid] == []
         assert [m["message_id"] for m in r.bot.markups] == [q_mid]
         assert r.rec.ui_posts == []
-        # one silent end line in reply to the start line takes the key away
+        # one silent end line in reply to the start line carries the outcome and the
+        # running time, and takes the key away
         (end,) = r.bot.replies()
-        assert (end["text"], end["reply_to"]) == ("Stopped «Process rows».", start_mid)
+        assert (end["text"], end["reply_to"]) == (
+            "🛑 Stopped finance's «Process rows» · 1 min", start_mid)
         assert end["markup"].remove_keyboard is True
 
     async def test_a_second_cancel_tap_while_the_first_runs_is_already_finishing(
@@ -640,8 +642,9 @@ class TestStartLineCancelAndRetirement:
         await r.reg.try_transition_terminal(r.rec.id, "completed", strict=True)
         assert r.ch.retire_ended_job_keyboards() == 1
         await _drain(r)
-        assert [(e["message_id"], e["text"]) for e in r.bot.edits] == [
-            (960, "✅ finance «Process rows» · 1 min")]
+        assert r.bot.edits == []
+        assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
+            ("✅ finance finished «Process rows» · 1 min", 960)]
         assert r.ch.retire_ended_job_keyboards() == 0
 
     async def test_launch_death_retires_the_keyboards_too(self, tmp_path, monkeypatch):
@@ -653,8 +656,9 @@ class TestStartLineCancelAndRetirement:
             None, r.rec, kind="launch_incomplete", detail="x", driver=None)
         assert result is tools.LaunchDeathResult.REPORTED
         await _drain(r)
-        assert [(e["message_id"], e["text"]) for e in r.bot.edits] == [
-            (970, "❌ finance «Process rows» · 1 min")]
+        assert r.bot.edits == []
+        assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
+            ("❌ finance's «Process rows» failed · 1 min", 970)]
 
 
 # ---------------------------------------------------------------------------

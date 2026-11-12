@@ -758,7 +758,7 @@ def _persist_later(engagement_id: str) -> None:
 
 def format_elapsed(seconds: float) -> str:
     """``40 min``, ``1 h 5 min``, ``2 h`` — the job's running time as the
-    operator reads it on the start line."""
+    operator reads it on the job's end line."""
     minutes = max(1, int(seconds // 60))
     hours, minutes = divmod(minutes, 60)
     if not hours:
@@ -865,8 +865,7 @@ class JobRunner:
     def turn_ended(self, rec: Any, result: Any, api_error: Any = None) -> None:
         """At every ResultMessage of a job's session, SYNCHRONOUSLY, in the
         reader. Continue, nudge once, or park — never end the job. Also
-        persists the job's cost (the driver updated it in memory) and
-        refreshes the start line."""
+        persists the job's cost (the driver updated it in memory)."""
         job = (getattr(rec, "origin", None) or {}).get("job")
         if not isinstance(job, dict):
             return                  # an interactive record an older Casa left
@@ -913,13 +912,6 @@ class JobRunner:
 
     async def _after_turn(self, rec: Any) -> None:
         await self.persist(rec.id)
-        refresh = getattr(self.channel, "refresh_job_start_line", None)
-        if callable(refresh):
-            try:
-                await refresh(rec)
-            except Exception:  # noqa: BLE001 — cosmetic
-                logger.info("job %s start line not refreshed", rec.id[:8],
-                            exc_info=True)
 
     async def _continue_after_fault(self, rec: Any) -> None:
         await asyncio.sleep(FAULT_RETRY_S)

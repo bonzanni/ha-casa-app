@@ -473,9 +473,9 @@ async def test_an_ended_jobs_keyboards_are_retired_through_their_own_bots(pair):
              [FINANCE_BOT, OPERATOR, 7, JOB_POST_QUESTION]]
     await pair.casa._retire_job_posts(rec, posts)
     await pair.finance._retire_job_posts(rec, posts)
-    # the start line's edit, then its end line (which takes the Stop key away)
-    assert [n for n, _ in calls(pair.casa)] == ["edit_message_text", "send_message"]
-    assert [kw["chat_id"] for n, kw in calls(pair.casa)] == [OPERATOR, OPERATOR]
+    # the start line is never edited: its end line (which takes the Stop key away)
+    assert [n for n, _ in calls(pair.casa)] == ["send_message"]
+    assert [kw["chat_id"] for n, kw in calls(pair.casa)] == [OPERATOR]
     assert [n for n, _ in calls(pair.finance)] == ["edit_message_reply_markup"]
     (_, kw), = calls(pair.finance)
     assert (kw["chat_id"], kw["message_id"]) == (OPERATOR, 7)

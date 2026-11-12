@@ -158,9 +158,6 @@ class FakeEndpoint:
         self._record("post_job_start_line", rec)
         return self._mid() if self._ready else None
 
-    async def refresh_job_start_line(self, rec: Any) -> None:
-        self._record("refresh_job_start_line", rec)
-
     async def post_job_parked(self, rec: Any, text: str) -> "int | None":
         self._record("post_job_parked", rec, text)
         return self._mid() if self._ready else None

@@ -544,15 +544,15 @@ finished. Everything that needs you happens in your DM; if you set up a log grou
 you can also watch the job work there (see [Optional: agent logs](#optional-agent-logs)).
 A job you asked for puts one
 silent line in your DM — "📊 Finance started «…»." — and a red **⏹ Stop «…»** key
-at your keyboard, which stays there while the job runs however far the chat moves on; the
-line shows how long the job has been running and, once its first stretch of work
-has ended, what it has cost so far ("· 40 min · $2.40"). When a specialist's job
+at your keyboard, which stays there while the job runs however far the chat moves on. When a specialist's job
 needs a decision from you it asks in your DM, with a button per choice: tap one,
 or reply to the question in words. To steer a running job, reply in your DM to any
 of its messages there (its start line, a question, something its plugin posted);
 your words reach the job while it works, at its next step. To stop it, press its
 **Stop** key, or ask the assistant to cancel it. When the job ends, one silent line
-("Finished «…».", "Stopped «…»." or "«…» failed.") takes its key away. If the job ended before it read your
+in reply to its start line shows the outcome, how long it ran and what it cost
+("✅ Finished «…» · 40 min · $2.40", "🛑 Stopped «…» · …" or "❌ «…» failed · …"; in
+the assistant's chat it names the agent) and takes the key away. If the job ended before it read your
 message, Casa answers it once: "The job had just finished, so your message didn't
 get through. Could you send it again?" A reply to a message of a job that has already ended goes to the assistant,
 with a note saying which job it was and how and when it ended.

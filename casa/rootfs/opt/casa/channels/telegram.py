@@ -153,6 +153,12 @@ def reply_note(who: str, posted: str | None, quoted_text: str | None) -> str:
             "Their words answer that message, which may not be your latest one.")
 
 
+def _cannot_be_edited(exc: BaseException) -> bool:
+    """Telegram's refusal to edit a message at all — one sent with a reply keyboard (the
+    Stop keys, ``stop_keys``) is never editable. Not an error: no retry, no warning."""
+    return "can't be edited" in str(exc).lower()
+
+
 def _plain(text):
     """#1330: ``plain_text`` for a send without entities, keeping the
     admission of model text — the plain transports refuse a bare string, and
@@ -3609,29 +3615,13 @@ class TelegramChannel(Channel):
 
     def _job_start_post(self, rec) -> "TgAddress | None":
         """The address of the job's start line, while it is filed and it is
-        this bot's message (only the bot that posted it can edit it or reply
-        to it)."""
+        this bot's message (only the bot that posted it can reply to it)."""
         from engagement_registry import JOB_POST_START
         for post in getattr(rec, "ui_posts", None) or ():
             parts = _job_post_parts(post)
             if parts is not None and parts[1] == JOB_POST_START:
                 return parts[0] if self._own_address(parts[0]) else None
         return None
-
-    async def refresh_job_start_line(self, rec) -> None:
-        """Edit a live job's start line, silently, to show how long it has
-        run and its exact cost as of its last turn end (absent until a turn
-        has ended): ``📊 Finance started «Accounting check». · 40 min ·
-        $2.40``, with no buttons (its Stop is the key at the keyboard). A job
-        with no start line (scheduled or agent-started) has nothing to edit."""
-        import background_jobs
-        start = self._job_start_post(rec)
-        if start is None or self.bot is None:
-            return
-        if getattr(rec, "status", None) not in ("active", "idle"):
-            return
-        text = self._job_start_text(rec) + background_jobs.cost_suffix(rec)
-        await self.edit_dm_message(start.chat_id, start.message_id, text)
 
     async def post_job_parked(self, rec, text: str) -> "int | None":
         """A parked job's one line in the operator's direct chat, with the
@@ -3764,12 +3754,13 @@ class TelegramChannel(Channel):
                                rec.id[:8], exc_info=True)
 
     async def _retire_job_post(self, rec, post) -> None:
-        """Edit one keyboard post of an ended job at its own address: the
-        start line to its outcome mark, followed by its end line (``Finished
-        «<title>».``, ``Stopped «<title>».`` or ``«<title>» failed.``) with the
-        chat's Stop keys still live, a question to no buttons. A post this
-        cannot edit — one without an address, or another bot's — keeps its
-        keyboard; a tap on it reads the terminal record."""
+        """Retire one keyboard post of an ended job at its own address. The start line
+        is never edited (it carries the reply keyboard, which Telegram does not allow to
+        be edited): one silent line in reply to it ends the job — its outcome, running
+        time and cost, ``✅ Finished «<title>» · 40 min · $2.40`` (naming the agent where
+        the start line does) — with the chat's Stop keys still live. A question loses its
+        buttons. A post this cannot touch — one without an address, or another bot's —
+        keeps its keyboard; a tap on it reads the terminal record."""
         from engagement_registry import JOB_POST_START
         parts = _job_post_parts(post)
         if parts is None:
@@ -3785,18 +3776,13 @@ class TelegramChannel(Channel):
         if kind == JOB_POST_START:
             import background_jobs
             import result_broker
-            mark = {"completed": "✅", "cancelled": "🛑"}.get(rec.status, "❌")
-            # in the agent's own chat the chat is the agent: no name
-            who = (f" {self._job_agent_name(rec)}"
-                   if result_broker.label_at(rec.role_or_type, self) else "")
-            await self.edit_dm_message(
-                chat, message_id,
-                f"{mark}{who} «{self._job_title(rec)}»" + background_jobs.cost_suffix(rec))
-            # an edit cannot take a reply keyboard down: one silent line in reply to
-            # the start line carries the keys still live in the chat
             import stop_keys
-            await self._send_key_line(chat, stop_keys.job_end_line(rec),
-                                      reply_to=message_id, silent=True)
+            # in the agent's own chat the chat is the agent: no name
+            agent = (self._job_agent_name(rec)
+                     if result_broker.label_at(rec.role_or_type, self) else "")
+            await self._send_key_line(
+                chat, stop_keys.job_end_line(rec, agent) + background_jobs.cost_suffix(rec),
+                reply_to=message_id, silent=True)
         else:
             await self.clear_dm_keyboard(chat, message_id)
 
@@ -4795,6 +4781,10 @@ class TelegramChannel(Channel):
                     except BadRequest as exc:
                         if "not modified" in str(exc).lower():
                             return True
+                        if _cannot_be_edited(exc):
+                            logger.info("edit_dm_message: message can't be edited "
+                                        "(chat=%s message_id=%s)", chat_id, message_id)
+                            return False
                         logger.warning(
                             "edit_dm_message rich edit fell back to plain "
                             "(chat=%s message_id=%s): %s",
@@ -4817,6 +4807,10 @@ class TelegramChannel(Channel):
             except BadRequest as exc:
                 if "not modified" in str(exc).lower():
                     return True
+                if _cannot_be_edited(exc):
+                    logger.info("edit_dm_message: message can't be edited "
+                                "(chat=%s message_id=%s)", chat_id, message_id)
+                    return False
                 logger.warning(
                     "edit_dm_message failed (chat=%s message_id=%s): %s",
                     chat_id, message_id, exc,

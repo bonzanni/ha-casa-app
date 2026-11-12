@@ -406,25 +406,32 @@ def _ended_job(status="completed"):
         origin={"chat_id": str(OPERATOR), "job": {"title": "Accounting check"}})
 
 
-@pytest.mark.parametrize("status,mark", [("completed", "✅"), ("cancelled", "🛑"),
-                                         ("failed", "❌")])
-async def test_a_jobs_end_in_its_agents_own_chat_does_not_name_the_agent(
-        world, monkeypatch, status, mark):
+@pytest.mark.parametrize("cost,suffix", [(0.12, " · 1 min · $0.12"), (None, " · 1 min")])
+@pytest.mark.parametrize("status,line", [("completed", "✅ Finished «Accounting check»"),
+                                         ("cancelled", "🛑 Stopped «Accounting check»"),
+                                         ("failed", "❌ «Accounting check» failed")])
+async def test_a_jobs_end_line_in_its_agents_own_chat_does_not_name_the_agent(
+        world, monkeypatch, status, line, cost, suffix):
     from engagement_registry import JOB_POST_START
     ch, _bus = _endpoint("own")
     _behind_transport(monkeypatch, ch)
-    await ch._retire_job_post(_ended_job(status),
-                              (TgAddress(OWN_BOT, OPERATOR, 501), JOB_POST_START))
-    assert [e["text"] for e in ch._app.bot.edited] == [f"{mark} «Accounting check» · 1 min"]
+    rec = _ended_job(status)
+    if cost is not None:
+        rec.origin["job"]["cost_usd"] = cost
+    await ch._retire_job_post(rec, (TgAddress(OWN_BOT, OPERATOR, 501), JOB_POST_START))
+    assert ch._app.bot.edited == []
+    assert [m["text"] for m in ch._app.bot.sent] == [line + suffix]
 
 
-async def test_a_jobs_end_in_the_residents_chat_names_the_agent(world, monkeypatch):
+async def test_a_jobs_end_line_in_the_residents_chat_names_the_agent(world, monkeypatch):
     from engagement_registry import JOB_POST_START
     ch, _bus = _endpoint("casa")
     _behind_transport(monkeypatch, ch)
     await ch._retire_job_post(_ended_job(),
                               (TgAddress(CASA_BOT, OPERATOR, 501), JOB_POST_START))
-    assert [e["text"] for e in ch._app.bot.edited] == ["✅ Finance «Accounting check» · 1 min"]
+    assert ch._app.bot.edited == []
+    assert [m["text"] for m in ch._app.bot.sent] == [
+        "✅ Finance finished «Accounting check» · 1 min"]
 
 
 # ---------------------------------------------------------------------------
