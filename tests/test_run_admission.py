@@ -50,6 +50,7 @@ class _Channel:
         self.edits: list[tuple] = []
         self.edit_buttons: list[list] = []
         self.cards: list[tuple] = []
+        self.card_options: list[dict] = []
         self.card_lands = True
 
     async def deliver_operator_question(self, chat_id, text, labels, rid, *, post=None):
@@ -61,8 +62,9 @@ class _Channel:
         self.edit_buttons.append(list(buttons or []))
         return True
 
-    async def deliver_run_card(self, chat_id, text, buttons, *, post=None):
+    async def deliver_run_card(self, chat_id, text, buttons, *, post=None, **options):
         self.cards.append((chat_id, text, list(buttons)))
+        self.card_options.append(options)
         return 556 if self.card_lands else None
 
 
@@ -606,6 +608,28 @@ async def test_a_colleagues_request_with_words_is_admitted_without_a_reading(
     assert len(channel.cards) == 1
     assert action_judgement.WORDS.get(plugin="browser", bot_id=CASA_BOT, operator_id=100,
                                       spec_digest="sha256:aa") is None
+
+
+@pytest.mark.parametrize("words,chain,extra,silent", [
+    pytest.param(None, COLLEAGUE, {"_operator_task": True}, True,
+                 id="a-colleague-asked-under-the-operators-task"),
+    pytest.param("download my latest RunPod invoice", ("assistant", "browser"), {}, False,
+                 id="the-resident-asked-and-his-words-name-the-site"),
+    pytest.param("download my latest RunPod invoice", ("assistant", "browser"),
+                 {"_operator_task": True}, False,
+                 id="the-resident-asked-under-the-operators-task"),
+])
+@pytest.mark.asyncio
+async def test_the_status_card_notifies_unless_a_colleague_asked_under_the_operators_task(
+        wired, monkeypatch, words, chain, extra, silent):
+    channel, _continued = wired
+    ask, _ = _model('{"runs": [{"site": "RunPod"}]}')
+    monkeypatch.setattr(run_admission, "_ask_model", ask)
+    out = await run_admission.request_admission(
+        _call(words=words, chain=chain, **extra), [RUNPOD], "k1")
+    await _cards_settle()
+    assert out["status"] == "admitted" and len(channel.cards) == 1
+    assert channel.card_options == [{"silent": silent}]
 
 
 @pytest.mark.parametrize("chain,extra", [

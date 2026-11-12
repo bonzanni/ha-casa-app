@@ -644,15 +644,18 @@ def _spawn_status_card(call, runs: list[dict], binding, cid: str, endpoint,
                        chat_id: int) -> None:
     """The runs were admitted without a start card (by his words, or for a colleague
     under his task): one status card with the Stop button is posted beside the answer
-    (never awaited by it), through *endpoint* in *chat_id*, the call's delivery. A failed
-    post is logged and nothing else — Ellen's ``stop_work`` remains."""
+    (never awaited by it), through *endpoint* in *chat_id*, the call's delivery. A
+    colleague's card under his task is sent without a notification. A failed post is
+    logged and nothing else — Ellen's ``stop_work`` remains."""
     async def _post() -> None:
+        from handoff import helper_under_operator_task
         from result_broker import compose_operator_message, label_at
         text = compose_operator_message(
             compose_status(runs, _requester_name(binding, call.role)),
             label_at(call.role, endpoint))
+        silent = helper_under_operator_task(call.origin, call.chain)
         mid = await endpoint.deliver_run_card(chat_id, text, [stop_button(cid)],
-                                              post=_card_post(call, cid))
+                                              post=_card_post(call, cid), silent=silent)
         if isinstance(mid, int) and not isinstance(mid, bool):
             CONFIRMATIONS.set_card(cid, TgAddress(endpoint.bot_id, chat_id, mid), text)
         else:

@@ -213,6 +213,9 @@ class _InFlight:
     contract_map: Any = None
     protected: Any = None
     entry: Any = None
+    # The call was made by a helper working on a task the operator started
+    # with someone else: the messages it delivers do not notify.
+    quiet: bool = False
 
 
 @dataclasses.dataclass
@@ -688,12 +691,14 @@ class ReferenceStore:
     def open_call(self, *, client_id: str, artifact_id: str, tool_name: str,
                   tool_use_id: str, identity, provides: tuple,
                   delivers: dict | None = None, contract_map: Any = None,
-                  protected: Any = None, entry: Any = None) -> None:
+                  protected: Any = None, entry: Any = None,
+                  quiet: bool = False) -> None:
         """Register a ``capability`` call at admission. The identity is stored
         HERE, atomically with the call, so a deposit can bind it: the plugin's
         deposit request carries no identity and asserts none. ``delivers``
         (#1015) is the contract's ``{slot: kind}`` — the slot whose deposit
-        the result hook delivers instead of passing."""
+        the result hook delivers instead of passing. ``quiet`` marks a call
+        whose delivered messages are sent without a notification."""
         with self._lock:
             self._sweep_locked()
             self._inflight[(client_id, tool_use_id)] = _InFlight(
@@ -701,7 +706,8 @@ class ReferenceStore:
                 tool_name=tool_name, tool_use_id=tool_use_id,
                 identity=identity, provides=tuple(provides),
                 opened_at=self._now(), delivers=dict(delivers or {}),
-                contract_map=contract_map, protected=protected, entry=entry)
+                contract_map=contract_map, protected=protected, entry=entry,
+                quiet=quiet)
 
     def close_call(self, client_id: str, tool_use_id: str):
         """Close a call (PostToolUse / PostToolUseFailure). Returns the record
@@ -1214,6 +1220,8 @@ def make_plugin_admission_hook(
                 from operator_calls import CALLS
                 CALLS.close(client_id, str(tool_use_id or ""))
         try:
+            import agent as agent_mod
+            from handoff import child_chain, helper_under_operator_task
             if owner is not None:
                 # S5 §5.3: the pin, before anything with a side effect
                 why = owner.pin(tool_name, (input_data or {}).get("tool_input") or {})
@@ -1240,7 +1248,6 @@ def make_plugin_admission_hook(
             # grant check at all, so this is its only gate.
             erase_admitted = False
             if _erase_turn() is not None:
-                import agent as agent_mod
                 from plugin_erasure import WATCH, erase_turn_question_open
                 run_id = _erase_run_of(contract_map, tool_name)
                 if (run_id is None or not WATCH.is_armed(run_id, tool_name)
@@ -1320,7 +1327,6 @@ def make_plugin_admission_hook(
                 # turn, for the plugin's own code to use during the call —
                 # only for the operator as configured NOW (a sender the
                 # accept-all mode lets in has an identity, not the operator's).
-                import agent as agent_mod
                 from operator_calls import CALLS, is_configured_operator
                 if not is_configured_operator(identity.chat_id, identity.operator_id):
                     return _deny(_DENY_NOT_OPERATOR_CALL)
@@ -1328,6 +1334,10 @@ def make_plugin_admission_hook(
                            tool_name=tool_name, role=role, plugin=seg, identity=identity,
                            origin=dict(agent_mod.origin_var.get(None) or {}))
                 recorded = True
+            # A helper working on a task the operator started with someone
+            # else: what this call posts for reading does not notify.
+            origin = agent_mod.origin_var.get(None)
+            quiet = helper_under_operator_task(origin, child_chain(origin, role))
             if entry.kind == "capability":
                 store.open_call(
                     client_id=client_id, artifact_id=entry.artifact_id,
@@ -1336,7 +1346,8 @@ def make_plugin_admission_hook(
                     delivers=getattr(entry, "delivers", None),
                     # S5 §2: a proposal's buttons are judged against the
                     # session's own maps and this tool's server
-                    contract_map=contract_map, protected=protected, entry=entry)
+                    contract_map=contract_map, protected=protected, entry=entry,
+                    quiet=quiet)
             if entry.consumes:
                 updated = dict(tool_input)
                 armed_any = False
@@ -1361,7 +1372,7 @@ def make_plugin_admission_hook(
                             client_id=client_id, artifact_id=entry.artifact_id,
                             tool_name=tool_name,
                             tool_use_id=str(tool_use_id or ""),
-                            identity=identity, provides=())
+                            identity=identity, provides=(), quiet=quiet)
                     return {"hookSpecificOutput": {
                         "hookEventName": "PreToolUse",
                         "updatedInput": updated,
@@ -1459,16 +1470,18 @@ def _endpoint_for(target: Any):
 
 
 async def _post_operator_message(to: TgAddress, text: str,
-                                 post: "PostRecord | None" = None):
+                                 post: "PostRecord | None" = None, *,
+                                 silent: bool = False):
     """S3: the channel of *to*'s bot judges the whole physical plan of *text*
     before the first send and posts every page; no Telegram ⇒
     ``NOT_DELIVERED``. ``post`` (S4) is the record the channel files each
-    landed page under."""
+    landed page under; ``silent`` posts every page without a notification."""
     from channels import DeliveryOutcome
     channel = _endpoint_for(to)
     if channel is None:
         return DeliveryOutcome.NOT_DELIVERED
-    return await channel.deliver_operator_message(to.chat_id, text, post=post)
+    return await channel.deliver_operator_message(to.chat_id, text, post=post,
+                                                  silent=silent)
 
 
 async def _post_operator_page(to: TgAddress, text: str, post: "PostRecord | None" = None):
@@ -2004,7 +2017,7 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
                 if dkind == OPERATOR_MESSAGE:
                     text = compose_operator_message(value, head)
                     outcome = await asyncio.wait_for(
-                        _post_operator_message(to, text, post=post),
+                        _post_operator_message(to, text, post=post, silent=call.quiet),
                         DELIVERY_TIMEOUT_S)
                     delivered = outcome is DeliveryOutcome.DELIVERED
                     if delivered:

@@ -57,7 +57,7 @@ RUN = {"spec_digest": DIGEST, "mode": "account", "task_kind": "invoice", "task_t
 class _Endpoint(FakeEndpoint):
     """A fake endpoint with the posting methods the plugin runtime uses."""
 
-    async def deliver_operator_message(self, chat_id, text, *, post=None):
+    async def deliver_operator_message(self, chat_id, text, *, post=None, silent=False):
         self._record("deliver_operator_message", chat_id, text)
         return DeliveryOutcome.DELIVERED if self.is_ready else DeliveryOutcome.NOT_DELIVERED
 
@@ -65,7 +65,7 @@ class _Endpoint(FakeEndpoint):
         self._record("deliver_operator_question", chat_id, text, rid)
         return self._mid()
 
-    async def deliver_run_card(self, chat_id, text, buttons, *, post=None):
+    async def deliver_run_card(self, chat_id, text, buttons, *, post=None, silent=False):
         self._record("deliver_run_card", chat_id, text)
         return self._mid()
 

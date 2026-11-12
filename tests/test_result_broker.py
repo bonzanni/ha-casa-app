@@ -410,6 +410,42 @@ async def test_admission_branches():
     assert store.inflight_count() == 1
 
 
+def test_a_call_is_quiet_only_when_it_is_opened_quiet():
+    store, _ = _store()
+    _open(store, call="a")
+    store.open_call(client_id="c1", artifact_id=ARTIFACT, tool_name=FETCH, tool_use_id="b",
+                    identity=_identity(), provides=("link",), quiet=True)
+    assert store._inflight[("c1", "a")].quiet is False
+    assert store._inflight[("c1", "b")].quiet is True
+
+
+ASKED_BY_A_COLLEAGUE = {**DM, "role": "assistant", "_delegation_id": "d-1",
+                        "delegation_depth": 2,
+                        "_handoff_chain": ("assistant", "browser", "finance")}
+
+
+@pytest.mark.parametrize("origin,quiet", [
+    pytest.param(DM, False, id="its-own-turn"),
+    pytest.param({**ASKED_BY_A_COLLEAGUE, "_operator_task": True}, True,
+                 id="a-colleague-asked-under-the-operators-task"),
+    pytest.param(ASKED_BY_A_COLLEAGUE, False, id="a-colleague-asked-outside-it"),
+    pytest.param({**ASKED_BY_A_COLLEAGUE, "_operator_task": True,
+                  "_handoff_chain": ("assistant", "finance"), "delegation_depth": 1},
+                 False, id="the-resident-asked-under-the-operators-task"),
+])
+@pytest.mark.asyncio
+async def test_admission_opens_a_call_quiet_only_for_a_helper_under_the_operators_task(
+        origin, quiet):
+    """An ordinary capability call (it asks Casa nothing and runs on no erase
+    turn) is admitted on every one of these turns; what differs is whether its
+    messages will notify."""
+    store, _ = _store()
+    hook = rb.make_plugin_admission_hook("finance", _map(), client_id="c1", store=store)
+    with _Origin(origin):
+        assert await hook(_pre(FETCH), "call-1", {}) == {}
+    assert store._inflight[("c1", "call-1")].quiet is quiet
+
+
 @pytest.mark.asyncio
 async def test_a_capability_refused_off_his_turn_names_casas_rule_and_his_remedy():
     """casa-test 2026-11-03: refused on a follow-up turn nobody typed, the browsing
