@@ -447,6 +447,7 @@ IDENTITY_SITE_HITS = {
     "event_reconcile.py": {"_default_entries": 1},
     "event_spool.py": {"EventSpool._write_removal_record": 1, "_validate_removal": 1},
     "explanation_store.py": {"ExplanationRecord": 1},
+    "guest_groups.py": {"GuestEntry": 1, "GuestStore._snapshot": 1},
     "job_registry.py": {
         "JobRegistry.__init__": 1, "JobRegistry._decode_job": 3,
         "JobRegistry._forget_task_posts_of_deleted": 2, "JobRegistry._task_post_job": 1,
@@ -789,6 +790,10 @@ IDENTITY_FUNCTIONS = {
               "requested; each confirmation keeps its own bot"),
     ("run_admission.py", "_spawn_status_card"): (NOISE, "a signature"),
     ("task_model.py", "Requester"): (NOISE, "a record's fields"),
+    ("guest_groups.py", "GuestEntry"): (NOISE, "a record's fields: an allowance for one "
+                                               "specialist in one group, not a key"),
+    ("guest_groups.py", "GuestStore._snapshot"): (NOISE, "the same record's fields, as "
+                                                         "written to the store's file"),
     ("action_judgement.py", "_login_item_reply"): (NOISE, "parsing"),
     ("action_judgement.py", "judge"): (NOISE, "a log line"),
     ("action_judgement.py", "parse_reply"): (NOISE, "parsing"),
