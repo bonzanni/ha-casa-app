@@ -51,28 +51,10 @@ read-evidence matchers join every resident's hook bundle. What the scope does wi
 is [`output-boundary.md`](output-boundary.md) (its three decisions: INV-OUT-006 in
 [`output-scope-properties.md`](output-scope-properties.md)).
 
-**The origin snapshot records the turn's question, which is usually its text.** The prompt
-is built from the message's own text, and the options from the session's frozen memory view
-([`memory-serving.md`](memory-serving.md)); the query sent
-puts `compose_turn_preamble` ahead of it — the `<current_time>` envelope, then, on a turn
-that has any, one `<casa_notes>` block of Casa's per-turn notes (on Telegram, in order,
-the drained chat notes, a reply's note, a captioned file's note, and a summons' group and the
-answer it replied to: [`own-voice.md`](own-voice.md), [`telegram.md`](telegram.md),
-[`inbound-files.md`](inbound-files.md), [`guest-summons.md`](guest-summons.md); on every
-turn of a memory role, the correction note), which retention
-strips with the envelope (INV-MEM-022 in [`memory-labelling.md`](memory-labelling.md)). The origin's
-`user_text` normally holds that same text, which a delegation launched from the turn
-records and quotes back. The one exception is a turn `handle_message` synthesized from a
-delegation completion: it passes `_process` the completion's own question as the
-keyword-only `origin_question`, and the origin records that instead of the notice (INV-JOB-017
-in [`delegation-announcements.md`](delegation-announcements.md)). No other caller passes it.
-
-**A specialist with its own chat runs this loop too.** Its conversation is an `Agent` for its
-role, on the same session machinery, but its options come from the specialist builder
-(`Agent._build_specialist_session_options`) with its session extras, never the resident's; a turn drains Casa's notes for its chat (`chat_notes`) into its notes block, under
-one frame line that hands them to the agent as its own memory, each line prefixed `(Casa) `;
-the turn that opens its chat is told so on its own line (`agent.CHAT_OPENING_NOTE`;
-[`own-voice.md`](own-voice.md)).
+**The turn's question and Casa's notes.** What the query carries ahead of the message's
+text — the time envelope and Casa's per-turn notes, summons notes among them — what the
+origin records as the turn's question, and how a specialist's own conversation runs this
+loop are [`turn-notes.md`](turn-notes.md).
 
 ## Contracts & invariants
 
