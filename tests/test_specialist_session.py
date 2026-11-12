@@ -7,6 +7,8 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
+
+from sent_prompt import sent_prompt
 from claude_agent_sdk import ClaudeAgentOptions
 
 import agent as agent_mod
@@ -44,7 +46,7 @@ def _reference(options, cfg, origin, session_id, *, task=None, words=None, conv=
 def _shape(options):
     servers = options.mcp_servers
     return (dict(options.env), sorted(servers), servers.get(SERVER, {}).get("alwaysLoad"),
-            list(options.allowed_tools), options.system_prompt)
+            list(options.allowed_tools), sent_prompt(options))
 
 
 @pytest.fixture
@@ -145,7 +147,7 @@ async def test_a_delegated_run_has_the_env_the_pad_and_the_log_lines(conv, pads,
     assert (opts.env.get(LONG) == "200000") is long and (LONG in opts.env) is long
     assert GRANT in opts.allowed_tools and SERVER in opts.mcp_servers
     assert opts.mcp_servers[SERVER].get("alwaysLoad") is (True if long else None)
-    assert opts.system_prompt == f"x\n\n{PROMPT_LINE}"
+    assert sent_prompt(opts) == f"x\n\n{PROMPT_LINE}"
     assert seen == [[opts.session_id]]                 # the pad is the run's session's
     assert pads.keys() == []                           # and goes with the run
     lines = logs.texts(LogKey("agent", "browser"))

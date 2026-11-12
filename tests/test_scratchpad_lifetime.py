@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from sent_prompt import sent_prompt
+
 import agent as agent_mod
 import operator_calls
 import plugin_bindings
@@ -72,7 +74,7 @@ async def test_a_delegated_client_holds_a_pad_under_its_own_session(conv, pads):
     await _delegate(conv)
     (opts,) = conv.h.launches
     assert GRANT in opts.allowed_tools and SERVER in opts.mcp_servers
-    assert opts.system_prompt == f"x\n\n{PROMPT_LINE}"
+    assert sent_prompt(opts) == f"x\n\n{PROMPT_LINE}"
     assert seen == [(opts.session_id, [opts.session_id])]
 
 
@@ -95,7 +97,7 @@ async def test_a_resumed_client_is_told_as_well(conv):  # noqa: F811
     _kept(conv, b)
     await (await _continue(conv, b))
     (opts,) = conv.h.launches
-    assert opts.resume == SID and PROMPT_LINE in opts.system_prompt
+    assert opts.resume == SID and PROMPT_LINE in sent_prompt(opts)
 
 
 async def test_a_stored_call_has_no_tool(conv, pads):  # noqa: F811
@@ -105,7 +107,7 @@ async def test_a_stored_call_has_no_tool(conv, pads):  # noqa: F811
     (opts,) = conv.h.launches
     assert SERVER not in opts.mcp_servers
     assert GRANT not in opts.allowed_tools
-    assert opts.system_prompt == "x" and PROMPT_LINE not in opts.system_prompt
+    assert sent_prompt(opts) == "x" and PROMPT_LINE not in sent_prompt(opts)
     assert pads.keys() == []
 
 
@@ -124,7 +126,7 @@ async def test_a_role_that_disallows_it_has_no_tool_and_is_told_nothing(conv, de
     (opts,) = conv.h.launches
     assert deny in opts.disallowed_tools
     assert SERVER not in opts.mcp_servers and GRANT not in opts.allowed_tools
-    assert opts.system_prompt == "x"
+    assert sent_prompt(opts) == "x"
 
 
 # --- the brief ---------------------------------------------------------------------------

@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from sent_prompt import sent_prompt
 from claude_agent_sdk import ClaudeAgentOptions, PermissionResultDeny
 
 import background_jobs as jobs
@@ -79,10 +81,10 @@ async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
     assert cli_limit(opts) == str(jobs.JOB_MAX_TURNS)
     assert Path(opts.cwd) == tools._PLUGIN_JOB_ROOT / rec.id / 'plugin-job'
     assert Path(opts.cwd).is_dir()
-    assert opts.system_prompt == f'{tools._PLUGIN_JOB_PROMPT}\n\n{jobs.JOB_PROMPT_LINE}'
-    assert 'PERSONA SECRET' not in opts.system_prompt
+    assert sent_prompt(opts) == f'{tools._PLUGIN_JOB_PROMPT}\n\n{jobs.JOB_PROMPT_LINE}'
+    assert 'PERSONA SECRET' not in sent_prompt(opts)
     for fragment in ('worker', 'one long session', 'Do not ask questions', 'report_job_progress', 'emit_completion', 'no delegation', 'resident memory'):
-        assert fragment in opts.system_prompt
+        assert fragment in sent_prompt(opts)
     assert isinstance(await opts.can_use_tool('Bash', {}, None), PermissionResultDeny)
     assert {'PreToolUse', 'PostToolUse', 'PostToolUseFailure'} <= set(opts.hooks)
     assert (rec.kind, rec.role_or_type, rec.driver) == ('plugin', 'assistant', 'in_casa')
@@ -134,7 +136,7 @@ async def test_resume_uses_pinned_launch_settings(worker):
     assert cli_limit(opts) == str(jobs.JOB_MAX_TURNS)
     assert opts.plugins == initial.plugins
     assert opts.allowed_tools == initial.allowed_tools
-    assert opts.system_prompt == initial.system_prompt
+    assert sent_prompt(opts) == sent_prompt(initial)
     assert opts.cwd == initial.cwd
 
 

@@ -707,6 +707,17 @@ from logging_state import casa_logging_containment  # noqa: E402,F401
 
 
 @pytest.fixture(autouse=True)
+def _system_prompt_files_in_test_tmp(tmp_path_factory, monkeypatch):
+    """#1570: SDK exec sites write the system prompt to a file. Keep the
+    suite's files under pytest's own temp root, never the shared temp dir.
+    ``claude_runtime`` imports only the standard library, so this is safe in
+    the SDK-less root lane."""
+    import claude_runtime
+    monkeypatch.setattr(claude_runtime, "SYSTEM_PROMPT_DIR",
+                        tmp_path_factory.getbasetemp() / "system-prompts")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_verdict_broker_and_challenges():
     """#783: clear the two process-global request registries at every test
     boundary, so a request one test registers cannot reach the next one.

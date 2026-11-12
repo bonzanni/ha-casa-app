@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from telegram import MessageEntity
 
 from claude_runtime import (
+    with_system_prompt_file,
     CLAUDE_CLI_PATH,
     SDK_MAX_BUFFER_SIZE,
     cli_session_settings,
@@ -555,7 +556,7 @@ async def _ask(system: str, user: str) -> str:
         permission_mode="acceptEdits",
     )
     reply = ""
-    async for msg in sdk.query(prompt=user, options=opts):
+    async for msg in sdk.query(prompt=user, options=with_system_prompt_file(opts)):
         if isinstance(msg, sdk.AssistantMessage):
             for block in getattr(msg, "content", []) or []:
                 text = getattr(block, "text", None)

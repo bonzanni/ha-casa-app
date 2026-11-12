@@ -16,6 +16,7 @@ import types
 from datetime import datetime, timezone
 
 from memory import corrections, model_port, writer
+from sent_prompt import sent_prompt
 from memory_writer_support import (
     ScriptedPort, add_each, dispositions, job_rows, new_store, new_writer,
     no_change_all, pending_seqs, reply, rows, run_new, seed,
@@ -337,7 +338,7 @@ async def test_the_sdk_port_joins_the_reply_and_reports_cost(monkeypatch):
         text='{"ops": []}', usage={"input_tokens": 10, "output_tokens": 2},
         cost_usd=0.25)
     [opts] = launches
-    assert (opts.model, opts.effort, opts.system_prompt) == (
+    assert (opts.model, opts.effort, sent_prompt(opts)) == (
         "claude-opus-5-5", "medium", "rules")
     assert opts.tools == [] and opts.allowed_tools == []
 

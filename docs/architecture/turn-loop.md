@@ -268,6 +268,13 @@ to 5 MiB of base64 each, and 64 MiB would no longer cover it. The value is passe
 client goes through the same wrapper: a construction that omits it silently falls back to
 the 1 MiB default, and a source sweep refuses one.
 
+**INV-TURN-015**: Every SDK exec Casa makes hands the CLI a non-empty string system prompt as a file (`--system-prompt-file`), never as an argument, so a prompt of any size starts the CLI.
+
+Linux refuses an exec whose one argument reaches 128 KiB; a resident's prompt carries its
+memory block and outgrew that (#1570). `with_system_prompt_file` (`claude_runtime.py`)
+converts at the exec site only; the CLI reads the file once, at startup, and a source sweep
+refuses an unconverted SDK client or query.
+
 ## Failure behavior
 
 **The model call fails transiently.** Retried with exponential backoff up to a small attempt

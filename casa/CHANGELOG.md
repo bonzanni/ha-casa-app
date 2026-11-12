@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.367.1] - 2026-11-12
+
+### Fixed
+
+- The assistant no longer stops answering once its memory grows large. Its instructions and memory are now handed to Claude as a file. Before, past about 128 KB they could no longer be passed when a new session started, so that session failed every time with "There was an issue communicating with Claude" (#1570).
+
 ## [0.367.0] - 2026-11-12
 
 ### Added

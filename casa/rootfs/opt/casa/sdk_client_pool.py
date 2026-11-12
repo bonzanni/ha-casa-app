@@ -62,7 +62,8 @@ class PoolClosing(PoolUnavailable):
 
 def _default_make_client(options):
     from claude_agent_sdk import ClaudeSDKClient
-    return ClaudeSDKClient(options)
+    from claude_runtime import with_system_prompt_file
+    return ClaudeSDKClient(with_system_prompt_file(options))
 
 
 class ManagedSdkClient:
