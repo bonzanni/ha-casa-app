@@ -235,6 +235,14 @@ is a thing the next call site forgets. An edit that names its buttons
 answered Start, settles to none, and the work it started is stopped by its key at the reply
 keyboard ([`plugin-stop.md`](plugin-stop.md)).
 
+A button is posted in Telegram's red style only where the caller names its position
+(`post_dm_keyboard(danger=...)`, `edit_dm_message(danger=...)`). Three callers do: the memory
+wipe question for its approving button, the uninstall question for its erasing choices, and
+the browsing start card for the Stop it carries when no key could be raised. Red marks a
+choice that deletes something for good, or stops running work; every other button, Approve
+and Deny included, keeps the app's default look, so that a red button stays worth a second
+look.
+
 An edit is idempotent, so a DM settle edit that fails transiently is tried once more: after
 flood control's stated wait (at most ten seconds), or a second after a network error. Any
 other refusal, and a second failure, is logged and the edit reports that it did not land.

@@ -213,4 +213,6 @@ def prompt_erase_choice(
         kind="plugin_erase_choice", meta_extra={"subject": key.subject},
         timeout_s=QUESTION_TTL_S,
         card_request=card_request,
+        # The erasing choices are the ones that cannot be taken back.
+        danger=[i for i, c in enumerate(choices) if c in (ERASE, ERASE_DATA_ONLY)],
     )

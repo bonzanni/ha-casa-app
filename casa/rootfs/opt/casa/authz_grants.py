@@ -30,6 +30,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Any, Callable
 
 from channels.tg_address import CASA, AddressError, TgAddress, is_route, scope
@@ -655,6 +656,7 @@ class ChallengeCoordinator:
         kind: str = "authz", meta_extra: "dict | None" = None,
         timeout_s: "float | None" = None,
         card_request: "approval_card.CardRequest | None" = None,
+        danger: "Collection[int]" = (),
     ) -> ChallengeHandle:
         """Register ONE operator challenge keyboard for *key* (dedup by key).
 
@@ -677,6 +679,9 @@ class ChallengeCoordinator:
         entities instead of *challenge_text*. The card is written inside the
         post driver, after registration, and is never posted once the request
         has settled. The size check still applies to *challenge_text*.
+
+        *danger* names the positions in *options* whose button is shown red:
+        a choice that deletes something for good.
         """
         existing = self._entries.get(key)
         if existing is not None:
@@ -744,6 +749,10 @@ class ChallengeCoordinator:
         from output_boundary import IntentKind, casa_text, resolve_scope
         _scope = resolve_scope()
 
+        # Only a card with a red button names one: every other card's post is
+        # the call it always was.
+        red = {"danger": tuple(danger)} if danger else {}
+
         async def _post() -> Any:
             if card_request is not None:
                 return await _post_card(card_request)
@@ -751,7 +760,7 @@ class ChallengeCoordinator:
                      if _scope is not None else casa_text(challenge_text))
             mid = await channel.post_dm_keyboard(
                 chat_id=chat_id, request_id=rid, text=_body,
-                options=options,
+                options=options, **red,
             )
             # #1079: the admission recorded this body as committed to the
             # operator; only the broker's own "posted" test confirms it.
@@ -787,7 +796,7 @@ class ChallengeCoordinator:
             prefix = _body[:len(_body) - len(display)]
             mid = await channel.post_dm_keyboard(
                 chat_id=chat_id, request_id=rid, text=_body,
-                options=options,
+                options=options, **red,
                 entities=approval_card.shift_entities(entities, prefix),
             )
             if isinstance(mid, int):

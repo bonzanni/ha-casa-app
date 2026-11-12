@@ -635,7 +635,7 @@ async def _decide(call, runs: list[dict], request_key: str, binding, endpoint,
                     try:
                         await endpoint.edit_dm_message(
                             card.chat_id, card.message_id, settled.card_text,
-                            buttons=[stop_button(cid)])
+                            buttons=[stop_button(cid)], danger=(0,))
                     except Exception as exc:  # noqa: BLE001 — logged; stop_work remains
                         logger.warning("run admission: no Stop reached the card (%s)",
                                        type(exc).__name__)

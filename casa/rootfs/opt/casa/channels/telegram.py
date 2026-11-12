@@ -38,6 +38,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
+from collections.abc import Collection
 from typing import Any, Awaitable, Callable
 
 from telegram import InputFile, Update
@@ -4579,6 +4580,7 @@ class TelegramChannel(Channel):
         self, *, chat_id: int, request_id: str, text: str, options: list[str],
         short_labels: bool = False, shorts: "list | None" = None,
         urls: "list | None" = None, entities: "list | None" = None,
+        danger: "Collection[int]" = (),
     ) -> int | None:
         """Post a plain-text question to a DM chat with one tappable button
         per option (resident_ask).
@@ -4605,6 +4607,11 @@ class TelegramChannel(Channel):
         an address at an option's index, that button opens the address and sends
         no callback.
 
+        ``danger``: the positions in ``options`` whose button is shown in
+        Telegram's red style. For a choice that deletes something for good (a
+        memory wipe, an uninstall that erases data), and nothing else: a red
+        button on an ordinary card would only teach the reader to ignore it.
+
         ``entities`` (a card whose caller computed its own formatting): when not
         ``None``, ``text`` is sent with exactly those entities (UTF-16 offsets
         into ``text``) and is never rendered or rewritten. Lone surrogates are
@@ -4625,6 +4632,7 @@ class TelegramChannel(Channel):
             ) if i < len(links) and links[i] else InlineKeyboardButton(
                 text=(heuristic[i] if heuristic is not None else options[i]),
                 callback_data=f"v1|resident_ask|{request_id}|{i}",
+                style="danger" if i in danger else None,
             )]
             for i in range(len(options))
         ])
@@ -4706,7 +4714,7 @@ class TelegramChannel(Channel):
     async def edit_dm_message(
         self, chat_id: int, message_id: int, text: str, *, caption: bool = False,
         buttons: "list[tuple[str, str]] | None" = None, urls: "list | None" = None,
-        literal: bool = False,
+        literal: bool = False, danger: "Collection[int]" = (),
     ) -> bool:
         """Plain (no parse_mode, no reply_markup) text edit of a posted DM
         message — resident_ask finish-hook target.
@@ -4755,7 +4763,8 @@ class TelegramChannel(Channel):
         cleared = InlineKeyboardMarkup(
             [[InlineKeyboardButton(text=str(label), url=links[i])
               if i < len(links) and links[i] else
-              InlineKeyboardButton(text=str(label), callback_data=str(data))]
+              InlineKeyboardButton(text=str(label), callback_data=str(data),
+                                   style="danger" if i in danger else None)]
              for i, (label, data) in enumerate(buttons or [])])
         if literal:
             display, entities = replace_lone_surrogates(text), None
