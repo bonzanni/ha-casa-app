@@ -65,7 +65,10 @@ turn once it holds it; one already started is the running session, left to end i
 or status card — the admission's `card` address, if one landed, so through the bot that
 posted it — is edited to its recorded text plus a mark and loses any keyboard
 (`settle_run_card`): `☑ Stopped` (also for `already_stopped`), `☑ Ended`, `☑ Stop asked`
-(`not_taken`). After `stopped`, `ended` and `already_stopped` (`ENDS`) the request no longer
+(`not_taken`). A status card was sent with the Stop key at the reply keyboard, and Telegram
+never lets such a message be edited: its mark is refused, which `edit_dm_message` takes as
+an expected outcome (logged at INFO, not retried), and the line below says what happened. A
+start card that began as a question was sent with buttons and takes its mark. After `stopped`, `ended` and `already_stopped` (`ENDS`) the request no longer
 runs: the admission forgets its card (`Confirmations.clear_card`), even when the edit fails,
 which is what takes its Stop key away. Any other outcome leaves the card, and the key, as they
 were. The line is Casa's fixed text under the specialist's label, posted as a reply to the

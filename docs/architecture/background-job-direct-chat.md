@@ -31,9 +31,10 @@ here works with no log group configured, and nothing here reads one (INV-BGJOB-0
 started (directly, or through an agent acting on their message — the record's starter is
 `operator`) gets one silent line, `📊 <Agent> started «<title>».`, with no button: it raises
 the job's red key, `⏹ Stop «<title>»`, at the reply keyboard, which stays there while the job
-is live and its start line filed. The line is edited, still without buttons, while the job
-runs to show its running time and cost (INV-BGJOB-020); a scheduled job, or one an agent
-started on its own, gets none, and so has no key. A job Casa parks posts one line with a
+is live and its start line filed. A message sent with a reply keyboard can never be edited,
+so the start line stays as it was sent: the job's outcome, running time and cost are on the
+line that ends it (INV-BGJOB-020). A scheduled job, or one an agent started on its own, gets
+none, and so has no key. A job Casa parks posts one line with a
 **Cancel** button — in reply to the start line when there is one — and a reply to it continues
 the job (INV-BGJOB-017). A specialist's job asks with
 `ask_operator(question, options?)`: a plain post under its label, one button per option and a
@@ -99,15 +100,17 @@ stored and acknowledged, like every captionless file, and no turn starts.
 **Whoever sees the record terminal last retires the keyboard.** The registry's terminal
 observer — told by every in-process terminal winner: the finalize funnel, the launch-death
 report, the reap, the legacy direct mutators — has the channel take the record's keyboard posts
-in one synchronous step and edit them away: the start line to `✅`/`🛑`/`❌ <Agent> «<title>»`
-(without the agent's name in the host's own chat) with the job's running time and cost, a question or parking line to no buttons.
-An edit cannot take a reply keyboard down, so the start line's edit is followed by one silent
-end line in reply to it (`stop_keys.job_end_line`: `Finished «<title>».`, `Stopped
-«<title>».` or `«<title>» failed.`), carrying the chat's Stop keys still live, or the
-keyboard's removal when none is; it is posted even when the edit fails. A job that
+in one synchronous step and retire them on a task of its own: a question or parking line is
+edited to no buttons; the start line is never edited (it carries the reply keyboard) and gets
+one silent end line in reply to it (`stop_keys.job_end_line` plus
+`background_jobs.cost_suffix`): `✅ Finished «<title>» · 40 min · $2.40`, `🛑 Stopped
+«<title>» · …` or `❌ «<title>» failed · …` in the host's own chat, and naming the agent where
+the start line does — `✅ Finance finished «<title>» · …`, `🛑 Stopped Finance's «<title>» · …`,
+`❌ Finance's «<title>» failed · …`. The end line carries the chat's Stop keys still live, or
+the keyboard's removal when none is. A job that
 completes from inside a running turn is the one exception to the timing: the observer leaves its
 keyboards to the completion's finalize tail, which retires them once that turn has ended (or a
-bounded wait passed), so the end paint carries the completing turn's cost. A keyboard post that lands after the terminal write settled is
+bounded wait passed), so the end line carries the completing turn's cost. A keyboard post that lands after the terminal write settled is
 retired by the code that filed it. At boot, terminal records still carrying keyboard posts are
 retired once. A keyboard an edit could not remove keeps its buttons; a tap on it reads the
 terminal record and gets "already finished".
@@ -168,9 +171,11 @@ the scheduled write loses that post's ownership, and a reply to it then takes th
 before.
 
 **A keyboard edit fails.** The keyboard stays; the record no longer lists it, so nothing retries
-it. Its taps read the terminal record. A start line's end line is posted all the same, so the
-job's Stop key goes; a press of a key last shown for a job that has ended gets "It had already
-ended." ([`plugin-stop.md`](plugin-stop.md)).
+it. Its taps read the terminal record.
+
+**An end line send fails.** It is logged and not retried; the job's key stays at the keyboard
+until the next message that carries the keys, and a press of a key last shown for a job that
+has ended gets "It had already ended." ([`plugin-stop.md`](plugin-stop.md)).
 
 ## Extension points
 
@@ -196,6 +201,7 @@ parser.
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_job_cancel_callback`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.retire_job_keyboards`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.retire_ended_job_keyboards`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._retire_job_post`
 - `casa/rootfs/opt/casa/channels/telegram.py::_parse_job_callback`
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.record_job_post`
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.job_post_owner`

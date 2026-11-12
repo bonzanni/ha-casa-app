@@ -1,6 +1,7 @@
 """A job's cost and running time, shown to the operator and never used to
-decide anything (INV-BGJOB-020): the start line, edited while the job runs;
-the end paint on that line; and the end notice to the resident."""
+decide anything (INV-BGJOB-020): on the line that ends the job, in reply to
+its start line (which carries the Stop key and is never edited), and on the
+end notice to the resident."""
 
 from __future__ import annotations
 
@@ -8,7 +9,6 @@ from types import SimpleNamespace
 
 import pytest
 
-import background_jobs as bj
 from channels.tg_address import TgAddress
 
 pytestmark = pytest.mark.asyncio
@@ -17,18 +17,22 @@ pytestmark = pytest.mark.asyncio
 class _Bot:
     def __init__(self):
         self.edits: list[dict] = []
+        self.sent: list[dict] = []
 
     async def edit_message_text(self, chat_id, message_id, text, **kw):
-        self.edits.append({"message_id": message_id, "text": str(text),
-                           "markup": kw.get("reply_markup")})
+        self.edits.append({"message_id": message_id, "text": str(text)})
         return True
 
+    async def send_message(self, **kw):
+        self.sent.append(kw)
+        return SimpleNamespace(message_id=900 + len(self.sent))
 
-def _rec(status="active", **job):
+
+def _rec(status="completed", **job):
     from engagement_registry import JOB_POST_START
     return SimpleNamespace(
         id="c" * 32, status=status, role_or_type="finance", task="t",
-        started_at=1000.0, completed_at=None,
+        started_at=1000.0, completed_at=1000.0 + 65 * 60,
         origin={"chat_id": "100", "_tg_bot": 111,
                 "job": {"title": "Accounting check", **job}},
         ui_posts=[(TgAddress(111, 100, 501), JOB_POST_START)])
@@ -36,41 +40,30 @@ def _rec(status="active", **job):
 
 @pytest.fixture
 def channel(monkeypatch):
-    import time
     import tools
     from channels.telegram import TelegramChannel
     monkeypatch.setattr(tools, "_display_name_for_role", lambda role: "Finance")
-    monkeypatch.setattr(time, "time", lambda: 1000.0 + 40 * 60)
     bot = _Bot()
     return TelegramChannel(bot=bot, chat_id="100", known_bot_id=111), bot
 
 
-async def test_the_start_line_shows_elapsed_time_then_the_exact_cost(channel):
-    ch, bot = channel
-    rec = _rec()
-    await ch.refresh_job_start_line(rec)
-    rec.origin["job"]["cost_usd"] = 2.4
-    await ch.refresh_job_start_line(rec)
-    assert [e["text"] for e in bot.edits] == [
-        "📊 Finance started «Accounting check». · 40 min",
-        "📊 Finance started «Accounting check». · 40 min · $2.40"]
-    # the edit carries no button: the job's Stop is its key at the keyboard
-    assert [b for row in bot.edits[-1]["markup"].inline_keyboard for b in row] == []
-
-
-async def test_an_ended_job_s_start_line_is_not_refreshed(channel):
-    ch, bot = channel
-    await ch.refresh_job_start_line(_rec(status="completed"))
-    assert bot.edits == []
-
-
-async def test_the_end_paint_carries_time_and_cost(channel):
+@pytest.mark.parametrize("status,line", [
+    ("completed", "✅ Finance finished «Accounting check»"),
+    ("cancelled", "🛑 Stopped Finance's «Accounting check»"),
+    ("error", "❌ Finance's «Accounting check» failed"),
+])
+@pytest.mark.parametrize("cost,suffix", [(3.9, " · 1 h 5 min · $3.90"),
+                                         (None, " · 1 h 5 min")])
+async def test_the_end_line_carries_outcome_time_and_cost(channel, status, line,
+                                                          cost, suffix):
     from engagement_registry import JOB_POST_START
     ch, bot = channel
-    rec = _rec(status="completed", cost_usd=3.9)
-    rec.completed_at = 1000.0 + 65 * 60
+    rec = _rec(status=status, **({} if cost is None else {"cost_usd": cost}))
     await ch._retire_job_post(rec, (TgAddress(111, 100, 501), JOB_POST_START))
-    assert bot.edits[-1]["text"] == "✅ Finance «Accounting check» · 1 h 5 min · $3.90"
+    assert bot.edits == []
+    (end,) = bot.sent
+    assert end["text"] == line + suffix
+    assert end["reply_parameters"].message_id == 501
 
 
 async def test_the_resident_s_end_notice_carries_time_and_cost():

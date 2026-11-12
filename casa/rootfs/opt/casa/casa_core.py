@@ -3918,30 +3918,6 @@ async def main() -> None:
         max_instances=1,
         misfire_grace_time=3600,
     )
-    # A live job's start line shows how long it has run: refreshed every few
-    # minutes (and at each turn end, with its cost).
-    async def _refresh_job_start_lines() -> None:
-        if tg_transport is None:
-            return
-        for rec in engagement_registry.active_and_idle():
-            if not rec.origin.get("job"):
-                continue
-            try:
-                await tg_transport.refresh_job_start_line(rec)
-            except Exception:  # noqa: BLE001 — cosmetic
-                logger.debug("job %s start line not refreshed", rec.id[:8],
-                             exc_info=True)
-
-    scheduler.add_job(
-        _refresh_job_start_lines,
-        trigger="interval",
-        minutes=5,
-        id="job_start_line_refresh",
-        replace_existing=True,
-        coalesce=True,
-        max_instances=1,
-        misfire_grace_time=60,
-    )
     # Every 30 minutes: delete the agent log's posts before Telegram stops
     # letting the bot delete them (48 hours), and re-check a log that is
     # off — one failed check at a rebuild would otherwise leave it off until

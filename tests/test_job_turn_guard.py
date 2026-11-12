@@ -81,15 +81,11 @@ class Registry:
 class Channel:
     def __init__(self):
         self.parked: list[str] = []
-        self.refreshed = 0
         self.notices: list[str] = []
 
     async def post_job_parked(self, rec, text):
         self.parked.append(text)
         return 42
-
-    async def refresh_job_start_line(self, rec):
-        self.refreshed += 1
 
     def endpoint(self, bot_id):
         # the transport's endpoint for the job's delivery bot: this one
@@ -308,10 +304,10 @@ async def test_cost_never_ends_or_parks_a_job(rig):
     assert rig.drv.writes == [bj._NUDGE_ASK] and rig.ch.parked == []
 
 
-async def test_each_turn_end_persists_and_refreshes_the_start_line(rig):
+async def test_each_turn_end_persists_the_job(rig):
     rig.runner.turn_ended(rig.rec, _result())
     await settle()
-    assert rig.reg.persists >= 1 and rig.ch.refreshed == 1
+    assert rig.reg.persists >= 1
 
 
 # -- INV-BGJOB-018: one automatic resume ----------------------------------------

@@ -76,33 +76,3 @@ def test_engagement_transcript_reap_is_a_scheduled_coroutine_job():
     assert "args=(engagement_registry,)" in job.group("args")
     assert "next_run_time=" in job.group("args")
 
-
-def test_job_start_line_refresh_is_a_five_minute_coroutine_job():
-    """A live job's start line shows how long it has run, refreshed by a
-    scheduled job between turn ends. Static wiring guard: the closure is a
-    coroutine (same v0.15.2 hazard as the sweepers above) that refreshes
-    each live job's start line, registered under its own id on a 5-minute
-    interval."""
-    text = _CASA_CORE_SRC.read_text(encoding="utf-8")
-    closure = re.search(
-        r"async def _refresh_job_start_lines\(\)[^\n]*\n"
-        r"(?P<body>.*?)\n\s*scheduler\.add_job\(",
-        text,
-        re.S,
-    )
-    assert closure, ("casa_core.py no longer defines the "
-                     "_refresh_job_start_lines closure right before its "
-                     "scheduler.add_job registration")
-    assert "await tg_transport.refresh_job_start_line(rec)" in closure.group("body")
-    job = re.search(
-        r"scheduler\.add_job\(\s*_refresh_job_start_lines,"
-        r"(?P<args>.*?)\n    \)",
-        text,
-        re.S,
-    )
-    assert job, ("_refresh_job_start_lines must be registered directly with "
-                 "scheduler.add_job")
-    args = job.group("args")
-    assert 'id="job_start_line_refresh"' in args
-    assert 'trigger="interval"' in args
-    assert re.search(r"\bminutes=5,", args)

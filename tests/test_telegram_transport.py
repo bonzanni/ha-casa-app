@@ -482,23 +482,6 @@ async def test_a_new_job_post_goes_through_the_jobs_delivery_not_its_route(
     assert calls(h.casa) == []
 
 
-async def test_a_start_line_edit_goes_through_the_bot_that_posted_it(two_endpoints):
-    h = two_endpoints
-    # the job's route says 111, but its start line was posted by 222
-    rec = _job(route=111, posts=[(TgAddress(222, 100, 7), "start"),
-                                 (TgAddress(111, 100, 8), "question")])
-    await h.transport.refresh_job_start_line(rec)
-    assert [c[0] for c in calls(h.finance)] == ["refresh_job_start_line"]
-    assert calls(h.casa) == []
-    # the stored row form names the same post
-    rec2 = _job(route=111, posts=[[222, 100, 7, "start"]])
-    await h.transport.refresh_job_start_line(rec2)
-    assert [c[0] for c in calls(h.finance)] == ["refresh_job_start_line"] * 2
-    # no start line filed: nothing to edit
-    await h.transport.refresh_job_start_line(_job(posts=[(TgAddress(111, 100, 8), "question")]))
-    assert calls(h.casa) == []
-
-
 async def test_retire_job_keyboards_is_synchronous_and_per_post_endpoint(two_endpoints):
     h = two_endpoints
     p1, p2, p3 = ((TgAddress(111, 100, 5), "start"),

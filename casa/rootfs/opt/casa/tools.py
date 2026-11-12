@@ -10989,12 +10989,12 @@ _DRIVER_CANCEL_TIMEOUT_S = 20.0
 _finalize_tail_tasks: set[asyncio.Task] = set()
 
 # A job that completes from inside a running turn: its teardown waits, at most
-# this long, for that turn to end, so the end paint and the end notice carry
+# this long, for that turn to end, so the end line and the end notice carry
 # the completing turn's cost. Past the bound it finalizes with the last cost
 # known.
 _COMPLETION_TURN_END_WAIT_S = 30.0
 
-# Jobs whose end paint (start line and question keyboards) waits for their
+# Jobs whose end paint (the end line and the question keyboards) waits for their
 # completing turn to end: the terminal observer leaves their keyboards to the
 # finalize tail, which retires them once the turn's cost is recorded.
 _end_paint_deferred: set[str] = set()
@@ -11035,9 +11035,9 @@ async def _await_completing_turn(driver: Any, engagement: Any) -> None:
 
 
 def _paint_job_end(engagement: Any) -> None:
-    """Retire an ended job's keyboards (the start line painted with its
-    outcome, time and cost) — the step the terminal observer left to the
-    finalize tail. Never raises."""
+    """Retire an ended job's keyboards (its end line, with its outcome, time
+    and cost, in reply to the start line) — the step the terminal observer
+    left to the finalize tail. Never raises."""
     _end_paint_deferred.discard(engagement.id)
     channel = _transport()
     retire = getattr(channel, "retire_job_keyboards", None)
@@ -13238,9 +13238,9 @@ def _on_engagement_terminal(rec) -> None:
 
     An ended job's keyboards in the direct chat (its start line, its
     questions) are retired on every terminal winner too: the channel takes
-    them off the record in this step and edits them away on a task of its
-    own, the start line followed by the end line that takes the job's Stop
-    key off the keyboard — except for a job that completed from inside a running turn, whose
+    them off the record in this step and retires them on a task of its
+    own: the end line in reply to the start line, which takes the job's Stop
+    key off the keyboard, and the questions' buttons edited away — except for a job that completed from inside a running turn, whose
     finalize tail retires them once that turn has ended and its cost is
     recorded."""
     CHALLENGES.cancel_matching(engagement=rec.id, reason="engagement_ended")

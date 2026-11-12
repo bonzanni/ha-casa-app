@@ -400,7 +400,7 @@ IDENTITY_SITE_HITS = {
         "TelegramChannel._on_proposal_callback": 1, "TelegramChannel._quoted_address": 1,
         "TelegramChannel._quoted_task": 1, "TelegramChannel._record_post": 1,
         "TelegramChannel._redirect_from_log_group": 2, "TelegramChannel._reply_note_for": 1,
-        "TelegramChannel._resolve_file_address": 1, "TelegramChannel._retire_job_post": 2,
+        "TelegramChannel._resolve_file_address": 1, "TelegramChannel._retire_job_post": 1,
         "TelegramChannel._cancel_job_by_key": 1, "TelegramChannel._press_stop_key": 2,
         "TelegramChannel._route_task_file": 1, "TelegramChannel._route_task_file.tell": 1,
         "TelegramChannel._run_job_cancel": 1, "TelegramChannel._send_dormant_line": 1,
