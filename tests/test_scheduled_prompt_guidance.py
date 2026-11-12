@@ -496,6 +496,7 @@ NOT_A_DELIVERY = {
     "tools.py::event_ack_revoke",
     "tools.py::get_item_fields",
     "tools.py::get_schedule",
+    "tools.py::guest_access",
     "tools.py::list_inbound_files",
     "tools.py::list_vault_items",
     "tools.py::open_memory",
