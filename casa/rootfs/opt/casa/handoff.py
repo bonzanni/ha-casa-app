@@ -5,7 +5,8 @@ work to any specialist through Casa. Each hand-off carries the operator's own
 words (for run admission) and the chain of requesters (so a result returns to
 whoever asked). The bounds are mechanical and agent-agnostic: a chain never
 hands work back to an agent already in it, and holds at most
-``MAX_HANDOFFS`` hand-offs after the resident it started from.
+``MAX_HANDOFFS`` hand-offs after the agent it started from (a resident, or a
+specialist asked in its own chat).
 
 Everything here is a pure function of a turn's origin snapshot. The origin's
 keys it reads are server-set: ``_operator_turn`` and ``synthetic`` are reserved
@@ -19,9 +20,9 @@ from typing import Any
 
 from provenance import OPERATOR_TASK_KEY
 
-# Ellen -> A -> B -> C: three hand-offs after the resident, the design's
-# "[my call: 3 hand-offs after Ellen]".
-MAX_HANDOFFS = 3
+# A stop for a runaway chain, not a budget: no real request comes near it, and
+# the no-agent-twice rule already ends a chain at the number of specialists.
+MAX_HANDOFFS = 10
 
 # The synthetic marker a tapped model-written suggested reply's turn will carry
 # (design §5.5: "A tapped suggested reply counts as his own words"); that

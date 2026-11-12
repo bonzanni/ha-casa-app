@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.367.0] - 2026-11-12
+
+### Added
+
+- You can ask a specialist in its own chat to get help from another specialist: "Alex, get these from Fido" now works there. Before, a specialist could ask a colleague only while answering a request that came through the assistant. Fido starts browsing straight away when your message names the sites, and otherwise asks you once, as when you ask through the assistant.
+
+### Changed
+
+- A request can now pass through up to ten specialists in a row (three before). The limit only stops a runaway chain.
+
 ## [0.366.0] - 2026-11-12
 
 ### Changed

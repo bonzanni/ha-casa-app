@@ -647,7 +647,8 @@ bounded by two app options:
   hands part of its work to another specialist, the hand-off runs inside
   the delegation that started it: a chain of hand-offs counts once against
   the fleet-wide cap, while the per-scope rule still applies to each
-  specialist in it.
+  specialist in it. A hand-off a specialist makes from its own chat has no
+  delegation above it and counts as one.
 - `specialist_cost_alert_threshold` (default `5.0`, in USD) — once a
   specialist's cumulative delegated spend passes this figure, every further
   delegation to it logs an operator-visible warning (spend is not blocked,
