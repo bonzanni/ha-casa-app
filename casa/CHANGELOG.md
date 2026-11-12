@@ -5,7 +5,7 @@
 ### Changed
 
 - Approval cards are short and readable. Every approval — a protected plugin tool call, a specialist or persona install or update, a plugin's webhook, callback or event, and the erase question when a plugin is uninstalled — opens with the same question, "🔐 Allow Ellen to …?", followed by a short summary and a few labelled lines in plain words. At most two lines carry a ⚠️, for what is worth checking before you tap.
-- A separate model writes each card from the request's own facts; if it cannot do so in time (about 15–20 seconds), Casa shows a plain card of its own with every detail.
+- A separate model writes each card from the request's own facts; if it cannot do so in time (usually 15–20 seconds, at most about 25), Casa shows a plain card of its own with every detail.
 - Approval cards no longer show the raw request (the arguments as JSON, the tool's internal id, install digests). What you approve is still bound to exactly the request that was made.
 - Before an approval is needed, Casa reads each protected plugin tool's own description, so the card explains what the tool really does. To read it, Casa starts the plugin's tool server briefly in the background (once per plugin version).
 

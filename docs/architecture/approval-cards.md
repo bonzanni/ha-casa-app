@@ -35,8 +35,9 @@ binds exactly those all the same.
 It is one query with no tools and no session (`_ask`: built-in tools removed, Bash, Task,
 Agent and the cross-session tools denied, ephemeral settings), on Sonnet, under one budget of
 15 seconds that covers waiting for a slot, the query, parsing and one retry; when it expires the
-model's process is shut down before the fallback is posted, which can add about five seconds
-(measured about 20 seconds in all). At most three run
+SDK shuts the model's process down before the fallback is posted, which usually takes about
+five seconds and up to about ten when the process has to be killed (the fallback arrives after
+about 15-20 seconds, at most about 25). At most three run
 at once. The facts are JSON bounded at 20,000 characters (`facts_json`): past that it drops the
 input schema, cuts the tool description to 1,000 characters, halves the string cap step by
 step, then replaces the arguments with a note, and at worst sends the request's kind and
@@ -143,12 +144,13 @@ retired by the finish hook installed on its message id, as for any keyboard.
 
 **The card model is slow, down, refuses or answers badly.** The fallback is posted when the
 budget runs out or the reply is unusable, with a warning logged; after a timeout the model's
-process is shut down first, so the fallback can come about 20 seconds after the request. The
+process is shut down first (usually about five seconds, up to about ten when it has to be
+killed), so the fallback comes about 15-20 seconds after the request, at most about 25. The
 approval works the same.
 
 **A burst of approvals.** Three are written at a time; the rest wait for a slot inside their
 own budget and fall back when it runs out, so no request waits for its card past its
-fifteen-second budget plus that shutdown (about 20 seconds in all).
+fifteen-second budget plus that shutdown (usually 15-20 seconds, at most about 25).
 
 **The tool's description was never listed.** The model is told the tool's name, the plugin's
 declared summary and the arguments; an info line names the missing description.
