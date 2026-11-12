@@ -51,7 +51,10 @@ release — is [`own-voice-lifecycle.md`](own-voice-lifecycle.md).
 
 **The resident's tool for an agent's chat.** `offer_own_chat` (`tools.offer_own_chat` →
 `own_voice.offer_own_chat`) takes the agent and a `mode`: `check` reports on up to five
-candidate handles and gives the context to choose one; `offer`, the default, posts the
+candidate handles — `invalid_format`, `owned_by_other`, `used_before`, `taken`,
+`probably_free` or `unknown` — and gives the context to choose one (the role, its persona's
+name, the resident's own bot, the role's current and previous handles, the other agents'
+handles, Telegram's username rules); `offer`, the default, posts the
 card that creates the chat with the handle the resident chose (`username`), or, once the
 bot exists, the card that opens it, and answers `already_open` with the link when the chat
 is open; `replace` offers a new bot with a new handle in place of the current one, and,

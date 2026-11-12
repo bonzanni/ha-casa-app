@@ -37,7 +37,8 @@ checks the bot's phase itself.
 
 **Who is answered** (`TelegramChannel._guest_decision`). A bot that is not bound to its
 agent (`own_voice.is_bound`, a plain read of the bot's phase that creates and journals
-nothing) drops every summons. The operator's summons is answered, in any chat. Anyone else's
+nothing) drops every summons — a dormant, recovering, retiring or released bot included, so
+the bot of an uninstalled specialist answers no one. The operator's summons is answered, in any chat. Anyone else's
 is dropped, unless the chat is a group the operator allowed for the specialist installed in
 that role now (`guest_groups.store().allowed`, matched on the component id
 `guest_groups.component_of` reads): that summons is logged as not answered — a summons from
