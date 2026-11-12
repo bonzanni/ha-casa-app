@@ -161,11 +161,23 @@ def _route_ok(entry: Any) -> bool:
     return True
 
 
+def _is_specialist(role: str) -> bool:
+    import tools as tools_mod
+    return getattr(tools_mod._agent_role_map.get(role), "kind", "") == "specialist"
+
+
 def requester_kind(chain: tuple | list) -> str:
-    """``operator_resident`` when the run serves the chain's root resident
-    directly (the resident's own delegation, or a pinned stored-call turn),
-    else ``specialist``."""
-    return "operator_resident" if len(chain) <= 2 else "specialist"
+    """``specialist`` when the agent that asked — the chain's element before
+    the run's own — is a specialist: every requester past the root is one (a
+    hand-off only comes from a specialist), and so is a root that is a
+    specialist asked in its own chat. Else ``operator_resident``: the run
+    serves a resident directly (its own delegation, a pinned stored-call
+    turn) or is the agent's own."""
+    if len(chain) > 2:
+        return "specialist"
+    if len(chain) == 2 and _is_specialist(chain[0]):
+        return "specialist"
+    return "operator_resident"
 
 
 class BindingStore:

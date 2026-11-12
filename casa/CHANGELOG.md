@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.367.3] - 2026-11-12
+
+### Fixed
+
+- A specialist you ask in its own chat can now receive files from the colleague it asks. Before, when you asked Alex in his chat to get an invoice through Fido, Fido was told the request came from the assistant, so he posted the file to you instead of handing it to Alex, and nothing was filed (#1573).
+
 ## [0.367.2] - 2026-11-12
 
 ### Fixed
