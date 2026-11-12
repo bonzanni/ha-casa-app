@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.366.0] - 2026-11-12
+
+### Changed
+
+- A specialist that started a job for you now hears the result first and can finish the work itself, including asking another specialist, before the assistant tells you. If that follow-up cannot run, you still get the job's result, with a line saying so.
+- Under a task you started, a specialist's request to Fido starts browsing without a start card, and Fido's status card and messages for it arrive without a notification. Links, files, questions and cards that need you still notify, and actions that change, pay or send are still asked.
+
 ## [0.365.1] - 2026-11-12
 
 ### Fixed
