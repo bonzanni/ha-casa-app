@@ -398,3 +398,42 @@ async def test_a_targetless_plugin_gets_a_row_for_a_codeless_fault(tmp_path,
     codes = sorted(i.reason_code for i in written["issues"]
                    if getattr(i, "name", None) == "gmail")
     assert codes == ["setup_env_unprovisioned", "system_requirement_missing"]
+
+
+# ------------------------- #1566: a setting the install is about to wire
+
+async def test_a_missing_setting_is_held_during_its_install_only():
+    assert plugin_health.held_while_installing("env_unresolved")
+    assert plugin_health.held_while_installing("setup_episode_pending")
+    assert not plugin_health.held_while_installing("setup_episode_failed")
+    # Still a fault where a row picks its one reason.
+    assert not plugin_health.is_install_phase("env_unresolved")
+
+
+async def test_a_missing_setting_waits_for_the_install_to_end(wired):
+    lease = await _install_run()
+    _recorded("mtg.mtg")
+    plugin_health.write_report(issues=[
+        _issue("mtg.mtg", "env_unresolved"),
+        _issue("other", "env_unresolved")], warnings=[], path=wired.path)
+    await casa_core.notify_plugin_health(wired.cm, path=str(wired.path))
+    assert len(wired.cm.channel.sent) == 1
+    assert "other is missing a setting" in wired.cm.channel.sent[0]
+    assert "mtg.mtg" not in wired.cm.channel.sent[0]
+    # The install ends with the value still missing: now it is said.
+    lease.release()
+    await _drain()
+    assert len(wired.cm.channel.sent) == 2
+    assert "mtg.mtg is missing a setting it needs" in wired.cm.channel.sent[1]
+
+
+async def test_a_setting_wired_before_the_install_ends_is_never_said(wired):
+    lease = await _install_run()
+    _recorded("mtg.mtg")
+    plugin_health.write_report(issues=[_issue("mtg.mtg", "env_unresolved")],
+                               warnings=[], path=wired.path)
+    await casa_core.notify_plugin_health(wired.cm, path=str(wired.path))
+    plugin_health.write_report(issues=[], warnings=[], path=wired.path)
+    lease.release()
+    await _drain()
+    assert wired.cm.channel.sent == []

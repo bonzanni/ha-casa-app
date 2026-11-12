@@ -140,7 +140,10 @@ record the plugin on the run's lease — bundle entries by their scoped names �
 lease is held the DM neither names nor marks that plugin's rows in those states. They stay
 new, so when the lease is released, however the run ended, one notify pass runs and names
 whatever still stands; an install that ended with the plugin not working is exactly what the
-operator must hear (INV-CFG-018, in [`configurator.md`](configurator.md)). Every other row — a failed setup, a corrupt artifact — is sent at once, install or not,
+operator must hear (INV-CFG-018, in [`configurator.md`](configurator.md)). A missing setting
+is held back the same way (`plugin_health.py::held_while_installing`): the run installing the
+plugin is usually about to wire it, so it is said only if it still stands when the run ends,
+though it remains a fault when a row picks its one reason. Every other row — a failed setup, a corrupt artifact — is sent at once, install or not,
 and a row never lets an install-phase state stand in front of a real fault: a report row
 carries one reason, and an install-phase one only when every other input of the plugin's
 readiness is ready or install-phase too — including a missing program, which verification

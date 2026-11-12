@@ -386,7 +386,8 @@ _REASON_FALLBACK = "is not working"
 # run, a first install awaiting its reload, a plugin installed before its
 # specialist. Expected while the installing engagement is live, so the DM
 # defers them for that plugin until the engagement ends; every other code is a
-# fault whether or not an install is running.
+# fault whether or not an install is running (a missing setting is a fault too,
+# though the DM also holds it back during the install: held_while_installing).
 _INSTALL_PHASE_CODES = frozenset({
     "setup_env_unprovisioned",
     "setup_episode_pending",
@@ -399,6 +400,15 @@ def is_install_phase(code: "str | None") -> bool:
     """True for a reason code that describes an install still in progress."""
     code = str(code or "")
     return code in _INSTALL_PHASE_CODES or code.endswith("_pending_ack")
+
+
+def held_while_installing(code: "str | None") -> bool:
+    """True for a row the DM holds back while its plugin's install runs: the
+    install-phase states, and a missing setting, which the installing run is
+    usually about to wire. The row still counts as a fault when it decides
+    which reason a row carries (``is_install_phase``); only its announcement
+    waits, and the pass at the run's end names it if it still stands."""
+    return is_install_phase(code) or code == "env_unresolved"
 
 
 def describe_issue(d: dict) -> str:
