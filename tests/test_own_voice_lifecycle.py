@@ -951,12 +951,13 @@ async def test_a_pending_switch_retires_the_old_bot_and_binds_the_new_one_at_boo
     lc2, host2 = make_lifecycle(world, root)
     await lc2.apply_switches()
     disk = _disk(root)
-    assert str(ALEX_BOT) not in disk["bots"]
+    assert disk["bots"][str(ALEX_BOT)]["phase"] == ovl.RELEASED     # kept, released
+    assert disk["bots"][str(ALEX_BOT)]["role"] == "finance"
     assert disk["bots"][str(NEW_BOT)]["phase"] == ovl.BINDING
     assert disk["agents"]["finance"]["bot_id"] == NEW_BOT
     assert world.op_items == {}
     await lc2.boot()
-    assert ALEX_BOT not in lc2.store.bots
+    assert lc2.store.bots[ALEX_BOT]["phase"] == ovl.RELEASED
     assert not lc2.journal.path(ALEX_BOT).exists()
     assert [i["token"] for i in world.op_items.values()] == [NEW_TOKEN]
     agent = lc2.store.agents["finance"]
@@ -1005,7 +1006,7 @@ async def test_the_switch_step_touches_no_telegram(world, root):
                  "set_photo", "remove_photo", "request_restart", "handle_taken"):
         setattr(host2, name, refuse(name))
     await lc2.apply_switches()
-    assert ALEX_BOT not in lc2.store.bots
+    assert lc2.store.bots[ALEX_BOT]["phase"] == ovl.RELEASED
     assert lc2.store.bots[NEW_BOT]["phase"] == ovl.BINDING
     assert lc2.store.agents["finance"]["bot_id"] == NEW_BOT
 
@@ -1520,7 +1521,11 @@ async def test_one_item_per_role_through_bind_rotate_delete_and_recreate(world, 
     await lc.on_updated(created(ALEX_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR)
     assert lc.store.bots[ALEX_BOT]["phase"] == ovl.RELEASED
     world.tokens[8888] = "8888:recreated-token-dddddddddd"
-    await lc.offer("finance", "HeyAlexTestBot")
+    # the deleted bot cannot take Alex back: Telegram says so, and Casa
+    # forgets it, so its handle is offered for a new bot when asked again
+    assert (await lc.offer("finance", "HeyAlexTestBot"))["kind"] == "bot_gone"
+    assert ALEX_BOT not in lc.store.bots
+    assert (await lc.offer("finance", "HeyAlexTestBot"))["status"] == "offered"
     sugg = lc.store.agents["finance"]["suggestion"]
     await lc.on_created(created(8888, sugg["name"], sugg["username"]), OPERATOR)
     assert lc.store.bots[8888]["phase"] == ovl.BOUND
@@ -1976,7 +1981,8 @@ def _check_switch(lc, host, world, held):
         assert lc.store.bots[ALEX_BOT]["phase"] == ovl.BOUND
         assert lc.store.bots[NEW_BOT]["phase"] == ovl.SWITCHING
     else:
-        assert ALEX_BOT not in lc.store.bots
+        assert lc.store.bots[ALEX_BOT]["phase"] == ovl.RELEASED
+        assert lc.store.bots[ALEX_BOT]["role"] == "finance"
         assert agent["bot_id"] == NEW_BOT and agent["moved_from"] == "HeyAlexTestBot"
         assert lc.store.bots[NEW_BOT]["phase"] == ovl.BOUND
         assert lc.store.bots[NEW_BOT]["role"] == "finance"

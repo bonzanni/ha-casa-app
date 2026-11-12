@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-11
+last_reviewed: 2026-11-12
 ---
 
 # An agent's own bot: its lifecycle
@@ -19,7 +19,8 @@ per-bot transport these bots run on is [`telegram-bots.md`](telegram-bots.md).
 
 **The lifecycle is a record per agent and per bot, driven through phases.**
 `own_voice_lifecycle.Lifecycle` keeps `agent-voices.json` under `/data` (one record per
-agent: its offer card, its current suggestion, every handle it was ever offered, its bot, a
+agent: its offer card, its current suggestion (the handle offered and the display name
+chosen for its bot, if any), every handle it was ever offered, its bot, a
 pending change to a new bot, the handle it moved from, when its chat opened; one per bot:
 its phase, role, username, name, the open question about it, the digest of its last
 self-setup). A bot's phases are `seen → unbound → binding → bound`, with `recovering`,
@@ -37,9 +38,9 @@ its result; the configurator says so in its answer, and the resident offers the 
 the resident's choice, steered by the tool's description (name the role, not the persona;
 by default `Casa<Role><digits>Bot`; the operator's existing pattern and wishes first); no
 code derives it. Mode `check` answers, for up to five candidates, `invalid_format`,
-`owned_by_other`, `taken`, `probably_free` or `unknown`, with what the choice needs: the
-role, its persona's name, the resident's own bot, the role's current handle, the other
-agents' handles and Telegram's username rules. An offer is refused, naming the reason, when
+`owned_by_other`, `used_before` (below), `taken`, `probably_free` or `unknown`, with what
+the choice needs: the role, its persona's name, the resident's own bot, the role's current
+and previous handles, the other agents' handles and Telegram's username rules. An offer is refused, naming the reason, when
 the handle is not a bot username (`valid_username`: 5–32 of `[A-Za-z0-9_]`, ending in
 `bot`), when it was ever offered to another agent (each agent's `handles`, kept across new
 offers and restarts), or when the probe shows it taken: `TelegramHost.handle_taken` reads
@@ -48,7 +49,7 @@ offers and restarts), or when the probe shows it taken: `TelegramHost.handle_tak
 taken, and a reserved or recently freed one looks unused. The offer is an ordinary Casa
 card in the resident's chat: "Alex can get a separate chat with you. Tap below, then
 Create." with one URL button opening Telegram's pre-filled "Create Bot" form
-(`https://t.me/newbot/<resident bot>/<handle>?name=<persona name>`); the suggestion and the
+(`https://t.me/newbot/<resident bot>/<handle>?name=<display name>`); the suggestion and the
 handle's ownership are persisted before the card is posted. The operator confirms the form;
 Telegram then sends the `managed_bot_created` service message to the resident's bot and a
 `managed_bot` update. Only the first registers a bot, and only when it comes from the
@@ -75,11 +76,11 @@ call logs its URL. It is stored per role — in its own 1Password item
 1Password in `agent-voices/tokens/<role>`; before binding it is kept in memory and fetched
 again at boot. A stored token is used only for the bot whose id it begins with
 (`token_belongs_to`); a token of another bot is never started, and the right one is
-fetched. Binding then runs the bot's **self-setup** — the persona's name as the bot's
-display name, description, short description, the one `/new` command, access restricted
-to its owner, the persona's picture (set, changed or removed) — each call idempotent,
-re-run whenever the digest of the declared values changes (a persona apply included). A
-refused picture never fails the binding.
+fetched. Binding then runs the bot's **self-setup** — its display name (the name chosen
+for it, else the persona's), description, short description, the one `/new` command, access
+restricted to its owner, the persona's picture (set, changed or removed) — each call
+idempotent, re-run whenever the digest of the values it applies changes (a persona apply or
+a rename included). A refused picture never fails the binding.
 
 **A new bot for an agent.** The operator asks the resident for a new handle and she calls
 `offer_own_chat` with mode `replace`. It is refused while anything still waits on the
@@ -102,9 +103,10 @@ and the scheduler start; it reads only Casa's records and the token store. For e
 pending switch it asks `open_on_bot` again, durable kinds only: if anything still waits on
 the old bot the switch stays pending, the old bot boots as usual, and the card says Alex
 still had something open there; asking again with `replace` once it is done requests
-another restart, with no new bot to create. Otherwise it **retires** the old bot — its
-record, its held journal and its stored token (1Password item or file) — and hands the new
-bot to the ordinary binding as `binding`; every step is persisted and idempotent, so a
+another restart, with no new bot to create. Otherwise it **retires** the old bot — its held
+journal and its stored token (1Password item or file) go, and its record stays, `released`,
+with its role and handle and no setup digest — and hands the new bot to the ordinary
+binding as `binding`; every step is persisted and idempotent, so a
 crash re-runs it from what is on disk. The agent keeps the old handle (`moved_from`) until
 its new chat opens. The move's cards are new messages, since the offer card is far up the
 resident's chat by then and an edit there goes unnoticed: the switch clears the agent's
@@ -117,6 +119,26 @@ new chat is open." (a post that fails puts that text and button on the ready car
 was sent to either bot around the restart may be lost. An uninstall drops a pending change
 whose bot does not exist yet; a pending switch whose bot exists still applies at boot, and
 the new bot then goes dormant through the ordinary binding.
+
+**Back to an earlier bot.** A released bot is no agent's bot: `bot_of`, the chat-opening
+reads (`_role_of`), the boot steps and intake all pass it by. For the agent it was moved
+away from, `check` reports its handle `used_before` (unless the handle was ever offered to
+another agent); for every other agent nothing changes, so a bot is never offered to another
+agent. Offering that handle (`replace`, after the same busy check, or `offer` for an agent
+with no bot) posts no card: Casa fetches the bot's token with `getManagedBotToken`. Refused,
+no agent or card changes and the result says so — `bot_gone` when Telegram reports the bot
+deleted (Casa then forgets its record, so the handle is an ordinary one again) or
+`bot_unreachable`. Fetched, the bot becomes the pending change's new bot in phase
+`switching`, under the registry lock (unless a bot created from an earlier offer claimed
+the change meanwhile), and Casa asks for the restart as for a created bot; the switch binds
+it and its self-setup runs afresh.
+
+**The bot's name.** Mode `rename` stores the operator's chosen display name as the agent's
+suggestion name (1–64 characters, `setMyName`'s limit) — a suggestion name equal to the
+persona name recorded beside it counts as none, so an older offer's stored persona name
+follows the persona. Self-setup applies it, so a bound bot takes it at once with its own
+token, with no new bot and no restart, and a refused call is made again at the next boot;
+later offers keep it for the Create form and the next bot. Cards keep the persona's name.
 
 **The agent speaks first; the chat opens once Telegram takes a turn's reply or the operator
 writes.** The card becomes "Alex's chat is ready: @…. Open it and say hi." (after a move,
@@ -185,15 +207,15 @@ not authorized no fetch is tried and the log says so once. An uninstall's result
 
 **INV-OWN-006**: An update that reaches an agent's own bot passes the lifecycle's intake before it is queued; it is delivered only to a bound, reconciled, declared agent whose queue is registered and with nothing older held, otherwise journaled before Telegram is acknowledged, and held records are released in arrival order, a refused one holding itself and every later one.
 
-**INV-OWN-008**: Every lifecycle effect finds its phase on disk, every phase has a boot reconciliation, and a bot is released only on the token fetch failure that establishes its deletion; every other failure keeps it recovering.
+**INV-OWN-008**: Every lifecycle effect finds its phase on disk, every phase has a boot reconciliation, and a recovering bot is released only on the token fetch failure that establishes its deletion; every other failure keeps it recovering.
 
 **INV-OWN-011**: A binding that completes greets once: Casa hands the bound agent one turn of its own, marked `synthetic: "chat_opening"` with no operator identity, carrying the opening line, unless the chat is open by then — read under the chat's serial lock — and the boot of an already-bound bot greets nobody; that turn opens the chat only once its reply reached Telegram, and a reply Telegram refuses leaves it unopened, and an operator `/start` that arrives while that greeting is on its way is held: the delivered greeting answers it, and a greeting refused, ended in silence or undelivered when its window runs out replays it as his own turn. Otherwise the operator's first turn in an agent's own chat that the agent's queue accepts, whatever it says, opens the chat: that turn alone carries Casa's line that the operator just opened it — in an agent's new chat after a move to a new bot, the line that it is the new chat — and `chat_open_at` is persisted only after the acceptance, on a first send and on a retry after a hand-back alike; a delivery refused or interrupted, across a restart included, and a file sent without a caption open nothing, and the chat's next accepted operator turn carries the line.
 
 **INV-OWN-012**: A bot is registered only from the operator's own `managed_bot_created` message to Casa's bot in his chat, and bound to an agent only when its username equals that agent's current suggestion (a waiting agent's first bot, or a pending change) or the operator names a waiting agent or one with a pending change; a bot is never rebound to another agent, and an agent has one bound bot at a time.
 
-**INV-OWN-013**: A pending switch is applied only by the boot step that runs before Casa's HTTP server, channels, workers and scheduler start, and only when no durable record still waits on the old bot; it removes the old bot's record, held journal and stored token before the new bot enters binding, and a stored token is used only for the bot whose id it begins with.
+**INV-OWN-015**: A pending switch is applied only by the boot step that runs before Casa's HTTP server, channels, workers and scheduler start, and only when no durable record still waits on the old bot; it drops the old bot's held journal and stored token and keeps its record as `released`, no agent's bot, before the new bot enters binding, and a stored token is used only for the bot whose id it begins with.
 
-**INV-OWN-014**: An offer's handle is refused when it is not a valid bot username, when it was ever offered to another agent, or when the t.me probe shows it taken; a probe that cannot complete refuses nothing.
+**INV-OWN-016**: An offer's handle is refused when it is not a valid bot username, when it was ever offered to another agent, or when the t.me probe shows it taken — except the handle of a released bot of the same agent, which records that bot as the agent's pending change only once its token was fetched; a released bot of another agent is never offered, and a probe that cannot complete refuses nothing.
 
 ## Failure behavior
 
@@ -220,6 +242,9 @@ same 1Password item in place, and a stored token of another bot is never used.
 
 **The handle probe cannot reach t.me** (network, egress, a status other than 200). The check
 says `unknown` for that candidate, and an offer goes ahead.
+
+**An earlier bot Telegram will not hand back.** Nothing moves and no card is posted; the
+result says the bot is gone or not reachable, and the resident tells the operator.
 
 **A store `open_on_bot` reads fails.** Logged, and reported as "something Casa could not
 check": the change waits rather than going ahead blind.
@@ -277,6 +302,7 @@ the opening line too, but the chat is marked open, and its cards posted, once.
 - `tests/test_own_voice_conversation.py`
 - `tests/test_own_chat_open_items.py`
 - `tests/test_own_chat_switch_boot.py`
+- `tests/test_own_chat_move_back_and_rename.py`
 
 **Related**
 - [`architecture/own-voice.md`](../architecture/own-voice.md)

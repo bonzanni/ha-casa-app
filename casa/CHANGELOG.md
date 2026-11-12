@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.365.0] - 2026-11-12
+
+### Added
+
+- You can move a specialist back to a bot it had before: ask the assistant, and if that bot still exists Casa restarts for a moment and the specialist is back in its earlier chat, with nothing to create. If the bot was deleted, the assistant tells you. Not backward compatible: only bots a specialist leaves from this version on are remembered (#1554).
+- You can rename a specialist's bot: ask the assistant, and the name at the top of its chat changes right away, keeping its handle and chat (#1554).
+
 ## [0.364.4] - 2026-11-12
 
 ### Fixed

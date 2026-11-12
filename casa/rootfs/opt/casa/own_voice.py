@@ -287,18 +287,22 @@ def open_on_bot(role: str, bot_id: int, *, durable_only: bool = False) -> list[s
 
 
 #: what :func:`offer_own_chat` can be asked to do
-OFFER_MODES = ("check", "offer", "replace", "drop")
+OFFER_MODES = ("check", "offer", "replace", "drop", "rename")
 
 
 async def offer_own_chat(role: str, *, mode: str = "offer", username: "str | None" = None,
-                         candidates: "list[str] | None" = None) -> dict:
+                         candidates: "list[str] | None" = None,
+                         name: "str | None" = None) -> dict:
     """The resident's tool, for *role*'s own chat. *mode*:
 
     ``"check"`` reports on the *candidates* handles and what the resident
     needs to choose one; ``"offer"`` posts the card that creates the chat
     with the handle *username* (or, once created, the card that opens it);
     ``"replace"`` offers a new bot with the handle *username* in place of the
-    current one; ``"drop"`` keeps the current bot after all."""
+    current one; ``"drop"`` keeps the current bot after all. For the handle
+    of a bot *role* was moved away from, ``"offer"`` and ``"replace"`` move
+    it back to that bot. ``"rename"`` gives *role*'s bot the display name
+    *name*."""
     lc = _lifecycle()
     if mode == "check":
         return await lc.check_handles(role, list(candidates or []))
@@ -308,6 +312,8 @@ async def offer_own_chat(role: str, *, mode: str = "offer", username: "str | Non
         return await lc.replace(role, username or "")
     if mode == "drop":
         return await lc.drop_change(role)
+    if mode == "rename":
+        return await lc.rename(role, name or "")
     return {"status": "error", "kind": "bad_mode",
             "message": f"mode must be one of {', '.join(OFFER_MODES)}"}
 
