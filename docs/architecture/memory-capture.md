@@ -43,6 +43,13 @@ awaits the append, so every capture a turn made has returned by the time the tur
   line Casa prefixes when it redelivers the message after a restart), once it is written into
   the job's session, and each message the specialist writes. Plugin jobs are not
   memory-writing specialists.
+- **Casa's line about how a change of an agent's own chat turned out**, from the own-chat
+  lifecycle (`Lifecycle._remember` → `TelegramHost.remember`). The resident starts a chat's
+  setup or a move with its card, but what finishes it (the operator's Create, a handle typed
+  differently in Telegram's form, Casa's question about which agent a new bot is for, the
+  restart) happens on Casa's cards, never in its turns. A completed binding writes "Alex's chat
+  is set up: @…." or "Alex's chat moved from @old to @new.", the handle read from the bot
+  itself; a move the boot holds back writes that it waits and why (INV-MEM-047).
 - **Casa's line that a specialist which keeps no memory posted to the operator's chat**, in
   the Telegram channel's `_record_post`, where every message Casa sends on a specialist's
   behalf lands: a plugin's link, message, page, proposal or file, a file sent with
@@ -191,6 +198,8 @@ card of a browsing run, its status card, the line answering a Stop — are
 Casa's status text, not the specialist's post, and leave no line. The write is detached: a
 crash between the landing and the write loses the line, never the post.
 
+**INV-MEM-047**: A binding of an agent's own bot that completes captures exactly one event in the resident's memory — Casa's words naming the bot's own handle as Telegram reported it at creation: that the agent's chat is set up there, or, for a move, that it moved there from the old handle — with speaker `casa`, origin `system`, the resident as its role, the agent as its speaker id, a `private` floor and the rule `own_chat_line`, handed to capture (detached, like Casa's line for a specialist's post) before the bound phase is saved; a later boot of the bound bot captures none, a pending switch the boot holds back captures the line that the move waits, and a capture that fails never stops the binding.
+
 **INV-MEM-044**: When the operator's reply in their direct chat to one of a job's posts, the job being the engagement of a specialist that writes no memory, is handed to that engagement as a turn, exactly their typed words are captured once as their message — speaker `operator`, origin `operator`, no floor, the chat's resident as its role, keyed by their message with the key a memory-writing specialist's engagement gives it (`memory.occurrence.engagement_key`) — never the specialist's turn; nothing is captured for a specialist that writes memory.
 
 The specialist's engagement captures nothing (INV-MEM-032), and the operator's words went down
@@ -281,6 +290,7 @@ that writes it ([`memory-store.md`](memory-store.md)).
 **Tests**
 - `tests/test_memory_capture.py`
 - `tests/test_memory_specialist_post.py`
+- `tests/test_own_chat_memory_line.py`
 - `tests/test_memory_eligibility.py`
 - `tests/test_memory_excluded_specialist.py`
 - `tests/test_no_retain_specialist.py`

@@ -463,6 +463,75 @@ async def test_the_greeting_opens_the_chat_only_once_its_reply_landed(
         ovl.install(None)
 
 
+async def test_the_agents_surfaces_may_post_while_its_greeting_is_on_its_way(
+        world, tmp_path, monkeypatch):
+    """Casa's greeting turn tells Alex the operator opened his chat, and the
+    chat opens with that greeting: while it is on its way his surfaces may
+    post (a tool checked during his hello is not refused as an unopened
+    chat). A greeting that reached no one leaves the chat as it was."""
+    import own_voice
+    import own_voice_lifecycle as ovl
+    from own_voice_world import World, created, make_lifecycle, specialist
+    from test_own_chat_routing import _endpoint, _turns
+
+    voices = World(configs={"finance": specialist("Alex")}, queues=set(),
+                   tokens={FINANCE_BOT: f"{FINANCE_BOT}:alex-token-aaaaaaaaaaaaaaaa"})
+    lc, host = make_lifecycle(voices, tmp_path / "voices", channel=False)
+    monkeypatch.setattr(host, "operator_id", lambda: OPERATOR)
+    await lc.post_offer("finance", "HeyAlexTestBot")
+    await lc.on_created(created(FINANCE_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR)
+    ovl.install(lc)
+    try:
+        ch, bus = _endpoint("own")
+        refused = own_voice.require_open_chat("finance", label="Alex")
+        assert refused is not None and refused.kind == "own_chat_not_open"
+        assert await ch.speak_first() is True
+        [_greeting] = _turns(bus, "finance")
+        assert lc.state("finance") == "not_open"
+        assert own_voice.require_open_chat("finance", label="Alex") is None
+        ch._end_greeting()                       # it reached no one
+        refused = own_voice.require_open_chat("finance", label="Alex")
+        assert refused is not None and refused.kind == "own_chat_not_open"
+    finally:
+        ovl.install(None)
+
+
+@pytest.mark.parametrize("ending", ["not_started", "stopped"])
+async def test_a_greeting_that_can_no_longer_arrive_ends_its_window(
+        world, tmp_path, monkeypatch, ending):
+    """The greeting's reply cannot be sent (the endpoint is not started), or
+    the endpoint stops while it is on its way: the window ends there, and the
+    agent's surfaces are refused again as an unopened chat."""
+    import own_voice
+    import own_voice_lifecycle as ovl
+    from own_voice_world import World, created, make_lifecycle, specialist
+    from test_own_chat_routing import _endpoint, _turns
+
+    voices = World(configs={"finance": specialist("Alex")}, queues=set(),
+                   tokens={FINANCE_BOT: f"{FINANCE_BOT}:alex-token-aaaaaaaaaaaaaaaa"})
+    lc, host = make_lifecycle(voices, tmp_path / "voices", channel=False)
+    monkeypatch.setattr(host, "operator_id", lambda: OPERATOR)
+    await lc.post_offer("finance", "HeyAlexTestBot")
+    await lc.on_created(created(FINANCE_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR)
+    ovl.install(lc)
+    try:
+        ch, bus = _endpoint("own")
+        assert await ch.speak_first() is True
+        [greeting] = _turns(bus, "finance")
+        assert own_voice.require_open_chat("finance", label="Alex") is None
+        if ending == "not_started":
+            ch._app = None
+            await ch.send_response("Hi, Alex here.", greeting.context)
+        else:
+            ch._app = None              # this double has no PTB application to tear down
+            await ch.stop()
+        refused = own_voice.require_open_chat("finance", label="Alex")
+        assert refused is not None and refused.kind == "own_chat_not_open"
+        assert ch._greeting_timer is None
+    finally:
+        ovl.install(None)
+
+
 async def test_a_silent_greeting_opens_nothing(world, tmp_path, monkeypatch):
     """Alex chooses silence on Casa's greeting turn: nothing reached the
     operator, so the chat stays unopened and his first message opens it."""

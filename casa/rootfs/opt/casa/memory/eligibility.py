@@ -53,6 +53,10 @@ class Source(str, enum.Enum):
     #: specialist's. The value is stored as the item's admitting rule, so it
     #: keeps the name it was first stored under.
     JOB_REPLY = "topic_message"
+    #: Casa's own line for how a change of an agent's own chat that the
+    #: resident started turned out (set up, moved, or held back): the cards
+    #: and taps that finish it are not the resident's turns.
+    OWN_CHAT_LINE = "own_chat_line"
 
 
 def admit(
@@ -88,4 +92,6 @@ def admit(
         return source.value if role_writes_memory else None
     if source in (Source.SPECIALIST_POST, Source.JOB_REPLY):
         return None if role_writes_memory else source.value
+    if source is Source.OWN_CHAT_LINE:
+        return source.value
     raise ValueError(f"unknown capture source {source!r}")

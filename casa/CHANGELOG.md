@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.365.1] - 2026-11-12
+
+### Fixed
+
+- The assistant now learns how a specialist's chat change turned out: when the specialist's chat is set up or moved, or a move has to wait, Casa leaves a line in the assistant's memory with the bot's real handle. Before, the assistant remembered only the handle it had suggested, and could tell you a move had failed when you had simply picked another handle in Telegram's form (#1559).
+- A specialist saying hello in its new chat can use its tools straight away. Before, Fido could tell you to tap a button in the assistant's chat because his chat did not count as open yet (#1560).
+
+### Changed
+
+- When a specialist moves to a new bot, the card and the assistant now just say it will say hi in its new chat in a moment, without talking about Casa restarting.
+
 ## [0.365.0] - 2026-11-12
 
 ### Added

@@ -738,7 +738,7 @@ async def test_only_the_current_suggestion_completes_a_change(world, root):
     assert lc.store.bots[ALEX_BOT]["phase"] == ovl.BOUND
     assert world.restarts == 1
     assert world.card_text(agent["offer_card"]) == \
-        "Alex is moving to @casafinancebbbbbot — Casa restarts for a moment."  # its own name
+        "Alex is moving to @casafinancebbbbbot and says hi there in a moment."  # its own name
     assert _disk(root)["bots"][str(NEW_BOT)]["phase"] == ovl.SWITCHING
     world.tokens[779] = "779:third-token-yyyyyyyyyyyy"
     await lc.on_created(created(779, "Alex", "CasaFinanceBbbbBot"), OPERATOR)   # a second one
@@ -806,7 +806,7 @@ async def test_picking_a_specialist_with_a_pending_change_moves_it_at_a_restart(
     assert world.restarts == 1
     assert world.card_text(ask_card) == "@HeyCasaFinanceBot is Alex's."
     assert world.card_text(agent["offer_card"]) == \
-        "Alex is moving to @HeyCasaFinanceBot — Casa restarts for a moment."
+        "Alex is moving to @HeyCasaFinanceBot and says hi there in a moment."
     assert _disk(root)["bots"]["777"]["phase"] == ovl.SWITCHING
 
 
@@ -1075,7 +1075,7 @@ async def test_the_new_chats_card_is_a_new_message(world, root):
     assert text == "Alex's new chat is ready: @CasaFinance4821Bot. Open it and say hi."
     assert buttons == [("Open Alex's chat", "https://t.me/CasaFinance4821Bot")]
     assert world.card_text(old_card) == \
-        "Alex is moving to @CasaFinance4821Bot — Casa restarts for a moment."
+        "Alex is moving to @CasaFinance4821Bot and says hi there in a moment."
     cards = len(world.cards)
     lc2, _host2 = make_lifecycle(world, root)
     await lc2.boot()                    # a later restart edits it, posts nothing

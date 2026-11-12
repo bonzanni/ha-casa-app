@@ -889,6 +889,8 @@ BOT_ID_READS = {
     ("channels/telegram.py", "TelegramChannel._handle_serialized"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._send_turn"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel.speak_first"): (1, RECEIPT, "the endpoint's own bot, whose chat its agent's greeting opens"),
+    ("channels/telegram.py", "TelegramChannel._end_greeting"): (1, RECEIPT, "the endpoint's own bot, whose agent's greeting ended"),
+    ("channels/telegram.py", "TelegramChannel.stop"): (1, RECEIPT, "the endpoint's own bot, whose greeting a stop ends"),
     ("channels/telegram.py", "TelegramChannel._on_proposal_callback"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._on_resident_callback"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._on_run_stop_callback"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
