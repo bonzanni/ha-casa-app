@@ -1645,6 +1645,12 @@ class Agent:
         # diff r1).
         # #1142: never on a `deliver: operator` webhook fire — an untrusted
         # turn; the helper itself does not exclude those.
+        # A turn the agent's bot was summoned to in a group it is not a
+        # member of delivers its final text into that group's one inline
+        # message (the channel's ``guest_finish``); Casa's own lines — this
+        # notice among them — go to the DM as their own sends.
+        guest = (bool(delivery_context.get("_guest_query"))
+                 and hasattr(channel, "guest_finish"))
         if (
             text and channel is not None
             and getattr(channel, "delivers_final_text", True)
@@ -1653,8 +1659,10 @@ class Agent:
             noticed, health_notice = await self._maybe_prepend_health_notice(text)
             # The notice is prepended OUTSIDE the admitted text (outermost, as
             # today); the admission — its provenance and annotations — is
-            # carried over the re-rendered body.
-            if noticed is not text and admitted is not None:
+            # carried over the re-rendered body. The group receives the
+            # model's text only: a summoned turn sends the notice to the DM
+            # below, once the text has landed.
+            if not guest and noticed is not text and admitted is not None:
                 text = admitted.with_text(noticed)
         else:
             health_notice = None
@@ -1666,7 +1674,10 @@ class Agent:
             outcome = None
             delivered = False
             try:
-                if on_token is not None and hasattr(channel, "finalize_stream"):
+                if guest:
+                    outcome = await channel.guest_finish(
+                        text, error_kind, delivery_context)
+                elif on_token is not None and hasattr(channel, "finalize_stream"):
                     if error_kind is None and hasattr(
                         channel, "finalize_response_stream",
                     ):
@@ -1725,6 +1736,22 @@ class Agent:
                 plugin_health.forget_notice(self.config.role, health_notice)
             if delivered:
                 await self._ack_delivery(msg, error_kind)
+            if guest and health_notice is not None and delivered:
+                # The notice as its own send to the DM, after the group's
+                # text; a send that proves it was not shown releases it, as
+                # the ordinary path does.
+                try:
+                    shown = await channel.send(casa_text(health_notice),
+                                               delivery_context)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    logger.exception("health notice send failed (role=%s)",
+                                     self.config.role)
+                    shown = DeliveryOutcome.NOT_DELIVERED
+                if shown is DeliveryOutcome.NOT_DELIVERED:
+                    import plugin_health
+                    plugin_health.forget_notice(self.config.role, health_notice)
         elif channel is not None:
             # L7 (v0.52.0): a turn that strips to empty / `<silent/>` never
             # calls send()/finalize_stream(), so give the channel a chance to
