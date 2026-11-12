@@ -110,7 +110,8 @@ What the operator reads is an approval card, not the request itself
 ([`approval-cards.md`](approval-cards.md)): a separate model writes it from the call's facts —
 the requesting agent, the plugin, the tool as declared, the tool's own description and input
 schema when listed, the plugin's declared summary, and the arguments — and, when it cannot
-(a timeout, an error, an unusable reply), Casa posts a fallback with one labelled line per argument. The canonical
+(a timeout, an error, an unusable reply), Casa posts a fallback with one labelled line per argument
+(for a call with no arguments, the plugin's own description of the tool). The canonical
 arguments and the full tool id are not on the card; the grant binds exactly them all the same,
 and registration measures the challenge text Casa renders from them
 (`render_challenge_message`), refusing an oversized one before anything is posted. The card
