@@ -30,10 +30,13 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from channels.tg_address import CASA, AddressError, TgAddress, is_route, scope
 from text_util import escape_unsafe_text, is_unsafe_text, utf16_len
+
+if TYPE_CHECKING:  # annotation only; the runtime import stays lazy
+    import approval_card
 
 logger = logging.getLogger(__name__)
 

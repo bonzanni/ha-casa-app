@@ -93,7 +93,7 @@ def test_every_options_site_passes_effort_for_its_own_model():
                     or len(effort.args) != 1
                     or ast.unparse(effort.args[0]) != ast.unparse(model)):
                 problems.append(f"{where}: effort is not effort_for(<model>)")
-    assert count == 9, count
+    assert count == 10, count
     assert fixed_seen == set(FIXED_EFFORT), fixed_seen
     assert not problems, problems
 
