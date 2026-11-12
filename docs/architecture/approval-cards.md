@@ -103,7 +103,8 @@ plugins — a resident's, a specialist's, a delegated capture's, a plugin job's 
 thread it runs on. For each resolved plugin that declares protected tools and has one stdio
 server (`plugin_continuations.sweep_server`), a background task starts that server, runs
 `initialize` and `list_tools` and nothing else (`plugin_continuations.list_plugin_tools`,
-20 seconds), and keeps the protected tools' descriptions and input schemas in memory under
+a 20 second budget for the listing; a server that does not answer is stopped afterwards, which
+can take about two seconds more), and keeps the protected tools' descriptions and input schemas in memory under
 the artifact id and the declared tool name, so a replacement artifact never reads another's
 entry. Each artifact is listed once per process; a failed listing is tried again after five
 minutes, at most three times. A miss is normal and logged: the card goes without.

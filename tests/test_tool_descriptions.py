@@ -115,6 +115,33 @@ async def test_list_plugin_tools_gives_up_after_its_budget(monkeypatch):
                                    timeout_s=0.05)
 
 
+@pytest.mark.asyncio
+async def test_list_plugin_tools_stops_a_silent_real_server(tmp_path):
+    """A real server that never answers: the call times out, returns within a few seconds
+    (the budget plus the MCP client's own shutdown wait), and the process is gone."""
+    import os
+    import sys
+    import time
+
+    pid_file = tmp_path / "pid"
+    code = ("import os, time, pathlib, sys; "
+            "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(60)")
+    server = {"command": sys.executable, "args": ["-c", code, str(pid_file)],
+              "env": {}, "cwd": str(tmp_path)}
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await pc.list_plugin_tools(server, timeout_s=1.0)
+    assert time.monotonic() - started < 5
+    pid = int(pid_file.read_text())
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return
+    # A terminated child may linger as a zombie until its parent reaps it.
+    status = f"/proc/{pid}/status"
+    assert not os.path.exists(status) or "\nState:\tZ" in open(status).read()
+
+
 # ---- the fill -----------------------------------------------------------------
 
 def _fake_list(monkeypatch, by_path: dict, *, gate: "dict | None" = None):
