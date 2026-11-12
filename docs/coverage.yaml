@@ -103,6 +103,8 @@
   doc: architecture/plugin-operator-calls.md
 - item: casa/rootfs/opt/casa/own_voice.py
   doc: architecture/own-voice.md
+- item: casa/rootfs/opt/casa/guest_groups.py
+  doc: architecture/own-voice.md
 - item: casa/rootfs/opt/casa/own_voice_lifecycle.py
   doc: architecture/own-voice-lifecycle.md
 - item: casa/rootfs/opt/casa/run_admission.py
