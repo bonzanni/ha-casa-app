@@ -91,11 +91,12 @@ def wired(monkeypatch, tmp_path):
     return channel, continued
 
 
-def _call(words="download my latest RunPod invoice", chain=("assistant", "browser")):
+def _call(words="download my latest RunPod invoice", chain=("assistant", "browser"),
+          **extra):
     ident = GrantIdentity(operator_id=100, chat_id=42, enforcement_role="browser",
                           artifact_id=ARTIFACT, engagement_id="", bot_id=CASA_BOT,
                           delivery=TgAddress(CASA_BOT, 42))
-    origin = {**ORIGIN, "user_text": words or "", "_handoff_chain": chain}
+    origin = {**ORIGIN, "user_text": words or "", "_handoff_chain": chain, **extra}
     if words is None:
         origin["synthetic"] = "continuation"
     else:
@@ -555,3 +556,74 @@ async def test_a_status_card_that_fails_to_post_leaves_the_admission(wired, monk
     await _cards_settle()
     assert out["status"] == "admitted" and len(channel.cards) == 1
     assert run_admission.CONFIRMATIONS.peek(out["confirmation_id"]).card is None
+
+
+# -- a colleague's request under the operator's task ---------------------------------------
+
+COLLEAGUE = ("assistant", "finance", "browser")
+UNNAMED = [RUNPOD, _run(("LinkedIn", "account"), digest="sha256:dd")]
+
+
+@pytest.mark.asyncio
+async def test_a_colleagues_request_under_the_operators_task_starts_without_a_card(
+        wired, monkeypatch):
+    """A specialist asked the browsing agent, in a turn that belongs to a task
+    the operator started: the runs are admitted with no question, on sites no
+    words name, and the status card with its Stop is posted."""
+    channel, continued = wired
+    ask, seen = _model(AssertionError("nothing is read: the call has no words"))
+    monkeypatch.setattr(run_admission, "_ask_model", ask)
+    call = _call(words=None, chain=COLLEAGUE, _operator_task=True)
+    assert call.operator_words is None and call.chain == COLLEAGUE
+    out = await run_admission.request_admission(call, UNNAMED, "k1")
+    await _cards_settle()
+    assert out["status"] == "admitted"
+    assert [a["spec_digest"] for a in out["admissions"]] == ["sha256:aa", "sha256:dd"]
+    assert channel.posted == [] and continued == [] and seen == []
+    (card,) = channel.cards
+    cid = out["confirmation_id"]
+    assert card[2] == [("Stop", f"v1|run_stop|{cid}|0")]
+    assert "On it for Alex (2 runs):\n• RunPod — download invoice" in card[1]
+    assert run_admission.confirmation_status(call, cid)["status"] == "admitted"
+    # the same request again is the same answer: no second card of either kind
+    assert await run_admission.request_admission(call, UNNAMED, "k1") == out
+    await _cards_settle()
+    assert channel.posted == [] and len(channel.cards) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_colleagues_request_with_words_is_admitted_without_a_reading(
+        wired, monkeypatch):
+    channel, _continued = wired
+    ask, seen = _model(AssertionError("the words are not read for this request"))
+    monkeypatch.setattr(run_admission, "_ask_model", ask)
+    import action_judgement
+    monkeypatch.setattr(action_judgement, "WORDS", action_judgement.OperatorWords())
+    out = await run_admission.request_admission(
+        _call(words="collect them", chain=COLLEAGUE, _operator_task=True), UNNAMED, "k1")
+    await _cards_settle()
+    assert out["status"] == "admitted" and channel.posted == [] and seen == []
+    assert len(channel.cards) == 1
+    assert action_judgement.WORDS.get(plugin="browser", bot_id=CASA_BOT, operator_id=100,
+                                      spec_digest="sha256:aa") is None
+
+
+@pytest.mark.parametrize("chain,extra", [
+    pytest.param(("assistant", "browser"), {"_operator_task": True},
+                 id="the-resident-asked"),
+    pytest.param(("browser",), {"_operator_task": True}, id="its-own-run"),
+    pytest.param(COLLEAGUE, {}, id="not-the-operators-task"),
+    pytest.param(COLLEAGUE, {"_operator_task": "yes"}, id="a-mark-that-is-not-true"),
+    pytest.param(COLLEAGUE, {"_operator_task": 1}, id="a-mark-that-is-a-number"),
+])
+@pytest.mark.asyncio
+async def test_every_other_request_without_naming_words_still_gets_the_card(
+        wired, monkeypatch, chain, extra):
+    channel, _continued = wired
+    ask, seen = _model(AssertionError("nothing is read: the call has no words"))
+    monkeypatch.setattr(run_admission, "_ask_model", ask)
+    out = await run_admission.request_admission(
+        _call(words=None, chain=chain, **extra), UNNAMED, "k1")
+    await _cards_settle()
+    assert out["status"] == "confirmation_pending" and "admissions" not in out
+    assert len(channel.posted) == 1 and channel.cards == [] and seen == []
