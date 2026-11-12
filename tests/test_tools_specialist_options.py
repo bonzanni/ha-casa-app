@@ -166,3 +166,55 @@ def test_effective_line_excludes_disallowed_tools(caplog) -> None:
     assert "tool_count=1" in line
     # And the options genuinely deny it at the CLI layer.
     assert "Write" in opts.disallowed_tools
+
+
+# -- guest_access: specialist builds only ---------------------------------------
+
+def _guest_cfg(role: str, kind: str = "specialist"):
+    from config import AgentConfig, CharacterConfig
+    try:
+        from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
+    except ImportError:
+        from role_artifact_stub import STUB_ROLE_ARTIFACT
+    return AgentConfig(role_artifact=STUB_ROLE_ARTIFACT, role=role, model="x",
+                       character=CharacterConfig(name="N"), system_prompt="x",
+                       kind=kind)
+
+
+def _quiet_builder(monkeypatch):
+    import agent_inbox
+    import tools
+    monkeypatch.setattr(agent_inbox, "_inboxes", {})
+    for name in ("_agent_registry", "_specialist_telemetry", "_channel_manager",
+                 "_mcp_registry"):
+        monkeypatch.setattr(tools, name, None, raising=False)
+    return tools
+
+
+GUEST_GRANT = "mcp__casa-framework__guest_access"
+
+
+def test_specialist_builds_grant_guest_access_and_engagements_do_not(monkeypatch):
+    """A specialist's own-chat and delegated builds are offered the tool (it
+    refuses outside a group by itself); an engagement or job build is not."""
+    from plugin_registry import ResolutionResult
+    tools = _quiet_builder(monkeypatch)
+    assert tools._guest_grants(_guest_cfg("mtg"), engagement=False) == (GUEST_GRANT,)
+    assert tools._guest_grants(_guest_cfg("mtg"), engagement=True) == ()
+    res = ResolutionResult(registry_valid=True, plugins=[])
+    opts = tools._build_specialist_options(_guest_cfg("mtg"), resolution=res)
+    assert GUEST_GRANT in opts.allowed_tools
+    eng = tools._build_specialist_options(
+        _guest_cfg("mtg"), resolution=res,
+        extra_casa_tools=("mcp__casa-framework__emit_completion",))
+    assert GUEST_GRANT not in eng.allowed_tools
+
+
+def test_the_resident_build_does_not_grant_guest_access(monkeypatch):
+    from plugin_registry import ResolutionResult
+    tools = _quiet_builder(monkeypatch)
+    resident = _guest_cfg("assistant", kind="resident")
+    assert tools._guest_grants(resident, engagement=False) == ()
+    opts = tools._build_specialist_options(
+        resident, resolution=ResolutionResult(registry_valid=True, plugins=[]))
+    assert GUEST_GRANT not in opts.allowed_tools
