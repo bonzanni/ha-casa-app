@@ -77,8 +77,9 @@ DORMANT = "dormant"
 RELEASING = "releasing"
 RELEASED = "released"
 SWITCHING = "switching"
+RETIRING = "retiring"
 PHASES = (SEEN, UNBOUND, BINDING, BOUND, RECOVERING, DORMANT, RELEASING, RELEASED,
-          SWITCHING)
+          SWITCHING, RETIRING)
 
 #: Each phase's boot reconciliation, by method name. Every phase has one; a
 #: phase added without one fails the crash sweep that iterates this table.
@@ -92,7 +93,11 @@ BOOT_STEPS: dict[str, str] = {
     RELEASING: "_step_releasing",
     RELEASED: "_step_released",
     SWITCHING: "_step_switching",
+    RETIRING: "_step_retiring",
 }
+
+#: The phases of a bot that is still its agent's: what an uninstall retires.
+_LIVE = (BINDING, BOUND, RECOVERING, DORMANT, SWITCHING)
 
 #: The fetch failures that establish a bot is no longer managed by the
 #: resident's bot, so its record may be released: ``getManagedBotToken``
@@ -905,7 +910,7 @@ class Lifecycle:
         """The agent *bot_id* is for; ``None`` for an unknown bot and for a
         released one, which is no agent's bot any more."""
         rec = self.store.bots.get(bot_id) or {}
-        return rec.get("role") if rec.get("phase") != RELEASED else None
+        return rec.get("role") if rec.get("phase") not in (RETIRING, RELEASED) else None
 
     def chat_opening(self, bot_id: int) -> bool:
         """Whether a turn delivered on *bot_id* now is the one that opens its
@@ -1440,7 +1445,7 @@ class Lifecycle:
         found no queue may ask again and gets ``"held"``."""
         async with self._lock(bot_id):
             rec = self.store.bots.get(bot_id)
-            if rec is None or rec["phase"] in (RELEASING, RELEASED):
+            if rec is None or rec["phase"] in (RELEASING, RELEASED, RETIRING):
                 return "held"
             if rec["phase"] == DORMANT:
                 return "dormant_reply"   # the endpoint sends the dormant line
@@ -1690,6 +1695,41 @@ class Lifecycle:
         elif outcome != "wait":
             self._schedule_retry(bot_id, "token not fetched")
 
+    async def _step_retiring(self, bot_id: int) -> None:
+        """An uninstall retires its agent's bot: the endpoint stops, the held
+        updates and the stored token go, the agent has no bot, and a card
+        offers the bot's deletion in BotFather. The record stays, ``released``
+        and set up afresh should it ever be used again. A token that cannot be
+        deleted keeps the bot ``retiring``, retried with backoff."""
+        rec = self.store.bots[bot_id]
+        role = rec["role"]
+        try:
+            await self.host.stop_endpoint(bot_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("own chat bot %s: endpoint not stopped", bot_id, exc_info=True)
+        await asyncio.to_thread(self.journal.drop, bot_id)
+        self._tokens.pop(bot_id, None)
+        self._reconciled.discard(bot_id)
+        agent = self.store.agent(role, create=True)
+        if agent.get("bot_id") == bot_id:
+            try:
+                await asyncio.to_thread(self.tokens.delete, role, agent.get("token_item"))
+            except TokenStoreError as exc:
+                logger.warning("own chat %s: the bot's token was not deleted (%s)", role, exc)
+                self._schedule_retry(bot_id, "token not deleted")
+                return
+            agent.update(bot_id=None, chat_open_at=None, moved_from=None, token_item=None,
+                         offer_card=None)
+        rec["setup_digest"] = None
+        await self.store.save()
+        username = rec.get("username") or ""
+        await self._post(f"{self._label(role)} was uninstalled, so @{username} is no "
+                         "longer used. You can delete it now.",
+                         [(f"Delete @{username}", BOTFATHER_DELETE)])
+        rec["phase"] = RELEASED
+        await self.store.save()
+        logger.info("own chat %s: bot %s released by the uninstall", role, bot_id)
+
     # -- triggers ---------------------------------------------------------
 
     async def apply_switches(self) -> None:
@@ -1808,6 +1848,33 @@ class Lifecycle:
                 await self._step_binding(bot_id)
             elif rec["phase"] == BOUND:
                 await self._self_setup(bot_id, role)
+
+    async def on_uninstall(self, role: str) -> None:
+        """An uninstall committed for *role*: every bot that is still its
+        agent's — the bound or dormant one, and a pending change's new bot —
+        is retired (:meth:`_step_retiring`), and the change is dropped. An
+        upgrade that drops the declaration does not come here: its bot goes
+        dormant (:meth:`reconcile_role`)."""
+        agent = self.store.agents.get(role)
+        if agent is None:
+            return
+        async with self._registry_lock:
+            change = agent.get("change")
+            bots = {bot_id for bot_id, rec in self.store.bots.items()
+                    if rec.get("role") == role and rec["phase"] in _LIVE}
+            if change is not None and change["new_bot"] is not None:
+                bots.add(change["new_bot"])
+            if change is not None:
+                agent["change"] = None
+                await self.store.save()
+        for bot_id in sorted(bots):
+            async with self._lock(bot_id):
+                rec = self.store.bots.get(bot_id)
+                if rec is None or rec["phase"] not in _LIVE:
+                    continue
+                rec.update(phase=RETIRING, role=role)
+                await self.store.save()
+                await self._step_retiring(bot_id)
 
     async def on_install(self, role: str) -> None:
         await self.reconcile_role(role)
@@ -2038,7 +2105,7 @@ class Lifecycle:
         found = self.store.bot_of(role)
         if found is None or not found[1].get("username"):
             return None
-        return {"bot": f"@{found[1]['username']}", "delete_link": BOTFATHER_DELETE}
+        return {"bot": f"@{found[1]['username']}", "released": True}
 
 
 # ---------------------------------------------------------------------------

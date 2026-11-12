@@ -83,7 +83,7 @@ async def test_a_switch_keeps_the_old_bot_released_and_it_is_not_the_agents_bot(
     assert lc.store.bot_of("finance")[0] == NEW_BOT
     assert lc.bot_id_for("finance") == NEW_BOT
     assert lc.link_for("finance") == f"https://t.me/{NEW}"
-    assert lc.disclosure("finance") == {"bot": f"@{NEW}", "delete_link": ovl.BOTFATHER_DELETE}
+    assert lc.disclosure("finance") == {"bot": f"@{NEW}", "released": True}
     assert ALEX_BOT not in host.endpoints and ALEX_BOT not in lc._tokens
     assert await lc.intake(ALEX_BOT, update(1)) == "held"
     assert not lc.journal.path(ALEX_BOT).exists()

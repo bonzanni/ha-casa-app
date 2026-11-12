@@ -1454,8 +1454,7 @@ async def test_a_message_in_the_uninstall_gap_gets_the_dormant_reply(world, root
     assert lc.store.bots[ALEX_BOT]["phase"] == ovl.DORMANT
     assert world.notices[-1] == (ALEX_BOT, "Alex isn't installed right now.")
     assert lc.journal.pending(ALEX_BOT) == [] and world.released == []
-    assert lc.disclosure("finance") == {"bot": "@HeyAlexTestBot",
-                                        "delete_link": ovl.BOTFATHER_DELETE}
+    assert lc.disclosure("finance") == {"bot": "@HeyAlexTestBot", "released": True}
 
 
 async def test_a_crash_between_the_uninstall_commit_and_its_hook_ends_dormant(world, root):
@@ -1490,6 +1489,101 @@ async def test_an_upgrade_that_drops_the_declaration_goes_dormant_and_back(world
     world.configs["finance"] = specialist("Alex")
     await lc.on_upgrade("finance")         # the rollback / upgrade that declares it again
     assert lc.store.bots[ALEX_BOT]["phase"] == ovl.BOUND
+
+
+# ---------------------------------------------------------------------------
+# an uninstall releases the bot; an upgrade keeps it
+# ---------------------------------------------------------------------------
+
+UNINSTALLED = ("Alex was uninstalled, so @{} is no longer used. You can delete it now.")
+
+
+def _delete_cards(world) -> list:
+    return [(t, b) for t, b in world.cards.values() if t.startswith("Alex was uninstalled")]
+
+
+@pytest.mark.parametrize("dormant_first", [False, True])
+async def test_an_uninstall_releases_the_bot_and_offers_its_deletion(world, root, dormant_first):
+    lc, host = make_lifecycle(world, root)
+    await _bind_alex(lc, host)
+    assert len(world.op_items) == 1
+    if dormant_first:                      # an earlier upgrade dropped the declaration
+        world.configs["finance"] = specialist("Alex", own=False)
+        await lc.on_upgrade("finance")
+        assert lc.store.bots[ALEX_BOT]["phase"] == ovl.DORMANT
+    del world.configs["finance"]
+    world.queues.discard("finance")
+    await lc.intake(ALEX_BOT, update(1))   # between the commit and the hook
+    await lc.on_uninstall("finance")
+    rec = lc.store.bots[ALEX_BOT]
+    assert rec["phase"] == ovl.RELEASED and rec["role"] == "finance"
+    assert rec["setup_digest"] is None
+    assert ALEX_BOT not in host.endpoints and lc.journal.pending(ALEX_BOT) == []
+    assert world.op_items == {}
+    agent = lc.store.agents["finance"]
+    assert agent["bot_id"] is None and agent["token_item"] is None
+    assert agent["chat_open_at"] is None and agent["offer_card"] is None
+    assert _delete_cards(world) == [(UNINSTALLED.format("HeyAlexTestBot"),
+                                     [("Delete @HeyAlexTestBot", ovl.BOTFATHER_DELETE)])]
+    assert await lc.intake(ALEX_BOT, update(2)) == "held"
+    assert _disk(root)["bots"][str(ALEX_BOT)]["phase"] == ovl.RELEASED
+    # a reinstall offers a new chat, as a first install does
+    world.configs["finance"] = specialist("Alex")
+    await lc.on_install("finance")
+    assert lc.state("finance") == "no_bot"
+
+
+async def test_an_uninstall_during_a_pending_switch_releases_both_bots(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _created_switch(lc, host, world)
+    del world.configs["finance"]
+    world.queues.discard("finance")
+    await lc.on_uninstall("finance")
+    assert lc.store.agents["finance"]["change"] is None
+    assert lc.store.bots[ALEX_BOT]["phase"] == ovl.RELEASED
+    assert lc.store.bots[NEW_BOT]["phase"] == ovl.RELEASED
+    assert host.endpoints == {} and world.op_items == {}
+    assert sorted(b[0][0] for _t, b in _delete_cards(world)) == [
+        "Delete @CasaFinance4821Bot", "Delete @HeyAlexTestBot"]
+    lc2, _host2 = make_lifecycle(world, root)       # the restart applies nothing
+    await lc2.apply_switches()
+    await lc2.boot()
+    assert lc2.store.bots[NEW_BOT]["phase"] == ovl.RELEASED
+    assert lc2.bot_id_for("finance") is None
+
+
+async def test_a_token_that_cannot_be_deleted_keeps_the_bot_retiring(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _bind_alex(lc, host)
+    del world.configs["finance"]
+    world.queues.discard("finance")
+    world.op_delete_fails = True
+    await lc.on_uninstall("finance")
+    assert lc.store.bots[ALEX_BOT]["phase"] == ovl.RETIRING
+    assert len(world.op_items) == 1 and lc.store.agents["finance"]["token_item"]
+    assert _delete_cards(world) == [] and ALEX_BOT not in host.endpoints
+    assert await lc.intake(ALEX_BOT, update(2)) == "held"      # ignored, not journaled
+    assert lc.journal.pending(ALEX_BOT) == [] and lc._role_of(ALEX_BOT) is None
+    world.op_delete_fails = False
+    lc2, _host2 = make_lifecycle(world, root)
+    await lc2.boot()
+    assert lc2.store.bots[ALEX_BOT]["phase"] == ovl.RELEASED
+    assert world.op_items == {} and len(_delete_cards(world)) == 1
+
+
+async def test_a_retiring_bot_is_released_at_the_next_boot(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _bind_alex(lc, host)
+    del world.configs["finance"]
+    world.queues.discard("finance")
+    rec = lc.store.bots[ALEX_BOT]
+    rec["phase"] = ovl.RETIRING                 # persisted, then the process died
+    await lc.store.save()
+    lc2, host2 = make_lifecycle(world, root)
+    await lc2.boot()
+    assert lc2.store.bots[ALEX_BOT]["phase"] == ovl.RELEASED
+    assert ALEX_BOT not in host2.endpoints and world.op_items == {}
+    assert len(_delete_cards(world)) == 1
 
 
 async def test_an_install_or_upgrade_posts_no_offer_by_itself(world, root):
@@ -1937,7 +2031,7 @@ async def _scenario_uninstall(lc, host, world):
     world.queues.discard("finance")
     del world.configs["finance"]
     await lc.intake(ALEX_BOT, update(1))
-    await lc.reconcile_role("finance")
+    await lc.on_uninstall("finance")
 
 
 async def _finish_uninstall(lc, host, world):
@@ -1945,12 +2039,35 @@ async def _finish_uninstall(lc, host, world):
         await _finish_match(lc, host, world)
         world.queues.discard("finance")
         del world.configs["finance"]
-        await lc.reconcile_role("finance")
+    if lc.store.bots[ALEX_BOT]["phase"] != ovl.RELEASED:
+        await lc.on_uninstall("finance")   # the hook, had it not run
 
 
 def _check_uninstall(lc, host, world, held):
+    assert lc.store.bots[ALEX_BOT]["phase"] == ovl.RELEASED
+    assert lc.journal.pending(ALEX_BOT) == [] and ALEX_BOT not in host.endpoints
+    assert lc.bot_id_for("finance") is None and world.op_items == {}
+    assert any(b == [("Delete @HeyAlexTestBot", ovl.BOTFATHER_DELETE)]
+               for _t, b in world.cards.values())
+
+
+async def _scenario_upgrade_drop(lc, host, world):
+    await _bind_alex(lc, host)
+    world.configs["finance"] = specialist("Alex", own=False)
+    await lc.intake(ALEX_BOT, update(1))
+    await lc.on_upgrade("finance")
+
+
+async def _finish_upgrade_drop(lc, host, world):
+    if lc.declared("finance"):              # crashed before the upgrade
+        await _finish_match(lc, host, world)
+        world.configs["finance"] = specialist("Alex", own=False)
+    await lc.on_upgrade("finance")
+
+
+def _check_upgrade_drop(lc, host, world, held):
     assert lc.store.bots[ALEX_BOT]["phase"] == ovl.DORMANT
-    assert lc.journal.pending(ALEX_BOT) == []
+    assert lc.journal.pending(ALEX_BOT) == [] and len(world.op_items) == 1
 
 
 async def _scenario_switch(lc, host, world):
@@ -2000,6 +2117,7 @@ SCENARIOS = {
     "ask_none": (_scenario_none, _finish_none, _check_none),
     "deleted": (_scenario_delete, _finish_delete, _check_delete),
     "uninstall": (_scenario_uninstall, _finish_uninstall, _check_uninstall),
+    "upgrade_drop": (_scenario_upgrade_drop, _finish_upgrade_drop, _check_upgrade_drop),
     "switch": (_scenario_switch, _finish_switch, _check_switch),
 }
 
