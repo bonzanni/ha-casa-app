@@ -173,8 +173,10 @@ a role captures neither side; a request is captured only with the chain's reside
 an engagement of such a specialist captures no turn of its own, and the requester is
 still told; the operator's own replies into its job are his
 (INV-MEM-044). A delegated run's task is captured only as a resident's own words:
-a chain of at most the resident and one specialist (`len(_handoff_chain) <= 2`) on a turn
-Casa did not compose (`synthetic != "continuation"`).
+a run whose requester is not a specialist (`plugin_bindings.requester_kind` of its chain
+is `operator_resident` — a task handed on by a specialist is that specialist's writing,
+also when the chain started in its own chat) on a turn Casa did not compose
+(`synthetic != "continuation"`).
 
 What it does not cover: what the resident chooses to say about the result, which is the
 resident's; Casa's own body-free line that such a specialist posted (INV-MEM-040); a specialist that writes memory quoting the excluded specialist's answer in its

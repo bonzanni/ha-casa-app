@@ -301,6 +301,31 @@ def test_a_call_expires_after_the_cap():
 
 # -- bindings (C1) -----------------------------------------------------------------
 
+def test_a_binding_names_a_specialist_requester_whatever_the_chains_length(tmp_path,
+                                                                           monkeypatch):
+    """A specialist asked in its own chat is a chain's root: the helper it
+    hands work to serves a specialist, as one further down a chain does."""
+    monkeypatch.setattr(tools_mod, "_agent_role_map", {
+        "assistant": SimpleNamespace(kind="resident"),
+        "finance": SimpleNamespace(kind="specialist"),
+        "browser": SimpleNamespace(kind="specialist")}, raising=False)
+    store = plugin_bindings.BindingStore(str(tmp_path / "bindings.json"))
+    kinds = {}
+    for key, chain in (("own-chat", ("finance", "browser")),
+                       ("resident", ("assistant", "browser")),
+                       ("handed-on", ("assistant", "finance", "browser")),
+                       ("own-run", ("browser",)),
+                       ("unloaded-root", ("gone", "browser"))):
+        b = store.for_turn(plugin="browser", turn_key=key, identity=_identity(),
+                           chain=chain, origin=FIDO_RUN)
+        kinds[key] = (b.requester, b.requester_kind)
+    assert kinds == {"own-chat": ("finance", "specialist"),
+                     "resident": ("assistant", "operator_resident"),
+                     "handed-on": ("finance", "specialist"),
+                     "own-run": ("browser", "operator_resident"),
+                     "unloaded-root": ("gone", "operator_resident")}
+
+
 def test_one_binding_per_plugin_and_turn_and_it_survives_a_restart(tmp_path):
     path = str(tmp_path / "bindings.json")
     store = plugin_bindings.BindingStore(path)

@@ -399,6 +399,35 @@ async def test_a_relayed_answer_is_not_banked_as_the_requesters_task(roles, monk
     assert "finance answer" in banked
 
 
+@pytest.mark.asyncio
+async def test_a_task_handed_on_from_a_specialists_own_chat_is_not_banked_as_a_residents(
+        roles, monkeypatch, mem):
+    """INV-MEM-032: a hand-off's task is its specialist's writing wherever the
+    chain started — Fido, asked in his own chat, hands work to finance."""
+
+    class _Client:
+        def __init__(self, options): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *exc): return None
+        async def query(self, prompt): return None
+        async def receive_response(self):
+            from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
+            yield AssistantMessage(content=[TextBlock(text="finance answer")], model="x")
+            yield ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1,
+                                is_error=False, num_turns=1, session_id="s")
+
+    monkeypatch.setattr(tools_mod, "ClaudeSDKClient", _Client)
+    origin = {**ORIGIN, "role": "browser", "execution_role": "browser"}
+    tok = agent_mod.origin_var.set(origin)
+    try:
+        await tools_mod._run_delegated_agent(roles["finance"], "Fido's own task text", "")
+    finally:
+        agent_mod.origin_var.reset(tok)
+    banked = [e["text"] for e in await captured_events(mem)]
+    assert "Fido's own task text" not in banked
+    assert "finance answer" in banked
+
+
 # -- the driver sweep ----------------------------------------------------------------------
 
 def test_the_plugin_data_dir_follows_the_clis_rule():

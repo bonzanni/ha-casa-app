@@ -43,7 +43,9 @@ it runs, so the routes never serve a call with no operator behind it.
 **A binding names whom the work serves, for as long as it takes** (`plugin_bindings`).
 `POST /internal/broker/requester` answers the call's binding: an opaque `casa-bind-…`
 reference, the requester (the chain's element before the plugin's role), its kind
-(`operator_resident` when the resident asked directly, else `specialist`) and the chain.
+(`specialist` when the agent that asked is a specialist — one that was handed the work, or
+one asked in its own chat — else `operator_resident`: the resident asked directly, or the
+run is the agent's own) and the chain.
 One binding is minted per plugin and turn; a continuation turn answers the binding it was
 queued for. Bindings are durable (`/data/plugin-bindings.json`, `0600`) because a run can
 outlive a restart, keep only plain origin markers — never the operator's words, the

@@ -4806,10 +4806,12 @@ async def _run_delegated_turn(
 
     # The request is captured raw, before the run starts, and never depends
     # on the answer (INV-MEM-016); the run's row already exists.
+    import plugin_bindings
     await run.kept(_capture_delegated(
         _CaptureSource.DELEGATED_REQUEST, cfg, parent, task_text,
         speaker_kind="resident", speaker_id=caller_role,
-        resident_request=(len(child_origin["_handoff_chain"]) <= 2
+        resident_request=(plugin_bindings.requester_kind(
+                              child_origin["_handoff_chain"]) == "operator_resident"
                           and parent.get("synthetic") != "continuation")))
 
     # Off-loop: _build_specialist_options resolves the registry (file IO) —
