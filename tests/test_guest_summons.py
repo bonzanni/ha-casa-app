@@ -361,6 +361,55 @@ async def test_the_frame_note_names_the_group(summoned):
     assert "You answered earlier" not in _Capturing.prompts[1]
 
 
+def _private_summons(*, first_name=None, last_name=None, text="@FinanceBot and in euros?",
+                     update_id=3):
+    """A summons from a private chat: no title; Telegram names it after the
+    person it is with, when it names it at all."""
+    update = _guest(chat_id=4242, text=text, update_id=update_id)
+    chat = NS(id=4242, title=None, type="private", first_name=first_name, last_name=last_name)
+    update.guest_message.chat = chat
+    update.effective_chat = chat
+    return update
+
+
+async def test_a_summons_from_a_private_chat_names_the_person_not_an_empty_group(summoned):
+    w = summoned
+    update = _private_summons(first_name="Ada", last_name="Lovelace")
+    update.guest_message.reply_to_message = _quoted(from_id=OWN_BOT, text="The rate is 1.08.")
+    turn = await _dispatched(w.ch, w.bus, update)
+    assert turn.context["_guest_chat"] == {"id": 4242, "title": "Ada Lovelace", "type": "private"}
+    assert turn.context["_guest_reply_note"] == (
+        "You answered earlier in a chat with «Ada Lovelace»: The rate is 1.08.")
+    assert w.ch._guest_replies[turn.context["_guest_query"]].meta["title"] == "Ada Lovelace"
+    with patch("sdk_client_pool._default_make_client", _Capturing):
+        await w.agent.handle_message(turn)
+    [prompt] = _Capturing.prompts
+    note = agent_mod.GUEST_CALL_NOTE_CHAT.format(name="Ada Lovelace")
+    assert note == ("The person summoned you in a chat with «Ada Lovelace». Your text answer "
+                    "is posted there; a card, a file or anything else you send goes to your "
+                    "chat with them.")
+    assert prompt.count(note) == 1
+    assert "«»" not in prompt and "the group" not in prompt
+    assert w.bot.edits[-1]["text"] == "pong"
+
+
+async def test_a_summons_from_a_nameless_chat_says_another_chat(summoned):
+    w = summoned
+    update = _private_summons()
+    update.guest_message.reply_to_message = _quoted(from_id=OWN_BOT, text="The rate is 1.08.")
+    turn = await _dispatched(w.ch, w.bus, update)
+    assert turn.context["_guest_chat"] == {"id": 4242, "title": "", "type": "private"}
+    assert turn.context["_guest_reply_note"] == (
+        "You answered earlier in another chat: The rate is 1.08.")
+    with patch("sdk_client_pool._default_make_client", _Capturing):
+        await w.agent.handle_message(turn)
+    [prompt] = _Capturing.prompts
+    assert prompt.count(agent_mod.GUEST_CALL_NOTE_ELSEWHERE) == 1
+    assert agent_mod.GUEST_CALL_NOTE_ELSEWHERE.startswith(
+        "The person summoned you in another chat. Your text answer is posted there;")
+    assert "«" not in prompt.split("The person summoned you")[1].split(".")[0]
+
+
 # ---------------------------------------------------------------------------
 # a question or a card in the own chat, while the group waits
 # ---------------------------------------------------------------------------

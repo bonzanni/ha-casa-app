@@ -416,6 +416,7 @@ IDENTITY_SITE_HITS = {
         "TelegramChannel.send_reply_line": 1, "TelegramChannel.mark_proposal": 1,
         "TelegramChannel.speak_first": 1,
         "TelegramChannel.proposal_finish_hook._finish": 5,
+        "_summons_chat_name": 2,
     },
     "channels/telegram_transport.py": {"TelegramTransport.add_agent_endpoint": 1},
     "channels/tg_address.py": {"TgAddress": 1, "TgAddress.__post_init__": 1, "scope": 1},
@@ -798,6 +799,8 @@ IDENTITY_FUNCTIONS = {
                                                          "written to the store's file"),
     ("tools.py", "_guest_chat_of"): (NOISE, "the summons group's fields, read off the "
                                             "server-stamped origin into a record"),
+    ("channels/telegram.py", "_summons_chat_name"): (NOISE, "a chat's display fields (title, "
+                                                            "the person's name), not a key"),
     ("action_judgement.py", "_login_item_reply"): (NOISE, "parsing"),
     ("action_judgement.py", "judge"): (NOISE, "a log line"),
     ("action_judgement.py", "parse_reply"): (NOISE, "parsing"),

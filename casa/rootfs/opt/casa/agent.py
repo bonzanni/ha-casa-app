@@ -256,10 +256,14 @@ CHAT_NOTES_FRAME = ("What you did in this chat for others since you last spoke h
                     "your own memory, so recall it naturally, never as a note or a record:")
 
 #: Casa's line on a turn the operator summoned in a group (``_guest_chat``):
-#: where the answer shows, and where everything else goes.
-GUEST_CALL_NOTE = ("The person summoned you in the group «{title}». Your text answer is "
-                   "posted there; a card, a file or anything else you send goes to your "
-                   "chat with them.")
+#: where the answer shows, and where everything else goes. A summons from a
+#: chat that is not a group (a private chat, named after the person it is
+#: with when Telegram gives one) takes the second form.
+_GUEST_CALL_TAIL = (" Your text answer is posted there; a card, a file or anything else "
+                    "you send goes to your chat with them.")
+GUEST_CALL_NOTE = "The person summoned you in the group «{title}»." + _GUEST_CALL_TAIL
+GUEST_CALL_NOTE_CHAT = "The person summoned you in a chat with «{name}»." + _GUEST_CALL_TAIL
+GUEST_CALL_NOTE_ELSEWHERE = "The person summoned you in another chat." + _GUEST_CALL_TAIL
 
 
 def _projection_name_for_turn(channel: str, origin_route: str | None) -> str:
@@ -2408,8 +2412,13 @@ class Agent:
                 # the second read only under the first's reserved marker.
                 guest_chat = msg.context.get("_guest_chat")
                 if isinstance(guest_chat, dict):
-                    notes.append(GUEST_CALL_NOTE.format(
-                        title=str(guest_chat.get("title") or "")))
+                    name = str(guest_chat.get("title") or "")
+                    if guest_chat.get("type") in ("group", "supergroup"):
+                        notes.append(GUEST_CALL_NOTE.format(title=name))
+                    elif name:
+                        notes.append(GUEST_CALL_NOTE_CHAT.format(name=name))
+                    else:
+                        notes.append(GUEST_CALL_NOTE_ELSEWHERE)
                     earlier = msg.context.get("_guest_reply_note")
                     if isinstance(earlier, str) and earlier.strip():
                         notes.append(earlier)

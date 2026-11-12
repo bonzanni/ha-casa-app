@@ -140,6 +140,17 @@ def _log_summons(outcome: str, level: int = logging.INFO, *, role: Any = None,
     logger.log(level, GUEST_SUMMONS_LOG, role, caller_id, chat_id, title, outcome, ms)
 
 
+def _summons_chat_name(chat: Any) -> str:
+    """What the chat a summons came from is called: a group's title, else
+    the name of the person a private chat is with (first and last name, as
+    Telegram gives them), else empty."""
+    title = getattr(chat, "title", None)
+    if title:
+        return str(title)
+    names = (getattr(chat, "first_name", None), getattr(chat, "last_name", None))
+    return " ".join(str(n) for n in names if n)
+
+
 def _proposal_keyboard(labels: list, rid: str, urls: "list | None" = None):
     """A proposal's keyboard: one button per label, ``callback_data = v1|proposal|<rid>|<i>``,
     or (slice 5f) the link button's https address where *urls* has one at that index."""
@@ -1828,7 +1839,7 @@ class TelegramChannel(Channel):
         _log_summons(outcome, level, role=self.default_agent,
                      caller_id=getattr(update.effective_user, "id", None),
                      chat_id=getattr(group, "id", None),
-                     title=getattr(group, "title", None) or "", t0=t0)
+                     title=_summons_chat_name(group), t0=t0)
 
     async def _dispatch_summoned_turn(self, update: Any) -> bool:
         """The operator's summons of this bot in a group, as a turn of the
@@ -1858,7 +1869,9 @@ class TelegramChannel(Channel):
         reply = GuestReply(
             self._app.bot, guest_query_id=gm.guest_query_id,
             name=tools_mod._display_name_for_role(self.default_agent), key=key)
-        title = chat.title or ""
+        # A group's title; a private chat has none, so the name of the
+        # person it is with stands in (empty when there is none).
+        title = _summons_chat_name(chat)
         reply.meta = {"role": self.default_agent, "caller_id": user.id, "chat_id": chat.id,
                       "title": title, "t0": time.monotonic()}
         if not await reply.open():
@@ -1890,7 +1903,7 @@ class TelegramChannel(Channel):
         context["_operator_words"] = gm.text or ""
         context["_guest_chat"] = {"id": chat.id, "title": title, "type": chat.type}
         context["_guest_query"] = key
-        earlier = self._guest_reply_note_for(gm, title)
+        earlier = self._guest_reply_note_for(gm, chat.type, title)
         if earlier is not None:
             context["_guest_reply_note"] = earlier
 
@@ -1912,10 +1925,11 @@ class TelegramChannel(Channel):
         _log_summons("operator_failed", **reply.meta)
         return False
 
-    def _guest_reply_note_for(self, gm: Any, title: str) -> str | None:
+    def _guest_reply_note_for(self, gm: Any, chat_type: str, title: str) -> str | None:
         """Casa's note when a summons replied to this bot's own earlier
-        message in the group — the agent's previous answer there, quoted as
-        a reply's quote is clipped — or ``None``."""
+        message in the chat — the agent's previous answer there, quoted as
+        a reply's quote is clipped — or ``None``. *title* is the chat's name
+        as :func:`_summons_chat_name` gives it."""
         quoted = getattr(gm, "reply_to_message", None)
         quoted_from = getattr(quoted, "from_user", None)
         if quoted is None or quoted_from is None or not self.has_bot_id:
@@ -1926,8 +1940,13 @@ class TelegramChannel(Channel):
         if not text:
             return None
         import chat_notes
-        return (f"You answered earlier in «{title}»: "
-                f"{chat_notes.clip(text, REPLY_QUOTE_CHARS)}")
+        if chat_type in ("group", "supergroup"):
+            where = f"in «{title}»"
+        elif title:
+            where = f"in a chat with «{title}»"
+        else:
+            where = "in another chat"
+        return f"You answered earlier {where}: {chat_notes.clip(text, REPLY_QUOTE_CHARS)}"
 
     async def _own_intake(self, update: Any) -> bool:
         """Offer one update that reached this agent's own bot to its chat's
