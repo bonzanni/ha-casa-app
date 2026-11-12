@@ -303,3 +303,15 @@ async def test_pin_inv_tg_007_a_settle_that_names_its_buttons_keeps_exactly_thos
     rows = list(kwargs["reply_markup"].inline_keyboard)
     assert [(b.text, b.callback_data) for row in rows for b in row] == [
         ("Stop", "v1|run_stop|conf-x|0")]
+
+
+async def test_an_edit_shows_only_the_named_button_red():
+    ch, bot = _mk_channel()
+
+    await ch.edit_dm_message(CHAT, MESSAGE_ID, PLAIN_TEXT,
+                             buttons=[("Stop", "v1|run_stop|conf-x|0"), ("More", "x")],
+                             danger=(0,))
+
+    _, kwargs = bot.edit_message_text.call_args
+    assert [row[0].style for row in kwargs["reply_markup"].inline_keyboard] == [
+        "danger", None]

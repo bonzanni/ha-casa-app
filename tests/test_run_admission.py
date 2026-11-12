@@ -52,15 +52,17 @@ class _Channel:
         self.cards: list[tuple] = []
         self.card_options: list[dict] = []
         self.card_lands = True
+        self.edit_danger: list[tuple] = []
         self.lines: list[tuple] = []
 
     async def deliver_operator_question(self, chat_id, text, labels, rid, *, post=None):
         self.posted.append((chat_id, text, labels, rid))
         return 555 if self.deliver else None
 
-    async def edit_dm_message(self, chat_id, message_id, text, buttons=None):
+    async def edit_dm_message(self, chat_id, message_id, text, buttons=None, danger=()):
         self.edits.append(text)
         self.edit_buttons.append(list(buttons or []))
+        self.edit_danger.append(tuple(danger))
         return True
 
     async def deliver_run_card(self, chat_id, text, *, starting=None, post=None, **options):
@@ -505,6 +507,7 @@ async def test_a_started_line_that_does_not_land_puts_a_stop_button_on_the_card(
     await _tap(channel, 0)
     assert run_admission.CONFIRMATIONS.peek(cid).status == "admitted"
     assert channel.edit_buttons == [[], [("Stop", f"v1|run_stop|{cid}|0")]]
+    assert channel.edit_danger == [(), (0,)]                 # that Stop is red
 
 
 @pytest.mark.asyncio
@@ -513,7 +516,7 @@ async def test_a_card_edit_that_raises_still_settles_his_start(wired, monkeypatc
     ask, _ = _model('{"runs": []}')
     monkeypatch.setattr(run_admission, "_ask_model", ask)
 
-    async def _boom(chat_id, message_id, text, buttons=None):
+    async def _boom(chat_id, message_id, text, buttons=None, danger=()):
         raise RuntimeError("edit refused")
     channel.edit_dm_message = _boom
     out = await run_admission.request_admission(_call(words="yes"), [RUNPOD], "k1")

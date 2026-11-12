@@ -2605,7 +2605,7 @@ async def wipe_memory(args: dict) -> dict:
         # #1038: the wipe confirmation is Casa's own text, not the model's.
         return await channel.post_dm_keyboard(
             chat_id=chat_id, request_id=rid, text=casa_text(body), options=options,
-            short_labels=True,
+            short_labels=True, danger=(0,),
         )
 
     def _finish_factory(message_id: int):

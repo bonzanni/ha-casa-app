@@ -36,6 +36,22 @@ async def test_explicit_entities_are_sent_as_given_and_render_is_not_called(monk
 
 
 @pytest.mark.asyncio
+async def test_only_the_named_buttons_go_to_telegram_red():
+    ch, bot = _mk_channel_with_fake_bot()
+    await ch.post_dm_keyboard(
+        chat_id=100, request_id="r1", text=admitted("Erase?"),
+        options=["Keep", "Erase", "Cancel"], danger=(1,),
+    )
+    await ch.post_dm_keyboard(
+        chat_id=100, request_id="r2", text=admitted("Q?"), options=["Yes", "No"],
+    )
+    first, second = [c.kwargs["reply_markup"].inline_keyboard
+                     for c in bot.send_message.await_args_list]
+    assert [row[0].style for row in first] == [None, "danger", None]
+    assert [row[0].style for row in second] == [None, None]
+
+
+@pytest.mark.asyncio
 async def test_explicit_entities_text_has_lone_surrogates_replaced_one_for_one(monkeypatch):
     monkeypatch.setattr(tg, "render", _boom)
     ch, bot = _mk_channel_with_fake_bot()

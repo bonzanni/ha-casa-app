@@ -90,8 +90,9 @@ class _FakeChannel:
         return True
 
     async def post_dm_keyboard(self, *, chat_id, request_id, text, options,
-                               short_labels=False):
+                               short_labels=False, danger=()):
         self.posts.append((chat_id, request_id, text, tuple(options)))
+        self.danger = tuple(danger)
         return self._post_result
 
     async def edit_dm_message(self, chat_id, message_id, text):
@@ -161,12 +162,12 @@ class _BlockingPostChannel(_FakeChannel):
         self.release_post = asyncio.Event()
 
     async def post_dm_keyboard(self, *, chat_id, request_id, text, options,
-                               short_labels=False):
+                               short_labels=False, danger=()):
         self.post_started.set()
         await self.release_post.wait()
         return await super().post_dm_keyboard(
             chat_id=chat_id, request_id=request_id, text=text,
-            options=options, short_labels=short_labels)
+            options=options, short_labels=short_labels, danger=danger)
 
 
 async def _tap(broker, channel, *, chat_id=500, actor_id=500, idx=0):
@@ -222,7 +223,8 @@ class TestGates:
 class TestConsentFlow:
     async def test_posts_keyboard_and_awaits_user(self, monkeypatch, _fresh_broker):
         payload, channel = await _invoke(monkeypatch)
-        assert payload["status"] == "awaiting_user"
+        assert len(channel.posts) == 1
+        assert channel.danger == (0,)        # only "Approve — wipe everything" is red
         assert len(channel.posts) == 1
         assert _fresh_broker.pending(namespace="resident_ask", scope="authz:111:500")
 

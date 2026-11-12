@@ -72,7 +72,8 @@ coordinator the install-consent keyboards use: **Keep data / Erase data, keep si
 Erase everything / Cancel**, each erase option only when EVERY erasing plugin in the
 uninstall declares that kind (`tools._offered_erase_choices`) — a plugin lacking it could
 honour neither promise, and with no common kind only Keep and Cancel remain. The button
-index maps to a choice id through the question's own list. The question is an approval card;
+index maps to a choice id through the question's own list. The erasing buttons are red;
+Keep and Cancel are not. The question is an approval card;
 the model-written one is titled `🔐 Uninstall {what}: erase its data too?` and written from each eraser an
 offered option would run, what each offered choice does, and the note that earlier Home
 Assistant backups keep the data either way (`plugin_erase_consent.erase_card_request`); its

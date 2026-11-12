@@ -30,7 +30,7 @@ pending tasks, plugin data and logs stay; a kept item can still mention somethin
 **Three doors, one consent posture.** The terminal door (`casactl memory-wipe --yes` →
 `POST /admin/memory/wipe`) is root-gated by the peer-credential check every admin route
 has, plus an explicit confirm field. The agent door (`wipe_memory`) posts an Approve/Cancel
-keyboard carrying the confirmation text — what is erased, what stays, that Casa restarts,
+keyboard, its approving button red, carrying the confirmation text — what is erased, what stays, that Casa restarts,
 and that copies outside Casa are untouched — to the configured operator, and acts only on
 the operator's own tap, from the broker's finish hook outside any turn. With no operator
 configured nobody can consent, and the tool door refuses everyone.

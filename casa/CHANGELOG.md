@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.369.1] - 2026-11-12
+
+### Changed
+
+- A button that deletes something for good is now red: **Approve — wipe everything** on the memory wipe question, and **Erase everything** and **Erase data, keep sign-ins** on the uninstall question. The other buttons on those cards, and every other card, look as before.
+- When a browsing request's card has to carry its own **Stop** button (the Stop key could not be raised at the keyboard), that button is red, like the key.
+
 ## [0.369.0] - 2026-11-12
 
 ### Changed

@@ -155,6 +155,17 @@ async def test_a_button_index_means_the_choice_it_shows():
     assert calls == [pec.ERASE] and grants.consume_erase(_key()) == pec.ERASE
 
 
+@pytest.mark.asyncio
+async def test_only_the_erasing_buttons_are_red():
+    four = (pec.KEEP, pec.ERASE_DATA_ONLY, pec.ERASE, pec.CANCEL)
+    coord, *_ = await _tap_on(four, 0)
+    assert list(coord.kw["danger"]) == [1, 2]
+    coord, *_ = await _tap_on((pec.KEEP, pec.ERASE, pec.CANCEL), 0)
+    assert list(coord.kw["danger"]) == [1]
+    coord, *_ = await _tap_on((pec.KEEP, pec.CANCEL), 0)
+    assert list(coord.kw["danger"]) == []
+
+
 # --- the tool flow -------------------------------------------------------------------
 
 def _current_key(subject="plugin:probe", artifacts=(ART,)):

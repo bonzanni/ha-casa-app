@@ -276,10 +276,11 @@ def _install_telegram_stubs() -> None:
     # v0.37.0 E-12 (Phase 2): inline-keyboard primitives — minimal value-shape
     # stubs that preserve the constructor kwargs so tests can inspect them.
     class _FakeInlineKeyboardButton:
-        def __init__(self, text, *, callback_data=None, url=None, **kw):
+        def __init__(self, text, *, callback_data=None, url=None, style=None, **kw):
             self.text = text
             self.callback_data = callback_data
             self.url = url
+            self.style = style
 
     class _FakeInlineKeyboardMarkup:
         def __init__(self, inline_keyboard):

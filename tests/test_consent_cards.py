@@ -49,9 +49,11 @@ class _Channel:
         self.posts: list = []
         self.edits: list = []
 
-    async def post_dm_keyboard(self, *, chat_id, request_id, text, options, entities=None):
+    async def post_dm_keyboard(self, *, chat_id, request_id, text, options, entities=None,
+                               danger=()):
         self.posts.append(SimpleNamespace(chat_id=chat_id, request_id=request_id, text=text,
-                                          options=tuple(options), entities=entities))
+                                          options=tuple(options), entities=entities,
+                                          danger=tuple(danger)))
         return 55
 
     async def edit_dm_message(self, chat_id, message_id, text, literal=False):

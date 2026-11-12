@@ -373,3 +373,32 @@ async def test_registration_refusal_is_unchanged(monkeypatch, _fresh_broker, wit
                                      scope=f"authz:{CASA_BOT}:{OPERATOR}")) == 0
     assert len(channel.posts) == 0
     assert ask.calls == 0
+
+
+class _RedChannel(_Channel):
+    """Also records which buttons a post asked to be red. The base double's
+    fixed signature is itself the check that an ordinary card names none."""
+
+    async def post_dm_keyboard(self, *, danger=(), **kw):
+        mid = await super().post_dm_keyboard(**kw)
+        self.posts[-1]["danger"] = tuple(danger)
+        return mid
+
+
+async def test_the_red_buttons_reach_the_post_with_and_without_a_card(
+        monkeypatch, _fresh_broker):
+    _install_ask(monkeypatch, _Ask())
+    channel = _RedChannel()
+    coordinator = authz_grants.ChallengeCoordinator()
+    options = ["Keep data", "Erase everything", "Cancel"]
+
+    for key, card_request in (("plain", None), ("card", _request())):
+        handle = coordinator.register_challenge(
+            key, bot_id=CASA_BOT, chat_id=OPERATOR, operator_id=OPERATOR,
+            channel=channel, challenge_text=CHALLENGE, options=options,
+            card_request=card_request, danger=[1],
+        )
+        assert await handle.settled_post() == "posted"
+
+    assert [p["danger"] for p in channel.posts] == [(1,), (1,)]
+    assert [p["options"] for p in channel.posts] == [tuple(options)] * 2

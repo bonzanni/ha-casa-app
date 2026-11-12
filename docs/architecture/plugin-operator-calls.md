@@ -105,7 +105,7 @@ and only then posts one silent line, `Started.` (`run_admission.STARTED_LINE`), 
 the card under the agent's label (`plugin_stop.post_line`), which raises the request's red
 Stop key at the reply keyboard ([`plugin-stop.md`](plugin-stop.md)), so the key never shows
 for a request not yet admitted; when that line does not land, the card is edited to carry a
-Stop button instead (`run_admission.stop_button`, the `run_stop` callback). When his words admitted the runs there is no start card, so
+red Stop button instead (`run_admission.stop_button`, the `run_stop` callback). When his words admitted the runs there is no start card, so
 one status card (`compose_status`: `On it for Ellen:` over the same run lines — `On it:` when
 the run is the agent's own) is posted with no button, raising the same key,
 beside the answer in its own task, never awaited by it (`_spawn_status_card`,
