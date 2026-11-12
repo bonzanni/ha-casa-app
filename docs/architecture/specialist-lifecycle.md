@@ -67,6 +67,17 @@ secrets it requires or only references); then the action line; and the digests l
 root digest the approval binds is shown whole; the component, dependency and plugin-content
 digests it covers are shown by their first sixteen hex characters (`SHORT_DIGEST_HEX`).
 
+**A role may say it suits the voice concierge; the configurator asks, Casa wires nothing.**
+The optional role field `voice_handoff` (a boolean; absent means false) is read off the
+staged role into the inspection (`InspectionResult.voice_handoff`) and reported as
+`voice_handoff` by `specialist_install_inspect` and by the success results of
+`specialist_install_commit` and `specialist_upgrade`. Nothing at runtime acts on it. The
+specialist install and upgrade recipes tell the configurator to end an active install's or
+upgrade's answer by asking whether the voice concierge should be able to ask the specialist
+too — only when the flag is true, `agents/concierge/` exists and its `delegates.yaml` does
+not already list the specialist — and to wire a yes as an ordinary request through
+`recipes/delegate/wire.md` in a later run.
+
 ## Contracts & invariants
 
 **INV-SPEC-001**: No durable component-store write happens without a recorded consent for the exact install identity.

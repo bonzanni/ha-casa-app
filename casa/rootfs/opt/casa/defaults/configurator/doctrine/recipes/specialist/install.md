@@ -140,6 +140,12 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    `delegation_not_declared` (#1009).
 9. End with your answer, e.g. "I installed <slug> <version> from <repo> and added it to
     <resident>'s helpers."
+   **Offer it to the voice concierge** only when all three hold: the commit result says
+   `voice_handoff: true`, `agents/concierge/` exists, and `agents/concierge/delegates.yaml` does
+   not already list the specialist. Then end the answer with one short question, naming the
+   concierge as `agents/concierge/character.yaml` does: "Should Gary be able to ask it too?" Change
+   nothing for it in this run. A yes comes back as a new request: wire it then with
+   `recipes/delegate/wire.md`, as any standalone wire request.
 
 ## Common mistakes
 

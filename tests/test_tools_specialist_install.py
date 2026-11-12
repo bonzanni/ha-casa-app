@@ -726,7 +726,7 @@ def _fake_inspection(tmp_path, *, plugin_resolutions=(), receipt_digest=""):
         required_config_names=(), required_secret_names=(),
         dependencies=(), staged_dir=tmp_path / "staged",
         # INV-SPEC-018: a real call always reports the ref it fetched.
-        resolved_ref="main",
+        resolved_ref="main", voice_handoff=False,
         # Fix round 1 (task-12): a real inspect_specialist_repo call ALWAYS
         # populates these (specialist_install.py InspectionResult) — every
         # fake here mirrors that so the ok_payload's receipt_id/
@@ -867,7 +867,7 @@ async def test_inspect_receipt_id_round_trips_into_commit(monkeypatch, tmp_path)
         default_persona_checksum=component.default_persona_checksum,
         required_config_names=(), required_secret_names=(), dependencies=deps,
         staged_dir=staged, receipt_id=real_receipt_id, receipt_digest="",
-        plugin_resolutions=(), resolved_ref="main",
+        plugin_resolutions=(), resolved_ref="main", voice_handoff=False,
     )
     monkeypatch.setattr(
         specialist_install, "inspect_specialist_repo", lambda *a, **k: fake_inspection)
@@ -1906,7 +1906,7 @@ async def test_an_unreadable_registry_names_only_what_the_swap_dropped(
 _RESUME_KEYS = {"receipt_id", "staged_dir", "component_id", "version", "root_digest"}
 
 
-def _stage_real_component(tmp_path, *, name: str):
+def _stage_real_component(tmp_path, *, name: str, role_extra: dict | None = None):
     """A real staged component tree plus the closure digest the tools recompute
     from its bytes — never a fixture-held constant."""
     from test_specialist_install import _write_component
@@ -1915,7 +1915,7 @@ def _stage_real_component(tmp_path, *, name: str):
 
     staging_parent = tmp_path / ".staging"
     staging_parent.mkdir(exist_ok=True)
-    staged = _write_component(staging_parent / name, slug="mtg")
+    staged = _write_component(staging_parent / name, slug="mtg", role_extra=role_extra)
     component = load_specialist_component(staged, staged / "manifest.json")
     deps = resolve_dependency_closure(component, staged)
     root_digest = compute_install_root_digest(
@@ -1939,8 +1939,9 @@ class _Counter:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state,pending", [("pending-configuration", True), ("active", False)])
+@pytest.mark.parametrize("voice_handoff", [True, False])
 async def test_a_pending_install_commit_names_its_resume_inputs(
-        monkeypatch, tmp_path, state, pending) -> None:
+        monkeypatch, tmp_path, state, pending, voice_handoff) -> None:
     """The pending arm carries exactly the five re-commit inputs, equal to the
     values THIS call validated; the active arm — which prunes the receipt and
     reclaims the staging tree — carries none of them."""
@@ -1949,7 +1950,9 @@ async def test_a_pending_install_commit_names_its_resume_inputs(
     import tools as tools_mod
     from tools import specialist_install_commit
 
-    staged, component, root_digest = _stage_real_component(tmp_path, name="commit")
+    # #1568: the result reports the staged role's voice_handoff (absent = False).
+    staged, component, root_digest = _stage_real_component(
+        tmp_path, name="commit", role_extra={"voice_handoff": True} if voice_handoff else None)
     receipt_id = "7" * 32
     monkeypatch.setattr(
         specialist_receipt, "load",
@@ -1997,12 +2000,14 @@ async def test_a_pending_install_commit_names_its_resume_inputs(
     assert payload["state"] == state
     assert payload["activation_committed"] is (state == "active")
     assert payload["required_env_vars"] == {}
+    assert payload["voice_handoff"] is voice_handoff
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state,pending", [("pending-configuration", True), ("active", False)])
+@pytest.mark.parametrize("voice_handoff", [True, False])
 async def test_a_pending_upgrade_names_its_resume_inputs(
-        monkeypatch, tmp_path, state, pending) -> None:
+        monkeypatch, tmp_path, state, pending, voice_handoff) -> None:
     """The upgrade arm in parity with the install arm: an upgrade that lands
     pending-configuration retains the receipt and the staging tree, and now
     names the five inputs the follow-up re-commit takes."""
@@ -2011,7 +2016,9 @@ async def test_a_pending_upgrade_names_its_resume_inputs(
     import tools as tools_mod
     from tools import specialist_upgrade
 
-    staged, component, root_digest = _stage_real_component(tmp_path, name="upgrade")
+    # #1568: the result reports the staged role's voice_handoff (absent = False).
+    staged, component, root_digest = _stage_real_component(
+        tmp_path, name="upgrade", role_extra={"voice_handoff": True} if voice_handoff else None)
     receipt_id = "9" * 32
     monkeypatch.setattr(
         specialist_receipt, "load",
@@ -2055,9 +2062,10 @@ async def test_a_pending_upgrade_names_its_resume_inputs(
     # for an upgrade that is `specialist_upgrade`, because the active tuple it
     # left in place makes `specialist_install_commit` refuse `concurrent_mutation`.
     assert sorted(payload.keys() - _RESUME_KEYS) == (
-        ["ok", "reloaded", "slug", "state", "tool", "verify"] if pending
-        else ["ok", "reloaded", "slug", "state", "verify"])
+        ["ok", "reloaded", "slug", "state", "tool", "verify", "voice_handoff"] if pending
+        else ["ok", "reloaded", "slug", "state", "verify", "voice_handoff"])
     assert payload.get("tool") == ("specialist_upgrade" if pending else None)
+    assert payload["voice_handoff"] is voice_handoff
 
 
 @pytest.mark.asyncio
@@ -2075,6 +2083,23 @@ async def test_inspect_ok_payload_reports_the_resolved_ref(monkeypatch, tmp_path
 
     assert payload["ok"] is True
     assert payload["resolved_ref"] == "v1.2.0"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("voice_handoff", [True, False])
+async def test_inspect_ok_payload_reports_voice_handoff(
+        monkeypatch, tmp_path, voice_handoff) -> None:
+    """#1568: the install recipe asks about the voice concierge from this flag."""
+    from tools import specialist_install_inspect
+
+    fake, _ = _wire_inspect(monkeypatch, tmp_path, channel=None)
+    fake.voice_handoff = voice_handoff
+
+    payload = _payload(await specialist_install_inspect.handler(
+        {"repo": "owner/repo", "ref": "main"}))
+
+    assert payload["ok"] is True
+    assert payload["voice_handoff"] is voice_handoff
 
 
 def test_consent_reprompt_names_the_retry_for_an_expired_install_consent() -> None:

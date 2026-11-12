@@ -14985,6 +14985,9 @@ async def specialist_install_inspect(args: dict) -> dict:
         # when the caller passed ``latest`` — for the configurator's commit
         # message and completion, exactly as plugin_add reports resolved_ref.
         "resolved_ref": result.resolved_ref,
+        # #1568: the role declares it suits the voice concierge; the install
+        # recipe offers to wire it there once the install is active.
+        "voice_handoff": result.voice_handoff,
         # Fix round 1 (task-12): specialist_install_commit/specialist_upgrade
         # REQUIRE args["receipt_id"] (see their "required" schemas below) —
         # without it in this payload every real install/upgrade dead-ends at
@@ -15090,7 +15093,8 @@ def _inspection_from_checked(checked: Any, staged_dir: Path) -> Any:
         required_config_names=(), required_secret_names=(), dependencies=checked.dependencies,
         staged_dir=staged_dir, receipt_id=receipt.receipt_id,
         receipt_digest=receipt.receipt_digest, plugin_resolutions=receipt.plugins,
-        role_tool_grants=role_tool_grants(component))
+        role_tool_grants=role_tool_grants(component),
+        voice_handoff=component.role.role.get("voice_handoff") is True)
 
 
 def _run_approval() -> "dict | None":
@@ -15865,6 +15869,8 @@ async def specialist_install_commit(args: dict) -> dict:
         return {"ok": True, "slug": instance.slug, "state": instance.state,
                 "activation_committed": instance.state == "active",
                 "reloaded": seq["reloaded"], "verify": seq["verify"],
+                # #1568: whether the role suits the voice concierge.
+                "voice_handoff": inspection.voice_handoff,
                 **_activation_error_disclosure(instance),
                 # #499: parity with plugin_add's required_env_vars — the
                 # bundled plugins' declared env names, per plugin, so the
@@ -16031,6 +16037,8 @@ async def specialist_upgrade(args: dict) -> dict:
             specialist_install_mod.reclaim_staging_tree(staged_dir)
         return {"ok": True, "slug": instance.slug, "state": instance.state,
                 "reloaded": seq["reloaded"], "verify": seq["verify"],
+                # #1568: whether the role suits the voice concierge.
+                "voice_handoff": inspection.voice_handoff,
                 **_activation_error_disclosure(instance),
                 # #929: parity with specialist_install_commit — an upgrade that
                 # lands pending-configuration keeps its receipt and staging

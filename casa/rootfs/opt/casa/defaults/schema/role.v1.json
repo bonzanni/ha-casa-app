@@ -21,6 +21,7 @@
     "memory": {"type": "object", "additionalProperties": false, "required": ["token_budget", "read_strategy"], "properties": {"token_budget": {"type": "integer", "minimum": 0}, "read_strategy": {"enum": ["per_turn", "cached"]}}},
     "session": {"type": "object", "additionalProperties": false, "required": ["strategy", "idle_timeout_seconds"], "properties": {"strategy": {"enum": ["persistent", "pooled", "ephemeral"]}, "idle_timeout_seconds": {"type": "integer", "minimum": 0}, "long_runs": {"type": "boolean"}}},
     "own_chat": {"type": "object", "additionalProperties": false, "required": ["short_description", "description"], "properties": {"short_description": {"type": "string", "minLength": 1, "maxLength": 120}, "description": {"type": "string", "minLength": 1, "maxLength": 512}}},
+    "voice_handoff": {"type": "boolean"},
     "disclosure": {"type": "object", "additionalProperties": false, "required": ["policy", "overrides"], "properties": {"policy": {"type": "string", "minLength": 1}, "overrides": {"type": "object"}}},
     "delegates": {"type": "array", "items": {"type": "object"}},
     "executors": {"type": "array", "items": {"type": "object"}},
