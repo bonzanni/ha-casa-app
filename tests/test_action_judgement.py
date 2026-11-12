@@ -13,6 +13,8 @@ import types
 from pathlib import Path
 
 import pytest
+
+from sent_prompt import sent_prompt
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
@@ -682,7 +684,7 @@ async def test_picture_and_body_go_as_one_user_message(monkeypatch):
                          {"type": "image", "source": {"type": "base64",
                                                       "media_type": "image/png", "data": pic}},
                          {"type": "text", "text": '{"packet": 1}'}]}}]
-    assert options.tools == [] and options.system_prompt == "rb"
+    assert options.tools == [] and sent_prompt(options) == "rb"
     # no picture: the prompt is the body string, as it was
     await aj._ask_check("rb", '{"packet": 1}')
     assert launches[1][0] == '{"packet": 1}'

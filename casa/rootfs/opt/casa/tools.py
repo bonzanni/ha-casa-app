@@ -79,6 +79,7 @@ from output_boundary import (
 )
 from config import current_resident_model, effort_for, resolve_model
 from claude_runtime import (
+    with_system_prompt_file,
     CLAUDE_CLI_PATH,
     SDK_MAX_BUFFER_SIZE,
     cli_session_settings,
@@ -4911,7 +4912,7 @@ async def _run_delegated_turn(
         _ph["options"] = time.monotonic()
         token = agent_mod.origin_var.set(child_origin)
         approval_scope = resolve_scope(child_origin)
-        client_options = (
+        client_options = with_system_prompt_file(
             options if output_format is not None
             else sdk_logging.with_stderr_callback(options, engagement_id=None)
         )
@@ -11971,8 +11972,8 @@ async def _synthesize_answer(
     _synth_result = None
     eng = engagement_var.get(None)
     eng_id = eng.id[:8] if eng is not None else None
-    async with ClaudeSDKClient(
-        sdk_logging.with_stderr_callback(options, engagement_id=eng_id),
+    async with ClaudeSDKClient(with_system_prompt_file(
+        sdk_logging.with_stderr_callback(options, engagement_id=eng_id)),
     ) as client:
         await client.query(prompt)
         async for msg in client.receive_response():

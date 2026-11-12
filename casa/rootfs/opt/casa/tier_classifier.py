@@ -17,6 +17,7 @@ import logging
 
 from config import effort_for, resolve_model
 from claude_runtime import (
+    with_system_prompt_file,
     CLAUDE_CLI_PATH,
     SDK_MAX_BUFFER_SIZE,
     cli_session_settings,
@@ -143,7 +144,7 @@ async def classify_tier(content: str) -> str:
         for attempt in range(1, _ATTEMPTS + 1):
             reply = ""
             try:
-                async for msg in sdk.query(prompt=prompt, options=opts):
+                async for msg in sdk.query(prompt=prompt, options=with_system_prompt_file(opts)):
                     if isinstance(msg, sdk.AssistantMessage):
                         for block in getattr(msg, "content", []) or []:
                             t = getattr(block, "text", None)

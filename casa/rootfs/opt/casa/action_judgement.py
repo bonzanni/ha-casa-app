@@ -279,7 +279,7 @@ async def _ask_check(rulebook: str, body: str, picture: "str | None" = None) -> 
     from claude_runtime import (
         CLAUDE_CLI_PATH, SDK_MAX_BUFFER_SIZE, cli_session_settings,
         ephemeral_extra_args, ephemeral_setting_sources,
-        with_cross_session_tools_denied,
+        with_cross_session_tools_denied, with_system_prompt_file,
     )
 
     opts = sdk.ClaudeAgentOptions(
@@ -299,7 +299,7 @@ async def _ask_check(rulebook: str, body: str, picture: "str | None" = None) -> 
     # the call (slice 5, r6).
     with sdk_logging.suppress_structured_voice_sdk_payload_logs():
         prompt = body if picture is None else _one_message(body, picture)
-        async for msg in sdk.query(prompt=prompt, options=opts):
+        async for msg in sdk.query(prompt=prompt, options=with_system_prompt_file(opts)):
             if isinstance(msg, sdk.AssistantMessage):
                 # The CLI reports an API fault or a refusal as an ordinary
                 # assistant message carrying its own text (error_kinds).

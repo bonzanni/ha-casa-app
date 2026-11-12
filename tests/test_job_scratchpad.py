@@ -16,6 +16,8 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+
+from sent_prompt import sent_prompt
 from claude_agent_sdk import ClaudeAgentOptions
 
 import agent
@@ -106,7 +108,7 @@ async def test_a_specialist_job_launch_opens_its_pad_with_the_brief(  # noqa: F8
     assert off_loop == [True]
     opts = Client.instances[0].options
     assert GRANT in opts.allowed_tools and opts.mcp_servers[SERVER]["alwaysLoad"] is True
-    assert opts.system_prompt.endswith(jobs.JOB_PROMPT_LINE)
+    assert sent_prompt(opts).endswith(jobs.JOB_PROMPT_LINE)
 
 
 async def test_a_resident_hosted_job_launch_opens_its_pad_with_the_brief(  # noqa: F811

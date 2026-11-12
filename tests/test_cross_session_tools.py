@@ -27,6 +27,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from sent_prompt import sent_prompt
+
 try:
     from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
 except ImportError:
@@ -399,7 +401,7 @@ async def test_action_judgement_options(monkeypatch):
     _assert_locked(launches[0])
     _assert_loads_no_settings_source(launches[0])
     assert launches[0].tools == [] and launches[0].allowed_tools == []
-    assert launches[0].system_prompt == action_judgement.RULEBOOKS["action"]
+    assert sent_prompt(launches[0]) == action_judgement.RULEBOOKS["action"]
     assert launches[0].max_turns == 4
 
 

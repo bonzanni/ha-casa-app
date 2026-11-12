@@ -52,6 +52,7 @@ from claude_agent_sdk import (
 )
 
 import background_jobs
+from claude_runtime import with_system_prompt_file
 from drivers.driver_protocol import DriverProtocol
 from drivers.turn_progress import step_log_line
 from error_kinds import ErrorKind, api_error_kind, result_api_error_kind
@@ -759,8 +760,8 @@ class InCasaDriver(DriverProtocol):
         from tools import engagement_var
 
         options = _at_launch_cwd(engagement, options)
-        client = ClaudeSDKClient(sdk_logging.with_stderr_callback(
-            options, engagement_id=engagement.id[:8]))
+        client = ClaudeSDKClient(with_system_prompt_file(sdk_logging.with_stderr_callback(
+            options, engagement_id=engagement.id[:8])))
         holder = _EngagementTurn()
         token = engagement_var.set(engagement)
         cid_token = cid_var.set(holder)

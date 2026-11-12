@@ -81,10 +81,12 @@ class SdkModelPort:
 
     async def _query(self, system: str, prompt: str) -> ModelReply:
         import claude_agent_sdk as sdk
+        from claude_runtime import with_system_prompt_file
         options = writer_options(system)
         text: list[str] = []
         result = None
-        async for msg in sdk.query(prompt=prompt, options=options):
+        async for msg in sdk.query(
+                prompt=prompt, options=with_system_prompt_file(options)):
             if isinstance(msg, sdk.AssistantMessage):
                 for block in getattr(msg, "content", []) or []:
                     piece = getattr(block, "text", None)

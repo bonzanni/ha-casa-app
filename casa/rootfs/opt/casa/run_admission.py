@@ -195,7 +195,7 @@ async def _ask_model(words: str) -> str:
     from claude_runtime import (
         CLAUDE_CLI_PATH, SDK_MAX_BUFFER_SIZE, cli_session_settings,
         ephemeral_extra_args, ephemeral_setting_sources,
-        with_cross_session_tools_denied,
+        with_cross_session_tools_denied, with_system_prompt_file,
     )
     from config import effort_for, resolve_model
 
@@ -210,7 +210,7 @@ async def _ask_model(words: str) -> str:
     )
     reply = ""
     prompt = f"The person's message:\n<message>\n{words}\n</message>"
-    async for msg in sdk.query(prompt=prompt, options=opts):
+    async for msg in sdk.query(prompt=prompt, options=with_system_prompt_file(opts)):
         if isinstance(msg, sdk.AssistantMessage):
             for block in getattr(msg, "content", []) or []:
                 t = getattr(block, "text", None)

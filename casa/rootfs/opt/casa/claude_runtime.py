@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import json
+import os
 import subprocess
+import tempfile
+import time
+from pathlib import Path
 
 
 CLAUDE_CLI_PATH = "/usr/local/bin/claude"
@@ -132,6 +138,65 @@ def ephemeral_extra_args() -> dict[str, str | None]:
     SDK's stream-json transport: a completed turn returns its reply and
     leaves nothing under the projects root."""
     return {"no-session-persistence": None}
+
+
+# #1570: the SDK hands a string system prompt to the CLI as ONE argv entry
+# (``--system-prompt <text>``), and Linux refuses an exec whose single argument
+# reaches 128 KiB (MAX_ARG_STRLEN, measured in the container: 131,071 bytes
+# start, 131,072 fail with E2BIG). A resident's prompt carries its memory block,
+# which grows with the bank: the assistant's reached 128,696 bytes and the next
+# cold start failed, retry after retry. So every exec passes the prompt as a
+# file (``--system-prompt-file``), which the pinned CLI reads once, at startup.
+# Files are content-addressed, so an unchanged prompt is written once, and any
+# file not used for an hour is pruned: by then its CLI has long read it.
+SYSTEM_PROMPT_DIR = Path(tempfile.gettempdir()) / "casa-system-prompts"
+SYSTEM_PROMPT_FILE_TTL_S = 3600
+
+
+def with_system_prompt_file(options):
+    """Return *options* with a non-empty string system prompt moved to a file.
+
+    Apply at the exec site only, on the copy handed to the SDK: the options
+    builders and their readers keep working with the string. Preset, file and
+    empty prompts pass through unchanged."""
+    prompt = getattr(options, "system_prompt", None)
+    if not isinstance(prompt, str) or not prompt:
+        return options
+    path = _system_prompt_file(prompt)
+    return dataclasses.replace(
+        options, system_prompt={"type": "file", "path": str(path)})
+
+
+def _system_prompt_file(prompt: str) -> Path:
+    data = prompt.encode("utf-8")
+    SYSTEM_PROMPT_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = SYSTEM_PROMPT_DIR / f"{hashlib.sha256(data).hexdigest()}.md"
+    try:
+        os.utime(path)                     # reused: keep it out of the prune
+    except FileNotFoundError:
+        fd, tmp = tempfile.mkstemp(dir=SYSTEM_PROMPT_DIR, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    _prune_system_prompt_files(keep=path)
+    return path
+
+
+def _prune_system_prompt_files(*, keep: Path) -> None:
+    cutoff = time.time() - SYSTEM_PROMPT_FILE_TTL_S
+    for entry in SYSTEM_PROMPT_DIR.iterdir():
+        try:
+            if entry != keep and entry.stat().st_mtime < cutoff:
+                entry.unlink()
+        except OSError:
+            pass
 
 
 def verify_effective_cli() -> str:
