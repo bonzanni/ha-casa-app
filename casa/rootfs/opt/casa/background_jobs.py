@@ -479,11 +479,14 @@ STARTED_BY_TOKENS = ("operator", "scheduled", "agent")
 def job_started_by(origin: dict) -> str:
     """``scheduled`` for a job trigger's fire; ``operator`` for a turn Casa
     attributes to the operator's authenticated act — their own message or
-    tap (``_operator_turn``) or their answer to a scheduled ask
-    (``ANSWERED_BY_OPERATOR``); ``agent`` for everything else."""
-    from provenance import ANSWERED_BY_OPERATOR
+    tap (``_operator_turn``), their answer to a scheduled ask
+    (``ANSWERED_BY_OPERATOR``), or a turn of a task the operator started
+    (``OPERATOR_TASK_KEY``); ``agent`` for everything else."""
+    from provenance import ANSWERED_BY_OPERATOR, OPERATOR_TASK_KEY
     if origin.get("_scheduled_job") is True:
         return "scheduled"
+    if origin.get(OPERATOR_TASK_KEY) is True:
+        return "operator"
     if origin.get("_operator_turn") is True or origin.get(ANSWERED_BY_OPERATOR) is True:
         return "operator"
     return "agent"

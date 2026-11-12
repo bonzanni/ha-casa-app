@@ -14,7 +14,10 @@ markers no external context can carry (``provenance.sanitize_external_context``)
 ``_handoff_chain`` is stamped only by ``tools._run_delegated_agent``."""
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Any
+
+from provenance import OPERATOR_TASK_KEY
 
 # Ellen -> A -> B -> C: three hand-offs after the resident, the design's
 # "[my call: 3 hand-offs after Ellen]".
@@ -84,6 +87,16 @@ def operator_words(origin: dict | None) -> str | None:
     if not isinstance(text, str) or not text.strip():
         return None
     return text
+
+
+def helper_under_operator_task(origin: Mapping | None, chain: Sequence[str]) -> bool:
+    """Whether the agent at the end of *chain* is helping a specialist under a
+    task the operator started: *origin* carries the operator-task proof and
+    the agent's requester is a specialist (a chain longer than the resident
+    and the agent itself). The chain is the caller's own: a recorded call's
+    origin keeps scalars only and has no stamped chain to rebuild it from."""
+    return (isinstance(origin, Mapping) and origin.get(OPERATOR_TASK_KEY) is True
+            and len(chain) > 2)
 
 
 def handoff_refusal(chain: tuple[str, ...], target: str) -> dict[str, Any] | None:

@@ -56,11 +56,11 @@ def roles(monkeypatch, tmp_path):
     return m
 
 
-def _binding(chain=("assistant", "browser"), plugin="browser"):
+def _binding(chain=("assistant", "browser"), plugin="browser", origin=ORIGIN, turn_key="d-1"):
     ident = GrantIdentity(operator_id=100, chat_id=42, enforcement_role=chain[-1],
                           artifact_id="1" * 64, engagement_id="", bot_id=BOT)
-    return plugin_bindings.BINDINGS.for_turn(plugin=plugin, turn_key="d-1", identity=ident,
-                                             chain=chain, origin=ORIGIN)
+    return plugin_bindings.BINDINGS.for_turn(plugin=plugin, turn_key=turn_key, identity=ident,
+                                             chain=chain, origin=origin)
 
 
 def test_a_continuation_origin_is_rebuilt_from_the_binding_alone(roles):
@@ -75,6 +75,24 @@ def test_a_continuation_origin_is_rebuilt_from_the_binding_alone(roles):
     assert relay["_handoff_chain"] == ("assistant",) and relay["synthetic"] == "continuation"
     import handoff
     assert handoff.operator_words({**o, "execution_role": "browser"}) is None
+
+
+def test_a_binding_carries_the_task_proof_into_its_continuation_and_relay_turns(roles):
+    chain = ("assistant", "finance", "browser")
+    b = _binding(chain, origin={**ORIGIN, "_operator_task": True, "_owner_pass": 2})
+    assert (b.origin["_operator_task"], b.origin["_owner_pass"]) == (True, 2)
+    for o in (pc.continuation_origin(b), pc.continuation_origin(b, executing="finance")):
+        assert o["_operator_task"] is True and o["_owner_pass"] == 2
+    # it survives a restart with the binding
+    reloaded = plugin_bindings.BindingStore(plugin_bindings.BINDINGS._path).peek(b.ref)
+    assert pc.continuation_origin(reloaded)["_operator_task"] is True
+    plain = _binding(chain, turn_key="d-2")
+    for o in (pc.continuation_origin(plain), pc.continuation_origin(plain, executing="finance")):
+        assert "_operator_task" not in o and "_owner_pass" not in o
+    # a value that is not the literal proof is not carried
+    odd = _binding(chain, turn_key="d-3",
+                   origin={**ORIGIN, "_operator_task": "yes", "_owner_pass": True})
+    assert not {"_operator_task", "_owner_pass"} & set(pc.continuation_origin(odd))
 
 
 @pytest.mark.asyncio

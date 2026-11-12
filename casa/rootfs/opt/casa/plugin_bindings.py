@@ -48,7 +48,7 @@ import scratchpad
 from atomic_io import PRIVATE, atomic_write_json
 from channels.tg_address import (
     AddressError, EndpointNotReady, EndpointUnavailable, TgAddress, is_route)
-from provenance import ROUTING_KEYS
+from provenance import OPERATOR_TASK_KEY, OWNER_PASS_KEY, ROUTING_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +59,11 @@ REF_PREFIX = "casa-bind-"
 
 # The origin markers a continuation turn is rebuilt from — plain, persistable
 # values only. Never the operator's words: a continuation has none
-# (``handoff.operator_words``), so a run it starts goes to his tap.
+# (``handoff.operator_words``), so a run it starts goes to his tap. The task
+# proof is kept: work continued for a task the operator started is still his.
 _ORIGIN_KEYS = ("role", "channel", "chat_id", "user_id", "user_name",
-                "_origin_route", "_origin_clearance", *ROUTING_KEYS)
+                "_origin_route", "_origin_clearance", *ROUTING_KEYS,
+                OPERATOR_TASK_KEY, OWNER_PASS_KEY)
 
 
 @dataclasses.dataclass

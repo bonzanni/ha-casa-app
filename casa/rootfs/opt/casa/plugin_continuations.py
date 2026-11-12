@@ -68,7 +68,7 @@ from pathlib import Path
 from typing import Any
 
 from output_boundary import SILENCE_SENTINEL
-from provenance import carry_route, task_delivery_marker
+from provenance import carry_route, carry_task_proof, task_delivery_marker
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +222,7 @@ def continuation_origin(binding, *, executing: str | None = None) -> dict:
         "_handoff_chain": tuple(upto) or (chain[0],),
         "_binding_ref": binding.ref,
         **carry_route(stored),
+        **carry_task_proof(stored),
         **task_delivery_marker(_delivery_for_turn(binding, executing)),
     }
     return origin
