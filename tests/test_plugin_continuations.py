@@ -208,6 +208,27 @@ async def test_the_answer_climbs_the_chain_one_requester_at_a_time(roles, lanes,
 
 
 @pytest.mark.asyncio
+async def test_a_chain_started_in_a_specialists_own_chat_answers_that_specialist(
+        roles, lanes, announce, monkeypatch):
+    """A specialist asked in its own chat handed work on: the helper's finished
+    run is announced to that specialist's conversation, as a resident's is, and
+    no relay turn runs — the root is told by the announcement."""
+    seen: list = []
+    _recording_runner(monkeypatch, seen)
+    reg, announced = announce
+    b = _binding(("finance", "browser"), origin={**ORIGIN, "role": "finance"})
+    await pc.run_continuation(pc.Pending(b, "r-8", "operator_answer", 0.0, bot_id=BOT),
+                              on_start=lambda: None)
+    task, record = announced[0]
+    out = await task
+    assert [x[0] for x in seen] == ["browser"]
+    assert seen[0][3] == ("finance",)             # asked by finance, from its own turn
+    assert out.text == "browser says done"
+    assert record.agent == "browser" and record.requester.role == "finance"
+    assert record.origin["role"] == "finance" and record.origin["chat_id"] == 42
+
+
+@pytest.mark.asyncio
 async def test_a_run_started_in_an_engagement_is_continued_as_its_specialist(
         roles, lanes, announce, monkeypatch):
     """Phone round 7: the call made inside an interactive engagement runs under

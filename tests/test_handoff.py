@@ -83,12 +83,17 @@ def test_helper_under_operator_task_needs_the_proof_and_a_specialist_requester()
     assert handoff.helper_under_operator_task(None, three) is False
 
 
-def test_bounds_refuse_a_cycle_and_a_fourth_handoff():
+def test_bounds_refuse_a_cycle_and_a_handoff_past_the_limit():
     assert handoff.handoff_refusal(("assistant", "finance"), "finance")["kind"] == "handoff_cycle"
     assert handoff.handoff_refusal(("assistant", "finance"), "assistant")["kind"] == "handoff_cycle"
-    assert handoff.handoff_refusal(("assistant", "a", "b"), "c") is None          # third hand-off
-    assert handoff.handoff_refusal(("assistant", "a", "b", "c"), "d")["kind"] == (
+    assert handoff.MAX_HANDOFFS == 10
+    last_allowed = ("assistant", *(f"s{i}" for i in range(handoff.MAX_HANDOFFS - 1)))
+    assert handoff.handoff_refusal(last_allowed, "next") is None       # the tenth hand-off
+    assert handoff.handoff_refusal((*last_allowed, "next"), "one-more")["kind"] == (
         "handoff_chain_too_long")
+    # a chain that started in a specialist's own chat is bounded the same way
+    assert handoff.handoff_refusal(("finance",), "browser") is None
+    assert handoff.handoff_refusal(("finance", "browser"), "finance")["kind"] == "handoff_cycle"
 
 
 # -- the delegated run stamps the chain and names its requester ---------------
@@ -223,10 +228,12 @@ async def test_handoff_refuses_a_cycle_and_does_not_run(wired):
 
 
 @pytest.mark.asyncio
-async def test_handoff_refuses_past_three_handoffs(wired):
+async def test_handoff_refuses_past_the_limit(wired):
     _, _, calls = wired
-    origin = _specialist_origin(execution_role="mtg",
-                                _handoff_chain=("assistant", "x", "y", "mtg"))
+    origin = _specialist_origin(
+        execution_role="mtg",
+        _handoff_chain=("assistant", *(f"s{i}" for i in range(handoff.MAX_HANDOFFS - 1)),
+                        "mtg"))
     out = await _call({"agent": "browser", "task": "t"}, origin)
     assert out["kind"] == "handoff_chain_too_long" and calls == []
 
@@ -242,6 +249,45 @@ async def test_handoff_refuses_past_three_handoffs(wired):
 async def test_handoff_is_unavailable_outside_a_specialist_run(wired, origin):
     _, _, calls = wired
     out = await _call({"agent": "browser", "task": "t"}, origin)
+    assert out["kind"] == "handoff_unavailable" and calls == []
+
+
+def _own_chat_origin(**extra) -> dict:
+    """A turn of the specialist's own chat: the operator wrote to it directly, so
+    it runs under no delegation and its chain is the specialist alone."""
+    return {"role": "finance", "execution_role": "finance", "channel": "telegram",
+            "chat_id": "7", "user_id": 7, "cid": "c", "user_text": "get these from Fido",
+            "_operator_words": "get these from Fido", "_operator_turn": True, **extra}
+
+
+@pytest.mark.asyncio
+async def test_handoff_from_a_specialists_own_chat_runs_as_the_chains_root(wired):
+    _, limiter, calls = wired
+    out = await _call({"agent": "browser", "task": "download the four invoices"},
+                      _own_chat_origin())
+    assert out["status"] == "ok" and out["text"] == "4 invoices saved"
+    role, task_text, _, child_origin = calls[0]
+    assert role == "browser" and task_text == "download the four invoices"
+    assert handoff.operator_words(child_origin) == "get these from Fido"
+    assert handoff.child_chain(child_origin, "browser") == ("finance", "browser")
+    assert child_origin["in_flight"] == 1          # no delegation above it: it counts
+    assert limiter.in_flight == 0 and "7:browser" not in limiter._active_scopes
+
+
+@pytest.mark.asyncio
+async def test_handoff_from_an_own_chat_is_busy_at_the_global_cap(wired):
+    _, limiter, calls = wired
+    limiter.try_acquire("9:mtg")                   # someone else's delegation holds the slot
+    out = await _call({"agent": "browser", "task": "t"}, _own_chat_origin())
+    assert out["kind"] == "busy" and calls == []
+    assert "7:browser" not in limiter._active_scopes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra", [{"stored_call": True}, {"channel": "voice"}])
+async def test_handoff_from_an_own_chat_keeps_the_other_refusals(wired, extra):
+    _, _, calls = wired
+    out = await _call({"agent": "browser", "task": "t"}, _own_chat_origin(**extra))
     assert out["kind"] == "handoff_unavailable" and calls == []
 
 

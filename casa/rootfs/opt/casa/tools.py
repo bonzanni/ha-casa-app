@@ -8763,7 +8763,8 @@ def _handoff_target(agent_name: str) -> "tuple[str | None, dict | None]":
 
 @tool(
     "hand_off",
-    "Hand part of the request you are answering to another specialist and wait "
+    "Hand part of what you are working on — a request you are answering, or "
+    "what you were asked in your own chat — to another specialist and wait "
     "for its answer, which comes back to you (not to the person). Use it when "
     "another specialist is the one who can do that part — say what a correct "
     "result looks like in expected_result. The answer is yours to check and to "
@@ -8780,23 +8781,23 @@ def _handoff_target(agent_name: str) -> "tuple[str | None, dict | None]":
 async def hand_off(args: dict) -> dict:
     """Run one hand-off synchronously and return the target's answer.
 
-    Available only inside a specialist's own delegated or pinned run (never an
-    engagement, a job, a stored-call turn or a voice-originated run). The
-    bounds are mechanical (``handoff.handoff_refusal``): no agent twice in the
-    chain, at most ``MAX_HANDOFFS`` hand-offs after the resident. The run is
-    ephemeral like any delegation, holds only its per-scope permit (the
-    chain's root holds the global slot), writes no job row and posts no
-    hand-off line — the requester is waiting on it, and the requester's own
-    ceiling does not run while it waits (``_bounded_wait``)."""
+    Available to a specialist in its delegated or pinned run and in a turn of
+    its own chat (never an engagement, a job, a stored-call turn or a
+    voice-originated run). The bounds are mechanical
+    (``handoff.handoff_refusal``): no agent twice in the chain, at most
+    ``MAX_HANDOFFS`` hand-offs after the agent the chain started from. The run
+    is ephemeral like any delegation, writes no job row and posts no hand-off
+    line — the requester is waiting on it, and the requester's own ceiling
+    does not run while it waits (``_bounded_wait``). Inside a delegated chain
+    it holds only its per-scope permit (the chain's root delegation holds the
+    global slot); from the specialist's own chat no delegation holds one, so
+    the hand-off is the chain's root and takes the full permit."""
     from handoff import handoff_chain, handoff_refusal
 
     origin = _snapshot_origin()
     if engagement_var.get(None) is not None or origin.get("stored_call"):
         return _handoff_unavailable(
             "hand_off is not available in an engagement, a job or a tapped call.")
-    if int(origin.get("delegation_depth", 0) or 0) <= 0:
-        return _handoff_unavailable(
-            "hand_off is for a specialist answering a request; delegate instead.")
     if str(origin.get("channel", "")) == "voice":
         return _handoff_unavailable("hand_off is not available on voice.")
     caller = str(origin.get("execution_role") or "")
@@ -8840,8 +8841,11 @@ async def hand_off(args: dict) -> dict:
 
     permit = None
     if _specialist_limiter is not None:
-        permit = _specialist_limiter.try_acquire_scope_only(
-            _delegation_scope(origin, target))
+        # a turn of the caller's own chat runs under no delegation
+        _in_chain = int(origin.get("delegation_depth", 0) or 0) > 0
+        _acquire = (_specialist_limiter.try_acquire_scope_only if _in_chain
+                    else _specialist_limiter.try_acquire)
+        permit = _acquire(_delegation_scope(origin, target))
         if permit is None:
             return _result({
                 "status": "error", "kind": "busy", "agent": target,
