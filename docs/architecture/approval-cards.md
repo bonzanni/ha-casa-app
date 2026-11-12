@@ -39,7 +39,9 @@ at once. The facts are JSON bounded at 20,000 characters (`facts_json`): past th
 input schema, cuts the tool description to 1,000 characters, halves the string cap step by
 step, then replaces the arguments with a note, and at worst sends the request's kind and
 requester with a cut of the rest. The
-reply must be exactly `{"action", "summary", "lines"}` within fixed bounds, counted in UTF-16
+reply must carry the fields `{"action", "summary", "lines"}` as JSON — text around it, such as
+a code fence or a leading sentence, is tolerated, since the reply is read from its first `{` to
+its last `}`, and other keys are ignored — within fixed bounds, counted in UTF-16
 units and checked, never clipped: an action of at most 60 units, a summary of at most 240,
 at most five `Label: value` lines (labels at most 24, values at most 160), each field one line
 with no unsafe code point (`card_from_reply`). Only the first line marked sensitive carries
@@ -51,9 +53,13 @@ this request's own requester and title.
 **The title names who asks and what approving lets happen.** It is `🔐 Allow {who} to
 {action}?`. For a tool call `who` is the requesting agent's display name, its role when the
 name is unsafe or too long; for an install, an update, a persona install and the erase question it is
-the agent its turn's origin names (`tools._requester_name`: in a configurator run, the agent
-that delegated to it), else `Casa`; for a trigger, a callback and an event it is `the {plugin} plugin`. The
-erase question has its own fixed title, `🔐 Uninstall {what}: erase its data too?`.
+the display name of the agent its turn's origin names (`tools._requester_name`: in a
+configurator run, the agent that delegated to it), that agent's role when the name is unsafe
+or too long, and `Casa` when the origin names no loaded agent; for a trigger, a callback and an
+event it is `the {plugin} plugin`. The erase question's model-written card has its own fixed
+title, `🔐 Uninstall {what}: erase its data too?`. These are the model-written card's titles; a
+fallback carries its own (below) — the erase question's is the first line of its text,
+`🗑 Uninstalling {what}`.
 
 **What the model is told.** A tool call: the requester, the plugin, the tool as the plugin
 declares it, the tool's MCP description and input schema when listed, the plugin's declared
