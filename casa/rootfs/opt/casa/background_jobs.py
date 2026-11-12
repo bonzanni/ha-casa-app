@@ -499,7 +499,7 @@ def starter_line(started_by: Any) -> str:
 
 
 def initial_job_state(decl: JobDecl, *, started_by: str | None = None,
-                      context: str = "") -> dict:
+                      context: str = "", self_host: bool = False) -> dict:
     """The ``origin["job"]`` a job engagement is created with.
 
     ``brief_uuid`` is the identity of the job's brief: the brief is written
@@ -507,7 +507,10 @@ def initial_job_state(decl: JobDecl, *, started_by: str | None = None,
     session transcript only when it takes the message into a turn. A resume
     after a restart or a session death therefore knows, from the transcript
     alone, whether the job ever read its brief. ``context`` is the launch
-    context, kept so the brief can be written again when it was not."""
+    context, kept so the brief can be written again when it was not.
+    ``self_host`` marks a job its own host started from a turn of its own
+    (``start_job`` called by a specialist), as opposed to one a resident
+    started on it."""
     state = {
         "name": decl.qualified_name,
         "title": decl.title,
@@ -521,6 +524,8 @@ def initial_job_state(decl: JobDecl, *, started_by: str | None = None,
     if decl.quiet_when_scheduled and started_by == "scheduled":
         # #1301: decided once, here, and read from the record ever after.
         state["quiet"] = True
+    if self_host:
+        state["self_host"] = True
     return state
 
 

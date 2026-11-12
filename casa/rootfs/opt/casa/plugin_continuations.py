@@ -270,7 +270,8 @@ async def _lane_turn(chat_id: int, role: str, *, deadline: float):
     """One use of *role*'s lane (``agent_lane``) with a concurrency permit
     for it in *chat_id*: waits for the queue and the lock (bounded by
     *deadline*), rechecks the fault under the lock, takes the permit after the
-    lock as every use of the lane does."""
+    lock as every use of the lane does. A lane still busy at *deadline* drops
+    the turn, and the place it held in the queue is given back."""
     import agent_lane
     import tools as tools_mod
     lane = agent_lane.LANES.get(role)
@@ -285,7 +286,9 @@ async def _lane_turn(chat_id: int, role: str, *, deadline: float):
     permit = None
     runs: list = []
     try:
-        async with lane.use(reservation):
+        async with lane.use(reservation, deadline) as admitted:
+            if not admitted:
+                raise ContinuationDropped(f"{role}'s lane stayed busy")
             if lane.faulted is not None:
                 raise ContinuationDropped(f"{role} faulted while it waited")
             limiter = tools_mod._specialist_limiter
@@ -304,6 +307,7 @@ async def _lane_turn(chat_id: int, role: str, *, deadline: float):
                 tools_mod._lane_run_sink.reset(sink_tok)
                 lane.hold_unwinding(runs)
     finally:
+        reservation.release()
         if permit is not None:
             permit.release()
 

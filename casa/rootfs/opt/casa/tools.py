@@ -33,6 +33,7 @@ from system_requirements.manifest import (
     read_manifest as read_sysreq_manifest, retire_stale_bin,
 )
 import background_jobs
+import job_owner_turn
 import plugin_registry
 import plugin_store
 import tool_descriptions
@@ -7471,7 +7472,8 @@ async def _launch_interactive_engagement(
     # origin; both renderers read it from the record, never from markers.
     origin["job"] = background_jobs.initial_job_state(
         job, started_by=background_jobs.job_started_by(origin),
-        context=context_text if isinstance(context_text, str) else "")
+        context=context_text if isinstance(context_text, str) else "",
+        self_host=self_host)
     casa_grants += background_jobs.JOB_CASA_GRANTS
     if plugin_host is not None:
         casa_grants = background_jobs.PLUGIN_JOB_CASA_GRANTS
@@ -11383,8 +11385,35 @@ async def _finalize_engagement_tail(
     # 4. NOTIFY the assistant (via existing DelegationComplete-shaped pathway).
     # #1301: not for a quiet run's completed end — its plugin already posted
     # whatever the operator needs to see.
-    if _bus is not None and frozen.get(
-            "notify", not _told_nowhere(frozen["origin"], outcome)):
+    tell = _bus is not None and frozen.get(
+        "notify", not _told_nowhere(frozen["origin"], outcome))
+    # A job its own host started for someone else: the host hears the end
+    # first, in a turn of its own, and that turn decides what the requester is
+    # told (``job_owner_turn``). The owed notice is settled only when that
+    # turn has ended: an answer is sent in the job's place and acknowledged on
+    # delivery as any notice is; a turn that closes silent has more work
+    # coming back to the host, so nothing is sent and nothing stays owed; a
+    # turn that did not run, failed or was cancelled sends the job's own
+    # result with a line saying so.
+    owner_cancelled: asyncio.CancelledError | None = None
+    if tell and job_owner_turn.owner_role(frozen, outcome) is not None:
+        try:
+            owner = await job_owner_turn.run_owner_turn(frozen, text)
+        except asyncio.CancelledError as exc:
+            owner, owner_cancelled = job_owner_turn.OwnerResult("failed"), exc
+        if owner.kind == "answer":
+            text = owner.text
+        elif owner.kind == "silent":
+            if _engagement_registry is not None:
+                await _engagement_registry.ack_terminal_notification(eng_id)
+            logger.info(
+                "Engagement %s: %s has more work coming back to it; "
+                "its requester is not told yet",
+                engagement.id[:8], frozen["role_or_type"])
+            tell = False
+        else:
+            text = text + "\n\n" + job_owner_turn.FOLLOW_UP_FAILED_LINE
+    if tell:
         target_role = frozen["origin"].get("role") or "assistant"
         # S3 §6: a specialist's or job's proven posts, as body-free Casa
         # lines after the terminal text — the one announcement the creator
@@ -11425,16 +11454,22 @@ async def _finalize_engagement_tail(
             return _ack
 
         try:
-            await send_engagement_outcome(
+            sending = send_engagement_outcome(
                 _bus, complete=complete, origin=dict(frozen["origin"]),
                 ack=(_ack_for(eng_id) if _registry is not None else None),
                 context_extra={"next_steps": next_steps},
                 source=frozen["role_or_type"])
+            # a cancelled owner's turn still tells the requester: the send
+            # is finished before the cancellation goes on
+            await (asyncio.shield(sending) if owner_cancelled is not None
+                   else sending)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "finalize engagement %s: bus.notify failed: %s",
                 engagement.id[:8], exc,
             )
+    if owner_cancelled is not None:
+        raise owner_cancelled
 
     # G-4 (v0.33.0): surface the cause when outcome=error so operators
     # have a starting point for triage. Pre-fix the only log line for

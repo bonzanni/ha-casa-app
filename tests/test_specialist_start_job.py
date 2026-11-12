@@ -167,6 +167,8 @@ async def test_the_resident_start_of_a_specialist_job_is_unchanged(
     rec = runtime.registry.get(result["engagement_id"])
     assert rec.origin["execution_role"] == "assistant"
     assert rec.origin["delegation_depth"] == 1
+    # only a job its own host started is marked as one
+    assert "self_host" not in rec.origin["job"]
     assert _counts(runtime) == (1, 1, 0)
 
 
@@ -295,3 +297,96 @@ async def test_a_specialists_own_start_during_its_jobs_pending_terminal_write_is
     assert "engagement_id" not in result and "topic_id" not in result, result
     assert rec.status == "active"
     assert _counts(runtime) == (1, 0, 0)
+
+
+async def test_a_specialists_own_start_marks_the_job_as_started_by_its_host(
+        finance_is_specialist, tmp_path, monkeypatch):
+    runtime = finance_is_specialist
+    _real_discovery(monkeypatch, tmp_path)
+    _own_ledger(tmp_path)
+    result = await start_as(_delegated_turn_origin())
+    assert result["status"] == "pending", result
+    await drain_launch_turns()
+    job = _the_live_record(runtime).origin["job"]
+    assert job["self_host"] is True and job["started_by"] == "operator"
+
+
+def _turn_of_an_operators_task(**extra):
+    """A delegated turn that is not the operator's own message but carries
+    Casa's mark that it belongs to a task the operator started."""
+    origin = _delegated_turn_origin()
+    del origin["_operator_turn"]
+    return {**origin, "_operator_task": True, **extra}
+
+
+async def test_a_job_started_under_an_operators_task_is_the_operators_and_keeps_the_pass_count(
+        finance_is_specialist, tmp_path, monkeypatch):
+    runtime = finance_is_specialist
+    _real_discovery(monkeypatch, tmp_path)
+    _own_ledger(tmp_path)
+    result = await start_as(_turn_of_an_operators_task(_owner_pass=2))
+    assert result["status"] == "pending", result
+    await drain_launch_turns()
+    rec = _the_live_record(runtime)
+    assert rec.origin["job"]["started_by"] == "operator"
+    assert rec.origin["job"]["self_host"] is True
+    assert (rec.origin["_operator_task"], rec.origin["_owner_pass"]) == (True, 2)
+    # the same turn without the mark is an agent's start
+    for live in runtime.registry.active_and_idle():
+        await runtime.driver.cancel(live)
+        await runtime.registry.try_transition_terminal(live.id, "cancelled")
+    origin = _turn_of_an_operators_task()
+    del origin["_operator_task"]
+    assert (await start_as(origin))["status"] == "pending"
+    await drain_launch_turns()
+    assert _the_live_record(runtime).origin["job"]["started_by"] == "agent"
+
+
+async def test_the_host_can_start_the_next_job_from_its_turn_at_the_first_jobs_end(
+        finance_is_specialist, tmp_path, monkeypatch):
+    """The job's host hears its job's end in a turn of its own, taken on the
+    real lane and the real concurrency limit while the ended job's context is
+    still current. A follow-up job it starts there is admitted: the ended job
+    holds no slot, the turn is not the ended job's, and the follow-up is the
+    operator's and one pass further along."""
+    import agent_lane
+    import job_owner_turn
+    from handoff import child_chain
+
+    runtime = finance_is_specialist
+    _real_discovery(monkeypatch, tmp_path)
+    _own_ledger(tmp_path)
+    agent_lane.reset()
+    assert (await start_as(_delegated_turn_origin()))["status"] == "pending"
+    await drain_launch_turns()
+    first = _the_live_record(runtime)
+    nested: list = []
+
+    async def _owners_turn(cfg, task, origin, *, quota_key):
+        # the delegated runner's own derivation of the turn's origin
+        child = {**origin, "execution_role": cfg.role, "_delegation_id": quota_key,
+                 "_delegation_kind": cfg.kind, "delegation_depth": 1,
+                 "_handoff_chain": child_chain(origin, cfg.role)}
+        nested.append(await start_as(child))
+        return tools.DelegatedOutput(text="<silent/>")
+
+    monkeypatch.setattr(job_owner_turn, "_run_turn_cancellable", _owners_turn)
+    bound = tools.engagement_var.set(first)
+    try:
+        await tools._finalize_engagement(
+            first, outcome="completed", text="61 of 65", next_steps=[],
+            driver=runtime.driver)
+    finally:
+        tools.engagement_var.reset(bound)
+    await drain_launch_turns()
+
+    assert [r.get("status") for r in nested] == ["pending"], nested
+    follow_up = _the_live_record(runtime)
+    assert follow_up.id != first.id and first.status == "completed"
+    assert follow_up.origin["job"]["started_by"] == "operator"
+    assert follow_up.origin["job"]["self_host"] is True
+    assert (follow_up.origin["_operator_task"], follow_up.origin["_owner_pass"]) == (True, 1)
+    assert "_operator_turn" not in follow_up.origin
+    # the host closed silent: nothing stays owed for the first job
+    assert first.terminal_notification_pending is False
+    assert not agent_lane.LANES.get("finance").lock.locked()

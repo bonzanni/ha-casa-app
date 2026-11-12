@@ -2467,6 +2467,16 @@ def _e_continuation_origin(env, tmp_path, monkeypatch):
     return [pc.continuation_origin(_e_binding(tmp_path, monkeypatch)).get("_tg_bot")]
 
 
+def _e_owner_turn_origin(env, tmp_path, monkeypatch):
+    """The origin of the turn a job's host gets when the job ends, built from
+    the job's stored origin."""
+    import job_owner_turn
+    job = _e_origin(role="assistant", _handoff_chain=("assistant", "finance"),
+                    job={"name": "ledger:classify", "self_host": True})
+    return [job_owner_turn.owner_origin(
+        {"role_or_type": "finance", "origin": job}).get("_tg_bot")]
+
+
 async def _e_continuation_record(env, tmp_path, monkeypatch):
     """The delegation record a continuation registers names the binding's
     route."""
@@ -2689,6 +2699,7 @@ DERIVED_CASES = {
     "binding": _e_binding_route,
     "continuation_origin": _e_continuation_origin,
     "continuation_record": _e_continuation_record,
+    "owner_turn_origin": _e_owner_turn_origin,
     "scheduled_ask_meta": _e_scheduled_ask_meta,
     "launch_note": _e_launch_note,
     "delegation_envelope": _e_delegation_envelope,
