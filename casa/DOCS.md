@@ -451,8 +451,8 @@ still open if something is. Otherwise she settles the new handle with you
 and posts a card, "Alex can move to a new chat with you, replacing @….";
 tap it, then **Create**. Casa restarts for a moment to move the specialist
 to the new bot. Open the new chat and say hi; the specialist tells you it is
-its new chat, and the card then reads "Alex has moved to @…. You can delete
-@… now." with a button that opens BotFather's delete flow, where you pick
+its new chat, and the assistant's chat gets a new message, "Alex has moved
+to @…. You can delete @… now." with a button that opens BotFather's delete flow, where you pick
 the old bot. The old chat keeps its history, but its buttons stop working,
 and messages sent to either bot around the move may be lost. Changed your
 mind before tapping Create? Ask the assistant to drop the change. If

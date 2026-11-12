@@ -817,9 +817,12 @@ class Lifecycle:
             return
         found = self.store.bot_of(role)
         new = found[1].get("username") if found else ""
-        await self._edit(agent.get("offer_card"),
-                         f"{label} has moved to @{new}. You can delete @{old} now.",
-                         [(f"Delete @{old}", BOTFATHER_DELETE)])
+        text = f"{label} has moved to @{new}. You can delete @{old} now."
+        buttons = [(f"Delete @{old}", BOTFATHER_DELETE)]
+        if await self._post(text, buttons) is None:
+            await self._edit(agent.get("offer_card"), text, buttons)
+            return
+        await self._edit(agent.get("offer_card"), f"{label}'s new chat is open.")
 
     def chat_opening(self, bot_id: int) -> bool:
         """Whether a turn delivered on *bot_id* now is the one that opens its
@@ -1433,6 +1436,9 @@ class Lifecycle:
         await self._self_setup(bot_id, role)
         self._reconciled.add(bot_id)
         await self._release_locked(bot_id)
+        agent = self.store.agents.get(role) or {}
+        if agent.get("offer_card") is None and not agent.get("chat_open_at"):
+            await self._card_bound(role)    # its ready card was never posted
 
     async def _go_dormant(self, bot_id: int) -> None:
         """Hold first (the endpoint keeps no agent), then ``dormant``."""
@@ -1575,6 +1581,9 @@ class Lifecycle:
                     agent["bot_id"] = None
                     agent["chat_open_at"] = None
             agent["moved_from"] = change["old_username"]
+            # The new chat's cards are new messages: the offer card is far up
+            # the resident's chat by now, and an edit there goes unnoticed.
+            agent["offer_card"] = None
             await self.store.save()
             if old_bot is not None:
                 await asyncio.to_thread(self.journal.drop, old_bot)

@@ -1063,24 +1063,70 @@ async def _moved(world, root):
     return await _restart_applying_switches(world, root)
 
 
-async def test_the_new_chats_card_says_it_is_new(world, root):
-    lc, _host = await _moved(world, root)
-    text, buttons = world.cards[lc.store.agents["finance"]["offer_card"][2]]
+async def test_the_new_chats_card_is_a_new_message(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _created_switch(lc, host, world)
+    old_card = lc.store.agents["finance"]["offer_card"]
+    lc, _host = await _restart_applying_switches(world, root)
+    card = lc.store.agents["finance"]["offer_card"]
+    assert card[2] != old_card[2]
+    text, buttons = world.cards[card[2]]
     assert text == "Alex's new chat is ready: @CasaFinance4821Bot. Open it and say hi."
     assert buttons == [("Open Alex's chat", "https://t.me/CasaFinance4821Bot")]
+    assert world.card_text(old_card) == \
+        "Alex is moving to @CasaFinance4821Bot — Casa restarts for a moment."
+    cards = len(world.cards)
+    lc2, _host2 = make_lifecycle(world, root)
+    await lc2.boot()                    # a later restart edits it, posts nothing
+    assert len(world.cards) == cards and lc2.store.agents["finance"]["offer_card"] == card
 
 
-async def test_opening_the_new_chat_offers_to_delete_the_old_bot(world, root):
+async def test_a_ready_card_that_could_not_be_posted_is_posted_at_the_next_restart(
+        world, root):
+    lc, host = make_lifecycle(world, root)
+    await _created_switch(lc, host, world)
+    world.fail_post = True
+    lc, _host = await _restart_applying_switches(world, root)
+    assert lc.store.agents["finance"]["offer_card"] is None
+    assert lc.store.bots[NEW_BOT]["phase"] == ovl.BOUND
+    world.fail_post = False
+    lc2, _host2 = make_lifecycle(world, root)
+    await lc2.boot()
+    card = lc2.store.agents["finance"]["offer_card"]
+    assert world.card_text(card) == \
+        "Alex's new chat is ready: @CasaFinance4821Bot. Open it and say hi."
+    cards = len(world.cards)
+    lc3, _host3 = make_lifecycle(world, root)
+    await lc3.boot()
+    assert len(world.cards) == cards
+
+
+async def test_opening_the_new_chat_offers_to_delete_the_old_bot_in_a_new_message(world, root):
     lc, _host = await _moved(world, root)
+    ready = lc.store.agents["finance"]["offer_card"]
     assert await lc.intake(NEW_BOT, update(1, "hi")) == "deliver"
     assert lc.state("finance") == "open"
-    text, buttons = world.cards[lc.store.agents["finance"]["offer_card"][2]]
+    latest = max(world.cards)
+    assert latest != ready[2]
+    text, buttons = world.cards[latest]
     assert text == "Alex has moved to @CasaFinance4821Bot. You can delete @HeyAlexTestBot now."
     assert buttons == [("Delete @HeyAlexTestBot", ovl.BOTFATHER_DELETE)]
+    assert world.card_text(ready) == "Alex's new chat is open."
     disk = _disk(root)["agents"]["finance"]
     assert disk["moved_from"] is None and disk["chat_open_at"]
+    cards = len(world.cards)
     assert await lc.intake(NEW_BOT, update(2)) == "deliver"     # said once
-    assert world.card_text(lc.store.agents["finance"]["offer_card"]) == text
+    assert len(world.cards) == cards
+
+
+async def test_an_unpostable_delete_message_falls_back_to_the_ready_card(world, root):
+    lc, _host = await _moved(world, root)
+    ready = lc.store.agents["finance"]["offer_card"]
+    world.fail_post = True
+    assert await lc.intake(NEW_BOT, update(1, "hi")) == "deliver"
+    text, buttons = world.cards[ready[2]]
+    assert text == "Alex has moved to @CasaFinance4821Bot. You can delete @HeyAlexTestBot now."
+    assert buttons == [("Delete @HeyAlexTestBot", ovl.BOTFATHER_DELETE)]
 
 
 async def test_a_moved_chat_is_reported_until_it_opens(world, root):
