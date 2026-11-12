@@ -30,7 +30,9 @@ logger = logging.getLogger(__name__)
 
 # How often a guest reply's progress message is refreshed, in seconds.
 GUEST_TICK_S = 3.0
-# How long a guest turn may take to reach a final answer, in seconds.
+# How long a guest reply's terminal edit may keep retrying (flood waits,
+# network errors) before it is given up, in seconds. The turn itself is not
+# bounded by this.
 GUEST_TERMINAL_BUDGET_S = 300.0
 # The longest guest reply text sent in one message (Telegram's message limit,
 # counted in UTF-16 code units).
