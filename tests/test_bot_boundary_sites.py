@@ -601,7 +601,8 @@ IDENTITY_SITE_HITS = {
         "_configurator_step_line._send": 2, "_delegation_scope": 1,
         "_deliver_erasure_outcome": 2, "_dependency_unavailable_message": 1,
         "_episode_sentence": 1, "_erase_gate": 1, "_erase_gate._run": 1,
-        "_erased_everything": 1, "_failure_message": 2, "_plugin_conversation_blocks": 1,
+        "_erased_everything": 1, "_failure_message": 2, "_guest_chat_of": 3,
+        "_plugin_conversation_blocks": 1,
         "_run_delegated_turn": 2,
         "_scheduled_operator_target": 1, "_settle_setup_from_delegated_results": 1,
         "_take_complete_erasures": 1, "_tool_set_plugin_env_reference": 1,
@@ -794,6 +795,8 @@ IDENTITY_FUNCTIONS = {
                                                "specialist in one group, not a key"),
     ("guest_groups.py", "GuestStore._snapshot"): (NOISE, "the same record's fields, as "
                                                          "written to the store's file"),
+    ("tools.py", "_guest_chat_of"): (NOISE, "the summons group's fields, read off the "
+                                            "server-stamped origin into a record"),
     ("action_judgement.py", "_login_item_reply"): (NOISE, "parsing"),
     ("action_judgement.py", "judge"): (NOISE, "a log line"),
     ("action_judgement.py", "parse_reply"): (NOISE, "parsing"),
@@ -897,6 +900,7 @@ BOT_ID_READS = {
     ("channels/telegram.py", "TelegramChannel._dispatch_dm_turn"): (4, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._dispatch_proposal_tap"): (3, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._dispatch_scheduled_continuation"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
+    ("channels/telegram.py", "TelegramChannel._guest_decision"): (1, RECEIPT, "the endpoint's own bot, where a summons arrived, whose binding decides whether it is answered"),
     ("channels/telegram.py", "TelegramChannel._hand_back"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._handle_serialized"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
     ("channels/telegram.py", "TelegramChannel._send_turn"): (1, RECEIPT, "the endpoint's own bot, where an update or tap arrived"),
