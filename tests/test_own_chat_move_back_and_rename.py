@@ -44,7 +44,7 @@ def _disk(root: Path) -> dict:
 
 async def _bind_alex(lc, username=OLD) -> None:
     await lc.post_offer("finance", username)
-    await lc.on_created(created(ALEX_BOT, "AlexTest", username), OPERATOR)
+    await lc.on_created(created(ALEX_BOT, "Alex", username), OPERATOR)   # the pre-filled name
     assert lc.store.bots[ALEX_BOT]["phase"] == ovl.BOUND
 
 
@@ -395,7 +395,8 @@ async def test_a_name_chosen_before_the_bot_exists_names_the_form_and_the_bot(wo
     # a new handle keeps the chosen name
     await lc.replace("finance", NEW)
     assert _create_links(world)[-1] == f"https://t.me/newbot/HeyEllenTestBot/{NEW}?name=Alex+F"
-    assert lc.store.agents["finance"]["suggestion"] == {"name": "Alex F", "username": NEW}
+    sugg = lc.store.agents["finance"]["suggestion"]
+    assert (sugg["name"], sugg["username"], sugg["prefills"][-1]) == ("Alex F", NEW, "Alex F")
 
 
 async def test_a_rename_telegram_refuses_is_applied_at_the_next_restart(world, root):
@@ -443,3 +444,96 @@ async def test_a_rename_needs_an_agent_with_a_chat_of_its_own(world, root):
     res = await lc.rename("nobody", "Somebody")
     assert res["status"] == "error" and res["kind"] == "not_declared"
     assert "nobody" not in lc.store.agents
+
+
+async def test_a_name_typed_in_the_create_form_is_the_bots_chosen_name(world, root):
+    # #1567: the operator typed another name over the pre-filled one
+    lc, _host = make_lifecycle(world, root)
+    await lc.post_offer("finance", OLD)
+    assert _create_links(world) == [f"https://t.me/newbot/HeyEllenTestBot/{OLD}?name=Alex"]
+    await lc.on_created(created(ALEX_BOT, "AlexTest", OLD), OPERATOR)
+    assert lc.store.bots[ALEX_BOT]["phase"] == ovl.BOUND
+    assert "Alex" not in [name for _t, name in _names(world)]
+    assert _names(world)[-1] == (ALEX_TOKEN, "AlexTest")
+    assert _disk(root)["agents"]["finance"]["suggestion"]["name"] == "AlexTest"
+    # the cards keep the persona's name
+    assert lc._bound_card("finance")[0].startswith("Alex's chat is ready")
+    # kept like a rename: a restart keeps it, a persona change does not undo it
+    lc2, _host2 = await _restart(world, root)
+    world.configs["finance"] = specialist("Alexa")
+    await lc2.on_persona("finance")
+    assert "Alexa" not in [name for _t, name in _names(world)]
+
+
+async def test_a_new_bot_for_a_move_keeps_the_name_typed_in_its_form(world, root):
+    lc, _host = make_lifecycle(world, root)
+    await _bind_alex(lc)
+    await lc.replace("finance", NEW)
+    await lc.on_created(created(NEW_BOT, "Alex Two", NEW), OPERATOR)
+    sugg = lc.store.agents["finance"]["suggestion"]
+    assert (sugg["name"], sugg["username"]) == ("Alex Two", NEW)
+
+
+async def test_a_rename_after_the_offer_survives_an_untouched_form(world, root):
+    lc, _host = make_lifecycle(world, root)
+    await lc.post_offer("finance", OLD)                      # the form says "Alex"
+    await lc.rename("finance", "Alex F")
+    lc2, _host2 = await _restart(world, root)
+    await lc2.on_created(created(ALEX_BOT, "Alex", OLD), OPERATOR)
+    assert _names(world)[-1] == (ALEX_TOKEN, "Alex F")
+
+
+async def test_a_bot_from_an_older_card_does_not_take_its_name_as_chosen(world, root):
+    lc, host = make_lifecycle(world, root)
+    await lc.post_offer("finance", "FirstOfferBot")          # the form says "Alex"
+    world.configs["finance"] = specialist("Alexa")
+    await lc.post_offer("finance", "SecondOfferBot")         # the form says "Alexa"
+    await lc.on_created(created(ALEX_BOT, "Alex", "FirstOfferBot"), OPERATOR)
+    await host.answer("Alexa")
+    assert _names(world)[-1] == (ALEX_TOKEN, "Alexa")
+    world.configs["finance"] = specialist("Alexandra")
+    await lc.on_persona("finance")
+    assert _names(world)[-1] == (ALEX_TOKEN, "Alexandra")    # still follows the persona
+
+
+async def test_an_untouched_older_form_for_the_same_handle_is_not_a_choice(world, root):
+    lc, _host = make_lifecycle(world, root)
+    await lc.post_offer("finance", OLD)                      # the form says "Alex"
+    world.configs["finance"] = specialist("Alexa")
+    await lc.post_offer("finance", OLD)                      # same handle, says "Alexa"
+    lc2, _host2 = await _restart(world, root)
+    await lc2.on_created(created(ALEX_BOT, "Alex", OLD), OPERATOR)   # the first card
+    world.configs["finance"] = specialist("Alexandra")
+    await lc2.on_persona("finance")
+    assert _names(world)[-1] == (ALEX_TOKEN, "Alexandra")    # still follows the persona
+
+
+async def test_a_name_telegram_trims_is_still_the_untouched_one(world, root):
+    lc, _host = make_lifecycle(world, root)
+    await lc.post_offer("finance", OLD)
+    await lc.on_created(created(ALEX_BOT, " Alex ", OLD), OPERATOR)
+    world.configs["finance"] = specialist("Alexa")
+    await lc.on_persona("finance")
+    assert _names(world)[-1] == (ALEX_TOKEN, "Alexa")
+
+
+async def test_a_move_back_keeps_the_names_earlier_forms_opened_with(world, root):
+    # an earlier Create card can still be submitted after the move back
+    lc, _host = await _moved_to_new(world, root)
+    world.taken_handles = {OLD, NEW}
+    before = list(lc.store.agents["finance"]["suggestion"]["prefills"])
+    assert before == ["Alex"]
+    await lc.replace("finance", OLD)
+    sugg = lc.store.agents["finance"]["suggestion"]
+    assert sugg["username"] == OLD and sugg["prefills"] == before
+
+
+async def test_a_long_name_telegram_cuts_at_a_space_is_still_the_untouched_one(world, root):
+    long_name = "A" * 63 + " B"
+    world.configs["finance"] = specialist(long_name)
+    lc, _host = make_lifecycle(world, root)
+    await lc.post_offer("finance", OLD)
+    await lc.on_created(created(ALEX_BOT, long_name.strip()[:64], OLD), OPERATOR)
+    world.configs["finance"] = specialist("Alexa")
+    await lc.on_persona("finance")
+    assert _names(world)[-1] == (ALEX_TOKEN, "Alexa")

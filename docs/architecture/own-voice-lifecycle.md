@@ -59,7 +59,7 @@ BotFather once; Casa never gates on `getMe.can_manage_bots`, which lags that swi
 
 **Binding: match or ask, one bot per agent.** A new bot binds to the waiting agent (one
 with no bot and no pending change) whose current suggested username it has, in any case;
-the display name is not compared, since self-setup sets it. A bot whose username is a
+the display name is not compared (see below). A bot whose username is a
 pending change's current suggestion starts that agent's switch instead (below). With no
 single match Casa asks in the resident's chat ("A new bot @… was just created. Which agent
 is it for?"), offering the waiting agents, then the agents whose pending change has no bot
@@ -133,8 +133,8 @@ deleted (Casa then forgets its record, so the handle is an ordinary one again) o
 the change meanwhile), and Casa asks for the restart as for a created bot; the switch binds
 it and its self-setup runs afresh.
 
-**The bot's name.** Mode `rename` stores the operator's chosen display name as the agent's
-suggestion name (1–64 characters, `setMyName`'s limit) — a suggestion name equal to the
+**The bot's name.** Mode `rename`, or a name typed over the current Create form's pre-filled one,
+stores the operator's chosen display name as the agent's suggestion name (1–64 characters, `setMyName`'s limit) — a suggestion name equal to the
 persona name recorded beside it counts as none, so an older offer's stored persona name
 follows the persona. Self-setup applies it, so a bound bot takes it at once with its own
 token, with no new bot and no restart, and a refused call is made again at the next boot;
