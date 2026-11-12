@@ -16,8 +16,9 @@ and a terminal method never raises (``asyncio.CancelledError`` aside): the
 ticker is always stopped and an outcome always established, so the caller
 can treat the result like any other delivery outcome. The terminal edit
 runs as the reply's own task: a caller cancelled while it waits (a turn torn
-down during a flood wait) lets the edit land, or spend its budget, before
-the cancellation goes on — the group is never left with the placeholder.
+down during a flood wait), once or repeatedly, lets the edit land, or spend
+its budget, before the cancellation goes on — the group is never left with
+the placeholder.
 
 Text length is Telegram's: 4096 UTF-16 units for the message. The source is
 cut before rendering — the renderer drops every entity of a text whose
@@ -223,19 +224,28 @@ class GuestReply:
         budget: the edit runs as the reply's own task, out of reach of a
         caller cancelled mid-wait (a turn torn down during a flood wait), so
         the caller can remove its binding knowing the group's message is
-        final."""
+        final. However often the caller is cancelled meanwhile, it keeps
+        waiting — the budget bounds the wait — and the cancellation goes on
+        once the edit is done. Only the edit's own task being cancelled (the
+        loop shutting down) ends the wait early."""
         if not self._done:
             self._done = True
             self._outcome = DeliveryOutcome.NOT_DELIVERED
             self._terminal_task = asyncio.get_running_loop().create_task(
                 self._deliver_terminal(text))
         task = self._terminal_task
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            if not task.done():
-                await asyncio.wait({task})
-            raise
+        interrupted: asyncio.CancelledError | None = None
+        while True:
+            try:
+                await asyncio.shield(task)
+                break
+            except asyncio.CancelledError as exc:
+                if task.done():
+                    raise
+                if interrupted is None:
+                    interrupted = exc
+        if interrupted is not None:
+            raise interrupted
         return self._outcome or DeliveryOutcome.NOT_DELIVERED
 
     async def _deliver_terminal(self, text: str) -> None:

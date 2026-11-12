@@ -399,6 +399,55 @@ async def test_turn_finished_cancelled_during_its_edit_still_lands_it():
     assert "d" not in ch._guest_replies
 
 
+async def test_turn_finished_cancelled_repeatedly_during_its_edit_still_lands_it():
+    """A second cancellation arriving while the first one waits for the edit
+    must not let the caller go early: however often it is cancelled, the
+    binding stays until the one edit has landed."""
+    bot = _SlowBot()
+    ch = _channel(bot)
+    reply, ctx = await _bound(ch, bot, key="d")
+    ctx["_turn_scope"] = NS(detached_ask=False)
+    teardown = asyncio.create_task(ch.turn_finished(ctx))
+    await _settle()
+    assert bot.in_flight == 1
+    for _ in range(3):
+        teardown.cancel()
+        await _settle()
+        assert not teardown.done() and "d" in ch._guest_replies
+    bot.answer()
+    with pytest.raises(asyncio.CancelledError):
+        await teardown
+    assert [e["text"] for e in bot.edits] == [DECLINE]
+    assert reply._terminal_task.done() and not reply._terminal_task.cancelled()
+    assert "d" not in ch._guest_replies
+
+
+@pytest.mark.parametrize("caller_cancelled_first", [False, True])
+async def test_a_cancelled_terminal_edit_lets_its_caller_go_at_once(
+        monkeypatch, caller_cancelled_first):
+    """The edit's own task cancelled (the loop's shutdown sweep cancels every
+    task) ends the wait: the caller leaves cancelled, at once, whether or not
+    it was itself cancelled before."""
+    waiting = asyncio.Event()
+
+    async def sleep(s):
+        waiting.set()
+        await asyncio.Event().wait()            # a flood wait that never ends
+    monkeypatch.setattr(guest_reply, "_sleep", sleep)
+    bot = _Bot(edits=[RetryAfter(30), None])
+    r = await _opened(bot)
+    caller = asyncio.create_task(r.finish(admitted("the answer")))
+    await asyncio.wait_for(waiting.wait(), timeout=5)
+    if caller_cancelled_first:
+        caller.cancel()
+        await _settle()
+        assert not caller.done()
+    r._terminal_task.cancel()
+    await _settle()
+    assert caller.done() and caller.cancelled()
+    assert [e["text"] for e in bot.edits] == ["the answer"]       # the rejected one only
+
+
 async def test_two_terminal_calls_at_once_make_one_edit_and_share_its_outcome():
     bot = _SlowBot()
     r = await _opened(bot)

@@ -138,6 +138,51 @@ async def test_a_turn_cancelled_during_a_flood_wait_still_lands_the_terminal_edi
     assert len(bot.edits) == 2
 
 
+async def test_a_turn_cancelled_twice_during_a_flood_wait_still_lands_the_terminal_edit(
+        tmp_path, monkeypatch):
+    """The dispatch is cancelled by the eviction and then once more while the
+    terminal edit still waits out its ``RetryAfter``: the second cancellation
+    must not release the binding early either. The edit lands exactly once,
+    the binding goes only after it, and a later teardown edits nothing."""
+    bot = _Bot(edits=[RetryAfter(30), None])
+    agent, ep, reply = await _summoned(tmp_path, bot)
+    waits: list[float] = []
+    waiting, release = asyncio.Event(), asyncio.Event()
+
+    async def sleep(s):
+        waits.append(s)
+        waiting.set()
+        await release.wait()
+    monkeypatch.setattr(guest_reply, "_sleep", sleep)
+
+    bus = MessageBus()
+    bus.register("finance", agent.handle_message)
+    bus.start_agent_loop("finance")
+    with patch.object(agent, "_process", AsyncMock(return_value="the answer")):
+        await bus.send(_turn())
+        await asyncio.wait_for(waiting.wait(), timeout=5)
+        [dispatch] = bus.dispatch_tasks_for("finance")
+        evicted = asyncio.create_task(bus.unregister_and_wait("finance"))
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert not evicted.done() and not dispatch.done()
+        dispatch.cancel()                                            # the second cancellation
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert not dispatch.done() and not evicted.done()
+        assert KEY in ep._guest_replies and len(bot.edits) == 1       # nothing landed yet
+        release.set()
+        await asyncio.wait_for(evicted, timeout=5)
+    assert dispatch.cancelled()
+    assert waits == [30.0]
+    assert [e["text"] for e in bot.edits] == ["the answer", "the answer"]
+    assert reply._terminal_task.done() and not reply._terminal_task.cancelled()
+    assert KEY not in ep._guest_replies
+    ctx = {**_turn().context, "_turn_scope": NS(detached_ask=False)}
+    await ep.turn_finished(ctx)                                       # nothing left to edit
+    assert len(bot.edits) == 2
+
+
 async def test_an_agent_exception_fails_the_reply_with_the_guest_error_line(tmp_path):
     bot = _Bot()
     agent, ep, reply = await _summoned(tmp_path, bot)
