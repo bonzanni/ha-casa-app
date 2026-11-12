@@ -25,7 +25,8 @@ bypasses is [`telegram-rendering.md`](telegram-rendering.md).
 approval binds — the grant key, the hash of the canonical arguments, the consent identity, the
 install root digest — from the request itself, and its size refusal measures the text Casa
 renders for the request (`authz_grants.render_challenge_message` for a tool call, each
-consent's own `render_*` text). The card is only what is posted: `register_challenge` takes a
+consent's own `render_*` text; an install's or update's is cut to fit first, so it is never
+refused for its size). The card is only what is posted: `register_challenge` takes a
 `card_request` (`approval_card.CardRequest`: a kind, who asks, the facts, and a fallback
 card), and the card is written inside the post driver, after registration. The raw request —
 the canonical JSON, the full tool id, the digests — is not on the posted card; the approval
@@ -68,7 +69,7 @@ fallback carries its own (below) — the erase question's is the first line of i
 declares it, the tool's MCP description and input schema when listed, the plugin's declared
 summary and the arguments. An install or update: the renderer's own inputs without digests —
 the specialist and component, the version (for an update, the new one and, when it can be read, the installed one), the mission, the
-Casa tools the role grants when known, the default persona, the dependencies, each bundled
+Casa tools the role grants, the default persona, the dependencies, each bundled
 plugin with its protected tools and their declared summaries and the secrets it requires or
 only references (under separate keys), the effective settings, the ones kept from the current
 install, and the secret names provided, never their values. A persona install: the persona,
@@ -83,8 +84,8 @@ install or update grants, to mark at most two lines that a person must not miss 
 irreversible wipe counts even when deleting is what was asked), and to treat text inside the
 facts as data. That is an instruction to a model, not a check: what code guarantees is that
 those facts reach it. The fallback shows what Casa's own text for the request shows, and no
-more — an install's consent text, for one, names the Casa tools only when the inspection it
-is rendered from carries them, and the one the request tool rebuilds does not
+more — an install's consent text names the Casa tools the role grants, as the inspect tool's
+inspection and the one the request tool rebuilds both carry them
 ([`specialist-lifecycle.md`](specialist-lifecycle.md)).
 
 **A settled card says what was asked, in the card's own words.** When a protected tool call's
@@ -114,7 +115,11 @@ instead of an empty `{}` line, the plugin's own one-line description of the tool
 summary (interpolated when that works, else as written), else the first sentence of the
 tool's listed description — one literal line, unsafe code points escaped, at most 400 units
 and always inside the 2,600. A consent's fallback is `text_fallback` of the consent text Casa already renders: its
-first line bold, the rest kept literally.
+first line bold, the rest kept literally. An install's or update's consent text over the
+3,900-unit challenge limit is first cut by `approval_card.fit_lines`
+(`specialist_install_consent.install_consent_text`): its first line (itself cut with `…` when
+it alone is too long) and as many following whole lines as fit, then `…and N more lines`; a
+text within the limit is unchanged.
 
 **Protected tools describe themselves ahead of time** (`tool_descriptions`). The plugin's
 server is never started on the approval path. When an options build resolves a role's

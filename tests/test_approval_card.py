@@ -3,7 +3,7 @@
 import json
 
 from approval_card import (
-    Card, CardLine, card_from_reply, render_card, shift_entities,
+    Card, CardLine, card_from_reply, fit_lines, render_card, shift_entities,
     text_fallback, tool_fallback,
 )
 from text_util import utf16_len
@@ -135,6 +135,36 @@ def test_tool_fallback_description_is_literal_and_within_budget():
 def test_tool_fallback_joins_a_scalar_list():
     card = tool_fallback(who="Ellen", plugin="gmail", args={"to": ["a@b.c", "d@e.f"]})
     assert [(l.label, l.value) for l in card.lines] == [("To", "a@b.c, d@e.f")]
+
+
+def test_fit_lines_keeps_a_text_within_the_limit_unchanged():
+    text = "🔐 Install x?\nMission: y\n\nDigests:\nroot"
+    assert fit_lines(text, utf16_len(text)) == text
+
+
+def test_fit_lines_keeps_whole_leading_lines_and_says_how_many_it_left_out():
+    text = "\n".join(["🔐 Install x?"] + [f"line {i:02d} " + "x" * 40 for i in range(100)])
+    fitted = fit_lines(text, 1000)
+    assert utf16_len(fitted) <= 1000
+    *kept, closing = fitted.split("\n")
+    assert kept == text.split("\n")[:len(kept)] and len(kept) > 1
+    assert closing == f"…and {101 - len(kept)} more lines"
+
+
+def test_fit_lines_cuts_a_first_line_that_alone_is_over_the_limit():
+    # A component id has no length cap, so an install's title can be longer
+    # than the whole card may be; astral characters count two units each.
+    text = "🔐 Install " + "😀" * 3000 + "\nMission: y"
+    fitted = fit_lines(text, 3900)
+    assert utf16_len(fitted) <= 3900
+    title, closing = fitted.split("\n")
+    assert title.startswith("🔐 Install 😀") and title.endswith("…")
+    assert closing == "…and 1 more line"
+
+
+def test_fit_lines_always_keeps_the_first_line():
+    text = "🔐 " + "t" * 50 + "\n" + "x" * 50
+    assert fit_lines(text, 75) == "🔐 " + "t" * 50 + "\n…and 1 more line"
 
 
 def test_tool_fallback_says_how_many_lines_it_left_out():

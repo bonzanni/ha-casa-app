@@ -39,7 +39,9 @@ a person would check, so the posted card need not list every setting. When it ca
 error, an unusable reply), the fallback is Casa's own consent text, which lists each effective setting with its
 value, marks the ones the request did not submit `(kept from the current settings)` and names
 the secrets provided, never their values (`specialist_install_consent.render_settings_lines`).
-Either way the approval binds the frozen values, not the card's wording. A newer request for
+A consent text over the challenge size limit is cut to its leading whole lines and a count of
+the ones left out, which can leave settings off the fallback card
+([`specialist-lifecycle.md`](specialist-lifecycle.md)). Either way the approval binds the frozen values, not the card's wording. A newer request for
 the same component replaces the record, and the older card is edited to say "Replaced by a
 newer request; nothing was installed." (or "updated"); a card still being written when that
 happens is never posted, and the older request is told `approval_superseded`. Deny and an

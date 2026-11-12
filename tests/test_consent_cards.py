@@ -507,8 +507,8 @@ async def _request_approval(governed, config):
 
 
 def _todays_body(governed, config):
-    """What the request tool registered before cards were model-written: the
-    consent text of the inspection rebuilt from the checked staged bytes."""
+    """The whole consent text of the inspection rebuilt from the checked
+    staged bytes, before any cut to the size limit."""
     import specialist_install
     from specialist_install_consent import render_install_consent_message
     r = governed.result
@@ -539,23 +539,25 @@ async def test_governed_install_request_carries_role_grants_and_tool_summaries(e
     assert plugin["protected_tools"] == [
         {"name": "danger_tool", "summary": "Deletes the deck {deck}"},
         {"name": "plain_tool", "summary": None}]
-    # What registration measures, and so what it accepts, is unchanged.
+    # #1543: the consent text, which registration measures and the fallback
+    # shows, names the Casa tools too.
     [reg] = governed.registered
     assert reg["challenge_text"] == _todays_body(governed, config)
-    assert "Casa tools:" not in reg["challenge_text"]
+    assert reg["challenge_text"].count("Casa tools: " + ", ".join(GRANTS) + "\n") == 1
     assert reg["card_request"].fallback == approval_card.text_fallback(reg["challenge_text"])
 
 
-async def test_unknown_grants_are_left_unsaid(env, governed, monkeypatch):
-    """When the card's extra facts cannot be read at all, the model is not
-    told the role grants nothing: the grants are simply not mentioned."""
+async def test_grants_are_told_when_the_extra_facts_cannot_be_read(env, governed,
+                                                                   monkeypatch):
+    """The grants come from the checked component itself, so the model is
+    told them even when the card's extra facts cannot be read at all."""
     def _fails(*a, **kw):
         raise OSError("staged tree gone")
     monkeypatch.setattr(tools, "_install_card_facts", _fails)
     out = await _request_approval(governed, {})
     assert out["approval"] == "requested", out
     [facts] = env.asked
-    assert "casa_tools_granted" not in facts
+    assert facts["casa_tools_granted"] == GRANTS
     # The plugin's tools still come from the checked receipt, by name.
     assert [t["name"] for t in facts["bundled_plugins"][0]["protected_tools"]] == [
         "danger_tool", "plain_tool"]
@@ -593,21 +595,28 @@ async def test_unreadable_plugin_manifest_lists_its_tools_by_name(env, governed,
                for r in caplog.records)
 
 
-async def test_near_limit_install_is_accepted_as_today(env, governed):
-    """A consent text of 3 890 UTF-16 units from a role that grants Casa
-    tools posts, as it did: the grants reach the model's facts, never the
-    text registration measures."""
+async def test_an_install_over_the_size_limit_is_asked_with_its_text_cut(env, governed):
+    """A consent text over the 3 900-unit limit is not refused (#1541): what
+    registration measures, and the fallback shows, is its leading whole lines
+    and how many were left out. The model is still told every fact."""
     base = utf16_len(_todays_body(governed, {"NOTE": "x"}))
-    config = {"NOTE": "x" * (1 + 3890 - base)}
+    config = {"NOTE": "x" * (1 + 3950 - base)}
     body = _todays_body(governed, config)
-    assert utf16_len(body) == 3890 and "Casa tools:" not in body
-    grants_line = "Casa tools: " + ", ".join(GRANTS) + "\n"
-    assert utf16_len(body) + utf16_len(grants_line) > 3900   # with them it would not fit
+    assert utf16_len(body) == 3950
     out = await _request_approval(governed, config)
     assert out["approval"] == "requested", out
-    assert [utf16_len(r["challenge_text"]) for r in governed.registered] == [3890]
+    [reg] = governed.registered
+    text = reg["challenge_text"]
+    assert utf16_len(text) <= 3900
+    *kept, closing = text.split("\n")
+    assert kept == body.split("\n")[:len(kept)]
+    assert kept[0].startswith("🔐 Install ")
+    assert ("Casa tools: " + ", ".join(GRANTS)) in kept
+    left = len(body.split("\n")) - len(kept)
+    assert left > 0 and closing == f"…and {left} more line{'' if left == 1 else 's'}"
+    assert reg["card_request"].fallback == approval_card.text_fallback(text)
     assert len(env.channel.posts) == 1
-    assert env.asked[0]["casa_tools_granted"] == GRANTS
+    assert env.asked[0]["settings"] == config
 
 
 async def test_upgrade_facts_carry_the_installed_version(monkeypatch, tmp_path):
@@ -621,7 +630,7 @@ async def test_upgrade_facts_carry_the_installed_version(monkeypatch, tmp_path):
         component=SimpleNamespace(role=SimpleNamespace(role={}), dependencies=()),
         receipt=SimpleNamespace(plugins=()))
     facts = tools._install_card_facts(checked, tmp_path, slug="mtg", mode="upgrade")
-    assert facts == {"role_grants": (), "from_version": "0.1.0", "protected_tools": {}}
+    assert facts == {"from_version": "0.1.0", "protected_tools": {}}
     monkeypatch.setattr(personality_binding, "InstanceDir",
                         lambda path: SimpleNamespace(active=lambda: None))
     assert "from_version" not in tools._install_card_facts(

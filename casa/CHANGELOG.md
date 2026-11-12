@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.364.4] - 2026-11-12
+
+### Fixed
+
+- When Casa writes the plain approval card for a specialist install or update itself (because the summary could not be written in time), the card now lists the Casa tools the specialist will be allowed to use (#1543).
+- A specialist that bundles many plugins can now be approved: when Casa's plain card for it would be too long for one Telegram message, the card shows its first part and says how many lines it left out, instead of not asking at all (#1541).
+
 ## [0.364.3] - 2026-11-12
 
 ### Fixed
