@@ -2,8 +2,9 @@
 
 A full app restart (``POST /addons/self/restart``) stops the whole container
 and starts a fresh one, so every container-start step runs again. The
-Supervisor answers the request first and stops the container a few seconds
-later.
+Supervisor answers only after the restart has stopped this container, so a
+caller sees an answer only when the request was refused, and the awaiting
+task must not be one Casa's own stop waits for.
 
 A leaf module: it imports nothing from the running Casa process, so the
 memory package can use it as well as ``tools``.

@@ -115,7 +115,11 @@ Each endpoint states the update types it wants on every `setWebhook` and `getUpd
 On Casa's bot a `managed_bot_created` service message is caught by its own handler, registered
 ahead of the non-text one (which would otherwise answer it as an unreadable message): from the
 operator in his chat it is handed to the own-chat lifecycle and is never a turn; anything else
-is logged and ignored. The `managed_bot` update is handed over the same way. An agent's own bot
+is logged and ignored. The `managed_bot` update is handed over the same way. Both run the
+lifecycle in a task the channel owns (`_lifecycle_task`), not in the handler's own: the
+lifecycle may ask for a restart, which the Supervisor answers only once Casa has stopped, and
+`Application.stop()` waits for its handler tasks; the channel's `stop()` cancels these first and
+waits for them only briefly. An agent's own bot
 queues every update through `_IntakeQueue`, which asks `own_voice.intake` before the update is
 queued: an update held or answered there reaches no handler; the lifecycle later replays held
 ones through `release_update`. On such a bot `/start` is an ordinary turn; the operator's first

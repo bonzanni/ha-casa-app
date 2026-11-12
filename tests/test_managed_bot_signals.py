@@ -17,6 +17,7 @@ the same second); the ids and names are made up.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
@@ -102,6 +103,12 @@ def _endpoint(*, casa: bool = True):
     return ch, bus
 
 
+async def _settle(ch) -> None:
+    """Let the lifecycle work the handler handed off run to its end."""
+    while ch._turn_tasks:
+        await asyncio.gather(*list(ch._turn_tasks))
+
+
 @pytest.fixture
 def lifecycle(monkeypatch):
     created, updated = AsyncMock(), AsyncMock()
@@ -117,6 +124,7 @@ def lifecycle(monkeypatch):
 async def test_the_creation_message_is_handed_to_the_lifecycle_and_is_never_a_turn(lifecycle):
     ch, bus = _endpoint()
     await ch._on_managed_bot_created(_created_update())
+    await _settle(ch)
     lifecycle.created.assert_awaited_once_with(
         CREATED["message"]["managed_bot_created"]["bot"], OPERATOR)
     lifecycle.updated.assert_not_awaited()
@@ -129,6 +137,7 @@ async def test_a_creation_message_not_from_the_operator_in_his_chat_is_ignored(
         lifecycle, sender, chat):
     ch, bus = _endpoint()
     await ch._on_managed_bot_created(_created_update(sender=sender, chat=chat))
+    await _settle(ch)
     lifecycle.created.assert_not_awaited()
     assert await _drain_bus(bus) == [] and ch._app.bot.sent == []
 
@@ -136,12 +145,14 @@ async def test_a_creation_message_not_from_the_operator_in_his_chat_is_ignored(
 async def test_a_creation_message_on_an_agents_own_bot_is_ignored(lifecycle):
     ch, _bus = _endpoint(casa=False)
     await ch._on_managed_bot_created(_created_update())
+    await _settle(ch)
     lifecycle.created.assert_not_awaited()
 
 
 async def test_a_managed_bot_update_alone_never_registers_a_bot(lifecycle):
     ch, bus = _endpoint()
     await ch._on_managed_bot_updated(_updated_update())
+    await _settle(ch)
     lifecycle.created.assert_not_awaited()
     lifecycle.updated.assert_awaited_once_with(UPDATED["managed_bot"]["bot"], OPERATOR)
     assert await _drain_bus(bus) == [] and ch._app.bot.sent == []
@@ -151,6 +162,7 @@ async def test_a_managed_bot_update_of_another_owner_is_passed_with_that_owner(l
     """The lifecycle ignores another owner's bot; the endpoint names the owner."""
     ch, _bus = _endpoint()
     await ch._on_managed_bot_updated(_updated_update(owner=555))
+    await _settle(ch)
     lifecycle.updated.assert_awaited_once_with(UPDATED["managed_bot"]["bot"], 555)
 
 
@@ -158,8 +170,39 @@ async def test_a_lifecycle_failure_is_logged_not_raised(lifecycle, caplog):
     lifecycle.created.side_effect = RuntimeError("boom")
     ch, bus = _endpoint()
     await ch._on_managed_bot_created(_created_update())
+    await _settle(ch)
     assert "registering a created bot failed" in caplog.text
     assert await _drain_bus(bus) == [] and ch._app.bot.sent == []
+
+
+@pytest.mark.parametrize("signal", ["created", "updated"])
+async def test_lifecycle_work_still_waiting_does_not_hold_the_handler_or_the_stop(
+        lifecycle, signal):
+    """A handle change's restart request is answered by the Supervisor only
+    once the container has stopped. PTB's ``Application.stop()`` waits for
+    the handler's own task, so the handler must return without waiting for
+    the lifecycle, and the channel's stop must end that work promptly."""
+    never = asyncio.Event()
+    started = asyncio.Event()
+    cancelled = []
+
+    async def _waits(*_a):
+        started.set()
+        try:
+            await never.wait()
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    getattr(lifecycle, signal).side_effect = _waits
+    ch, _bus = _endpoint()
+    handler = (ch._on_managed_bot_created(_created_update()) if signal == "created"
+               else ch._on_managed_bot_updated(_updated_update()))
+    await asyncio.wait_for(handler, timeout=1)
+    await asyncio.wait_for(started.wait(), timeout=1)
+    ch._app = None                      # no Application to tear down here
+    await asyncio.wait_for(ch.stop(), timeout=2)
+    assert cancelled == [True]
 
 
 # ---------------------------------------------------------------------------

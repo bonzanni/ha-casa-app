@@ -1676,10 +1676,9 @@ class TelegramChannel(Channel):
                         "the direct chat with Casa's bot")
             return
         import own_voice
-        try:
-            await own_voice.on_managed_bot_created(created.bot.to_dict(), user.id)
-        except Exception:  # noqa: BLE001 — the lifecycle retries from its own state
-            logger.exception("registering a created bot failed")
+        self._lifecycle_task(
+            own_voice.on_managed_bot_created(created.bot.to_dict(), user.id),
+            "registering a created bot failed")
 
     async def _on_managed_bot_updated(self, update: Any, _context: Any = None) -> None:
         """A bot Casa's bot manages was created, or its token or owner changed:
@@ -1689,11 +1688,30 @@ class TelegramChannel(Channel):
         if managed is None or not self.is_casa:
             return
         import own_voice
-        try:
-            await own_voice.on_managed_bot_updated(
-                managed.bot.to_dict(), managed.user.id)
-        except Exception:  # noqa: BLE001 — the lifecycle retries from its own state
-            logger.exception("a managed bot's update failed")
+        self._lifecycle_task(
+            own_voice.on_managed_bot_updated(managed.bot.to_dict(), managed.user.id),
+            "a managed bot's update failed")
+
+    def _lifecycle_task(self, coro: Any, failure: str) -> None:
+        """Run a managed-bot signal's lifecycle work in a task this channel
+        owns, not in the PTB handler's own task.
+
+        The work can end in a restart request for a handle change, and the
+        Supervisor answers that request only once the container has stopped.
+        ``Application.stop()`` waits for every handler task it started, so a
+        handler still awaiting that answer held the stop until the app's stop
+        timeout killed the container. ``stop()`` cancels these tasks first and
+        waits for them only briefly; a cancelled step resumes from the
+        lifecycle's stored state at the next boot."""
+        async def _run() -> None:
+            try:
+                await coro
+            except Exception:  # noqa: BLE001 — the lifecycle retries from its own state
+                logger.exception(failure)
+
+        task = asyncio.create_task(_run())
+        self._turn_tasks.add(task)
+        task.add_done_callback(self._turn_tasks.discard)
 
     async def _own_intake(self, update: Any) -> bool:
         """Offer one update that reached this agent's own bot to its chat's
