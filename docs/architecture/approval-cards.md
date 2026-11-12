@@ -99,8 +99,10 @@ the next 5 minutes.`, `❌ Denied — {who} won't {action}.`, and for a retireme
 no action, so its lines say "this request" (`✅ Approved — {who} can go ahead with this request
 once, in the next 5 minutes.`). An approval whose continuation cannot be delivered reads
 `⚠️ Approved, but {who} couldn't be reached to do it — say "retry" in this chat.`, or for an
-engagement-bound grant `… — ask again.`, where `{who}` is, for a delegated call, the resident
-the decision goes back to. No such line names the tool, its id or an engagement id.
+engagement-bound grant `… — ask again.`; a denial whose notice cannot be delivered reads
+`⚠️ Denied — {who} couldn't be told; nothing will run.` In both, `{who}` is, for a delegated
+call, the resident the decision goes back to. No such line names the tool, its id or an
+engagement id.
 
 **Every failure ends in Casa's own card.** A timeout, a backend error, a refusal and two
 invalid replies all return the request's fallback, and `write_card` never raises. A tool

@@ -1530,7 +1530,7 @@ class TestAuthzFinishHook:
         await _settle()
 
         last = channel.edits[-1][2].lower()
-        assert "failed" in last
+        assert "couldn't be told" in last
 
     async def test_no_answer_edits_expired(self, monkeypatch):
         """#933: drove `cancel(reason="timeout")` and so never reached
@@ -1679,8 +1679,7 @@ class TestAuthzFinishHook:
         _tap(broker, ch, 1)
         await _settle()
         assert channel.edits[-1][2] == (
-            "⚠️ Denied, but delivery to finance-full failed — "
-            "say 'retry' in chat"
+            "⚠️ Denied — finance-full couldn't be told; nothing will run."
         )
 
     async def test_delegated_delivery_failure_names_originating_resident(
@@ -1810,6 +1809,38 @@ class TestAuthzFinishHook:
             'say "retry" in this chat.',
         ]
 
+    async def test_an_undelivered_denial_names_the_agent(self, monkeypatch):
+        broker, coord, channel, ch = await self._model_card_challenge(
+            monkeypatch)
+        channel.dispatch_result = False
+        _tap(broker, ch, 1)
+        await _settle()
+        assert [e[2] for e in channel.edits] == [
+            "❌ Denied — Ellen won't send an email to anna@example.com.",
+            "⚠️ Denied — Ellen couldn't be told; nothing will run.",
+        ]
+        assert channel.edit_literals == [True, True]
+
+    async def test_a_delegated_undelivered_denial_names_the_resident(
+        self, monkeypatch,
+    ):
+        import tools
+        monkeypatch.setattr(
+            tools, "_display_name_for_role",
+            lambda role: {"assistant": "Ellen"}.get(role, role))
+        broker, coord, channel = _fresh_env(monkeypatch)
+        channel.dispatch_result = False
+        key, handle = _create(
+            coord, channel, enforcement_role="finance",
+            target_role="assistant", display_name="Alex",
+        )
+        await handle.settled_post()
+        _tap(broker, coord._entries[key], 1)
+        await _settle()
+        assert channel.edits[-1][2] == (
+            "⚠️ Denied — Ellen couldn't be told; nothing will run.")
+        assert "Alex" not in channel.edits[-1][2]
+
     async def test_an_undelivered_engagement_approval_says_ask_again(
         self, monkeypatch,
     ):
@@ -1827,7 +1858,7 @@ class TestAuthzFinishHook:
 
     @pytest.mark.parametrize("scenario", [
         "approve", "deny", "withdraw", "expire", "new_session",
-        "approve_undelivered",
+        "approve_undelivered", "deny_undelivered",
     ])
     @pytest.mark.parametrize("model_card", [True, False])
     async def test_no_settled_line_names_the_tool(
@@ -1843,11 +1874,11 @@ class TestAuthzFinishHook:
                                   target_role="assistant")
             assert await handle.settled_post() == "posted"
             ch = coord._entries[key]
-        if scenario == "approve_undelivered":
+        if scenario.endswith("_undelivered"):
             channel.dispatch_result = False
         if scenario.startswith("approve"):
             _tap(broker, ch, 0)
-        elif scenario == "deny":
+        elif scenario.startswith("deny"):
             _tap(broker, ch, 1)
         elif scenario == "withdraw":
             assert coord.cancel_matching(role="assistant") == 1

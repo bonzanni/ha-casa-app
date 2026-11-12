@@ -1197,8 +1197,10 @@ class ChallengeCoordinator:
                     f"from the operator for {tool_name} is a new request: make "
                     "or delegate the call and follow Casa's authorization "
                     "result.",
-                    f"⚠️ Denied, but delivery to {_target_desc} "
-                    "failed — say 'retry' in chat",
+                    # The denial stands; only the agent's notice of it
+                    # failed, so nothing runs either way.
+                    f"⚠️ Denied — {_reached()} couldn't be told; nothing will "
+                    "run.",
                 )
 
         return _finish
