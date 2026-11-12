@@ -94,7 +94,7 @@ exist yet ("Alex keeps @old."). A created bot whose username is exactly that cha
 current suggestion turns it, under the registry lock, into a **pending switch**: the bot is
 recorded in phase `switching` and is never bound in this process; its endpoint holds what
 it receives and says once that the chat is being set up. Casa edits the card ("Alex is
-moving to @new — Casa restarts for a moment.") and asks the Supervisor for a restart
+moving to @new and says hi there in a moment.", which never mentions the restart) and asks the Supervisor for a restart
 (`supervisor_restart`), which answers only once Casa has stopped, so nothing Casa's stop
 waits for may be awaiting it. At boot `casa_core._apply_own_chat_switches`
 (→ `Lifecycle.apply_switches`) runs once the durable stores and the tools are loaded and
@@ -161,7 +161,9 @@ message's `on_delivery`, which the agent calls once a delivery landed, marks it
 the operator never pressed Start) is one info line in `TelegramChannel.send_response`, and
 the chat stays unopened; the agent's session keeps the unsent greeting. A greeting turn the
 agent answers with silence opens nothing either: the agent's acknowledgement of a chosen
-silence skips a `chat_opening` turn.
+silence skips a `chat_opening` turn. Meanwhile its surfaces may post
+([`own-voice.md`](own-voice.md)); a completed binding leaves the resident a memory line
+([`memory-capture.md`](memory-capture.md)).
 
 Otherwise the chat counts as **open** from the operator's first turn there that its agent's
 queue accepts, whatever it says (a held one released counts). Whether an operator's turn

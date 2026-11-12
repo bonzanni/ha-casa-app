@@ -65,12 +65,13 @@ def endpoint_for(role: str) -> "TelegramChannel | None":
 def require_open_chat(role: str, *, label: str) -> "Refusal | None":
     """``None`` when a surface of *role* may post now, else the refusal.
 
-    Only an open chat admits a surface. The resident's chat is Casa's own
-    and always open; every other agent without a chat of its own has no
-    surface at all."""
+    Only an open chat admits a surface, and one whose agent's greeting is on
+    its way: the chat opens with that greeting, and the agent was told the
+    operator opened it. The resident's chat is Casa's own and always open;
+    every other agent without a chat of its own has no surface at all."""
     lc = _lifecycle()
     state = lc.state(role)
-    if state == "open":
+    if state == "open" or (state == "not_open" and lc.greeting_on_its_way(role)):
         return None
     resident = lc._resident()
     if state == "not_declared":
@@ -113,6 +114,20 @@ def chat_opening(bot_id: int) -> bool:
     """Whether a turn delivered on own bot *bot_id* now is the one that opens
     its agent's chat (the chat has not opened yet)."""
     return _lifecycle().chat_opening(bot_id)
+
+
+def greeting_started(bot_id: int) -> None:
+    """The agent of own bot *bot_id* is about to say hello by itself."""
+    _lifecycle().greeting_started(bot_id)
+
+
+def greeting_ended(bot_id: int) -> None:
+    """That greeting reached the operator, or will not. Creates no
+    lifecycle: without one, nothing was on its way."""
+    import own_voice_lifecycle
+    lc = own_voice_lifecycle._CURRENT
+    if lc is not None:
+        lc.greeting_ended(bot_id)
 
 
 async def mark_open(bot_id: int) -> None:

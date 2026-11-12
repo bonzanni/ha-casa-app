@@ -70,6 +70,7 @@ class World:
     op_delete_fails: bool = False                     # `op item delete` exits non-zero
     greetings: list = field(default_factory=list)     # (bot_id, opening) each greeting turn
     greeting_lands: bool = False                      # Telegram takes a bot's first word
+    memory: list = field(default_factory=list)        # (role, text) Casa's lines in memory
 
     def tick(self, what: str) -> None:
         self.effects.append(what)
@@ -254,6 +255,9 @@ class FakeHost:
         self.w.next_mid += 1
         self.w.cards[mid] = (text, list(buttons))
         return TgAddress(CASA_BOT, OPERATOR, mid)
+
+    async def remember(self, role, text):
+        self.w.memory.append((role, text))
 
     async def post_card(self, text, buttons):
         if self.w.fail_post or not self.w.manager_ok:

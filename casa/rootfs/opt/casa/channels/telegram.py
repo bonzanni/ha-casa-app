@@ -1226,6 +1226,13 @@ class TelegramChannel(Channel):
         self._typing_loops.clear()
         self._typing_leases.clear()
 
+        # A greeting still on its way will not arrive from this endpoint.
+        if self._greeting_timer is not None:
+            self._greeting_timer.cancel()
+            self._greeting_timer = None
+            import own_voice
+            own_voice.greeting_ended(self.bot_id)
+
         # M9: cancel any in-flight engagement-turn delivery tasks.
         for task in list(self._turn_tasks):
             task.cancel()
@@ -1835,7 +1842,11 @@ class TelegramChannel(Channel):
                          "synthetic": "chat_opening", "_tg_bot": bot_id,
                          "_chat_opening": "moved" if moved else True},
                 on_delivery=_delivered)
+            # Its surfaces may post during the greeting: the chat opens with it.
+            own_voice.greeting_started(bot_id)
             taken = await self._bus.send_checked(msg) == "accepted"
+            if not taken:
+                own_voice.greeting_ended(bot_id)
             if taken:
                 # The greeting answers the operator's Start: one pressed while
                 # it is on its way adds no turn of its own (see _handle_serialized).
@@ -1853,6 +1864,8 @@ class TelegramChannel(Channel):
         if self._greeting_timer is not None:
             self._greeting_timer.cancel()
             self._greeting_timer = None
+        import own_voice
+        own_voice.greeting_ended(self.bot_id)
         held, self._held_start = self._held_start, None
         if held is not None and not delivered:
             self._start_replay = asyncio.get_running_loop().create_task(
@@ -5499,10 +5512,11 @@ class TelegramChannel(Channel):
             # Release the lease before the availability guard (reconnect-safe).
             target_chat = _resolve_chat_id(context, self.chat_id)
             self._release_typing(context, target_chat)
-            if _unadmitted("send_response", message):
-                return DeliveryOutcome.NOT_DELIVERED
-            if self._app is None:
-                logger.warning("Telegram channel not started; cannot send message")
+            if _unadmitted("send_response", message) or self._app is None:
+                if self._app is None:
+                    logger.warning("Telegram channel not started; cannot send message")
+                if context.get("synthetic") == "chat_opening":
+                    self._end_greeting(delivered=False)   # it will not arrive
                 return DeliveryOutcome.NOT_DELIVERED
             pages = render_paged(message)
             # A task post's context carries the post record its pages are filed

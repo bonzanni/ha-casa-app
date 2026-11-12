@@ -16,6 +16,7 @@ DQ, DA = Source.DELEGATED_REQUEST, Source.DELEGATED_ANSWER
 ET, EA = Source.ENGAGEMENT_TURN, Source.ENGAGEMENT_ANSWER
 SP = Source.SPECIALIST_POST
 TM = Source.JOB_REPLY
+OC = Source.OWN_CHAT_LINE
 
 MATRIX = [
     # source, channel, facts, admitting rule
@@ -69,6 +70,8 @@ MATRIX = [
      {"role_writes_memory": False, "text": " "}, None),
     ("job reply on voice", TM, "voice", {"role_writes_memory": False},
      None),
+    ("own-chat line", OC, "telegram", {}, "own_chat_line"),
+    ("blank own-chat line", OC, "telegram", {"text": " "}, None),
 ]
 
 

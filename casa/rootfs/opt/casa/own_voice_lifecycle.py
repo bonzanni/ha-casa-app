@@ -568,6 +568,8 @@ class Lifecycle:
         self._reconciled: set[int] = set()
         self._told_setup: set[int] = set()
         self._live_asks: set[str] = set()
+        #: Bots whose agent's greeting is on its way (in memory only).
+        self._greeting: set[int] = set()
         self._retry_tasks: dict[int, asyncio.Task] = {}
         self._attempts: dict[int, int] = {}
         self._tasks: set[asyncio.Task] = set()
@@ -629,6 +631,18 @@ class Lifecycle:
         if phase != BOUND:
             return "no_bot"
         return "open" if self.store.agents[role].get("chat_open_at") else "not_open"
+
+    def greeting_started(self, bot_id: int) -> None:
+        self._greeting.add(bot_id)
+
+    def greeting_ended(self, bot_id: int) -> None:
+        self._greeting.discard(bot_id)
+
+    def greeting_on_its_way(self, role: str) -> bool:
+        """Whether *role*'s agent is saying hello in its chat right now: the
+        chat opens with that hello, so its surfaces may already post."""
+        found = self.store.bot_of(role)
+        return bool(found) and found[0] in self._greeting
 
     def is_recovering(self, role: str) -> bool:
         found = self.store.bot_of(role)
@@ -789,6 +803,16 @@ class Lifecycle:
             await self.host.edit_card(TgAddress.from_json(addr_json), text, buttons or [])
         except Exception:  # noqa: BLE001 — a card edit is best effort
             logger.warning("own chats: card edit failed", exc_info=True)
+
+    async def _remember(self, role: str, text: str) -> None:
+        """Casa's one line in the resident's memory for how a change of
+        *role*'s chat turned out: the resident started it, but the cards and
+        the operator's taps that finish it are not its turns."""
+        try:
+            await self.host.remember(role, text)
+        except Exception:  # noqa: BLE001 — a memory line never fails the lifecycle
+            logger.warning("own chat %s: the memory line was not captured", role,
+                           exc_info=True)
 
     async def _post(self, text: str, buttons: list[tuple[str, str]]) -> "TgAddress | None":
         try:
@@ -1459,6 +1483,13 @@ class Lifecycle:
         self._reconciled.add(bot_id)
         await self._release_locked(bot_id)
         await self._card_bound(role)
+        # Before the phase is saved: a crash in between repeats the line at
+        # the next boot rather than losing it.
+        moved_from = (self.store.agents.get(role) or {}).get("moved_from")
+        label = self._label(role)
+        await self._remember(role, f"{label}'s chat moved from @{moved_from} to "
+                                   f"@{rec['username']}." if moved_from else
+                                   f"{label}'s chat is set up: @{rec['username']}.")
         rec["phase"] = BOUND
         await self.store.save()
         self._speak_first(bot_id)
@@ -1697,11 +1728,14 @@ class Lifecycle:
             agent = self.store.agents.get(role) or {}
             change = agent.get("change") or {}
             new = (self.store.bots.get(change.get("new_bot")) or {}).get("username") or ""
+            old = change.get("old_username", "")
             await self._edit(
                 agent.get("offer_card"),
                 f"{self._label(role)} still had something open in "
-                f"@{change.get('old_username', '')}, so the move to @{new} waits. "
+                f"@{old}, so the move to @{new} waits. "
                 f"Ask {self._resident()} again once it's done.")
+            await self._remember(role, f"{self._label(role)}'s move from @{old} to @{new} "
+                                       f"waits: something is still open in @{old}.")
         self._switch_held.clear()
         for bot_id in sorted(self.store.bots):
             async with self._lock(bot_id):
@@ -1924,7 +1958,7 @@ class Lifecycle:
         new_rec = self.store.bots.get(agent["change"]["new_bot"]) or {}
         new = new_rec.get("username") or new
         await self._edit(agent.get("offer_card"),
-                         f"{label} is moving to @{new} — Casa restarts for a moment.")
+                         f"{label} is moving to @{new} and says hi there in a moment.")
         if await self._request_restart(role):
             return {"status": "restarting", "new": f"@{new}"}
         await self._edit(agent.get("offer_card"),
@@ -2181,6 +2215,25 @@ class TelegramHost:
         if ep is None:
             return "no_target"
         return await ep.release_update(update)
+
+    # -- the resident's memory --------------------------------------------
+
+    async def remember(self, role: str, text: str) -> None:
+        """Capture *text*, Casa's line about *role*'s chat, as an event in the
+        resident's memory: speaker ``casa``, origin ``system``, *role* as its
+        speaker id, a ``private`` floor."""
+        from channel_policy import writes_to_bank
+        from memory import capture, eligibility
+        rule = eligibility.admit(eligibility.Source.OWN_CHAT_LINE, text=text,
+                                 channel_writes=writes_to_bank("telegram"))
+        if rule is None:
+            return
+        # Detached, like Casa's line for a specialist's post: it belongs to no
+        # turn's run.
+        capture.record_detached(capture.event(
+            role=self.resident_role(), channel="telegram", speaker_kind="casa",
+            origin_kind="system", text=text, eligibility=rule,
+            origin_tier="private", speaker_id=role))
 
     # -- cards in the resident's chat (Casa's own cards) ------------------
 
