@@ -46,21 +46,22 @@ that remain are among the facts the approval card is written from. The request t
 them from the staged role (`specialist_install.role_tool_grants`) and hands them to the card's
 model as `casa_tools_granted`, with each bundled plugin's protected tools and the summaries
 its staged manifest declares; the model is told to keep every granted power on the card
-([`approval-cards.md`](approval-cards.md)). That is an instruction, not a check, and the
-card's fallback does not carry them: the consent text below lists `Casa tools:` only when
-the inspection it renders carries grants, and the inspection the request tool rebuilds from
-the checked receipt does not. When those extra facts cannot be read, the grants are left out
-of the facts rather than reported as none. Two further layers back the ceiling
+([`approval-cards.md`](approval-cards.md)). That is an instruction, not a check; the card's
+fallback carries them too, as the consent text below lists `Casa tools:` from the inspection
+the request tool rebuilds from the checked staged component (`tools._inspection_from_checked`),
+just as the inspect tool's own inspection does. Two further layers back the ceiling
 at load and at dispatch (INV-MCP-009), for installs that predate it.
 
 **The consent text reads in the order the operator decides by**
-(`specialist_install_consent.render_install_consent_message`). It is what registration
-measures against the size limit, and the approval card's fallback, kept literally with its
+(`specialist_install_consent.render_install_consent_message`). Cut to fit the challenge size
+limit when it is over it (`specialist_install_consent.install_consent_text`: its leading whole
+lines, then how many were left out), it is what registration measures, so a bundle of any size
+is asked about rather than refused, and the approval card's fallback, kept literally with its
 first line bold; the card the operator normally reads is written by a model from the same
 inputs, digests left out (`specialist_install_consent.install_card_request`). Its first line
 asks the question — install which component at which version as which specialist, or update
 which specialist to which version — and the mission follows; then what the specialist comes
-with (its `Casa tools:` when the inspection carries them, its persona, its dependencies and,
+with (its `Casa tools:` when the role grants any, its persona, its dependencies and,
 per bundled plugin, its manifest name, version, source, MCP servers, protected tools and the
 secrets it requires or only references); then the action line; and the digests last. The
 root digest the approval binds is shown whole; the component, dependency and plugin-content

@@ -200,6 +200,32 @@ def text_fallback(body: str) -> Card:
     return Card(title=first, body=newline + rest)
 
 
+def fit_lines(text: str, max_units: int) -> str:
+    """*text* unchanged when it is within *max_units* UTF-16 units; else its
+    first line and as many of the following whole lines as fit, closed by a
+    line saying how many were left out. The first line is always kept, itself
+    cut with "…" when it alone does not fit."""
+    if utf16_len(text) <= max_units:
+        return text
+    lines = text.split("\n")
+    # Sized for the most lines that can be left out, so the closing line fits
+    # whatever the count turns out to be.
+    room = max_units - utf16_len(f"\n…and {len(lines) - 1} more lines")
+    first = lines[0]
+    if utf16_len(first) > room:
+        first = first[:utf16_prefix_end(first, 0, max(room - 1, 0))] + "…"
+    kept = [first]
+    used = utf16_len(first)
+    for line in lines[1:]:
+        cost = 1 + utf16_len(line)
+        if used + cost > room:
+            break
+        kept.append(line)
+        used += cost
+    left = len(lines) - len(kept)
+    return "\n".join(kept) + f"\n…and {left} more line{'' if left == 1 else 's'}"
+
+
 # --- tool fallback -----------------------------------------------------------
 
 def _is_scalar(value: object) -> bool:

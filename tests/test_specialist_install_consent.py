@@ -511,3 +511,34 @@ async def test_an_upgrade_card_is_worded_as_an_update(env):
     _tap(env, 1)
     await _settle()
     assert env.channel.edits[-1][2] == "❌ Denied — 'mtg' was not updated"
+
+
+def _plugin_row(i: int):
+    from specialist_receipt import PluginReceiptRow
+    return PluginReceiptRow(
+        identifier=f"plugin-{i:02d}", scoped_name=f"mtg.plugin-{i:02d}",
+        manifest_name=f"plugin-{i:02d}", version="1.0.0", source_type="bundled",
+        repo="", ref="", revision="", subdir=f"plugins/plugin-{i:02d}",
+        content_digest="sha256:" + "3" * 64, staged_path="",
+        mcp_servers=(f"server-{i:02d}",),
+        protected_tools=tuple(f"tool_{i:02d}_{j}" for j in range(4)),
+        env_names=(f"PLUGIN_{i:02d}_TOKEN",), exempt_env_names=(f"PLUGIN_{i:02d}_URL",))
+
+
+async def test_a_bundle_too_large_for_one_message_is_still_asked(env):
+    """#1541: thirty bundled plugins render a consent text far over the size
+    limit. The card is posted with the text cut to fit, not refused, and an
+    Approve still binds the record's identity."""
+    from text_util import utf16_len
+    inspection = _inspection(plugin_resolutions=tuple(_plugin_row(i) for i in range(30)))
+    assert utf16_len(render_install_consent_message(inspection, values=VALUES)) > 3900
+    record, _outcome, _ = await _request(inspection=inspection)
+    handle = _prompt(env, record, inspection=inspection)
+    assert handle.refused is None
+    assert await handle.settled_post() == "posted"
+    [(_chat, _rid, text, _options)] = env.channel.posts
+    assert utf16_len(text) <= 3900
+    assert text.startswith("🔐 Install casa-test/mtg@0.1.0 as specialist:mtg?\n")
+    assert text.rsplit("\n", 1)[1].startswith("…and ")
+    assert _tap(env, 0) is None
+    assert env.acks.is_acked(record.consent_identity) is True

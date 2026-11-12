@@ -398,33 +398,42 @@ def render_install_consent_message(inspection: Any, *, mode: str = "install",
     ])
 
 
+def install_consent_text(inspection: Any, *, mode: str = "install",
+                         values: "dict | None" = None, submitted_config: Any = None) -> str:
+    """The consent text an install or update card falls back to, and what its
+    registration measures: :func:`render_install_consent_message`, cut to its
+    leading whole lines when it is over the challenge size limit (#1541), so a
+    large bundle is still asked about rather than refused. A text within the
+    limit is the rendered message unchanged."""
+    import approval_card
+    from authz_grants import _CHALLENGE_MAX_CHARS
+    return approval_card.fit_lines(
+        render_install_consent_message(
+            inspection, mode=mode, values=values, submitted_config=submitted_config),
+        _CHALLENGE_MAX_CHARS)
+
+
 def install_card_request(
     inspection: Any, *, mode: str = "install", values: "dict | None" = None,
     submitted_config: Any = None, requester_name: str = "Casa",
-    role_grants: "tuple[str, ...] | None" = None, from_version: str = "",
+    from_version: str = "",
     protected_tools: "dict[str, list[dict]] | None" = None,
 ) -> Any:
     """The approval card asked for installing or updating *inspection*: the
     facts a model writes it from, and, as the fallback, the consent text
-    :func:`render_install_consent_message` renders, kept literally. Display
-    only — the approval stays bound to the record's consent identity.
+    (:func:`install_consent_text`), kept literally. Display only — the
+    approval stays bound to the record's consent identity.
 
     The facts are the renderer's own inputs, digests left out, plus what the
-    caller knows beyond them: *role_grants* (the Casa tools the role grants,
-    when the inspection does not carry them; with neither, the facts do not
-    mention grants), *from_version* (the installed
-    version an update replaces) and *protected_tools* (per bundled plugin's
-    scoped name, its protected tools as ``{"name", "summary"}`` from the
-    plugin's manifest; a plugin missing from it is listed by tool name)."""
+    caller knows beyond them: *from_version* (the installed version an update
+    replaces) and *protected_tools* (per bundled plugin's scoped name, its
+    protected tools as ``{"name", "summary"}`` from the plugin's manifest; a
+    plugin missing from it is listed by tool name)."""
     import approval_card
 
-    text = render_install_consent_message(
+    text = install_consent_text(
         inspection, mode=mode, values=values, submitted_config=submitted_config)
-    # Grants the caller did not pass are known only when the inspection
-    # carries some; an empty tuple there may just mean nobody read them, so
-    # the key is then left out rather than claiming "none".
-    grants = role_grants if role_grants is not None else (
-        getattr(inspection, "role_tool_grants", ()) or None)
+    grants = getattr(inspection, "role_tool_grants", ()) or ()
     facts: dict = {"requested_by": requester_name,
                    "request": "update" if mode == "upgrade" else "install",
                    "specialist": inspection.slug,
@@ -437,7 +446,7 @@ def install_card_request(
         facts["version"] = inspection.version
     facts.update({
         "mission": inspection.mission,
-        **({"casa_tools_granted": list(grants)} if grants is not None else {}),
+        "casa_tools_granted": list(grants),
         "default_persona": inspection.default_persona_ref,
         "dependencies": [f"{d.kind}:{d.identifier}" for d in inspection.dependencies],
         "bundled_plugins": [
@@ -661,7 +670,6 @@ def prompt_specialist_install_consent(
     acks: "SpecialistInstallAckStore | None" = None,
     requester: str = "",
     requester_name: str = "Casa",
-    role_grants: "tuple[str, ...] | None" = None,
     from_version: str = "",
     protected_tools: "dict[str, list[dict]] | None" = None,
 ) -> Any:
@@ -677,8 +685,9 @@ def prompt_specialist_install_consent(
     identity of *inspection_facts* with the record's values.
 
     The card is written for the operator by a model (:func:`install_card_request`),
-    titled for *requester_name*, the agent whose turn asked; *role_grants*,
-    *from_version* and *protected_tools* only add to what it is told.
+    titled for *requester_name*, the agent whose turn asked; *from_version*
+    and *protected_tools* only add to what it is told. A consent text over the
+    size limit is cut to fit (:func:`install_consent_text`), never refused.
     *requester* is the asking run's id, which keeps its card apart."""
     inspection = inspection_facts
     mode = "upgrade" if record.kind == "specialist_upgrade" else "install"
@@ -700,9 +709,9 @@ def prompt_specialist_install_consent(
         requester=requester, approval_rid=record.rid)
     card_request = install_card_request(
         inspection, mode=mode, values=record.values, submitted_config=submitted_config,
-        requester_name=requester_name, role_grants=role_grants, from_version=from_version,
+        requester_name=requester_name, from_version=from_version,
         protected_tools=protected_tools)
-    text = render_install_consent_message(
+    text = install_consent_text(
         inspection, mode=mode, values=record.values, submitted_config=submitted_config)
     noun = "update" if mode == "upgrade" else "install"
 

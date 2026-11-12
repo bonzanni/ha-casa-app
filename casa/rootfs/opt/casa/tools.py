@@ -14986,17 +14986,16 @@ def _requester_name(origin: dict) -> str:
 
 def _install_card_facts(checked: Any, staged_dir: Path, *, slug: str, mode: str) -> dict:
     """What an install or update card is told beyond the inspection the
-    governed tools work on: the Casa tools the role grants, the installed
-    version an update replaces, and each bundled plugin's protected tools with
-    the summaries its staged manifest declares. Presentation only: none of it
-    reaches the consent text, the receipt or the approval's identity. A read;
-    whatever cannot be read is left out (a plugin's tools then by name only)."""
+    governed tools work on: the installed version an update replaces, and each
+    bundled plugin's protected tools with the summaries its staged manifest
+    declares. Presentation only: none of it reaches the consent text, the
+    receipt or the approval's identity. A read; whatever cannot be read is left
+    out (a plugin's tools then by name only)."""
     import plugin_store
     from personality_binding import InstanceDir
-    from specialist_install import (parse_component_root, role_tool_grants,
-                                    sourced_plugin_tree)
+    from specialist_install import parse_component_root, sourced_plugin_tree
     component = checked.component
-    out: dict = {"role_grants": role_tool_grants(component)}
+    out: dict = {}
     if mode == "upgrade":
         try:
             active = InstanceDir(_SPECIALISTS_DIR / slug).active()
@@ -15036,8 +15035,9 @@ _SPECIALISTS_DIR = Path("/config/specialists")
 def _inspection_from_checked(checked: Any, staged_dir: Path) -> Any:
     """The inspection the governed tools work on, rebuilt from the staged bytes
     and the trusted receipt a resume check validated — never from the
-    caller's arguments."""
-    from specialist_install import InspectionResult
+    caller's arguments. It carries the Casa tools the role grants, so the
+    consent text names them as the inspect tool's does."""
+    from specialist_install import InspectionResult, role_tool_grants
     receipt, component = checked.receipt, checked.component
     return InspectionResult(
         component_id=component.component_id, version=component.version, slug=component.slug,
@@ -15047,7 +15047,8 @@ def _inspection_from_checked(checked: Any, staged_dir: Path) -> Any:
         default_persona_checksum=component.default_persona_checksum,
         required_config_names=(), required_secret_names=(), dependencies=checked.dependencies,
         staged_dir=staged_dir, receipt_id=receipt.receipt_id,
-        receipt_digest=receipt.receipt_digest, plugin_resolutions=receipt.plugins)
+        receipt_digest=receipt.receipt_digest, plugin_resolutions=receipt.plugins,
+        role_tool_grants=role_tool_grants(component))
 
 
 def _run_approval() -> "dict | None":
