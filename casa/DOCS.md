@@ -316,7 +316,7 @@ retires their secrets (re-approval mints fresh ones).
 **Plugin trigger replies (0.333.0).** A webhook turn's reply goes nowhere
 unless the plugin's trigger declares `deliver: operator`. Then each fire's
 reply, or the error message if the turn fails, is sent to you on Telegram, and
-the consent message tells you so. A reply that is only `<silent/>` sends
+the approval card tells you so. A reply that is only `<silent/>` sends
 nothing. Triggers that do not declare it behave as before.
 
 **Every fire, no silence (0.335.0).** A trigger that declares
@@ -324,7 +324,7 @@ nothing. Triggers that do not declare it behave as before.
 invited to stay silent, and if its reply is `<silent/>` or empty anyway, Casa
 sends one line of its own instead: "The '<webhook>' webhook fired; I had
 nothing to add." An error or a step-limit notice counts as that message, so a
-fire with no reply still sends you exactly one message. The consent message
+fire with no reply still sends you exactly one message. The approval card
 says so.
 
 **Provider-generated secrets and larger bodies (0.334.0).** A plugin trigger
@@ -338,7 +338,7 @@ endpoint answers `401`. A plugin update, or a revoke followed by a new
 approval, clears the stored secret, and the setup tool runs again once you
 approve. A plugin trigger may also declare
 `max_body_kib` (64–1024, default 64) to accept larger bodies, such as a long
-call transcript. The consent message names both.
+call transcript. The approval card covers both.
 
 The target of `/invoke/{agent}` must declare the `webhook` capability in its `channels:` list to be invoke-reachable; a request for an agent that does not (for example the voice butler, which declares only `ha_voice`) returns `404 {"error": "unknown agent"}` — the same response as for an agent that does not exist, so the endpoint reveals nothing about which agents are configured. The default `assistant` (Ellen) declares `webhook` and stays reachable.
 
@@ -394,8 +394,9 @@ Each agent config supports: `name`, `role`, `model`, `personality`, `tools`, `mc
 Specialists install from their repository in one flow: ask the assistant to
 install one, approve the single consent message, done. If the specialist's
 repository bundles plugins (or declares them by repository reference), they are
-installed together with it — the consent message lists each bundled plugin's
-tools and the secrets it will need, so one tap covers the whole package.
+installed together with it — the approval card describes what the bundled
+plugins can do and the secrets they will need (see "Approval cards" below), so
+one tap covers the whole package.
 Bundle-installed plugins belong to their specialist: they are private to it and
 removed automatically when the specialist is uninstalled. Plugins you install
 yourself with `plugin_add` are operator-owned — a specialist's lifecycle never
@@ -890,6 +891,32 @@ schedule that asked it is edited away, the agent is told what happened instead
 of waiting on an answer that will never arrive. Your tap is reported to the
 agent as part of that scheduled run, not as a message from you.
 
+## Approval cards (v0.363.0)
+
+Every approval Casa asks you for — a protected plugin tool call, installing or
+updating a specialist or persona, a plugin's webhook, callback or event, and
+the erase question when a plugin is uninstalled — arrives as the same short
+card: a bold question saying what is being allowed and by whom ("🔐 Allow
+Ellen to send an email to Marco?"), a one- or two-sentence summary, and a few
+labelled lines with the details worth checking. At most two lines carry a ⚠️,
+for what you should not miss: something unexpected, unusually risky, or a wipe
+that cannot be undone.
+
+A separate model writes the card from the request's own facts, with no access
+to the conversation and no tools, in plain words: addresses, amounts, dates,
+file names and versions are shown exactly, technical names are translated. It
+is told to include every recipient, amount, deletion, granted power and secret;
+like any model it can occasionally leave a detail out. If it cannot write the
+card within a few seconds, Casa posts its own plain card instead: one line per
+argument for a tool call, or the full consent text for an install, webhook,
+callback or event.
+
+The card no longer shows the raw request (the arguments as JSON, the tool's
+internal id, install digests). What you approve is still bound to exactly the
+request that was made: approving lets that one call, or that one install, go
+ahead and nothing else. Nothing written inside a request — an email subject, a
+plugin's description — can turn into a link or formatting on the card.
+
 ## Optional: agent logs
 
 If you want to watch your agents work, Casa can keep a read-only log for each of
@@ -979,8 +1006,9 @@ answer.
 - **It asks you something?** Ellen tells you; answer her in her chat — a reply there is
   hers too — and she passes your answer on.
 - **An approval card** (installing or updating a specialist, or installing a persona): the
-  card lists the settings the install will end up with, marking the ones kept from the
-  current install, and the names (never the values) of the secrets provided. Tap Approve
+  card describes the settings the install will end up with and the secrets provided (by
+  name, never their values); Casa's own fallback card, shown when the card cannot be
+  written, lists every setting, marking the ones kept from the current install. Tap Approve
   and Casa carries the configurator on with exactly those settings. One tap is one attempt:
   the approval is used up when the work starts, so if the work fails, or you want the same
   update again after a rollback, you get a new card. If the configurator could not be

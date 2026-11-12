@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.363.0] - 2026-11-12
+
+### Changed
+
+- Approval cards are short and readable. Every approval — a protected plugin tool call, a specialist or persona install or update, a plugin's webhook, callback or event, and the erase question when a plugin is uninstalled — opens with the same question, "🔐 Allow Ellen to …?", followed by a short summary and a few labelled lines in plain words. At most two lines carry a ⚠️, for what is worth checking before you tap.
+- A separate model writes each card from the request's own facts; if it cannot do so within a few seconds, Casa shows a plain card of its own with every detail.
+- Approval cards no longer show the raw request (the arguments as JSON, the tool's internal id, install digests). What you approve is still bound to exactly the request that was made.
+- Before an approval is needed, Casa reads each protected plugin tool's own description, so the card explains what the tool really does. To read it, Casa starts the plugin's tool server briefly in the background (once per plugin version).
+
+### Fixed
+
+- Text inside a request, such as an email subject or a plugin's description, can no longer turn into a link or formatting on an approval card (#1538).
+- When a newer install request replaces one whose card is still being prepared, the older card is never posted and the older request is reported as replaced.
+
+### Notes
+
+- Update the Gmail plugin to 0.12.1 before or together with this release. Older Gmail versions can show as signed out for a session when Casa reads Gmail's tool list at the same moment that session starts Gmail.
+
 ## [0.362.3] - 2026-11-12
 
 ### Fixed
