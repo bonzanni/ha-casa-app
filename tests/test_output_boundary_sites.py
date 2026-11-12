@@ -136,11 +136,17 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "post_job_start_line"): "notice",       # a job's start line raising its Stop key, Casa template
     ("channels/telegram.py", "post_job_parked"): "notice",           # a parked job's line with its Cancel, Casa template quoting the job's last progress report
     ("channels/telegram.py", "_send_dm_reply"): "notice",            # a lost-message / turn notice in reply to the operator, Casa-composed
+    # a summoned turn's one inline message: the terminal edit carries the
+    # admitted final reply (guest_finish refuses a bare string) or a fixed
+    # Casa line; the ticker and the waiting line are Casa-composed
+    ("channels/guest_reply.py", "_edit_final"): "admitted",
+    ("channels/guest_reply.py", "_tick"): "notice",
+    ("channels/guest_reply.py", "waiting"): "notice",
 }
 
 
 CHANNEL_METHODS = {"send", "send_response", "finalize_stream", "finalize_response_stream",
-                   "post_dm_keyboard", "send_media", "post_job_question"}
+                   "post_dm_keyboard", "send_media", "post_job_question", "guest_finish"}
 # (file, enclosing function) → what the call hands the method. "admitted" = a value
 # minted by TurnScope.admit or carried from one; "casa_text" = the Casa template
 # class; "forward" = the channel forwarding an already-admitted value to a sibling
@@ -164,6 +170,7 @@ CHANNEL_METHOD_CALLERS = {
     ("channels/telegram_transport.py", "finalize_response_stream"): "forward",
     ("channels/telegram_transport.py", "finalize_stream"): "forward",
     ("channels/telegram_transport.py", "post_job_question"): "forward",
+    ("channels/telegram_transport.py", "guest_finish"): "forward",
     ("tools.py", "send_message"): "admitted",
     ("tools.py", "_classify_send"): "admitted",                 # the caption, admitted by send_media
     ("tools.py", "_post"): "admitted",                          # ask_user (both arms) and wipe_memory (casa_text)
@@ -228,7 +235,7 @@ def test_every_raw_transport_call_is_inside_a_recorded_function():
 
 
 ADMITTED_METHODS = {"send", "send_response", "finalize_stream", "finalize_response_stream",
-                    "post_dm_keyboard", "send_media", "post_job_question"}
+                    "post_dm_keyboard", "send_media", "post_job_question", "guest_finish"}
 DERIVED_METHODS = {"edit_dm_message"}
 NOTICE_METHODS = {"deliver_operator_link", "deliver_operator_message", "deliver_operator_page",
                   "deliver_operator_file", "deliver_casa_notice", "reply",

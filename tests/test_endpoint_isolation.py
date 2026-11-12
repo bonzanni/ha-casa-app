@@ -245,8 +245,26 @@ async def _job_reply(ep, h):
     return {"_tg_bot": tg_message.bot_id}
 
 
+async def _summoned(ep, h):
+    """The operator's summons of this bot in a group: an own-chat turn routed
+    to the bot the summons arrived on."""
+    from channels.guest_reply import GuestReply
+    h.monkeypatch.setattr(GuestReply, "start_ticker", lambda self: None)
+    ep._app.bot.answer_guest_query = AsyncMock(return_value=NS(inline_message_id="inl"))
+    user = _user()
+    chat = NS(id=-5, title="Group", type="group")
+    gm = NS(chat=chat, from_user=user, text="@Bot hi", guest_query_id="q", message_id=8,
+            reply_to_message=None)
+    update = NS(update_id=1, message=None, guest_message=gm, callback_query=None,
+                effective_chat=chat, effective_user=user)
+    assert await ep._dispatch_summoned_turn(update) is True
+    context = _turns(h.bus)[-1].context
+    assert context["chat_id"] == str(OPERATOR)       # the own chat, never the group
+    return context
+
+
 _BUILDERS = {"dm": _dm, "caption": _caption, "button": _button,
-             "scheduled_ask": _scheduled, "job_reply": _job_reply}
+             "scheduled_ask": _scheduled, "job_reply": _job_reply, "summoned": _summoned}
 
 
 @pytest.mark.parametrize("builder", sorted(_BUILDERS))

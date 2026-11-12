@@ -72,7 +72,9 @@ from channels.tg_address import (
     AddressError, EndpointNotReady, EndpointUnavailable, RouteMissing, TgAddress,
     scope as tg_scope,
 )
-from provenance import carry_route, route_context, task_delivery_marker
+from provenance import (
+    carry_route, drop_guest_markers, route_context, task_delivery_marker,
+)
 from output_boundary import (
     Admitted, ApprovalCut, IntentKind, ReadBeforeDescribe, TurnScope,
     UnadmittedText, casa_text, resolve_scope,
@@ -2125,6 +2127,9 @@ async def ask_user(args: dict) -> dict:
     if not live:
         return _result({"status": "settled", "request_id": rid,
                         "message": _SETTLED_ASK_MESSAGE})
+    # The question is on the screen and still open: the turn now has a
+    # question that outlives it, a fact its scope keeps for the turn's end.
+    _scope.detached_ask = True
     scheduled_asks.displace_scheduled_for_chat(bot_id, chat_id, "superseded")
     return _result({"status": "awaiting_user", "request_id": rid,
                     "note": ASK_USER_SILENCE_NOTE,
@@ -2757,7 +2762,8 @@ def _launch_note(origin: dict, text: str) -> "tuple[dict, str]":
     owed, and a launch with no scope bound owes nothing here — its child's
     own emissions are what refuse."""
     scope = origin.get("turn_scope")
-    out = dict(origin)
+    # The brief's run was not summoned: the summons markers stay with the turn.
+    out = drop_guest_markers(dict(origin))
     if not isinstance(scope, TurnScope):
         return out, ""
     note = scope.admit(IntentKind.STORED, text).note
@@ -3135,6 +3141,19 @@ def _handoff_grants(cfg, *, engagement: bool) -> tuple[str, ...]:
     return (_HANDOFF_GRANT,)
 
 
+_GUEST_GRANT = "mcp__casa-framework__guest_access"
+
+
+def _guest_grants(cfg, *, engagement: bool) -> tuple[str, ...]:
+    """``guest_access`` for every specialist's own-chat, delegated or pinned
+    build, the same condition as ``hand_off``. Those builds share one tool
+    set, so the tool is present in the specialist's own chat as well and
+    refuses there itself: it acts only on a turn summoned inside a group."""
+    if engagement or getattr(cfg, "kind", "") != "specialist":
+        return ()
+    return (_GUEST_GRANT,)
+
+
 def _build_specialist_options(
     cfg,
     *,
@@ -3326,8 +3345,9 @@ def _build_specialist_options(
     for grant in extra_casa_tools:
         if grant not in allowed_tools:
             allowed_tools.append(grant)
-    _handoff_tools = _handoff_grants(cfg, engagement=bool(extra_casa_tools))
-    for grant in _handoff_tools:
+    _code_granted_tools = (*_handoff_grants(cfg, engagement=bool(extra_casa_tools)),
+                      *_guest_grants(cfg, engagement=bool(extra_casa_tools)))
+    for grant in _code_granted_tools:
         if grant not in allowed_tools:
             allowed_tools.append(grant)
     for grant in _inbox_tools:                       # S6 §2.3, the same condition as the path
@@ -3373,11 +3393,11 @@ def _build_specialist_options(
     if _mcp_registry is not None:
         # S6 (diff round 1, Astra): a casa-framework tool granted in code — the
         # engagement and job launch grants, the inbox tools, start_job,
-        # hand_off (R2 acceptance F1: a role declaring no servers had hand_off
+        # hand_off, guest_access (R2 acceptance F1: a role declaring no servers had hand_off
         # granted and invisible) — needs the server that exposes it, whatever
         # the config's own server list says
         _server_names = list(cfg.mcp_server_names)
-        if ((extra_casa_tools or _inbox_tools or _job_tools or _handoff_tools)
+        if ((extra_casa_tools or _inbox_tools or _job_tools or _code_granted_tools)
                 and "casa-framework" not in _server_names):
             _server_names.append("casa-framework")
         mcp_servers = _mcp_registry.resolve(
@@ -4688,7 +4708,9 @@ async def _run_delegated_agent(
     # AR-2: snapshot BEFORE any await — this coroutine outlives the parent
     # turn (async delegations especially), and a pooled client's origin_var
     # holder can be rewritten by the NEXT turn while this one is in flight.
-    parent = _snapshot_origin()
+    # A run was not summoned in a group, whatever turn launched it: the
+    # summons markers stay with that turn.
+    parent = drop_guest_markers(_snapshot_origin())
     run = await _register_delegated_run(cfg, parent)
     try:
         return await _run_delegated_turn(
@@ -16723,6 +16745,78 @@ async def offer_own_chat(args: dict) -> dict:
                         "message": "That did not go through; try again shortly."})
 
 
+_GUEST_NOT_IN_GROUP = "I can only do that from inside the group concerned."
+_GUEST_GROUP_TYPES = ("group", "supergroup")
+
+
+def _guest_chat_of(origin: dict):
+    """The group this turn was summoned in, from the server-stamped origin,
+    or ``None`` when the turn did not come from one."""
+    import guest_groups
+    chat = origin.get("_guest_chat")
+    if not isinstance(chat, dict):
+        return None
+    chat_id, title, chat_type = chat.get("id"), chat.get("title"), chat.get("type")
+    if (not isinstance(chat_id, int) or isinstance(chat_id, bool)
+            or not isinstance(title, str) or not isinstance(chat_type, str)):
+        return None
+    return guest_groups.ChatRef(chat_id, title, chat_type)
+
+
+@tool(
+    "guest_access",
+    "Let everyone in the group you were just summoned in ask you (allow), stop that "
+    "(revoke), or say whether they may (status). Works only when the operator summoned "
+    "you in that group; it knows which group from the summons — there is no group to "
+    "name.",
+    {"type": "object",
+     "properties": {"action": {"type": "string", "enum": ["allow", "revoke", "status"]}},
+     "required": ["action"]},
+)
+async def guest_access(args: dict) -> dict:
+    """A specialist's answer to the operator's request, made inside a group,
+    that it answer (or stop answering) everyone there. The group and the
+    specialist come from the turn's origin; the arguments carry only the
+    action. A run handed off from the summoned specialist inherits its origin
+    but was not summoned, so it is refused."""
+    import guest_groups
+    origin = _snapshot_origin()
+    role = origin.get("role")
+    chat = _guest_chat_of(origin)
+    if (chat is None or not isinstance(role, str) or not role
+            or origin.get("execution_role", role) != role):
+        return _result({"status": "error", "kind": "not_in_group",
+                        "message": _GUEST_NOT_IN_GROUP})
+    if origin.get("_operator_turn") is not True:
+        return _result({"status": "error", "kind": "not_operator",
+                        "message": _GUEST_NOT_IN_GROUP})
+    action = args.get("action")
+    if action not in ("allow", "revoke", "status"):
+        return _result({"status": "error", "kind": "bad_action",
+                        "message": "The action is allow, revoke or status."})
+    store = guest_groups.store()
+    if action == "allow":
+        if chat.type not in _GUEST_GROUP_TYPES:
+            return _result({"status": "error", "kind": "not_a_group",
+                            "message": "I answer others in groups only."})
+        component_id = guest_groups.component_of(role)
+        if component_id is None:
+            return _result({"status": "error", "kind": "no_component",
+                            "message": "That specialist isn't fully installed yet."})
+        store.allow(role, chat, component_id)
+    elif action == "revoke":
+        store.revoke(role, chat.id)
+    if action != "status":
+        try:
+            await store.save()
+        except Exception:  # noqa: BLE001 — a result, never a raise
+            logger.exception("guest_access %s for %s failed to save", action, role)
+            return _result({"status": "error", "kind": "save_failed",
+                            "message": "That did not go through; try again shortly."})
+    return _result({"status": "ok", "action": action, "group": chat.title,
+                    "state": store.status(role, chat.id)})
+
+
 # ---------------------------------------------------------------------------
 # An agent's own chat across specialist changes. Each hook runs after the
 # bundle transaction has committed and released its lock; a hook's failure
@@ -19802,6 +19896,8 @@ CASA_TOOLS: tuple = (
     send_message,
     stop_work,                     # the resident's direct stop of a specialist's own work
     offer_own_chat,                # the resident offers a specialist its own chat
+    guest_access,                  # a specialist answers everyone in a group the
+                                   # operator allowed — specialists only, in code
     send_media,
     ask_user,
     delegate_to_agent,

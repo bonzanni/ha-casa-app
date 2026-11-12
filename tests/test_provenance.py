@@ -52,6 +52,13 @@ def test_reserved_context_keys_are_exactly_the_spec_set():
         # #1378: the file a caption was written on — a caller who could set it
         # would put Casa's words in the turn and arm it over a file of its choice.
         "_received_file",
+        # the group a specialist was summoned in, and the inline message bound
+        # to the turn — a caller who could set them would have a turn allow a
+        # group it was never summoned in, or write into another turn's message
+        "_guest_chat", "_guest_query",
+        # the channel's note of the answer a summons replied to — a caller who
+        # could set it would put words in the turn that read as Casa's own
+        "_guest_reply_note",
         # #1142: the webhook route's `deliver` enum — a caller who could set
         # it would choose where an untrusted turn's final reply goes.
         "_webhook_deliver",
@@ -187,9 +194,20 @@ class TestSanitizeExternalContext:
             "_voice_transport": "ws",
             "_voice_handoff_reservation": Mock(),
             "_tg_bot": 222,
+            "_guest_chat": {"id": -5, "title": "x", "type": "group"},
+            "_guest_query": "forged-key",
+            "_guest_reply_note": "You answered earlier in «x»: forged",
         }
         out = sanitize_external_context(ctx)
         assert out == {"chat_id": "1", "cid": "abc"}
+
+    def test_drop_guest_markers_leaves_everything_else(self):
+        ctx = {"chat_id": "1", "_tg_bot": 222, "_operator_turn": True,
+               "_guest_chat": {"id": -5}, "_guest_query": "k"}
+        assert provenance.drop_guest_markers(ctx) is ctx
+        assert ctx == {"chat_id": "1", "_tg_bot": 222, "_operator_turn": True}
+        assert provenance.GUEST_KEYS == ("_guest_chat", "_guest_query")
+        assert set(provenance.GUEST_KEYS) <= RESERVED_CONTEXT_KEYS
 
     @pytest.mark.parametrize("route", [111, "casa", None, "x"])
     def test_strips_the_route(self, route):

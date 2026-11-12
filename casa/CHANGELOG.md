@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.370.0] - 2026-11-13
+
+### Added
+
+- You can now call a specialist that has its own chat from any Telegram group or chat, without adding its bot: mention it (`@CasaJudge…Bot what happens if…`) or reply to one of its messages there. It answers in that chat, in its own name, after a short "thinking…" placeholder that turns into the answer. The conversation behind the answer is its ordinary chat with you, so it remembers what you two discussed; anything that isn't plain text — a card, a file, a question for you — still comes to your chat with it (when it asks you something there, the group reply says so).
+- One sentence lets other people in a group ask a specialist too: in that group, tell it "you can answer everyone here" (and "stop answering others here" to take it back; "who may call you here?" to check). The allowance is for that specialist in that group; a different specialist installed later in the same role does not inherit it.
+- Before any of this works, Guest Mode must be switched on for the specialist's bot in BotFather's Mini App (it is off by default); see the Guests section of the docs.
+
+### Notes
+
+- In this version other people's questions are not answered yet, even in a group you allowed: Casa receives them and logs them. The guest answers themselves — with only the tools a specialist's author marks as fit for guests, and no memory — come in the next release.
+- Each specialist bot now asks Telegram for guest summonses; Casa's own bot does not.
+
 ## [0.369.1] - 2026-11-12
 
 ### Changed

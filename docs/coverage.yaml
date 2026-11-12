@@ -69,6 +69,8 @@
   doc: architecture/telegram.md
 - item: casa/rootfs/opt/casa/channels/telegram_supervisor.py
   doc: architecture/telegram.md
+- item: casa/rootfs/opt/casa/channels/guest_reply.py
+  doc: architecture/guest-summons.md
 - item: casa/rootfs/opt/casa/channels/telegram_transport.py
   doc: architecture/telegram-bots.md
 - item: casa/rootfs/opt/casa/channels/tg_address.py
@@ -103,6 +105,8 @@
   doc: architecture/plugin-operator-calls.md
 - item: casa/rootfs/opt/casa/own_voice.py
   doc: architecture/own-voice.md
+- item: casa/rootfs/opt/casa/guest_groups.py
+  doc: architecture/guest-summons.md
 - item: casa/rootfs/opt/casa/own_voice_lifecycle.py
   doc: architecture/own-voice-lifecycle.md
 - item: casa/rootfs/opt/casa/run_admission.py
@@ -464,6 +468,8 @@
 - item: tool:get_item_fields
   doc: architecture/plugin-secret-exploration.md
 - item: tool:get_schedule
+  doc: architecture/tools-interface.md
+- item: tool:guest_access
   doc: architecture/tools-interface.md
 - item: tool:list_inbound_files
   doc: architecture/inbound-files.md

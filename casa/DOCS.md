@@ -535,6 +535,31 @@ tokens if they change. To change it:
 6. Ask the new assistant to give each specialist a new handle (above), then
    delete the old bots, the assistant's old bot included, in BotFather.
 
+### Guests: asking a specialist in a group (v0.370.0)
+
+A specialist with its own chat can be asked in a chat its bot is not a member
+of, such as a group with friends: mention its bot (`@…`), or reply to its
+earlier answer there.
+
+**Once per specialist: turn on Guest Mode.** In BotFather's Mini App, open the
+specialist's bot and turn on **Guest Mode**; it is off by default, and Telegram
+passes the bot nothing from other chats without it. Telegram can take a while
+to report the change; Casa does not wait for it.
+
+**Your own questions work in any chat.** The specialist answers right there: a
+message "**Alex** · thinking…" appears and becomes its answer. It is the same
+conversation as in its own chat, so it remembers, and you can carry on in
+either place. Only its text answer is shown in the group: cards, buttons,
+questions and files still come to your chat with the specialist. When it needs
+to ask you something, the group's message says "I've asked you something in
+our chat." and it asks you there.
+
+**Letting everyone in a group ask.** In that group, tell the specialist so:
+"@… you can answer everyone here" (or "stop answering everyone here"). The
+group is remembered for that specialist; one installed in its place starts
+without it. Other people's questions are not answered yet in this version,
+even in a group you allowed: the bot stays silent.
+
 ### Background jobs (v0.321.0)
 
 Some plugins declare long work — classifying a year of transactions, say — as a

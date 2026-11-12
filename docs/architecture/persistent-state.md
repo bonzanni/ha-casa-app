@@ -125,7 +125,11 @@ and per bot, set aside when corrupt or foreign, owner-only; an agent's record al
 every handle it was ever offered, a pending change to a new bot, and the handle it moved
 from until its new chat opens), the held journals
 `agent-voices/held/<bot>.jsonl`, and, without 1Password, each agent's token in
-`agent-voices/tokens/<role>` ([`own-voice-lifecycle.md`](own-voice-lifecycle.md)).
+`agent-voices/tokens/<role>` ([`own-voice-lifecycle.md`](own-voice-lifecycle.md)). The
+groups the operator allowed a specialist's bot to answer everyone in are
+`agent-voices-guests.json` (per role and chat, each entry bound to the component installed
+when it was made; saved whole, atomically and owner-only; a file not of its shape is moved
+aside to `.corrupt` and the store starts empty — [`guest-summons.md`](guest-summons.md)).
 
 ## Contracts & invariants
 

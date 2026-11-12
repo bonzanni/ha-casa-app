@@ -1,0 +1,36 @@
+# Manifest shard: a specialist summoned in a group (born in its own shard: the own-voice
+# shard and the T-Z shard stand close to the 40 KB index ceiling).
+- doc: architecture/guest-summons.md
+  summary: A specialist's own bot summoned in a chat it is not a member of (Telegram guest mode) — who is answered, the operator's summons as a turn of the agent's own conversation whose final text alone edits the group's one inline message, the placeholder, ticker and terminal edit, the reserved summons markers, the guest_access tool and the per-role, per-component record of allowed groups.
+  when_changing: a guest summons — the guest_message update or its handler, who a summons is answered for, the summoned turn or its markers, the group's inline message, its placeholder, ticker or terminal edit, guest_finish, the guest_access tool, or the allowed-groups file
+  covers:
+    - casa/rootfs/opt/casa/channels/guest_reply.py
+    - casa/rootfs/opt/casa/guest_groups.py
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._guest_decision
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_guest_message
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._dispatch_summoned_turn
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._guest_reply_note_for
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.guest_finish
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._guest_waiting
+    - casa/rootfs/opt/casa/channels/telegram_transport.py::TelegramTransport.guest_finish
+    - casa/rootfs/opt/casa/own_voice.py::is_bound
+    - casa/rootfs/opt/casa/provenance.py::drop_guest_markers
+    - casa/rootfs/opt/casa/tools.py::guest_access
+    - casa/rootfs/opt/casa/tools.py::_guest_grants
+  tests:
+    - tests/test_guest_intake.py
+    - tests/test_guest_summons.py
+    - tests/test_guest_reply.py
+    - tests/test_guest_agent_delivery.py
+    - tests/test_guest_access_tool.py
+    - tests/test_guest_groups.py
+  related: [architecture/own-voice.md, architecture/own-voice-lifecycle.md, architecture/telegram-bots.md, architecture/telegram.md, architecture/tools-interface.md, architecture/persistent-state.md, architecture/plugin-health.md]
+  defines_invariants: [INV-GUEST-001, INV-GUEST-004, INV-GUEST-005, INV-GUEST-006, INV-GUEST-007, INV-GUEST-009, INV-GUEST-010]
+  invariant_tests:
+    INV-GUEST-001: [tests/test_guest_intake.py::test_a_drop_makes_no_telegram_call, tests/test_guest_intake.py::test_the_decision, tests/test_guest_intake.py::test_a_summons_on_an_unbound_bot_is_dropped, tests/test_guest_intake.py::test_a_friend_in_an_allowed_group_is_dropped_in_this_release, tests/test_guest_intake.py::test_no_operator_identity_drops_the_summons, tests/test_guest_intake.py::test_two_groups_share_the_operators_limiter]
+    INV-GUEST-004: [tests/test_guest_access_tool.py::test_allow_uses_the_origins_group_and_ignores_any_argument, tests/test_guest_access_tool.py::test_without_a_guest_chat_in_the_origin_it_refuses, tests/test_guest_access_tool.py::test_without_any_origin_it_refuses, tests/test_guest_access_tool.py::test_without_the_operator_marker_it_refuses, tests/test_guest_access_tool.py::test_a_delegated_run_cannot_allow_a_group_for_itself, tests/test_guest_access_tool.py::test_only_groups_and_supergroups_can_be_allowed, tests/test_guest_access_tool.py::test_a_supergroup_can_be_allowed]
+    INV-GUEST-005: [tests/test_tools_specialist_options.py::test_specialist_builds_grant_guest_access_and_engagements_do_not, tests/test_tools_specialist_options.py::test_the_resident_build_does_not_grant_guest_access, tests/test_guest_intake.py::test_casas_bot_registers_no_guest_handler, tests/test_managed_bot_signals.py::test_only_casas_bot_asks_for_managed_bot_updates]
+    INV-GUEST-006: [tests/test_guest_summons.py::test_the_placeholder_goes_out_before_the_turn_is_queued, tests/test_guest_summons.py::test_a_refused_placeholder_queues_no_turn, tests/test_guest_summons.py::test_a_turn_the_queue_refuses_fails_the_reply, tests/test_guest_summons.py::test_a_detached_question_ends_with_ill_answer_there, tests/test_guest_summons.py::test_a_card_wait_then_silence_ends_in_a_decline, tests/test_guest_reply.py::test_finish_is_the_only_terminal_edit, tests/test_guest_reply.py::test_waiting_is_not_terminal, tests/test_guest_reply.py::test_guest_finish_routes_text_and_errors, tests/test_guest_reply.py::test_guest_finish_refuses_unadmitted_text_and_fails_the_reply, tests/test_guest_reply.py::test_turn_finished_declines_or_says_ill_answer_there, tests/test_guest_agent_delivery.py::test_text_reaches_the_group_through_the_transport, tests/test_guest_agent_delivery.py::test_an_agent_exception_fails_the_reply_with_the_guest_error_line, tests/test_guest_agent_delivery.py::test_empty_and_silent_output_go_to_turn_finished]
+    INV-GUEST-007: [tests/test_guest_intake.py::test_a_guest_update_skips_the_own_voice_intake, tests/test_guest_intake.py::test_a_text_update_still_passes_the_intake, tests/test_guest_summons.py::test_a_turn_the_queue_refuses_fails_the_reply]
+    INV-GUEST-009: [tests/test_guest_summons.py::test_the_markers_are_reserved_and_copied, tests/test_guest_summons.py::test_a_narration_turn_carries_no_guest_markers, tests/test_guest_summons.py::test_a_delegated_run_carries_no_guest_markers, tests/test_guest_summons.py::test_drop_guest_markers_removes_exactly_the_two, tests/test_provenance.py::TestSanitizeExternalContext::test_strips_exactly_the_reserved_keys, tests/test_provenance.py::TestSanitizeExternalContext::test_drop_guest_markers_leaves_everything_else]
+    INV-GUEST-010: [tests/test_guest_summons.py::test_a_summons_runs_as_an_own_chat_turn, tests/test_guest_summons.py::test_the_group_never_appears_as_chat_id_or_route, tests/test_guest_summons.py::test_a_send_message_tool_call_lands_in_the_dm_and_the_text_edits_the_group_once, tests/test_guest_summons.py::test_an_ask_in_the_own_chat_puts_the_reply_in_waiting, tests/test_guest_agent_delivery.py::test_a_pending_health_notice_goes_to_the_dm_not_the_group, tests/test_endpoint_isolation.py::test_every_turn_an_endpoint_builds_carries_the_bot_it_arrived_on]

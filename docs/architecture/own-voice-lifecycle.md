@@ -31,22 +31,17 @@ A per-bot lock covers intake, every phase change and the journal's release; a re
 covers what spans bots, taken after the per-bot one. The store is validated strictly: a
 record without the agent fields above is set aside like a corrupt one.
 
-**Offer and creation.** Casa posts no offer by itself. A committed install, upgrade or
-rollback of an agent that declares a chat it has no bot for says `own_chat: "offer_due"` in
-its result; the configurator says so in its answer, and the resident offers the chat with
-`offer_own_chat` — then, or whenever the operator asks. The handle (the bot's username) is
-the resident's choice, steered by the tool's description (name the role, not the persona;
-by default `Casa<Role><digits>Bot`; the operator's existing pattern and wishes first); no
-code derives it. Mode `check` answers, for up to five candidates, `invalid_format`,
-`owned_by_other`, `used_before` (below), `taken`, `probably_free` or `unknown`, with what
-the choice needs: the role, its persona's name, the resident's own bot, the role's current
-and previous handles, the other agents' handles and Telegram's username rules. An offer is refused, naming the reason, when
+**Offer and creation.** Casa posts no offer by itself: the resident offers the chat with
+`offer_own_chat` after an install's `offer_due`, or when the operator asks; the tool, the
+handle (the bot's username) and what `check` answers are [`own-voice.md`](own-voice.md)'s.
+An offer is refused, naming the reason, when
 the handle is not a bot username (`valid_username`: 5–32 of `[A-Za-z0-9_]`, ending in
 `bot`), when it was ever offered to another agent (each agent's `handles`, kept across new
 offers and restarts), or when the probe shows it taken: `TelegramHost.handle_taken` reads
 `https://t.me/<handle>` (5 s) and finds an existing account by the page's
-`tgme_page_title` block. A probe that cannot complete refuses nothing; it proves a handle
-taken, and a reserved or recently freed one looks unused. The offer is an ordinary Casa
+`tgme_page_title` block. A probe that cannot complete (network, egress, a status other than 200)
+answers `unknown` and refuses nothing; it proves a handle taken, and a reserved or recently
+freed one looks unused. The offer is an ordinary Casa
 card in the resident's chat: "Alex can get a separate chat with you. Tap below, then
 Create." with one URL button opening Telegram's pre-filled "Create Bot" form
 (`https://t.me/newbot/<resident bot>/<handle>?name=<display name>`); the suggestion and the
@@ -182,7 +177,8 @@ is that send's failure. `own_chat_state` reads one of `not_declared`, `no_bot`,
 `not_open`, `open`, `dormant`.
 
 **Held updates leave the journal only through intake.** An agent bot's update queue is
-`_IntakeQueue`: every update is offered to `own_voice.intake` before it is queued, which is
+`_IntakeQueue`: every message or tap (a guest summons skips it:
+[`guest-summons.md`](guest-summons.md)) goes to `own_voice.intake` before it is queued, which is
 before the webhook answers. It is delivered only when the bot is `bound`, reconciled in
 this process, its role declared and its agent's queue registered, and nothing older is
 held; otherwise it is appended to `agent-voices/held/<bot>.jsonl` (fsynced) and
@@ -213,7 +209,7 @@ not authorized no fetch is tried and the log says so once. An uninstall's result
 
 ## Contracts & invariants
 
-**INV-OWN-006**: An update that reaches an agent's own bot passes the lifecycle's intake before it is queued; it is delivered only to a bound, reconciled, declared agent whose queue is registered and with nothing older held, otherwise journaled before Telegram is acknowledged, and held records are released in arrival order, a refused one holding itself and every later one.
+**INV-OWN-006**: A message or tap to an agent's own bot passes the lifecycle's intake before it is queued; it is delivered only to a bound, reconciled, declared agent whose queue is registered and with nothing older held, otherwise journaled before Telegram is acknowledged, and held records are released in arrival order, a refused one holding itself and every later one.
 
 **INV-OWN-008**: Every lifecycle effect finds its phase on disk, every phase has a boot reconciliation, and a recovering bot is released only on the token fetch failure that establishes its deletion; every other failure keeps it recovering.
 
@@ -247,9 +243,6 @@ the tool answers `restart_failed`, and the switch completes at the next restart.
 
 **The old bot's token cannot be deleted.** Logged; the switch goes on. The binding writes the
 same 1Password item in place, and a stored token of another bot is never used.
-
-**The handle probe cannot reach t.me** (network, egress, a status other than 200). The check
-says `unknown` for that candidate, and an offer goes ahead.
 
 **An earlier bot Telegram will not hand back.** Nothing moves and no card is posted; the
 result says the bot is gone or not reachable, and the resident tells the operator.

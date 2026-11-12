@@ -73,6 +73,10 @@ server that lists them; the role's configuration is not changed. Without it the 
 reached the session's allowed list with no server behind them, and a job run told the
 operator it could not work because its progress and completion tools were missing.
 
+`guest_access` is granted in code under the same condition as `hand_off`
+(`tools._guest_grants`; [`guest-summons.md`](guest-summons.md)) and the build mounts the
+server for it by the same rule.
+
 What it does not cover: a casa-framework tool the role's own configuration lists while
 declaring no casa-framework server. That pairing is the role's configuration to keep
 consistent; the build adds the server only for what it grants itself.

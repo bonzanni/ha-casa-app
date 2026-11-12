@@ -198,6 +198,11 @@ COPIED_CONTEXT_MARKERS = (
     # Browser executor §5.5: the operator's own typed words (Telegram
     # ingress); read only by handoff.operator_words.
     "_operator_words",
+    # A summoned turn's group and its inline message (``provenance.GUEST_KEYS``):
+    # read by the guest_access tool and by the keyboard seam that puts the
+    # group's message in waiting. Dropped again wherever a run or a turn is
+    # derived from this one (``provenance.drop_guest_markers``).
+    "_guest_chat", "_guest_query",
     # The turn's route: the bot its replies go out through, decided where the
     # turn was born and carried by every turn derived from it.
     *ROUTING_KEYS,
@@ -249,6 +254,16 @@ CHAT_MOVED_NOTE = "(Casa) The operator just opened your new chat; your previous 
 #: in this chat for others, to recall as its own memory.
 CHAT_NOTES_FRAME = ("What you did in this chat for others since you last spoke here — "
                     "your own memory, so recall it naturally, never as a note or a record:")
+
+#: Casa's line on a turn the operator summoned in a group (``_guest_chat``):
+#: where the answer shows, and where everything else goes. A summons from a
+#: chat that is not a group (a private chat, named after the person it is
+#: with when Telegram gives one) takes the second form.
+_GUEST_CALL_TAIL = (" Your text answer is posted there; a card, a file or anything else "
+                    "you send goes to your chat with them.")
+GUEST_CALL_NOTE = "The person summoned you in the group «{title}»." + _GUEST_CALL_TAIL
+GUEST_CALL_NOTE_CHAT = "The person summoned you in a chat with «{name}»." + _GUEST_CALL_TAIL
+GUEST_CALL_NOTE_ELSEWHERE = "The person summoned you in another chat." + _GUEST_CALL_TAIL
 
 
 def _projection_name_for_turn(channel: str, origin_route: str | None) -> str:
@@ -1645,6 +1660,12 @@ class Agent:
         # diff r1).
         # #1142: never on a `deliver: operator` webhook fire — an untrusted
         # turn; the helper itself does not exclude those.
+        # A turn the agent's bot was summoned to in a group it is not a
+        # member of delivers its final text into that group's one inline
+        # message (the channel's ``guest_finish``); Casa's own lines — this
+        # notice among them — go to the DM as their own sends.
+        guest = (bool(delivery_context.get("_guest_query"))
+                 and hasattr(channel, "guest_finish"))
         if (
             text and channel is not None
             and getattr(channel, "delivers_final_text", True)
@@ -1653,8 +1674,10 @@ class Agent:
             noticed, health_notice = await self._maybe_prepend_health_notice(text)
             # The notice is prepended OUTSIDE the admitted text (outermost, as
             # today); the admission — its provenance and annotations — is
-            # carried over the re-rendered body.
-            if noticed is not text and admitted is not None:
+            # carried over the re-rendered body. The group receives the
+            # model's text only: a summoned turn sends the notice to the DM
+            # below, once the text has landed.
+            if not guest and noticed is not text and admitted is not None:
                 text = admitted.with_text(noticed)
         else:
             health_notice = None
@@ -1666,7 +1689,10 @@ class Agent:
             outcome = None
             delivered = False
             try:
-                if on_token is not None and hasattr(channel, "finalize_stream"):
+                if guest:
+                    outcome = await channel.guest_finish(
+                        text, error_kind, delivery_context)
+                elif on_token is not None and hasattr(channel, "finalize_stream"):
                     if error_kind is None and hasattr(
                         channel, "finalize_response_stream",
                     ):
@@ -1725,6 +1751,22 @@ class Agent:
                 plugin_health.forget_notice(self.config.role, health_notice)
             if delivered:
                 await self._ack_delivery(msg, error_kind)
+            if guest and health_notice is not None and delivered:
+                # The notice as its own send to the DM, after the group's
+                # text; a send that proves it was not shown releases it, as
+                # the ordinary path does.
+                try:
+                    shown = await channel.send(casa_text(health_notice),
+                                               delivery_context)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    logger.exception("health notice send failed (role=%s)",
+                                     self.config.role)
+                    shown = DeliveryOutcome.NOT_DELIVERED
+                if shown is DeliveryOutcome.NOT_DELIVERED:
+                    import plugin_health
+                    plugin_health.forget_notice(self.config.role, health_notice)
         elif channel is not None:
             # L7 (v0.52.0): a turn that strips to empty / `<silent/>` never
             # calls send()/finalize_stream(), so give the channel a chance to
@@ -2364,6 +2406,22 @@ class Agent:
                 received = msg.context.get("_received_file")
                 if isinstance(received, dict) and isinstance(received.get("note"), str):
                     notes.append(received["note"])
+                # A turn the operator summoned in a group: the frame, then
+                # (when the summons replied to the agent's earlier answer
+                # there) what that answer said. Both are the channel's,
+                # the second read only under the first's reserved marker.
+                guest_chat = msg.context.get("_guest_chat")
+                if isinstance(guest_chat, dict):
+                    name = str(guest_chat.get("title") or "")
+                    if guest_chat.get("type") in ("group", "supergroup"):
+                        notes.append(GUEST_CALL_NOTE.format(title=name))
+                    elif name:
+                        notes.append(GUEST_CALL_NOTE_CHAT.format(name=name))
+                    else:
+                        notes.append(GUEST_CALL_NOTE_ELSEWHERE)
+                    earlier = msg.context.get("_guest_reply_note")
+                    if isinstance(earlier, str) and earlier.strip():
+                        notes.append(earlier)
             if memory_note:
                 notes.append(memory_note)
             prompt_text = (

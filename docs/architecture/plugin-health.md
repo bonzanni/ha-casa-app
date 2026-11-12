@@ -66,6 +66,12 @@ line they have already read is the failure in the other direction. A channel tha
 report keeps the old behavior, deliberately: "cannot report" must not read as "failed", or
 the notice would repeat forever there.
 
+A turn the operator summoned in a group ([`guest-summons.md`](guest-summons.md)) does not
+prepend the line: the group's message receives the model's text alone, and once that text has
+landed the line goes to the operator's chat with the agent as its own send, released by the
+same rule when that send reports nothing shown. A summoned turn whose text did not land
+releases it as any undelivered reply does.
+
 A transport failure that cannot distinguish "never arrived" from "arrived, acknowledgement
 lost" is *not* a proven negative and does not release the memo. Only an established one
 does — the application being absent, so no call was made at all, or the API evaluating the

@@ -51,7 +51,10 @@ release — is [`own-voice-lifecycle.md`](own-voice-lifecycle.md).
 
 **The resident's tool for an agent's chat.** `offer_own_chat` (`tools.offer_own_chat` →
 `own_voice.offer_own_chat`) takes the agent and a `mode`: `check` reports on up to five
-candidate handles and gives the context to choose one; `offer`, the default, posts the
+candidate handles — `invalid_format`, `owned_by_other`, `used_before`, `taken`,
+`probably_free` or `unknown` — and gives the context to choose one (the role, its persona's
+name, the resident's own bot, the role's current and previous handles, the other agents'
+handles, Telegram's username rules); `offer`, the default, posts the
 card that creates the chat with the handle the resident chose (`username`), or, once the
 bot exists, the card that opens it, and answers `already_open` with the link when the chat
 is open; `replace` offers a new bot with a new handle in place of the current one, and,
@@ -163,8 +166,9 @@ the serial gate — with the specialist's surface: its options come from
 plugins under its profile), plus the session's extras every specialist session gets
 (`specialist_session.session_env_and_pad`: the long-run compaction window, its pad, its
 run in the agent's log). What it writes is captured with speaker kind `specialist`. Its
-turns come from the operator's direct messages in its chat and from results of work it
-started; work the resident started reaches it only as a `(Casa) ` note line, under one
+turns come from the operator's direct messages in its chat, from his summons of its bot in a
+chat it is not a member of — a turn of this same conversation whose final text alone is
+shown there ([`guest-summons.md`](guest-summons.md)) — and from results of work it started; work the resident started reaches it only as a `(Casa) ` note line, under one
 frame line that hands those notes to it as its own memory (`agent.CHAT_NOTES_FRAME`).
 
 **Own-chat routing, on every endpoint.** In any chat, task first:

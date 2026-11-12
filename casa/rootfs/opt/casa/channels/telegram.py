@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
 from collections.abc import Collection
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
 from telegram import InputFile, Update
 from telegram.constants import ChatAction
@@ -101,6 +101,10 @@ from provenance import (
 from rate_limit import RateLimiter
 from timekeeping import resolve_tz
 
+if TYPE_CHECKING:
+    from channels.guest_reply import GuestReply
+    from error_kinds import ErrorKind
+
 logger = logging.getLogger(__name__)
 
 
@@ -116,6 +120,35 @@ def _unadmitted(method: str, text: Any) -> bool:
     logger.error("unadmitted model text refused: %s (%s)", method,
                  type(text).__name__)
     return True
+
+
+#: The one line each guest summons leaves in the log, written by whichever
+#: step learns its outcome: the terminal edit of a summoned turn
+#: (``operator_answered`` / ``operator_declined`` / ``operator_asked_elsewhere``
+#: / ``operator_failed``), the dispatcher when the turn never starts
+#: (``operator_failed``), or the intake for a summons it does not answer
+#: (``guest_not_answered``; ``dropped`` at DEBUG).
+GUEST_SUMMONS_LOG = "guest summons: role=%s caller=%s chat=%s (%s) outcome=%s ms=%d"
+
+
+def _log_summons(outcome: str, level: int = logging.INFO, *, role: Any = None,
+                 caller_id: Any = None, chat_id: Any = None, title: Any = None,
+                 t0: Any = None) -> None:
+    """Log one summons from its facts (a ``GuestReply.meta`` spreads into
+    them), with the milliseconds since it arrived."""
+    ms = int((time.monotonic() - t0) * 1000) if isinstance(t0, (int, float)) else 0
+    logger.log(level, GUEST_SUMMONS_LOG, role, caller_id, chat_id, title, outcome, ms)
+
+
+def _summons_chat_name(chat: Any) -> str:
+    """What the chat a summons came from is called: a group's title, else
+    the name of the person a private chat is with (first and last name, as
+    Telegram gives them), else empty."""
+    title = getattr(chat, "title", None)
+    if title:
+        return str(title)
+    names = (getattr(chat, "first_name", None), getattr(chat, "last_name", None))
+    return " ".join(str(n) for n in names if n)
 
 
 def _proposal_keyboard(labels: list, rid: str, urls: "list | None" = None):
@@ -791,6 +824,14 @@ def _non_text_filter():
     return filters.UpdateType.MESSAGE & ~filters.TEXT
 
 
+def _guest_filter():
+    """The filter the guest handler is registered with: a summons of this bot
+    by @mention in a group it is not a member of (``Update.guest_message``).
+    Such an update has no ``update.message``, so neither message filter above
+    matches it."""
+    return filters.UpdateType.GUEST_MESSAGE
+
+
 def _managed_bot_created_filter():
     """The filter the creation handler is registered with: a message telling
     Casa's bot that the operator just created a bot for it to manage. It is
@@ -815,9 +856,10 @@ def _managed_bot_updated_handler(callback):
 
 #: The update types each endpoint asks Telegram for, stated on every
 #: ``setWebhook`` and ``getUpdates`` (an omitted list keeps whatever was set
-#: before). Only Casa's bot manages other bots, so only it hears of them.
+#: before). Only Casa's bot manages other bots, so only it hears of them;
+#: only an agent's own bot can be summoned into a group as a guest.
 ALLOWED_UPDATES_CASA = ("message", "callback_query", "managed_bot")
-ALLOWED_UPDATES_AGENT = ("message", "callback_query")
+ALLOWED_UPDATES_AGENT = ("message", "callback_query", "guest_message")
 
 #: While an agent's held update is being released, the bus outcomes its
 #: delivery met (see :meth:`TelegramChannel.release_update`).
@@ -830,13 +872,20 @@ class _IntakeQueue(asyncio.Queue):
     agent chat's lifecycle (``own_voice.intake``) before it is queued, which
     is before the webhook answers and before polling confirms it: an update
     the lifecycle holds or answers is acknowledged and goes no further, so no
-    handler of this endpoint sees an update its agent may not receive yet."""
+    handler of this endpoint sees an update its agent may not receive yet.
+
+    A guest summons (``guest_message``) is not a message of the agent's chat:
+    it skips the lifecycle and is queued for the guest handler, which checks
+    the bot's phase itself."""
 
     def __init__(self, channel: "TelegramChannel") -> None:
         super().__init__()
         self._channel = channel
 
     async def put(self, item: Any) -> None:
+        if getattr(item, "guest_message", None) is not None:
+            await super().put(item)
+            return
         if isinstance(getattr(item, "update_id", None), int):
             if not await self._channel._own_intake(item):
                 return
@@ -1192,6 +1241,10 @@ class TelegramChannel(Channel):
         self._job_cancels: set[str] = set()
         # Tasks retiring ended jobs' keyboards (strong references).
         self._job_ui_tasks: set[asyncio.Task] = set()
+        # The inline messages of turns this bot was summoned to in groups it
+        # is not a member of, by the key the turn's context carries
+        # (``_guest_query``); each is removed by its terminal edit.
+        self._guest_replies: dict[str, GuestReply] = {}
         # Default routing: forward to the existing PTB handler.
         self._route_to_assistant = self._route_to_assistant_default
 
@@ -1367,6 +1420,12 @@ class TelegramChannel(Channel):
         app.add_handler(
             MessageHandler(_text_filter(), self.handle_update, block=False)
         )
+        if not self.is_casa:
+            # An agent's own bot summoned by @mention in a group it is not a
+            # member of. Casa's bot never asks for these updates.
+            app.add_handler(
+                MessageHandler(_guest_filter(), self._on_guest_message, block=False)
+            )
         # #1036: every non-text message — files and everything else — so none
         # is dropped silently. See `_non_text_filter` for why it is not a bare
         # `~filters.TEXT`.
@@ -1725,6 +1784,169 @@ class TelegramChannel(Channel):
         task = asyncio.create_task(_run())
         self._turn_tasks.add(task)
         task.add_done_callback(self._turn_tasks.discard)
+
+    def _guest_decision(self, update: Any) -> Literal["operator", "guest", "drop"]:
+        """Who a guest summons is for. ``"operator"``: the operator summoned
+        this bot, whose chat is bound to its agent. ``"guest"``: someone else
+        summoned it in a group the operator allowed for the specialist
+        installed now. ``"drop"``: anything else, including any summons while
+        the bot is not bound."""
+        import guest_groups
+        import own_voice
+        if not own_voice.is_bound(self.bot_id):
+            return "drop"
+        if self._sender_is_operator(update.effective_user):
+            return "operator"
+        chat = update.effective_chat
+        role = self.default_agent
+        if chat is not None and guest_groups.store().allowed(
+                role, chat.id, guest_groups.component_of(role)):
+            return "guest"
+        return "drop"
+
+    async def _on_guest_message(self, update: Any, context: Any) -> None:
+        """A guest summons of this agent's own bot. The operator's becomes a
+        turn, under the same rate limit as his direct chat (keyed by him, not
+        by the group, so summoning across groups shares one allowance); a
+        refused one is not answered in the group. A summons from anyone else
+        is not answered yet. Everything else is dropped without a word."""
+        t0 = time.monotonic()
+        decision = self._guest_decision(update)
+        chat_id = getattr(update.effective_chat, "id", None)
+        if decision == "guest":
+            self._log_unanswered(update, t0, "guest_not_answered")
+            return
+        if decision == "operator":
+            operator = self.operator_user_id()
+            if operator is None:
+                self._log_unanswered(update, t0, "dropped", logging.DEBUG)
+                return
+            if self._rate_limiter is not None and self._rate_limiter.enabled:
+                rate = self._rate_limiter.check(str(operator))
+                if not rate.allowed:
+                    if rate.should_notify:
+                        logger.info("Telegram rate limit hit for the operator's summons of "
+                                    "%s in group %s; not answered", self.default_agent, chat_id)
+                    return
+            await self._dispatch_summoned_turn(update)
+            return
+        self._log_unanswered(update, t0, "dropped", logging.DEBUG)
+
+    def _log_unanswered(self, update: Any, t0: float, outcome: str,
+                        level: int = logging.INFO) -> None:
+        """The summons line for a summons that never reaches the dispatcher."""
+        group = update.effective_chat
+        _log_summons(outcome, level, role=self.default_agent,
+                     caller_id=getattr(update.effective_user, "id", None),
+                     chat_id=getattr(group, "id", None),
+                     title=_summons_chat_name(group), t0=t0)
+
+    async def _dispatch_summoned_turn(self, update: Any) -> bool:
+        """The operator's summons of this bot in a group, as a turn of the
+        agent's own chat whose final text is shown in the group. ``True``
+        when the agent's queue took the turn.
+
+        The guest query is answered first, with the placeholder of a
+        :class:`GuestReply` bound under the turn's cid; then ONE bus message
+        goes to the agent, built as :meth:`_dispatch_dm_turn` builds the
+        operator's direct message — his chat as ``chat_id``, this bot as the
+        route, his identity and markers — plus the two reserved markers that
+        make it a summoned turn: the group (``_guest_chat``) and the reply's
+        key (``_guest_query``). The group is never a chat id, a route or a
+        delivery: everything but the final text goes to the own chat. No
+        typing lease (the placeholder stands in for it) and no hand-back: a
+        turn the queue cannot take fails the reply there and then. The rate
+        decision was made by the caller."""
+        from channels.guest_reply import GuestReply
+        import tools as tools_mod
+        gm = update.guest_message
+        chat = gm.chat
+        user = update.effective_user
+        operator = self.operator_user_id()
+        if operator is None or user is None or self._app is None:
+            return False
+        key = new_cid()
+        reply = GuestReply(
+            self._app.bot, guest_query_id=gm.guest_query_id,
+            name=tools_mod._display_name_for_role(self.default_agent), key=key)
+        # A group's title; a private chat has none, so the name of the
+        # person it is with stands in (empty when there is none).
+        title = _summons_chat_name(chat)
+        reply.meta = {"role": self.default_agent, "caller_id": user.id, "chat_id": chat.id,
+                      "title": title, "t0": time.monotonic()}
+        if not await reply.open():
+            _log_summons("operator_failed", **reply.meta)
+            return False
+        self._guest_replies[key] = reply
+        reply.start_ticker()
+
+        user_name = getattr(user, "first_name", None) or "unknown"
+        trusted_origin = ingress_identity(
+            "telegram", sender_id=str(user.id), sender_display_name=user_name,
+            sender_is_operator=True)
+        # The turn's route: the bot the summons arrived on, as for a direct message.
+        route = self.bot_id
+        context = sanitize_external_context({
+            "chat_id": str(operator),
+            "user_id": user.id,
+            "user_name": user_name,
+            "message_id": str(gm.message_id),
+            "cid": key,
+        })
+        context["_origin_route"] = "telegram"
+        context["_origin_clearance"] = trusted_origin.server_origin.clearance
+        context["_tg_bot"] = route
+        opening = self._opening_marker(user)
+        if opening is not None:
+            context["_chat_opening"] = opening
+        context["_operator_turn"] = True
+        context["_operator_words"] = gm.text or ""
+        context["_guest_chat"] = {"id": chat.id, "title": title, "type": chat.type}
+        context["_guest_query"] = key
+        earlier = self._guest_reply_note_for(gm, chat.type, title)
+        if earlier is not None:
+            context["_guest_reply_note"] = earlier
+
+        msg = BusMessage(
+            type=MessageType.CHANNEL_IN,
+            source="telegram",
+            target=self.default_agent,
+            content=gm.text or "",
+            channel="telegram",
+            context=context,
+            trusted_user_origin=trusted_origin,
+        )
+        if await self._send_turn(msg) == "accepted":
+            return True
+        logger.error("role %r has no queue; the operator's summons in group %s is not "
+                     "answered", self.default_agent, chat.id)
+        await reply.fail()
+        self._guest_replies.pop(key, None)
+        _log_summons("operator_failed", **reply.meta)
+        return False
+
+    def _guest_reply_note_for(self, gm: Any, chat_type: str, title: str) -> str | None:
+        """Casa's note when a summons replied to this bot's own earlier
+        message in the chat — the agent's previous answer there, quoted as
+        a reply's quote is clipped — or ``None``. *title* is the chat's name
+        as :func:`_summons_chat_name` gives it."""
+        quoted = getattr(gm, "reply_to_message", None)
+        quoted_from = getattr(quoted, "from_user", None)
+        if quoted is None or quoted_from is None or not self.has_bot_id:
+            return None
+        if quoted_from.id != self.bot_id:
+            return None
+        text = getattr(quoted, "text", None) or getattr(quoted, "caption", None)
+        if not text:
+            return None
+        import chat_notes
+        if chat_type in ("group", "supergroup"):
+            where = f"in «{title}»"
+        elif title:
+            where = f"in a chat with «{title}»"
+        else:
+            where = "in another chat"
+        return f"You answered earlier {where}: {chat_notes.clip(text, REPLY_QUOTE_CHARS)}"
 
     async def _own_intake(self, update: Any) -> bool:
         """Offer one update that reached this agent's own bot to its chat's
@@ -2384,21 +2606,9 @@ class TelegramChannel(Channel):
         # change. The chat is marked open only once its queue takes the turn
         # (:meth:`_send_turn`); a turn refused here decides again when it is
         # delivered.
-        if not self.is_casa and self._sender_is_operator(user):
-            import own_voice
-            try:
-                opening = own_voice.chat_opening(self.bot_id)
-            except Exception:  # noqa: BLE001 — the turn goes on without the opening
-                logger.warning("own chat opening not read", exc_info=True)
-                opening = False
-            if opening:
-                try:
-                    moved = own_voice.chat_moved(self.bot_id)
-                except Exception:  # noqa: BLE001 — it opens as a first chat
-                    logger.warning("own chat: whether the chat moved was not read; "
-                                   "it opens as a first chat", exc_info=True)
-                    moved = False
-                context["_chat_opening"] = "moved" if moved else True
+        opening = self._opening_marker(user)
+        if opening is not None:
+            context["_chat_opening"] = opening
         # #283: live-operator marker — reserved (sanitize strips it from
         # every external context), stamped ONLY for the authenticated
         # operator sender. The agent-spawn cap exempts exactly these turns;
@@ -2439,6 +2649,31 @@ class TelegramChannel(Channel):
         if received_file is None:
             await self._hand_back(update, msg)
         return False
+
+    def _opening_marker(self, user: Any) -> "bool | str | None":
+        """The ``_chat_opening`` mark the operator's turn carries on this
+        agent's own bot: ``True`` when it opens the chat, ``"moved"`` when it
+        opens the agent's new chat after a handle change, else ``None`` —
+        Casa's own bot, another sender, or a chat already open. A lifecycle
+        that cannot be read opens nothing; one that cannot say whether the
+        chat moved opens it as a first chat."""
+        if self.is_casa or not self._sender_is_operator(user):
+            return None
+        import own_voice
+        try:
+            opening = own_voice.chat_opening(self.bot_id)
+        except Exception:  # noqa: BLE001 — the turn goes on without the opening
+            logger.warning("own chat opening not read", exc_info=True)
+            return None
+        if not opening:
+            return None
+        try:
+            moved = own_voice.chat_moved(self.bot_id)
+        except Exception:  # noqa: BLE001 — it opens as a first chat
+            logger.warning("own chat: whether the chat moved was not read; "
+                           "it opens as a first chat", exc_info=True)
+            moved = False
+        return "moved" if moved else True
 
     def _reply_note_for(self, update: Update, chat_id: str, *,
                         ended_task: Any = None) -> str | None:
@@ -4664,6 +4899,7 @@ class TelegramChannel(Channel):
                     "post_dm_keyboard send failed (chat=%s): %s", chat_id, exc,
                 )
                 return None
+            await self._guest_waiting()
             return msg.message_id
         display, entities = render(text)
         try:
@@ -4690,7 +4926,20 @@ class TelegramChannel(Channel):
                 "post_dm_keyboard send failed (chat=%s): %s", chat_id, exc,
             )
             return None
+        await self._guest_waiting()
         return msg.message_id
+
+    async def _guest_waiting(self) -> None:
+        """A keyboard just reached the operator's chat — a question, a card,
+        a protected call's challenge, all through :meth:`post_dm_keyboard`.
+        When the turn that posted it was summoned in a group (its origin
+        carries ``_guest_query``) and the group's message is still live, that
+        message says the agent is waiting in the chat. Informational: a turn
+        that goes on to answer still makes its one terminal edit."""
+        import agent as agent_mod
+        reply = self.guest_reply_for(agent_mod.origin_var.get(None))
+        if reply is not None and not reply.terminal:
+            await reply.waiting()
 
     async def clear_dm_keyboard(self, chat_id: int, message_id: int) -> bool:
         """#1375: remove a posted DM message's inline keyboard by a markup-only edit
@@ -5785,6 +6034,48 @@ class TelegramChannel(Channel):
                 logger.warning("Final stream overflow send failed: %s", exc)
         return outcome
 
+    # ------------------------------------------------------------------
+    # Outbound: a turn this bot was summoned to in a group it is not a
+    # member of. Telegram allows one inline message there, opened before the
+    # turn and edited once at its end; the turn's context names it by
+    # ``_guest_query``. Only the final text goes to the group — the
+    # ``send_message`` tool, Casa's own lines and the health notice keep
+    # going to the DM through ``send`` as on any other turn, and once the
+    # terminal edit is made the key is gone, so the context is an ordinary
+    # DM context for anything sent after it.
+    # ------------------------------------------------------------------
+
+    def guest_reply_for(self, context: Any) -> "GuestReply | None":
+        """The inline message bound to *context*'s summoned turn, if any."""
+        key = context.get("_guest_query") if isinstance(context, dict) else None
+        return self._guest_replies.get(key) if key else None
+
+    async def guest_finish(
+        self, text: str, error_kind: "ErrorKind | None", context: dict[str, Any],
+    ) -> DeliveryOutcome:
+        """The summoned turn's one terminal edit: the agent's final text, or
+        Casa's failure line when the turn ended in a classified error (the
+        error's own wording never reaches the group). The binding is removed
+        once the edit has been made, whatever its outcome — also when this
+        turn is cancelled while the edit waits out a flood wait: the reply
+        lands the edit (within its budget) before the cancellation goes on,
+        so the group never keeps the placeholder."""
+        reply = self.guest_reply_for(context)
+        if reply is None:
+            logger.warning("guest_finish: no inline message bound for %r",
+                           context.get("_guest_query"))
+            return DeliveryOutcome.NOT_DELIVERED
+        answered = False
+        try:
+            if error_kind is not None or _unadmitted("guest_finish", text):
+                return await reply.fail()
+            outcome = await reply.finish(text)
+            answered = outcome is DeliveryOutcome.DELIVERED
+            return outcome
+        finally:
+            self._guest_replies.pop(reply.key, None)
+            _log_summons("operator_answered" if answered else "operator_failed", **reply.meta)
+
     async def turn_finished(self, context: dict[str, Any]) -> None:
         """L7 (v0.52.0): teardown for turns that end WITHOUT delivery.
 
@@ -5794,7 +6085,26 @@ class TelegramChannel(Channel):
         (permanent 'typing…' plus one Bot API call every 4s). The agent calls
         this hook on the suppressed-turn path to stop it. In block mode the
         streaming first-token teardown never runs, so this is the only stop.
+
+        A summoned turn that ends with nothing to say still owes the group
+        its one edit: a decline, or — when the agent asked its question in
+        the chat instead — a pointer there. As in :meth:`guest_finish`, a
+        cancellation during that edit's wait lets the edit land first; the
+        binding goes only once the message is final.
         """
+        reply = self.guest_reply_for(context)
+        if reply is not None:
+            scope = context.get("_turn_scope")
+            said = "operator_failed"
+            try:
+                if getattr(scope, "detached_ask", False):
+                    if await reply.asked_elsewhere() is DeliveryOutcome.DELIVERED:
+                        said = "operator_asked_elsewhere"
+                elif await reply.decline() is DeliveryOutcome.DELIVERED:
+                    said = "operator_declined"
+            finally:
+                self._guest_replies.pop(reply.key, None)
+                _log_summons(said, **reply.meta)
         target_chat = _resolve_chat_id(context, self.chat_id)
         self._release_typing(context, target_chat)
         if context.get("synthetic") == "chat_opening":
@@ -5804,7 +6114,7 @@ class TelegramChannel(Channel):
     # Outbound: streaming
     # ------------------------------------------------------------------
 
-    def create_on_token(self, context: dict[str, Any]) -> OnTokenCallback:
+    def create_on_token(self, context: dict[str, Any]) -> "OnTokenCallback | None":
         """Return a callback for streaming tokens to this chat.
 
         The callback receives the *accumulated* response text on each token and
@@ -5812,7 +6122,12 @@ class TelegramChannel(Channel):
         ``telegram_delivery_mode`` option and with it the ``block`` mode, whose
         only behaviour was to make this a no-op and let the final send deliver
         everything at once.
+
+        ``None`` for a summoned turn: its one inline message takes only the
+        final text (:meth:`guest_finish`), so nothing streams.
         """
+        if self.guest_reply_for(context) is not None:
+            return None
         target_chat = str(_resolve_chat_id(context, self.chat_id))
         # r1-1: release THIS turn's lease by its cid on first-token teardown
         # (captured once — the context is fixed for this callback's turn).

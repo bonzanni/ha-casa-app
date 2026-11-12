@@ -112,6 +112,10 @@
   kind: meta
   summary: Manifest shard — the Telegram bots document, moved to its own shard because the T-Z shard stands just under the 40 KB index ceiling.
 
+- doc: manifest.d/architecture-guest-summons.yaml
+  kind: meta
+  summary: Manifest shard — the guest-summons document, born in its own shard because the own-voice and T-Z shards stand near the index ceiling.
+
 - doc: manifest.yaml
   kind: meta
   summary: The publication allowlist for this corpus.
