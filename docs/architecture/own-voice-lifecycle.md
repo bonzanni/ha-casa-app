@@ -94,7 +94,8 @@ current suggestion turns it, under the registry lock, into a **pending switch**:
 recorded in phase `switching` and is never bound in this process; its endpoint holds what
 it receives and says once that the chat is being set up. Casa edits the card ("Alex is
 moving to @new — Casa restarts for a moment.") and asks the Supervisor for a restart
-(`supervisor_restart`). At boot `casa_core._apply_own_chat_switches`
+(`supervisor_restart`), which answers only once Casa has stopped, so nothing Casa's stop
+waits for may be awaiting it. At boot `casa_core._apply_own_chat_switches`
 (→ `Lifecycle.apply_switches`) runs once the durable stores and the tools are loaded and
 before the plugin outbox, the agents, Telegram, the workers, the HTTP server, the channels
 and the scheduler start; it reads only Casa's records and the token store. For each

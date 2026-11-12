@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.364.3] - 2026-11-12
+
+### Fixed
+
+- Moving a specialist to a new bot no longer leaves Casa stuck for about two minutes while it restarts after you tap Create (#1552).
+
 ## [0.364.2] - 2026-11-12
 
 ### Fixed
