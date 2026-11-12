@@ -32,7 +32,8 @@ three rules, and then calls that endpoint's own method:
 - **A, address-bound** (`TelegramTransport.endpoint`): the bot of a stored address, for an
   edit, a delete or a reply to an existing message.
 - **B, route-bound** (`TelegramTransport.endpoint_for_route`): the route in the delivery
-  context, for a turn's reply, its stream, a media send.
+  context, for a turn's reply, its stream, a media send, and a summoned turn's answer in the
+  group's inline message (`guest_finish`, [`guest-summons.md`](guest-summons.md)).
 - **C, Casa-bound** (`TelegramTransport.casa_endpoint`): Casa's own cards and notices (consent,
   install and erase cards, Casa's operator notices, the limit line of a turn that did not come
   from a chat), which always go through Casa's bot whatever bot the triggering turn came from.
@@ -43,7 +44,8 @@ known, `set_endpoint_role` binds or releases the role (Casa's endpoint keeps its
 `remove_endpoint` forgets a stopped one. A job's posts are address-bound to the job's
 delivery (`_job_endpoint`), decided at its birth; a job with no delivery posts nothing. Each
 endpoint states the update types it asks Telegram for on every `setWebhook` and `getUpdates`:
-Casa's bot adds `managed_bot` to `message` and `callback_query`.
+Casa's bot adds `managed_bot` to `message` and `callback_query`, an agent's own bot
+`guest_message` (`ALLOWED_UPDATES_CASA`, `ALLOWED_UPDATES_AGENT`).
 
 Resolution never falls back. A bot with no endpoint is `EndpointUnavailable`, never answered
 by another endpoint. The transport adds no outcome of its own: an endpoint that is not ready

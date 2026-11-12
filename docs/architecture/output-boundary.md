@@ -131,6 +131,11 @@ never rendered — and each caller is recorded and classified in
 public channel coroutine with a text parameter. A new site fails those tests until someone
 records it and, in doing so, answers who authored the words.
 
+`guest_finish`, a summoned turn's one terminal edit of the group's inline message
+([`guest-summons.md`](guest-summons.md)), refuses a bare string by the same check and logs it
+the same way, but is outside the statement's failure value: Telegram allows the bot that one
+message only, so the refusal makes the edit Casa's failure line rather than no call at all.
+
 What it does not cover: the agent log, which is no channel method and carries no scope ([`agent-logs.md`](agent-logs.md)); the arrival replies and a plugin's delivered posts — the link
 message, a message and a file, each Casa-composed from plugin-authored bytes — which the
 recorded lists class as notices; and the voice channel, which has not adopted the contract. The recorded lists

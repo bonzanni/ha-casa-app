@@ -70,7 +70,7 @@
 - item: casa/rootfs/opt/casa/channels/telegram_supervisor.py
   doc: architecture/telegram.md
 - item: casa/rootfs/opt/casa/channels/guest_reply.py
-  doc: architecture/own-voice.md
+  doc: architecture/guest-summons.md
 - item: casa/rootfs/opt/casa/channels/telegram_transport.py
   doc: architecture/telegram-bots.md
 - item: casa/rootfs/opt/casa/channels/tg_address.py
@@ -106,7 +106,7 @@
 - item: casa/rootfs/opt/casa/own_voice.py
   doc: architecture/own-voice.md
 - item: casa/rootfs/opt/casa/guest_groups.py
-  doc: architecture/own-voice.md
+  doc: architecture/guest-summons.md
 - item: casa/rootfs/opt/casa/own_voice_lifecycle.py
   doc: architecture/own-voice-lifecycle.md
 - item: casa/rootfs/opt/casa/run_admission.py

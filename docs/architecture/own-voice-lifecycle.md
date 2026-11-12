@@ -182,7 +182,7 @@ is that send's failure. `own_chat_state` reads one of `not_declared`, `no_bot`,
 `not_open`, `open`, `dormant`.
 
 **Held updates leave the journal only through intake.** An agent bot's update queue is
-`_IntakeQueue`: every update is offered to `own_voice.intake` before it is queued, which is
+`_IntakeQueue`: every message or tap goes to `own_voice.intake` before it is queued, which is
 before the webhook answers. It is delivered only when the bot is `bound`, reconciled in
 this process, its role declared and its agent's queue registered, and nothing older is
 held; otherwise it is appended to `agent-voices/held/<bot>.jsonl` (fsynced) and
@@ -213,7 +213,7 @@ not authorized no fetch is tried and the log says so once. An uninstall's result
 
 ## Contracts & invariants
 
-**INV-OWN-006**: An update that reaches an agent's own bot passes the lifecycle's intake before it is queued; it is delivered only to a bound, reconciled, declared agent whose queue is registered and with nothing older held, otherwise journaled before Telegram is acknowledged, and held records are released in arrival order, a refused one holding itself and every later one.
+**INV-OWN-006**: A message or tap to an agent's own bot passes the lifecycle's intake before it is queued; it is delivered only to a bound, reconciled, declared agent whose queue is registered and with nothing older held, otherwise journaled before Telegram is acknowledged, and held records are released in arrival order, a refused one holding itself and every later one.
 
 **INV-OWN-008**: Every lifecycle effect finds its phase on disk, every phase has a boot reconciliation, and a recovering bot is released only on the token fetch failure that establishes its deletion; every other failure keeps it recovering.
 

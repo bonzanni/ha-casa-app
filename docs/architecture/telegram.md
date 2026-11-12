@@ -96,12 +96,13 @@ sites, so a new sender cannot forget it. A value nested inside a JSON-encoded pa
 entity address, a button label) is already an ASCII escape by the time it is serialised and
 is left for the platform to judge; a bot injected for a test is outside the seam.
 
-**Model text enters the six model-text methods only as admitted text.** `send`,
-`send_response`, `finalize_stream`, `finalize_response_stream`, `post_dm_keyboard` and
-`send_media`'s caption accept an `Admitted` — the value the authoring turn's scope mints, or
-Casa's own `casa_text` — and refuse a bare string with an `ERROR` log, zero Bot API calls
-and the method's own failure value: `NOT_DELIVERED`, `None`, or `UnadmittedText` from
-`send_media`. `edit_dm_message` stays string-typed, because it re-renders a body admitted
+**Model text enters the seven model-text methods only as admitted text.** `send`,
+`send_response`, `finalize_stream`, `finalize_response_stream`, `post_dm_keyboard`,
+`send_media`'s caption and `guest_finish` accept an `Admitted` — the value the authoring
+turn's scope mints, or Casa's own `casa_text` — and refuse a bare string with an `ERROR` log.
+The first six then make zero Bot API calls and return the method's own failure value:
+`NOT_DELIVERED`, `None`, or `UnadmittedText` from `send_media`; `guest_finish` still owes the
+group its one edit and makes it Casa's failure line ([`guest-summons.md`](guest-summons.md)). `edit_dm_message` stays string-typed, because it re-renders a body admitted
 when it was posted or replaces it with a Casa status; the arrival replies and the
 delivered-link message are outside the contract, and so is the agent log, which is no channel
 method and posts plain text. When a streamed
@@ -111,7 +112,8 @@ own message, before the overflow pages, which go untouched. The contract is INV-
 
 **Casa's bot also hears of the bots it manages; an agent's bot passes its lifecycle first.**
 Each endpoint states the update types it wants on every `setWebhook` and `getUpdates`
-(`allowed_updates`): `message` and `callback_query`, plus `managed_bot` on Casa's bot alone.
+(`allowed_updates`): `message` and `callback_query`, plus `managed_bot` on Casa's bot alone
+and `guest_message` on an agent's own bots alone.
 On Casa's bot a `managed_bot_created` service message is caught by its own handler, registered
 ahead of the non-text one (which would otherwise answer it as an unreadable message): from the
 operator in his chat it is handed to the own-chat lifecycle and is never a turn; anything else
@@ -121,7 +123,8 @@ lifecycle may ask for a restart, which the Supervisor answers only once Casa has
 `Application.stop()` waits for its handler tasks; the channel's `stop()` cancels these first and
 waits for them only briefly. An agent's own bot
 queues every update through `_IntakeQueue`, which asks `own_voice.intake` before the update is
-queued: an update held or answered there reaches no handler; the lifecycle later replays held
+queued — a guest summons aside, which goes straight to its own handler
+([`guest-summons.md`](guest-summons.md)): an update held or answered there reaches no handler; the lifecycle later replays held
 ones through `release_update`. On such a bot `/start` is an ordinary turn; the operator's first
 turn there, whatever it says, carries the reserved `_chat_opening` key that has the agent
 say hello (`"moved"` in an agent's new chat after a move to a new bot), and marks the chat open once its queue takes it (`TelegramChannel._send_turn`,
