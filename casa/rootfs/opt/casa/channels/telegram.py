@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
 from collections.abc import Collection
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
 from telegram import InputFile, Update
 from telegram.constants import ChatAction
@@ -791,6 +791,14 @@ def _non_text_filter():
     return filters.UpdateType.MESSAGE & ~filters.TEXT
 
 
+def _guest_filter():
+    """The filter the guest handler is registered with: a summons of this bot
+    by @mention in a group it is not a member of (``Update.guest_message``).
+    Such an update has no ``update.message``, so neither message filter above
+    matches it."""
+    return filters.UpdateType.GUEST_MESSAGE
+
+
 def _managed_bot_created_filter():
     """The filter the creation handler is registered with: a message telling
     Casa's bot that the operator just created a bot for it to manage. It is
@@ -815,9 +823,10 @@ def _managed_bot_updated_handler(callback):
 
 #: The update types each endpoint asks Telegram for, stated on every
 #: ``setWebhook`` and ``getUpdates`` (an omitted list keeps whatever was set
-#: before). Only Casa's bot manages other bots, so only it hears of them.
+#: before). Only Casa's bot manages other bots, so only it hears of them;
+#: only an agent's own bot can be summoned into a group as a guest.
 ALLOWED_UPDATES_CASA = ("message", "callback_query", "managed_bot")
-ALLOWED_UPDATES_AGENT = ("message", "callback_query")
+ALLOWED_UPDATES_AGENT = ("message", "callback_query", "guest_message")
 
 #: While an agent's held update is being released, the bus outcomes its
 #: delivery met (see :meth:`TelegramChannel.release_update`).
@@ -830,13 +839,20 @@ class _IntakeQueue(asyncio.Queue):
     agent chat's lifecycle (``own_voice.intake``) before it is queued, which
     is before the webhook answers and before polling confirms it: an update
     the lifecycle holds or answers is acknowledged and goes no further, so no
-    handler of this endpoint sees an update its agent may not receive yet."""
+    handler of this endpoint sees an update its agent may not receive yet.
+
+    A guest summons (``guest_message``) is not a message of the agent's chat:
+    it skips the lifecycle and is queued for the guest handler, which checks
+    the bot's phase itself."""
 
     def __init__(self, channel: "TelegramChannel") -> None:
         super().__init__()
         self._channel = channel
 
     async def put(self, item: Any) -> None:
+        if getattr(item, "guest_message", None) is not None:
+            await super().put(item)
+            return
         if isinstance(getattr(item, "update_id", None), int):
             if not await self._channel._own_intake(item):
                 return
@@ -1367,6 +1383,12 @@ class TelegramChannel(Channel):
         app.add_handler(
             MessageHandler(_text_filter(), self.handle_update, block=False)
         )
+        if not self.is_casa:
+            # An agent's own bot summoned by @mention in a group it is not a
+            # member of. Casa's bot never asks for these updates.
+            app.add_handler(
+                MessageHandler(_guest_filter(), self._on_guest_message, block=False)
+            )
         # #1036: every non-text message — files and everything else — so none
         # is dropped silently. See `_non_text_filter` for why it is not a bare
         # `~filters.TEXT`.
@@ -1725,6 +1747,61 @@ class TelegramChannel(Channel):
         task = asyncio.create_task(_run())
         self._turn_tasks.add(task)
         task.add_done_callback(self._turn_tasks.discard)
+
+    def _guest_decision(self, update: Any) -> Literal["operator", "guest", "drop"]:
+        """Who a guest summons is for. ``"operator"``: the operator summoned
+        this bot, whose chat is bound to its agent. ``"guest"``: someone else
+        summoned it in a group the operator allowed for the specialist
+        installed now. ``"drop"``: anything else, including any summons while
+        the bot is not bound."""
+        import guest_groups
+        import own_voice
+        if not own_voice.is_bound(self.bot_id):
+            return "drop"
+        if self._sender_is_operator(update.effective_user):
+            return "operator"
+        chat = update.effective_chat
+        role = self.default_agent
+        if chat is not None and guest_groups.store().allowed(
+                role, chat.id, guest_groups.component_of(role)):
+            return "guest"
+        return "drop"
+
+    async def _on_guest_message(self, update: Any, context: Any) -> None:
+        """A guest summons of this agent's own bot. The operator's becomes a
+        turn, under the same rate limit as his direct chat (keyed by him, not
+        by the group, so summoning across groups shares one allowance); a
+        refused one is not answered in the group. A summons from anyone else
+        is not answered yet. Everything else is dropped without a word."""
+        decision = self._guest_decision(update)
+        chat_id = getattr(update.effective_chat, "id", None)
+        if decision == "guest":
+            logger.info("guest summons in allowed group %s for %s: not answered in this release",
+                        chat_id, self.default_agent)
+            return
+        if decision == "operator":
+            operator = self.operator_user_id()
+            if operator is None:
+                logger.debug("guest summons for %s dropped: no operator identity",
+                             self.default_agent)
+                return
+            if self._rate_limiter is not None and self._rate_limiter.enabled:
+                rate = self._rate_limiter.check(str(operator))
+                if not rate.allowed:
+                    if rate.should_notify:
+                        logger.info("Telegram rate limit hit for the operator's summons of "
+                                    "%s in group %s; not answered", self.default_agent, chat_id)
+                    return
+            await self._dispatch_summoned_turn(update)
+            return
+        logger.debug("guest summons in chat %s for %s dropped", chat_id, self.default_agent)
+
+    async def _dispatch_summoned_turn(self, update: Any) -> bool:
+        """The operator's summons of this bot in a group, as a turn of its
+        agent. ``True`` when a turn was dispatched. Not answered yet: the
+        summons is logged and nothing is sent."""
+        logger.info("operator summons received; not answered yet")
+        return False
 
     async def _own_intake(self, update: Any) -> bool:
         """Offer one update that reached this agent's own bot to its chat's

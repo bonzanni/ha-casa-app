@@ -55,6 +55,11 @@ UPDATED = {"managed_bot": {
     "user": {"first_name": "Op", "id": OPERATOR, "is_bot": False, "language_code": "en",
              "username": "op_example"}},
     "update_id": 392654411}
+GUEST = {"update_id": 3, "guest_message": {
+    "message_id": 58, "date": 1794339400, "text": "@ExampleFinanceTestBot how much?",
+    "chat": {"id": -5, "title": "Test Group", "type": "group"},
+    "from": {"first_name": "Op", "id": OPERATOR, "is_bot": False},
+    "guest_query_id": "q"}}
 
 
 
@@ -321,7 +326,7 @@ async def test_a_webhook_states_the_endpoints_update_types(monkeypatch, casa, ex
 
 def test_only_casas_bot_asks_for_managed_bot_updates():
     assert ALLOWED_UPDATES_CASA == ("message", "callback_query", "managed_bot")
-    assert ALLOWED_UPDATES_AGENT == ("message", "callback_query")
+    assert ALLOWED_UPDATES_AGENT == ("message", "callback_query", "guest_message")
 
 
 # ---------------------------------------------------------------------------
@@ -335,17 +340,24 @@ _REAL_PTB = textwrap.dedent(r"""
         from telegram import Update
     except ImportError:
         print(json.dumps({"skip": True})); raise SystemExit(0)
-    from telegram.ext import ManagedBotUpdatedHandler
+    from telegram.ext import ManagedBotUpdatedHandler, MessageHandler
     from channels.telegram import (ALLOWED_UPDATES_AGENT, ALLOWED_UPDATES_CASA,
-                                   _managed_bot_created_filter, _non_text_filter, _text_filter)
+                                   _guest_filter, _managed_bot_created_filter,
+                                   _non_text_filter, _text_filter)
     created = Update.de_json(json.loads(sys.argv[2]), None)
     updated = Update.de_json(json.loads(sys.argv[3]), None)
+    guest = Update.de_json(json.loads(sys.argv[4]), None)
     c = _managed_bot_created_filter()
     h = ManagedBotUpdatedHandler(lambda u, ctx: None)
     out = {
       "created": [bool(c.check_update(created)), bool(_non_text_filter().check_update(created)),
                   bool(_text_filter().check_update(created)), bool(h.check_update(created))],
       "updated": [bool(c.check_update(updated)), bool(h.check_update(updated))],
+      "guest": [bool(_text_filter().check_update(guest)),
+                bool(_non_text_filter().check_update(guest)),
+                bool(c.check_update(guest)), bool(_guest_filter().check_update(guest)),
+                bool(MessageHandler(_guest_filter(), lambda u, ctx: None).check_update(guest)),
+                guest.message is None, guest.effective_chat.id, guest.effective_user.id],
       "bot": created.message.managed_bot_created.bot.to_dict(),
       "from": created.message.from_user.id,
       "managed": [updated.managed_bot.bot.to_dict(), updated.managed_bot.user.id],
@@ -358,12 +370,12 @@ _REAL_PTB = textwrap.dedent(r"""
 def test_real_ptb_routes_the_two_signals_as_the_endpoint_assumes():
     """The creation message matches the creation filter AND the non-text one
     (so the registration order is what keeps it from the "can't read" reply)
-    and no text filter; the managed_bot update matches only its handler; the
-    bot is read as the endpoint passes it; the stated update types are
-    Telegram's. Needs python-telegram-bot 22.8 (Bot API 10.0)."""
+    and no text filter; the managed_bot update matches only its handler; a
+    guest summons matches only the guest filter; the bot is read as the
+    endpoint passes it; the stated update types are Telegram's. Needs python-telegram-bot 22.8 (Bot API 10.0)."""
     root = os.path.join(os.path.dirname(__file__), "..", "casa", "rootfs", "opt", "casa")
     r = subprocess.run([sys.executable, "-c", _REAL_PTB, os.path.abspath(root),
-                        json.dumps(CREATED), json.dumps(UPDATED)],
+                        json.dumps(CREATED), json.dumps(UPDATED), json.dumps(GUEST)],
                        capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, r.stderr[-2000:]
     out = json.loads(r.stdout.strip().splitlines()[-1])
@@ -371,6 +383,8 @@ def test_real_ptb_routes_the_two_signals_as_the_endpoint_assumes():
         pytest.skip("python-telegram-bot not installed")
     assert out["created"] == [True, True, False, False]
     assert out["updated"] == [False, True]
+    # a guest summons matches only the guest handler, never a message handler
+    assert out["guest"] == [False, False, False, True, True, True, -5, OPERATOR]
     assert out["bot"] == CREATED["message"]["managed_bot_created"]["bot"]
     assert out["from"] == OPERATOR
     assert out["managed"] == [UPDATED["managed_bot"]["bot"], OPERATOR]

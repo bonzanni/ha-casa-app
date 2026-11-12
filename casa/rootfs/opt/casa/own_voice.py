@@ -110,6 +110,18 @@ async def intake(bot_id: int, update_json: dict) -> Literal["deliver", "held", "
     return await _lifecycle().intake(bot_id, update_json)
 
 
+def is_bound(bot_id: "int | None") -> bool:
+    """Whether own bot *bot_id* is bound to its agent now. A plain read of
+    the bot's phase: it offers nothing to the lifecycle, journals nothing and
+    creates no lifecycle (``False`` without one, or without a record)."""
+    import own_voice_lifecycle
+    lc = own_voice_lifecycle._CURRENT
+    if lc is None or bot_id is None:
+        return False
+    rec = lc.store.bots.get(bot_id) or {}
+    return rec.get("phase") == own_voice_lifecycle.BOUND
+
+
 def chat_opening(bot_id: int) -> bool:
     """Whether a turn delivered on own bot *bot_id* now is the one that opens
     its agent's chat (the chat has not opened yet)."""
