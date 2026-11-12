@@ -141,6 +141,12 @@ class TestHappyPath:
         assert artifact.role_path == d / "role.yaml"
         assert artifact.doctrine_path == d / "doctrine.md"
 
+    @pytest.mark.parametrize("value", [True, False])
+    def test_voice_handoff_is_an_optional_boolean(self, tmp_path, value):
+        d = write_role_dir(tmp_path, role=valid_role(voice_handoff=value))
+
+        assert load_role_artifact(d).role["voice_handoff"] is value
+
     def test_role_mapping_is_immutable(self, tmp_path):
         d = write_role_dir(tmp_path, role=valid_role())
         artifact = load_role_artifact(d)
@@ -304,6 +310,12 @@ class TestSchemaValidation:
         role = valid_role()
         role["response"]["text"]["register"] = "  "
         d = write_role_dir(tmp_path, role=role)
+
+        with pytest.raises(ValueError):
+            load_role_artifact(d)
+
+    def test_voice_handoff_must_be_a_boolean(self, tmp_path):
+        d = write_role_dir(tmp_path, role=valid_role(voice_handoff="yes"))
 
         with pytest.raises(ValueError):
             load_role_artifact(d)

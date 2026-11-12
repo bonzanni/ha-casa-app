@@ -348,6 +348,11 @@ class InspectionResult:
     # caller's own ref. The receipt records the same value; the literal is
     # never persisted. Defaulted for hand-built InspectionResults.
     resolved_ref: str = ""
+    # #1568: the role's ``voice_handoff`` declaration (absent means False):
+    # the specialist says it suits the voice concierge, so the configurator
+    # may offer to wire it there at the end of an install or upgrade.
+    # Defaulted for hand-built InspectionResults.
+    voice_handoff: bool = False
 
 
 def _record_pending_receipt(slug_dir: Path, receipt_id: str) -> None:
@@ -1616,6 +1621,7 @@ def inspect_specialist_repo(
             plugin_resolutions=tuple(plugin_rows),
             role_tool_grants=role_tool_grants(component),
             resolved_ref=ref,
+            voice_handoff=component.role.role.get("voice_handoff") is True,
         )
     except BaseException:
         shutil.rmtree(component_dir, ignore_errors=True)

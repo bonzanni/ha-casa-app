@@ -26,7 +26,8 @@ from canonical_bytes import canonical_json_bytes, canonical_text, checksum_bytes
 
 def _write_component(root: Path, *, slug: str = "mtg-test",
                       dependencies: list[dict] | None = None,
-                      model: dict | None = None) -> Path:
+                      model: dict | None = None,
+                      role_extra: dict | None = None) -> Path:
     (root / "role").mkdir(parents=True)
     (root / "persona" / "pack").mkdir(parents=True)
     role_yaml = {
@@ -44,6 +45,7 @@ def _write_component(root: Path, *, slug: str = "mtg-test",
                       "restricted_webhook": {"register": "plain"}},
         "persona": {"policy": "required", "compatibility": ["casa/judge@>=0.1.0 <1.0.0"]},
         "requires": {"plugins": [], "tools": []}, "doctrine_file": "doctrine.md",
+        **(role_extra or {}),
     }
     (root / "role" / "role.yaml").write_text(yaml.safe_dump(role_yaml, sort_keys=False), encoding="utf-8")
     (root / "role" / "doctrine.md").write_text("# Core doctrine\n\nAnswer test questions.\n", encoding="utf-8")
@@ -254,6 +256,26 @@ def test_inspect_specialist_repo_install_mode_success(tmp_path: Path, monkeypatc
     assert result.slug == "fresh-specialist"
     assert result.component_checksum == component.checksum
     assert result.root_digest != result.component_checksum
+
+
+@pytest.mark.parametrize("role_extra,expected", [
+    ({"voice_handoff": True}, True), ({"voice_handoff": False}, False), ({}, False)])
+def test_inspect_specialist_repo_reports_the_roles_voice_handoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role_extra: dict, expected: bool,
+) -> None:
+    """#1568: the inspection carries the role's ``voice_handoff`` declaration,
+    False when the role does not declare it."""
+    component_root = _write_component(
+        tmp_path / "component", slug="fresh-specialist", role_extra=role_extra)
+    monkeypatch.setattr(specialist_install, "resolve_and_fetch", _stub_resolve_and_fetch(component_root))
+    index = InstalledSpecialistIndex(specialists_dir=str(tmp_path / "specialists"))
+    index.load()
+
+    result = specialist_install.inspect_specialist_repo(
+        "org/repo", "main", staging_root=tmp_path / "staging",
+        installed_index=index, receipts_dir=tmp_path / "receipts",
+    )
+    assert result.voice_handoff is expected
 
 
 def test_inspect_specialist_repo_install_mode_rejects_already_installed_slug(
@@ -2841,3 +2863,16 @@ def test_the_dependency_closure_reads_one_registry_generation(
     assert plugin_rows["alpha"].available is True
     assert plugin_rows["beta"].available is False
     assert "not registered" in plugin_rows["beta"].detail
+
+
+def test_the_install_and_upgrade_recipes_ask_about_the_voice_concierge() -> None:
+    """#1568: the question rides on the result's ``voice_handoff``, checks the
+    concierge's delegate list, and a yes goes through the ordinary wire recipe."""
+    recipes = (Path(specialist_install.__file__).parent / "defaults" / "configurator"
+               / "doctrine" / "recipes" / "specialist")
+    install = (recipes / "install.md").read_text(encoding="utf-8")
+    upgrade = (recipes / "upgrade.md").read_text(encoding="utf-8")
+    assert "`voice_handoff: true`" in install
+    assert "agents/concierge/delegates.yaml" in install
+    assert "recipes/delegate/wire.md" in install
+    assert "voice_handoff" in upgrade and "install.md` step 9" in upgrade

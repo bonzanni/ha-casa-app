@@ -109,6 +109,8 @@ apply unchanged, step 3's open-conversation warning included.
    set REPLACES the old one atomically as part of `specialist_upgrade` itself (a plugin the old
    version owned but the new one no longer declares is removed; anything newly declared is
    activated) — no separate plugin step here.
+   When the three conditions of `recipes/specialist/install.md` step 9 hold (here `voice_handoff`
+   comes from the `specialist_upgrade` result), end the answer with its voice-concierge question.
 
 ## Common mistakes
 

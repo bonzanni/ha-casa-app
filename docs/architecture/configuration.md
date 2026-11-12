@@ -125,6 +125,9 @@ the same value the add-on verifies.
 **A specialist's role may declare its own chat** (`AgentConfig.own_chat`, an `OwnChatConfig`
 of two profile texts), and `session.long_runs: true` marks a role whose requests are each one
 long conversation ([`own-voice.md`](own-voice.md), [`scratchpad.md`](scratchpad.md)).
+`voice_handoff: true` says the specialist suits the voice concierge; nothing at runtime reads
+it, and only the install and upgrade recipes act on it
+([`specialist-lifecycle.md`](specialist-lifecycle.md)).
 
 ## Contracts & invariants
 

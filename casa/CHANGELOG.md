@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.367.6] - 2026-11-12
+
+### Added
+
+- A specialist can now say it suits voice (`voice_handoff: true` in its role). When you install or update one, the assistant ends by asking whether the voice concierge (Gary) should be able to ask it too, if the concierge can't already. Say yes and it's wired like any other helper (#1568).
+
 ## [0.367.5] - 2026-11-12
 
 ### Fixed
