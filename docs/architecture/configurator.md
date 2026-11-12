@@ -140,7 +140,7 @@ from the config it runs (`tools.py::_run_delegated_turn`), never from anything a
 `tools.py::_effective_caller_role`, shared with the narrower in-tool checks of
 [`tools-interface.md`](tools-interface.md).
 
-**INV-CFG-018**: While a configurator run holds the lease, the operator DM neither names nor marks the plugin-health rows whose reason is an install phase (consent pending, a setup-provided value unwired, setup pending, not loaded yet, target pending) of the plugins that run is installing; every other row is sent as before; and when the lease is released in this process after such a run, a notify pass runs that can name those rows.
+**INV-CFG-018**: While a configurator run holds the lease, the operator DM neither names nor marks the plugin-health rows whose reason is an install phase (consent pending, a setup-provided value unwired, setup pending, not loaded yet, target pending) of the plugins that run is installing, nor those whose reason is a missing setting (which the run usually wires); every other row is sent as before; and when the lease is released in this process after such a run, a notify pass runs that can name those rows.
 
 The plugin mutations and env wirings a run makes record their plugins on the held lease
 (`tools.py::_record_plugin_installer`; bundle entries by their scoped names), and

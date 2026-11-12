@@ -147,7 +147,9 @@ the remainder of the referenced set (a `${VAR:-default}` the CLI satisfies from 
 default, a name the plugin's own setup tool creates) as a separate, equally attested
 receipt-row field. The consent text renders the two on differently labelled lines, the
 approval card's facts carry them under different keys (`secrets_required`,
-`env_referenced_not_required`), the inspect and commit payloads do too, and the install recipe tells
+`env_referenced_not_required`), plus `secrets_required_already_set` for the required names
+that already hold a value in `plugin-env.conf` — an update usually keeps what an earlier install
+wired, and the card must not read those as asks (#1566) — the inspect and commit payloads do too, and the install recipe tells
 the configurator to wire the first and never to ask for the second. The collision
 preflights — against installed plugins and between siblings of one bundle — keep reading
 the union: a name claimed in the defaulted form still collides (#431).

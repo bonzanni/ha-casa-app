@@ -582,6 +582,7 @@ IDENTITY_SITE_HITS = {
         "sanitize_specialist_snapshots": 4, "uninstall_specialist": 4, "upgrade_specialist": 1,
     },
     "specialist_install_consent.py": {
+        "_env_names_set": 1,
         "approval_card_hooks._finish_factory._edit": 1,
         "approval_card_hooks._finish_factory._finish": 1,
     },

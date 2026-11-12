@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.367.5] - 2026-11-12
+
+### Fixed
+
+- Installing a specialist no longer warns "Something needs attention … missing a setting" for values the install is about to set. You hear about a missing setting only if the install ends with it still missing (#1566).
+- An update's approval card no longer lists settings as needed when they are already set (#1566).
+
 ## [0.367.4] - 2026-11-12
 
 ### Fixed

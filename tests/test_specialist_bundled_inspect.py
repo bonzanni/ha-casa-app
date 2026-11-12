@@ -374,6 +374,27 @@ def test_render_consent_message_includes_bundled_plugin_surfaces(
     assert "tools: python3 -m mtgserver" in plugin["mcp_servers"]
     assert [t["name"] for t in plugin["protected_tools"]] == ["danger_tool"]
     assert plugin["secrets_required"] == ["SOME_API_KEY"]
+    assert "secrets_required_already_set" not in plugin
+
+
+def test_the_card_facts_say_which_required_settings_are_already_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1566: an update card read "Needs 2 settings" for two values an earlier
+    install had already wired; the facts now say which ones are set."""
+    import plugin_env_conf
+    from specialist_install_consent import install_card_request
+    component_dir, manifest_path = write_minimal_component(tmp_path, slug="mtg-test")
+    digest = write_bundled_plugin(
+        component_dir, "mtg", env_names=["SOME_API_KEY", "OTHER_KEY"])
+    _add_dependency_row(manifest_path, _bundled_dep_row("mtg", digest, "plugins/mtg"))
+    result = _inspect(tmp_path, component_dir, monkeypatch=monkeypatch)
+    env = tmp_path / "plugin-env.conf"
+    env.write_text("SOME_API_KEY=op://v/i/f\nOTHER_KEY=\n", encoding="utf-8")
+    monkeypatch.setattr(plugin_env_conf, "PLUGIN_ENV_CONF_PATH", env)
+    [plugin] = install_card_request(result, mode="upgrade").facts["bundled_plugins"]
+    assert sorted(plugin["secrets_required"]) == ["OTHER_KEY", "SOME_API_KEY"]
+    assert plugin["secrets_required_already_set"] == ["SOME_API_KEY"]
 
 
 def test_the_consent_leads_with_what_is_asked_and_ends_with_the_digests(

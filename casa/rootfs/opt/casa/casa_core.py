@@ -1799,8 +1799,9 @@ async def _notify_plugin_health_locked(channel_manager: Any, path: str) -> None:
                if e.get("fingerprint") in fp_set]
     # #1053: an install walks its plugin through states that are expected on
     # the way (consent pending, a setup-provided value not wired yet, setup
-    # still to run…). While the configurator run installing that plugin holds
-    # its lease, its install-phase rows are neither named nor marked — so they
+    # still to run…), and a setting it is about to wire reads as missing until
+    # it does (#1566). While the configurator run installing that plugin holds
+    # its lease, those rows are neither named nor marked — so they
     # stay new, and the pass run when the lease is released
     # (configurator_run._release) names whatever still stands. Any other row
     # is a fault and is sent as ever.
@@ -1814,7 +1815,7 @@ async def _notify_plugin_health_locked(channel_manager: Any, path: str) -> None:
     if installing:
         entries = [e for e in entries
                    if not (e.get("name") in installing
-                           and plugin_health.is_install_phase(
+                           and plugin_health.held_while_installing(
                                e.get("reason_code")))]
         if not entries:
             return

@@ -434,6 +434,7 @@ def install_card_request(
     text = install_consent_text(
         inspection, mode=mode, values=values, submitted_config=submitted_config)
     grants = getattr(inspection, "role_tool_grants", ()) or ()
+    env_set = _env_names_set() if inspection.plugin_resolutions else set()
     facts: dict = {"requested_by": requester_name,
                    "request": "update" if mode == "upgrade" else "install",
                    "specialist": inspection.slug,
@@ -450,7 +451,7 @@ def install_card_request(
         "default_persona": inspection.default_persona_ref,
         "dependencies": [f"{d.kind}:{d.identifier}" for d in inspection.dependencies],
         "bundled_plugins": [
-            _plugin_facts(row, (protected_tools or {}).get(row.scoped_name))
+            _plugin_facts(row, (protected_tools or {}).get(row.scoped_name), env_set)
             for row in inspection.plugin_resolutions or ()],
     })
     if values is not None:
@@ -466,15 +467,33 @@ def install_card_request(
         who=requester_name, facts=facts, fallback=approval_card.text_fallback(text))
 
 
-def _plugin_facts(row: Any, tools: "list[dict] | None") -> dict:
+def _plugin_facts(row: Any, tools: "list[dict] | None", already_set: "set[str]") -> dict:
     if tools is None:
         tools = [{"name": n, "summary": None} for n in row.protected_tools]
-    return {"name": row.scoped_name, "manifest_name": row.manifest_name,
-            "version": row.version, "source": row.source_type,
-            "mcp_servers": list(row.mcp_servers),
-            "protected_tools": [dict(t) for t in tools],
-            "secrets_required": list(row.env_names),
-            "env_referenced_not_required": list(getattr(row, "exempt_env_names", ()) or ())}
+    required = list(row.env_names)
+    facts = {"name": row.scoped_name, "manifest_name": row.manifest_name,
+             "version": row.version, "source": row.source_type,
+             "mcp_servers": list(row.mcp_servers),
+             "protected_tools": [dict(t) for t in tools],
+             "secrets_required": required,
+             "env_referenced_not_required": list(getattr(row, "exempt_env_names", ()) or ())}
+    # #1566: an update usually keeps settings an earlier install wired; without
+    # this the card read every required name as something still to give.
+    set_now = [n for n in required if n in already_set]
+    if set_now:
+        facts["secrets_required_already_set"] = set_now
+    return facts
+
+
+def _env_names_set() -> "set[str]":
+    """The plugin env names that already hold a value. Never raises: an
+    unreadable file only means the card says less."""
+    import plugin_env_conf
+    try:
+        return {n for n, v in plugin_env_conf.read_entries().items() if v}
+    except Exception:  # noqa: BLE001 — display only
+        logger.warning("plugin env read for the approval card failed", exc_info=True)
+        return set()
 
 
 # --- the approval card, shared by the specialist and persona cards -------------
