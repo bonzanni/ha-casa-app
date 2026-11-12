@@ -394,8 +394,9 @@ class InheritedNote(Obligation):
 @dataclass(frozen=True)
 class NoStream(Obligation):
     """The turn thinks privately: no token callback, only the final text is
-    delivered (#534 event wakes; scheduled turns). ``reason`` is the fact it
-    was registered from — ``"scheduled"`` or ``"event_wake"``."""
+    delivered (#534 event wakes; scheduled turns; an agent's greeting in its
+    own chat). ``reason`` is the fact it was registered from —
+    ``"scheduled"``, ``"event_wake"`` or ``"chat_opening"``."""
 
     reason: str
 
@@ -493,6 +494,10 @@ class TurnScope:
             scope.arm(NoStream("scheduled"))
         elif markers.get("synthetic") == "event_wake":
             scope.arm(NoStream("event_wake"))
+        elif markers.get("synthetic") == "chat_opening":
+            # an agent's greeting in its own chat: a reply Telegram refuses is
+            # tried once, whole, not once per streamed fragment
+            scope.arm(NoStream("chat_opening"))
         if scope.channel == "webhook" and markers.get("_origin_route") != "invoke":
             scope.arm(DestinationOperatorOnly())
         return scope

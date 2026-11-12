@@ -1777,6 +1777,40 @@ class TelegramChannel(Channel):
                 logger.warning("own chat not marked open", exc_info=True)
         return outcome
 
+    async def speak_first(self) -> bool:
+        """This agent says hello in its own chat by itself, once its bot is
+        bound and while the chat is not open: a turn Casa starts (``synthetic:
+        "chat_opening"``, no operator identity, so none of his grants) that
+        carries the opening line the operator's first turn would carry. The
+        chat opens only once the agent's reply reached Telegram (the message's
+        ``on_delivery``): a reply Telegram refuses, because the operator never
+        pressed Start, leaves it unopened, and his first message opens it as
+        before. Whether the chat is still unopened is read under the chat's
+        serial lock, so an operator message taken first is the only opening.
+        ``True`` when the agent's queue took the turn."""
+        operator = self.operator_user_id()
+        if self.is_casa or operator is None:
+            return False
+        import own_voice
+        chat = str(operator)
+        bot_id = self.bot_id
+        lock = self._chat_serial_locks.setdefault(chat, asyncio.Lock())
+        async with lock:
+            if not own_voice.chat_opening(bot_id):
+                return False
+            moved = own_voice.chat_moved(bot_id)
+
+            async def _delivered() -> None:
+                await own_voice.mark_open(bot_id)
+            msg = BusMessage(
+                type=MessageType.CHANNEL_IN, source="telegram", target=self.default_agent,
+                content="/start", channel="telegram",
+                context={"chat_id": chat, "user_id": operator, "cid": new_cid(),
+                         "synthetic": "chat_opening", "_tg_bot": bot_id,
+                         "_chat_opening": "moved" if moved else True},
+                on_delivery=_delivered)
+            return await self._bus.send_checked(msg) == "accepted"
+
     async def release_update(self, update_json: dict) -> str:
         """Deliver one update the chat's lifecycle held for this agent's bot,
         on the normal path, now, as if it had just arrived (the intake already
@@ -5401,61 +5435,73 @@ class TelegramChannel(Channel):
         every page sends rendered (previously the whole message fell back to
         plain raw chunks via ``send()``). Single page keeps the v0.70.0
         contract (no entities → ``plain_text``, #1330; BadRequest → raw resend);
-        multi-page fallbacks use each page's DISPLAY."""
-        # Release the lease before the availability guard (reconnect-safe).
-        target_chat = _resolve_chat_id(context, self.chat_id)
-        self._release_typing(context, target_chat)
-        if _unadmitted("send_response", message):
-            return DeliveryOutcome.NOT_DELIVERED
-        if self._app is None:
-            logger.warning("Telegram channel not started; cannot send message")
-            return DeliveryOutcome.NOT_DELIVERED
-        pages = render_paged(message)
-        # A task post's context carries the post record its pages are filed
-        # under as they land; every other reply carries none.
-        post = context.get("_post")
+        multi-page fallbacks use each page's DISPLAY.
 
-        def _landed(sent):
-            self._record_post(target_chat, sent, post)
-        if len(pages) == 1:
-            display, entities = pages[0]
-            if entities is None:
-                if post is None:
-                    # Delegate's outcome, VERBATIM (#556 design §2.1) — rewrapping
-                    # it here is how a delegation path loses the distinction.
-                    return await self.send(_plain(message), context)
-                _landed(await self._app.bot.send_message(
-                    chat_id=target_chat, text=display))
+        The reply to an agent's greeting (:meth:`speak_first`) that Telegram
+        refuses is one info line and not delivered: the operator has not
+        pressed Start, and the chat waits for his first message."""
+        try:
+            # Release the lease before the availability guard (reconnect-safe).
+            target_chat = _resolve_chat_id(context, self.chat_id)
+            self._release_typing(context, target_chat)
+            if _unadmitted("send_response", message):
+                return DeliveryOutcome.NOT_DELIVERED
+            if self._app is None:
+                logger.warning("Telegram channel not started; cannot send message")
+                return DeliveryOutcome.NOT_DELIVERED
+            pages = render_paged(message)
+            # A task post's context carries the post record its pages are filed
+            # under as they land; every other reply carries none.
+            post = context.get("_post")
+
+            def _landed(sent):
+                self._record_post(target_chat, sent, post)
+            if len(pages) == 1:
+                display, entities = pages[0]
+                if entities is None:
+                    if post is None:
+                        # Delegate's outcome, VERBATIM (#556 design §2.1) — rewrapping
+                        # it here is how a delegation path loses the distinction.
+                        return await self.send(_plain(message), context)
+                    _landed(await self._app.bot.send_message(
+                        chat_id=target_chat, text=display))
+                    context["_delivery_head_sent"] = True
+                    return DeliveryOutcome.DELIVERED
+                await self._send_one(target_chat, message, display, entities,
+                                     record=_landed)
                 context["_delivery_head_sent"] = True
                 return DeliveryOutcome.DELIVERED
-            await self._send_one(target_chat, message, display, entities,
-                                 record=_landed)
-            context["_delivery_head_sent"] = True
-            return DeliveryOutcome.DELIVERED
-        outcome = DeliveryOutcome.NOT_DELIVERED
-        for display, entities in pages:
-            chunks, fell_back = [display], False
-            if entities is None:
-                _landed(await self._app.bot.send_message(
-                    chat_id=target_chat, text=display))
-            else:
-                # #831: the plain retry carries this page's link destinations,
-                # which its marker-free display cannot.
-                chunks = self._plain_fallback_chunks(display, entities)
-                fell_back = await self._send_one(
-                    target_chat, chunks[0], display, entities, record=_landed)
-            # Page 1 carries the notice: once it lands the delivery counts as
-            # shown, however the remaining pages fare. Stamped BEFORE the
-            # overflow chunks below, so a raising tail cannot erase the fact
-            # that the head is on screen.
-            if outcome is DeliveryOutcome.NOT_DELIVERED:
-                context["_delivery_head_sent"] = True
-                outcome = DeliveryOutcome.DELIVERED
-            if fell_back:
-                for chunk in chunks[1:]:
+            outcome = DeliveryOutcome.NOT_DELIVERED
+            for display, entities in pages:
+                chunks, fell_back = [display], False
+                if entities is None:
                     _landed(await self._app.bot.send_message(
-                        chat_id=target_chat, text=chunk))
-        return outcome
+                        chat_id=target_chat, text=display))
+                else:
+                    # #831: the plain retry carries this page's link destinations,
+                    # which its marker-free display cannot.
+                    chunks = self._plain_fallback_chunks(display, entities)
+                    fell_back = await self._send_one(
+                        target_chat, chunks[0], display, entities, record=_landed)
+                # Page 1 carries the notice: once it lands the delivery counts as
+                # shown, however the remaining pages fare. Stamped BEFORE the
+                # overflow chunks below, so a raising tail cannot erase the fact
+                # that the head is on screen.
+                if outcome is DeliveryOutcome.NOT_DELIVERED:
+                    context["_delivery_head_sent"] = True
+                    outcome = DeliveryOutcome.DELIVERED
+                if fell_back:
+                    for chunk in chunks[1:]:
+                        _landed(await self._app.bot.send_message(
+                            chat_id=target_chat, text=chunk))
+            return outcome
+        except (Forbidden, BadRequest) as exc:
+            if context.get("synthetic") != "chat_opening":
+                raise
+            logger.info("own chat of %s: Telegram did not take the greeting (%s); "
+                        "the chat opens at the operator's first message",
+                        self.default_agent, type(exc).__name__)
+            return DeliveryOutcome.NOT_DELIVERED
 
     async def finalize_response_stream(
         self, full_text: str, context: dict[str, Any], on_token: OnTokenCallback,

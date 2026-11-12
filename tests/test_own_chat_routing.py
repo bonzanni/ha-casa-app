@@ -747,6 +747,127 @@ async def test_a_released_captionless_document_opens_nothing_and_the_next_text_g
 
 
 # ---------------------------------------------------------------------------
+# the agent says hello by itself once its bot is bound
+# ---------------------------------------------------------------------------
+
+async def test_the_greeting_is_casas_turn_carrying_the_opening(world):
+    ch, bus = _endpoint("own")
+    world.opening.unopened = True
+    assert await ch.speak_first() is True
+    [turn] = _turns(bus, "finance")
+    assert turn.content == "/start"
+    assert turn.trusted_user_origin is None
+    ctx = turn.context
+    assert ctx["synthetic"] == "chat_opening" and ctx["_chat_opening"] is True
+    assert ctx["_tg_bot"] == OWN_BOT and ctx["chat_id"] == str(OPERATOR)
+    assert "_operator_turn" not in ctx and "_operator_words" not in ctx
+    assert world.opening.marks == []            # taken by the queue opens nothing yet
+
+
+async def test_the_greeting_opens_the_chat_once_delivered(world):
+    ch, bus = _endpoint("own")
+    world.opening.unopened = True
+    await ch.speak_first()
+    [turn] = _turns(bus, "finance")
+    await turn.on_delivery()                    # the agent's reply reached Telegram
+    assert world.opening.marks == [OWN_BOT]
+
+
+async def test_a_moved_chats_greeting_carries_the_moved_opening(world):
+    ch, bus = _endpoint("own")
+    world.opening.unopened = True
+    world.opening.moved = True
+    await ch.speak_first()
+    [turn] = _turns(bus, "finance")
+    assert turn.context["_chat_opening"] == "moved"
+
+
+@pytest.mark.parametrize("kind", ENDPOINTS)
+async def test_an_open_chat_or_the_residents_bot_gets_no_greeting(world, kind):
+    ch, bus = _endpoint(kind)
+    world.opening.unopened = kind == "casa"
+    assert await ch.speak_first() is False
+    assert _turns(bus, ch.default_agent) == []
+
+
+async def test_a_greeting_its_agents_queue_cannot_take_opens_nothing(world):
+    ch, bus = _endpoint("own", register=False)
+    world.opening.unopened = True
+    assert await ch.speak_first() is False
+    assert world.opening.marks == [] and world.opening.unopened is True
+
+
+async def test_an_operator_message_taken_first_leaves_no_greeting(world):
+    """The operator's first message holds the chat's serial lock when the
+    greeting starts: it opens the chat, and the greeting, reading the chat
+    again under the lock, adds no second opening."""
+    ch, bus = _endpoint("own")
+    world.opening.unopened = True
+    lock = ch._chat_serial_locks.setdefault(str(OPERATOR), asyncio.Lock())
+    await lock.acquire()
+    first = asyncio.ensure_future(ch._handle(_text("/start"), None))
+    greeting = asyncio.ensure_future(ch.speak_first())
+    await asyncio.sleep(0)
+    lock.release()
+    await first
+    assert await greeting is False
+    [turn] = _turns(bus, "finance")
+    assert turn.context["_chat_opening"] is True and "synthetic" not in turn.context
+    assert world.opening.marks == [OWN_BOT]
+
+
+async def test_the_greeting_has_no_operator_grant_identity(world):
+    """Casa starts the greeting: classified as no direct message, so it
+    carries none of the operator's grants."""
+    import agent as agent_mod
+    import provenance
+    ch, bus = _endpoint("own")
+    world.opening.unopened = True
+    await ch.speak_first()
+    [turn] = _turns(bus, "finance")
+    origin = {**turn.context, "message_type": "channel_in", "channel": "telegram",
+              "source": "telegram", "role": "finance", "execution_role": "finance"}
+    token = agent_mod.origin_var.set(origin)
+    try:
+        assert provenance.turn_provenance().transport == "other"
+    finally:
+        agent_mod.origin_var.reset(token)
+
+
+async def test_the_greeting_thinks_privately_and_sends_its_reply_whole():
+    from bus import MessageType
+    from output_boundary import TurnScope
+    msg = BusMessage(type=MessageType.CHANNEL_IN, source="telegram",
+                     target="finance", content="/start", channel="telegram",
+                     context={"synthetic": "chat_opening", "cid": "c"})
+    assert TurnScope.mint(msg, types.SimpleNamespace(role="finance")).streaming_allowed is False
+
+
+@pytest.mark.parametrize("error", ["forbidden", "chat_not_found"])
+async def test_a_greeting_telegram_refuses_is_one_info_line(world, caplog, error):
+    import logging
+
+    from channels import DeliveryOutcome
+    from output_boundary import casa_text
+    from telegram.error import BadRequest, Forbidden
+    ch, _bus = _endpoint("own")
+    exc = (Forbidden("Forbidden: bot can't initiate conversation with a user")
+           if error == "forbidden" else BadRequest("Chat not found"))
+
+    async def refuse(**_kw):
+        raise exc
+    ch._app.bot.send_message = refuse
+    caplog.set_level(logging.INFO)
+    out = await ch.send_response(casa_text("Hi, I'm Alex."),
+                                 {"chat_id": str(OPERATOR), "synthetic": "chat_opening"})
+    assert out is DeliveryOutcome.NOT_DELIVERED
+    [line] = [r for r in caplog.records if r.levelno >= logging.INFO]
+    assert line.levelno == logging.INFO and "greeting" in line.getMessage()
+    with pytest.raises(type(exc)):              # any other reply is not excused
+        await ch.send_response(casa_text("Hi."), {"chat_id": str(OPERATOR)})
+
+
+# ---------------------------------------------------------------------------
 # lines in an agent's own chat carry no 📊 head
 # ---------------------------------------------------------------------------
 

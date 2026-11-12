@@ -68,6 +68,8 @@ class World:
     restarts: int = 0                                 # app restarts requested
     restart_ok: bool = True
     op_delete_fails: bool = False                     # `op item delete` exits non-zero
+    greetings: list = field(default_factory=list)     # (bot_id, opening) each greeting turn
+    greeting_lands: bool = False                      # Telegram takes a bot's first word
 
     def tick(self, what: str) -> None:
         self.effects.append(what)
@@ -222,6 +224,20 @@ class FakeHost:
     async def notify(self, bot_id, text):
         self.w.notices.append((bot_id, text))
         return True
+
+    async def speak_first(self, bot_id):
+        """The channel's greeting: a turn built only while the chat is not
+        open, which opens it once Telegram took its reply (the operator had
+        pressed Start); a refused one leaves it unopened. An agent with no
+        queue takes no turn."""
+        if not self.lifecycle.chat_opening(bot_id):
+            return
+        role = self.endpoints[bot_id].default_agent if bot_id in self.endpoints else ""
+        if role not in self.w.queues:
+            return
+        self.w.greetings.append((bot_id, "moved" if self.lifecycle.chat_moved(bot_id) else True))
+        if self.w.greeting_lands:
+            await self.lifecycle.mark_open(bot_id)
 
     async def release_update(self, bot_id, update):
         opening = self.turn_opening(bot_id, update)

@@ -1757,6 +1757,9 @@ class Agent:
                 and turn_report.get("retries") == []
                 and scope.operator_sends_delivered
                 and not limit_stop
+                # an agent's greeting in its own chat is acknowledged only by
+                # a reply that reached Telegram: silence opens nothing
+                and msg.context.get("synthetic") != "chat_opening"
             ):
                 await self._ack_delivery(msg, error_kind)
 
