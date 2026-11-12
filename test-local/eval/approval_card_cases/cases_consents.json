@@ -1,0 +1,117 @@
+{
+  "about": "Each consent kind through Casa's own card builder. The specialist cases inspect a real specialist checkout (--finance-repo) the way the install tool does; erase cases take their erasers from the tool fixtures, as Casa takes them from the plugin manifests.",
+  "cases": [
+    {
+      "id": "consent.specialist_install.finance",
+      "type": "specialist", "who": "Ellen",
+      "inputs": {"mode": "install", "config": {},
+                 "secret_names_provided": ["CASA_BANKFEED_EB_CP_TOKEN", "CASA_PLUGIN_BANKFEED_EB_PRIVATE_KEY"]},
+      "material_facts": [
+        "Installs the finance specialist: casa/finance (or 'finance') version 0.29.3, verbatim",
+        "Bundled plugins named with their versions: bank-feed 0.24.0 and tx-classifier 0.4.0",
+        "Casa powers it is granted, in plain words (grouped is fine): see the schedule, send files, ask the operator, search and read memory",
+        "It requires the 1Password service account token and default vault (secrets it needs)",
+        "Two Enable Banking keys are provided with the install (secrets given)",
+        "Its default persona is Alex (casa/alex 0.1.0)"
+      ],
+      "warning": {"expected": "optional", "on": "access to the 1Password service account (broad access to secrets)"}
+    },
+    {
+      "id": "consent.specialist_upgrade.finance",
+      "type": "specialist", "who": "Ellen",
+      "inputs": {"mode": "upgrade", "from_version": "0.28.0", "config": {}, "secret_names_provided": []},
+      "material_facts": [
+        "Updates the finance specialist from 0.28.0 to 0.29.3 (both versions verbatim)",
+        "Bundled plugins named with their versions: bank-feed 0.24.0 and tx-classifier 0.4.0",
+        "Casa powers it is granted, in plain words (grouped is fine): see the schedule, send files, ask the operator, search and read memory",
+        "It requires the 1Password service account token and default vault (secrets it needs)"
+      ],
+      "warning": {"expected": "optional", "on": "access to the 1Password service account (broad access to secrets)"}
+    },
+    {
+      "id": "consent.persona_install",
+      "type": "persona", "who": "Ellen",
+      "inputs": {"persona_id": "alex", "version": "0.1.0", "display_name": "Alex",
+                 "checksum": "sha256:5a2ea3451564e4cf67afcf59b6730b2c579e2690f3fee54eb2cee21f00632eb4"},
+      "material_facts": [
+        "Installs the persona alex, version 0.1.0 (verbatim)",
+        "Its display name is Alex"
+      ],
+      "warning": {"expected": "no", "on": ""}
+    },
+    {
+      "id": "consent.trigger.gmail_push",
+      "type": "trigger",
+      "inputs": {"plugin": "gmail", "effective": "plg-gmail--push", "target": "resident:assistant",
+                 "auth": {"mode": "static_header", "header": "X-API-Key"},
+                 "clearance": "public", "deliver": "none"},
+      "material_facts": [
+        "Opens a web address that outside callers can reach (incoming calls to the gmail plugin)",
+        "Each call starts a turn of the assistant (the resident assistant)",
+        "Callers must present a shared key (sent in a request header) to be accepted",
+        "Those turns get only public memory (memory clearance public)"
+      ],
+      "warning": {"expected": "optional", "on": "outside callers can start assistant turns"}
+    },
+    {
+      "id": "consent.callback.gmail_oauth",
+      "type": "callback",
+      "inputs": {"plugin": "gmail", "effective": "plg-gmail--oauth"},
+      "material_facts": [
+        "Opens an address that receives the browser redirect of a sign-in (authorization) flow for gmail",
+        "It starts no agent turn and gives no memory access"
+      ],
+      "warning": {"expected": "no", "on": ""}
+    },
+    {
+      "id": "consent.event.bank_sync",
+      "type": "event",
+      "inputs": {"subscriber": "quarterly-accounting", "emitter": "finance.bank-feed",
+                 "event": "transactions_synced", "targets": ["specialist:finance"]},
+      "material_facts": [
+        "The quarterly-accounting plugin receives an event from bank-feed (the 'transactions synced' event, in plain words or verbatim)",
+        "The event is delivered to the finance specialist"
+      ],
+      "warning": {"expected": "no", "on": ""}
+    },
+    {
+      "id": "consent.erase.gmail_plugin",
+      "type": "erase", "who": "Ellen",
+      "inputs": {"what": "the plugin gmail",
+                 "erasers": [{"plugin": "gmail", "tool": "erase_gmail", "data_tool": "erase_gmail_data"}]},
+      "material_facts": [
+        "Choice to keep the data (a reinstall picks it up)",
+        "Choice to erase data but keep the sign-in: deletes the sent log and saved attachments",
+        "Choice to erase everything: also revokes Gmail's access at Google and deletes the sign-in (a new sign-in is needed later)",
+        "Home Assistant backups taken before now still contain the data either way"
+      ],
+      "warning": {"expected": "optional", "on": "erasing everything revokes access at Google"}
+    },
+    {
+      "id": "consent.erase.finance_specialist",
+      "type": "erase", "who": "Ellen",
+      "inputs": {"what": "the specialist finance",
+                 "erasers": [{"plugin": "finance.bank-feed", "tool": "delete_all_data", "data_tool": "delete_data_keep_signins"}]},
+      "material_facts": [
+        "Choice to keep the data",
+        "Choice to erase data but keep sign-ins: erases transactions, notes, tags, rules, balances, plugin backups and exports, keeps the bank consents and links",
+        "Choice to erase everything: also asks the banks to withdraw consent and erases the 1Password key and sign-in the plugin made",
+        "Erasing is irreversible (Home Assistant backups taken before now still contain the data)"
+      ],
+      "warning": {"expected": "optional", "on": "erase everything withdraws bank consents / is irreversible"}
+    },
+    {
+      "id": "consent.erase.quarterly_plugin",
+      "type": "erase", "who": "Ellen",
+      "inputs": {"what": "the plugin quarterly-accounting",
+                 "erasers": [{"plugin": "quarterly-accounting", "tool": "reset_store", "data_tool": ""}]},
+      "material_facts": [
+        "Choice to keep the data",
+        "Choice to erase everything: the whole accounting store (documents, decisions, views, packages)",
+        "Bank-feed's accounting tags and notes stay",
+        "Home Assistant backups taken before now still contain the data either way"
+      ],
+      "warning": {"expected": "no", "on": ""}
+    }
+  ]
+}

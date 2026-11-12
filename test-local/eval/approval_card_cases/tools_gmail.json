@@ -1,0 +1,134 @@
+{
+  "plugin": "gmail",
+  "server": "gmail",
+  "source": {
+    "manifest_name": "gmail",
+    "version": "0.12.1",
+    "commit": "c922376f2143",
+    "registered_in": "server/server.py (FastMCP @mcp.tool(); schema from the plugin's vendored mcp 1.3.0)"
+  },
+  "tools": {
+    "send_email": {
+      "summary": "Send email to {to}: {subject}",
+      "description": "Send a plain-text email. from_address: optional SendAs alias (defaults to subject's primary address). Protected: requires the user's tap-approval.",
+      "inputSchema": {
+        "properties": {
+          "to": {
+            "title": "To",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "request_id": {
+            "default": "",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "attachment_paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Attachment Paths"
+          },
+          "from_address": {
+            "default": "",
+            "title": "From Address",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to",
+          "subject",
+          "body"
+        ],
+        "title": "send_emailArguments",
+        "type": "object"
+      }
+    },
+    "reply_to_thread": {
+      "summary": "Reply to: {display_subject}",
+      "description": "Reply to an email thread. display_subject is for the approval prompt only. from_address: optional SendAs alias. Protected: requires the user's tap-approval.",
+      "inputSchema": {
+        "properties": {
+          "thread_id": {
+            "title": "Thread Id",
+            "type": "string"
+          },
+          "display_subject": {
+            "title": "Display Subject",
+            "type": "string"
+          },
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "request_id": {
+            "default": "",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "attachment_paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Attachment Paths"
+          },
+          "from_address": {
+            "default": "",
+            "title": "From Address",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "display_subject",
+          "body"
+        ],
+        "title": "reply_to_threadArguments",
+        "type": "object"
+      }
+    },
+    "erase_gmail": {
+      "summary": "Revokes Gmail's access at Google and deletes the stored sign-in, the sent log and saved attachments. Reconnecting needs a new sign-in.",
+      "description": "Erase everything this plugin holds: revokes Gmail's access at Google and deletes the stored sign-in, the sent log and saved attachments. Run by Casa at uninstall; takes no arguments.",
+      "inputSchema": {
+        "properties": {},
+        "title": "erase_gmailArguments",
+        "type": "object"
+      }
+    },
+    "erase_gmail_data": {
+      "summary": "Deletes the sent log and saved attachments; keeps the Gmail sign-in, so a reinstall stays connected.",
+      "description": "Erase this plugin's data (sent log, saved attachments) but keep the Gmail sign-in, so a reinstall stays connected. Run by Casa at uninstall; takes no arguments.",
+      "inputSchema": {
+        "properties": {},
+        "title": "erase_gmail_dataArguments",
+        "type": "object"
+      }
+    }
+  }
+}

@@ -13,3 +13,13 @@ header for the required options/env); none is part of the pytest unit gate.
   of one long session built under the pre-#1390 description — the live condition; a
   fresh session did not reproduce the failure. Runs in the container or with
   `--local --cli` (see script header).
+- `approval_card_eval.py` — measurement of the model-written approval cards: every
+  case in `approval_card_cases/` (real protected tools with their own descriptions and
+  input schemas, each consent kind, three cases whose arguments try to steer the
+  writer) is built by Casa's own card builder and written by the real `write_card`
+  against a logged-in CLI, three runs per case for Sonnet at its effort, Sonnet at low
+  effort and Haiku. A separate Opus call judges each card against the case's material
+  facts; the summary reports missed and wrong facts, warning accuracy, softened or
+  overstated scope, code-like tokens, fallbacks, latency and length. Runs from a
+  checkout with `--cli` and `--out` (see script header); `--check` builds the requests
+  without a model.
