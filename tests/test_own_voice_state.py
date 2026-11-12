@@ -183,7 +183,11 @@ async def test_offer_own_chat_passes_its_mode_through(lc, world, ellens_tool):
     dropped = await ellens_tool({"agent": "finance", "mode": "drop"})
     assert dropped == {"status": "dropped", "keeps": "@HeyAlexTestBot"}
     assert lc.store.agents["finance"]["change"] is None
-    unknown = await ellens_tool({"agent": "finance", "mode": "rename"})
+    renamed = await ellens_tool({"agent": "finance", "mode": "rename",
+                                 "name": "Alex the Accountant"})
+    assert renamed == {"status": "renamed", "name": "Alex the Accountant"}
+    assert ("name", ALEX_TOKEN, "Alex the Accountant") in world.setup
+    unknown = await ellens_tool({"agent": "finance", "mode": "adopt"})
     assert unknown["status"] == "error" and unknown["kind"] == "bad_mode"
 
 

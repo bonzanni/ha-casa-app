@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-11
+last_reviewed: 2026-11-12
 ---
 
 # Agents with their own chat
@@ -47,7 +47,9 @@ card that creates the chat with the handle the resident chose (`username`), or, 
 bot exists, the card that opens it, and answers `already_open` with the link when the chat
 is open; `replace` offers a new bot with a new handle in place of the current one, and,
 asked again after a switch was held back, requests the restart that finishes it; `drop`
-keeps the current bot, while the new one does not exist yet. The handle is always the
+keeps the current bot, while the new one does not exist yet; `rename` gives the agent's bot
+the display name `name`. For the handle of a bot the agent was moved away from (`check` says
+`used_before`), `offer` and `replace` move it back to that bot. The handle is always the
 resident's: the tool's description carries the guidance (the role, not the persona;
 `Casa<Role><digits>Bot` by default; the operator's pattern and wishes first), and code
 only checks it. An install, upgrade or rollback that leaves a declared agent without a bot

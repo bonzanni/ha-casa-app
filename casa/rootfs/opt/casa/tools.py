@@ -16598,7 +16598,9 @@ async def persona_apply(args: dict) -> dict:
     "when they have one; the person's own wishes always win. Before you propose "
     "handles to the person, check them with mode \"check\" and candidates (it also "
     "tells you the role, the persona's name, your own bot's handle and the other "
-    "specialists' handles); propose only ones it reports probably_free. mode "
+    "specialists' handles, and the handles it had before); propose only ones it "
+    "reports probably_free, or used_before: a bot this specialist was moved away "
+    "from, which it can move back to. mode "
     "\"offer\" (the default) with username posts the card that creates the chat, or, "
     "once created, the one that opens it; when the chat is already open it returns "
     "already_open with its link. When the person wants a specialist's handle "
@@ -16607,24 +16609,32 @@ async def persona_apply(args: dict) -> dict:
     "what is open and that the change can happen once it is done. The move happens "
     "during a short Casa restart, after the person taps Create. If the person changes "
     "their mind before tapping Create, use mode \"drop\". Asking again with mode "
-    "\"replace\" after a move was held back finishes it. When a specialist was just "
+    "\"replace\" after a move was held back finishes it. Offering a used_before handle "
+    "(with mode \"replace\", or \"offer\" when the specialist has no bot) moves the "
+    "specialist back to that bot during a short Casa restart, with nothing to tap; if "
+    "Telegram no longer has that bot, the result says so. To change the name shown at "
+    "the top of the specialist's chat (not its handle), use mode \"rename\" with name: "
+    "it applies at once, and to any later bot of that specialist. When a specialist was just "
     "installed or upgraded and can now have its own chat, offer it, choosing the "
     "handle yourself; the person need not discuss it. For a specialist that cannot "
     "have its own chat, it returns an error saying so.",
     {"type": "object",
      "properties": {
          "agent": {"type": "string"},
-         "mode": {"type": "string", "enum": ["check", "offer", "replace", "drop"],
+         "mode": {"type": "string",
+                  "enum": ["check", "offer", "replace", "drop", "rename"],
                   "default": "offer"},
          "username": {"type": "string"},
+         "name": {"type": "string"},
          "candidates": {"type": "array", "items": {"type": "string"}},
      },
      "required": ["agent"]},
 )
 async def offer_own_chat(args: dict) -> dict:
     """The resident's tool for a specialist's own chat: it checks handles,
-    offers the chat, replaces its bot or drops a pending change. The body and
-    the results are the own-chat lifecycle's."""
+    offers the chat, replaces its bot (or moves it back to an earlier one),
+    drops a pending change or renames the bot. The body and the results are
+    the own-chat lifecycle's."""
     import own_voice
     agent = args.get("agent")
     role, refusal = _handoff_target(agent if isinstance(agent, str) else "")
@@ -16633,12 +16643,14 @@ async def offer_own_chat(args: dict) -> dict:
     mode = args.get("mode") or "offer"
     username = args.get("username")
     candidates = args.get("candidates")
+    name = args.get("name")
     try:
         return _result(await own_voice.offer_own_chat(
             role, mode=mode if isinstance(mode, str) else "",
             username=username if isinstance(username, str) else None,
             candidates=[c for c in candidates if isinstance(c, str)]
-            if isinstance(candidates, list) else None))
+            if isinstance(candidates, list) else None,
+            name=name if isinstance(name, str) else None))
     except Exception:  # noqa: BLE001 — a result, never a raise
         logger.exception("offer_own_chat for %s failed", role)
         return _result({"status": "error", "kind": "offer_failed",

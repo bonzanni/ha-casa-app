@@ -117,6 +117,9 @@ USERNAME_RULES = "5–32 characters of A–Z, a–z, 0–9 and _, ending in bot"
 HANDLE_PAGE = "https://t.me/{}"
 _HANDLE_PROBE_TIMEOUT_S = 5
 MAX_CANDIDATES = 5
+#: The longest display name Telegram's ``setMyName`` takes
+#: (``telegram.constants.BotNameLimit.MAX_NAME_LENGTH``).
+MAX_NAME = 64
 
 
 def _now_iso() -> str:
@@ -594,6 +597,19 @@ class Lifecycle:
         agent = self.store.agents.get(role)
         return (agent or {}).get("label") or role
 
+    @staticmethod
+    def _chosen_name(agent: dict) -> "str | None":
+        """The display name chosen for the agent's bot, or ``None``. The
+        suggestion's name is a choice only when it differs from the persona
+        name recorded beside it (an offer made before a name could be chosen
+        stored the persona's name there)."""
+        name = (agent.get("suggestion") or {}).get("name")
+        return name if name and name != agent.get("label") else None
+
+    def _display_name(self, role: str) -> str:
+        """The name the bot shows: the one chosen for it, else the persona's."""
+        return self._chosen_name(self.store.agents.get(role) or {}) or self._label(role)
+
     def _resident_name(self) -> str:
         try:
             return self.host.resident_name() or ""
@@ -824,19 +840,25 @@ class Lifecycle:
             return
         await self._edit(agent.get("offer_card"), f"{label}'s new chat is open.")
 
+    def _role_of(self, bot_id: int) -> "str | None":
+        """The agent *bot_id* is for; ``None`` for an unknown bot and for a
+        released one, which is no agent's bot any more."""
+        rec = self.store.bots.get(bot_id) or {}
+        return rec.get("role") if rec.get("phase") != RELEASED else None
+
     def chat_opening(self, bot_id: int) -> bool:
         """Whether a turn delivered on *bot_id* now is the one that opens its
         agent's chat: the bot is its agent's and that chat has not opened yet.
         Read from the records, not :meth:`state`, which says ``no_bot`` while a
         binding releases what was held for it."""
-        role = (self.store.bots.get(bot_id) or {}).get("role")
+        role = self._role_of(bot_id)
         return bool(role) and not (self.store.agents.get(role) or {}).get("chat_open_at")
 
     def chat_moved(self, bot_id: int) -> bool:
         """Whether *bot_id* is an agent's new bot after a handle change whose
         chat has not opened yet: its first turn opens a new chat, not a first
         one."""
-        role = (self.store.bots.get(bot_id) or {}).get("role")
+        role = self._role_of(bot_id)
         agent = self.store.agents.get(role) or {} if role else {}
         return bool(agent.get("moved_from")) and not agent.get("chat_open_at")
 
@@ -845,7 +867,7 @@ class Lifecycle:
         (the operator's) or reached Telegram (the agent's greeting): the chat
         is open. Takes no lock: the endpoint calls it while a release may hold
         this bot's."""
-        role = (self.store.bots.get(bot_id) or {}).get("role")
+        role = self._role_of(bot_id)
         if role:
             await self._mark_open(role)
 
@@ -881,12 +903,33 @@ class Lifecycle:
             logger.warning("own chats: the handle probe failed", exc_info=True)
             return None
 
+    def _released_bot(self, role: str, username: str) -> "int | None":
+        """The released bot of *role* whose handle is *username*, in any case
+        (the newest, should there be two), unless the handle was ever offered
+        to another agent: a bot *role* was moved away from, which it can be
+        moved back to. A released bot of another agent is never one."""
+        if self._owner_of(username, besides=role) is not None:
+            return None
+        wanted = username.lower()
+        found = [bot_id for bot_id, rec in self.store.bots.items()
+                 if rec["phase"] == RELEASED and rec.get("role") == role
+                 and (rec.get("username") or "").lower() == wanted]
+        return max(found) if found else None
+
+    def _previous_handles(self, role: str) -> list[str]:
+        """The handles of *role*'s released bots, oldest first."""
+        return [rec["username"] for _bot_id, rec in sorted(self.store.bots.items())
+                if rec["phase"] == RELEASED and rec.get("role") == role
+                and rec.get("username")]
+
     async def check_handles(self, role: str, candidates: list[str]) -> dict:
         """What the resident needs to choose *role*'s handle: per candidate
-        ``invalid_format``, ``owned_by_other``, ``taken``, ``probably_free``
-        or ``unknown`` (the probe did not complete), and the context: the
-        role, its persona's name, the resident's own bot, the role's current
-        handle, the other agents' handles and Telegram's username rules."""
+        ``invalid_format``, ``owned_by_other``, ``used_before`` (a bot *role*
+        was moved away from: offering it moves *role* back to that bot),
+        ``taken``, ``probably_free`` or ``unknown`` (the probe did not
+        complete), and the context: the role, its persona's name, the
+        resident's own bot, the role's current and previous handles, the
+        other agents' handles and Telegram's username rules."""
         candidates = [str(c) for c in candidates or []]
         if len(candidates) > MAX_CANDIDATES:
             return {"status": "error", "kind": "too_many_candidates",
@@ -897,6 +940,8 @@ class Lifecycle:
                 return "invalid_format"
             if self._owner_of(name, besides=role) is not None:
                 return "owned_by_other"
+            if self._released_bot(role, name) is not None:
+                return "used_before"
             taken = await self._probe_handle(name)
             return {True: "taken", False: "probably_free"}.get(taken, "unknown")
 
@@ -927,6 +972,7 @@ class Lifecycle:
                             "resident_bot": resident,
                             "current_handle": (current[1].get("username") or None)
                             if current else None,
+                            "previous_handles": self._previous_handles(role),
                             "other_handles": others, "rules": USERNAME_RULES}}
 
     def _offer_no_longer_fits(self, role: str, username: str,
@@ -985,8 +1031,9 @@ class Lifecycle:
                     agent["change"] = {"new_bot": None, "old_bot": agent.get("bot_id"),
                                        "old_username": found[1].get("username") or ""
                                        if found else ""}
+                name = self._chosen_name(agent)
                 agent.update(offered_at=_now_iso(), label=label,
-                             suggestion={"name": label, "username": username})
+                             suggestion={"name": name, "username": username})
                 agent["offer_card"] = None
                 await self.store.save()
                 change = agent.get("change")
@@ -996,7 +1043,7 @@ class Lifecycle:
             return refusal
         if previous is not None:
             await self._edit(previous, "Replaced by the offer below.")
-        url = create_link(me.get("username") or "", label, username)
+        url = create_link(me.get("username") or "", name or label, username)
         if change is not None:
             text = (f"{label} can move to a new chat with you, replacing "
                     f"@{change['old_username']}. Tap below, then Create.")
@@ -1008,7 +1055,8 @@ class Lifecycle:
                     "message": "the offer could not be posted"}
         agent["offer_card"] = addr.to_json()
         await self.store.save()
-        return {"status": "offered", "suggested_name": label, "suggested_username": username}
+        return {"status": "offered", "suggested_name": name or label,
+                "suggested_username": username}
 
     # -- creation, match, ask ---------------------------------------------
 
@@ -1080,6 +1128,9 @@ class Lifecycle:
             return False
         rec.update(phase=BINDING, role=role)
         agent["bot_id"] = bot_id
+        if agent.get("suggestion"):
+            # Read against the label it was stored beside, before that moves.
+            agent["suggestion"] = {**agent["suggestion"], "name": self._chosen_name(agent)}
         agent["label"] = self._label(role)
         await self.store.save()
         return True
@@ -1209,31 +1260,32 @@ class Lifecycle:
         self._avatar_told.discard(role)
         return data
 
-    async def _self_setup(self, bot_id: int, role: str) -> None:
-        """Name the bot after the persona, describe it, set its commands,
-        restrict it to its owner and give it the persona's picture — each
-        call idempotent, each failure logged and retried at the next trigger.
-        Runs when the declared values' digest differs from the one last
-        applied."""
+    async def _self_setup(self, bot_id: int, role: str) -> bool:
+        """Name the bot (the name chosen for it, else the persona's), describe
+        it, set its commands, restrict it to its owner and give it the
+        persona's picture — each call idempotent, each failure logged and
+        retried at the next trigger. Runs when the digest of the values it
+        applies differs from the one last applied. Whether the bot now has
+        them all."""
         cfg = self._configs().get(role)
         own = getattr(cfg, "own_chat", None)
         if own is None:
-            return
+            return False
         rec = self.store.bots[bot_id]
         photo = self._avatar(role, cfg)
-        label = self._label(role)
+        name = self._display_name(role)
         digest = hashlib.sha256(json.dumps([
-            label, own.description, own.short_description, list(COMMANDS), "owner-only",
+            name, own.description, own.short_description, list(COMMANDS), "owner-only",
             hashlib.sha256(photo).hexdigest() if photo is not None else None,
         ]).encode("utf-8")).hexdigest()
         if rec.get("setup_digest") == digest:
-            return
+            return True
         token = self._tokens.get(bot_id)
         if token is None:
-            return
+            return False
         ok = True
         calls = (
-            ("name", lambda: self.host.set_name(token, label)),
+            ("name", lambda: self.host.set_name(token, name)),
             ("description", lambda: self.host.set_description(token, own.description)),
             ("short description",
              lambda: self.host.set_short_description(token, own.short_description)),
@@ -1261,9 +1313,11 @@ class Lifecycle:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("own chat %s: old picture not removed (%s)", role,
                                type(exc).__name__)
-        if ok:
-            rec["setup_digest"] = digest
+        # A partly applied setup forgets the last digest: the values it did
+        # apply may differ from the ones that digest describes.
+        rec["setup_digest"] = digest if ok else None
         await self.store.save()
+        return ok
 
     # -- endpoint, release, intake ----------------------------------------
 
@@ -1575,9 +1629,11 @@ class Lifecycle:
 
         A switch stays pending while a durable record still waits on the old
         bot (the card says so once the channels are up). Otherwise the old
-        bot is retired (its record, held updates and stored token) and the
-        new one is handed to the ordinary binding. Every step is persisted
-        and idempotent, so a crash anywhere re-runs from what is on disk."""
+        bot is retired — its held updates and stored token go, and its
+        record stays, ``released``, so the agent can be moved back to it —
+        and the new one is handed to the ordinary binding. Every step is
+        persisted and idempotent, so a crash anywhere re-runs from what is on
+        disk."""
         self._switch_held.clear()
         for role in sorted(self.store.agents):
             agent = self.store.agents[role]
@@ -1585,15 +1641,18 @@ class Lifecycle:
             if change is None or change["new_bot"] is None:
                 continue
             old_bot, new_bot = change["old_bot"], change["new_bot"]
-            if old_bot is not None and old_bot in self.store.bots:
+            old_rec = self.store.bots.get(old_bot) if old_bot is not None else None
+            if old_rec is not None and old_rec["phase"] != RELEASED:
                 items = list(self.host.open_items(role, old_bot, True) or [])
                 if items:
                     self._switch_held[role] = items
                     logger.info("own chat %s: the move to a new bot waits; still open "
                                 "on the old one: %s", role, ", ".join(items))
                     continue
+            if old_rec is not None:
+                # Set up afresh should the agent ever move back to it.
+                old_rec.update(phase=RELEASED, setup_digest=None)
             if old_bot is not None:
-                self.store.bots.pop(old_bot, None)
                 if agent.get("bot_id") == old_bot:
                     agent["bot_id"] = None
                     agent["chat_open_at"] = None
@@ -1724,6 +1783,9 @@ class Lifecycle:
         if self.bot_id_for(role) is not None:
             return {"status": "error", "kind": "being_set_up",
                     "message": f"{self._label(role)}'s chat is being set up"}
+        back = self._released_bot(role, username)
+        if back is not None:
+            return await self._move_back(role, back)
         refusal = await self._handle_refusal(role, username)
         if refusal is not None:
             return refusal
@@ -1731,9 +1793,10 @@ class Lifecycle:
 
     async def replace(self, role: str, username: str) -> dict:
         """The resident's request for a new bot for *role*, with the handle it
-        chose. Refused while something still waits on the current bot. Once
-        the new bot exists, asking again requests the restart that moves the
-        agent to it."""
+        chose — or, for the handle of a bot *role* was moved away from, that
+        bot again. Refused while something still waits on the current bot.
+        Once the new bot exists, asking again requests the restart that moves
+        the agent to it."""
         label = self._label(role)
         if not self.declared(role):
             return {"status": "error", "kind": "not_declared",
@@ -1753,6 +1816,9 @@ class Lifecycle:
             return busy
         if change is not None and change["new_bot"] is not None:
             return await self._restart_for_switch(role)
+        back = self._released_bot(role, username)
+        if back is not None:
+            return await self._move_back(role, back)
         refusal = await self._handle_refusal(role, username)
         if refusal is not None:
             return refusal
@@ -1761,6 +1827,82 @@ class Lifecycle:
             return res
         return {"status": "change_offered", "suggested_username": username,
                 "replaces": f"@{old_username}"}
+
+    async def _move_back(self, role: str, bot_id: int) -> dict:
+        """Move *role* back to *bot_id*, a bot it was moved away from: no new
+        bot, only the restart that applies a pending switch. Its token is
+        fetched first; when Telegram does not hand it over nothing changes —
+        and a bot Telegram reports deleted is forgotten, so its handle is an
+        ordinary one again."""
+        rec = self.store.bots[bot_id]
+        username = rec.get("username") or ""
+        label = self._label(role)
+        token, outcome = await self._fetch(bot_id)
+        if token is None:
+            if outcome == "deleted":
+                async with self._registry_lock:
+                    if (self.store.bots.get(bot_id) or {}).get("phase") == RELEASED:
+                        del self.store.bots[bot_id]
+                        await self.store.save()
+                return {"status": "error", "kind": "bot_gone",
+                        "message": f"@{username} no longer exists on Telegram, so {label} "
+                                   "cannot move back to it. A new bot can be offered "
+                                   "under that handle if it is free."}
+            return {"status": "error", "kind": "bot_unreachable",
+                    "message": f"Telegram did not hand Casa @{username} back: it may "
+                               "have been deleted, Casa's bot may no longer manage it, "
+                               "or Telegram is not reachable right now."}
+        async with self._registry_lock:
+            # The fetch awaited: a bot created from an earlier offer, or this
+            # same move asked twice, may have claimed the change meanwhile.
+            agent = self.store.agent(role, create=True)
+            change = agent.get("change")
+            if change is None or change["new_bot"] is None:
+                if change is None:
+                    found = self.store.bot_of(role)
+                    change = agent["change"] = {
+                        "new_bot": None, "old_bot": agent.get("bot_id"),
+                        "old_username": (found[1].get("username") or "") if found else ""}
+                change["new_bot"] = bot_id
+                rec.update(phase=SWITCHING, role=role)
+                self._tokens[bot_id] = token
+                if username.lower() not in {h.lower() for h in agent["handles"]}:
+                    agent["handles"].append(username)
+                agent.update(label=label, suggestion={"name": self._chosen_name(agent),
+                                                      "username": username})
+                await self.store.save()
+        return await self._restart_for_switch(role)
+
+    async def rename(self, role: str, name: str) -> dict:
+        """The resident's request to give *role*'s bot the display name
+        *name* (the handle stays). It is kept as the agent's chosen name: a
+        bound bot takes it now, through its self-setup, and any later bot at
+        its own; the cards keep the persona's name."""
+        name = (name or "").strip()
+        if not self.declared(role):
+            return {"status": "error", "kind": "not_declared",
+                    "message": f"{self._label(role)} does not have a chat of its own"}
+        if not name or len(name) > MAX_NAME:
+            return {"status": "error", "kind": "invalid_name",
+                    "message": f"a bot's name is 1–{MAX_NAME} characters"}
+        agent = self.store.agent(role, create=True)
+        username = (agent.get("suggestion") or {}).get("username") or ""
+        agent.update(label=self._label(role),
+                     suggestion={"name": name, "username": username})
+        await self.store.save()
+        found = self.store.bot_of(role)
+        if found is None:
+            return {"status": "name_saved", "name": name,
+                    "message": "the bot takes this name once it is set up"}
+        async with self._lock(found[0]):
+            if self.store.bots[found[0]]["phase"] != BOUND:
+                return {"status": "name_saved", "name": name,
+                        "message": "the bot takes this name once it is set up again"}
+            if not await self._self_setup(found[0], role):
+                return {"status": "error", "kind": "not_applied", "name": name,
+                        "message": "Telegram did not take the name now; Casa sets it "
+                                   "again at its next restart"}
+        return {"status": "renamed", "name": name}
 
     def _busy(self, role: str, bot_id: "int | None", username: str) -> "dict | None":
         """What still waits on *bot_id*, as a refusal, or ``None``."""

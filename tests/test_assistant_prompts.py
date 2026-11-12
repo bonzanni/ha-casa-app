@@ -1236,11 +1236,16 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # `offer_own_chat`, can give it a different handle (check, then replace), and
 # should do so even if earlier in the conversation it looked as if she could
 # not. The eight other carriers byte-identical. No retention claim.
+# MOVED (a specialist moved back, a bot renamed), `assistant:text` only: in
+# that same paragraph, before its last sentence, two sentences say a handle
+# the check reports `used_before` moves the specialist back to a bot it had,
+# and that the `rename` mode changes the name at the top of its chat. The
+# eight other carriers byte-identical. No retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "f7f8d0dcbbc197ff0349557cbebe0f95e5e360377030dacd09f38cf61ab7e335",
     "assistant:text":
-        "dd5955e68019c9181b456fa6dbb4f7c60862a0f281e3aa6dee2491713f405d7e",
+        "70c4d83a43d31dd039243e0e7666c5a4f088c2a7309de449e7fb4e731487f74a",
     "assistant:voice":
         "71805d1c8fd3a8ef47a7de718e60db1123752388d8203a66e358eedac7b007d1",
     "butler:restricted_webhook":

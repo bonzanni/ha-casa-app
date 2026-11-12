@@ -471,7 +471,7 @@ async def test_the_facade_drops_a_pending_change(voices):
 
 
 async def test_an_unknown_mode_is_an_error(voices):
-    res = await own_voice.offer_own_chat(ROLE, mode="rename", username=NEW_HANDLE)
+    res = await own_voice.offer_own_chat(ROLE, mode="adopt", username=NEW_HANDLE)
     assert res["status"] == "error" and res["kind"] == "bad_mode"
     assert voices.world.cards == {}
 
@@ -483,7 +483,7 @@ async def test_the_boot_step_applies_a_pending_switch(voices):
     await own_voice.apply_switches_at_boot()
     agent = lc2.store.agents[ROLE]
     assert agent["bot_id"] == NEW_BOT and agent["change"] is None
-    assert ALEX_BOT not in lc2.store.bots
+    assert lc2.store.bots[ALEX_BOT]["phase"] == own_voice_lifecycle.RELEASED
     assert lc2.store.bots[NEW_BOT]["phase"] == own_voice_lifecycle.BINDING
 
 

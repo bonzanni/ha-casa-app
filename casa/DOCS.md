@@ -464,6 +464,19 @@ something opened in the old chat in the seconds before the restart, the
 move waits and the card says so; ask again once it is done, and the move
 finishes with another short restart.
 
+**Going back to an earlier handle.** Casa remembers the bots a specialist
+moved away from. Ask the assistant to move it back ("put Alex back on
+@…"): if you have not deleted that bot, there is nothing to create or tap —
+Casa restarts for a moment and the specialist is back in that chat. If the
+bot was deleted in BotFather, the assistant tells you, and can offer a new
+bot under that handle if Telegram has freed it. Bots a specialist left before
+v0.365.0 are not remembered.
+
+**Renaming a specialist's bot.** Ask the assistant for a different name
+("call Alex's bot Alex the Accountant"). The name at the top of the chat
+changes right away; the handle, the chat and its history stay as they are.
+Casa's own cards keep using the specialist's name.
+
 **What lives where.**
 
 - **The specialist's own chat** holds your conversation with it — write to it
