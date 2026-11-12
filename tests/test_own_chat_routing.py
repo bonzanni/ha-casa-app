@@ -816,6 +816,123 @@ async def test_an_operator_message_taken_first_leaves_no_greeting(world):
     assert world.opening.marks == [OWN_BOT]
 
 
+async def test_a_start_while_the_greeting_is_on_its_way_adds_no_turn(world):
+    """The operator presses Start while the agent's greeting is queued but
+    not yet delivered: the greeting answers it, so the Start adds no second
+    opening turn; once the greeting landed, a Start is an ordinary turn."""
+    ch, bus = _endpoint("own")
+    world.opening.unopened = True
+    assert await ch.speak_first() is True
+    [greeting] = _turns(bus, "finance")
+    await _handle(ch, _text("/start"))
+    assert _turns(bus, "finance") == []
+    await _handle(ch, _text("hi"))                  # anything else goes through
+    [turn] = _turns(bus, "finance")
+    assert turn.content == "hi"
+    await greeting.on_delivery()
+    await _handle(ch, _text("/start"))
+    [later] = _turns(bus, "finance")
+    assert later.content == "/start"
+
+
+async def test_a_refused_greeting_lets_the_next_start_open_the_chat(world):
+    from output_boundary import casa_text
+    from telegram.error import Forbidden
+    ch, bus = _endpoint("own")
+    world.opening.unopened = True
+    await ch.speak_first()
+    _turns(bus, "finance")
+
+    async def refuse(**_kw):
+        raise Forbidden("Forbidden: bot can't initiate conversation with a user")
+    ch._app.bot.send_message = refuse
+    await ch.send_response(casa_text("Hi, I'm Alex."),
+                           {"chat_id": str(OPERATOR), "synthetic": "chat_opening"})
+    await _handle(ch, _text("/start"))
+    [turn] = _turns(bus, "finance")
+    assert turn.content == "/start" and turn.context["_chat_opening"] is True
+
+
+async def test_a_greeting_that_never_ends_replays_a_held_start_when_its_time_runs_out(
+        world, monkeypatch):
+    """The greeting neither lands nor is refused (a failed turn): when its
+    window runs out, the operator's held Start becomes his own turn."""
+    import channels.telegram as tg
+    monkeypatch.setattr(tg, "GREETING_IN_FLIGHT_S", 0.01)
+    ch, bus = _endpoint("own")
+    world.opening.unopened = True
+    await ch.speak_first()
+    _turns(bus, "finance")
+    await _handle(ch, _text("/start"))
+    assert _turns(bus, "finance") == []
+    for _ in range(100):
+        if getattr(ch, "_start_replay", None) is not None:
+            break
+        await asyncio.sleep(0.01)
+    await ch._start_replay
+    [turn] = _turns(bus, "finance")
+    assert turn.context["_chat_opening"] is True and ch._greeting_timer is None
+
+
+async def test_a_silent_greeting_lets_the_next_start_open_the_chat(world):
+    ch, bus = _endpoint("own")
+    world.opening.unopened = True
+    await ch.speak_first()
+    _turns(bus, "finance")
+    await ch.turn_finished({"chat_id": str(OPERATOR), "synthetic": "chat_opening"})
+    await _handle(ch, _text("/start"))
+    [turn] = _turns(bus, "finance")
+    assert turn.context["_chat_opening"] is True
+
+
+@pytest.mark.parametrize("end", ["silent", "refused"])
+async def test_a_start_held_for_a_greeting_that_never_lands_is_replayed(world, end):
+    """The operator's Start was held for the greeting, and the greeting then
+    ends without reaching him: his Start becomes his own opening turn."""
+    from output_boundary import casa_text
+    from telegram.error import Forbidden
+    ch, bus = _endpoint("own")
+    world.opening.unopened = True
+    await ch.speak_first()
+    _turns(bus, "finance")
+    await _handle(ch, _text("/start"))
+    assert _turns(bus, "finance") == []
+    if end == "silent":
+        await ch.turn_finished({"chat_id": str(OPERATOR), "synthetic": "chat_opening"})
+    else:
+        async def refuse(**_kw):
+            raise Forbidden("Forbidden: bot can't initiate conversation with a user")
+        ch._app.bot.send_message = refuse
+        await ch.send_response(casa_text("Hi, I'm Alex."),
+                               {"chat_id": str(OPERATOR), "synthetic": "chat_opening"})
+    await ch._start_replay
+    [turn] = _turns(bus, "finance")
+    assert turn.content == "/start" and turn.context["_chat_opening"] is True
+
+
+async def test_a_start_held_for_a_delivered_greeting_is_answered_by_it(world):
+    ch, bus = _endpoint("own")
+    world.opening.unopened = True
+    await ch.speak_first()
+    [greeting] = _turns(bus, "finance")
+    await _handle(ch, _text("/start"))
+    await greeting.on_delivery()
+    assert ch._held_start is None and _turns(bus, "finance") == []
+
+
+@pytest.mark.parametrize("text", ["/start@HeyAlexTestBot please check my balance",
+                                  "/start@SomeOtherBot", "/start please"])
+async def test_anything_but_a_bare_start_during_the_greeting_is_an_ordinary_turn(
+        world, text):
+    ch, bus = _endpoint("own")
+    world.opening.unopened = True
+    await ch.speak_first()
+    _turns(bus, "finance")
+    await _handle(ch, _text(text))
+    [turn] = _turns(bus, "finance")
+    assert turn.content == text
+
+
 async def test_the_greeting_has_no_operator_grant_identity(world):
     """Casa starts the greeting: classified as no direct message, so it
     carries none of the operator's grants."""
