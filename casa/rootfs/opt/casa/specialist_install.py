@@ -1304,6 +1304,26 @@ def _sourced_plugin_manifest_version(tree: Path) -> str:
     return version if isinstance(version, str) and version else "0.0.0"
 
 
+def sourced_plugin_tree(component_dir: Path, dep: Any) -> Path:
+    """Where a sourced plugin dependency's tree is staged inside
+    *component_dir*: a bundled plugin at its declared path, a fetched one under
+    ``.dep-plugins/<identifier>``. The receipt's rows point here."""
+    if dep.source.type == "bundled":
+        return Path(component_dir) / dep.source.path
+    return Path(component_dir) / ".dep-plugins" / dep.identifier
+
+
+def role_tool_grants(component: Any) -> tuple[str, ...]:
+    """The Casa framework tools *component*'s role grants. #541: Casa
+    framework grants only — built-in tools are bounded by the role schema,
+    plugin tools by the bundled-plugin blocks."""
+    return tuple(
+        t for t in ((component.role.role.get("tools") or {})
+                    .get("allowed") or ())
+        if isinstance(t, str) and t.startswith("mcp__casa-framework")
+    )
+
+
 def _extract_full_line_yaml_comments(text: str) -> str:
     """Task N2 fix: role.yaml's own legitimate flow-style syntax (e.g.
     `disclosure: {policy: delegated, overrides: {}}`, used by every
@@ -1544,12 +1564,11 @@ def inspect_specialist_repo(
             if dep.kind != "plugin/implementation" or dep.source is None:
                 continue
             resolution = resolved_by_identity[(dep.kind, dep.identifier)]
+            tree = sourced_plugin_tree(component_dir, dep)
             if dep.source.type == "bundled":
-                tree = component_dir / dep.source.path
                 row_repo, row_ref, row_revision = repo, ref, f"git:{component_revision}"
                 row_subdir = f"{subdir}/{dep.source.path}" if subdir else dep.source.path
             else:
-                tree = component_dir / ".dep-plugins" / dep.identifier
                 row_repo, row_ref, row_revision = dep.source.repo, dep.source.ref, dep.source.revision
                 row_subdir = ""
             plugin_rows.append(specialist_receipt.PluginReceiptRow(
@@ -1595,13 +1614,7 @@ def inspect_specialist_repo(
             dependencies=dependencies, staged_dir=component_dir,
             receipt_id=receipt.receipt_id, receipt_digest=receipt.receipt_digest,
             plugin_resolutions=tuple(plugin_rows),
-            # #541: casa-framework grants only — CC built-ins are bounded by
-            # the role schema, plugin tools by the bundled-plugin blocks.
-            role_tool_grants=tuple(
-                t for t in ((component.role.role.get("tools") or {})
-                            .get("allowed") or ())
-                if isinstance(t, str) and t.startswith("mcp__casa-framework")
-            ),
+            role_tool_grants=role_tool_grants(component),
             resolved_ref=ref,
         )
     except BaseException:

@@ -48,11 +48,12 @@ class _FakeChannel:
             raise EndpointNotReady("no bot id yet")
         return self._bot_id
 
-    async def post_dm_keyboard(self, *, chat_id, request_id, text, options):
+    async def post_dm_keyboard(self, *, chat_id, request_id, text, options,
+                               entities=None):
         self.posts.append((chat_id, request_id, text, tuple(options)))
         return self.post_result
 
-    async def edit_dm_message(self, chat_id, message_id, text):
+    async def edit_dm_message(self, chat_id, message_id, text, literal=False):
         self.edits.append((chat_id, message_id, text))
         return True
 
@@ -153,7 +154,16 @@ def test_consent_target_without_a_channel_manager_is_none():
 
 
 async def test_prompt_posts_keyboard_with_binding_facts(monkeypatch, tmp_path):
+    import json
+
+    import approval_card
     broker, coord, channel, acks = _fresh_env(monkeypatch, tmp_path)
+    facts = []
+
+    async def _no_model(system, user):
+        facts.append(json.loads(user))
+        raise RuntimeError("no model")
+    monkeypatch.setattr(approval_card, "_ask", _no_model)
     handle = _prompt(coord, channel, acks)
     assert handle.created is True
     await handle.settled_post()
@@ -164,12 +174,23 @@ async def test_prompt_posts_keyboard_with_binding_facts(monkeypatch, tmp_path):
     ch = next(iter(coord._entries.values()))
     assert ch.scope == "authz:111:100"
     assert ch.req.meta["bot_id"] == 111
+    # The card is model-written now; the literal detail moved to its fallback
+    # (posted when the model fails, as here) and to the facts the model gets.
+    assert text == approval_card.render_card(approval_card.text_fallback(
+        tc.render_trigger_consent_message(
+            plugin="elevenlabs", effective="plg-elevenlabs--voicemail",
+            role="assistant", auth=AUTH)))[0]
     assert "elevenlabs" in text
     assert "/webhook/plg-elevenlabs--voicemail" in text
     assert "assistant" in text
     assert "static_header" in text
     # the memory clearance is part of what the operator approves — disclose it
     assert "clearance public" in text
+    [f] = facts
+    assert (f["plugin"], f["opens"], f["each_call_starts_a_turn_of"],
+            f["auth"]["mode"], f["memory_clearance"]) == (
+        "elevenlabs", "POST /webhook/plg-elevenlabs--voicemail", "assistant",
+        "static_header", "public")
 
 
 async def test_duplicate_prompt_is_deduped(monkeypatch, tmp_path):

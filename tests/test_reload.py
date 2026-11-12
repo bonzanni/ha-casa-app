@@ -2267,7 +2267,9 @@ class TestReloadUpdatesDisplayName:
         from plugin_registry import reload_snapshot
         from plugin_fixtures import entry, mk_artifact, mk_registry
         from test_agent_plugin_binding import _make_agent
-        from authz_grants import render_challenge_message
+        from authz_grants import (
+            ChallengeCoordinator, GrantKey, GrantStore, canonical_args_hash,
+        )
 
         def _authz_hook(opts):
             for m in (opts.hooks or {}).get("PreToolUse", []):
@@ -2300,11 +2302,29 @@ class TestReloadUpdatesDisplayName:
         deps2 = _authz_hook(await build())._casa_authz_deps_factory()
         assert deps2.display_name == "Ellen-2"
 
-        # A post-reload challenge names the new display name.
-        text = render_challenge_message(
-            tool_name="invoice_reset", enforcement_role="assistant",
-            canonical_json="{}", display_name=deps2.display_name)
-        assert "Ellen-2 (assistant)" in text
+        # A post-reload challenge names the new display name: the card posted
+        # for it (Casa's own here: no model is reachable in tests) is titled
+        # with it.
+        posts = []
+
+        class _Endpoint:
+            async def post_dm_keyboard(self, *, chat_id, request_id, text,
+                                       options, entities=None):
+                posts.append(text)
+                return 1
+
+        key = GrantKey(operator_id=1, bot_id=111, chat_id=1,
+                       enforcement_role="assistant", artifact_id=e["artifact_id"],
+                       tool_name="mcp__plugin_p_p__invoice_reset",
+                       args_hash=canonical_args_hash({}))
+        handle = ChallengeCoordinator().get_or_create(
+            key, chat_id=1, operator_id=1, target_role="assistant",
+            tool_name="mcp__plugin_p_p__invoice_reset", canonical_json="{}",
+            enforcement_role="assistant", channel=_Endpoint(),
+            grants=GrantStore(), display_name=deps2.display_name, plugin="p")
+        assert await handle.settled_post() == "posted"
+        assert len(posts) == 1
+        assert posts[0].startswith("🔐 Allow Ellen-2 to use p?")
 
 
 class TestRestartToSwapGuardCascades:

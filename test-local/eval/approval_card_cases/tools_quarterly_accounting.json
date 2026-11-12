@@ -1,0 +1,21 @@
+{
+  "plugin": "quarterly-accounting",
+  "server": "quarterly-accounting",
+  "source": {
+    "manifest_name": "quarterly-accounting",
+    "version": "0.12.0",
+    "commit": "12ce3e2764b3",
+    "registered_in": "server/tools.py (@register into qa_server.TOOLS)"
+  },
+  "tools": {
+    "reset_store": {
+      "summary": "Erases the whole quarterly-accounting store: documents, decisions, views, packages. bank-feed's acct:: tags and notes stay.",
+      "description": "PROTECTED (Casa asks the operator for one tap). Erase the whole accounting store: documents, decisions, views, packages. Used in the test-install reset loop after the ledger's install backup was restored, and by Casa as this plugin's uninstall eraser. Answers {erasure: complete|incomplete, report}; refused (busy) while another session is filing or erasing documents.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    }
+  }
+}

@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-08
+last_reviewed: 2026-11-12
 ---
 
 # Plugin authorization
@@ -106,12 +106,22 @@ keyboard is on screen, so a challenge that fails to post does not cost the opera
 question that was waiting. A boot reconcile running while the challenge's post is still in
 flight reads the lane the same way and restores the waiting question (INV-JOB-014).
 
-The protected-tool challenge body interpolates the model's own tool arguments, so it is
-model text: `register_challenge` resolves the scope before it creates the poster — a bound
-engagement's first, else the running turn's (`output_boundary.resolve_scope`) — the poster
-admits the body under it, and posts it as Casa's own text when neither is bound, so a
-challenge raised by a turn that listed an inbound file and neither opened nor shared one carries the same Casa
-line as the turn's other output ([`output-boundary.md`](output-boundary.md)).
+What the operator reads is an approval card, not the request itself
+([`approval-cards.md`](approval-cards.md)): a separate model writes it from the call's facts —
+the requesting agent, the plugin, the tool as declared, the tool's own description and input
+schema when listed, the plugin's declared summary, and the arguments — and, when it cannot
+(a timeout, an error, an unusable reply), Casa posts a fallback with one labelled line per argument
+(for a call with no arguments, the plugin's own description of the tool). The canonical
+arguments and the full tool id are not on the card; the grant binds exactly them all the same,
+and registration measures the challenge text Casa renders from them
+(`render_challenge_message`), refusing an oversized one before anything is posted. The card
+is written from the model's own tool arguments, so it is model text: `register_challenge`
+resolves the scope before it creates the poster — a bound engagement's first, else the running
+turn's (`output_boundary.resolve_scope`) — the poster admits the card under it, and posts it
+as Casa's own text when neither is bound, so a challenge raised by a turn that listed an
+inbound file and neither opened nor shared one carries the same Casa line as the turn's other
+output ([`output-boundary.md`](output-boundary.md)). A challenge whose request settles while
+its card is being written posts nothing (INV-PLUG-060).
 
 Who may approve is a separate guarantee, INV-PLUG-007: read this invariant as "one
 approval authorises one action" and that one as "the approver is the configured operator".

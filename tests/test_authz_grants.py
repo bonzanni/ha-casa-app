@@ -743,7 +743,9 @@ class _FakeChannel:
 
     def __init__(self, *, log: list | None = None) -> None:
         self.posts: list = []
+        self.post_entities: list = []
         self.edits: list = []
+        self.edit_literals: list = []
         self.dispatches: list = []
         self.eng_dispatches: list = []
         self.post_result: int | None = 55
@@ -755,16 +757,19 @@ class _FakeChannel:
         self.leases: list = []
         self.log = log if log is not None else []
 
-    async def post_dm_keyboard(self, *, chat_id, request_id, text, options):
+    async def post_dm_keyboard(self, *, chat_id, request_id, text, options,
+                               entities=None):
         self.posts.append((chat_id, request_id, text, tuple(options)))
+        self.post_entities.append(entities)
         if self.post_gate is not None:
             await self.post_gate.wait()
         if self.post_raises:
             raise RuntimeError("post boom")
         return self.post_result
 
-    async def edit_dm_message(self, chat_id, message_id, text):
+    async def edit_dm_message(self, chat_id, message_id, text, literal=False):
         self.edits.append((chat_id, message_id, text))
+        self.edit_literals.append(literal)
         self.log.append(("edit", text))
         if self.edit_raises:
             raise RuntimeError("edit boom")
@@ -847,6 +852,16 @@ class _SpyGrants:
         return self._real.consume(key)
 
 
+# A valid model reply for the approval card (replaces ``approval_card._ask``
+# where a test wants the model-written card rather than Casa's own).
+_CARD_REPLY = json.dumps({
+    "action": "reset invoice INV-1",
+    "summary": "Clears the draft so it can be issued again.",
+    "lines": [{"label": "Invoice", "value": "INV-1", "sensitive": False},
+              {"label": "Amount", "value": "10", "sensitive": False}],
+})
+
+
 def _fresh_env(monkeypatch, *, ttl=None, log=None):
     """A fresh broker (monkeypatched into the singleton slot the coordinator
     resolves at call time), a fresh coordinator, and a fake channel."""
@@ -866,7 +881,7 @@ def _create(coord, channel, key=None, *, chat_id=100, operator_id=7,
             target_role="finance-full", tool_name="invoice_reset",
             canonical_json='{"amount":10,"id":"INV-1"}',
             enforcement_role="finance", summary=None, display_name=None,
-            engagement_id="", grants=None):
+            engagement_id="", grants=None, plugin=""):
     if key is None:
         key = _key(chat_id=chat_id, enforcement_role=enforcement_role,
                    tool_name=tool_name, args_hash=canonical_args_hash({"x": 1}),
@@ -878,6 +893,7 @@ def _create(coord, channel, key=None, *, chat_id=100, operator_id=7,
         summary=summary, display_name=display_name,
         engagement_id=engagement_id,
         grants=GrantStore() if grants is None else grants,
+        plugin=plugin,
     )
     return key, handle
 
@@ -958,27 +974,205 @@ class TestChallengeAtomicRegistration:
         assert channel.posts == []  # the driver has not run its first turn
         await handle.settled_post()
 
-    async def test_posted_text_uses_humanized_render_challenge_message(
+    async def test_posted_text_is_the_model_written_card(self, monkeypatch):
+        """Wiring check: the ACTUAL posted keyboard text is exactly the card
+        the model wrote, rendered by ``approval_card.render_card`` for the
+        current display name, posted with Casa's bold entities — no other
+        template lives inside ``get_or_create``. The card carries no tool id
+        and no raw canonical JSON."""
+        import approval_card
+
+        replies = []
+
+        async def _ask(system, user):
+            replies.append(user)
+            return _CARD_REPLY
+
+        monkeypatch.setattr(approval_card, "_ask", _ask)
+        broker, coord, channel = _fresh_env(monkeypatch)
+        canonical = '{"amount":10,"id":"INV-1"}'
+        tool = "mcp__plugin_lantern-invoice_finance__invoice_reset"
+        key, handle = _create(
+            coord, channel, tool_name=tool,
+            enforcement_role="finance", canonical_json=canonical,
+            summary="reset invoice {id}", display_name="Alex",
+            plugin="lantern-invoice",
+        )
+        assert await handle.settled_post() == "posted"
+        assert len(replies) == 1
+        card = approval_card.card_from_reply(_CARD_REPLY, who="Alex")
+        text, entities = approval_card.render_card(card)
+        assert len(channel.posts) == 1
+        assert channel.posts[0][2] == text
+        assert text.startswith("🔐 Allow Alex to reset invoice INV-1?")
+        assert channel.post_entities[0] == entities
+        assert "mcp__" not in text
+        assert canonical not in text and "{" not in text
+
+    async def test_tool_card_names_the_plugin_in_the_fallback_title(
         self, monkeypatch,
     ):
-        """Wiring check: the ACTUAL posted keyboard text is exactly what
-        ``render_challenge_message`` renders — no separate/duplicated
-        template lives inside ``get_or_create``."""
+        """No model card (the call fails) ⇒ Casa's own card, titled with the
+        display name and the plugin, one line per argument; never the tool id
+        or the canonical JSON."""
         broker, coord, channel = _fresh_env(monkeypatch)
         canonical = '{"amount":10,"id":"INV-1"}'
         key, handle = _create(
-            coord, channel, tool_name="invoice_reset",
-            enforcement_role="finance", canonical_json=canonical,
-            summary="reset invoice {id}", display_name="Alex",
+            coord, channel,
+            tool_name="mcp__plugin_lantern-invoice_finance__invoice_reset",
+            canonical_json=canonical, display_name="Alex",
+            plugin="lantern-invoice",
         )
-        await handle.settled_post()
-        # The posted keyboard text is EXACTLY what render_challenge_message
-        # renders with the SAME summary + display name threaded through.
-        assert channel.posts[0][2] == render_challenge_message(
-            tool_name="invoice_reset", enforcement_role="finance",
-            canonical_json=canonical, summary="reset invoice {id}",
-            display_name="Alex",
+        assert await handle.settled_post() == "posted"
+        assert len(channel.posts) == 1
+        text = channel.posts[0][2]
+        assert text == (
+            "🔐 Allow Alex to use lantern-invoice?\n\n"
+            "Amount: 10\n"
+            "Id: INV-1"
         )
+        assert channel.posts[0][3] == ("Approve", "Deny")
+        assert "mcp__" not in text and canonical not in text
+
+    async def test_a_call_without_arguments_falls_back_to_the_plugins_description(
+        self, monkeypatch,
+    ):
+        """No model card for an argument-free call: Casa's own card carries
+        the plugin's summary of the tool, or else the first sentence of the
+        tool's listed description -- never an empty "{}"."""
+        import approval_card
+        import tool_descriptions
+
+        async def _fails(system, user):
+            raise RuntimeError("model unavailable")
+        monkeypatch.setattr(approval_card, "_ask", _fails)
+
+        broker, coord, channel = _fresh_env(monkeypatch)
+        _key_, handle = _create(
+            coord, channel, tool_name="mcp__plugin_gmail_gmail__erase_gmail",
+            canonical_json="{}", display_name="Ellen", plugin="gmail",
+            summary="Revokes Gmail's access at Google and deletes the stored sign-in.")
+        assert await handle.settled_post() == "posted"
+        assert channel.posts[-1][2] == (
+            "🔐 Allow Ellen to use gmail?\n\n"
+            "Revokes Gmail's access at Google and deletes the stored sign-in.")
+
+        broker, coord, channel = _fresh_env(monkeypatch)
+        key = _key(tool_name="mcp__plugin_bank_bank__delete_all_data")
+        tool_descriptions._cache[(key.artifact_id, "delete_all_data")] = {
+            "description": "Erase the entire local ledger. Protected: asks first.",
+            "inputSchema": {"type": "object", "properties": {}}}
+        _key_, handle = _create(
+            coord, channel, key, tool_name="mcp__plugin_bank_bank__delete_all_data",
+            canonical_json="{}", display_name="Alex", plugin="bank")
+        assert await handle.settled_post() == "posted"
+        text = channel.posts[-1][2]
+        assert text == "🔐 Allow Alex to use bank?\n\nErase the entire local ledger."
+        assert "{}" not in text
+
+    async def test_cached_description_reaches_the_model(self, monkeypatch):
+        """The tool's own description and schema, listed ahead of time under
+        the grant key's artifact id, are in the facts the model is shown, next
+        to the requester, the plugin, the bare tool name, the plugin's summary
+        and the arguments."""
+        import approval_card
+        import tool_descriptions
+
+        seen = []
+
+        async def _ask(system, user):
+            seen.append(json.loads(user))
+            return _CARD_REPLY
+
+        monkeypatch.setattr(approval_card, "_ask", _ask)
+        schema = {"type": "object",
+                  "properties": {"id": {"type": "string"}}}
+        broker, coord, channel = _fresh_env(monkeypatch)
+        key = _key(tool_name="mcp__plugin_p_s__invoice_reset")
+        tool_descriptions._cache[(key.artifact_id, "invoice_reset")] = {
+            "description": "Reset one invoice draft.", "inputSchema": schema}
+        _key_, handle = _create(
+            coord, channel, key, tool_name="mcp__plugin_p_s__invoice_reset",
+            canonical_json='{"id":"INV-1"}', display_name="Alex",
+            summary="Reset {id}", plugin="lantern-invoice",
+        )
+        assert await handle.settled_post() == "posted"
+        assert len(seen) == 1
+        assert seen[0] == {
+            "requested_by": "Alex",
+            "plugin": "lantern-invoice",
+            "tool": "invoice_reset",
+            "tool_description": "Reset one invoice draft.",
+            "input_schema": schema,
+            "what_the_plugin_says_it_does": "Reset {id}",
+            "arguments": {"id": "INV-1"},
+        }
+
+    async def test_description_is_found_under_the_declared_tool_name(
+        self, monkeypatch,
+    ):
+        """The plugin declared ``invoice.reset``; the full tool id carries
+        the sanitized ``invoice_reset``. The description was listed under the
+        declared name, so that is the name it is looked up by and the name
+        the model is shown."""
+        import approval_card
+        import tool_descriptions
+
+        seen = []
+
+        async def _ask(system, user):
+            seen.append(json.loads(user))
+            return _CARD_REPLY
+
+        monkeypatch.setattr(approval_card, "_ask", _ask)
+        broker, coord, channel = _fresh_env(monkeypatch)
+        tool = "mcp__plugin_p_s__invoice_reset"
+        key = _key(tool_name=tool)
+        tool_descriptions._cache[(key.artifact_id, "invoice.reset")] = {
+            "description": "Reset one invoice draft.", "inputSchema": None}
+        handle = coord.get_or_create(
+            key, chat_id=100, operator_id=7, target_role="finance-full",
+            tool_name=tool, canonical_json='{"id":"INV-1"}',
+            enforcement_role="finance", channel=channel, grants=GrantStore(),
+            plugin="p", declared_tool="invoice.reset",
+        )
+        assert await handle.settled_post() == "posted"
+        assert len(seen) == 1
+        assert seen[0]["tool"] == "invoice.reset"
+        assert seen[0]["tool_description"] == "Reset one invoice draft."
+
+    async def test_cold_description_cache_logs_a_miss_and_still_posts(
+        self, monkeypatch, caplog,
+    ):
+        """Nothing listed for the tool yet: the miss is logged once and the
+        card is still written and posted, without a description."""
+        import approval_card
+
+        seen = []
+
+        async def _ask(system, user):
+            seen.append(json.loads(user))
+            return _CARD_REPLY
+
+        monkeypatch.setattr(approval_card, "_ask", _ask)
+        broker, coord, channel = _fresh_env(monkeypatch)
+        key = _key(tool_name="mcp__plugin_p_s__invoice_reset")
+        with caplog.at_level("INFO", logger="authz_grants"):
+            _key_, handle = _create(
+                coord, channel, key,
+                tool_name="mcp__plugin_p_s__invoice_reset",
+                canonical_json='{"id":"INV-1"}', plugin="lantern-invoice",
+            )
+            assert await handle.settled_post() == "posted"
+        misses = [r for r in caplog.records
+                  if r.getMessage() == (
+                      "approval card: no tool description cached for "
+                      f"mcp__plugin_p_s__invoice_reset (artifact {key.artifact_id})")]
+        assert len(misses) == 1
+        assert misses[0].levelname == "INFO"
+        assert len(channel.posts) == 1
+        assert seen[0]["tool_description"] is None
+        assert seen[0]["input_schema"] is None
 
     async def test_summary_inflated_message_over_ceiling_is_refused(
         self, monkeypatch,
@@ -1042,7 +1236,12 @@ class TestSettledPostClassification:
         channel.post_gate = asyncio.Event()
         key, handle = _create(coord, channel)
         task = asyncio.ensure_future(handle.settled_post())
-        await asyncio.sleep(0)          # driver starts, post blocks
+        # The driver writes the card, then posts; the post blocks on the gate.
+        for _ in range(50):
+            if channel.posts:
+                break
+            await asyncio.sleep(0)
+        assert len(channel.posts) == 1  # /new lands while the post is in flight
         broker.cancel_scope(namespace="resident_ask", scope="authz:111:100",
                             reason="new_session")
         channel.post_gate.set()
@@ -1315,6 +1514,33 @@ class TestAuthzFinishHook:
         await _settle()
         assert sum("expired" in e[2].lower() for e in channel.edits) == 1
         assert channel.dispatches == []
+
+    @pytest.mark.parametrize("scenario,expected_edits", [
+        ("approve", 1), ("deny", 1), ("expire", 1), ("unminted", 1),
+        ("approve_undelivered", 2), ("deny_undelivered", 2),
+    ])
+    async def test_approval_edits_are_literal(
+        self, monkeypatch, scenario, expected_edits,
+    ):
+        """The card was posted with Casa's own entities and no markdown; every
+        edit that replaces it (approved, denied, expired, internal error,
+        delivery failure) is sent literally too, so nothing in the settlement
+        text is ever parsed as markup."""
+        broker, coord, channel = _fresh_env(monkeypatch)
+        if scenario.endswith("_undelivered"):
+            channel.dispatch_result = False
+        key, handle = _create(coord, channel)
+        assert await handle.settled_post() == "posted"
+        ch = coord._entries[key]
+        if scenario == "expire":
+            broker._on_timeout(("resident_ask", ch.scope, ch.rid))
+        elif scenario == "unminted":
+            _tap(broker, ch, 0, run_sync_step=False)
+        else:
+            _tap(broker, ch, 0 if scenario.startswith("approve") else 1)
+        await _settle()
+        assert len(channel.edits) == expected_edits
+        assert channel.edit_literals == [True] * expected_edits
 
     # -- W1: exact humanized settlement copy --------------------------------
 

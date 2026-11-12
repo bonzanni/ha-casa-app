@@ -35,7 +35,7 @@ class _EditChannel:
     def __init__(self):
         self.edits = []
 
-    async def edit_dm_message(self, chat_id, message_id, text):
+    async def edit_dm_message(self, chat_id, message_id, text, literal=False):
         self.edits.append(text)
 
 

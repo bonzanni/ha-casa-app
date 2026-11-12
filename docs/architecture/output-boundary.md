@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-22
+last_reviewed: 2026-11-12
 ---
 
 # The output boundary
@@ -124,7 +124,8 @@ handles it: `NOT_DELIVERED` from the four senders, `None` from the keyboard post
 `send_media`, which the tool's send classifier reports as `refused` rather than as a down
 channel. `edit_dm_message` stays string-typed on purpose: every caller re-renders a body that
 was admitted when it was posted, replaces it with a Casa status, or edits a plugin-authored
-consent body, and each caller is recorded and classified in
+consent body — an approval card's status edits pass `literal=True` and are sent as given,
+never rendered — and each caller is recorded and classified in
 `tests/test_output_boundary_sites.py` — as is every `casa_text` call site, every raw
 `bot.send_message`, `edit_message_text` or media call by enclosing function, and every
 public channel coroutine with a text parameter. A new site fails those tests until someone
@@ -245,8 +246,10 @@ remedy decided together, and its wording owned by the scope.
 **A new emitting path** must take an `Admitted` and be classified in
 `tests/test_output_boundary_sites.py`; a new Casa notice is a recorded `casa_text` site. A
 template that interpolates model-supplied text is model text and goes through
-`TurnScope.admit`, not `casa_text` — the authorization challenge body, which interpolates
-the model's tool arguments, is the worked example. A path that admits `DISCRETE`, `CAPTION`
+`TurnScope.admit`, not `casa_text` — the approval card, written from the model's tool
+arguments, is the worked example: the post driver admits the card's display text under the
+turn's scope and moves the card's entities right by the prefix admission added
+([`approval-cards.md`](approval-cards.md)). A path that admits `DISCRETE`, `CAPTION`
 or `KEYBOARD` text confirms it with `mark_delivered()` only on its transport's positive
 evidence; one that never confirms keeps a narrating turn's announcement owed, the safe
 direction.

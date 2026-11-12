@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-28
+last_reviewed: 2026-11-12
 ---
 
 # Plugin data erasure at uninstall
@@ -49,8 +49,8 @@ providers, and returns as its text result a JSON object:
 verbatim and cut at 4000 characters with a ` [truncated]` marker. Anything else — prose,
 another value, a missing key, a non-string report, a tool error — is not a complete
 erasure, and its raw text becomes the report. A plugin may also list its eraser in
-`casa.protectedTools`; the question then shows the plugin's own summary for it, and the
-operator's Erase tap is the approval of exactly the one call (below). An optional
+`casa.protectedTools`; the question's card is then written knowing the plugin's own summary
+for it, and its fallback text shows that summary, and the operator's Erase tap is the approval of exactly the one call (below). An optional
 `unrecorded_vault_items`, a list of `{"title": str, "found": true|null}`, names vault items
 the eraser left because nothing records the plugin creating them (`null`: the vault could
 not be checked); it never changes the verdict.
@@ -72,9 +72,12 @@ coordinator the install-consent keyboards use: **Keep data / Erase data, keep si
 Erase everything / Cancel**, each erase option only when EVERY erasing plugin in the
 uninstall declares that kind (`tools._offered_erase_choices`) — a plugin lacking it could
 honour neither promise, and with no common kind only Keep and Cancel remain. The button
-index maps to a choice id through the question's own list. The question names each eraser
-an offered option would run and says that earlier Home Assistant backups keep the data
-either way. It stays answerable for 600 s. The call that posted it
+index maps to a choice id through the question's own list. The question is an approval card;
+the model-written one is titled `🔐 Uninstall {what}: erase its data too?` and written from each eraser an
+offered option would run, what each offered choice does, and the note that earlier Home
+Assistant backups keep the data either way (`plugin_erase_consent.erase_card_request`); its
+fallback, Casa's own question text (`plugin_erase_consent.render_erase_choice`), is titled by
+its first line, `🗑 Uninstalling {what}`, and states all of them ([`approval-cards.md`](approval-cards.md)). It stays answerable for 600 s. The call that posted it
 returns `erase_choice_pending` with nothing removed. An Erase tap records a single-use
 choice bound to the operator, the uninstall subject (`plugin:<name>` or
 `specialist:<slug>`) and the erasing artifacts as they were at question time, valid for

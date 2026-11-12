@@ -76,15 +76,20 @@ class TestShortOptionLabel:
 
 
 def test_authz_challenge_renderer_untouched() -> None:
-    """authz_grants renders its own challenge body (render_challenge_message)
-    and posts via post_dm_keyboard — a SEPARATE path that must not share the
-    ask body/label code changed here."""
+    """An authz challenge posts an approval card (``approval_card``) via
+    post_dm_keyboard, measured for size by its own
+    ``render_challenge_message`` — a SEPARATE path that must not share the ask
+    body/label code changed here."""
+    import approval_card
     import authz_grants
 
-    # The authz challenge renderer exists and is independent.
+    # The authz challenge's measure and its card renderer exist and are
+    # independent of the ask body.
     assert hasattr(authz_grants, "render_challenge_message")
-    # It does NOT import or depend on the ask-body helper.
-    assert not hasattr(authz_grants, "render_ask_body")
-    assert not hasattr(authz_grants, "_short_option_label")
-    src = authz_grants.render_challenge_message.__module__
-    assert src == "authz_grants"
+    assert authz_grants.render_challenge_message.__module__ == "authz_grants"
+    assert approval_card.render_card.__module__ == "approval_card"
+    # Neither imports or depends on the ask-body helpers.
+    for module in (authz_grants, approval_card):
+        assert not hasattr(module, "render_ask_body")
+        assert not hasattr(module, "_short_option_label")
+        assert not hasattr(module, "short_option_labels")

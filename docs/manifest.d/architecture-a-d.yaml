@@ -37,6 +37,28 @@
     INV-AGENT-003: [tests/test_agent_loader.py::test_per_specialist_isolation]
     INV-AGENT-004: [tests/test_pin_g1_invariants.py::test_pin_inv_agent_004_registry_performs_no_filesystem_access]
 
+- doc: architecture/approval-cards.md
+  summary: What the operator reads when Casa asks for an approval — the card a separate model writes from the request's facts, Casa's own fallback, the bold entities only Casa places, the post and edits that bypass markdown, and the protected tools' descriptions listed ahead of time.
+  when_changing: an approval card's wording, facts, model call, budget, cache or fallback, its bold entities, how a card is posted or edited, or the listing of protected tools' descriptions
+  covers:
+    - casa/rootfs/opt/casa/approval_card.py
+    - casa/rootfs/opt/casa/tool_descriptions.py
+    - casa/rootfs/opt/casa/authz_grants.py::ChallengeCoordinator.register_challenge
+    - casa/rootfs/opt/casa/authz_grants.py::ChallengeCoordinator._tool_card_request
+    - casa/rootfs/opt/casa/plugin_continuations.py::list_plugin_tools
+  tests:
+    - tests/test_approval_card.py
+    - tests/test_approval_card_writer.py
+    - tests/test_approval_card_posting.py
+    - tests/test_telegram_approval_card_io.py
+    - tests/test_consent_cards.py
+    - tests/test_tool_descriptions.py
+  related: [architecture/plugin-authorization.md, architecture/configurator-approvals.md, architecture/specialist-lifecycle.md, architecture/telegram-rendering.md, architecture/output-boundary.md, architecture/plugin-continuations.md]
+  defines_invariants: [INV-PLUG-059, INV-PLUG-060]
+  invariant_tests:
+    INV-PLUG-059: [tests/test_approval_card.py::test_field_content_never_shapes_an_entity, tests/test_telegram_approval_card_io.py::test_explicit_entities_are_sent_as_given_and_render_is_not_called, tests/test_approval_card_posting.py::test_entity_offsets_survive_an_admission_prefix]
+    INV-PLUG-060: [tests/test_approval_card_posting.py::test_settled_while_writing_posts_nothing, tests/test_approval_card_posting.py::test_settled_right_after_writing_posts_nothing, tests/test_consent_cards.py::test_superseded_install_while_writing_posts_nothing]
+
 - doc: architecture/callback-delivery.md
   summary: The authorization-callback delivery half — the mtime-clocked publish-once spool, the per-flow attempt ledger and its ack protocol, the consumer verbs, and redelivery until receipt.
   when_changing: the callback spool protocol, the attempt ledger or its ack protocol, or the delivery worker

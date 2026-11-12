@@ -4390,7 +4390,7 @@ class TelegramChannel(Channel):
     async def post_dm_keyboard(
         self, *, chat_id: int, request_id: str, text: str, options: list[str],
         short_labels: bool = False, shorts: "list | None" = None,
-        urls: "list | None" = None,
+        urls: "list | None" = None, entities: "list | None" = None,
     ) -> int | None:
         """Post a plain-text question to a DM chat with one tappable button
         per option (resident_ask).
@@ -4416,6 +4416,13 @@ class TelegramChannel(Channel):
         chat): parallel to ``options``, as in ``_proposal_keyboard`` — where it has
         an address at an option's index, that button opens the address and sends
         no callback.
+
+        ``entities`` (a card whose caller computed its own formatting): when not
+        ``None``, ``text`` is sent with exactly those entities (UTF-16 offsets
+        into ``text``) and is never rendered or rewritten. Lone surrogates are
+        replaced one-for-one, which keeps every offset valid. An entity
+        ``BadRequest`` posted nothing, so ONE retry sends the same text without
+        entities.
         """
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -4440,6 +4447,28 @@ class TelegramChannel(Channel):
         # (#1330). An entity ``BadRequest`` posted NOTHING (Telegram rejected the
         # send), so ONE plain retry with the original text cannot duplicate the
         # ask; any other failure keeps the delivery-failure contract (None).
+        if entities is not None:
+            literal = replace_lone_surrogates(text)
+            try:
+                try:
+                    msg = await self.bot.send_message(
+                        chat_id=chat_id, text=literal, entities=entities,
+                        reply_markup=kbd,
+                    )
+                except BadRequest as exc:
+                    logger.warning(
+                        "post_dm_keyboard send with entities fell back to "
+                        "plain (chat=%s): %s", chat_id, exc,
+                    )
+                    msg = await self.bot.send_message(
+                        chat_id=chat_id, text=literal, reply_markup=kbd,
+                    )
+            except Exception as exc:  # noqa: BLE001 — delivery failure, not fatal
+                logger.warning(
+                    "post_dm_keyboard send failed (chat=%s): %s", chat_id, exc,
+                )
+                return None
+            return msg.message_id
         display, entities = render(text)
         try:
             if entities is not None:
@@ -4489,6 +4518,7 @@ class TelegramChannel(Channel):
     async def edit_dm_message(
         self, chat_id: int, message_id: int, text: str, *, caption: bool = False,
         buttons: "list[tuple[str, str]] | None" = None, urls: "list | None" = None,
+        literal: bool = False,
     ) -> bool:
         """Plain (no parse_mode, no reply_markup) text edit of a posted DM
         message — resident_ask finish-hook target.
@@ -4526,6 +4556,10 @@ class TelegramChannel(Channel):
         ``urls``: parallel to ``buttons``, as in ``_proposal_keyboard`` — where it
         has an address at a button's index, that button opens the address instead
         of sending its callback (a Casa card edited to a stage that links out).
+
+        ``literal``: edit with ``text`` exactly as given (lone surrogates
+        replaced one-for-one) and no entities — markers stay literal and the
+        text is never rendered or rewritten.
         """
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -4535,7 +4569,12 @@ class TelegramChannel(Channel):
               if i < len(links) and links[i] else
               InlineKeyboardButton(text=str(label), callback_data=str(data))]
              for i, (label, data) in enumerate(buttons or [])])
-        display, entities = render(text)
+        if literal:
+            display, entities = replace_lone_surrogates(text), None
+            fallback_text = display
+        else:
+            display, entities = render(text)
+            fallback_text = text if entities is not None else _plain(text)
         for attempt in (1, 2):
             try:
                 if entities is not None:
@@ -4569,7 +4608,7 @@ class TelegramChannel(Channel):
                 else:
                     await self.bot.edit_message_text(
                         chat_id=chat_id, message_id=message_id,
-                        text=text if entities is not None else _plain(text),
+                        text=fallback_text,
                         reply_markup=cleared,
                     )
                 return True

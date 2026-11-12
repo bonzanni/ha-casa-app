@@ -1,0 +1,135 @@
+{
+  "plugin": "finance.bank-feed",
+  "server": "bank-feed",
+  "source": {
+    "manifest_name": "bank-feed",
+    "version": "0.24.0",
+    "commit": "123bc15ae1fa",
+    "registered_in": "plugins/bank-feed/server/tools_{destructive,refresh,auth,backup}.py (@register into bank_feed_server.TOOLS)"
+  },
+  "tools": {
+    "unlink_bank": {
+      "summary": "Revokes the Enable Banking consent identified by {consent_ref}. Refresh stops for that bank's accounts until it is re-linked. Local history is not erased.",
+      "description": "Revoke a bank consent. Stops refreshing; does NOT erase local history. withdrawn_at_bank=true only when the operator says the bank no longer holds this consent after a withdrawal here already failed: if the provider still does not confirm, the consent is recorded as withdrawn by the operator. Protected: casa demands an operator grant.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "consent_ref": {
+            "type": "string"
+          },
+          "withdrawn_at_bank": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "consent_ref"
+        ]
+      }
+    },
+    "purge": {
+      "summary": "Deletes transactions before_date={before_date} + notes/tags/coverage (all: + balances). {user_work}: keep=rules, account settings; erase=ALL notes/tags/rules/settings. May drop oldest erasure backup.",
+      "description": "Really delete transactions — every one booked before a date, or the whole ledger with before_date='all' — with their notes and tags (a dated purge keeps a pending row and the row that replaced it together, so it deletes such a pair only when both are before the date), trim or drop the proven-coverage intervals to match, then VACUUM. user_work is required: 'keep' keeps auto-tagging rules and account labels, categories and include flags; 'erase' erases ALL of them and every note and tag, on surviving rows too. A backup is taken first; restore_backup undoes the purge. Protected: casa demands an operator grant.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "before_date": {
+            "type": "string"
+          },
+          "user_work": {
+            "type": "string",
+            "enum": [
+              "keep",
+              "erase"
+            ]
+          }
+        },
+        "required": [
+          "before_date",
+          "user_work"
+        ]
+      }
+    },
+    "forget_local_account": {
+      "summary": "Erases account {account_id} locally: its history, notes, tags, balances, coverage, sync, link-attempt records. Tagging rules stay. Revokes no bank consent. Backed up; may drop oldest erasure backup.",
+      "description": "Erase one account's LOCAL history and drop the account. The bank consent is untouched: nothing is revoked here. Protected: casa demands an operator grant.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id"
+        ]
+      }
+    },
+    "delete_all_data": {
+      "summary": "Erases ALL local finance data; tries to erase every plugin backup (not HA backups), exports, and the 1Password key + sign-in it made (setup redoes both); asks banks to withdraw consent. Irreversible.",
+      "description": "Erase the entire local ledger. Protected: casa demands an operator grant bound to this exact call.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    "delete_data_keep_signins": {
+      "summary": "Erases local finance data: transactions, notes/tags/rules, balances, every plugin backup (not HA backups), exports. KEEPS bank consents + account links: reinstall needs no re-approval. Irreversible.",
+      "description": "Erase every transaction, note, tag, rule, balance, measurement, backup and export, but KEEP the bank sessions and the accounts bound to them, so a reinstall carries on syncing without re-approving any bank. Then nothing is fetched or written until setup_bank_feed runs. Protected: casa demands an operator grant bound to this exact call.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    "label_account": {
+      "summary": "Changes account {account_id}'s label, category or included status. Excluding it removes the account from every balance and transaction total shown until it is re-included.",
+      "description": "For label-only changes use rename_account (no approval needed); this tool is for category and included changes. Sets an account's personal/company category, whether it is included in answers, and optionally its friendly name alongside those. Protected: casa demands an operator grant.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "personal",
+              "company"
+            ]
+          },
+          "included": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "account_id"
+        ]
+      }
+    },
+    "accept_app_reregistration": {
+      "summary": "Authorizes setup_bank_feed to REGISTER A REPLACEMENT Enable Banking application because the previously bound one vanished from the control panel. Every bank must be re-linked afterwards.",
+      "description": "Accept re-registering the Enable Banking application after setup_bank_feed reports the previously bound one VANISHED from the control panel. Protected: casa demands an operator confirmation. Every bank must be re-linked afterwards.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    "restore_backup": {
+      "summary": "Replaces the ENTIRE local finance ledger with backup {backup_id}: transactions, tags, notes, rules as they were then. Changes since are lost; no safety copy is taken first. Bank links stay live.",
+      "description": "PROTECTED. Replace the ledger's rows in place from a backup: transactions, tags, notes, rules, registrations. Consent bindings (bank links) are kept live, never taken from the backup. An account in the backup but not linked live comes back needing a re-link.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "backup_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "backup_id"
+        ]
+      }
+    }
+  }
+}

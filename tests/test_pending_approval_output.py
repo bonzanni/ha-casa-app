@@ -99,11 +99,12 @@ class _Channel:
     def _user_id_is_operator(self, user_id) -> bool:
         return True
 
-    async def post_dm_keyboard(self, *, chat_id, request_id, text, options):
+    async def post_dm_keyboard(self, *, chat_id, request_id, text, options,
+                               entities=None):
         self.posts.append((chat_id, request_id, str(text), tuple(options)))
         return 55
 
-    async def edit_dm_message(self, chat_id, message_id, text):
+    async def edit_dm_message(self, chat_id, message_id, text, literal=False):
         return True
 
     def final_texts(self) -> list[str]:

@@ -32,6 +32,7 @@ from claude_agent_sdk import (
 )
 
 import plugin_registry
+import tool_descriptions
 from plugin_grants import (
     apply_profile_plan,
     grants_for_resolution,
@@ -3459,6 +3460,8 @@ class Agent:
         )
         from plugin_grants import protected_map
         _protected = protected_map(resolution)
+        # List the protected tools' real descriptions ahead of any approval.
+        tool_descriptions.schedule_fill(resolution)
         _authz_hook = None
         if _protected:
             _cm = self._channel_manager

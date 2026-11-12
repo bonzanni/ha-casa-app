@@ -356,13 +356,24 @@ def test_render_consent_message_includes_bundled_plugin_surfaces(
 
     result = _inspect(tmp_path, component_dir, monkeypatch=monkeypatch)
 
-    text = render_install_consent_message(result)
+    # The operator now reads a model-written card: the literal detail moved to
+    # the card's fallback (the consent text, posted when the model fails) and
+    # to the facts the model writes from.
+    import approval_card
+    from specialist_install_consent import install_card_request
+    req = install_card_request(result)
+    text = approval_card.render_card(req.fallback)[0]
+    assert text == render_install_consent_message(result)
 
     # Non-vacuous: the literal server name, protected-tool name, and env
     # name must all appear — not just a generic "see receipt" placeholder.
     assert "tools: python3 -m mtgserver" in text
     assert "danger_tool" in text
     assert "SOME_API_KEY" in text
+    [plugin] = req.facts["bundled_plugins"]
+    assert "tools: python3 -m mtgserver" in plugin["mcp_servers"]
+    assert [t["name"] for t in plugin["protected_tools"]] == ["danger_tool"]
+    assert plugin["secrets_required"] == ["SOME_API_KEY"]
 
 
 def test_the_consent_leads_with_what_is_asked_and_ends_with_the_digests(

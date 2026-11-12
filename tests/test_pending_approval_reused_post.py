@@ -49,7 +49,8 @@ class _HeldPostChannel(_Channel):
         self.post_result: int | None = None
         self.delivered = 0
 
-    async def post_dm_keyboard(self, *, chat_id, request_id, text, options):
+    async def post_dm_keyboard(self, *, chat_id, request_id, text, options,
+                               entities=None):
         self.posts.append((chat_id, request_id, str(text), tuple(options)))
         self.post_started.set()
         await self.post_release.wait()

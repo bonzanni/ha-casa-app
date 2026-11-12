@@ -398,6 +398,74 @@ def render_install_consent_message(inspection: Any, *, mode: str = "install",
     ])
 
 
+def install_card_request(
+    inspection: Any, *, mode: str = "install", values: "dict | None" = None,
+    submitted_config: Any = None, requester_name: str = "Casa",
+    role_grants: "tuple[str, ...] | None" = None, from_version: str = "",
+    protected_tools: "dict[str, list[dict]] | None" = None,
+) -> Any:
+    """The approval card asked for installing or updating *inspection*: the
+    facts a model writes it from, and, as the fallback, the consent text
+    :func:`render_install_consent_message` renders, kept literally. Display
+    only — the approval stays bound to the record's consent identity.
+
+    The facts are the renderer's own inputs, digests left out, plus what the
+    caller knows beyond them: *role_grants* (the Casa tools the role grants,
+    when the inspection does not carry them; with neither, the facts do not
+    mention grants), *from_version* (the installed
+    version an update replaces) and *protected_tools* (per bundled plugin's
+    scoped name, its protected tools as ``{"name", "summary"}`` from the
+    plugin's manifest; a plugin missing from it is listed by tool name)."""
+    import approval_card
+
+    text = render_install_consent_message(
+        inspection, mode=mode, values=values, submitted_config=submitted_config)
+    # Grants the caller did not pass are known only when the inspection
+    # carries some; an empty tuple there may just mean nobody read them, so
+    # the key is then left out rather than claiming "none".
+    grants = role_grants if role_grants is not None else (
+        getattr(inspection, "role_tool_grants", ()) or None)
+    facts: dict = {"requested_by": requester_name,
+                   "request": "update" if mode == "upgrade" else "install",
+                   "specialist": inspection.slug,
+                   "component": inspection.component_id}
+    if mode == "upgrade":
+        if from_version:
+            facts["from_version"] = from_version
+        facts["to_version"] = inspection.version
+    else:
+        facts["version"] = inspection.version
+    facts.update({
+        "mission": inspection.mission,
+        **({"casa_tools_granted": list(grants)} if grants is not None else {}),
+        "default_persona": inspection.default_persona_ref,
+        "dependencies": [f"{d.kind}:{d.identifier}" for d in inspection.dependencies],
+        "bundled_plugins": [
+            _plugin_facts(row, (protected_tools or {}).get(row.scoped_name))
+            for row in inspection.plugin_resolutions or ()],
+    })
+    if values is not None:
+        config = values.get("config") or {}
+        submitted = None if submitted_config is None else set(submitted_config)
+        facts["settings"] = dict(config)
+        if submitted is not None:
+            facts["settings_kept_from_current"] = sorted(
+                str(n) for n in config if n not in submitted)
+        facts["secrets_provided_names_only"] = list(values.get("secrets") or [])
+    return approval_card.CardRequest(
+        kind="specialist_upgrade" if mode == "upgrade" else "specialist_install",
+        who=requester_name, facts=facts, fallback=approval_card.text_fallback(text))
+
+
+def _plugin_facts(row: Any, tools: "list[dict] | None") -> dict:
+    if tools is None:
+        tools = [{"name": n, "summary": None} for n in row.protected_tools]
+    return {"name": row.scoped_name, "manifest_name": row.manifest_name,
+            "version": row.version, "source": row.source_type,
+            "mcp_servers": list(row.mcp_servers),
+            "protected_tools": [dict(t) for t in tools],
+            "secrets_required": list(row.env_names),
+            "env_referenced_not_required": list(getattr(row, "exempt_env_names", ()) or ())}
 
 
 # --- the approval card, shared by the specialist and persona cards -------------
@@ -465,7 +533,8 @@ def supersede_card(record: Any, *, channel: Any = None) -> "Awaitable[None]":
 
     async def _edit() -> None:
         try:
-            await endpoint.edit_dm_message(card.chat_id, card.message_id, replaced_line(record))
+            await endpoint.edit_dm_message(card.chat_id, card.message_id, replaced_line(record),
+                                           literal=True)
         except Exception:  # noqa: BLE001 — a failed edit leaves the card as it was
             logger.warning("could not edit the replaced approval card %s", card, exc_info=True)
 
@@ -527,7 +596,7 @@ def approval_card_hooks(
 
     def _finish_factory(message_id: int, req: Any) -> Callable[[dict], Any]:
         async def _edit(text: str) -> None:
-            await channel.edit_dm_message(chat_id, message_id, text)
+            await channel.edit_dm_message(chat_id, message_id, text, literal=True)
 
         async def _on_outcome(outcome: str) -> None:
             if outcome == "started":
@@ -591,6 +660,10 @@ def prompt_specialist_install_consent(
     submitted_config: Any = None,
     acks: "SpecialistInstallAckStore | None" = None,
     requester: str = "",
+    requester_name: str = "Casa",
+    role_grants: "tuple[str, ...] | None" = None,
+    from_version: str = "",
+    protected_tools: "dict[str, list[dict]] | None" = None,
 ) -> Any:
     """Post the card asking the operator to approve *record*, a
     ``specialist_install`` or ``specialist_upgrade`` approval record, for the
@@ -601,7 +674,12 @@ def prompt_specialist_install_consent(
     the current settings. Approve records the consent ack for the record's
     identity, approves the record and has Casa carry the configurator on with
     *continuation*. Raises ``ValueError`` when the record's identity is not the
-    identity of *inspection_facts* with the record's values."""
+    identity of *inspection_facts* with the record's values.
+
+    The card is written for the operator by a model (:func:`install_card_request`),
+    titled for *requester_name*, the agent whose turn asked; *role_grants*,
+    *from_version* and *protected_tools* only add to what it is told.
+    *requester* is the asking run's id, which keeps its card apart."""
     inspection = inspection_facts
     mode = "upgrade" if record.kind == "specialist_upgrade" else "install"
     receipt_digest = inspection.receipt_digest
@@ -620,6 +698,10 @@ def prompt_specialist_install_consent(
     key = SpecialistInstallConsentKey(
         component_id=inspection.component_id, slug=inspection.slug, identity=identity,
         requester=requester, approval_rid=record.rid)
+    card_request = install_card_request(
+        inspection, mode=mode, values=record.values, submitted_config=submitted_config,
+        requester_name=requester_name, role_grants=role_grants, from_version=from_version,
+        protected_tools=protected_tools)
     text = render_install_consent_message(
         inspection, mode=mode, values=record.values, submitted_config=submitted_config)
     noun = "update" if mode == "upgrade" else "install"
@@ -649,4 +731,5 @@ def prompt_specialist_install_consent(
                     "install_component_id": inspection.component_id,
                     "approval_rid": record.rid},
         timeout_s=INSTALL_CONSENT_TTL_S,
+        card_request=card_request,
     )

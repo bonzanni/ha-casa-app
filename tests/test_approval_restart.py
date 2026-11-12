@@ -49,9 +49,10 @@ _CHILD = textwrap.dedent('''
 
     class Channel:
         bot_id = 111
-        async def post_dm_keyboard(self, *, chat_id, request_id, text, options):
+        async def post_dm_keyboard(self, *, chat_id, request_id, text, options,
+                               entities=None):
             return 55
-        async def edit_dm_message(self, chat_id, message_id, text):
+        async def edit_dm_message(self, chat_id, message_id, text, literal=False):
             return True
 
     starts = []

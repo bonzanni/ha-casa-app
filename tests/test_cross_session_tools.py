@@ -448,6 +448,7 @@ EXPECTED_SITES = {
     ("run_admission.py", "_ask_model"): "test_run_admission_options",
     ("action_judgement.py", "_ask_check"): "test_action_judgement_options",
     ("memory/model_port.py", "writer_options"): "test_memory_writer_options",
+    ("approval_card.py", "_ask"): "test_approval_card_writer.py",
 }
 
 # The calls whose result carries the denial: the helper itself, and the

@@ -36,11 +36,12 @@ class _FakeChannel:
         self.chat_id = "100"
         self.bot_id = 111
 
-    async def post_dm_keyboard(self, *, chat_id, request_id, text, options):
+    async def post_dm_keyboard(self, *, chat_id, request_id, text, options,
+                               entities=None):
         self.posts.append((chat_id, request_id, text, tuple(options)))
         return 55
 
-    async def edit_dm_message(self, chat_id, message_id, text):
+    async def edit_dm_message(self, chat_id, message_id, text, literal=False):
         self.edits.append((chat_id, message_id, text))
         return True
 
@@ -143,16 +144,32 @@ def test_message_names_multiple_target_roles():
 
 
 async def test_prompt_posts_the_keyboard(monkeypatch, tmp_path):
+    import json
+
+    import approval_card
     broker, coord, channel, acks = _fresh_env(monkeypatch, tmp_path)
+    facts = []
+
+    async def _no_model(system, user):
+        facts.append(json.loads(user))
+        raise RuntimeError("no model")
+    monkeypatch.setattr(approval_card, "_ask", _no_model)
     handle = _prompt(coord, channel, acks)
     assert handle.created is True
     await handle.settled_post()
     chat_id, _rid, text, options = channel.posts[0]
     assert chat_id == 100
     assert options == ("Approve", "Deny")
+    # The card is model-written now; the literal detail moved to its fallback
+    # (posted when the model fails, as here) and to the facts the model gets.
+    assert text == approval_card.render_card(approval_card.text_fallback(
+        ec.render_event_consent_message(subscriber=SUBSCRIBER, emitter=EMITTER,
+                                        event=EVENT, targets=TARGETS)))[0]
     assert SUBSCRIBER in text
     assert EMITTER in text
     assert EVENT in text
+    [f] = facts
+    assert (f["subscriber"], f["emitted_by"], f["event"]) == (SUBSCRIBER, EMITTER, EVENT)
 
 
 async def test_duplicate_prompt_is_deduped(monkeypatch, tmp_path):

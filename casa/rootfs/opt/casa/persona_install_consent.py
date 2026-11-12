@@ -39,11 +39,27 @@ def render_persona_install_consent_message(inspection: Any) -> str:
     )
 
 
+def persona_card_request(inspection: Any, *, requester_name: str = "Casa") -> Any:
+    """The approval card asked for installing the persona *inspection*: the
+    facts a model writes it from (the renderer's inputs, the checksum left
+    out) and, as the fallback, :func:`render_persona_install_consent_message`
+    kept literally. Display only."""
+    import approval_card
+    return approval_card.CardRequest(
+        kind="persona_install", who=requester_name,
+        facts={"requested_by": requester_name, "request": "install a persona",
+               "persona": inspection.persona_id, "version": inspection.version,
+               "display_name": inspection.display_name},
+        fallback=approval_card.text_fallback(
+            render_persona_install_consent_message(inspection)))
+
+
 def prompt_persona_install_consent(
     *, coordinator: Any, channel: Any, chat_id: int, operator_id: int,
     record: Any, inspection: Any, continuation: str,
     acks: "PersonaInstallAckStore | None" = None,
     requester: str = "",
+    requester_name: str = "Casa",
 ) -> Any:
     """Post the card asking the operator to approve *record*, a
     ``persona_install`` approval record, for the staged persona *inspection*.
@@ -52,7 +68,9 @@ def prompt_persona_install_consent(
     specialist sibling (``specialist_install_consent.approval_card_hooks``)
     holds the shared tap and finish behaviour. Raises ``ValueError`` when the
     record's identity is not the identity of *inspection* with the record's
-    values."""
+    values. The card is written for the operator by a model
+    (:func:`persona_card_request`), titled for *requester_name*, the agent
+    whose turn asked."""
     identity = persona_install_consent_identity(
         persona_id=inspection.persona_id, version=inspection.version, checksum=inspection.checksum,
         values_digest=record.values_digest)
@@ -104,4 +122,5 @@ def prompt_persona_install_consent(
         meta_extra={"persona_id": inspection.persona_id, "persona_version": inspection.version,
                     "approval_rid": record.rid},
         timeout_s=INSTALL_CONSENT_TTL_S,
+        card_request=persona_card_request(inspection, requester_name=requester_name),
     )

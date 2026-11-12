@@ -381,7 +381,7 @@ class _A_AskEndpoint(FakeEndpoint):
         self.edits: list[tuple] = []
         self.continuations: list[dict] = []
 
-    async def edit_dm_message(self, chat_id, message_id, text):
+    async def edit_dm_message(self, chat_id, message_id, text, literal=False):
         self.edits.append((chat_id, message_id, text))
         return True
 

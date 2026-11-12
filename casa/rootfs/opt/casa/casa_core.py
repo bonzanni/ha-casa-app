@@ -2489,6 +2489,11 @@ async def main() -> None:
     # would log at ERROR on every engagement close.
     from sdk_logging import install_sdk_task_noise_filter
     install_sdk_task_noise_filter(asyncio.get_running_loop())
+    # The loop the background listing of protected plugin tools runs on: bound here,
+    # on Casa's main loop and before any role loads, since the protected-tool maps are
+    # built (some on worker threads) as roles load and hand their listing to it.
+    import tool_descriptions
+    tool_descriptions.bind_loop(asyncio.get_running_loop())
     logger.info("Casa core starting up")
 
     # 1b. #203: every external ingress must be able to name the author of its

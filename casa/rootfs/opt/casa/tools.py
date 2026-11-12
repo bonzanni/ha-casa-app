@@ -35,6 +35,7 @@ from system_requirements.manifest import (
 import background_jobs
 import plugin_registry
 import plugin_store
+import tool_descriptions
 from plugin_grants import (
     CASA_OWNED_ENV_OPTIONS as _CASA_OWNED_ENV,
     apply_profile_plan,
@@ -3085,6 +3086,7 @@ def _capture_build_input(cfg):
     resolution, withheld = withhold_env_unresolved(
         _delegated_resolution(cfg), context=f"delegated {_role} options")
     protected = protected_map(resolution)
+    tool_descriptions.schedule_fill(resolution)
     contract_map = result_contract_map(resolution)
     target = f"{_tier}:{_role}"
     plan = profile_plan(resolution, target=target, withheld=[rp for rp, _ in withheld])
@@ -3263,6 +3265,7 @@ def _build_specialist_options(
     else:
         from plugin_grants import protected_map
         _protected = protected_map(resolution)
+        tool_descriptions.schedule_fill(resolution)
     _authz_role = getattr(cfg, "role", "unknown")
     _authz_hook = None
     if _protected:
@@ -3521,6 +3524,7 @@ def _build_plugin_job_options(rec, resolution,
         raise RuntimeError("declaring plugin unavailable for plugin job")
     role = rec.role_or_type
     protected = protected_map(resolution)
+    tool_descriptions.schedule_fill(resolution)
 
     def deps():
         # The transport: a challenge goes through the bot of the job's route.
@@ -14967,6 +14971,57 @@ async def specialist_install_inspect(args: dict) -> dict:
     return _result(ok_payload)
 
 
+def _requester_name(origin: dict) -> str:
+    """The display name of the agent whose turn made a request, for the
+    approval card's title: *origin*'s ``role`` (in a configurator run, the
+    agent that delegated to it), else ``"Casa"``."""
+    from authz_grants import _resolve_display_name
+    role = str((origin or {}).get("role") or "")
+    cfg = _agent_role_map.get(role) if role else None
+    if cfg is None:
+        return "Casa"
+    name = getattr(getattr(cfg, "character", None), "name", None)
+    return _resolve_display_name(name, role)
+
+
+def _install_card_facts(checked: Any, staged_dir: Path, *, slug: str, mode: str) -> dict:
+    """What an install or update card is told beyond the inspection the
+    governed tools work on: the Casa tools the role grants, the installed
+    version an update replaces, and each bundled plugin's protected tools with
+    the summaries its staged manifest declares. Presentation only: none of it
+    reaches the consent text, the receipt or the approval's identity. A read;
+    whatever cannot be read is left out (a plugin's tools then by name only)."""
+    import plugin_store
+    from personality_binding import InstanceDir
+    from specialist_install import (parse_component_root, role_tool_grants,
+                                    sourced_plugin_tree)
+    component = checked.component
+    out: dict = {"role_grants": role_tool_grants(component)}
+    if mode == "upgrade":
+        try:
+            active = InstanceDir(_SPECIALISTS_DIR / slug).active()
+            if active is not None:
+                out["from_version"] = parse_component_root(active.root)[1]
+        except (ValueError, OSError) as exc:
+            logger.info("approval card: installed version of %s unreadable (%s)", slug, exc)
+    deps = {d.identifier: d for d in getattr(component, "dependencies", ()) or ()
+            if getattr(d, "source", None) is not None}
+    tools_by_plugin: dict = {}
+    for row in checked.receipt.plugins:
+        try:
+            tree = sourced_plugin_tree(staged_dir, deps[row.identifier])
+            manifest = json.loads((tree / ".claude-plugin" / "plugin.json")
+                                  .read_text(encoding="utf-8"))
+            tools_by_plugin[row.scoped_name] = [
+                {"name": t["name"], "summary": t.get("summary")}
+                for t in plugin_store.manifest_protected_tools(manifest)]
+        except Exception as exc:  # noqa: BLE001 — the card then names the tools only
+            logger.info("approval card: protected tool summaries of %s unreadable (%s: %s)",
+                        row.scoped_name, type(exc).__name__, exc)
+    out["protected_tools"] = tools_by_plugin
+    return out
+
+
 def _configurator_run_key() -> str:
     """The configurator run this tool runs in (its delegation id), or ``""``."""
     origin = _snapshot_origin() or {}
@@ -15042,8 +15097,9 @@ def _upgrade_changes_nothing(inspection: Any, slug: str, effective: dict,
 
 async def _supersede_card(record: Any) -> None:
     """Edit a replaced request's card to say so and settle it, so a later tap
-    on it answers "replaced". Never raises."""
-    if record is None or getattr(record, "card", None) is None:
+    on it answers "replaced". A card still being written is settled too, so it
+    is never posted. Never raises."""
+    if record is None:
         return
     try:
         import inspect as _inspect
@@ -15077,12 +15133,16 @@ async def _post_approval_card(record: Any, post: "Callable[..., Any]", *, what: 
         return {"ok": False, "kind": "consent_prompt_failed",
                 "detail": f"{type(exc).__name__}: {exc}"}
     failure = await _settle_install_consent_post(handle)
-    if failure is not None:
-        return failure
     # The card records where it landed and, when a newer request replaced this
-    # one while it was posting, edits itself to say so at once.
+    # one while it was posting, edits itself to say so at once. One replaced
+    # while its card was still being written is never posted: its question
+    # settled first, which reads as inactive.
     now = approval_records.get(record.rid)
-    if now is not None and now.state == "superseded":
+    replaced = now is not None and now.state == "superseded"
+    if failure is not None and not (replaced
+                                    and failure.get("kind") == "consent_prompt_inactive"):
+        return failure
+    if replaced:
         return {"ok": False, "kind": "approval_superseded",
                 "detail": ("a newer request replaced this one while its card was "
                            "posting; the newer card is the one the operator answers")}
@@ -15153,7 +15213,14 @@ async def specialist_install_request_approval(args: dict) -> dict:
         return _result({"ok": False, "kind": exc.kind, "detail": exc.detail})
     values = {"config": effective, "secrets": secrets}
     identity = identity_for_inspection(inspection, values=values)
+    try:
+        card_facts = await asyncio.to_thread(
+            _install_card_facts, checked, staged_dir, slug=slug, mode=mode)
+    except Exception:  # noqa: BLE001 — the card is told less, the request stands
+        logger.warning("approval card facts for specialist:%s unavailable", slug, exc_info=True)
+        card_facts = {}
     origin = _snapshot_origin() or {}
+    requester_name = _requester_name(origin)
     asked = str(origin.get("user_text") or "")[:approval_records.ASKED_MAX]
     carrying = origin.get(approval_records.APPROVAL_KEY)
     carrying_rid = str(carrying.get("rid") or "") if isinstance(carrying, dict) else ""
@@ -15184,7 +15251,9 @@ async def specialist_install_request_approval(args: dict) -> dict:
 
     def _post(**kw):
         return prompt_specialist_install_consent(inspection_facts=inspection,
-                                                 submitted_config=config, **kw)
+                                                 submitted_config=config,
+                                                 requester_name=requester_name,
+                                                 **card_facts, **kw)
     return _result(await _post_approval_card(
         record, _post, what=f"specialist:{inspection.slug}", continuation=continuation))
 
@@ -16195,8 +16264,11 @@ async def persona_install_inspect(args: dict) -> dict:
                         "next": "stop; Casa continues you once this run ends"})
     await _supersede_card(superseded)
 
+    requester_name = _requester_name(origin)
+
     def _post(**kw):
-        return prompt_persona_install_consent(inspection=result, **kw)
+        return prompt_persona_install_consent(inspection=result,
+                                              requester_name=requester_name, **kw)
     posted = await _post_approval_card(
         record, _post, what=f"persona {result.persona_id}", continuation=continuation)
     if posted.get("ok") is not True:
@@ -17468,7 +17540,8 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
     chat_id = operator_id = address.chat_id
     artifacts = tuple(s.artifact_id for s in specs)
     # the operator's own words in this run: what a continuation's row keeps
-    asked = str((_snapshot_origin() or {}).get("user_text") or "")
+    origin = _snapshot_origin() or {}
+    asked = str(origin.get("user_text") or "")
     if erase is None:
         if confirm is not None:
             had = questions.current(subject) is not None
@@ -17494,6 +17567,8 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
             if pec.ERASE in choices:
                 erasers.append((s.name, s.tool, s.summary))
         text = pec.render_erase_choice(what, erasers, choices)
+        card_request = pec.erase_card_request(what, erasers, choices,
+                                              requester_name=_requester_name(origin))
         deliver = _configurator_deliverer(question, asked)
 
         async def _continue(choice: int) -> bool:
@@ -17509,7 +17584,7 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
             handle = pec.prompt_erase_choice(
                 coordinator=CHALLENGES, channel=channel, key=key, text=text,
                 continue_cb=_continue,
-                choices=choices)
+                choices=choices, card_request=card_request)
         except Exception as exc:  # noqa: BLE001 — structured, never a raise
             logger.exception("erase-choice prompt failed to post")
             return {"ok": False, "kind": "consent_prompt_failed",

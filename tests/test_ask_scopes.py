@@ -55,11 +55,11 @@ class _Endpoint(FakeEndpoint):
         return user_id == OPERATOR
 
     async def post_dm_keyboard(self, *, chat_id, request_id, text, options,
-                               short_labels=False, shorts=None):
+                               short_labels=False, shorts=None, entities=None):
         self.posts.append((chat_id, request_id, str(text), tuple(options)))
         return self._mid()
 
-    async def edit_dm_message(self, chat_id, message_id, text):
+    async def edit_dm_message(self, chat_id, message_id, text, literal=False):
         self.edits.append((chat_id, message_id, text))
         return True
 

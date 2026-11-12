@@ -30,10 +30,13 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from channels.tg_address import CASA, AddressError, TgAddress, is_route, scope
 from text_util import escape_unsafe_text, is_unsafe_text, utf16_len
+
+if TYPE_CHECKING:  # annotation only; the runtime import stays lazy
+    import approval_card
 
 logger = logging.getLogger(__name__)
 
@@ -443,6 +446,26 @@ def _interpolated_summary_or_none(
     return _interpolate_summary(summary, args)
 
 
+def _first_sentence(text: "str | None") -> "str | None":
+    """The first sentence of *text* (up to its first ". " or line break)."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    head = text.strip().split("\n", 1)[0]
+    end = head.find(". ")
+    return head[:end + 1] if end >= 0 else head
+
+
+def _fallback_summary(summary: "str | None", canonical_json: str,
+                      description: "str | None") -> "str | None":
+    """The plugin's own one-line description of a call, for the fallback
+    card: its manifest summary (interpolated when that works cleanly, else
+    the template as written), else the first sentence of the tool's listed
+    description, else None."""
+    if summary:
+        return _interpolated_summary_or_none(summary, canonical_json) or summary
+    return _first_sentence(description)
+
+
 def render_challenge_message(
     *, tool_name: str, enforcement_role: str, canonical_json: str,
     summary: "str | None" = None, display_name: "str | None" = None,
@@ -621,6 +644,7 @@ class ChallengeCoordinator:
         finish_factory: "Callable[[int, Any], Callable[[dict], Any]] | None" = None,
         kind: str = "authz", meta_extra: "dict | None" = None,
         timeout_s: "float | None" = None,
+        card_request: "approval_card.CardRequest | None" = None,
     ) -> ChallengeHandle:
         """Register ONE operator challenge keyboard for *key* (dedup by key).
 
@@ -637,6 +661,12 @@ class ChallengeCoordinator:
         resolves taps under that scope and fail-closes on the meta's
         bot/chat/operator. *channel* is the endpoint of bot *bot_id*: the
         keyboard is posted, and later edited, through that bot only.
+
+        With a *card_request*, the keyboard carries the approval card written
+        for it (a model's, or the request's own fallback) with Casa's bold
+        entities instead of *challenge_text*. The card is written inside the
+        post driver, after registration, and is never posted once the request
+        has settled. The size check still applies to *challenge_text*.
         """
         existing = self._entries.get(key)
         if existing is not None:
@@ -705,6 +735,8 @@ class ChallengeCoordinator:
         _scope = resolve_scope()
 
         async def _post() -> Any:
+            if card_request is not None:
+                return await _post_card(card_request)
             _body = (_scope.admit(IntentKind.KEYBOARD, challenge_text)
                      if _scope is not None else casa_text(challenge_text))
             mid = await channel.post_dm_keyboard(
@@ -713,6 +745,37 @@ class ChallengeCoordinator:
             )
             # #1079: the admission recorded this body as committed to the
             # operator; only the broker's own "posted" test confirms it.
+            if isinstance(mid, int):
+                _body.mark_delivered()
+            return mid
+
+        async def _post_card(card_req: Any) -> Any:
+            import approval_card
+
+            card = await approval_card.write_card(card_req)
+            display, entities = approval_card.render_card(card)
+            # A tap, a timeout or a cancellation may have settled the request
+            # while the card was being written. Nothing is admitted or posted
+            # for it then: admission opens a send record that only a delivered
+            # post may close. The non-int return is the broker's
+            # nothing-was-posted signal, and unregistering a settled request
+            # changes nothing. From this check to the start of the send there
+            # is no await; a settlement that lands during the send itself is
+            # handled as for any keyboard, by the finish hook installed on the
+            # returned message id.
+            if req._future.done():
+                return None
+            _body = (_scope.admit(IntentKind.KEYBOARD, display)
+                     if _scope is not None else casa_text(display))
+            # Admission only ever prepends lines; the entities move right by
+            # exactly that prefix (measured in UTF-16 units by shift_entities).
+            assert _body.endswith(display)
+            prefix = _body[:len(_body) - len(display)]
+            mid = await channel.post_dm_keyboard(
+                chat_id=chat_id, request_id=rid, text=_body,
+                options=options,
+                entities=approval_card.shift_entities(entities, prefix),
+            )
             if isinstance(mid, int):
                 _body.mark_delivered()
             return mid
@@ -743,7 +806,7 @@ class ChallengeCoordinator:
         target_role: str, tool_name: str, canonical_json: str,
         enforcement_role: str, channel: Any, grants: "GrantStore",
         summary: "str | None" = None, display_name: "str | None" = None,
-        engagement_id: str = "",
+        engagement_id: str = "", plugin: str = "", declared_tool: str = "",
     ) -> ChallengeHandle:
         existing = self._entries.get(key)
         if existing is not None:
@@ -751,13 +814,19 @@ class ChallengeCoordinator:
 
         # Rendering + size validation runs BEFORE any insert [A:§3.4]:
         # oversized -> refused handle, NO entry, NO keyboard, NO registration.
-        # The plugin-declared *summary* + the current *display_name* are
-        # captured here (W2) into the challenge render AND, below, the
+        # This rendering is the size measure only: what the operator reads is
+        # the approval card below. The plugin-declared *summary* + the current
+        # *display_name* are captured here into the card AND, below, the
         # settlement finish hook.
         challenge_text = render_challenge_message(
             tool_name=tool_name, enforcement_role=enforcement_role,
             canonical_json=canonical_json, summary=summary,
             display_name=display_name,
+        )
+        card_request = self._tool_card_request(
+            key, tool_name=tool_name, canonical_json=canonical_json,
+            enforcement_role=enforcement_role, summary=summary,
+            display_name=display_name, plugin=plugin, declared_tool=declared_tool,
         )
 
         # #663: an engagement-origin challenge dispatches a continuation on
@@ -813,6 +882,50 @@ class ChallengeCoordinator:
                 "canonical_args_json": canonical_json,
                 "enforcement_role": enforcement_role,
             },
+            card_request=card_request,
+        )
+
+    @staticmethod
+    def _tool_card_request(
+        key: GrantKey, *, tool_name: str, canonical_json: str,
+        enforcement_role: str, summary: "str | None",
+        display_name: "str | None", plugin: str, declared_tool: str,
+    ) -> "approval_card.CardRequest":
+        """The approval card asked for a protected tool call: the facts the
+        model writes it from, and the card Casa writes itself from the
+        arguments when the model does not answer in time. Display only — the
+        grant stays bound to *key* (the canonical arguments' hash).
+
+        The tool is named as the plugin declares it (*declared_tool*), which
+        is also the name its description was listed under; the full tool id
+        carries a sanitized form of it."""
+        import approval_card
+        import tool_descriptions
+
+        who = _resolve_display_name(display_name, enforcement_role)
+        short = declared_tool or short_tool_name(tool_name)
+        args = json.loads(canonical_json)
+        described = tool_descriptions.get(key.artifact_id, short)
+        if described is None:
+            logger.info(
+                "approval card: no tool description cached for %s (artifact %s)",
+                tool_name, key.artifact_id)
+            described = {}
+        return approval_card.CardRequest(
+            kind="authz", who=who,
+            facts={
+                "requested_by": who,
+                "plugin": plugin,
+                "tool": short,
+                "tool_description": described.get("description"),
+                "input_schema": described.get("inputSchema"),
+                "what_the_plugin_says_it_does": summary,
+                "arguments": args,
+            },
+            fallback=approval_card.tool_fallback(
+                who=who, plugin=plugin, args=args,
+                summary=_fallback_summary(summary, canonical_json,
+                                          described.get("description"))),
         )
 
     # -- owned setup driver -------------------------------------------------
@@ -953,7 +1066,7 @@ class ChallengeCoordinator:
 
         async def _deliver(text: str, fail_text: str) -> None:
             if not await _safe_dispatch(text) and not _seam_tells_its_loss():
-                await channel.edit_dm_message(chat_id, message_id, fail_text)
+                await channel.edit_dm_message(chat_id, message_id, fail_text, literal=True)
 
         async def _hand_over(text: str, fail_text: str) -> None:
             """#1049: a delegated call's decision goes back to the resident that
@@ -991,6 +1104,7 @@ class ChallengeCoordinator:
                     _challenge_retired_text(
                         tool_name, o, outcome.get("reason")
                         if isinstance(outcome, dict) else None),
+                    literal=True,
                 )
                 return
             idx = outcome.get("option_index")
@@ -1003,6 +1117,7 @@ class ChallengeCoordinator:
                         chat_id, message_id,
                         "internal error recording the approval — "
                         "call the tool again",
+                        literal=True,
                     )
                     return
                 # Edit the SUCCESS state FIRST, then dispatch, then overwrite
@@ -1012,6 +1127,7 @@ class ChallengeCoordinator:
                     f"✅ Approved — {display} ({enforcement_role}) may run "
                     f"{short} once with exactly these arguments in the next "
                     f"{_GRANT_TTL_MINUTES} minutes",
+                    literal=True,
                 )
                 await _hand_over(
                     "[authorization approved]: have "
@@ -1029,6 +1145,7 @@ class ChallengeCoordinator:
             else:
                 await channel.edit_dm_message(
                     chat_id, message_id, f"❌ Denied — {short} will not run",
+                    literal=True,
                 )
                 # #1071: bound to the one call refused, as the approval is —
                 # a tool-wide "do not retry {tool}" read as a ban on the tool
@@ -1571,12 +1688,12 @@ def make_resident_authz_hook(
     ``role`` is the agent's own (plain, tier-stripped) role — asserted equal to
     ``origin.execution_role`` as defense in depth and used as
     ``GrantKey.enforcement_role``. ``protected`` maps each full tool name to
-    ``{"artifact_id": ..., "summary": ...}`` (from ``plugin_grants.protected_map``
-    over the SAME ``ResolutionResult`` used to build the agent's options — a
-    mid-TTL plugin update changes the artifact and invalidates the grant).
-    This hook consumes ONLY ``artifact_id`` — exactly as before v0.78.0, no
-    grant/GrantKey/enforcement change; ``summary`` is advisory copy threaded
-    to the challenge render by the coordinator (W2), not read here.
+    ``{"artifact_id", "summary", "plugin", "tool"}`` (from
+    ``plugin_grants.protected_map`` over the SAME ``ResolutionResult`` used to
+    build the agent's options — a mid-TTL plugin update changes the artifact
+    and invalidates the grant). Only ``artifact_id`` binds: it goes into the
+    GrantKey. ``summary``, ``plugin`` and the declared tool name ``tool`` are
+    display-only and feed the operator's approval card.
     ``deps_factory`` resolves the Telegram channel + stores LAZILY at call time;
     ``None`` (no DM reachable) is the unsupported-origin deny.
 
@@ -1667,6 +1784,8 @@ def make_resident_authz_hook(
                     summary=protected[tool_name].get("summary"),
                     display_name=deps.display_name,
                     engagement_id=engagement_id,
+                    plugin=protected[tool_name].get("plugin", ""),
+                    declared_tool=protected[tool_name].get("tool", ""),
                 )
                 if handle.refused == "args_too_large":
                     return _deny(_DENY_UNRENDERABLE)

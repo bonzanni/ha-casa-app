@@ -70,6 +70,7 @@ CASA_TEXT_SITES = {
     ("agent.py", "handle_message"): "a classified-error reply (_USER_MESSAGES) is Casa's",
     ("agent.py", "_send_limit_line"): "#1121: the turn-limit line, Casa template, its own send",
     ("authz_grants.py", "_post"): "a challenge raised with NO turn bound (a setup dispatch); with a turn it is admitted",
+    ("authz_grants.py", "_post_card"): "an approval card raised with NO turn bound (a setup dispatch); with a turn it is admitted",
     ("casa_core.py", "_notify_plugin_health_locked"): "plugin-health notice, Casa template",
     ("casa_core.py", "notify_placeholder_rewrites"): "placeholder-rewrite notice, Casa template",
     ("casa_core.py", "_telegram_outbound"): "bus target for Casa notices only; a model reply never reaches it",
@@ -148,6 +149,7 @@ CHANNEL_METHOD_CALLERS = {
     ("agent.py", "handle_message"): "admitted",                 # the final reply
     ("agent.py", "_send_limit_line"): "casa_text",              # #1121: the turn-limit line
     ("authz_grants.py", "_post"): "admitted",                   # the challenge body (or casa_text with no turn)
+    ("authz_grants.py", "_post_card"): "admitted",              # the approval card (or casa_text with no turn)
     ("casa_core.py", "operator_notify"): "casa_text",
     ("casa_core.py", "_notify_plugin_health_locked"): "casa_text",
     ("casa_core.py", "notify_placeholder_rewrites"): "casa_text",
