@@ -508,6 +508,26 @@ def _tool_descriptions_state_reset():
 
 
 @pytest.fixture(autouse=True)
+def _delegation_task_sets_without_closed_loops():
+    """#1545: drop every delegation task whose loop is closed before each test.
+
+    ``tools._delegation_settle_tasks`` and ``_delegation_callback_tasks`` lose a
+    member through a done callback on the member's own loop. A task still
+    pending when its test's loop closed never runs that callback and stays in
+    the set, and the next test that gathers the set fails with "attached to a
+    different loop". Only already-imported ``tools`` is touched: a test that
+    never imported it has nothing in the sets."""
+    tools_mod = sys.modules.get("tools")
+    if tools_mod is not None:
+        for task_set in (tools_mod._delegation_settle_tasks,
+                         tools_mod._delegation_callback_tasks):
+            for task in list(task_set):
+                if task.get_loop().is_closed():
+                    task_set.discard(task)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _approval_card_model_unreachable(monkeypatch):
     """A protected tool call's approval card is written by a model call
     (``approval_card._ask``) that would start the real CLI. No test reaches it:
