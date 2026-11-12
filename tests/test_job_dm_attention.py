@@ -548,7 +548,7 @@ class TestAskAndTap:
 
 
 class TestStartLineCancelAndRetirement:
-    async def test_an_operator_started_job_gets_a_silent_start_line_with_cancel(
+    async def test_an_operator_started_job_gets_a_silent_start_line_with_its_stop_key(
             self, tmp_path, monkeypatch):
         import tools
         from engagement_registry import JOB_POST_START
@@ -556,8 +556,11 @@ class TestStartLineCancelAndRetirement:
         await tools._post_job_start_line(r.rec.id)
         (post,) = r.bot.sent
         assert post["text"] == "📊 finance started «Process rows»."
-        assert [b.callback_data for b in _buttons(post["markup"])] == [
-            f"v1|job_cancel|{r.rec.id}"]
+        # no inline button: the line raises the job's red Stop key at the keyboard
+        assert not hasattr(post["markup"], "inline_keyboard")
+        assert [[(k.text, k.style) for k in row] for row in post["markup"].keyboard] == [
+            [("⏹ Stop «Process rows»", "danger")]]
+        assert post["markup"].is_persistent is True and post["markup"].resize_keyboard is True
         assert r.rec.ui_posts == [(A(post["message_id"]), JOB_POST_START)]
         assert r.reg.job_post_owner(A(post["message_id"])) is r.rec
 
@@ -583,7 +586,10 @@ class TestStartLineCancelAndRetirement:
             "🛑 finance «Process rows» · 1 min"]
         assert [m["message_id"] for m in r.bot.markups] == [q_mid]
         assert r.rec.ui_posts == []
-        assert r.bot.replies() == []
+        # one silent end line in reply to the start line takes the key away
+        (end,) = r.bot.replies()
+        assert (end["text"], end["reply_to"]) == ("Stopped «Process rows».", start_mid)
+        assert end["markup"].remove_keyboard is True
 
     async def test_a_second_cancel_tap_while_the_first_runs_is_already_finishing(
             self, tmp_path, monkeypatch):
@@ -612,7 +618,7 @@ class TestStartLineCancelAndRetirement:
         assert r.rec.status == "active"
         assert r.bot.edits == [] and r.bot.markups == []
         assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
-            ("The job could not be cancelled just now — tap Cancel again.", start_mid)]
+            ("The job could not be stopped just now — try again.", start_mid)]
         assert r.rec.ui_posts and r.rec.id not in r.ch._job_cancels
 
     async def test_a_keyboard_post_landing_after_the_end_is_retired_by_its_filer(

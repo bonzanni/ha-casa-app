@@ -115,6 +115,8 @@
   doc: architecture/plugin-continuations.md
 - item: casa/rootfs/opt/casa/plugin_stop.py
   doc: architecture/plugin-stop.md
+- item: casa/rootfs/opt/casa/stop_keys.py
+  doc: architecture/plugin-stop.md
 - item: casa/rootfs/opt/casa/drivers/in_casa_driver.py
   doc: architecture/engagement-completion-gate.md
 - item: casa/rootfs/opt/casa/drivers/turn_progress.py

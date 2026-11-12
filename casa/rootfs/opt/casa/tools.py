@@ -576,11 +576,18 @@ async def stop_work(args: dict) -> dict:
             continue                    # no request of this plugin he may stop has it
         on_bot = found.bot_id           # the bot the request was asked on
 
-        async def _tell(outcome: dict, seg=seg, on_bot=on_bot) -> None:
-            mark = plugin_stop.MARKS.get(outcome.get("outcome"))
-            if mark is not None:
-                await plugin_stop.settle_run_card(
-                    plugin_stop.confirmation_for(seg, on_bot, operator_id, ref), mark)
+        async def _tell(outcome: dict, seg=seg, on_bot=on_bot, role=role) -> None:
+            # the resident tells him in its own words; a request that no longer runs also
+            # gets one silent line in reply to its card, which takes its Stop key off the keyboard
+            o = outcome.get("outcome")
+            c = plugin_stop.confirmation_for(seg, on_bot, operator_id, ref)
+            card = c.card_address() if c is not None else None
+            await plugin_stop.settle_stop(c, o)
+            line = {"stopped": plugin_stop.LINES["stopped"],
+                    "ended": plugin_stop.ENDED_LINE}.get(o)
+            if line is not None and card is not None:
+                await plugin_stop.post_line(card.bot_id, card.chat_id, role, line,
+                                            reply_to=card.message_id)
 
         out = await plugin_stop.stop(role, seg, ref, bot_id=on_bot, operator_id=operator_id,
                                      tell=_tell)
@@ -6290,7 +6297,7 @@ async def _prelaunch(
                     "agent": agent_name, "engagement_id": rec.id,
                     "message": f"{_display_name_for_role(agent_name)} already has an open "
                                f"engagement: {title}. Wait for it to finish, or cancel it "
-                               "with the Cancel button on its start line or by asking me.",
+                               "with its Stop key at the keyboard or by asking me.",
                 })
     permit = None
     # The permit is taken here, before the agent's lane: a delegation refused
@@ -7982,8 +7989,9 @@ _START_LINE_TIMEOUT_S = 10.0
 
 
 async def _post_job_start_line(engagement_id: Any) -> None:
-    """The silent start line, with its Cancel button, of a job the operator
-    started — directly or through an agent acting on their message. A job the
+    """The silent start line, which raises the job's Stop key at the keyboard, of
+    a job the operator started — directly or through an agent acting on their
+    message. A job the
     scheduler started gets none, and nor does one an agent started on its
     own: neither was asked for in the chat. Bounded; a failure is logged."""
     rec = (_engagement_registry.get(engagement_id)
@@ -13231,7 +13239,8 @@ def _on_engagement_terminal(rec) -> None:
     An ended job's keyboards in the direct chat (its start line, its
     questions) are retired on every terminal winner too: the channel takes
     them off the record in this step and edits them away on a task of its
-    own — except for a job that completed from inside a running turn, whose
+    own, the start line followed by the end line that takes the job's Stop
+    key off the keyboard — except for a job that completed from inside a running turn, whose
     finalize tail retires them once that turn has ended and its cost is
     recorded."""
     CHALLENGES.cancel_matching(engagement=rec.id, reason="engagement_ended")
@@ -15372,7 +15381,7 @@ async def _settle_install_consent_post(handle) -> "dict | None":
 SPECIALIST_OPEN_CONVERSATION_NOTICE_TEMPLATE = (
     "When it resumes, it picks up Casa's updated settings, but it keeps its "
     "personality and the plugin versions it started with. To get everything "
-    "new, cancel it (with its Cancel button, or ask {assistant}) and start it "
+    "new, cancel it (with its Stop key, or ask {assistant}) and start it "
     "again."
 )
 

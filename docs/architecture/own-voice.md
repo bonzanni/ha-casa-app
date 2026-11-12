@@ -71,7 +71,8 @@ agent moves to a new bot only when it is empty. Durable kinds: a delegation aske
 bot or delivering there that is accepted or running, waiting for input it can still take,
 or still owing its requester an announcement; a live or idle job started on the bot or
 posting there; an ended job whose keyboard post on the bot is not retired; a scheduled
-question stored as posted through it; a run card whose Stop still works
+question stored as posted through it; a browsing request that still holds its run card and
+its Stop key — admitted, neither stopped nor ended, its binding there
 (`run_admission.Confirmations.open_cards_on_bot`); an update held for it. Memory-only
 kinds: a live question or card asked on it (`verdict_broker.VerdictBroker.live_on_bot`), a
 continuation queued on it (`plugin_continuations.Continuations.pending_on_bot`), and a turn

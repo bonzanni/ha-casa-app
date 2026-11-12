@@ -30,7 +30,7 @@ CHAT = 42
 async def _stop_line(monkeypatch):
     import plugin_stop
 
-    async def send_reply_line(chat_id, text, reply_to, *, post=None):
+    async def send_reply_line(chat_id, text, reply_to, *, post=None, silent=False):
         return 7
     endpoint = NS(bot_id=A, default_agent="assistant", send_reply_line=send_reply_line)
     monkeypatch.setattr(plugin_stop, "_transport",

@@ -54,8 +54,8 @@ async def test_the_start_line_shows_elapsed_time_then_the_exact_cost(channel):
     assert [e["text"] for e in bot.edits] == [
         "📊 Finance started «Accounting check». · 40 min",
         "📊 Finance started «Accounting check». · 40 min · $2.40"]
-    buttons = [b for row in bot.edits[-1]["markup"].inline_keyboard for b in row]
-    assert [b.text for b in buttons] == ["Cancel"]
+    # the edit carries no button: the job's Stop is its key at the keyboard
+    assert [b for row in bot.edits[-1]["markup"].inline_keyboard for b in row] == []
 
 
 async def test_an_ended_job_s_start_line_is_not_refreshed(channel):

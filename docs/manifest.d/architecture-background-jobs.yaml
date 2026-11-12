@@ -29,14 +29,15 @@
     INV-BGJOB-022: [tests/test_job_turn_guard.py::test_a_turn_ended_unfinished_is_nudged_once_then_parked, tests/test_job_turn_guard.py::test_a_ceiling_without_progress_since_the_last_one_parks, tests/test_job_turn_guard.py::test_an_api_fault_is_continued_once_then_parks, tests/test_job_turn_guard.py::test_cost_never_ends_or_parks_a_job, tests/test_job_turn_guard.py::test_a_second_death_ends_the_job_with_its_last_progress, tests/test_job_turn_guard.py::test_a_failed_resume_ends_the_job, tests/test_job_turn_guard.py::test_a_job_not_resumable_after_a_restart_ends_error, tests/test_finalize_engagement.py::test_a_job_s_cancelled_or_failed_end_carries_its_last_progress_once]
 
 - doc: architecture/background-job-direct-chat.md
-  summary: A background job in the operator's direct chat — the start line and its Cancel, a specialist job's ask_operator questions and their buttons, a parked job's line, replies into a live job, a reply to an ended job's post, the job-post ownership the engagement record keeps, the retirement of a job's keyboards when it ends, and why none of it needs a log group.
-  when_changing: a job's start line or Cancel button, ask_operator or a question's buttons, how a reply or a tap reaches a live job, where a reply to an ended job's post goes, the job posts an engagement record files, how an ended job's keyboards are retired, or what a job needs without a log group
+  summary: A background job in the operator's direct chat — the start line, the job's Stop key at the reply keyboard and its end line, a specialist job's ask_operator questions and their buttons, a parked job's line, replies into a live job, a reply to an ended job's post, the job-post ownership the engagement record keeps, the retirement of a job's keyboards when it ends, and why none of it needs a log group.
+  when_changing: a job's start line, its end line or what a press of its Stop key runs, ask_operator or a question's buttons, how a reply or a tap reaches a live job, where a reply to an ended job's post goes, the job posts an engagement record files, how an ended job's keyboards are retired, or what a job needs without a log group
   covers:
     - casa/rootfs/opt/casa/tools.py::ask_operator
     - casa/rootfs/opt/casa/tools.py::_post_job_start_line
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.deliver_operator_reply
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._route_task_reply
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_start_line
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._cancel_job_by_key
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.post_job_question
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_job_question_callback
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_job_cancel_callback
@@ -55,7 +56,8 @@
     - tests/test_job_dm_attention.py
     - tests/test_job_dm_posts_registry.py
     - tests/test_ended_job_replies.py
-  related: [architecture/agent-logs.md, architecture/background-jobs.md, architecture/background-job-session.md, architecture/engagement-inbound-disclosure.md, architecture/background-job-quiet-runs.md, architecture/telegram.md]
+    - tests/test_stop_keys.py
+  related: [architecture/agent-logs.md, architecture/background-jobs.md, architecture/background-job-session.md, architecture/engagement-inbound-disclosure.md, architecture/background-job-quiet-runs.md, architecture/telegram.md, architecture/plugin-stop.md]
   defines_invariants: [INV-BGJOB-026, INV-BGJOB-012, INV-BGJOB-024, INV-BGJOB-023, INV-BGJOB-013, INV-BGJOB-014]
   invariant_tests:
     INV-BGJOB-026: [tests/test_job_dm_posts_registry.py::TestFilingAndIndex::test_a_live_jobs_post_is_filed_indexed_and_persisted, tests/test_job_dm_posts_registry.py::TestFilingAndIndex::test_posts_are_uncapped_while_the_job_lives, tests/test_job_dm_posts_registry.py::TestFilingAndIndex::test_the_index_is_rebuilt_from_live_records_at_load, tests/test_job_dm_posts_registry.py::TestFilingAndIndex::test_settling_the_terminal_transition_drops_posts_and_questions, tests/test_job_dm_posts_registry.py::TestPendingTerminalCountsAsLive::test_a_pending_record_routes_and_files_and_a_rollback_keeps_them, tests/test_job_dm_posts_registry.py::TestEndedJobPosts::test_settlement_moves_the_posts_to_the_ended_index_and_a_reload_keeps_them, tests/test_job_dm_posts_registry.py::TestEndedJobPosts::test_a_post_landing_after_the_end_is_kept_as_the_ended_jobs, tests/test_job_dm_posts_registry.py::TestEndedJobPosts::test_a_pending_terminal_record_is_live_not_ended, tests/test_job_dm_posts_registry.py::TestEndedJobPosts::test_a_direct_mutators_unsettled_end_is_ended_in_its_own_chat_only, tests/test_job_dm_posts_registry.py::TestEndedJobPosts::test_a_record_aged_out_of_the_tombstone_leaves_the_index, tests/test_job_dm_attention.py::TestReplyRoute::test_a_plugin_post_of_the_job_is_filed_and_routes]

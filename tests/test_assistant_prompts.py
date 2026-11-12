@@ -1164,7 +1164,7 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # "progress appears in the specialist's topic; they can write there between
 # batches or /cancel it" becomes: its questions and its result come to this
 # chat, progress appears in the topic, the person steers it by replying here
-# to the job's messages and stops it with the Cancel button on its start line
+# to the job's messages and stops it with its Stop key at the keyboard
 # or by asking (`cancel_engagement`). One paragraph changed on
 # `assistant:text`; the eight other carriers byte-identical. No retention
 # claim.
@@ -1177,7 +1177,7 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # links"; the job paragraph says progress appears in the agent's log when the
 # result's message says so, not in the specialist's topic; the unopened-topic
 # paragraph becomes "A job lives in this chat: its questions, its result and
-# its Cancel button come here." followed by the unchanged talk-with-a-specialist
+# its Stop key come here." followed by the unchanged talk-with-a-specialist
 # sentences, its topic sentences gone. Measured with `difflib` over
 # base-vs-new compiled text, word by word: eight non-equal opcodes on
 # `assistant:text`, all inside those three paragraphs; the eight other carriers
@@ -1241,11 +1241,16 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # the check reports `used_before` moves the specialist back to a bot it had,
 # and that the `rename` mode changes the name at the top of its chat. The
 # eight other carriers byte-identical. No retention claim.
+# MOVED (the Stop key at the keyboard), `assistant:text` only: the job
+# paragraph says the person stops a job "with its Stop key at the keyboard"
+# where it said "with the Cancel button on its start line", and the
+# job-lives-here paragraph says "its Stop key" where it said "its Cancel
+# button". The eight other carriers byte-identical. No retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "f7f8d0dcbbc197ff0349557cbebe0f95e5e360377030dacd09f38cf61ab7e335",
     "assistant:text":
-        "70c4d83a43d31dd039243e0e7666c5a4f088c2a7309de449e7fb4e731487f74a",
+        "100940f2e893f33779a8547a9fe36c0e639606789aa6cb0505ff7ad3791d5148",
     "assistant:voice":
         "71805d1c8fd3a8ef47a7de718e60db1123752388d8203a66e358eedac7b007d1",
     "butler:restricted_webhook":
@@ -1560,7 +1565,7 @@ _KERNEL_DROP_OFF_CLAUSE = (
 )
 
 _UNOPENED_TOPIC_DOCTRINE = (
-    "A job lives in this chat: its questions, its result and its Cancel button "
+    "A job lives in this chat: its questions, its result and its Stop key "
     "come here. When the person wants to talk with a specialist themselves, or "
     "a step needs them to, delegate their words to it in `sync` mode and tell "
     "them its answer in your own words; they carry on by writing to you, and "

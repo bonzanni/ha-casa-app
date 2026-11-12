@@ -288,6 +288,27 @@ def _install_telegram_stubs() -> None:
     tg.InlineKeyboardButton = _FakeInlineKeyboardButton
     tg.InlineKeyboardMarkup = _FakeInlineKeyboardMarkup
 
+    # The Stop keys at the keyboard (``stop_keys``): reply-keyboard primitives,
+    # kept as value shapes the tests can inspect.
+    class _FakeKeyboardButton:
+        def __init__(self, text, *, style=None, **kw):
+            self.text = text
+            self.style = style
+
+    class _FakeReplyKeyboardMarkup:
+        def __init__(self, keyboard, *, resize_keyboard=None, is_persistent=None, **kw):
+            self.keyboard = keyboard
+            self.resize_keyboard = resize_keyboard
+            self.is_persistent = is_persistent
+
+    class _FakeReplyKeyboardRemove:
+        def __init__(self, **kw):
+            self.remove_keyboard = True
+
+    tg.KeyboardButton = _FakeKeyboardButton
+    tg.ReplyKeyboardMarkup = _FakeReplyKeyboardMarkup
+    tg.ReplyKeyboardRemove = _FakeReplyKeyboardRemove
+
     # python-telegram-bot also surfaces CallbackQueryHandler from telegram.ext;
     # ext stubs are a MagicMock above, so this just lives there too.
     tg_ext.CallbackQueryHandler = MagicMock()

@@ -56,7 +56,7 @@ delegation reports that it could not start it. A delegation starts fresh and a j
 told to the resident, not to a later delegation of the delegate, so the text doctrine also has her pass on what she
 already knows of a job's state — whether it ended, how, and when — in the `context=` of a
 delegation that asks the delegate about that job. Its text doctrine says a job lives in the
-direct chat — its questions, its result and its Cancel button come there — and names no topic.
+direct chat — its questions, its result and its Stop key come there — and names no topic.
 Its voice doctrine says no job starts on a call. The
 `start_job` description names the delegation route.
 
