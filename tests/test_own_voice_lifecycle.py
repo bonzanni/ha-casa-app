@@ -47,7 +47,8 @@ def root(tmp_path) -> Path:
 
 async def _bind_alex(lc, host) -> None:
     await lc.post_offer("finance", "HeyAlexTestBot")
-    await lc.on_created(created(ALEX_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR)
+    # created with the name the form was pre-filled with (the persona's)
+    await lc.on_created(created(ALEX_BOT, "Alex", "HeyAlexTestBot"), OPERATOR)
     assert lc.store.bots[ALEX_BOT]["phase"] == ovl.BOUND
 
 

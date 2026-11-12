@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.367.4] - 2026-11-12
+
+### Fixed
+
+- When you create a specialist's chat and change the bot's name in Telegram's form, the bot keeps your name. Before, Casa put the suggested name back without telling you. A name you pick this way counts like one you ask the assistant for: renaming the specialist later doesn't change it (#1567).
+
 ## [0.367.3] - 2026-11-12
 
 ### Fixed

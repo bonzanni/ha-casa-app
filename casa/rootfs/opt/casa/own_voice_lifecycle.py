@@ -608,6 +608,43 @@ class Lifecycle:
         name = (agent.get("suggestion") or {}).get("name")
         return name if name and name != agent.get("label") else None
 
+    @staticmethod
+    def _suggest(agent: dict, *, name: "str | None", username: str,
+                 prefill: "str | None" = None) -> None:
+        """Set the agent's suggestion. Every writer goes through here, so the
+        names its Create forms opened with ("prefills", newest last) are never
+        dropped: an earlier card can still be used. *prefill* adds the name a
+        new form opens with."""
+        prefills = list((agent.get("suggestion") or {}).get("prefills") or [])
+        if prefill is not None:
+            prefills = [p for p in prefills if p != prefill] + [prefill]
+        agent["suggestion"] = {"name": name, "username": username,
+                               "prefills": prefills[-20:]}
+
+    def _take_typed_name(self, agent: dict, rec: dict) -> None:
+        """Settle the chosen name of an offered agent whose bot *rec* was just
+        created. A name the operator typed over the one its Create form was
+        pre-filled with is their choice, kept as a rename through the resident
+        would be. Only a bot with the current offer's handle came from one of
+        this agent's forms, and a name equal to any name such a form opened
+        with (as Telegram trims and cuts it) is taken as untouched; any other
+        bot keeps the choice as it was. Read against the label the suggestion
+        was stored beside, before that moves."""
+        sugg = agent.get("suggestion")
+        if not sugg:
+            return
+        chosen = self._chosen_name(agent)
+
+        def norm(s: str) -> str:
+            return s.strip()[:MAX_NAME].rstrip()
+        typed = norm(rec.get("name") or "")
+        prefills = {norm(p) for p in sugg.get("prefills") or [] if isinstance(p, str)}
+        from_a_form = bool(prefills) and ((sugg.get("username") or "").lower()
+                                          == (rec.get("username") or "").lower())
+        if from_a_form and typed and typed not in prefills:
+            chosen = typed
+        self._suggest(agent, name=chosen, username=sugg.get("username") or "")
+
     def _display_name(self, role: str) -> str:
         """The name the bot shows: the one chosen for it, else the persona's."""
         return self._chosen_name(self.store.agents.get(role) or {}) or self._label(role)
@@ -1056,8 +1093,9 @@ class Lifecycle:
                                        "old_username": found[1].get("username") or ""
                                        if found else ""}
                 name = self._chosen_name(agent)
-                agent.update(offered_at=_now_iso(), label=label,
-                             suggestion={"name": name, "username": username})
+                agent.update(offered_at=_now_iso(), label=label)
+                # the Create form below opens with this name (create_link)
+                self._suggest(agent, name=name, username=username, prefill=name or label)
                 agent["offer_card"] = None
                 await self.store.save()
                 change = agent.get("change")
@@ -1152,9 +1190,8 @@ class Lifecycle:
             return False
         rec.update(phase=BINDING, role=role)
         agent["bot_id"] = bot_id
-        if agent.get("suggestion"):
-            # Read against the label it was stored beside, before that moves.
-            agent["suggestion"] = {**agent["suggestion"], "name": self._chosen_name(agent)}
+        # Read against the label it was stored beside, before that moves.
+        self._take_typed_name(agent, rec)
         agent["label"] = self._label(role)
         await self.store.save()
         return True
@@ -1169,6 +1206,7 @@ class Lifecycle:
                 role, switching = hit[0], True
                 rec.update(phase=SWITCHING, role=role)
                 self.store.agents[role]["change"]["new_bot"] = bot_id
+                self._take_typed_name(self.store.agents[role], rec)
                 await self.store.save()
             elif hit is not None:
                 role = hit[0]
@@ -1250,6 +1288,7 @@ class Lifecycle:
                     switching = True
                     rec.update(phase=SWITCHING, role=role)
                     self.store.agents[role]["change"]["new_bot"] = bot_id
+                    self._take_typed_name(self.store.agents[role], rec)
                     await self.store.save()
                 else:
                     ok = self._waiting(role) and await self._enter_binding(bot_id, role)
@@ -1902,8 +1941,9 @@ class Lifecycle:
                 self._tokens[bot_id] = token
                 if username.lower() not in {h.lower() for h in agent["handles"]}:
                     agent["handles"].append(username)
-                agent.update(label=label, suggestion={"name": self._chosen_name(agent),
-                                                      "username": username})
+                name = self._chosen_name(agent)
+                agent["label"] = label
+                self._suggest(agent, name=name, username=username)
                 await self.store.save()
         return await self._restart_for_switch(role)
 
@@ -1921,8 +1961,8 @@ class Lifecycle:
                     "message": f"a bot's name is 1–{MAX_NAME} characters"}
         agent = self.store.agent(role, create=True)
         username = (agent.get("suggestion") or {}).get("username") or ""
-        agent.update(label=self._label(role),
-                     suggestion={"name": name, "username": username})
+        agent["label"] = self._label(role)
+        self._suggest(agent, name=name, username=username)
         await self.store.save()
         found = self.store.bot_of(role)
         if found is None:
