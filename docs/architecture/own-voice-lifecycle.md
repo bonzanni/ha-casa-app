@@ -117,17 +117,38 @@ was sent to either bot around the restart may be lost. An uninstall drops a pend
 whose bot does not exist yet; a pending switch whose bot exists still applies at boot, and
 the new bot then goes dormant through the ordinary binding.
 
-**Open only once the operator has written.** A bound bot cannot speak first, so the card
-becomes "Alex's chat is ready: @…. Open it and say hi." (after a move, "Alex's new chat is
-ready: …") with an "Open Alex's chat" URL button. The chat counts as **open** from the
-operator's first turn there that its agent's queue accepts, whatever it says (a held one
-released counts). Whether an operator's turn opens the chat is read when the channel builds
-it (`own_voice.chat_opening`: no `chat_open_at` yet; `own_voice.chat_moved`: the agent
-moved to this bot); such a turn carries the reserved `_chat_opening` key — `True`, or
-`"moved"` in a new chat after a move — which only the channel stamps, and its prompt gets
-Casa's line that the operator just opened the chat (`agent.CHAT_OPENING_NOTE`, or
-`agent.CHAT_MOVED_NOTE`: the new chat, the previous one closed), so the agent says hello. `chat_open_at` is written only once
-the queue took that turn (`TelegramChannel._send_turn` → `own_voice.mark_open`, on a first
+**The agent speaks first; the chat opens once Telegram takes a turn's reply or the operator
+writes.** The card becomes "Alex's chat is ready: @…. Open it and say hi." (after a move,
+"Alex's new chat is ready: …") with an "Open Alex's chat" URL button. A bot may write to the
+operator only once he has pressed Start in its chat, and the `/start` he sends at creation
+reaches no endpoint (the bot is not bound yet). So at the end of every binding — a first
+bot, a move bound at boot after `apply_switches`, a dormant bot bound again — the lifecycle
+spawns one greeting (`Lifecycle._speak_first` → `TelegramHost.speak_first` →
+`TelegramChannel.speak_first`), never awaited under the bot's lock; the boot of a bot that is
+already bound greets nobody, and nothing retries. Under the chat's serial lock the endpoint
+reads again whether the chat is unopened (a held message the binding released may have
+opened it, and an operator message holding the lock first opens it instead) and hands its
+agent a turn Casa starts: content `/start`, the reserved `synthetic: "chat_opening"` marker
+and no operator identity, so it is no direct message and carries none of his grants
+(`provenance.turn_provenance` classifies it `other`), and the same `_chat_opening` key the
+operator's first turn would carry. It thinks privately (`NoStream("chat_opening")`): the
+reply goes out whole, once. The chat opens only when that reply reached Telegram — the
+message's `on_delivery`, which the agent calls once a delivery landed, marks it
+(`own_voice.mark_open`). Telegram refusing it (Forbidden, or a BadRequest such as "Chat not found":
+the operator never pressed Start) is one info line in `TelegramChannel.send_response`, and
+the chat stays unopened; the agent's session keeps the unsent greeting. A greeting turn the
+agent answers with silence opens nothing either: the agent's acknowledgement of a chosen
+silence skips a `chat_opening` turn.
+
+Otherwise the chat counts as **open** from the operator's first turn there that its agent's
+queue accepts, whatever it says (a held one released counts). Whether an operator's turn
+opens the chat is read when the channel builds it (`own_voice.chat_opening`: no
+`chat_open_at` yet; `own_voice.chat_moved`: the agent moved to this bot); such a turn
+carries the reserved `_chat_opening` key — `True`, or `"moved"` in a new chat after a move —
+which only the channel stamps, and its prompt gets Casa's line that the operator just opened
+the chat (`agent.CHAT_OPENING_NOTE`, or `agent.CHAT_MOVED_NOTE`: the new chat, the previous
+one closed), so the agent says hello. For an operator's turn `chat_open_at` is written only
+once the queue took it (`TelegramChannel._send_turn` → `own_voice.mark_open`, on a first
 send or a retry after a hand-back alike); neither intake nor a release writes it, so a
 refused or interrupted delivery opens nothing and its later delivery opens the chat then. A
 file sent without a caption starts no turn: it is stored and acknowledged, and the chat
@@ -165,7 +186,7 @@ not authorized no fetch is tried and the log says so once. An uninstall's result
 
 **INV-OWN-008**: Every lifecycle effect finds its phase on disk, every phase has a boot reconciliation, and a bot is released only on the token fetch failure that establishes its deletion; every other failure keeps it recovering.
 
-**INV-OWN-011**: The operator's first turn in an agent's own chat that the agent's queue accepts, whatever it says, opens the chat: that turn alone carries Casa's line that the operator just opened it — in an agent's new chat after a move to a new bot, the line that it is the new chat — and `chat_open_at` is persisted only after the acceptance, on a first send and on a retry after a hand-back alike; a delivery refused or interrupted, across a restart included, and a file sent without a caption open nothing, and the chat's next accepted operator turn carries the line.
+**INV-OWN-011**: A binding that completes greets once: Casa hands the bound agent one turn of its own, marked `synthetic: "chat_opening"` with no operator identity, carrying the opening line, unless the chat is open by then — read under the chat's serial lock — and the boot of an already-bound bot greets nobody; that turn opens the chat only once its reply reached Telegram, and a reply Telegram refuses leaves it unopened. Otherwise the operator's first turn in an agent's own chat that the agent's queue accepts, whatever it says, opens the chat: that turn alone carries Casa's line that the operator just opened it — in an agent's new chat after a move to a new bot, the line that it is the new chat — and `chat_open_at` is persisted only after the acceptance, on a first send and on a retry after a hand-back alike; a delivery refused or interrupted, across a restart included, and a file sent without a caption open nothing, and the chat's next accepted operator turn carries the line.
 
 **INV-OWN-012**: A bot is registered only from the operator's own `managed_bot_created` message to Casa's bot in his chat, and bound to an agent only when its username equals that agent's current suggestion (a waiting agent's first bot, or a pending change) or the operator names a waiting agent or one with a pending change; a bot is never rebound to another agent, and an agent has one bound bot at a time.
 
@@ -210,6 +231,13 @@ write is logged and leaves the chat unopened the same way; a failure to read whe
 turn opens the chat is logged and the turn goes on without the opening line, and one to read
 whether it opens a moved chat is logged and opens it as a first chat.
 
+**Telegram refuses the greeting.** The operator has not pressed Start in the bot's chat: one
+info line, the chat stays unopened, and his first message there opens it with the opening
+line as before (the agent's session already holds the greeting it could not send). A
+greeting whose turn fails or ends in silence opens nothing either; a greeting and an
+operator message that both reach the agent while the chat is unopened may both carry the
+opening line, but the chat is marked open, and its cards posted, once.
+
 ## Extension points
 
 **A new phase** persists its name before its effect and adds its boot step to `BOOT_STEPS`.
@@ -229,6 +257,7 @@ whether it opens a moved chat is logged and opens it as a first chat.
 - `casa/rootfs/opt/casa/channels/telegram.py::_IntakeQueue`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.release_update`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._send_turn`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.speak_first`
 - `casa/rootfs/opt/casa/own_voice.py::chat_opening`
 - `casa/rootfs/opt/casa/own_voice.py::mark_open`
 - `casa/rootfs/opt/casa/own_voice.py::chat_moved`

@@ -841,9 +841,10 @@ class Lifecycle:
         return bool(agent.get("moved_from")) and not agent.get("chat_open_at")
 
     async def mark_open(self, bot_id: int) -> None:
-        """The agent's queue took the turn that opened *bot_id*'s chat: the
-        chat is open. Takes no lock: the endpoint calls it while a release
-        may hold this bot's."""
+        """The turn that opened *bot_id*'s chat was taken by the agent's queue
+        (the operator's) or reached Telegram (the agent's greeting): the chat
+        is open. Takes no lock: the endpoint calls it while a release may hold
+        this bot's."""
         role = (self.store.bots.get(bot_id) or {}).get("role")
         if role:
             await self._mark_open(role)
@@ -1406,6 +1407,22 @@ class Lifecycle:
         await self._card_bound(role)
         rec["phase"] = BOUND
         await self.store.save()
+        self._speak_first(bot_id)
+
+    def _speak_first(self, bot_id: int) -> None:
+        """A bot just bound: its agent says hello by itself, unless its chat
+        is open by now (a held message released above opened it) — the
+        endpoint reads that, under the chat's lock. Spawned, never awaited
+        here: that lock is taken before this bot's by a message handed back to
+        the intake. One attempt; a greeting Telegram refuses (the operator
+        never pressed Start) leaves the chat to his first message."""
+        async def _greet() -> None:
+            try:
+                await self.host.speak_first(bot_id)
+            except Exception:  # noqa: BLE001 — the operator's first message still opens
+                logger.warning("own chat bot %s: the greeting was not started", bot_id,
+                               exc_info=True)
+        self._spawn(_greet())
 
     async def _step_bound(self, bot_id: int) -> None:
         rec = self.store.bots[bot_id]
@@ -2008,6 +2025,12 @@ class TelegramHost:
     async def notify(self, bot_id: int, text: str) -> bool:
         ep = self.endpoint(bot_id)
         return bool(ep is not None and await ep.notify_operator(text))
+
+    async def speak_first(self, bot_id: int) -> None:
+        """The agent's greeting in its own chat, from its endpoint."""
+        ep = self.endpoint(bot_id)
+        if ep is not None:
+            await ep.speak_first()
 
     async def release_update(self, bot_id: int, update: dict) -> str:
         """The endpoint's normal intake of a held update: ``"accepted"`` once

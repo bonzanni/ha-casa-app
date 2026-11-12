@@ -423,6 +423,70 @@ async def test_a_first_message_handed_back_and_taken_on_retry_greets_once(
         ovl.install(None)
 
 
+@pytest.mark.parametrize("lands", [True, False])
+async def test_the_greeting_opens_the_chat_only_once_its_reply_landed(
+        world, tmp_path, monkeypatch, lands):
+    """Casa's greeting turn reaches Alex as his chat's opening: his prompt
+    carries the opening line, he answers whole through his own bot (no
+    stream), and the chat is open once that reply landed. A reply Telegram
+    did not take leaves the chat unopened, and the operator's first message
+    is then the turn that opens it."""
+    import own_voice_lifecycle as ovl
+    from own_voice_world import World, created, make_lifecycle, specialist
+    from test_own_chat_routing import _endpoint, _handle, _text, _turns
+
+    voices = World(configs={"finance": specialist("Alex")}, queues=set(),
+                   tokens={FINANCE_BOT: f"{FINANCE_BOT}:alex-token-aaaaaaaaaaaaaaaa"})
+    lc, host = make_lifecycle(voices, tmp_path / "voices", channel=False)
+    monkeypatch.setattr(host, "operator_id", lambda: OPERATOR)
+    await lc.post_offer("finance", "HeyAlexTestBot")
+    await lc.on_created(created(FINANCE_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR)
+    ovl.install(lc)
+    try:
+        ch, bus = _endpoint("own")
+        assert await ch.speak_first() is True
+        [greeting] = _turns(bus, "finance")
+        world.eps.finance._ready = lands
+        await world.alex.handle_message(greeting)
+        assert _Client.prompts[0].count(agent_mod.CHAT_OPENING_NOTE) == 1
+        sent = [c[0] for c in calls(world.eps.finance)]
+        assert "create_on_token" not in sent and sent[-1] == "send_response"
+        assert lc.state("finance") == ("open" if lands else "not_open")
+        await _handle(ch, _text("/start"))
+        [turn] = _turns(bus, "finance")
+        assert turn.context.get("_chat_opening") is (None if lands else True)
+    finally:
+        ovl.install(None)
+
+
+async def test_a_silent_greeting_opens_nothing(world, tmp_path, monkeypatch):
+    """Alex chooses silence on Casa's greeting turn: nothing reached the
+    operator, so the chat stays unopened and his first message opens it."""
+    import own_voice_lifecycle as ovl
+    from own_voice_world import World, created, make_lifecycle, specialist
+    from test_own_chat_routing import _endpoint, _handle, _text, _turns
+
+    voices = World(configs={"finance": specialist("Alex")}, queues=set(),
+                   tokens={FINANCE_BOT: f"{FINANCE_BOT}:alex-token-aaaaaaaaaaaaaaaa"})
+    lc, host = make_lifecycle(voices, tmp_path / "voices", channel=False)
+    monkeypatch.setattr(host, "operator_id", lambda: OPERATOR)
+    await lc.post_offer("finance", "HeyAlexTestBot")
+    await lc.on_created(created(FINANCE_BOT, "AlexTest", "HeyAlexTestBot"), OPERATOR)
+    ovl.install(lc)
+    try:
+        ch, bus = _endpoint("own")
+        assert await ch.speak_first() is True
+        [greeting] = _turns(bus, "finance")
+        _Client.reply = "<silent/>"
+        await world.alex.handle_message(greeting)
+        assert lc.state("finance") == "not_open"
+        await _handle(ch, _text("/start"))
+        [turn] = _turns(bus, "finance")
+        assert turn.context.get("_chat_opening") is True
+    finally:
+        ovl.install(None)
+
+
 async def test_a_job_started_in_the_agents_chat_narrates_its_result_there(world):
     """A job Alex's conversation started has Alex's conversation as its
     requester: its completion is a turn of that conversation, on Alex's

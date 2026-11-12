@@ -116,7 +116,8 @@ def chat_opening(bot_id: int) -> bool:
 
 
 async def mark_open(bot_id: int) -> None:
-    """The agent's queue took the turn that opened *bot_id*'s chat: it is open."""
+    """The turn that opened *bot_id*'s chat was taken by the agent's queue (the
+    operator's) or reached Telegram (the agent's greeting): it is open."""
     await _lifecycle().mark_open(bot_id)
 
 

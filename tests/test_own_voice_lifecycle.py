@@ -1144,6 +1144,105 @@ async def test_a_first_chat_is_not_a_moved_one(world, root):
 
 
 # ---------------------------------------------------------------------------
+# a bound agent says hello by itself; its chat opens once Telegram took it
+# ---------------------------------------------------------------------------
+
+async def _settled(lc) -> None:
+    """Every task the lifecycle spawned has run (the greeting is one)."""
+    while lc._tasks:
+        await asyncio.gather(*list(lc._tasks))
+
+
+async def test_a_binding_greets_once_and_a_refused_greeting_opens_nothing(world, root):
+    """Telegram refuses the greeting (the operator never pressed Start): the
+    chat stays unopened on disk, and his first message opens it as before."""
+    lc, host = make_lifecycle(world, root)
+    await _bind_alex(lc, host)
+    await _settled(lc)
+    assert world.greetings == [(ALEX_BOT, True)]
+    assert _disk(root)["agents"]["finance"]["chat_open_at"] is None
+    assert lc.state("finance") == "not_open"
+    assert await lc.intake(ALEX_BOT, update(1, "/start")) == "deliver"
+    assert world.openings == [True]
+    assert lc.state("finance") == "open"
+
+
+async def test_a_delivered_greeting_opens_the_chat(world, root):
+    world.greeting_lands = True
+    lc, host = make_lifecycle(world, root)
+    await _bind_alex(lc, host)
+    await _settled(lc)
+    assert world.greetings == [(ALEX_BOT, True)]
+    assert lc.state("finance") == "open"
+    assert world.card_text(lc.store.agents["finance"]["offer_card"]) == "Alex's chat is open."
+    assert await lc.intake(ALEX_BOT, update(1, "/start")) == "deliver"
+    assert world.openings == [False]            # the operator's message opens nothing more
+
+
+async def test_a_chat_a_held_message_opened_gets_no_greeting(world, root):
+    lc, host = make_lifecycle(world, root)
+    await lc.on_created(created(ALEX_BOT, "Alex", "AlexHomeBot"), OPERATOR)   # asks
+    assert await lc.intake(ALEX_BOT, update(1, "/start")) == "held"
+    await host.answer("Alex")                   # bound; the held message opens the chat
+    await _settled(lc)
+    assert world.openings == [True]
+    assert world.greetings == []
+
+
+async def test_a_bound_bot_does_not_greet_again_at_boot(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _bind_alex(lc, host)
+    await _settled(lc)
+    await lc.close()
+    lc, host = make_lifecycle(world, root)      # a restart
+    await lc.boot()
+    await _settled(lc)
+    assert world.greetings == [(ALEX_BOT, True)]
+    assert lc.state("finance") == "not_open"
+
+
+async def test_a_move_bound_at_boot_greets_in_the_new_chat_and_offers_the_delete(world, root):
+    lc, host = make_lifecycle(world, root)
+    await _created_switch(lc, host, world)
+    await _settled(lc)
+    world.greetings.clear()
+    world.greeting_lands = True
+    lc, _host = await _restart_applying_switches(world, root)
+    ready = lc.store.agents["finance"]["offer_card"]
+    await _settled(lc)
+    assert world.greetings == [(NEW_BOT, "moved")]
+    assert lc.state("finance") == "open"
+    text, buttons = world.cards[max(world.cards)]
+    assert text == "Alex has moved to @CasaFinance4821Bot. You can delete @HeyAlexTestBot now."
+    assert buttons == [("Delete @HeyAlexTestBot", ovl.BOTFATHER_DELETE)]
+    assert world.card_text(ready) == "Alex's new chat is open."
+
+
+async def test_a_refused_greeting_in_a_moved_chat_leaves_it_for_the_operator(world, root):
+    lc, _host = await _moved(world, root)
+    await _settled(lc)
+    assert world.greetings[-1] == (NEW_BOT, "moved")
+    assert lc.chat_moved(NEW_BOT) and lc.chat_opening(NEW_BOT)
+    assert await lc.intake(NEW_BOT, update(1, "hi")) == "deliver"
+    assert lc.state("finance") == "open"
+    assert world.cards[max(world.cards)][0].startswith("Alex has moved to")
+
+
+async def test_the_operators_message_and_a_delivered_greeting_open_the_chat_once(world, root):
+    """Both the greeting and the operator's first message reach the agent:
+    the chat is marked open once, its cards said once."""
+    lc, host = make_lifecycle(world, root)
+    await _bind_alex(lc, host)
+    assert await lc.intake(ALEX_BOT, update(1, "/start")) == "deliver"
+    stamp = lc.store.agents["finance"]["chat_open_at"]
+    cards = dict(world.cards)
+    await _settled(lc)
+    await lc.mark_open(ALEX_BOT)                # a greeting delivered all the same
+    assert lc.store.agents["finance"]["chat_open_at"] == stamp
+    assert world.cards == cards
+
+
+# ---------------------------------------------------------------------------
 # every unbound bot has an answerable question after a restart
 # ---------------------------------------------------------------------------
 

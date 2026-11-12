@@ -52,7 +52,9 @@ class BusMessage:
     cancelled: bool = False
     # #701: a process-local delivery acknowledgement. Set ONLY by a producer
     # that holds a durable obligation to announce something (restart recovery
-    # and the delegation terminal callback), and invoked by the consuming
+    # and the delegation terminal callback) or whose effect waits on the
+    # reply reaching Telegram (an agent's greeting in its own chat opens the
+    # chat), and invoked by the consuming
     # agent once its channel reports that the turn reached the transport — not
     # when this message was accepted onto a queue, which is all `send_checked`
     # can report. Never serialised, never decoded from payload or context, and

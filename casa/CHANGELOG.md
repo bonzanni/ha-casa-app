@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.364.1] - 2026-11-12
+
+### Changed
+
+- A specialist with a new chat now says hello by itself once you have pressed Start; if Telegram does not let it yet, your first message opens the chat as before.
+
 ## [0.364.0] - 2026-11-12
 
 ### Fixed

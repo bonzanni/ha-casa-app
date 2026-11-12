@@ -436,11 +436,13 @@ new bot is for; answer "None — I'll delete it" to keep it out of Casa.
 **Open and say hi.** Casa sets the bot up (the specialist's name, its
 description, a `/new` command, the specialist's picture when its persona has
 one, and access limited to you) and the card changes to "Alex's chat is
-ready: @…. Open it and say hi." Tap **Open Alex's chat** and say hi (any
-message works): a bot cannot write first, so the chat opens with your first
-message, and whatever you write first, the specialist says hello as it
-answers. A file sent on its own, without a caption, is kept and acknowledged
-but does not open the chat yet. Until then the specialist cannot show you
+ready: @…. Open it and say hi." Once the bot is ready, the specialist says
+hello by itself — if you pressed **Start** in the new bot's chat when you
+created it. Telegram lets a bot write to you only after that; if it does not
+let the specialist yet, tap **Open Alex's chat** and say hi (any message
+works): the chat then opens with your first message, and whatever you write
+first, the specialist says hello as it answers. A file sent on its own,
+without a caption, is kept and acknowledged but does not open the chat yet. Until then the specialist cannot show you
 anything. Messages you send while the chat is being set up are kept and
 answered once it is ready.
 
@@ -451,7 +453,8 @@ awaiting your answer, a scheduled question — and she tells you what is
 still open if something is. Otherwise she settles the new handle with you
 and posts a card, "Alex can move to a new chat with you, replacing @….";
 tap it, then **Create**. Casa restarts for a moment to move the specialist
-to the new bot. Open the new chat and say hi; the specialist tells you it is
+to the new bot. The specialist greets you in the new chat by itself when
+Telegram lets it (otherwise open the new chat and say hi) and tells you it is
 its new chat, and the assistant's chat gets a new message, "Alex has moved
 to @…. You can delete @… now." with a button that opens BotFather's delete flow, where you pick
 the old bot. The old chat keeps its history, but its buttons stop working,
