@@ -31,8 +31,10 @@ from claude_agent_sdk import (
     UserMessage,
 )
 
+import guest_run
 import plugin_registry
 import tool_descriptions
+from guest_run import GUEST_CHANNEL
 from plugin_grants import (
     apply_profile_plan,
     grants_for_resolution,
@@ -1464,6 +1466,12 @@ class Agent:
                 logger.warning(
                     "webhook deliver: no operator channel (role=%s webhook=%s)",
                     self.config.role, msg.context.get("webhook_name"))
+        elif msg.channel == GUEST_CHANNEL:
+            # A friend's summons in a group: the reply goes out through the
+            # Telegram transport, whose ``guest_finish`` and ``turn_finished``
+            # route by the bot the context names.
+            channel = self._channel_manager.get("telegram")
+            delivery_context = msg.context
         else:
             channel = (self._channel_manager.get(msg.channel)
                        if msg.channel else None)
@@ -1685,12 +1693,16 @@ class Agent:
         # member of delivers its final text into that group's one inline
         # message (the channel's ``guest_finish``); Casa's own lines — this
         # notice among them — go to the DM as their own sends.
+        # A friend's summons (the guest channel) is a public reply with no
+        # DM behind it: the notice is neither shown nor consulted, so its
+        # cooldown is left for a turn that can show it.
         guest = (bool(delivery_context.get("_guest_query"))
                  and hasattr(channel, "guest_finish"))
         if (
             text and channel is not None
             and getattr(channel, "delivers_final_text", True)
             and not scope.delivers_to_operator
+            and msg.channel != GUEST_CHANNEL
         ):
             noticed, health_notice = await self._maybe_prepend_health_notice(text)
             # The notice is prepended OUTSIDE the admitted text (outermost, as
@@ -1910,7 +1922,8 @@ class Agent:
         ``log``: an untrusted webhook turn — no user to tell, WARNING only —
         unless its route declares ``deliver: operator`` (#1142): that fire's
         line goes to the operator, or the stop would be the silent loss the
-        opt-in exists to close.
+        opt-in exists to close; and a friend's summons on the guest channel,
+        whose group gets the text the run produced and nothing of Casa's.
         ``chat``: the turn's own Telegram chat. ``operator``: the operator's
         Telegram chat, taken explicitly, for a Casa-started turn that ran on no
         Telegram chat (a voice- or webhook-origin narration, a schedule
@@ -1919,6 +1932,8 @@ class Agent:
         route = (msg.context or {}).get("_origin_route")
         if route == "webhook_trigger":
             return "operator" if delivers_to_operator else "log"
+        if msg.channel == GUEST_CHANNEL:
+            return "log"
         if is_narration:
             return ("chat" if msg.channel == "telegram" and channel is not None
                     else "operator")
@@ -2329,6 +2344,17 @@ class Agent:
                 self.config.cwd
                 or f"/config/agent-home/{self.config.role}"
             )
+
+            # A friend's summons in a group the operator allowed: one bounded
+            # run on a locked-down client, outside the pool, the session
+            # registry and memory. Nothing below applies to it; the finally
+            # has nothing of it to close.
+            if msg.channel == GUEST_CHANNEL:
+                response_text = await self._guest_turn(
+                    msg, origin=origin_snapshot, scope=scope,
+                    user_text=user_text, report=report, turn_state=turn_state)
+                turn_completed = True
+                return response_text
 
             # Task 9: build this turn's persisted user identity ONCE, from the
             # server-created typed ingress field (never free-text
@@ -2970,6 +2996,94 @@ class Agent:
                 turn_capture.close()
             _explain_draft_var.reset(explain_token)
             origin_var.reset(origin_token)
+
+    async def _guest_turn(
+        self, msg: BusMessage, *, origin: dict, scope: TurnScope,
+        user_text: str, report: dict[str, Any], turn_state: dict[str, Any],
+    ) -> str | None:
+        """A friend's summons of this specialist's bot in a group the operator
+        allowed (:mod:`guest_run`): one bounded run, answered in one message.
+
+        The run is a one-shot :class:`ManagedSdkClient` on the locked-down
+        options of ``tools._build_guest_options`` — never the client pool,
+        never the session registry: a guest conversation is not resumed, not
+        persisted and not remembered. Its prompt is the guest projection of
+        the compiled bundle (the core doctrine and the guest section; the
+        plain system prompt for a specialist without a bundle) under the
+        guest frame, which names who called and where. No memory view is
+        served, no correction note read, nothing is captured, no chat notes
+        are drained, none of a specialist conversation's session extras
+        apply; the only note is what the bot answered earlier in that group,
+        when the summons replied to it. Transient SDK faults retry as on any
+        turn; the whole run is bounded by ``GUEST_RUN_TIMEOUT_S``, past which
+        it fails as a timeout with its client closed. The turn report is
+        written the way the pooled path writes it, so admission and the
+        limit-stop handling read one shape."""
+        import tools as tools_mod
+        from prompt_compiler import projection_for
+
+        caller = str(msg.context.get("user_name") or "Someone")
+        title = str((msg.context.get("_guest_chat") or {}).get("title") or "")
+        frame = guest_run.guest_frame(caller=caller, title=title)
+        bundle = self.config.compiled_prompt_bundle
+        if bundle is not None:
+            base = projection_for(bundle, channel=GUEST_CHANNEL,
+                                  origin_route=GUEST_CHANNEL).system_prompt
+        else:
+            base = self.config.system_prompt
+        system_prompt = f"{base}\n\n{frame}"
+
+        resolution = await self._get_plugin_resolution()
+        options = sdk_logging.with_stderr_callback(
+            await asyncio.to_thread(functools.partial(
+                tools_mod._build_guest_options, self.config,
+                resolution=resolution, system_prompt=system_prompt)),
+            engagement_id=None)
+        self._stash_explanation_draft(
+            projection="guest", bundle=None, system_prompt=system_prompt,
+            memory_view=None)
+
+        notes: list[str] = []
+        earlier = msg.context.get("_guest_reply_note")
+        if isinstance(earlier, str) and earlier.strip():
+            notes.append(earlier)
+        prompt = compose_turn_preamble(datetime.now(resolve_tz()), notes) + user_text
+
+        def _record_retry(attempt: int, exc: Exception, delay_ms: int) -> None:
+            try:
+                report["retries"].append(_classify_error(exc))
+            except Exception:  # noqa: BLE001 — recording never breaks the retry
+                pass
+            self._log_retry(attempt, exc, delay_ms)
+
+        async def _attempt() -> dict[str, Any]:
+            on_message, state = self._make_on_message(
+                None, None, settle_evidence=False, scope=scope)
+            turn_state["state"] = state
+            turn_state.setdefault("states", []).append(state)
+            client = ManagedSdkClient(
+                options, origin_ctxvar=origin_var,
+                cid_ctxvar=cid_var, engagement_ctxvar=self._engagement_var)
+            try:
+                await client.open()
+                async with client.lock:
+                    await client.run_turn_locked(
+                        prompt, origin=origin, cid=cid_var.get(),
+                        on_message=on_message)
+            finally:
+                await client.aclose()
+            return state
+
+        async with asyncio.timeout(guest_run.GUEST_RUN_TIMEOUT_S):
+            state = await retry_sdk_call(_attempt, on_retry=_record_retry)
+
+        report["reply_messages"] = tuple(state["messages"])
+        report["attempts"] = len(turn_state.get("states") or ())
+        report["limit_stop"] = state.get("limit_stop")
+        report["error_result"] = state.get("error_result")
+        report["approval_cut"] = None
+        logger.info(format_turn_summary(self.config.role, GUEST_CHANNEL, state["usage"]))
+        return state["text"] or None
 
     def _settle_from_tool_evidence(self, tool: str, invoked_at) -> bool:
         """#1003: hand one successful plugin-tool invocation of an ordinary

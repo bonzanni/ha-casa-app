@@ -75,7 +75,8 @@ from personality_types import (
 # ``channel="webhook"`` while being different origins with different trust
 # semantics (operator-signed call vs. untrusted third-party content).
 IngressRoute = Literal[
-    "telegram", "voice_sse", "voice_ws", "invoke", "webhook_trigger",
+    "telegram", "telegram_guest", "voice_sse", "voice_ws", "invoke",
+    "webhook_trigger",
 ]
 
 PeerStrategy = Literal["fixed", "telegram_sender", "webhook_name"]
@@ -135,6 +136,14 @@ _INGRESS_IDENTITY: dict[str, IngressIdentityPolicy] = {
         surface="telegram", authenticated=True, clearance="private",
         peer_strategy="telegram_sender", peer=None,
     ),
+    "telegram_guest": IngressIdentityPolicy(
+        # A friend summoning a specialist's bot in a group the operator
+        # allowed (``guest_run``): a Telegram person, named by their own
+        # sender id like any other. The table's clearance is already the
+        # public floor — the summons is a public reply, whoever sent it.
+        surface="telegram", authenticated=True, clearance="public",
+        peer_strategy="telegram_sender", peer=None,
+    ),
     "voice_sse": IngressIdentityPolicy(
         surface="voice", authenticated=True, clearance="friends",
         peer_strategy="fixed", peer="voice_speaker",
@@ -177,6 +186,9 @@ _ROUTE_CONTRACT: dict[str, tuple[str, bool, str, str | None, str]] = {
     # Peer is derived per sender, so there is no fixed value to pin — the
     # namespace checks below carry what the literal used to.
     "telegram":        ("telegram", True, "telegram_sender", None, "user"),
+    # A guest summons is a person too, named per sender; what differs from
+    # the telegram route is the clearance, which the contract does not pin.
+    "telegram_guest":  ("telegram", True, "telegram_sender", None, "user"),
     # Voice is deliberately a PERSON: an anonymous but trusted household
     # speaker, not an automation.
     "voice_sse":       ("voice",    True, "fixed", "voice_speaker", "user"),
