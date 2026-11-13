@@ -127,7 +127,8 @@ its posts carry no `📊` label (`result_broker.label_at`): the chat is the agen
 opens its post index (`task_posts.open`) and its input destination
 (`task_input.open_pending`) first, then posts its start post there, silently
 (`TelegramChannel.post_task_start`): "Ellen asked:" over the brief as written, whole, in an
-expandable quote, clipped with `…` only when it cannot fit one message; a task born on a
+expandable quote, its formatting rendered as an answer's is (plain when Telegram refuses it),
+clipped with `…` only when it cannot fit one message; a task born on a
 Casa-started plugin setup or erase turn posts none. It then runs in its own session, whose
 delegation context says that its closing message is posted to the operator as a reply to
 the request and opens "Done." or "Couldn't finish:", or neither while the work is still

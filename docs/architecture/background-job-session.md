@@ -189,8 +189,9 @@ after a resume, so the job's cost is `cost_base` (the record's cost when this cl
 plus that total, kept on `origin["job"]["cost_usd"]`. Nothing in the direct chat shows it
 while the job runs; the job's agent log is where progress is watched. The job posts no end line
 of its own ([`background-job-direct-chat.md`](background-job-direct-chat.md)): the end notice to
-its requester carries `Job ran 1 h 5 min · $3.90` (the cost once a turn has ended), and the
-requester's answer to it is the one message the end leaves.
+its requester carries `Job ran 1 h 5 min · $3.90` (the cost once a turn has ended) and asks
+the narration to mention both in its own words (`tools.JOB_COST_NOTE`); the requester's answer
+to it is the one message the end leaves.
 
 A job usually finishes from inside a turn: it calls `emit_completion`, and that turn ends only
 after the tool returns. The completion's Casa-owned finalization therefore returns the tool

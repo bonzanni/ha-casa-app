@@ -503,6 +503,12 @@ STOP_WORK_ONLY_OPERATOR = "Only the person's own message can stop work."
 #: the ref ``stop_work`` lists a background job under: ``job:<engagement id>``
 JOB_REF_PREFIX = "job:"
 _JOB_ALREADY_ENDED = "It had already ended."
+#: a job stop_work ended: its first line is the outcome (the job log's end line); the rest
+#: tells the end's narration that he has already been told
+STOP_WORK_CANCEL_TEXT = (
+    "Cancelled by the operator.\n"
+    "(Casa: he asked for this stop himself and was told it stopped. If he asked in this "
+    "chat, what was said is enough: add nothing more, <silent/> is fine.)")
 _JOB_NOT_STOPPED = "The job could not be stopped just now — try again."
 _STOP_WORK_RESULTS = {
     "stopped": ("Stopped: {task}. Tell the person in one plain line what stopped, in his "
@@ -518,13 +524,15 @@ _STOP_WORK_RESULTS["in_flight"] = _STOP_WORK_RESULTS["already_stopped"]
 
 
 def _his_live_jobs(operator_id: int) -> list:
-    """The live background jobs of *operator_id*: a record that is active or idle and
-    whose origin names him, whoever started it — he, a schedule or an agent."""
+    """The live background jobs of *operator_id*: a job record that is active or idle
+    and whose origin names him, whoever started it — he, a schedule or an agent. Another
+    engagement of his is not a job and not listed here."""
     from provenance import strict_positive_id
     if _engagement_registry is None:
         return []
     return [rec for rec in _engagement_registry.active_and_idle()
-            if strict_positive_id((rec.origin or {}).get("user_id")) == operator_id]
+            if isinstance((rec.origin or {}).get("job"), dict)
+            and strict_positive_id((rec.origin or {}).get("user_id")) == operator_id]
 
 
 async def _stop_his_job(engagement_id: str, operator_id: int) -> dict:
@@ -539,7 +547,7 @@ async def _stop_his_job(engagement_id: str, operator_id: int) -> dict:
     stopped = _text_result(f"Stopped «{TelegramChannel._job_title(rec)}».")
     try:
         fin = await _finalize_engagement(
-            rec, outcome="cancelled", text="Cancelled by the operator.", next_steps=[],
+            rec, outcome="cancelled", text=STOP_WORK_CANCEL_TEXT, next_steps=[],
             driver=getattr(agent_mod, "active_engagement_driver", None))
     except Exception:  # noqa: BLE001 — answered from the record below
         logger.warning("stop_work: job cancel failed for %s", engagement_id[:8],
@@ -11642,12 +11650,16 @@ async def _finalize_engagement(
     )
 
 
+#: what the narration of a job's end is asked to do with its time and cost line
+JOB_COST_NOTE = "(Casa: mention how long the job ran and what it cost, in your own words.)"
+
+
 def _with_job_cost(text: str, frozen: dict, now: float,
                    cost_job: dict | None = None) -> str:
     """A job's end notice to its resident carries how long it ran and its
-    cost as of its last turn end, shown when the outcome is reported. ``cost_job``
-    is the live job state to read the cost from when the completing turn's
-    end recorded it after the terminal flip."""
+    cost as of its last turn end, and asks the narration to mention both.
+    ``cost_job`` is the live job state to read the cost from when the
+    completing turn's end recorded it after the terminal flip."""
     job = (frozen.get("origin") or {}).get("job")
     if not isinstance(job, dict):
         return text
@@ -11656,6 +11668,7 @@ def _with_job_cost(text: str, frozen: dict, now: float,
     cost = (cost_job if isinstance(cost_job, dict) else job).get("cost_usd")
     if isinstance(cost, (int, float)) and not isinstance(cost, bool):
         line += f" · ${cost:.2f}"
+    line += " " + JOB_COST_NOTE
     return f"{text}\n\n{line}" if text else line
 
 

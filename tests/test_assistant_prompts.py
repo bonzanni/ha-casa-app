@@ -1261,11 +1261,17 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # and its result come here" where it said "its questions, its result and its
 # Stop key come here". The eight other carriers byte-identical. No retention
 # claim.
+# MOVED (stop_work names jobs too), `assistant:text` only: the stop paragraph
+# says "To stop or cancel work that runs by itself, a background job or a
+# specialist's browsing, call stop_work yourself" where it said "To stop or
+# cancel work a specialist carries on by itself, such as browsing, call
+# stop_work yourself". The eight other carriers byte-identical. No retention
+# claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "f7f8d0dcbbc197ff0349557cbebe0f95e5e360377030dacd09f38cf61ab7e335",
     "assistant:text":
-        "26387e86888196bdb808f4b5129a988941d02c75b5ef548ea2c589a7f0cee79c",
+        "3417be6f6f005d548ecb29b4038436abb34bef29647b7bbd27d862abe294a94b",
     "assistant:voice":
         "71805d1c8fd3a8ef47a7de718e60db1123752388d8203a66e358eedac7b007d1",
     "butler:restricted_webhook":

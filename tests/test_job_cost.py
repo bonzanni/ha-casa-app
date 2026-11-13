@@ -49,7 +49,14 @@ async def test_the_resident_s_end_notice_carries_time_and_cost():
     frozen = {"started_at": 1000.0,
               "origin": {"job": {"title": "x", "cost_usd": 3.9}}}
     assert tools._with_job_cost("Done.", frozen, 1000.0 + 65 * 60) == (
-        "Done.\n\nJob ran 1 h 5 min · $3.90")
+        "Done.\n\nJob ran 1 h 5 min · $3.90 " + tools.JOB_COST_NOTE)
     frozen["origin"]["job"].pop("cost_usd")
-    assert tools._with_job_cost("Done.", frozen, 1000.0 + 60) == "Done.\n\nJob ran 1 min"
+    assert tools._with_job_cost("Done.", frozen, 1000.0 + 60) == (
+        "Done.\n\nJob ran 1 min " + tools.JOB_COST_NOTE)
     assert tools._with_job_cost("Done.", {"started_at": 0, "origin": {}}, 5) == "Done."
+
+
+def test_the_end_notice_asks_the_narration_to_mention_time_and_cost():
+    import tools
+    assert tools.JOB_COST_NOTE == (
+        "(Casa: mention how long the job ran and what it cost, in your own words.)")

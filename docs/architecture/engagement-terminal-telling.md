@@ -100,7 +100,8 @@ with "Done.", "Stopped." or "Couldn't finish:" and why; the channel sends the an
 message as a reply to that message when it is the sending bot's own in the chat being
 answered, and plain otherwise ([`telegram-bots.md`](telegram-bots.md)). That answer is the one
 message a job's end leaves ([`background-job-direct-chat.md`](background-job-direct-chat.md)).
-An outcome with no stored request — a scheduled run's — carries no target and no note.
+An outcome with no stored request — a scheduled run's — carries no target and no note, and a
+launch whose outcome could not be recorded (the job is still open) carries no note either.
 
 ## Failure behavior
 

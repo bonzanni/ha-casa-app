@@ -661,6 +661,67 @@ async def test_the_start_post_quotes_the_whole_task_silently(world):
     assert s["disable_notification"] is True
 
 
+RICH_TASK = "Pay the **💶 rent** by [Monday](time:2026-11-16T09:00+01:00), please."
+
+
+async def test_the_start_post_shows_the_briefs_formatting_inside_the_quote(world):
+    """The brief is rendered as an answer is: bold and a time link show as formatting
+    inside the expandable quote, at offsets shifted past the who-asked line."""
+    from telegram import MessageEntity
+    from text_util import utf16_len
+    _FakeSpecialistClient.reset(response="€420.")
+    await _delegate("sync", task=RICH_TASK)
+    s = world.alex.sent[0]
+    body = "Pay the 💶 rent by Monday, please."
+    assert s["text"] == f"Ellen asked:\n{body}"
+    head = utf16_len("Ellen asked:\n")
+    quote, bold, when = s["entities"]
+    assert (quote.type, quote.offset, quote.length) == (
+        MessageEntity.EXPANDABLE_BLOCKQUOTE, head, utf16_len(body))
+    assert (bold.type, bold.offset, bold.length) == (
+        MessageEntity.BOLD, head + utf16_len("Pay the "), utf16_len("💶 rent"))
+    assert (when.type, when.offset, when.length) == (
+        MessageEntity.DATE_TIME, head + utf16_len("Pay the 💶 rent by "), len("Monday"))
+    assert s["disable_notification"] is True
+
+
+async def test_a_start_post_whose_formatting_is_refused_is_sent_plain(world):
+    from telegram import MessageEntity
+    from telegram.error import BadRequest
+    from text_util import utf16_len
+    _FakeSpecialistClient.reset(response="€420.")
+    real = world.alex._app.bot.send_message.side_effect
+
+    async def refuse_rich_starts(**kw):
+        if kw.get("disable_notification") and len(kw.get("entities") or []) > 1:
+            raise BadRequest("can't parse entities")
+        return await real(**kw)
+
+    world.alex._app.bot.send_message.side_effect = refuse_rich_starts
+    await _delegate("sync", task=RICH_TASK)
+    s = world.alex.sent[0]
+    assert s["text"] == f"Ellen asked:\n{RICH_TASK}"
+    (e,) = s["entities"]
+    assert (e.type, e.offset, e.length) == (
+        MessageEntity.EXPANDABLE_BLOCKQUOTE, utf16_len("Ellen asked:\n"), utf16_len(RICH_TASK))
+    assert world.alex.filed[0][2].slot == "task-start"
+
+
+async def test_a_rich_task_too_long_for_one_message_keeps_the_formatting_that_fits(world):
+    from telegram import MessageEntity
+    from text_util import utf16_len
+    task = "**Early** " + "💶" * 2039 + " **late**"   # renders, but past the post's budget
+    _FakeSpecialistClient.reset(response="€420.")
+    await _delegate("sync", task=task)
+    s = world.alex.sent[0]
+    assert utf16_len(s["text"]) <= 4096 and s["text"].endswith("…")
+    quote, *rest = s["entities"]
+    assert quote.type == MessageEntity.EXPANDABLE_BLOCKQUOTE
+    assert quote.offset + quote.length == utf16_len(s["text"])
+    assert [(e.type, e.offset, e.length) for e in rest] == [
+        (MessageEntity.BOLD, utf16_len("Ellen asked:\n"), len("Early"))]
+
+
 async def test_a_task_too_long_for_one_message_is_clipped_to_fit(world):
     from text_util import utf16_len
     task = "💶 " * 2000                      # 4000 characters (the task cap), 6000 UTF-16 units

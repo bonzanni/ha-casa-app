@@ -234,6 +234,31 @@ def test_the_narration_of_a_job_end_is_told_to_open_with_done(rig):
     assert agent.REPLY_OPENING_NOTE not in plain.content and "_reply_to" not in plain.context
 
 
+def test_a_launch_whose_outcome_was_not_recorded_is_not_told_how_to_open_an_end():
+    """The job is still open: the narration is not asked to open "Done.", "Stopped." or
+    "Couldn't finish:"."""
+    import agent
+    context = {"cid": "-", "chat_id": str(OPERATOR), "engagement_id": "e" * 32,
+               "_tg_bot": BOT, "_reply_to": REQUEST}
+    complete = DelegationComplete(
+        delegation_id="e" * 32, agent="finance", status="error",
+        kind="launch_outcome_uncommitted", message="not recorded", text="",
+        origin={"role": "assistant", "_tg_bot": BOT, "user_text": "do Q3"}, elapsed_s=1.0)
+    msg = BusMessage(type=MessageType.NOTIFICATION, source="finance", target="assistant",
+                     content=complete, channel="telegram", context=context)
+    turn = agent.Agent._synthesize_delegation_turn(Mock(), msg)
+    assert "the job is still open" in turn.content
+    assert agent.REPLY_OPENING_NOTE not in turn.content
+    error = DelegationComplete(
+        delegation_id="e" * 32, agent="finance", status="error", kind="error",
+        message="boom", text="", origin=complete.origin, elapsed_s=1.0)
+    turn = agent.Agent._synthesize_delegation_turn(
+        Mock(), BusMessage(type=MessageType.NOTIFICATION, source="finance",
+                           target="assistant", content=error, channel="telegram",
+                           context=context))
+    assert agent.REPLY_OPENING_NOTE in turn.content
+
+
 def test_the_reply_opening_note_is_casas_fixed_copy():
     import agent
     assert agent.REPLY_OPENING_NOTE == (

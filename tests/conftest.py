@@ -179,6 +179,14 @@ class _FakeMessageEntity:
         return f"_FakeMessageEntity({self.type!r}, {self.offset}, {self.length})"
 
     @staticmethod
+    def shift_entities(by, entities):
+        shift = by if isinstance(by, int) else len(by.encode("utf-16-le")) // 2
+        return [_FakeMessageEntity(e.type, e.offset + shift, e.length, url=e.url,
+                                   unix_time=e.unix_time,
+                                   date_time_format=e.date_time_format)
+                for e in entities]
+
+    @staticmethod
     def adjust_message_entities_to_utf_16(text, entities):
         out = []
         for e in entities:

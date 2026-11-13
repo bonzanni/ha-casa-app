@@ -167,6 +167,7 @@ def test_a_leading_marker_is_split_off():
     assert split_reply_marker("<reply />Yes.") == (ReplyMark(None), "Yes.")
     assert split_reply_marker("  \n<reply/>\n\nYes.") == (ReplyMark(None), "\nYes.")
     assert split_reply_marker('<reply quote="a "b" c"/>Yes.') == (ReplyMark('a "b" c'), "Yes.")
+    assert split_reply_marker('<reply quote="Tue" />\nYes.') == (ReplyMark("Tue"), "Yes.")
     assert split_reply_marker("I said <reply/> here") == (None, "I said <reply/> here")
     assert split_reply_marker('<reply quote="open') == (None, '<reply quote="open')
     assert split_reply_marker("<reply>Yes.") == (None, "<reply>Yes.")
@@ -176,7 +177,8 @@ def test_a_leading_marker_is_split_off():
 def test_a_marker_still_being_written_is_recognised():
     for text in ("<", "<rep", "  <reply", "<reply ", '<reply quote="Mon', '<reply quote="Mon"/'):
         assert may_be_reply_marker(text), text
-    for text in ("", "Sure", "<b>", "<reply>", "<reply/>", '<reply quote="Mon"/>Su', "x <reply"):
+    for text in ("", "Sure", "<b>", "<reply>", "<reply/>", '<reply quote="Mon"/>Su',
+                 '<reply quote="Mon" />Su', "x <reply"):
         assert not may_be_reply_marker(text), text
 
 
@@ -246,7 +248,7 @@ def test_the_telegram_channel_context_teaches_the_marker():
 
 def test_the_marker_guide_is_the_fixed_copy():
     assert REPLY_MARKER_GUIDE == (
-        'reply_to: your answer goes out as an ordinary message. When it answers one part of a '
-        'longer message, or a message the person sent a while ago, start it with <reply/> to '
-        'send it as a reply to their message, or with <reply quote="..."/> holding their exact '
-        'words for the part you answer. In an ordinary back-and-forth write no marker.')
+        'reply_to: your answer goes out as an ordinary message. When you answer late, or '
+        'answer one part of a longer message, start it with <reply/> to send it as a reply to '
+        'their message, or with <reply quote="..."/> holding their exact words for the part '
+        'you answer. In an ordinary back-and-forth write no marker.')

@@ -31,8 +31,9 @@ their formatting intact otherwise — chosen so cell content and link destinatio
 silently dropped. Anything ambiguous stays literal rather than rendering wrongly.
 
 **A time link is the one other link target, and it never fails the line.** An agent writes
-every date or time as `[its own words](time:<ISO 8601>)`, a rule its Telegram prompt states;
-Casa never looks for times in free text. A moment that parses becomes a `date_time` entity
+every date or time in a message the person reads in the chat as
+`[its own words](time:<ISO 8601>)`, and dates plainly in files, emails, tool fields and records,
+a rule its Telegram prompt states; Casa never looks for times in free text. A moment that parses becomes a `date_time` entity
 over the label, sent without a display format, so the reader sees the agent's words and can
 tap them. A moment with no UTC offset, or a date alone (its midnight), is read in Casa's
 timezone. A target that does not parse, a phrase with spaces included, leaves the label as

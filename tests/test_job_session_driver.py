@@ -750,7 +750,7 @@ async def test_a_one_turn_job_s_end_carries_that_turn_s_cost(
     job.cli.result()                        # total_cost_usd=0.01
     await until(lambda: job.channel.painted and job.notices)
     assert job.channel.painted == ["completed"]
-    assert job.notices[0].endswith(" · $0.01")
+    assert job.notices[0].endswith(" · $0.01 " + tools.JOB_COST_NOTE)
     assert job.cli.disconnected
 
 

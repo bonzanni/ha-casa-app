@@ -91,8 +91,9 @@ agent has an inbox ([`inbound-files.md`](inbound-files.md)).
 
 **An answer may open with a reply marker, and admission takes it off.** Like closing
 silence, the marker is admission's: a `FINAL_REPLY` or `STREAM_UPDATE` first loses a leading
-`<reply/>`, `<reply />` or `<reply quote="…"/>` (`split_reply_marker`: only at the very start,
-after leading whitespace, the quote running to the first `"/>`, with the spaces and at most
+`<reply/>`, `<reply />` or `<reply quote="…"/>`, a space before its `/>` allowed
+(`split_reply_marker`: only at the very start, after leading whitespace, the quote running to
+the first `"/>` or `" />`, with the spaces and at most
 one line break after it), before any silence check, so `<reply/><silent/>` is a chosen
 silence. A final reply keeps the marker as `Admitted.reply`, a `ReplyMark` that
 `with_text` carries over and a suppressed admission never has; the rules that read the turn

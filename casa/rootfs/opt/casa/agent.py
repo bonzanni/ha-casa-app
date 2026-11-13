@@ -2155,7 +2155,9 @@ class Agent:
             f"\nThe original user question was: {user_text}\n\n"
             "Reply to the user via their original channel. Be concise.\n"
         )
-        if msg.context.get("_reply_to"):
+        if (msg.context.get("_reply_to")
+                and complete.kind != "launch_outcome_uncommitted"):
+            # the end's opening words fit only an outcome that ended the work
             body += REPLY_OPENING_NOTE + "\n"
 
         # Release A Layer 3: the notification's context carries only cid/chat_id,

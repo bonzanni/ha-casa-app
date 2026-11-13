@@ -253,20 +253,21 @@ class ReplyMark:
 
 
 REPLY_MARKER_GUIDE = (
-    'reply_to: your answer goes out as an ordinary message. When it answers one part of a '
-    'longer message, or a message the person sent a while ago, start it with <reply/> to '
-    'send it as a reply to their message, or with <reply quote="..."/> holding their exact '
-    'words for the part you answer. In an ordinary back-and-forth write no marker.')
+    'reply_to: your answer goes out as an ordinary message. When you answer late, or '
+    'answer one part of a longer message, start it with <reply/> to send it as a reply to '
+    'their message, or with <reply quote="..."/> holding their exact words for the part '
+    'you answer. In an ordinary back-and-forth write no marker.')
 
 _REPLY_MARKER = re.compile(
-    r'\A\s*<reply(?: ?/>| quote="(.*?)"/>)[^\S\r\n]*(?:\r?\n)?', re.DOTALL)
+    r'\A\s*<reply(?: ?/>| quote="(.*?)" ?/>)[^\S\r\n]*(?:\r?\n)?', re.DOTALL)
 _REPLY_FORMS = ("<reply/>", "<reply />", '<reply quote="')
 
 
 def split_reply_marker(text: str) -> "tuple[ReplyMark | None, str]":
     """A reply marker at the very start of *text* (leading whitespace
-    allowed), and the text without it: ``<reply/>``, ``<reply />`` or
-    ``<reply quote="…"/>``, whose quote runs to the first ``"/>``. The marker
+    allowed), and the text without it: ``<reply/>``, ``<reply />``,
+    ``<reply quote="…"/>`` or ``<reply quote="…" />``, whose quote runs to the
+    first ``"/>`` or ``" />``. The marker
     goes with the spaces and at most one line break after it. A marker
     anywhere else, or one that never closes, is the author's text:
     ``(None, text)``, unchanged. An empty quote is no quote."""

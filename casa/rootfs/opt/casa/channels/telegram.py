@@ -3886,32 +3886,57 @@ class TelegramChannel(Channel):
                               post: Any) -> "int | None":
         """A task's silent start post: Casa's *head* line (who asked), then
         the admitted *body*, the request as its requester wrote it, inside one
-        expandable quote. A request too long for one message is clipped to
-        fit, ending in ``…``. Filed under the task as it lands, so a reply to
-        it reaches the task. Returns the message id, or ``None`` when nothing
-        landed."""
-        from telegram import MessageEntity
+        expandable quote. The body is rendered as an answer is, so its
+        formatting shows inside the quote; one Telegram refuses to format is
+        sent plain. A request too long for one message is clipped to fit,
+        ending in ``…``, keeping the formatting that ends before the cut.
+        Filed under the task as it lands, so a reply to it reaches the task.
+        Returns the message id, or ``None`` when nothing landed."""
         if _unadmitted("post_task_start", body):
             return None
         if self.bot is None:
             return None
-        quote = str(body)
-        budget = _TG_MAX_LENGTH - utf16_len(head) - 1
-        if utf16_len(quote) > budget:
-            quote = quote[:utf16_prefix_end(quote, 0, budget - 1)].rstrip() + "…"
-        text = f"{head}\n{quote}"
-        entities = MessageEntity.adjust_message_entities_to_utf_16(text, [MessageEntity(
-            type=MessageEntity.EXPANDABLE_BLOCKQUOTE, offset=len(head) + 1,
-            length=len(quote))])
+        display, rich = render(str(body))
+        tries = [(display, rich)] if rich is not None else []
+        tries.append((str(_plain(body)), []))
+        sent = None
         try:
-            sent = await self.bot.send_message(chat_id=chat_id, text=text,
-                                               entities=entities, disable_notification=True)
+            for n, (quote, entities) in enumerate(tries, 1):
+                text, entities = self._task_start_message(head, quote, entities)
+                try:
+                    sent = await self.bot.send_message(
+                        chat_id=chat_id, text=text, entities=entities,
+                        disable_notification=True)
+                    break
+                except BadRequest as exc:  # nothing posted: the plain send cannot duplicate
+                    if n == len(tries):
+                        raise
+                    logger.warning("task start post rich send fell back to plain: %s",
+                                   type(exc).__name__)
         except Exception as exc:  # noqa: BLE001 — a start post is never the task's fault
             logger.warning("task start post not delivered: %s", type(exc).__name__)
             return None
         self._record_post(chat_id, sent, post)
         mid = getattr(sent, "message_id", None)
         return mid if type(mid) is int else None
+
+    @staticmethod
+    def _task_start_message(head: str, quote: str, entities: list) -> "tuple[str, list]":
+        """The start post's text and entities: *head*, then *quote* with its
+        UTF-16 *entities* inside one expandable quote. A quote past the
+        message's budget is cut to fit with ``…``, and an entity that does not
+        end before the cut is dropped."""
+        from telegram import MessageEntity
+        shift = utf16_len(head) + 1
+        budget = _TG_MAX_LENGTH - shift
+        if utf16_len(quote) > budget:
+            quote = quote[:utf16_prefix_end(quote, 0, budget - 1)].rstrip()
+            kept = utf16_len(quote)
+            entities = [e for e in entities if e.offset + e.length <= kept]
+            quote += "…"
+        box = MessageEntity(type=MessageEntity.EXPANDABLE_BLOCKQUOTE, offset=shift,
+                            length=utf16_len(quote))
+        return f"{head}\n{quote}", [box, *MessageEntity.shift_entities(shift, entities)]
 
     def _job_request_post(self, rec) -> "TgAddress | None":
         """The operator's message that asked for the job (its origin's

@@ -156,10 +156,12 @@ def test_the_plain_fallback_shows_the_label_only():
 
 def test_the_guide_is_the_fixed_copy():
     assert TIME_LINK_GUIDE == (
-        "time_links: write every date or time as a Markdown link whose target is time: and the "
-        "moment in ISO 8601 with its UTC offset, keeping your own words as the label, for example "
-        "[Monday 16 November at 09:00](time:2026-11-16T09:00+01:00) or [16 November](time:2026-11-16). "
-        "Telegram makes it tappable.")
+        "time_links: in the messages the person reads in this chat (answers, questions, "
+        "progress notes, summaries) write every date or time as a Markdown link whose target "
+        "is time: and the moment in ISO 8601 with its UTC offset, keeping your own words as "
+        "the label, for example [Monday 16 November at 09:00](time:2026-11-16T09:00+01:00) or "
+        "[16 November](time:2026-11-16). Telegram makes it tappable. Everywhere else (files, "
+        "emails, tool fields, records) write dates plainly.")
 
 
 def test_every_writer_of_telegram_text_is_taught_time_links():

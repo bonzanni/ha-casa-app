@@ -875,7 +875,7 @@ async def test_stop_work_stops_his_job_through_the_cancel_funnel(env, jobs):
     (got,), kwargs = jobs.finalize.call_args
     assert got.id == rec.id
     assert jobs.finalize.call_args.kwargs["outcome"] == "cancelled"
-    assert kwargs["text"] == "Cancelled by the operator." and kwargs["next_steps"] == []
+    assert kwargs["text"] == tools_mod.STOP_WORK_CANCEL_TEXT and kwargs["next_steps"] == []
     assert kwargs["driver"] is getattr(agent_mod, "active_engagement_driver", None)
     assert text == "Stopped «Q3 accounting»."
     assert env.bot.sent == []                    # the job's own end tells him
@@ -896,6 +896,18 @@ async def test_stop_work_lists_and_stops_his_scheduled_and_agent_started_jobs_bu
     assert await _stop_work(env, {"ref": f"job:{scheduled.id}"}) == "Stopped «Morning news»."
     assert await _stop_work(env, {"ref": f"job:{by_agent.id}"}) == "Stopped «Receipts»."
     assert [c.args[0].id for c in jobs.finalize.await_args_list] == [scheduled.id, by_agent.id]
+
+
+async def test_a_live_engagement_that_is_not_a_job_is_neither_listed_nor_stopped(env, jobs):
+    """A specialist engagement of his that is not a background job is not stop_work's to
+    list or cancel, though its origin names him."""
+    job = await jobs.job()
+    plain = await jobs.reg.create(
+        "specialist", "finance", "in_casa", "t", {**ORIGIN, "user_id": OPERATOR},
+        executor="finance", delivery=TgAddress(BOT, OPERATOR))
+    assert await _stop_work(env, {}) == f"- job:{job.id}: Finance — Q3 accounting (running)"
+    assert await _stop_work(env, {"ref": f"job:{plain.id}"}) == "It had already ended."
+    jobs.finalize.assert_not_awaited()
 
 
 async def test_stop_work_on_an_ended_job_says_it_had_already_ended(env, jobs):
@@ -960,6 +972,18 @@ async def test_stop_work_is_refused_for_a_job_off_his_own_live_turn(env, jobs):
     text = await _stop_work(env, {"ref": f"job:{rec.id}"}, off)
     assert "Only the person's own message can stop work." in text
     jobs.finalize.assert_not_awaited()
+
+
+def test_a_job_stop_work_ended_tells_its_narration_the_person_was_already_told():
+    """The end notice of a job stopped through stop_work says he was told already, so the
+    narration need not say "Stopped." again where he asked; its log line stays the plain
+    outcome."""
+    assert tools_mod.STOP_WORK_CANCEL_TEXT == (
+        "Cancelled by the operator.\n"
+        "(Casa: he asked for this stop himself and was told it stopped. If he asked in this "
+        "chat, what was said is enough: add nothing more, <silent/> is fine.)")
+    assert tools_mod._end_log_line("cancelled", tools_mod.STOP_WORK_CANCEL_TEXT) == (
+        "🛑 cancelled — Cancelled by the operator.")
 
 
 def test_stop_work_describes_jobs_and_browsing():

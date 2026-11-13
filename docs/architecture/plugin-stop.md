@@ -134,15 +134,18 @@ binding's chain — as a delegation to an agent with its own chat runs in that a
 With no `ref` it lists every stop plugin's running requests, each with its ref
 (`request:<key>`), its specialist's name, its tasks and its state, and says of a specialist
 whose listing `failed` that what it is doing could not be listed right now; then each live
-background job of his (`_his_live_jobs`: an active or idle record whose origin names him,
-whoever started it — he, a schedule or an agent), as `- job:<engagement id>: <Agent> — <title>
+background job of his (`_his_live_jobs`: an active or idle job record — its origin holds a
+`job` — whose origin names him, whoever started it — he, a schedule or an agent; another
+engagement of his is no job and is neither listed nor stopped), as `- job:<engagement id>: <Agent> — <title>
 (running)`; `Nothing is running.` when there is neither. With a `request:` ref from that
 list it stops the request through the same flight and marks its card, posts nothing, adds
 no note for the agent, and returns a short instruction: the agent says in one plain line
 what stopped, and nothing about how it found it, or adds nothing when another path has
 already told him (`already_stopped`, `in_flight`). A ref no plugin knows is an error naming
 the listing. With a `job:` ref (`JOB_REF_PREFIX`) it runs the job's cancel funnel
-(`_finalize_engagement`, outcome `cancelled`, as a Cancel button does) and answers
+(`_finalize_engagement`, outcome `cancelled`, as a Cancel button does, with
+`STOP_WORK_CANCEL_TEXT`: the outcome, then a note telling the end's narration he was already
+told, so where he asked it need add nothing) and answers
 `Stopped «<title>».`; a job that is not among his live ones, or whose terminal write another
 writer won, answers `It had already ended.`, and a cancel whose write rolled back answers
 `The job could not be stopped just now — try again.` as an error, the job still live. A

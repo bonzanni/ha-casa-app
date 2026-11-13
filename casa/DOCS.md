@@ -602,7 +602,7 @@ of its messages there (a question, something its plugin posted, its start line i
 has one); your words reach the job while it works, at its next step. To stop it, ask
 the assistant to cancel it. When the job ends you get one message: the answer, as a
 reply to your request, opening "Done." (or "Stopped.", or "Couldn't finish:" and
-why), with how long the job ran and what it cost. If the job ended before it read your
+why), and saying how long the job ran and what it cost. If the job ended before it read your
 message, Casa answers it once: "The job had just finished, so your message didn't
 get through. Could you send it again?" A reply to a message of a job that has already ended goes to the assistant,
 with a note saying which job it was and how and when it ended.
