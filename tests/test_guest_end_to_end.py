@@ -24,6 +24,7 @@ from unittest.mock import patch
 import pytest
 
 from guest_groups import THINKING_WORDS
+from output_boundary_testing import admitted
 from test_guest_intake import FRIEND, GROUP, OPERATOR, _guest
 from test_guest_reply import ASKED_ELSEWHERE, DECLINE, FAIL, WAITING, _Ticks
 from test_guest_summons import (  # noqa: F401 — fixtures
@@ -161,13 +162,17 @@ async def test_a_refused_queue_is_logged_as_failed_once(world, opening, caplog):
     assert _one(caplog)["outcome"] == "operator_failed"
 
 
-async def test_someone_elses_summons_is_logged_as_not_answered(world, caplog):
+async def test_someone_elses_summons_is_logged_once_when_its_turn_ends(world, names, caplog):
     ch, bus, bot = _endpoint()
     world.allowed = True
     with caplog.at_level(logging.INFO, logger="channels.telegram"):
         await ch._on_guest_message(_guest(FRIEND), None)
-    assert bot.answers == [] and bot.edits == []
-    assert _one(caplog, caller=FRIEND)["outcome"] == "guest_not_answered"
+        assert _summons_lines(caplog) == []            # nothing until it ends
+        [turn] = _turns(bus, "finance")
+        assert turn.channel == "telegram_guest"
+        await ch.guest_finish(admitted("VAT is 21%."), None, turn.context)
+    assert [e["text"] for e in bot.edits] == ["VAT is 21%."]
+    assert _one(caplog, caller=FRIEND)["outcome"] == "guest_answered"
 
 
 async def test_a_dropped_summons_is_logged_at_debug_only(world, caplog):
