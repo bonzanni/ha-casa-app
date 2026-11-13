@@ -3564,8 +3564,15 @@ def _build_guest_options(
             hooks[_event] = [*hooks.get(_event, []), *_matchers]
         _broker_env = result_broker.broker_env(_client_id)
 
+    # Every other plugin tool the resolution names (the setup tool included)
+    # is kept out of the model's view as well; the pin and the broker still
+    # refuse it on their own should it be called anyway.
+    _not_offered = sorted(
+        ({*contract_map.tools, *_protected}
+         | {t for p in contract_map.plugins.values() for t in p.setup_tools})
+        - set(allowed) - set(_denies))
     disallowed_tools = with_cross_session_tools_denied(
-        [*_denies, "Bash", "Task", "Agent", "ToolSearch", "Skill"])
+        [*_denies, *_not_offered, "Bash", "Task", "Agent", "ToolSearch", "Skill"])
     try:
         logger.info(
             "agent_capabilities_effective role=%s surface=guest model=%s "
@@ -16884,14 +16891,16 @@ async def _guest_mode_hint(role: str):
 
 
 async def _guest_list() -> dict:
-    """Every group any specialist may answer in, with a per-role hint."""
+    """Every group any specialist may answer in, with a per-role hint. The
+    hints are asked side by side, one per role, so the list waits about one
+    hint's bound however many specialists it names."""
     import guest_groups
     store = guest_groups.store()
-    hints: dict[str, object] = {}
+    entries = store.entries()
+    roles = list(dict.fromkeys(entry.role for entry in entries))
+    hints = dict(zip(roles, await asyncio.gather(*map(_guest_mode_hint, roles))))
     groups = []
-    for entry in store.entries():
-        if entry.role not in hints:
-            hints[entry.role] = await _guest_mode_hint(entry.role)
+    for entry in entries:
         groups.append({
             "role": entry.role,
             "specialist": _display_name_for_role(entry.role),

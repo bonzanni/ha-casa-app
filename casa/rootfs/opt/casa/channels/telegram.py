@@ -128,7 +128,8 @@ def _unadmitted(method: str, text: Any) -> bool:
 #: ``<kind>_failed``, the kind being ``operator`` for the operator's summons
 #: and ``guest`` for a friend's), the dispatcher when the turn never starts
 #: (``<kind>_failed``), or the intake for a summons it does not run
-#: (``guest_busy``; ``guest_dropped`` and ``dropped`` at DEBUG).
+#: (``guest_busy``, or ``guest_failed`` when the busy line could not be
+#: said; ``guest_dropped`` and ``dropped`` at DEBUG).
 GUEST_SUMMONS_LOG = "guest summons: role=%s caller=%s chat=%s (%s) outcome=%s ms=%d"
 
 
@@ -1809,10 +1810,9 @@ class TelegramChannel(Channel):
             # No await between this count and the dispatcher binding its
             # reply, so summonses handled side by side cannot all pass it.
             if self._guest_runs_live() >= guest_run.GUEST_RUNS_IN_FLIGHT:
-                if self._app is not None:
-                    await self._guest_reply(update.guest_message).open_final(
-                        guest_run.BUSY_LINE)
-                self._log_unanswered(update, t0, "guest_busy")
+                said = self._app is not None and await self._guest_reply(
+                    update.guest_message).open_final(guest_run.BUSY_LINE)
+                self._log_unanswered(update, t0, "guest_busy" if said else "guest_failed")
                 return
             await self._dispatch_guest_turn(update)
             return

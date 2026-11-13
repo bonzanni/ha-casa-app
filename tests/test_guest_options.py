@@ -93,6 +93,17 @@ def test_the_allow_list_is_exactly_the_flagged_non_protected_tools(tmp_path):
     assert opts.system_prompt == "GUEST PROMPT"
 
 
+def test_the_plugin_tools_not_offered_are_out_of_the_models_view(tmp_path):
+    """An unflagged plugin tool and the setup tool are denied outright, so
+    the model never sees them; the flagged ones are not."""
+    opts = build(tmp_path)
+    assert EXPORT in opts.disallowed_tools
+    assert SETUP in opts.disallowed_tools
+    assert LOOKUP not in opts.disallowed_tools
+    assert SEARCH not in opts.disallowed_tools
+    assert len(opts.disallowed_tools) == len(set(opts.disallowed_tools))
+
+
 def test_no_casa_tools_no_handoff_no_delegates_no_builtins(tmp_path):
     opts = build(tmp_path)
     assert opts.mcp_servers == {}

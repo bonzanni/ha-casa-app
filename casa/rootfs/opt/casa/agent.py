@@ -1696,9 +1696,12 @@ class Agent:
         # notice among them — go to the DM as their own sends.
         # A friend's summons (the guest channel) is a public reply with no
         # DM behind it: the notice is neither shown nor consulted, so its
-        # cooldown is left for a turn that can show it.
-        guest = (bool(delivery_context.get("_guest_query"))
-                 and hasattr(channel, "guest_finish"))
+        # cooldown is left for a turn that can show it. A guest-channel turn
+        # always ends in ``guest_finish``, its reply bound or not: one whose
+        # reply is gone is refused there, never sent to the group's chat id.
+        guest = msg.channel == GUEST_CHANNEL or (
+            bool(delivery_context.get("_guest_query"))
+            and hasattr(channel, "guest_finish"))
         if (
             text and channel is not None
             and getattr(channel, "delivers_final_text", True)
@@ -3016,10 +3019,13 @@ class Agent:
         are drained, none of a specialist conversation's session extras
         apply; the only note is what the bot answered earlier in that group,
         when the summons replied to it. Transient SDK faults retry as on any
-        turn; the whole run is bounded by ``GUEST_RUN_TIMEOUT_S``, past which
-        it fails as a timeout with its client closed. The turn report is
-        written the way the pooled path writes it, so admission and the
-        limit-stop handling read one shape."""
+        turn; the run, retries included, is bounded by ``GUEST_RUN_TIMEOUT_S``,
+        past which it fails as a timeout with its client closed. Outside that
+        window come the plugin resolution and option build before it and, on
+        a timeout, the client's interrupt and drain of the cut turn (at most
+        7 s) and its disconnect. The turn report is written the way the pooled
+        path writes it, so admission and the limit-stop handling read one
+        shape."""
         import tools as tools_mod
         from prompt_compiler import projection_for
 
@@ -3040,9 +3046,6 @@ class Agent:
                 tools_mod._build_guest_options, self.config,
                 resolution=resolution, system_prompt=system_prompt)),
             engagement_id=None)
-        self._stash_explanation_draft(
-            projection="guest", bundle=None, system_prompt=system_prompt,
-            memory_view=None)
 
         notes: list[str] = []
         earlier = msg.context.get("_guest_reply_note")

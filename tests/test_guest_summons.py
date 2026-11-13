@@ -790,6 +790,22 @@ async def test_the_cap_is_the_constant(world, opening, names, monkeypatch):
     assert len(ch._guest_replies) == 1
 
 
+async def test_a_busy_line_telegram_refuses_is_logged_as_failed(
+        world, opening, names, monkeypatch, caplog):
+    """Past the cap, a busy line that never reached the group is logged
+    ``guest_failed``, not ``guest_busy``: nothing was said."""
+    world.allowed = True
+    monkeypatch.setattr(guest_run, "GUEST_RUNS_IN_FLIGHT", 1)
+    ch, bus, bot = _endpoint()
+    await ch._on_guest_message(_friend(), None)
+    bot.answer_error = RuntimeError("query expired")
+    with caplog.at_level("INFO", logger="channels.telegram"):
+        await ch._on_guest_message(_friend(update_id=4), None)
+    assert _answer_texts(bot) == [THINKING, guest_run.BUSY_LINE]   # tried, refused
+    assert len(_turns(bus, "finance")) == 1
+    assert _outcomes(caplog) == ["guest_failed"]
+
+
 async def test_the_cap_counts_guest_replies_only(world, opening, names):
     """The operator's own summonses, however many are live, take no place
     from his friends."""

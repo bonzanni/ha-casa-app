@@ -165,6 +165,24 @@ async def test_a_guest_turn_touches_no_memory_session_or_pool(tmp_path, client, 
         "_build_specialist_session_options")}
     for name, spy in spies.items():
         monkeypatch.setattr(agent, name, spy)
+    import specialist_session
+    called = {
+        "_stash_explanation_draft": MagicMock(name="_stash_explanation_draft"),
+        "_armed_prompt_surface": MagicMock(name="_armed_prompt_surface"),
+        "_drain_chat_notes": MagicMock(name="_drain_chat_notes"),
+        "session_write_gate": MagicMock(name="session_write_gate"),
+        "session_env_and_pad": MagicMock(name="session_env_and_pad"),
+        "registry.get": MagicMock(name="registry.get"),
+        "registry.touch": AsyncMock(name="registry.touch"),
+    }
+    monkeypatch.setattr(agent, "_stash_explanation_draft", called["_stash_explanation_draft"])
+    monkeypatch.setattr(agent, "_armed_prompt_surface", called["_armed_prompt_surface"])
+    monkeypatch.setattr(agent_mod, "_drain_chat_notes", called["_drain_chat_notes"])
+    monkeypatch.setattr(agent_mod, "session_write_gate", called["session_write_gate"])
+    monkeypatch.setattr(specialist_session, "session_env_and_pad",
+                        called["session_env_and_pad"])
+    monkeypatch.setattr(agent._session_registry, "get", called["registry.get"])
+    monkeypatch.setattr(agent._session_registry, "touch", called["registry.touch"])
     monkeypatch.setattr(agent._session_registry, "register", AsyncMock(name="register"))
     monkeypatch.setattr(agent._pool, "turn", AsyncMock(name="pool.turn"))
     capture = MagicMock(name="for_turn")
@@ -173,6 +191,7 @@ async def test_a_guest_turn_touches_no_memory_session_or_pool(tmp_path, client, 
     assert await agent._process(_guest_msg()) == "pong"
 
     assert {n: s.await_count for n, s in spies.items()} == {n: 0 for n in spies}
+    assert {n: s.call_count for n, s in called.items()} == {n: 0 for n in called}
     assert agent._session_registry.register.await_count == 0
     assert agent._pool.turn.await_count == 0
     assert capture.call_count == 0
@@ -251,7 +270,11 @@ async def test_a_legacy_prompt_specialist_still_runs_locked_down(tmp_path, clien
     assert opts.max_turns <= guest_run.GUEST_MAX_TURNS
 
 
-async def test_the_origin_carries_no_operator_markers(tmp_path, client):
+async def test_the_agent_adds_no_operator_markers_to_a_guest_origin(tmp_path, client):
+    """The origin a tool handler snapshots during a guest run carries no
+    operator marker the agent could have added; that the dispatcher builds
+    the turn without one is pinned in ``test_guest_summons.py``
+    (``test_a_guest_turn_carries_no_operator_markers``)."""
     agent = _agent(tmp_path)
     await agent._process(_guest_msg())
     [origin] = client.origins
@@ -285,6 +308,52 @@ async def test_the_text_goes_through_guest_finish_and_silence_through_turn_finis
     assert [e["text"] for e in bot.edits] == [DECLINE]
     assert finishes.await_count == 0
     assert bot.sent == []
+
+
+async def test_a_guest_channel_turn_without_its_reply_key_never_posts_to_the_group(
+        tmp_path, client, caplog):
+    """The guest channel alone makes a turn a guest turn: without the key
+    of its bound reply it still ends in ``guest_finish`` (refused there),
+    never in a send, a response or a draft to the group's chat id."""
+    bot = _Bot()
+    agent, ep, reply = await _summoned(tmp_path, bot)
+    transport = agent._channel_manager.get("telegram")
+    spies = {name: AsyncMock(name=name) for name in ("send", "send_response")}
+    callbacks: list = []
+    real_create = transport.create_on_token
+
+    def _create(context):
+        callbacks.append(real_create(context))
+        return callbacks[-1]
+    finish = AsyncMock(name="guest_finish", return_value=DeliveryOutcome.NOT_DELIVERED)
+    with patch.multiple(transport, guest_finish=finish, create_on_token=_create, **spies):
+        msg = _guest_msg()
+        del msg.context["_guest_query"]
+        await agent.handle_message(msg)
+    assert {n: s.await_count for n, s in spies.items()} == {n: 0 for n in spies}
+    assert callbacks == [None]                 # the turn was given no draft stream
+    assert finish.await_count == 1
+    assert "_guest_query" not in finish.await_args.args[2]
+    assert bot.sent == [] and bot.drafts == []
+
+
+async def test_a_guest_turn_hands_the_model_no_token_callback(tmp_path, client, monkeypatch):
+    """The guest run builds its message handler with no token callback, so
+    nothing the model writes can reach the group before the final edit —
+    whatever the endpoint would offer for the turn's chat."""
+    bot = _Bot()
+    agent, ep, reply = await _summoned(tmp_path, bot)
+    real = agent._make_on_message
+    handed: list = []
+
+    def _spy(on_token, *args, **kwargs):
+        handed.append(on_token)
+        return real(on_token, *args, **kwargs)
+    monkeypatch.setattr(agent, "_make_on_message", _spy)
+    await agent.handle_message(_guest_msg())
+    assert handed == [None]
+    assert bot.edits[-1]["text"] == "pong"
+    assert bot.sent == [] and bot.drafts == []
 
 
 async def test_no_health_notice_for_a_guest_turn(tmp_path, client, monkeypatch):

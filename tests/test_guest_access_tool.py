@@ -1,6 +1,7 @@
 """The ``guest_access`` tool: the operator, inside a group, lets the specialist
 they summoned there answer everyone in it. The group comes from the turn's
 server-stamped origin, never from the model's arguments."""
+import asyncio
 import json
 
 import pytest
@@ -257,6 +258,33 @@ async def test_list_from_ellens_chat_shows_every_role_and_group(
     assert rows[("finance", -7)]["telegram_reports_guest_mode"] is False
     # the hint is asked once per role, not once per group
     assert mtg_bot.calls == 1 and fin_bot.calls == 1
+
+
+async def test_the_hints_of_different_roles_are_asked_side_by_side(
+        two_roles, origin_resident_operator, endpoints):
+    """Each bot answers only once every bot has been asked: asked one after
+    another, the first would wait out its bound and read ``unknown``."""
+    asked: list[str] = []
+    everyone = asyncio.Event()
+
+    class _Waiting(_FakeBot):
+        def __init__(self, role, supports):
+            super().__init__(supports)
+            self.role = role
+
+        async def get_me(self):
+            asked.append(self.role)
+            if len(asked) == 2:
+                everyone.set()
+            await asyncio.wait_for(everyone.wait(), 1.0)
+            return await super().get_me()
+
+    endpoints["mtg"] = _endpoint(_Waiting("mtg", True))
+    endpoints["finance"] = _endpoint(_Waiting("finance", False))
+    out = await _call({"action": "list"})
+    hints = {g["role"]: g["telegram_reports_guest_mode"] for g in out["groups"]}
+    assert hints == {"mtg": True, "finance": False}
+    assert sorted(asked) == ["finance", "mtg"]
 
 
 async def test_the_hint_is_unknown_without_an_endpoint_or_on_failure(
