@@ -239,6 +239,20 @@ def _run_lines(runs: list[dict]) -> list[str]:
     return lines
 
 
+def key_title(runs: list[dict]) -> str:
+    """What the request does, for its Stop key (``stop_keys``): the first run's task and
+    `` +N`` for the runs after it; ``browsing`` when that run names no task. Never a site.
+    A long task is cut so that the whole title, count included, fits a key."""
+    from stop_keys import TITLE_CHARS
+    first = runs[0] if runs else {}
+    task = " ".join(str(first.get("task_kind") or first.get("task_text") or "").split())
+    more = f" +{len(runs) - 1}" if len(runs) > 1 else ""
+    room = TITLE_CHARS - len(more)
+    if len(task) > room:
+        task = task[:room - 1].rstrip() + "…"
+    return (task or "browsing") + more
+
+
 def compose_question(runs: list[dict], requester_name: "str | None") -> str:
     """The batch tap's text, in the browsing agent's own voice: who asked it
     (*requester_name*, ``None`` when the run is its own), then one line per run
@@ -301,6 +315,8 @@ class Confirmation:
     # Stop key at the keyboard (``stop_keys``)
     card: "list | None" = None
     card_text: str = ""
+    # what the request does, for its Stop key (``key_title``)
+    title: str = ""
 
     def card_address(self) -> "TgAddress | None":
         """The card's address, or None when no card is held."""
@@ -566,7 +582,7 @@ async def _decide(call, runs: list[dict], request_key: str, binding, endpoint,
                             operator_id=int(call.identity.operator_id),
                             binding_ref=binding.ref, request_key=request_key,
                             status="admitted", admissions=_admissions(runs),
-                            created_at=CONFIRMATIONS._now())
+                            created_at=CONFIRMATIONS._now(), title=key_title(runs))
         CONFIRMATIONS.add(conf)
         logger.info("run admission: %d run(s) admitted for a colleague under the "
                     "operator's task", len(runs))
@@ -586,7 +602,7 @@ async def _decide(call, runs: list[dict], request_key: str, binding, endpoint,
                                 operator_id=int(call.identity.operator_id),
                                 binding_ref=binding.ref, request_key=request_key,
                                 status="admitted", admissions=_admissions(runs),
-                                created_at=CONFIRMATIONS._now())
+                                created_at=CONFIRMATIONS._now(), title=key_title(runs))
             CONFIRMATIONS.add(conf)
             logger.info("run admission: %d run(s) admitted by his words extract_ms=%s "
                         "total_ms=%d", len(runs), extract_ms,
@@ -596,7 +612,7 @@ async def _decide(call, runs: list[dict], request_key: str, binding, endpoint,
     conf = Confirmation(cid=cid, plugin=call.plugin, bot_id=bot_id,
                         operator_id=int(call.identity.operator_id),
                         binding_ref=binding.ref, request_key=request_key, status="pending",
-                        admissions=[], created_at=CONFIRMATIONS._now())
+                        admissions=[], created_at=CONFIRMATIONS._now(), title=key_title(runs))
     CONFIRMATIONS.add(conf)
 
     async def _on_settle(outcome: dict) -> None:
@@ -684,7 +700,7 @@ def _spawn_status_card(call, runs: list[dict], binding, cid: str, endpoint,
             label_at(call.role, endpoint))
         silent = helper_under_operator_task(call.origin, call.chain)
         conf = CONFIRMATIONS.peek(cid)
-        starting = stop_keys.run_item(conf, text) if conf is not None else None
+        starting = stop_keys.run_item(conf) if conf is not None else None
         mid = await endpoint.deliver_run_card(chat_id, text, starting=starting,
                                               post=_card_post(call, cid), silent=silent)
         if isinstance(mid, int) and not isinstance(mid, bool):

@@ -593,7 +593,7 @@ async def test_runs_his_words_admitted_get_one_status_card_that_raises_its_stop_
     (card,) = channel.cards
     cid = out["confirmation_id"]
     # no button: the card raises the request's Stop key, named by the site it opens
-    assert (card[2].kind, card[2].key, card[2].title) == ("run", cid, "RunPod")
+    assert (card[2].kind, card[2].key, card[2].title) == ("run", cid, "download invoice")
     assert "On it for Ellen:\n• RunPod — download invoice" in card[1]
     assert "Asked for by" not in card[1]
     c = run_admission.CONFIRMATIONS.peek(cid)
@@ -636,7 +636,7 @@ async def test_a_colleagues_request_under_the_operators_task_starts_without_a_ca
     assert channel.posted == [] and continued == [] and seen == []
     (card,) = channel.cards
     cid = out["confirmation_id"]
-    assert (card[2].kind, card[2].key, card[2].title) == ("run", cid, "RunPod, LinkedIn")
+    assert (card[2].kind, card[2].key, card[2].title) == ("run", cid, "download invoice +1")
     assert "On it for Alex (2 runs):\n• RunPod — download invoice" in card[1]
     assert run_admission.confirmation_status(call, cid)["status"] == "admitted"
     # the same request again is the same answer: no second card of either kind

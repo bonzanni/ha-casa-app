@@ -174,7 +174,7 @@ before.
 it. Its taps read the terminal record.
 
 **An end line send fails.** It is logged and not retried; the job's key stays at the keyboard
-until the next message that carries the keys, and a press of a key last shown for a job that
+until the next message that carries the keys, and a press of a key for a job that
 has ended gets "It had already ended." ([`plugin-stop.md`](plugin-stop.md)).
 
 ## Extension points

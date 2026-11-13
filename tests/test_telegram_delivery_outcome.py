@@ -167,7 +167,6 @@ class TestDeliveriesThatDoNotNotify:
 
     async def test_a_silent_run_card_keeps_its_stop_key(self):
         import stop_keys
-        stop_keys.reset()
         ch, bot = _mk_channel_with_fake_bot()
         ch._known_bot_id = 111                  # the keys belong to this bot's chat
         starting = stop_keys.Item("run", "conf-x", "Runpod", 1.0)
