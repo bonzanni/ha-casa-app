@@ -66,8 +66,7 @@ async def _settle(ch):
 
 async def test_an_unaddressed_file_takes_todays_path_byte_for_byte(routed, wired):
     await routed.ch._on_non_text_message(_update(_plain_msg()))
-    [reply] = _replies(routed.bot)
-    assert reply.startswith("Got statement-q3.pdf") and "7 days" in reply
+    assert _replies(routed.bot) == [] and len(routed.bot.reactions) == 1   # stored: 👍
     assert len(wired.list_files()) == 1 and ai.get_inbox(FIN).list_files() == []
     assert routed.notices == []
 
@@ -83,6 +82,7 @@ async def test_a_file_replying_to_a_specialists_post_is_ellens_byte_for_byte(rou
     plain = _channel(plain_bot)
     await plain._on_non_text_message(_update(_plain_msg(name=name)))
     assert _replies(routed.bot) == _replies(plain_bot)
+    assert routed.bot.reactions == plain_bot.reactions
     assert ai.get_inbox(FIN).list_files() == [] and routed.notices == []
     assert routed.ch._turn_tasks == set()
 

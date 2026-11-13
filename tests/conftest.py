@@ -387,7 +387,12 @@ class _FakeForumSupergroup:
 class _FakeTelegramBot:
     def __init__(self):
         self.messages: list = []
+        self.reactions: list = []    # (chat_id, message_id) of each reaction set
         self._supergroups: dict = {}
+
+    async def set_message_reaction(self, *, chat_id, message_id, reaction):
+        self.reactions.append((chat_id, message_id))
+        return True
 
     def _require_supergroup(self, chat_id):
         if chat_id not in self._supergroups:

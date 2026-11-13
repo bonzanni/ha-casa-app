@@ -82,6 +82,7 @@ async def test_a_captioned_file_is_stored_and_runs_one_turn_with_the_caption_ver
     assert turn.target == "assistant" and turn.channel == "telegram"
     assert turn.content == CAPTION                     # the operator's words, untouched
     assert ch._app.bot.texts == []                     # the turn's reply replaces the ack
+    assert ch._app.bot.reactions == [(OPERATOR, 7)]    # and the file gets its 👍
     rf = turn.context["_received_file"]
     path = os.path.join(wired.ready_dir, stored.name)
     assert rf["files"] == [{"path": path, "name": "invoice-0912.pdf"}]
@@ -98,8 +99,7 @@ async def test_a_file_without_a_caption_is_acknowledged_and_runs_no_turn(wired, 
     ch, bus = _ch()
     await ch._on_non_text_message(NS(message=_file_msg(caption)))
     assert await _drain_bus(bus) == []
-    [ack] = ch._app.bot.texts
-    assert ack.startswith("Got invoice-0912.pdf") and "Ask me any time" in ack
+    assert ch._app.bot.texts == [] and ch._app.bot.reactions == [(OPERATOR, 7)]
     assert len(wired.list_files()) == 1
 
 
@@ -121,6 +121,7 @@ async def test_a_rate_limited_caption_falls_back_to_the_acknowledgement(wired):
     assert await _drain_bus(bus) == []
     [ack] = ch._app.bot.texts
     assert ack.startswith("Got invoice-0912.pdf")       # stored, and said so
+    assert ch._app.bot.reactions == []                  # a 👍 alone would read "on it"
 
 
 async def test_a_caption_turn_no_queue_took_falls_back_to_the_acknowledgement(wired):
@@ -131,6 +132,7 @@ async def test_a_caption_turn_no_queue_took_falls_back_to_the_acknowledgement(wi
     await ch._on_non_text_message(NS(message=_file_msg(CAPTION)))
     [ack] = ch._app.bot.texts
     assert ack.startswith("Got invoice-0912.pdf")
+    assert ch._app.bot.reactions == []
     assert len(wired.list_files()) == 1
 
 
@@ -166,7 +168,7 @@ async def test_an_album_turn_names_every_kept_file_of_the_album(wired):
     [turn] = await _drain_bus(bus)
     assert [f["name"] for f in turn.context["_received_file"]["files"]] == ["a.pdf", "b.pdf"]
     assert "2 files together" in turn.context["_received_file"]["note"]
-    assert ch._app.bot.texts == []
+    assert ch._app.bot.texts == [] and len(ch._app.bot.reactions) == 1   # one for the album
 
 
 async def test_no_external_context_can_set_the_received_file():

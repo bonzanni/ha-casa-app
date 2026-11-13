@@ -725,7 +725,8 @@ invoice say?") and she opens it then; if several files could match, she asks whi
 **A caption is an instruction (v0.344.65).** Write a caption on the file — "add it to the
 invoices", "what's the total?" — and she acts on it straight away, exactly as if you had
 sent the caption as a message about that file: Casa keeps the file and gives it a 👍 as
-usual, and her reply is the answer. She decides what the caption asks for; Casa does not
+usual, and her reply is the answer. If she cannot take it up right then, Casa says in words
+what it saved instead. She decides what the caption asks for; Casa does not
 guess from its words. In an album the caption is about the whole album: she waits for every
 file to arrive and then acts on all of them in one reply.
 

@@ -1008,6 +1008,7 @@ class _AckEntry:
 
     name: str
     group: str | None
+    message_id: int | None = None    # the Telegram message that carried it
     line: str | None = None          # its own one-line outcome; None while pending
     stored: tuple | None = None      # (name, kind, size, path) once stored
     claim: _AckClaim | None = None
@@ -4376,8 +4377,10 @@ class TelegramChannel(Channel):
             owner = self._ack_claim(burst, entry, caption)
         try:
             entry.line, entry.stored = await self._store_inbound(cls)
-            if entry.stored is not None:
-                entry.reacted = await self._ack_react(chat_id, msg, burst, entry)
+            if entry.stored is not None and entry.claim is None:
+                # A caption's files are reacted to only once its turn is
+                # dispatched; until then the turn, or the line, may answer.
+                entry.reacted = await self._ack_react(chat_id, burst, entry)
         finally:
             if entry.line is None:      # cancelled or raised: never left pending
                 import agent_inbox
@@ -4389,16 +4392,15 @@ class TelegramChannel(Channel):
             await self._run_claim(update, msg, user, burst, owner)
             await self._render_ack(chat_id, burst)
 
-    async def _ack_react(self, chat_id: Any, msg: Any, burst: _AckBurst,
-                         entry: _AckEntry) -> bool:
+    async def _ack_react(self, chat_id: Any, burst: _AckBurst, entry: _AckEntry) -> bool:
         """A stored file is acknowledged with a reaction on its message. Telegram
         shows a single reaction for a whole album, so an album is reacted to
         once, on its first stored file, and that one outcome stands for every
         file of it. ``False`` sends the file back to its line."""
         if entry.group is None:
-            return await self.react(chat_id, msg.message_id)
+            return await self.react(chat_id, entry.message_id)
         if burst.reaction is None:
-            burst.reaction = asyncio.ensure_future(self.react(chat_id, msg.message_id))
+            burst.reaction = asyncio.ensure_future(self.react(chat_id, entry.message_id))
         return await asyncio.shield(burst.reaction)
 
     async def react(self, chat_id: int, message_id: int) -> bool:
@@ -4467,7 +4469,8 @@ class TelegramChannel(Channel):
         doc = getattr(msg, "document", None)
         name = agent_inbox._bounded_display(
             cls.display_name or (getattr(doc, "file_name", None) or "") if doc else "")
-        entry = _AckEntry(name=name, group=group)
+        entry = _AckEntry(name=name, group=group,
+                          message_id=getattr(msg, "message_id", None))
         claim = burst.claims.get(group) if group is not None else None
         if claim is not None and not claim.sealed:
             entry.claim = claim
@@ -4499,7 +4502,8 @@ class TelegramChannel(Channel):
                          burst: _AckBurst, claim: _AckClaim) -> None:
         """#1379: once every file of the album has landed (and none arrived for
         ``ALBUM_SETTLE_S``), ONE turn acts on the files it kept; they are left
-        out of the acknowledgement only when that turn was dispatched."""
+        out of the acknowledgement, and get their reaction, only when that turn
+        was dispatched. A turn not dispatched leaves them their lines."""
         album = bool(getattr(msg, "media_group_id", None))
         deadline = time.monotonic() + self.ALBUM_MAX_WAIT_S
         while time.monotonic() < deadline:
@@ -4516,6 +4520,8 @@ class TelegramChannel(Channel):
                     [e.stored for e in files], album=album):
                 for e in files:
                     e.covered = True
+                for e in files:
+                    e.reacted = await self._ack_react(msg.chat.id, burst, e)
         finally:
             claim.done = True
 

@@ -20,10 +20,15 @@ BOT = CASA_BOT
 class _FakeBot:
     def __init__(self):
         self.sent = []
+        self.reactions = []          # (chat_id, message_id) of each reaction set
 
     async def send_message(self, **kwargs):
         self.sent.append(kwargs)
         return types.SimpleNamespace(message_id=1)
+
+    async def set_message_reaction(self, *, chat_id, message_id, reaction):
+        self.reactions.append((chat_id, message_id))
+        return True
 
 
 def _channel():

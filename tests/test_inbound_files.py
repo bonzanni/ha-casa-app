@@ -176,9 +176,8 @@ async def test_a_document_is_stored_and_acknowledged(wired, fake_telegram_bot, m
     monkeypatch.setattr(ai, "fetch_telegram_file", fetch)
     ch = _channel(fake_telegram_bot)
     await ch._on_non_text_message(_update(_msg(document=_doc())))
-    [reply] = _replies(fake_telegram_bot)
-    assert reply.startswith("Got statement-q3.pdf")
-    assert "7 days" in reply
+    assert _replies(fake_telegram_bot) == []                 # stored: a 👍, no line
+    assert fake_telegram_bot.reactions == [(OPERATOR, 7)]
     [stored] = wired.list_files()
     assert stored.display_name == "statement-q3.pdf"
 
@@ -196,7 +195,7 @@ async def test_the_largest_photo_size_is_the_one_fetched(wired, fake_telegram_bo
     ch = _channel(fake_telegram_bot)
     await ch._on_non_text_message(_update(_msg(photo=sizes)))
     assert fetched == ["large"]
-    assert _replies(fake_telegram_bot)[0].startswith("Got your photo")
+    assert fake_telegram_bot.reactions == [(OPERATOR, 7)]
 
 
 @pytest.mark.parametrize("attach,expect", [

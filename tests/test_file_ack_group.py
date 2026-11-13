@@ -212,6 +212,20 @@ async def test_an_album_caption_with_no_turn_acknowledges_every_file(wired):
                          f"and I'll read them. I'll keep them {DAYS} days."]
 
 
+async def test_an_album_caption_with_no_turn_keeps_its_lines_and_gets_no_thumbs_up(wired):
+    """A 👍 alone would read as "on it" for a caption nothing will answer, so a
+    caption whose turn was not dispatched keeps its files' lines instead."""
+    ch, bus = _ch()
+    ch._rate_limiter = NS(enabled=True,
+                          check=lambda key: NS(allowed=False, should_notify=False))
+    await asyncio.gather(_send(ch, "a.pdf", "file these", group="g1"),
+                         _send(ch, "b.pdf", group="g1"))
+    assert await _drain_bus(bus) == []
+    assert ch._app.bot.reactions == []
+    [text] = _chat(ch)
+    assert text.startswith("Got 2 files: a.pdf (1 KB), b.pdf (1 KB).")
+
+
 async def test_the_caption_turn_waits_for_a_slow_album_file(wired, monkeypatch):
     """The turn is held until every file of the album has landed, so a slow
     download is in the turn rather than acknowledged beside it."""
