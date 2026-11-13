@@ -560,7 +560,8 @@ IDENTITY_SITE_HITS = {
         "<module>": 1, "Confirmation": 2, "Confirmations.__init__": 1,
         "Confirmations._load_locked": 1, "Confirmations._save_locked": 5,
         "Confirmations.add": 1, "Confirmations.by_key": 2,
-        "Confirmations.by_key_on_any_bot": 2, "Confirmations.clear_card": 1,
+        "Confirmations.by_key_on_any_bot": 2, "Confirmations.card_for_binding": 1,
+        "Confirmations.clear_card": 1,
         "Confirmations.get": 1, "Confirmations.open_cards": 1,
         "Confirmations.peek": 1, "Confirmations.set_card": 1,
         "Confirmations.settle": 1, "_spawn_status_card": 1, "_spawn_status_card._post": 1,
@@ -799,6 +800,10 @@ IDENTITY_FUNCTIONS = {
               "confirmation) takes the asking bot's first, else only work the asking agent "
               "requested; each confirmation keeps its own bot"),
     ("run_admission.py", "_spawn_status_card"): (NOISE, "a signature"),
+    ("run_admission.py", "Confirmations.card_for_binding"): (
+        SAFE, "a lookup by the Casa-minted binding ref; the card it returns is a full "
+              "address carrying the bot that posted it, and the send seam replies to it "
+              "only through that bot, in that chat"),
     ("task_model.py", "Requester"): (NOISE, "a record's fields"),
     ("guest_groups.py", "GuestEntry"): (NOISE, "a record's fields: an allowance for one "
                                                "specialist in one group, not a key"),

@@ -5701,9 +5701,24 @@ async def _settle_then_announce(
             "delegation_id": record.id,
             # the reply goes back through the bot the delegation came from
             **carry_route(record.origin),
+            # ... as a reply to the card the work was approved on, when its
+            # record names one (a continuation's; never the asker's message)
+            **_record_reply_to(record.origin),
         },
         on_delivery=_ack,
     ))
+
+
+def _record_reply_to(origin: dict) -> dict:
+    """``{"_reply_to": address}`` when *origin* holds a stored Telegram address
+    under ``_reply_to``, else ``{}``. Unlike :func:`reply_target`, the person's
+    own message (``_tg_request``) is never taken in its place."""
+    value = origin.get("_reply_to")
+    try:
+        TgAddress.from_json(value)
+    except AddressError:
+        return {}
+    return {"_reply_to": value}
 
 
 def _delegation_failure_kind(exc: BaseException) -> str:

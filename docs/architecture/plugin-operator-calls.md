@@ -113,7 +113,11 @@ asking the agent, which calls `stop_work` ([`plugin-stop.md`](plugin-stop.md)). 
 `run_stop` callback of a card an earlier version posted with an inline Stop reads the
 admission by its id alone (`Confirmations.peek`) and compares the tapper itself. A request
 that is stopped, or ends on its own, has its card marked there, after which the admission
-forgets the card (`Confirmations.clear_card`), so no later pass edits it again.
+forgets the card (`Confirmations.clear_card`), so no later pass edits it again. The card
+the operator approved is also where the run's result answers him: a continuation reads it
+(`Confirmations.card_for_binding`, the newest `admitted` request of the binding that still
+holds one) when it is queued, and its narration replies to it
+([`plugin-continuations.md`](plugin-continuations.md)).
 
 **A colleague's request under the operator's task starts without a card.** When the call's
 turn carries Casa's operator-task proof and its requester is a specialist, not the resident

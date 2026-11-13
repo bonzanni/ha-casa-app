@@ -480,6 +480,17 @@ class Confirmations:
         return sorted((c for c in held if BINDINGS.peek(c.binding_ref) is not None),
                       key=lambda c: c.created_at)
 
+    def card_for_binding(self, binding_ref: str) -> "TgAddress | None":
+        """The card of the newest ``admitted`` request of the binding *binding_ref* that
+        still holds one (``clear_card`` has not forgotten it), or None. Read-only."""
+        with self._lock:
+            self._load_locked()
+            held = [c for c in self._items.values()
+                    if c.status == "admitted" and c.card and c.binding_ref == binding_ref]
+        if not held:
+            return None
+        return max(held, key=lambda c: c.created_at).card_address()
+
     def open_cards_on_bot(self, bot_id: int) -> int:
         """How many requests asked on bot *bot_id* still hold a card whose Stop works
         (``open_cards``)."""

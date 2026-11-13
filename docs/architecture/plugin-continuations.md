@@ -93,6 +93,20 @@ answered, in the chat the work posts in. A requester no longer loaded fails the 
 message (`RequesterUnavailable`), never with one role's answer passed off as another's. A relay's task is Casa's text and is
 never captured as the requester's words (INV-MEM-032).
 
+**The result replies to the card the operator approved.** `Continuations.request` reads the
+binding's card (`run_admission.Confirmations.card_for_binding`) when it queues the continuation
+and keeps it on the `Pending`: the same sweep pass may mark the request ended and forget its
+card (`_settle_ended`) before the turn starts. The record's origin then carries the card as
+its `_reply_to`, and `tools._settle_then_announce` puts that, and only that, into the
+requester's notice (`_record_reply_to`; the asker's own message, `_tg_request`, never stands
+in for it). The narration turn is told to open with "Done." (`agent.REPLY_OPENING_NOTE`), and
+the send seam replies to the card only through the bot that posted it, in its chat
+(`TelegramChannel._reply_parameters`, with `allow_sending_without_reply`). So when the
+specialist was asked in its own chat, its narration there is a reply to the card; when another
+agent asked, that agent's narration in its own chat is plain. A continuation's own closing
+message is still never posted in its executor's chat: it reaches the operator only through
+that narration.
+
 **A turn that only made progress tells nobody** (operator ruling 2026-10-18). The
 specialist declares it itself: a continuation turn whose closing message, whole, is exactly `<silent/>`
 (`output_boundary.SILENCE_SENTINEL`; an empty answer is not a declaration, and notes written before that message do not stop it being one) has nothing for a requester — the browsing

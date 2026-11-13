@@ -108,6 +108,9 @@ class Pending:
     queued_at: float
     bot_id: int                 # the binding's bot (plugin_bindings.binding_target) when queued
     dropped: bool = False       # its work was stopped before it started (``drop``)
+    # the card the operator approved the binding's newest request on, read when queued:
+    # the same sweep pass may forget it (``plugin_stop.settle_ended``) before the turn starts
+    card: Any = None
 
 
 class Continuations:
@@ -125,8 +128,10 @@ class Continuations:
         key = (binding.plugin, bot_id, int(binding.operator_id), run_ref)
         if key in self._pending:
             return "already_queued"
-        self._pending[key] = Pending(binding, run_ref, reason, time.monotonic(),
-                                     bot_id=bot_id)
+        import run_admission
+        self._pending[key] = Pending(
+            binding, run_ref, reason, time.monotonic(), bot_id=bot_id,
+            card=run_admission.CONFIRMATIONS.card_for_binding(binding.ref))
         task = asyncio.get_running_loop().create_task(self._run(key))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
@@ -443,7 +448,10 @@ async def run_continuation(pending: Pending, *, on_start) -> None:
                         "_origin_clearance": binding.origin.get("_origin_clearance",
                                                                 "private"),
                         **carry_route(binding.origin),
-                        **task_delivery_marker(delivery_of(binding))},
+                        **task_delivery_marker(delivery_of(binding)),
+                        # the requester's narration replies to the card the operator approved
+                        # (sent as a reply only in that card's own chat)
+                        **({"_reply_to": pending.card.to_json()} if pending.card else {})},
                 # the continuation as a task: run by the chain's last agent,
                 # its result to the requester, its posts at the binding's
                 # delivery — persisted, so a restart replays it whole
