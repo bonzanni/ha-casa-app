@@ -32,10 +32,26 @@ GUEST_FRAME = (
 )
 
 
+# The longest caller name and group title the frame quotes.
+_CALLER_MAX = 64
+_TITLE_MAX = 128
+
+
+def _framed(text: str, limit: int) -> str:
+    """*text* as the frame may quote it: one line (every whitespace run one
+    space), angle brackets swapped for guillemets so no name can open or
+    close a tag, cut to *limit* characters."""
+    one_line = " ".join(str(text).split())
+    return one_line.replace("<", "\u2039").replace(">", "\u203a")[:limit]
+
+
 def guest_frame(*, caller: str, title: str) -> str:
     """The frame for a summons by *caller* (a first name, or "Someone") in the
-    group *title*; appended to the specialist's guest prompt projection."""
-    return GUEST_FRAME.format(caller=caller, title=title)
+    group *title*; appended to the specialist's guest prompt projection.
+    Both are chosen by people in the group, so each is quoted as one line
+    with no angle brackets: nothing in a name can end the frame early."""
+    return GUEST_FRAME.format(caller=_framed(caller, _CALLER_MAX),
+                              title=_framed(title, _TITLE_MAX))
 
 
 def guest_tool_names(contract_map, protected) -> frozenset[str]:

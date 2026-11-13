@@ -10,7 +10,9 @@ import logging
 
 import plugin_grants
 import tools as tools_mod
-from config import AgentConfig, CharacterConfig, ToolsConfig
+from config import (
+    AgentConfig, CharacterConfig, DelegateEntry, HooksConfig, ToolsConfig,
+)
 from guest_run import GUEST_MAX_TURNS
 from plugin_registry import ResolutionResult, ResolvedPlugin
 
@@ -27,9 +29,17 @@ CTX: dict = {"signal": None}
 
 
 def _cfg(max_turns: int = 40) -> AgentConfig:
+    """A specialist with a full grant set of its own — built-ins, a Casa tool,
+    a Casa MCP server, a hook policy and a delegate — none of which a guest
+    run may carry: the assertions below fail if any is unioned in."""
     return AgentConfig(role_artifact=STUB_ROLE_ARTIFACT, role="mtg", model="x",
                        character=CharacterConfig(name="Judge"), system_prompt="x",
-                       kind="specialist", tools=ToolsConfig(max_turns=max_turns))
+                       kind="specialist",
+                       tools=ToolsConfig(max_turns=max_turns, allowed=[
+                           "Read", "Bash", "mcp__casa-framework__send_message"]),
+                       mcp_server_names=["casa-framework"],
+                       hooks=HooksConfig(pre_tool_use=[{"policy": "block_dangerous_bash"}]),
+                       delegates=[DelegateEntry(agent="assistant", purpose="p", when="w")])
 
 
 def _plugin(tmp_path, *, protected: list[str] | None = None) -> ResolutionResult:
