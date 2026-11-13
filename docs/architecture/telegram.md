@@ -42,7 +42,7 @@ draws one pointer to the direct chat per person per boot (INV-TG-016, in
 [`agent-logs.md`](agent-logs.md)). Both are *text*: the text
 handler is one of two message handlers, and the other takes every new non-text message — a
 file, a photo, a sticker, a pin. In the operator's chat it stores an accepted file and
-acknowledges it, files sent together in one edited message (INV-FILE-005) — or, when the file carries a caption, runs one ordinary turn with the caption
+acknowledges it with a 👍 (INV-FILE-005) — or, when the file carries a caption, runs one ordinary turn with the caption
 as the operator's words, admitted through the text handler's own dispatch tail
 (`_dispatch_dm_turn`, INV-FILE-004) — and answers everything else with a one-line refusal;
 outside that chat it follows the text path, and in the log group it draws the same one

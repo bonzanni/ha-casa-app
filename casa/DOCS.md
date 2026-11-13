@@ -718,20 +718,21 @@ load), the operation is unavailable and Casa tells you once, with the reason in 
 ### Sending files to the assistant (v0.325.0)
 
 Send the assistant a PDF, a photo, or a text or CSV file in your direct chat and she
-keeps it: Casa replies with what it saved and how long it will keep it — seven days.
+keeps it: Casa puts a 👍 on the file to say it is saved, and keeps it for seven days.
 Nothing is read on arrival. Ask about the file whenever you like ("what does that
 invoice say?") and she opens it then; if several files could match, she asks which.
 
 **A caption is an instruction (v0.344.65).** Write a caption on the file — "add it to the
 invoices", "what's the total?" — and she acts on it straight away, exactly as if you had
-sent the caption as a message about that file: Casa keeps the file as usual and her reply
-takes the place of the "Got …" line. She decides what the caption asks for; Casa does not
+sent the caption as a message about that file: Casa keeps the file and gives it a 👍 as
+usual, and her reply is the answer. She decides what the caption asks for; Casa does not
 guess from its words. In an album the caption is about the whole album: she waits for every
 file to arrive and then acts on all of them in one reply.
 
-**Several files at once (v0.344.68).** Files you send together — an album, or several
-files within a few seconds — get one reply from Casa that lists each file as it arrives
-("Got 3 files: …"), with any file it could not keep named in the same message.
+**Several files at once (v0.344.68).** Each file you send gets its own 👍; an album gets one
+👍 for the whole album. A file Casa could not keep gets a short line instead, and files sent
+together — an album, or several files within a few seconds — share one such message. If
+Telegram does not take the 👍, Casa says what it saved in words, as before ("Got 3 files: …").
 
 Files can be up to 8 MB, and she holds up to 50 files and 200 MB in all. When that is
 full a new file is refused rather than an old one dropped — the oldest go after seven days.

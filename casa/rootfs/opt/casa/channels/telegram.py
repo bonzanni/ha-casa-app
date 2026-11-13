@@ -40,7 +40,7 @@ from io import BytesIO
 from collections.abc import Collection
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
-from telegram import InputFile, ReplyParameters, Update
+from telegram import InputFile, ReactionTypeEmoji, ReplyParameters, Update
 from telegram.constants import ChatAction
 from telegram.request import HTTPXRequest
 from telegram.error import (
@@ -986,6 +986,8 @@ ACK_WINDOW_S = 10.0
 #: An album's size; with names shortened in a list, ten files' lines always fit
 #: one Telegram message (design round d1, Astra).
 ACK_MAX_FILES = 10
+#: The reaction a stored file gets in place of a line of acknowledgement.
+REACTION = "\N{THUMBS UP SIGN}"
 
 
 @dataclass(eq=False)
@@ -1010,6 +1012,7 @@ class _AckEntry:
     stored: tuple | None = None      # (name, kind, size, path) once stored
     claim: _AckClaim | None = None
     covered: bool = False            # a dispatched caption turn acts on it
+    reacted: bool = False            # stored, and acknowledged with a reaction
 
 
 @dataclass(eq=False)
@@ -1021,14 +1024,17 @@ class _AckBurst:
     claims: dict
     message_id: int | None = None
     shown: str = ""
+    reaction: "asyncio.Future | None" = None   # an album's one reaction
 
 
 def _ack_text(burst: _AckBurst) -> str:
     """The acknowledgement for what has landed: one file's own line, byte for
     byte as before; several files as one list of what was kept, then a line for
-    each file that was not. Files a caption turn covers are its reply's."""
+    each file that was not. Files a caption turn covers are its reply's, and a
+    file acknowledged with a reaction needs no line."""
     import agent_inbox
     shown = [e for e in burst.entries if e.line is not None and not e.covered
+             and not e.reacted
              and not (e.claim is not None and not e.claim.done)]
     if len(shown) == 1 and len(burst.entries) == 1:
         return shown[0].line
@@ -4370,6 +4376,8 @@ class TelegramChannel(Channel):
             owner = self._ack_claim(burst, entry, caption)
         try:
             entry.line, entry.stored = await self._store_inbound(cls)
+            if entry.stored is not None:
+                entry.reacted = await self._ack_react(chat_id, msg, burst, entry)
         finally:
             if entry.line is None:      # cancelled or raised: never left pending
                 import agent_inbox
@@ -4380,6 +4388,30 @@ class TelegramChannel(Channel):
         if owner is not None:
             await self._run_claim(update, msg, user, burst, owner)
             await self._render_ack(chat_id, burst)
+
+    async def _ack_react(self, chat_id: Any, msg: Any, burst: _AckBurst,
+                         entry: _AckEntry) -> bool:
+        """A stored file is acknowledged with a reaction on its message. Telegram
+        shows a single reaction for a whole album, so an album is reacted to
+        once, on its first stored file, and that one outcome stands for every
+        file of it. ``False`` sends the file back to its line."""
+        if entry.group is None:
+            return await self.react(chat_id, msg.message_id)
+        if burst.reaction is None:
+            burst.reaction = asyncio.ensure_future(self.react(chat_id, msg.message_id))
+        return await asyncio.shield(burst.reaction)
+
+    async def react(self, chat_id: int, message_id: int) -> bool:
+        """Put the 👍 reaction on one message. ``False`` when it did not go
+        through, logged with the exception's class only."""
+        try:
+            await self.bot.set_message_reaction(
+                chat_id=chat_id, message_id=message_id,
+                reaction=[ReactionTypeEmoji(REACTION)])
+            return True
+        except Exception as exc:  # noqa: BLE001 — the caller falls back to a line
+            logger.warning("reaction failed: %s", type(exc).__name__)
+            return False
 
     async def _store_inbound(self, cls: "_InboundClass") -> tuple[str, tuple | None]:
         """The default agent's inbox takes the file: its one-line outcome, and

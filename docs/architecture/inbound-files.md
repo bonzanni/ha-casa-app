@@ -21,9 +21,10 @@ says about them is [`output-boundary.md`](output-boundary.md).
 ## Mental model
 
 **Arrival stores; asking reads — and a caption is asking.** A file arriving without a
-caption runs no agent turn. The channel downloads it, checks it, publishes it, and posts one
-acknowledgement of its own — a channel message, not model output; files sent together share
-one (below). The agent reads the file
+caption runs no agent turn. The channel downloads it, checks it, publishes it, and puts a 👍 reaction on the
+file's message — a channel action, not model output. A file it could not keep, or one whose
+reaction did not go through, gets a line instead, and files sent together share one message
+(below). The agent reads the file
 later, in an ordinary text turn, when the operator asks: it calls `list_inbound_files` to find
 the path, then opens it with the `Read` tool it already has. A caption on the file is that
 asking, sent with the file: the stored file's caption becomes one ordinary turn (below). A read puts the file into the model request (a PDF becomes a document block),
@@ -85,7 +86,7 @@ the Casa-generated name rather than from `mtime`, so nothing can re-date one.
 
 A caption is the operator's instruction for the file it was written on. When the default
 agent's path stores a file and the message carries a caption that is not blank, the channel
-posts no acknowledgement and instead runs one ordinary turn of the default agent
+reacts to it as to any stored file, posts no line, and runs one ordinary turn of the default agent
 (`TelegramChannel._caption_turn`): the caption, verbatim, is the operator's message, and the
 file's facts — its name, kind and size, its path in the inbox, and that the path is for the
 agent's tools and not for its reply — are Casa's note on the reserved `_received_file` context
@@ -114,13 +115,20 @@ turn's message.
 
 ## Files sent together (#1379)
 
-Files that arrive together get ONE acknowledgement, edited as each lands
+A stored file is acknowledged with a 👍 reaction on its own message (`TelegramChannel.react`,
+the reaction `REACTION`), and draws no line. Telegram shows one reaction for a whole album
+whichever of its messages carries it, so an album is reacted to once, on its first stored
+file, and that one outcome stands for every file of it (`TelegramChannel._ack_react`). A
+reaction that fails is logged with its exception class, and the file falls back to its line.
+The lines — refusals, failures, and stored files whose reaction failed — of files that
+arrive together make ONE acknowledgement, edited as each lands
 (`TelegramChannel._render_ack`, `_ack_text`). Together is decided mechanically
 (`TelegramChannel._ack_join`): the same Telegram album, which keeps a message of its own
 found by its album id, or a lone file within `ACK_WINDOW_S` of the chat's previous file event, up to
 `ACK_MAX_FILES` files per message; a text message from the operator ends a group of lone
 files (an album is one sending, so nothing comes between its files). Once a
-caption's turn has taken its files, a later caption starts a turn of its own. One file reads exactly as it always has;
+caption's turn has taken its files, a later caption starts a turn of its own. One stored file without its reaction reads
+"Got a.pdf — 1 KB. Ask me any time and I'll read it. I'll keep it 7 days.";
 several read "Got 3 files: a.pdf (34 KB), b.pdf (37 KB), c.pdf (12 KB). Ask me any time and
 I'll read them. I'll keep them 7 days.", followed by one line per file that was refused or
 failed, prefixed with its name. Files a dispatched caption turn covers are her reply's and
@@ -207,9 +215,9 @@ for residents other than the Telegram default agent; a `📎` arming across a re
 like the proposal keyboards — the next file is the default agent's).
 
 
-**INV-FILE-004**: A file the default agent's path stored whose message carries a caption that is not blank starts exactly one turn of the default agent, admitted under the chat's serial lock through the text handler's own dispatch tail, whose message is the caption verbatim and whose reserved `_received_file` note names that file — and, in an album, every other file of the album that was kept — and arms the turn over them; Casa's only decision is whether a non-blank caption is present; such files draw no acknowledgement unless no turn was dispatched, when they draw the acknowledgement uncaptioned files draw; a caption with no file kept, and files without a caption, start no turn.
+**INV-FILE-004**: A file the default agent's path stored whose message carries a caption that is not blank starts exactly one turn of the default agent, admitted under the chat's serial lock through the text handler's own dispatch tail, whose message is the caption verbatim and whose reserved `_received_file` note names that file — and, in an album, every other file of the album that was kept — and arms the turn over them; Casa's only decision is whether a non-blank caption is present; such files draw no line of acknowledgement unless no turn was dispatched, when they draw the acknowledgement uncaptioned files draw; a caption with no file kept, and files without a caption, start no turn.
 
-**INV-FILE-005**: Every non-text message on the default agent's path ends as a line of its chat's one acknowledgement or in a dispatched caption turn: the files of one album, or lone files arriving within `ACK_WINDOW_S` of the chat's previous file event, share one message, sent once and edited as each lands, which lists every kept file no dispatched turn covers and every refusal, and is deleted only when a turn covers everything it showed.
+**INV-FILE-005**: Every non-text message on the default agent's path ends in a 👍 reaction on the stored file, a line of its chat's one acknowledgement (a refusal, a failure, or a stored file whose reaction failed) or a dispatched caption turn: the files of one album, or lone files arriving within `ACK_WINDOW_S` of the chat's previous file event, share one message, sent once and edited as each lands, which lists every such line no dispatched turn covers, and is deleted only when a turn covers everything it showed.
 
 What it does not cover: the order between a caption turn and a text sent while its file was
 downloading (the lock is taken after the download); a caption on a file that goes into a
