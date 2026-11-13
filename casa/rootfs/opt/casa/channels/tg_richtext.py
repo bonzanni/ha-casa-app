@@ -91,9 +91,12 @@ _TIME_KIND = "time:"
 # phrase) is not a Markdown link destination. Inside a ``](time:…)`` target
 # each space is swapped for this private-use character before the inline
 # parse and swapped back after, so the link still parses and its label is
-# never lost.
+# never lost. The private-use character is not whitespace to CommonMark, so
+# a target holding ``*`` is left alone: swapping its spaces would let a
+# literal asterisk open or close emphasis. A target with a quoted title is
+# left alone too, and markdown-it reads the title itself.
 _TIME_SPACE = "\ue000"
-_TIME_TARGET_RE = re.compile(r"\]\((?i:time:)[^()\n]*\)")
+_TIME_TARGET_RE = re.compile(r"\]\((?i:time:)[^()\n*\"']*\)")
 
 TIME_LINK_GUIDE = (
     "time_links: write every date or time as a Markdown link whose target is time: and the "

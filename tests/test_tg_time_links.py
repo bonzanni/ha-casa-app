@@ -168,3 +168,23 @@ def test_every_writer_of_telegram_text_is_taught_time_links():
     assert TIME_LINK_GUIDE in ANSWER_SHOWN_LINE
     assert TIME_LINK_GUIDE in background_jobs._job_rules()
     assert TIME_LINK_GUIDE in background_jobs._job_rules(can_ask=False)
+
+
+@pytest.mark.parametrize("src", [
+    "see ](time: 2 * 3 * 4) ok",
+    "x ](time: ** y ** z) w",
+])
+def test_asterisks_near_a_time_target_stay_literal(src):
+    assert render(src) == (src, None)
+
+
+def test_asterisks_after_a_real_link_and_a_time_target_stay_literal():
+    display, ents = render("[a](https://e.com/x) ](time: * b *)")
+    assert display == "a ](time: * b *)"
+    assert [e.type for e in ents] == ["text_link"]
+
+
+def test_a_time_link_with_a_title_still_becomes_an_entity():
+    display, ents = render('[Mon](time:2026-11-16T09:00+01:00 "title")')
+    assert display == "Mon"
+    assert _times(ents) == [(0, 3, MON_0900_ROME)]
