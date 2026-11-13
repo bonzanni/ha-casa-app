@@ -517,32 +517,42 @@ _STOP_WORK_RESULTS["in_flight"] = _STOP_WORK_RESULTS["already_stopped"]
 
 
 def _his_live_jobs(operator_id: int) -> list:
-    """The live background jobs *operator_id* started: a record that is active or idle,
-    whose starter is the operator and whose origin names him."""
+    """The live background jobs of *operator_id*: a record that is active or idle and
+    whose origin names him, whoever started it — he, a schedule or an agent."""
     from provenance import strict_positive_id
     if _engagement_registry is None:
         return []
     return [rec for rec in _engagement_registry.active_and_idle()
-            if ((rec.origin or {}).get("job") or {}).get("started_by") == "operator"
-            and strict_positive_id((rec.origin or {}).get("user_id")) == operator_id]
+            if strict_positive_id((rec.origin or {}).get("user_id")) == operator_id]
 
 
 async def _stop_his_job(engagement_id: str, operator_id: int) -> dict:
     """Stop his live job *engagement_id* through the cancel funnel, as its Cancel button
-    does; one that is not among his live jobs had already ended."""
+    does; one that is not among his live jobs had already ended. A funnel that raises is
+    logged, as the Cancel button's is, and answered by what the record then shows."""
     import agent as agent_mod
     from channels.telegram import TelegramChannel
     rec = next((r for r in _his_live_jobs(operator_id) if r.id == engagement_id), None)
     if rec is None:
         return _text_result(_JOB_ALREADY_ENDED)
-    fin = await _finalize_engagement(
-        rec, outcome="cancelled", text="Cancelled by the operator.", next_steps=[],
-        driver=getattr(agent_mod, "active_engagement_driver", None))
+    stopped = _text_result(f"Stopped «{TelegramChannel._job_title(rec)}».")
+    try:
+        fin = await _finalize_engagement(
+            rec, outcome="cancelled", text="Cancelled by the operator.", next_steps=[],
+            driver=getattr(agent_mod, "active_engagement_driver", None))
+    except Exception:  # noqa: BLE001 — answered from the record below
+        logger.warning("stop_work: job cancel failed for %s", engagement_id[:8],
+                       exc_info=True)
+        latest = _engagement_registry.get(engagement_id)
+        status = getattr(latest, "status", None)
+        if status in ("active", "idle"):
+            return _text_result(_JOB_NOT_STOPPED, is_error=True)
+        return stopped if status == "cancelled" else _text_result(_JOB_ALREADY_ENDED)
     if fin is FinalizeResult.ALREADY_TERMINAL:
         return _text_result(_JOB_ALREADY_ENDED)
     if not fin:
         return _text_result(_JOB_NOT_STOPPED, is_error=True)
-    return _text_result(f"Stopped «{TelegramChannel._job_title(rec)}».")
+    return stopped
 
 
 @tool(

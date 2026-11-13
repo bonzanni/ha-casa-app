@@ -237,7 +237,14 @@ async def _quiet(env, seconds=8.0):
 
 def _lines(env) -> list[dict]:
     """The reply lines sent under a card (the status card and any other send excluded)."""
-    return [m for m in env.bot.sent if "reply_to_message_id" in m]
+    return [m for m in env.bot.sent if "reply_parameters" in m]
+
+
+def _replied_to(line) -> int:
+    """The message a line replies to; it is sent even when that message is gone."""
+    params = line["reply_parameters"]
+    assert params.allow_sending_without_reply is True
+    return params.message_id
 
 
 def _card_edits(env) -> list[dict]:
@@ -340,7 +347,7 @@ async def test_the_operators_stop_tap_stops_it_directly_and_tells_him_once(env):
     (edit,) = _card_edits(env)
     assert edit["text"].endswith("☑ Stopped") and _buttons(edit) == []
     (line,) = _lines(env)
-    assert line["reply_to_message_id"] == CARD_MID and line["text"].endswith("\nStopped.")
+    assert _replied_to(line) == CARD_MID and line["text"].endswith("\nStopped.")
 
 
 @pytest.mark.parametrize("case", ["sender", "chat", "unknown", "declined", "not_operator"])
@@ -436,7 +443,7 @@ async def test_a_tapped_start_card_carries_no_stop_and_posts_no_line(env, monkey
         order.append(("edit", c.status, list(buttons or []), kw))
         return True
 
-    async def send_reply_line(chat_id, text, reply_to, *, post=None, silent=False):
+    async def send_reply_line(chat_id, text, reply_to, *, post=None):
         sent_lines.append(text)
         return True
     ch.deliver_operator_question, ch.edit_dm_message = deliver_operator_question, edit_dm_message
@@ -675,7 +682,7 @@ async def test_the_twenty_minute_cards_stop_is_called_directly(env):
     assert [e["text"] for e in marks] == ["📊 Fido\nStill going.\n☑ Stopped"]
     assert len(_card_edits(env)) == 1               # the start card is marked too
     (line,) = _lines(env)
-    assert line["reply_to_message_id"] == 601
+    assert _replied_to(line) == 601
 
 
 async def test_the_twenty_minute_cards_stop_starts_before_any_card_edit(env):
@@ -874,14 +881,21 @@ async def test_stop_work_stops_his_job_through_the_cancel_funnel(env, jobs):
     assert env.bot.sent == []                    # the job's own end tells him
 
 
-async def test_stop_work_neither_lists_nor_stops_another_operators_or_a_scheduled_job(
+async def test_stop_work_lists_and_stops_his_scheduled_and_agent_started_jobs_but_not_anothers(
         env, jobs):
+    """Every live job whose origin names him is his to stop, whoever started it — he, a
+    schedule or an agent; a job of another operator is neither listed nor stopped."""
     other = await jobs.job("Bank sync", user=7)
     scheduled = await jobs.job("Morning news", started_by="scheduled")
-    assert await _stop_work(env, {}) == "Nothing is running."
-    for rec in (other, scheduled):
-        assert await _stop_work(env, {"ref": f"job:{rec.id}"}) == "It had already ended."
+    by_agent = await jobs.job("Receipts", started_by="agent")
+    listing = (await _stop_work(env, {})).splitlines()
+    assert listing == [f"- job:{scheduled.id}: Finance — Morning news (running)",
+                       f"- job:{by_agent.id}: Finance — Receipts (running)"]
+    assert await _stop_work(env, {"ref": f"job:{other.id}"}) == "It had already ended."
     jobs.finalize.assert_not_awaited()
+    assert await _stop_work(env, {"ref": f"job:{scheduled.id}"}) == "Stopped «Morning news»."
+    assert await _stop_work(env, {"ref": f"job:{by_agent.id}"}) == "Stopped «Receipts»."
+    assert [c.args[0].id for c in jobs.finalize.await_args_list] == [scheduled.id, by_agent.id]
 
 
 async def test_stop_work_on_an_ended_job_says_it_had_already_ended(env, jobs):
@@ -907,6 +921,37 @@ async def test_stop_work_whose_cancel_did_not_save_says_try_again(env, jobs):
         agent_mod.origin_var.reset(tok)
     assert out["content"][0]["text"] == "The job could not be stopped just now — try again."
     assert out.get("is_error") is True
+
+
+async def test_a_cancel_that_raises_is_answered_by_what_the_record_shows(env, jobs):
+    rec = await jobs.job()
+    jobs.finalize.side_effect = RuntimeError("boom")
+    tok = agent_mod.origin_var.set(dict(ORIGIN))
+    try:
+        out = await tools_mod.stop_work.handler({"ref": f"job:{rec.id}"})
+    finally:
+        agent_mod.origin_var.reset(tok)
+    assert out["content"][0]["text"] == "The job could not be stopped just now — try again."
+    assert out.get("is_error") is True               # still live: he may ask again
+
+
+async def test_stop_work_in_a_specialists_own_chat_stops_his_job(env, jobs, monkeypatch):
+    """His live message in a specialist's own chat, on that specialist's bot: the tool's
+    checks pass there as they do for the resident, and his job is stopped."""
+    from two_endpoints import FINANCE_BOT
+    bus = MessageBus()
+    bus.register("finance", _noop)
+    own = TelegramChannel(bot_token="F", chat_id=str(OPERATOR), default_agent="finance",
+                          bus=bus, is_casa=False, known_bot_id=FINANCE_BOT)
+    own._app = types.SimpleNamespace(bot=_FakeBot())
+    monkeypatch.setattr(tools_mod, "_channel_manager", make_transport(env.ch, own),
+                        raising=False)
+    rec = await jobs.job()
+    origin = {**ORIGIN, "role": "finance", "_tg_bot": FINANCE_BOT}
+    listing = await _stop_work(env, {}, origin)
+    assert listing == f"- job:{rec.id}: Finance — Q3 accounting (running)"
+    assert await _stop_work(env, {"ref": f"job:{rec.id}"}, origin) == "Stopped «Q3 accounting»."
+    jobs.finalize.assert_awaited_once()
 
 
 async def test_stop_work_is_refused_for_a_job_off_his_own_live_turn(env, jobs):
@@ -1194,7 +1239,7 @@ async def test_a_stop_line_after_a_restart_is_filed_under_the_cards_task(env, tm
     try:
         await plugin_stop.tell_line(BOT, OPERATOR, "browser", "stopped", reply_to=CARD_MID)
         (line,) = _lines(env)
-        assert line["reply_to_message_id"] == CARD_MID
+        assert _replied_to(line) == CARD_MID
         stop_line = TgAddress(BOT, OPERATOR, 900 + len(env.bot.sent))
         ref = task_posts.owner(stop_line)
         assert ref is not None and ref.task_id == "d-1"

@@ -73,7 +73,7 @@ class _Endpoint(FakeEndpoint):
         self._record("edit_dm_message", chat_id, message_id, text)
         return True
 
-    async def send_reply_line(self, chat_id, text, reply_to, *, post=None, silent=False):
+    async def send_reply_line(self, chat_id, text, reply_to, *, post=None):
         self._record("send_reply_line", chat_id, text, reply_to)
         return True
 

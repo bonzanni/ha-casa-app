@@ -150,7 +150,7 @@ seam; the question post is the turn's notice target. A second tap, or a tap and 
 is a second answer. A Cancel tap on a live record answers "Cancelling…" and runs the cancel
 funnel on a task of its own; a second tap while it runs answers "already finishing", one on an
 ended job "already finished". He can also stop a job by asking the agent: `stop_work` runs the
-same funnel for a live job he started ([`plugin-stop.md`](plugin-stop.md)). A tap while another terminal write of the job is still pending —
+same funnel for a live job of his, whoever started it ([`plugin-stop.md`](plugin-stop.md)). A tap while another terminal write of the job is still pending —
 a completion's, say — is a cancellation like any other: its transition waits for that write,
 cancels the job if it rolled back, and ends with nothing more if it committed. When the funnel's write rolls back, the record stays live, the
 button stays, and one line in reply to the tapped message says "The job could not be stopped

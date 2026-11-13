@@ -468,8 +468,8 @@ class Confirmations:
             self._save_locked()
 
     def open_cards(self, bot_id: int) -> "list[Confirmation]":
-        """The requests asked on bot *bot_id* that still hold a card whose Stop works:
-        admitted, with a card neither a stop nor a natural end has forgotten
+        """The requests asked on bot *bot_id* that still hold their card: admitted, with a
+        card neither a stop nor a natural end has forgotten
         (``clear_card``), and a binding that still exists — what the Stop callback itself
         requires. Oldest first. Read-only."""
         from plugin_bindings import BINDINGS

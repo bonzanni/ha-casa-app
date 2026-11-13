@@ -70,8 +70,8 @@ class _Channel:
         self.card_options.append(options)
         return 556 if self.card_lands else None
 
-    async def send_reply_line(self, chat_id, text, reply_to, *, post=None, silent=False):
-        self.lines.append((chat_id, text, reply_to, silent))
+    async def send_reply_line(self, chat_id, text, reply_to, *, post=None):
+        self.lines.append((chat_id, text, reply_to))
         return True
 
 

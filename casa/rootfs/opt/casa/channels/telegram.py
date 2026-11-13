@@ -5785,16 +5785,18 @@ class TelegramChannel(Channel):
         return mid if isinstance(mid, int) else None
 
     async def send_reply_line(self, chat_id: int, text: str, reply_to: "int | None", *,
-                              post=None, silent: bool = False) -> bool:
+                              post=None) -> bool:
         """One Casa line (the outcome of a card's own Stop, under the specialist's label) as
-        a reply to the card it answers, filed under *post* (the card's own record) as it
-        lands. ``silent`` sends it without a notification. A failure is logged and nothing
-        more is attempted."""
+        a reply to the card it answers — sent even when that card is gone — filed under
+        *post* (the card's own record) as it lands. A failure is logged and nothing more is
+        attempted."""
+        from telegram import ReplyParameters
         if self._app is None:
             return False
-        kwargs: dict = {"reply_to_message_id": reply_to} if isinstance(reply_to, int) else {}
-        if silent:
-            kwargs["disable_notification"] = True
+        kwargs: dict = {}
+        if isinstance(reply_to, int) and not isinstance(reply_to, bool):
+            kwargs["reply_parameters"] = ReplyParameters(
+                message_id=reply_to, allow_sending_without_reply=True)
         try:
             sent = await self._app.bot.send_message(chat_id=chat_id, text=text, **kwargs)
         except Exception as exc:  # noqa: BLE001 — a notice fault is logged

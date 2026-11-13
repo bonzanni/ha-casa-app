@@ -124,8 +124,8 @@ operator's own live message — the spawn cap's `_is_agent_context` is false (th
 server-stamped operator marker, no engagement, no delegation) and the sender is the
 configured operator in his own chat — so voice, narration, scheduled, delegated and group
 turns cannot stop anything. It reaches only his own work: a request whose admission
-(`plugin_stop.visible_confirmation`) is not this operator's, and a job he did not start, are
-neither listed nor stopped. An admission asked on the agent's own bot is found there; one
+(`plugin_stop.visible_confirmation`) is not this operator's, and a job whose origin does not
+name him, are neither listed nor stopped. An admission asked on the agent's own bot is found there; one
 asked on another bot is found when this agent asked for that work — the root of its
 binding's chain — as a delegation to an agent with its own chat runs in that agent's chat
 ([`own-voice.md`](own-voice.md)).
@@ -133,8 +133,8 @@ binding's chain — as a delegation to an agent with its own chat runs in that a
 With no `ref` it lists every stop plugin's running requests, each with its ref
 (`request:<key>`), its specialist's name, its tasks and its state, and says of a specialist
 whose listing `failed` that what it is doing could not be listed right now; then each live
-background job he started (`_his_live_jobs`: an active or idle record whose starter is
-`operator` and whose origin names him), as `- job:<engagement id>: <Agent> — <title>
+background job of his (`_his_live_jobs`: an active or idle record whose origin names him,
+whoever started it — he, a schedule or an agent), as `- job:<engagement id>: <Agent> — <title>
 (running)`; `Nothing is running.` when there is neither. With a `request:` ref from that
 list it stops the request through the same flight and marks its card, posts nothing, adds
 no note for the agent, and returns a short instruction: the agent says in one plain line
@@ -144,7 +144,9 @@ the listing. With a `job:` ref (`JOB_REF_PREFIX`) it runs the job's cancel funne
 (`_finalize_engagement`, outcome `cancelled`, as a Cancel button does) and answers
 `Stopped «<title>».`; a job that is not among his live ones, or whose terminal write another
 writer won, answers `It had already ended.`, and a cancel whose write rolled back answers
-`The job could not be stopped just now — try again.` as an error, the job still live. The
+`The job could not be stopped just now — try again.` as an error, the job still live. A
+funnel that raises is logged, as the Cancel button's is, and answered by what the record then
+shows. The
 resident's prompt tells it to stop such work itself, never by delegation, to ask which one
 when several run and the person's words do not say, and otherwise to write nothing to the
 person until it is stopped (the tool's description says the same: unless it must ask,
@@ -161,7 +163,7 @@ client, by `_on_run_stop_callback`, `_stop_tap` and `stop_work` reaching it outs
 place), by `_on_run_stop_callback` checking the admitted admission, the chat, the sender and
 the configured operator (`_run_stop_allowed`), `_stop_tap` running only after the proposal's own admission
 chain (INV-PROP-001), `stop_work` checking the live operator turn and the configured operator
-and starting no turn beyond the resident's own, and by `Continuations.drop` marking a
+and starting no turn beyond the calling agent's own, and by `Continuations.drop` marking a
 pending continuation dropped, which `run_continuation` checks once it holds the lane and
 before the turn starts.
 
