@@ -85,7 +85,7 @@ def test_the_real_ptb_serialises_the_entity_with_its_unix_time_and_no_format():
 
 
 def test_a_malformed_time_link_keeps_its_label_as_plain_text():
-    display, ents = render("**Due** [soon](time:next week)")
+    display, ents = render("**Due** [soon](time:soon)")
     assert display == "Due soon" and [e.type for e in ents] == ["bold"]
 
 
@@ -110,9 +110,19 @@ def test_a_z_suffix_and_a_date_only_target_parse():
     assert time_instant("time:0001-01-01T00:00+14:00") is None   # before 1970
 
 
-def test_a_spaced_iso_target_is_read_like_a_t_separated_one():
-    assert _times(render("[Mon](time:2026-11-16 09:00+01:00)")[1]) == [
-        (0, 3, MON_0900_ROME)]
+def test_a_target_with_a_space_is_not_a_link_and_stays_literal():
+    assert render("[x](time:2026-11-16 09:00)") == ("[x](time:2026-11-16 09:00)", None)
+    display, ents = render("**Due** [soon](time:next week)")
+    assert display == "Due [soon](time:next week)"
+    assert [(e.type, e.offset, e.length) for e in ents] == [("bold", 0, 3)]
+
+
+def test_text_that_only_looks_like_a_time_target_renders_as_it_always_did():
+    src = "See [manual](https://example.org/](time: next week))."
+    assert render(src) == (src, None)
+    display, ents = render("The token is ](time: ` a `).")
+    assert display == "The token is ](time: a)."
+    assert [(e.type, e.offset, e.length) for e in ents] == [("code", 21, 1)]
 
 
 def test_a_time_link_inside_bold_splits_the_bold_around_it():
@@ -164,9 +174,10 @@ def test_the_guide_is_the_fixed_copy():
     assert TIME_LINK_GUIDE == (
         "time_links: in the messages the person reads in this chat (answers, questions, "
         "progress notes, summaries) write every date or time as a Markdown link whose target "
-        "is time: and the moment in ISO 8601 with its UTC offset, keeping your own words as "
-        "the label, for example [Monday 16 November at 09:00](time:2026-11-16T09:00+01:00) or "
-        "[16 November](time:2026-11-16). Telegram makes it tappable. Everywhere else (files, "
+        "is time: and the moment in ISO 8601 with its UTC offset, a T between date and time and "
+        "no spaces, keeping your own words as the label, for example "
+        "[Monday 16 November at 09:00](time:2026-11-16T09:00+01:00) or [16 November](time:2026-11-16). "
+        "Telegram makes it tappable. Everywhere else (files, "
         "emails, tool fields, records) write dates plainly.")
 
 

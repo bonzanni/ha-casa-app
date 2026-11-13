@@ -87,23 +87,14 @@ MAX_ENTITIES = 100
 
 _LINK_KIND = "link:"
 _TIME_KIND = "time:"
-# A time target the model wrote with spaces ("time:2026-11-16 09:00", or a
-# phrase) is not a Markdown link destination. Inside a ``](time:…)`` target
-# each space is swapped for this private-use character before the inline
-# parse and swapped back after, so the link still parses and its label is
-# never lost. The private-use character is not whitespace to CommonMark, so
-# a target holding ``*`` is left alone: swapping its spaces would let a
-# literal asterisk open or close emphasis. A target with a quoted title is
-# left alone too, and markdown-it reads the title itself.
-_TIME_SPACE = "\ue000"
-_TIME_TARGET_RE = re.compile(r"\]\((?i:time:)[^()\n*\"']*\)")
 
 TIME_LINK_GUIDE = (
     "time_links: in the messages the person reads in this chat (answers, questions, progress "
     "notes, summaries) write every date or time as a Markdown link whose target is time: and "
-    "the moment in ISO 8601 with its UTC offset, keeping your own words as the label, for "
-    "example [Monday 16 November at 09:00](time:2026-11-16T09:00+01:00) or "
-    "[16 November](time:2026-11-16). Telegram makes it tappable. Everywhere else (files, "
+    "the moment in ISO 8601 with its UTC offset, a T between date and time and no spaces, "
+    "keeping your own words as the label, for example "
+    "[Monday 16 November at 09:00](time:2026-11-16T09:00+01:00) or [16 November](time:2026-11-16). "
+    "Telegram makes it tappable. Everywhere else (files, "
     "emails, tool fields, records) write dates plainly.")
 _TABLE_PRE_MAX_WIDTH = 40  # padded monospace wider than a phone → stanza
 
@@ -296,10 +287,6 @@ def _inline_line(body: str) -> "tuple[str, list[Span]] | None":
         return body, []
     if _has_unescaped_image_marker(body):
         return None
-    spaced = _TIME_SPACE not in body and _TIME_TARGET_RE.search(body)
-    if spaced:
-        body = _TIME_TARGET_RE.sub(
-            lambda m: m.group(0).replace(" ", _TIME_SPACE), body)
     try:
         tokens = _MD.parseInline(body, {})
         children = tokens[0].children if tokens else None
@@ -317,18 +304,15 @@ def _inline_line(body: str) -> "tuple[str, list[Span]] | None":
     link_spans: list[tuple[int, int, str | None]] = []
     emph_spans: list[Span] = []
 
-    def content(c) -> str:
-        return c.content.replace(_TIME_SPACE, " ") if spaced else c.content
-
     for c in children:
         t = c.type
         if t == "text":
-            out.append(content(c))
-            n += len(out[-1])
+            out.append(c.content)
+            n += len(c.content)
         elif t == "code_inline":
             start = n
-            out.append(content(c))
-            n += len(out[-1])
+            out.append(c.content)
+            n += len(c.content)
             if not link_stack:  # inside a label: plain text, span suppressed
                 code_spans.append((start, n))
         elif t in ("em_open", "strong_open"):
@@ -353,7 +337,7 @@ def _inline_line(body: str) -> "tuple[str, list[Span]] | None":
                 return None
             href = str(c.attrs.get("href", ""))
             if href[:len(_TIME_KIND)].lower() == _TIME_KIND:
-                instant = time_instant(href.replace(_TIME_SPACE, " "))
+                instant = time_instant(href)
                 kind = None if instant is None else f"{_TIME_KIND}{instant}"
             elif href.lower().startswith(("http://", "https://")):
                 kind = _LINK_KIND + href

@@ -32,12 +32,13 @@ silently dropped. Anything ambiguous stays literal rather than rendering wrongly
 
 **A time link is the one other link target, and it never fails the line.** An agent writes
 every date or time in a message the person reads in the chat as
-`[its own words](time:<ISO 8601>)`, and dates plainly in files, emails, tool fields and records,
+`[its own words](time:<ISO 8601>)`, the moment with a `T` between date and time and no spaces, and dates plainly in files, emails, tool fields and records,
 a rule its Telegram prompt states; Casa never looks for times in free text. A moment that parses becomes a `date_time` entity
 over the label, sent without a display format, so the reader sees the agent's words and can
 tap them. A moment with no UTC offset, or a date alone (its midnight), is read in Casa's
-timezone. A target that does not parse, a phrase with spaces included, leaves the label as
-plain text and the rest of the line formatted as usual. Like code and a link, the entity is an
+timezone. A target that does not parse leaves the label as plain text and the rest of the
+line formatted as usual. A target with a space in it is not a markdown link at all, so it stays
+literal text, like any other unrecognised syntax. Like code and a link, the entity is an
 atom: bold splits around it, a table that holds one is never the monospace box (which carries
 no entity), and a page cut through it gives an entity on each page. The plain fallbacks show
 the label alone, since its words already say the time.
