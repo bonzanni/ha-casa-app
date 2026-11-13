@@ -5,7 +5,10 @@ The operator's summons reaches the specialist's real endpoint as an update;
 the endpoint answers the guest query with the placeholder, the ticker edits
 it while the agent works, and the agent's text — produced by the real
 ``Agent.handle_message`` over the real transport — is the final edit. A turn
-that ends silent declines instead.
+that ends silent declines instead. A friend's summons in a group the
+operator allowed takes the same path on a guest run of the real specialist;
+past the cap of runs at once it is answered with the busy line and runs
+nothing.
 
 Each summons is logged exactly once, by whoever learns its outcome:
 ``guest summons: role=… caller=… chat=… (title) outcome=… ms=…``. The
@@ -19,17 +22,23 @@ Bot 222 is the specialist's (``finance``, shown as "Judge"), the operator is
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
+import guest_run
 from guest_groups import THINKING_WORDS
 from output_boundary_testing import admitted
 from test_guest_intake import FRIEND, GROUP, OPERATOR, _guest
+from test_guest_options import LOOKUP, SEARCH
 from test_guest_reply import ASKED_ELSEWHERE, DECLINE, FAIL, WAITING, _Ticks
+from test_guest_run import _agent as _guest_agent
+from test_guest_run import client  # noqa: F401 — fixture
 from test_guest_summons import (  # noqa: F401 — fixtures
     _ask, _endpoint, _turn_that, _turns, broker, names, opening, summoned, world,
 )
+from two_endpoints import build_two_endpoints
 
 pytestmark = pytest.mark.asyncio
 
@@ -61,8 +70,12 @@ async def _summon(w):
 
 
 def _answers(text: str):
+    """A ``_process`` that answers *text*; ``handed`` keeps the token
+    callback each turn was given."""
     async def _proc(msg, on_token=None, turn_report=None, **kw):
+        _proc.handed.append(on_token)
         return text
+    _proc.handed = []
     return _proc
 
 
@@ -84,13 +97,17 @@ async def test_a_summons_is_answered_in_the_group(summoned, monkeypatch, caplog)
         await ticks.tick()
         assert [e["text"] for e in w.bot.edits] == [f"Judge · {THINKING_WORDS[1]}…"]
 
-        with patch.object(w.agent, "_process", _answers("The rate is 1.08.")):
+        answers = _answers("The rate is 1.08.")
+        with patch.object(w.agent, "_process", answers):
             await w.agent.handle_message(turn)
 
     assert [e["text"] for e in w.bot.edits] == [
         f"Judge · {THINKING_WORDS[1]}…", "The rate is 1.08."]
     assert {e["inline_message_id"] for e in w.bot.edits} == {"inl-1"}
-    assert w.bot.sent == []                            # nothing in the own chat
+    # the turn runs on the operator's own chat, where a reply would be
+    # drafted while written; a summoned turn is given no draft stream
+    assert answers.handed == [None]
+    assert w.bot.sent == [] and w.bot.drafts == []     # nothing in the own chat
     assert w.ch._guest_replies == {}
     assert _one(caplog)["outcome"] == "operator_answered"
 
@@ -193,3 +210,127 @@ async def test_a_summons_on_an_unbound_bot_is_dropped(world, caplog):
         await ch._on_guest_message(_guest(), None)
     assert bot.answers == []
     assert _one(caplog, level=logging.DEBUG)["outcome"] == "dropped"
+
+
+# ---------------------------------------------------------------------------
+# a friend's summons, run by the real specialist
+# ---------------------------------------------------------------------------
+#
+# Only Telegram (the recording bot) and the SDK client are doubles: the
+# summons goes through the real endpoint, the real agent runs its guest turn
+# on the locked-down options over the client double, and the text comes back
+# through the real transport's ``guest_finish``.
+
+@pytest.fixture
+def friends(tmp_path, world, names, client):
+    """The specialist (with a guest projection and two tools opened to
+    guests) behind its real endpoint and the real transport; the group
+    allowed for it."""
+    world.allowed = True
+    ch, bus, bot = _endpoint()
+    agent = _guest_agent(tmp_path)
+    agent._channel_manager.register(build_two_endpoints(finance=ch).transport)
+    return SimpleNamespace(ch=ch, bus=bus, bot=bot, agent=agent, client=client)
+
+
+async def _friend_summons(w, update_id=3):
+    """A friend's summons, through the handler; the turns now queued."""
+    await w.ch._on_guest_message(_guest(FRIEND, update_id=update_id), None)
+    return _turns(w.bus, "finance")
+
+
+def _outcome_line(caplog, outcome: str) -> dict:
+    [fields] = [f for _lvl, f in _summons_lines(caplog) if f["outcome"] == outcome]
+    return fields
+
+
+async def test_a_friends_summons_is_answered_in_the_group(friends, monkeypatch, caplog):
+    w = friends
+    w.client.response_text = "VAT is 21%."
+    ticks = _Ticks(monkeypatch)
+    with caplog.at_level(logging.INFO, logger="channels.telegram"):
+        [turn] = await _friend_summons(w)
+        assert turn.channel == guest_run.GUEST_CHANNEL
+        [answer] = w.bot.answers                      # the placeholder
+        assert answer["guest_query_id"] == "q1"
+        assert answer["result"].input_message_content.message_text == "Judge · thinking…"
+        assert _summons_lines(caplog) == []           # nothing to say until it ends
+
+        await ticks.tick()
+        assert [e["text"] for e in w.bot.edits] == [f"Judge · {THINKING_WORDS[1]}…"]
+
+        real_process = w.agent._process
+        handed: list = []
+
+        async def _watched(msg, on_token=None, **kw):
+            handed.append(on_token)
+            return await real_process(msg, on_token=on_token, **kw)
+        with patch.object(w.agent, "_process", _watched):
+            await w.agent.handle_message(turn)
+
+    # the turn was given no draft stream, and the real guest run produced
+    # the text on the locked-down options
+    assert handed == [None]
+    assert w.client.attempts == 1
+    opts = w.client.captured_options
+    assert opts.allowed_tools == [LOOKUP, SEARCH] and opts.mcp_servers == {}
+    assert "mentioned you in the group «Test Group»" in opts.system_prompt
+    [prompt] = w.client.prompts
+    assert prompt.endswith("@FinanceBot how much?")
+
+    assert [e["text"] for e in w.bot.edits] == [
+        f"Judge · {THINKING_WORDS[1]}…", "VAT is 21%."]
+    assert {e["inline_message_id"] for e in w.bot.edits} == {"inl-1"}
+    assert w.bot.sent == [] and w.bot.drafts == []    # nothing in any chat
+    assert w.ch._guest_replies == {}
+    fields = _one(caplog, caller=FRIEND)
+    assert fields["outcome"] == "guest_answered"
+
+
+async def test_a_friends_silent_run_declines_in_the_group(friends, caplog):
+    w = friends
+    w.client.response_text = ""
+    with caplog.at_level(logging.INFO, logger="channels.telegram"):
+        [turn] = await _friend_summons(w)
+        await w.agent.handle_message(turn)
+    assert w.client.attempts == 1                     # the run happened, and said nothing
+    assert [e["text"] for e in w.bot.edits] == [DECLINE]
+    assert w.bot.sent == []
+    assert w.ch._guest_replies == {}
+    assert _one(caplog, caller=FRIEND)["outcome"] == "guest_declined"
+
+
+async def test_a_friends_summons_past_the_cap_is_answered_busy(friends, monkeypatch, caplog):
+    """With as many guest runs live as the cap allows, the next summons is
+    answered with the busy line at once: no placeholder bound, no edit, no
+    turn, no run. Once the live runs end, a summons is run again."""
+    w = friends
+    _Ticks(monkeypatch)                               # the tickers wait, never tick
+    cap = guest_run.GUEST_RUNS_IN_FLIGHT
+    with caplog.at_level(logging.INFO, logger="channels.telegram"):
+        live = [turn for n in range(cap) for turn in await _friend_summons(w, 10 + n)]
+        assert len(live) == cap and len(w.ch._guest_replies) == cap
+
+        assert await _friend_summons(w, 20) == []     # no turn for the busy summons
+        texts = [a["result"].input_message_content.message_text for a in w.bot.answers]
+        assert texts == ["Judge · thinking…"] * cap + [guest_run.BUSY_LINE]
+        assert w.bot.edits == []
+        assert len(w.ch._guest_replies) == cap        # the busy reply is never bound
+        assert w.client.attempts == 0                 # nothing ran
+        busy = _outcome_line(caplog, "guest_busy")
+        assert [f["outcome"] for _l, f in _summons_lines(caplog)] == ["guest_busy"]
+
+        for turn in live:
+            await w.agent.handle_message(turn)
+        assert w.client.attempts == cap
+        assert w.ch._guest_replies == {}
+        assert [f["outcome"] for _l, f in _summons_lines(caplog)] == (
+            ["guest_busy"] + ["guest_answered"] * cap)
+
+        [again] = await _friend_summons(w, 30)        # a place is free again
+        await w.agent.handle_message(again)
+    assert w.bot.edits[-1]["text"] == "pong"
+
+    assert busy["role"] == "finance" and busy["caller"] == FRIEND
+    assert busy["chat"] == GROUP and busy["title"] == TITLE
+    assert isinstance(busy["ms"], int) and busy["ms"] >= 0

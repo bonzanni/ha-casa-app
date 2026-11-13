@@ -45,6 +45,7 @@ class _Bot:
         self.answers: list[dict] = []
         self.edits: list[dict] = []
         self.sent: list[dict] = []
+        self.drafts: list[dict] = []
         self.script = list(edits)
         self.answer_error: Exception | None = None
         self._n = 0
@@ -67,6 +68,10 @@ class _Bot:
     async def send_message(self, **kw):
         self.sent.append(kw)
         return NS(message_id=len(self.sent))
+
+    async def send_message_draft(self, **kw):
+        self.drafts.append(kw)
+        return True
 
 
 class _SlowBot(_Bot):
