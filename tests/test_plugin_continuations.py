@@ -1424,6 +1424,9 @@ async def test_the_narration_in_the_cards_chat_replies_to_the_card(monkeypatch):
     reply = _channel(FIDO_BOT)._reply_parameters(turn.context, 42)
     assert reply.message_id == _card().message_id
     assert reply.allow_sending_without_reply is True
+    # the card in the same bot's chat but another chat is no reply target either
+    other = await _narration_notice(monkeypatch, {**origin, "chat_id": 43})
+    assert "_reply_to" not in other.context
 
 
 @pytest.mark.asyncio
@@ -1434,7 +1437,10 @@ async def test_a_narration_by_another_agent_in_its_own_chat_is_plain(monkeypatch
     origin = {"role": "assistant", "channel": "telegram", "chat_id": 42, "cid": "cont-2",
               "_tg_bot": BOT, "user_text": "", "_reply_to": _card().to_json()}
     notice = await _narration_notice(monkeypatch, origin)
+    assert "_reply_to" not in notice.context
     turn = agent_mod.Agent._synthesize_delegation_turn(Mock(), notice)
+    # never told its answer is a reply, since it cannot be one
+    assert agent_mod.REPLY_OPENING_NOTE not in turn.content
     assert _channel(BOT)._reply_parameters(turn.context, 42) is None
 
 

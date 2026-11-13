@@ -98,10 +98,13 @@ binding's card (`run_admission.Confirmations.card_for_binding`) when it queues t
 and keeps it on the `Pending`: the same sweep pass may mark the request ended and forget its
 card (`_settle_ended`) before the turn starts. The record's origin then carries the card as
 its `_reply_to`, and `tools._settle_then_announce` puts that, and only that, into the
-requester's notice (`_record_reply_to`; the asker's own message, `_tg_request`, never stands
-in for it). The narration turn is told to open with "Done." (`agent.REPLY_OPENING_NOTE`), and
-the send seam replies to the card only through the bot that posted it, in its chat
-(`TelegramChannel._reply_parameters`, with `allow_sending_without_reply`). So when the
+requester's notice (`_record_reply_to`) only when the card is a message of the bot the
+narration goes out through, in its chat (the origin's `_tg_bot` and `chat_id`); the asker's own
+message, `_tg_request`, never stands in for it. Only such a narration is told to open with
+"Done." (`agent.REPLY_OPENING_NOTE`), and the send seam replies to the card through that bot
+(`TelegramChannel._reply_parameters`, with `allow_sending_without_reply`). The card is the
+binding's newest admitted one, so with two admitted requests of one binding in flight the first
+result may reply to the second card. So when the
 specialist was asked in its own chat, its narration there is a reply to the card; when another
 agent asked, that agent's narration in its own chat is plain. A continuation's own closing
 message is still never posted in its executor's chat: it reaches the operator only through

@@ -5702,7 +5702,8 @@ async def _settle_then_announce(
             # the reply goes back through the bot the delegation came from
             **carry_route(record.origin),
             # ... as a reply to the card the work was approved on, when its
-            # record names one (a continuation's; never the asker's message)
+            # record names one in this bot's chat (a continuation's; never the
+            # asker's message)
             **_record_reply_to(record.origin),
         },
         on_delivery=_ack,
@@ -5711,12 +5712,18 @@ async def _settle_then_announce(
 
 def _record_reply_to(origin: dict) -> dict:
     """``{"_reply_to": address}`` when *origin* holds a stored Telegram address
-    under ``_reply_to``, else ``{}``. Unlike :func:`reply_target`, the person's
-    own message (``_tg_request``) is never taken in its place."""
+    under ``_reply_to`` that the narration can reply to: a message of the bot
+    the narration goes out through (the origin's ``_tg_bot``), in its chat.
+    Else ``{}``, so a narration told it answers as a reply always does. Unlike
+    :func:`reply_target`, the person's own message (``_tg_request``) is never
+    taken in its place."""
     value = origin.get("_reply_to")
     try:
-        TgAddress.from_json(value)
-    except AddressError:
+        target = TgAddress.from_json(value)
+        bot, chat = int(origin.get("_tg_bot")), int(origin.get("chat_id"))
+    except (AddressError, TypeError, ValueError):
+        return {}
+    if target.bot_id != bot or target.chat_id != chat:
         return {}
     return {"_reply_to": value}
 
