@@ -22,6 +22,7 @@ import pytest
 
 import channels.telegram as tg
 from channels.telegram import TelegramChannel
+from output_boundary_testing import admitted
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
@@ -222,13 +223,14 @@ async def test_breaker_trip_mid_lease_cleans_both_maps(monkeypatch):
 async def test_teardown_releases_lease_even_when_app_gone():
     # (c) a turn ends during a reconnect window (`_app is None`). The lease is
     # STILL released — release precedes the availability guard in the outbound
-    # teardown paths (finalize_stream + first-token callback both covered).
+    # teardown paths (the final reply's send + first-token callback both
+    # covered).
     ch = _channel()  # block mode
     _install_bot(ch)
     ch._start_typing("1", "cidA")
     ch._app = None  # reconnect window at teardown
 
-    await ch.finalize_stream("hi", {"chat_id": "1", "cid": "cidA"}, on_token=None)
+    await ch.send_response(admitted("hi"), {"chat_id": "1", "cid": "cidA"})
     await asyncio.sleep(0)
     assert "1" not in ch._typing_leases
     assert "1" not in ch._typing_loops
@@ -251,6 +253,8 @@ async def test_first_token_releases_lease_even_when_app_gone():
     await asyncio.sleep(0)  # let any loop cancellation propagate
     assert "1" not in ch._typing_leases
     assert "1" not in ch._typing_loops
+    on_token.end()  # the turn is over: no stream, and no task of it, stays
+    assert ch._streams == {}
 
 
 async def test_start_typing_noop_when_suspended():

@@ -95,6 +95,14 @@ class ManagedSdkClient:
         self.lock = asyncio.Lock()
         self.state = "new"
         self.sid: str | None = None
+        # True from the moment interrupt_turn() asks the CLI to stop the turn
+        # in flight: the error result an interrupted turn ends with is then
+        # the expected ending, not a fault. Cleared when the next turn starts.
+        self.stopped = False
+        # True once the turn in flight has received its result: from then on
+        # a stop is too late, and the result means what it says. Cleared when
+        # the next turn starts.
+        self.result_received = False
         self.created_at = monotonic()
         self.last_used = monotonic()
         self._client: Any = None
@@ -206,7 +214,8 @@ class ManagedSdkClient:
         visibility — spec Q7), queries, iterates receive_response()
         forwarding every message to ``on_message``, captures the sid,
         and enforces the AR-5 error-result and AR-1 cancellation
-        contracts."""
+        contracts. A turn ended by ``interrupt_turn()`` returns its sid and
+        leaves the client warm."""
         from claude_agent_sdk import AssistantMessage, ResultMessage, SystemMessage
 
         from error_kinds import (
@@ -215,6 +224,8 @@ class ManagedSdkClient:
 
         assert self.state == "warm", f"run_turn on state={self.state}"
         self.state = "in_turn"
+        self.stopped = False
+        self.result_received = False
         self.origin_holder.clear()
         self.origin_holder.update(origin)
         self.cid_box.value = cid or "-"
@@ -245,6 +256,7 @@ class ManagedSdkClient:
                         api_error = api_error_kind(sdk_msg)
                 elif isinstance(sdk_msg, ResultMessage):
                     result_msg = sdk_msg
+                    self.result_received = True
                     s = getattr(sdk_msg, "session_id", None)
                     if s:
                         self.sid = s
@@ -272,6 +284,11 @@ class ManagedSdkClient:
             raise ApiErrorTurn(api_error)
         # AR-5: never leave an error-result entry warm; raise retryables.
         if result_msg is not None and getattr(result_msg, "is_error", False):
+            if self.stopped:
+                # The CLI ends an interrupted turn with an error result, and
+                # the same client answers the next query: nothing to discard.
+                self.state = "warm"
+                return self.sid
             await self._invalidate()
             text = str(getattr(result_msg, "result", "") or "")
             from error_kinds import _classify_error
@@ -282,6 +299,28 @@ class ManagedSdkClient:
             return self.sid
         self.state = "warm"
         return self.sid
+
+    async def interrupt_turn(self) -> bool:
+        """Ask the CLI to stop the turn in flight; True when it was asked.
+
+        The turn is not cancelled: its stream ends on its own with the text
+        so far and an error result, which ``run_turn_locked`` then treats as
+        a stop rather than a fault. Called from outside the turn, so without
+        ``self.lock`` (the turn holds it). An entry with no turn in flight
+        refuses, and so does one whose turn has already received its result:
+        that result is the turn's own ending, whatever it says. If the
+        interrupt cannot be delivered the mark is withdrawn and the turn goes
+        on as if nothing had been asked."""
+        if self.state != "in_turn" or self.result_received:
+            return False
+        self.stopped = True
+        try:
+            await asyncio.wait_for(self._client.interrupt(), timeout=2.0)
+        except Exception as exc:  # noqa: BLE001 — the turn simply continues
+            self.stopped = False
+            logger.warning("pool client interrupt failed: %r", exc)
+            return False
+        return True
 
     async def _cleanup_after_cancel(self) -> None:
         """AR-1/AR-10: interrupt (≤2 s) then drain the aborted turn's
@@ -416,6 +455,10 @@ class PoolTurnResult(NamedTuple):
     sid: str | None
     resume_sid: str | None
     is_fresh: bool
+    #: a stop was requested before the turn's result arrived
+    #: (``interrupt_turns``); the text may still be complete, as the model can
+    #: finish while the request is on its way
+    stopped: bool = False
 
 
 class DrainOwner(NamedTuple):
@@ -687,7 +730,8 @@ class SdkClientPool:
                 if entry.state != "warm":             # AR-5 non-retryable path
                     await self._drop(channel_key, entry)
                 result = PoolTurnResult(sid=sid, resume_sid=resume_sid,
-                                        is_fresh=is_fresh)
+                                        is_fresh=is_fresh,
+                                        stopped=entry.stopped)
             if result is not None:
                 await self._enforce_caps(channel_key)  # outside entry.lock
                 return result
@@ -1166,3 +1210,31 @@ class SdkClientPool:
             self._sweeper = asyncio.create_task(
                 self._run_sweeper(), name="sdk-pool-sweeper",
             )
+
+
+async def interrupt_turns(cid: str) -> int:
+    """Interrupt every pooled turn running under ``cid``, in any agent's pool;
+    return how many were asked to stop.
+
+    A turn is matched by the correlation id it was started with. An empty id,
+    or the ``"-"`` placeholder a turn without one runs under, matches nothing.
+    Only pooled clients are looked at: a run that builds its own SDK client
+    is not reachable from here.
+
+    A pool's clients are the ones in its map and the ones it is draining: an
+    invalidation, like the pool's own close, takes an entry out of the map at
+    once and then waits for the turn it is running, and that turn is stopped
+    like any other."""
+    if not cid or cid == "-":
+        return 0
+    # Keyed by entry, so one that is found in both places is asked once.
+    running: dict[ManagedSdkClient, None] = {}
+    for pool in SdkClientPool._instances:
+        for entry in (*pool._entries.values(), *pool._draining):
+            if entry.state == "in_turn" and entry.cid_box.value == cid:
+                running[entry] = None
+    asked = 0
+    for entry in running:
+        if await entry.interrupt_turn():
+            asked += 1
+    return asked

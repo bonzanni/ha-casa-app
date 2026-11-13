@@ -71,6 +71,8 @@
   doc: architecture/telegram.md
 - item: casa/rootfs/opt/casa/channels/guest_reply.py
   doc: architecture/guest-summons.md
+- item: casa/rootfs/opt/casa/channels/telegram_draft.py
+  doc: architecture/telegram-reply-drafts.md
 - item: casa/rootfs/opt/casa/channels/telegram_transport.py
   doc: architecture/telegram-bots.md
 - item: casa/rootfs/opt/casa/channels/tg_address.py

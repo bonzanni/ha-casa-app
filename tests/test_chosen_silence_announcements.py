@@ -145,9 +145,6 @@ class _TelegramStub:
     def __init__(self, send_outcome=DeliveryOutcome.DELIVERED) -> None:
         self.send = AsyncMock(return_value=send_outcome)
         self.send_response = AsyncMock(return_value=DeliveryOutcome.DELIVERED)
-        self.finalize_stream = AsyncMock(return_value=DeliveryOutcome.DELIVERED)
-        self.finalize_response_stream = AsyncMock(
-            return_value=DeliveryOutcome.DELIVERED)
         self.turn_finished = AsyncMock()
 
     def create_on_token(self, _context):
@@ -156,9 +153,7 @@ class _TelegramStub:
         return _on_token
 
     def final_sends(self) -> int:
-        return (self.send_response.await_count
-                + self.finalize_stream.await_count
-                + self.finalize_response_stream.await_count)
+        return self.send_response.await_count
 
 
 def _make_agent(tmp_path) -> Agent:

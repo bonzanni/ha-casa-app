@@ -42,7 +42,7 @@ async def test_the_final_reply_of_a_file_turn_reaches_the_channel_admitted_and_a
     agent._channel_manager.register(stub)
     with patch.object(agent, "_process", AsyncMock(side_effect=_arming_process("It's €412"))):
         await agent.handle_message(_request_msg("what's the total?"))
-    delivered = stub.finalize_response_stream.await_args.args[0]
+    delivered = stub.send_response.await_args.args[0]
     assert isinstance(delivered, Admitted)
     assert delivered == ANSWERED + "\n\nIt's €412"
     assert delivered.annotations == (ANSWERED,)
@@ -54,7 +54,7 @@ async def test_a_turn_owing_nothing_delivers_the_text_unchanged_but_admitted(tmp
     agent._channel_manager.register(stub)
     with patch.object(agent, "_process", AsyncMock(return_value="pong")):
         await agent.handle_message(_request_msg())
-    delivered = stub.finalize_response_stream.await_args.args[0]
+    delivered = stub.send_response.await_args.args[0]
     assert isinstance(delivered, Admitted)
     assert delivered == "pong"
     assert delivered.annotations == ()
@@ -72,7 +72,7 @@ async def test_a_classified_error_reply_is_casa_text_never_annotated(tmp_path):
 
     with patch.object(agent, "_process", AsyncMock(side_effect=_boom)):
         await agent.handle_message(_request_msg())
-    delivered = stub.finalize_stream.await_args.args[0]
+    delivered = stub.send.await_args.args[0]
     assert isinstance(delivered, Admitted)
     assert delivered.source == "casa"
     assert delivered.annotations == ()
@@ -90,7 +90,7 @@ async def test_the_health_notice_is_prepended_outside_the_disclosure(tmp_path):
     with patch.object(agent, "_process", AsyncMock(side_effect=_arming_process("It's €412"))), \
             patch.object(agent, "_maybe_prepend_health_notice", _notice):
         await agent.handle_message(_request_msg())
-    delivered = stub.finalize_response_stream.await_args.args[0]
+    delivered = stub.send_response.await_args.args[0]
     assert delivered == "NOTICE\n\n" + ANSWERED + "\n\nIt's €412"
     assert isinstance(delivered, Admitted)
     assert delivered.annotations == (ANSWERED,)
@@ -103,7 +103,6 @@ async def test_a_silent_file_turn_stays_silent(tmp_path):
     agent._channel_manager.register(stub)
     with patch.object(agent, "_process", AsyncMock(side_effect=_arming_process("<silent/>"))):
         await agent.handle_message(_request_msg())
-    assert stub.finalize_response_stream.await_count == 0
     assert stub.send_response.await_count == 0
     assert stub.turn_finished.await_count == 1
 

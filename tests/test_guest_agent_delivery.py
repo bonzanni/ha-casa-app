@@ -80,8 +80,7 @@ def _notice(monkeypatch, text="PLUGIN-DEGRADED x"):
 async def test_text_reaches_the_group_through_the_transport(tmp_path, monkeypatch):
     bot = _Bot()
     agent, ep, reply = await _summoned(tmp_path, bot)
-    spies = {m: AsyncMock(name=m) for m in ("send_response", "finalize_stream",
-                                            "finalize_response_stream")}
+    spies = {m: AsyncMock(name=m) for m in ("send_response",)}
     for m, spy in spies.items():
         monkeypatch.setattr(ep, m, spy)
     with patch.object(agent, "_process", AsyncMock(return_value="The rate is **1.08**.")):

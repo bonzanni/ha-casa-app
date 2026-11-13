@@ -1,8 +1,8 @@
 """#831 red case — a rejected multi-page rich page must still deliver its link
 destinations.
 
-Both multi-page rich senders hand `render_paged`'s marker-free DISPLAY to
-their plain fallback, so when Telegram rejects a page's entities the retry
+The multi-page rich sender handed `render_paged`'s marker-free DISPLAY to
+its plain fallback, so when Telegram rejects a page's entities the retry
 carries the label alone and a `TEXT_LINK`'s destination reaches nobody, while
 the turn still reports DELIVERED. These pin the destination's presence in what
 was ACTUALLY sent to the Bot API — counts and payloads, never statuses.
@@ -98,40 +98,6 @@ async def test_send_response_multipage_entity_fallback_keeps_link_target():
     )
 
 
-async def test_finalize_response_stream_multipage_entity_fallback_keeps_link_target():
-    _assert_pagination_premise()
-    ch, bot = _mk_channel_with_fake_bot()
-    attempts = _record_attempts(bot)
-    ch._delivery_mode = "stream"
-    on_token = ch.create_on_token({"chat_id": "42"})
-    await on_token("partial")  # establishes message_id 12345
-    attempts.clear()
-
-    await ch.finalize_response_stream(admitted(AUTHORED), {"chat_id": "42"}, on_token)
-
-    assert (
-        len(attempts),
-        sum(text.count(URL) for _, text, _ in attempts),
-        sum(text.count(LABEL) for _, text, _ in attempts),
-        [(name, urls) for name, _, urls in attempts],
-        attempts[0][1],
-        URL in attempts[1][1],
-        attempts[2][1],
-    ) == (
-        3,
-        1,
-        2,
-        [
-            ("edit_message_text", [URL]),
-            ("edit_message_text", []),
-            ("send_message", []),
-        ],
-        LABEL,
-        True,
-        TAIL,
-    )
-
-
 CONVERSION_FAILURE_AUTHORED = f"\ud800[{LABEL}]({URL})\n\n{TAIL}"
 
 
@@ -158,13 +124,9 @@ def _record_without_rejecting(bot):
 def _observe_fallback(ch):
     """Record URL counts entering and leaving every #831 fallback call.
 
-    A zero call count is NOT assertable — both stream finalizers compute
-    `chunks0` unconditionally for a multi-page plan (`telegram.py:4636-4638`,
-    `:5117-5119`), whatever the renderer returned. What the acceptor's
-    objection actually protects is that the #831 fallback must not be what
-    delivers the destination, and `(urls in, urls out, entities)` says exactly
-    that: a fallback-created url reads `(0, 1, 0)`, a renderer-created one
-    `(1, 1, 0)`.
+    The #831 fallback must not be what delivers the destination, and
+    `(urls in, urls out, entities)` says exactly that: a fallback-created url
+    reads `(0, 1, 0)`, a renderer-created one `(1, 1, 0)`.
     """
     calls: list[tuple[int, int, int]] = []
     inner = ch._plain_fallback_chunks
@@ -196,7 +158,7 @@ def _summarise(attempts, fallback_calls):
     )
 
 
-async def test_both_senders_deliver_the_target_when_conversion_fails():
+async def test_send_response_delivers_the_target_when_conversion_fails():
     from channels.tg_richtext import parse_markdown
 
     first = f"\ufffd{LABEL} ({URL})"
@@ -218,37 +180,14 @@ async def test_both_senders_deliver_the_target_when_conversion_fails():
             f"\ud800{LABEL}", [entity]
         )
 
-    summaries: dict[str, tuple] = {}
-
     ch, bot = _mk_channel_with_fake_bot()
     attempts = _record_without_rejecting(bot)
     fallbacks = _observe_fallback(ch)
     await ch.send_response(admitted(CONVERSION_FAILURE_AUTHORED), {"chat_id": "42"})
-    summaries["send_response"] = _summarise(attempts, fallbacks)
 
-    ch, bot = _mk_channel_with_fake_bot()
-    attempts = _record_without_rejecting(bot)
-    fallbacks = _observe_fallback(ch)
-    ch._delivery_mode = "stream"
-    on_token = ch.create_on_token({"chat_id": "42"})
-    await on_token("partial")  # establishes message_id 12345
-    attempts.clear()
-    await ch.finalize_response_stream(
-        admitted(CONVERSION_FAILURE_AUTHORED), {"chat_id": "42"}, on_token
+    assert _summarise(attempts, fallbacks) == (
+        2, 1, 1, 0, 0, 1,
+        ["send_message", "send_message"],
+        [first, TAIL],
+        [],
     )
-    summaries["finalize_response_stream"] = _summarise(attempts, fallbacks)
-
-    assert summaries == {
-        "send_response": (
-            2, 1, 1, 0, 0, 1,
-            ["send_message", "send_message"],
-            [first, TAIL],
-            [],
-        ),
-        "finalize_response_stream": (
-            2, 1, 1, 0, 0, 1,
-            ["edit_message_text", "send_message"],
-            [first, TAIL],
-            [(1, 1, 0)],
-        ),
-    }

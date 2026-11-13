@@ -42,16 +42,18 @@
     - casa/rootfs/opt/casa/sdk_client_pool.py::ManagedSdkClient
     - casa/rootfs/opt/casa/sdk_client_pool.py::PoolUnavailable
     - casa/rootfs/opt/casa/sdk_client_pool.py::PoolClosing
+    - casa/rootfs/opt/casa/sdk_client_pool.py::interrupt_turns
   tests:
     - tests/test_sdk_client_pool_pool.py
     - tests/test_sdk_client_pool_client.py
+    - tests/test_sdk_pool_stop.py
     - tests/test_pool_close_final_sweep.py
     - tests/test_shutdown_pool_and_refusal.py
   related: [architecture/turn-loop.md, architecture/concurrency-model.md, architecture/overview.md]
   defines_invariants: [INV-TURN-001, INV-TURN-002, INV-TURN-003, INV-TURN-006, INV-TURN-010, INV-TURN-011]
   invariant_tests:
     INV-TURN-001: [tests/test_sdk_client_pool_pool.py::test_sid_mismatch_reconnects_on_registry_sid]
-    INV-TURN-002: [tests/test_sdk_client_pool_client.py::test_error_result_nonretryable_returns_but_invalidates]
+    INV-TURN-002: [tests/test_sdk_client_pool_client.py::test_error_result_nonretryable_returns_but_invalidates, tests/test_sdk_pool_stop.py::test_error_result_without_stop_still_invalidates, tests/test_sdk_pool_stop.py::test_stopped_turn_returns_sid_and_stays_warm]
     INV-TURN-003: [tests/test_sdk_client_pool_client.py::test_cancel_interrupts_drains_and_stays_warm]
     INV-TURN-006: [tests/test_sdk_client_pool_pool.py::test_close_key_joins_inflight_invalidation_flush]
     INV-TURN-010: [tests/test_sdk_client_pool_pool.py::test_pool_close_force_disconnects_invalidated_generation_without_waiting_for_turn_lock]

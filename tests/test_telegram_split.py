@@ -231,3 +231,26 @@ class TestInheritOrAllocateCid:
         import re
         assert re.match(r"^[0-9a-f]{8}$", cid), cid
         assert cid != "-"
+
+    async def test_allocates_cid_when_var_holds_no_string(self, telegram_channel):
+        # Inside an SDK tool handler the variable holds the pooled client's
+        # cid box — an object the pool rewrites for every turn, not a cid.
+        import re
+
+        from log_cid import cid_var
+        from sdk_client_pool import _CidBox
+
+        box = _CidBox()
+        box.value = "0badcafe"
+        token = cid_var.set(box)
+        try:
+            await _invoke_handle(telegram_channel, text="hello")
+        finally:
+            cid_var.reset(token)
+
+        msgs = await _drain(telegram_channel)
+        assert msgs, "expected at least one bus message"
+        cid = msgs[-1].context["cid"]
+        assert type(cid) is str, cid
+        assert re.match(r"^[0-9a-f]{8}$", cid), cid
+        assert cid != "0badcafe"

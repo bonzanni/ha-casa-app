@@ -26,8 +26,7 @@ from two_endpoints import (
 )
 
 
-_REPLY_METHODS = {"send", "send_response", "finalize_response_stream",
-                  "finalize_stream"}
+_REPLY_METHODS = {"send", "send_response"}
 
 
 def _replies(ep) -> list[tuple[str, tuple]]:
@@ -237,8 +236,9 @@ async def test_streaming_on_an_unready_casa_endpoint_reports_not_delivered(
     on_token = te.casa.last_on_token
     assert callable(on_token)
     await on_token("more")  # raises nothing
-    finals = [c for c in calls(te.casa) if c[0] == "finalize_response_stream"]
-    assert len(finals) == 1 and finals[0][1][0] == "All clear."
+    finals = _replies(te.casa)
+    assert [c[0] for c in finals] == ["send_response"]
+    assert finals[0][1][0] == "All clear."
     # the endpoint reported it not delivered; nothing acknowledged the turn
     assert msg.on_delivery.await_count == 0
     assert calls(te.finance) == []
@@ -257,8 +257,7 @@ async def test_a_silent_turn_on_an_unready_casa_endpoint_tears_down(tmp_path):
 @pytest.mark.asyncio
 async def test_the_unready_endpoints_not_delivered_is_passed_through():
     te = _unready_casa()
-    out = await te.transport.finalize_response_stream(
-        "x", {"_tg_bot": CASA}, te.casa.create_on_token({}))
+    out = await te.transport.send_response("x", {"_tg_bot": CASA})
     assert out is DeliveryOutcome.NOT_DELIVERED
 
 

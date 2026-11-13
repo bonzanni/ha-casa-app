@@ -413,12 +413,6 @@ class TelegramTransport(Channel):
         ep = self.endpoint_for_route(context, site="send_response")
         return await ep.send_response(message, context)
 
-    async def finalize_response_stream(
-        self, full_text: str, context: dict[str, Any], on_token: Any,
-    ) -> DeliveryOutcome:
-        ep = self.endpoint_for_route(context, site="finalize_response_stream")
-        return await ep.finalize_response_stream(full_text, context, on_token)
-
     async def turn_finished(self, context: dict[str, Any]) -> None:
         ep = self.endpoint_for_route(context, site="turn_finished")
         return await ep.turn_finished(context)
@@ -434,12 +428,6 @@ class TelegramTransport(Channel):
     def create_on_token(self, context: dict[str, Any]) -> Any:
         ep = self.endpoint_for_route(context, site="create_on_token")
         return ep.create_on_token(context)
-
-    async def finalize_stream(
-        self, full_text: str, context: dict[str, Any], on_token: Any,
-    ) -> DeliveryOutcome:
-        ep = self.endpoint_for_route(context, site="finalize_stream")
-        return await ep.finalize_stream(full_text, context, on_token)
 
     # ------------------------------------------------------------------
     # Job records: a new post goes through the job's delivery, an edit

@@ -60,11 +60,8 @@ ROUTE_BOUND = {
     "send": lambda t, ctx: t.send("hi", ctx),
     "send_media": lambda t, ctx: t.send_media(b"x", "document", "f.txt", ctx),
     "send_response": lambda t, ctx: t.send_response("hi", ctx),
-    "finalize_response_stream":
-        lambda t, ctx: t.finalize_response_stream("hi", ctx, None),
     "turn_finished": lambda t, ctx: t.turn_finished(ctx),
     "create_on_token": lambda t, ctx: t.create_on_token(ctx),
-    "finalize_stream": lambda t, ctx: t.finalize_stream("hi", ctx, None),
 }
 
 
@@ -174,8 +171,7 @@ class _SpyEndpoint(FakeEndpoint):
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
         self.sentinel = {name: object() for name in (
-            "send", "send_response", "finalize_response_stream",
-            "finalize_stream", "turn_finished")}
+            "send", "send_response", "turn_finished")}
 
     async def send(self, message, context):
         await super().send(message, context)
@@ -184,14 +180,6 @@ class _SpyEndpoint(FakeEndpoint):
     async def send_response(self, message, context):
         await super().send_response(message, context)
         return self.sentinel["send_response"]
-
-    async def finalize_response_stream(self, full_text, context, on_token):
-        await super().finalize_response_stream(full_text, context, on_token)
-        return self.sentinel["finalize_response_stream"]
-
-    async def finalize_stream(self, full_text, context, on_token):
-        await super().finalize_stream(full_text, context, on_token)
-        return self.sentinel["finalize_stream"]
 
     async def turn_finished(self, context):
         await super().turn_finished(context)
@@ -228,8 +216,7 @@ async def test_unready_endpoint_results_pass_through_unchanged(route):
 
 
 @pytest.mark.parametrize("method", [
-    "send", "send_response", "finalize_response_stream", "finalize_stream",
-    "turn_finished"])
+    "send", "send_response", "turn_finished"])
 async def test_unready_endpoint_return_value_is_the_transports(method):
     casa = FakeEndpoint("assistant", bot_id=111, is_casa=True)
     spy = _SpyEndpoint("finance", bot_id=222, ready=False)

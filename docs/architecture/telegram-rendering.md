@@ -106,7 +106,7 @@ once more without them. Which spans are bold, and that only Casa chooses them, i
 
 **Both rendering paths measure length in the unit Telegram counts.** The platform's limits
 are counted in UTF-16 code units — an astral character (most emoji) counts as two. The rich
-paginator, the plain splitter and streaming edits, and the authorization-challenge size gate
+paginator, the plain splitter, a reply's draft, and the authorization-challenge size gate
 all resolve to one shared measurement helper, so the paths cannot drift apart again. The
 plain splitter prefers newline boundaries, consumes exactly the one newline it splits at
 (blank-line separation survives into the next chunk), and drops a whitespace-only chunk
@@ -119,7 +119,7 @@ rather than sending a message the platform would reject.
 Enforced in the rich renderer's pagination, which measures in UTF-16 units as the platform
 does.
 
-What it does not cover: the plain streaming and splitting path. That path now measures the
+What it does not cover: the plain splitting path. That path now measures the
 same UTF-16 units through the shared helper, but it splits plain text only — it carries no
 entities and makes no entity-budget promise.
 

@@ -310,8 +310,6 @@ class _StubTelegramChannel:
     def __init__(self) -> None:
         self.send = AsyncMock()
         self.send_response = AsyncMock()
-        self.finalize_stream = AsyncMock()
-        self.finalize_response_stream = AsyncMock()
         self.turn_finished = AsyncMock()
 
     def create_on_token(self, _context):
@@ -322,7 +320,7 @@ class _StubTelegramChannel:
 
 class TestSilentTurnTeardown:
     """L7 (v0.52.0): a turn that strips to empty / `<silent/>` never calls
-    send()/finalize_stream(), so handle_message must call the channel's
+    send()/send_response(), so handle_message must call the channel's
     turn_finished() teardown hook (which stops the Telegram typing loop)."""
 
     async def test_silent_turn_calls_turn_finished(self, tmp_path):
@@ -332,7 +330,6 @@ class TestSilentTurnTeardown:
         with patch.object(agent, "_process", AsyncMock(return_value="<silent/>")):
             await agent.handle_message(_msg("telegram", "123", "hi"))
         assert stub.send.call_count == 0
-        assert stub.finalize_stream.call_count == 0
         assert stub.turn_finished.call_count == 1
 
     async def test_delivered_turn_does_not_call_turn_finished(self, tmp_path):
@@ -341,27 +338,28 @@ class TestSilentTurnTeardown:
         agent._channel_manager.register(stub)
         with patch.object(agent, "_process", AsyncMock(return_value="real reply")):
             await agent.handle_message(_msg("telegram", "123", "hi"))
-        # v0.70.0: a successful streamed turn (error_kind is None) routes through
-        # the response-provenant finalizer, NOT the plain one.
-        assert stub.finalize_response_stream.call_count == 1
-        assert stub.finalize_stream.call_count == 0
+        # A successful streamed turn (error_kind is None) ends through the
+        # rich-text send, NOT the plain one.
+        assert stub.send_response.call_count == 1
+        assert stub.send.call_count == 0
         assert stub.turn_finished.call_count == 0
 
 
 class TestResponseProvenanceRouting:
     """v0.70.0: rich-text renders only genuine agent responses; error/system
-    text stays on the plain finalizer."""
+    text stays on the plain send. A streamed turn ends through the same two
+    sends as any other, never through an edit."""
 
-    async def test_success_streamed_turn_uses_response_finalizer(self, tmp_path):
+    async def test_success_streamed_turn_uses_response_send(self, tmp_path):
         agent = _make_agent(tmp_path, role="assistant")
         stub = _StubTelegramChannel()
         agent._channel_manager.register(stub)
         with patch.object(agent, "_process", AsyncMock(return_value="ok reply")):
             await agent.handle_message(_msg("telegram", "123", "hi"))
-        assert stub.finalize_response_stream.call_count == 1
-        assert stub.finalize_stream.call_count == 0
+        assert stub.send_response.call_count == 1
+        assert stub.send.call_count == 0
 
-    async def test_error_turn_uses_plain_finalizer(self, tmp_path):
+    async def test_error_turn_uses_plain_send(self, tmp_path):
         agent = _make_agent(tmp_path, role="assistant")
         stub = _StubTelegramChannel()
         agent._channel_manager.register(stub)
@@ -370,8 +368,8 @@ class TestResponseProvenanceRouting:
         ):
             await agent.handle_message(_msg("telegram", "123", "hi"))
         # error text (error_kind set) must NOT be rich-rendered
-        assert stub.finalize_stream.call_count == 1
-        assert stub.finalize_response_stream.call_count == 0
+        assert stub.send.call_count == 1
+        assert stub.send_response.call_count == 0
 
 
 class TestHealthNoticeDeliveryConfirmation:
@@ -397,7 +395,7 @@ class TestHealthNoticeDeliveryConfirmation:
         agent, stub = self._agent_with_notice(
             tmp_path, monkeypatch, "PLUGIN-DEGRADED x",
         )
-        stub.finalize_response_stream.side_effect = RuntimeError("channel down")
+        stub.send_response.side_effect = RuntimeError("channel down")
 
         with patch.object(agent, "_process", AsyncMock(return_value="hello")):
             with pytest.raises(RuntimeError):
@@ -405,11 +403,11 @@ class TestHealthNoticeDeliveryConfirmation:
 
         # Channel recovers: the SAME notice is delivered on the next turn,
         # with no cooldown wait — the raise proved it was never shown.
-        stub.finalize_response_stream.side_effect = None
+        stub.send_response.side_effect = None
         with patch.object(agent, "_process", AsyncMock(return_value="again")):
             await agent.handle_message(_msg("telegram", "123", "hi"))
 
-        delivered = stub.finalize_response_stream.call_args[0][0]
+        delivered = stub.send_response.call_args[0][0]
         assert delivered.startswith("PLUGIN-DEGRADED")
         assert delivered.endswith("again")
 
@@ -428,22 +426,22 @@ class TestHealthNoticeDeliveryConfirmation:
         agent, stub = self._agent_with_notice(
             tmp_path, monkeypatch, "PLUGIN-DEGRADED x",
         )
-        stub.finalize_response_stream.return_value = (
+        stub.send_response.return_value = (
             DeliveryOutcome.NOT_DELIVERED)
 
         with patch.object(agent, "_process", AsyncMock(return_value="hello")):
             await agent.handle_message(_msg("telegram", "123", "hi"))
-        assert stub.finalize_response_stream.call_args[0][0].startswith(
+        assert stub.send_response.call_args[0][0].startswith(
             "PLUGIN-DEGRADED",
         )
 
         # Channel recovers. The notice must be offered again AT ONCE — not
         # after the one-hour cooldown — because it was never shown.
-        stub.finalize_response_stream.return_value = DeliveryOutcome.DELIVERED
+        stub.send_response.return_value = DeliveryOutcome.DELIVERED
         with patch.object(agent, "_process", AsyncMock(return_value="again")):
             await agent.handle_message(_msg("telegram", "123", "hi"))
 
-        delivered = stub.finalize_response_stream.call_args[0][0]
+        delivered = stub.send_response.call_args[0][0]
         assert delivered.startswith("PLUGIN-DEGRADED")
         assert delivered.endswith("again")
 
@@ -461,49 +459,47 @@ class TestHealthNoticeDeliveryConfirmation:
             tmp_path, monkeypatch, "PLUGIN-DEGRADED x",
         )
 
-        async def _head_then_raise(text, context, on_token):
+        async def _head_then_raise(text, context):
             context["_delivery_head_sent"] = True     # page 1 landed
             raise RuntimeError("page 3 failed")
 
-        stub.finalize_response_stream.side_effect = _head_then_raise
+        stub.send_response.side_effect = _head_then_raise
         with patch.object(agent, "_process", AsyncMock(return_value="hello")):
             with pytest.raises(RuntimeError):
                 await agent.handle_message(_msg("telegram", "123", "hi"))
 
         # Next turn: unprefixed, because the operator has already seen it.
-        stub.finalize_response_stream.side_effect = None
+        stub.send_response.side_effect = None
         with patch.object(agent, "_process", AsyncMock(return_value="second")):
             await agent.handle_message(_msg("telegram", "123", "hi"))
-        assert stub.finalize_response_stream.call_args[0][0] == "second"
+        assert stub.send_response.call_args[0][0] == "second"
 
     async def test_an_ambiguous_transport_failure_does_not_repeat_the_notice(
         self, tmp_path, monkeypatch,
     ):
-        """Sol + Terra diff r1: the regression this batch nearly shipped.
-
-        A lost acknowledgement (TimedOut) on a final edit is not evidence that
-        the edit failed — Telegram may have applied it, in which case the
-        operator has read the notice. Reporting NOT_DELIVERED there re-offered
-        it on the next turn, which the pre-contract code did NOT do, because it
-        swallowed the error and returned nothing.
+        """The agent's handling of a channel whose send returns
+        ``DeliveryOutcome.UNKNOWN``: that is not a proven failure — the notice
+        may have been shown — so the agent does not release it, and the next
+        turn's reply goes out without it. Only ``NOT_DELIVERED``, or a send
+        that raised before its head landed, offers the notice again.
         """
         from channels import DeliveryOutcome
 
         agent, stub = self._agent_with_notice(
             tmp_path, monkeypatch, "PLUGIN-DEGRADED x",
         )
-        stub.finalize_response_stream.return_value = DeliveryOutcome.UNKNOWN
+        stub.send_response.return_value = DeliveryOutcome.UNKNOWN
 
         with patch.object(agent, "_process", AsyncMock(return_value="hello")):
             await agent.handle_message(_msg("telegram", "123", "hi"))
-        assert stub.finalize_response_stream.call_args[0][0].startswith(
+        assert stub.send_response.call_args[0][0].startswith(
             "PLUGIN-DEGRADED",
         )
 
         # Not repeated: the notice may well have been displayed.
         with patch.object(agent, "_process", AsyncMock(return_value="second")):
             await agent.handle_message(_msg("telegram", "123", "hi"))
-        assert stub.finalize_response_stream.call_args[0][0] == "second"
+        assert stub.send_response.call_args[0][0] == "second"
 
     async def test_channel_off_the_contract_keeps_todays_behavior(
         self, tmp_path, monkeypatch,
@@ -513,13 +509,13 @@ class TestHealthNoticeDeliveryConfirmation:
         agent, stub = self._agent_with_notice(
             tmp_path, monkeypatch, "PLUGIN-DEGRADED x",
         )
-        stub.finalize_response_stream.return_value = None    # no contract
+        stub.send_response.return_value = None    # no contract
 
         with patch.object(agent, "_process", AsyncMock(return_value="hello")):
             await agent.handle_message(_msg("telegram", "123", "hi"))
         with patch.object(agent, "_process", AsyncMock(return_value="second")):
             await agent.handle_message(_msg("telegram", "123", "hi"))
-        assert stub.finalize_response_stream.call_args[0][0] == "second"
+        assert stub.send_response.call_args[0][0] == "second"
 
     async def test_identical_notice_is_not_repeated_within_the_cooldown(
         self, tmp_path, monkeypatch,
@@ -530,13 +526,13 @@ class TestHealthNoticeDeliveryConfirmation:
 
         with patch.object(agent, "_process", AsyncMock(return_value="hello")):
             await agent.handle_message(_msg("telegram", "123", "hi"))
-        assert stub.finalize_response_stream.call_args[0][0].startswith(
+        assert stub.send_response.call_args[0][0].startswith(
             "PLUGIN-DEGRADED",
         )
 
         with patch.object(agent, "_process", AsyncMock(return_value="second")):
             await agent.handle_message(_msg("telegram", "123", "hi"))
-        assert stub.finalize_response_stream.call_args[0][0] == "second"
+        assert stub.send_response.call_args[0][0] == "second"
 
     async def test_notice_survives_agent_reconstruction(
         self, tmp_path, monkeypatch,
@@ -550,7 +546,7 @@ class TestHealthNoticeDeliveryConfirmation:
         )
         with patch.object(agent, "_process", AsyncMock(return_value="hello")):
             await agent.handle_message(_msg("telegram", "123", "hi"))
-        assert stub.finalize_response_stream.call_args[0][0].startswith(
+        assert stub.send_response.call_args[0][0].startswith(
             "PLUGIN-DEGRADED",
         )
 
@@ -559,7 +555,7 @@ class TestHealthNoticeDeliveryConfirmation:
         fresh._channel_manager.register(stub2)
         with patch.object(fresh, "_process", AsyncMock(return_value="after")):
             await fresh.handle_message(_msg("telegram", "123", "hi"))
-        assert stub2.finalize_response_stream.call_args[0][0] == "after"
+        assert stub2.send_response.call_args[0][0] == "after"
 
     async def test_healthy_turn_sends_no_notice(
         self, tmp_path, monkeypatch,
@@ -569,7 +565,7 @@ class TestHealthNoticeDeliveryConfirmation:
         with patch.object(agent, "_process", AsyncMock(return_value="hello")):
             await agent.handle_message(_msg("telegram", "123", "hi"))
 
-        assert stub.finalize_response_stream.call_args[0][0] == "hello"
+        assert stub.send_response.call_args[0][0] == "hello"
 
     async def test_no_final_text_channel_does_not_consume_the_notice(
         self, tmp_path, monkeypatch,
@@ -611,7 +607,7 @@ class TestHealthNoticeDeliveryConfirmation:
             text_agent, "_process", AsyncMock(return_value="hi there"),
         ):
             await text_agent.handle_message(_msg("telegram", "123", "hi"))
-        assert text_stub.finalize_response_stream.call_args[0][0].startswith(
+        assert text_stub.send_response.call_args[0][0].startswith(
             "PLUGIN-DEGRADED",
         )
 
@@ -1982,12 +1978,12 @@ class _StubChannel:
 
     def __init__(self) -> None:
         from unittest.mock import MagicMock, AsyncMock
-        # create_on_token is a sync factory returning an async callback.
-        self.create_on_token = MagicMock(return_value=AsyncMock())
+        # create_on_token is a sync factory returning an async callback
+        # whose ``end`` is an ordinary function.
+        self.create_on_token = MagicMock(
+            return_value=AsyncMock(end=MagicMock()))
         self.send = AsyncMock()
         self.send_response = AsyncMock()
-        self.finalize_stream = AsyncMock()
-        self.finalize_response_stream = AsyncMock()
 
     async def start(self) -> None:
         pass
@@ -2074,7 +2070,7 @@ class TestScheduledSilence:
 
     async def test_silent_sentinel_suppresses_send(self, tmp_path):
         """Spec §3.2 B.2: text == '<silent/>' (after strip) must
-        suppress channel.send / finalize_stream and produce no
+        suppress channel.send / send_response and produce no
         BusMessage downstream."""
         agent = _make_agent(tmp_path, role="assistant")
         stub = _StubChannel()
@@ -2086,7 +2082,6 @@ class TestScheduledSilence:
             result = await agent.handle_message(_scheduled_msg())
 
         assert stub.send.call_count == 0
-        assert stub.finalize_stream.call_count == 0
         assert result is None
 
     async def test_whitespace_suppresses_send(self, tmp_path):
@@ -2102,7 +2097,6 @@ class TestScheduledSilence:
             result = await agent.handle_message(_scheduled_msg())
 
         assert stub.send.call_count == 0
-        assert stub.finalize_stream.call_count == 0
         assert result is None
 
     async def test_sentinel_with_whitespace_suppresses_send(self, tmp_path):
@@ -2120,7 +2114,6 @@ class TestScheduledSilence:
 
         assert stub.send.call_count == 0
         assert stub.send_response.call_count == 0
-        assert stub.finalize_stream.call_count == 0
         assert result is None
 
     async def test_repeated_sentinel_suppresses_send(self, tmp_path):
@@ -2173,12 +2166,11 @@ class TestScheduledSilence:
 
         # No on_token (Fix B.1 disables streaming for SCHEDULED). A successful
         # scheduled turn (error_kind is None) routes through send_response
-        # (v0.70.0 rich-text), NOT plain send/finalize_stream.
+        # (v0.70.0 rich-text), NOT plain send.
         assert stub.send_response.call_count == 1
         sent_text = stub.send_response.call_args.args[0]
         assert sent_text == text
         assert stub.send.call_count == 0
-        assert stub.finalize_stream.call_count == 0
         assert result is not None
         assert result.content == text
 
@@ -2203,7 +2195,6 @@ class TestScheduledSilence:
             result = await agent.handle_message(_request_msg())
 
         assert stub.send.call_count == 0
-        assert stub.finalize_stream.call_count == 0
         # M4 (v0.53.0): send suppression is still load-bearing, but a REQUEST
         # turn must ALWAYS return a RESPONSE (empty content) so bus.request()
         # callers (voice SSE/WS, /invoke) resolve instead of hanging 300s.
@@ -2225,7 +2216,6 @@ class TestScheduledSilence:
             result = await agent.handle_message(_request_msg())
 
         assert stub.send.call_count == 0
-        assert stub.finalize_stream.call_count == 0
         # M4 (v0.53.0): empty REQUEST turn still returns an empty RESPONSE.
         assert result is not None
         assert result.type == MessageType.RESPONSE
@@ -2386,7 +2376,6 @@ class TestSetupOutcomeThroughHandleMessage:
         stub = _StubTelegramChannel()
         if outcome is not None:
             stub.send_response.return_value = outcome
-            stub.finalize_response_stream.return_value = outcome
         agent._channel_manager.register(stub)
         ScriptedToolClient.reset([
             _mk_init("sid-1012", ["Read", _SETUP_NS]),
@@ -2889,7 +2878,7 @@ class TestDeliveryAcknowledgedAnnouncements:
         self, tmp_path, outcome, acknowledged,
     ):
         agent, stub = self._agent(tmp_path)
-        stub.finalize_response_stream.return_value = outcome
+        stub.send_response.return_value = outcome
         acks: list = []
         msg = _msg("telegram", "123", "hi")
         msg.on_delivery = self._notice(acks)
@@ -2897,7 +2886,7 @@ class TestDeliveryAcknowledgedAnnouncements:
         with patch.object(agent, "_process", AsyncMock(return_value="hello")):
             await agent.handle_message(msg)
 
-        assert stub.finalize_response_stream.call_count == 1
+        assert stub.send_response.call_count == 1
         assert acks == (["narrated"] if acknowledged else [])
 
     async def test_a_head_that_landed_acknowledges_before_the_tail_raises(
@@ -2910,11 +2899,11 @@ class TestDeliveryAcknowledgedAnnouncements:
         msg = _msg("telegram", "123", "hi")
         msg.on_delivery = self._notice(acks)
 
-        async def _head_then_raise(text, context, on_token):
+        async def _head_then_raise(text, context):
             context["_delivery_head_sent"] = True
             raise RuntimeError("page three failed")
 
-        stub.finalize_response_stream.side_effect = _head_then_raise
+        stub.send_response.side_effect = _head_then_raise
 
         with patch.object(agent, "_process", AsyncMock(return_value="hello")):
             with pytest.raises(RuntimeError):
@@ -2927,7 +2916,7 @@ class TestDeliveryAcknowledgedAnnouncements:
         acks: list = []
         msg = _msg("telegram", "123", "hi")
         msg.on_delivery = self._notice(acks)
-        stub.finalize_response_stream.side_effect = RuntimeError("channel down")
+        stub.send_response.side_effect = RuntimeError("channel down")
 
         with patch.object(agent, "_process", AsyncMock(return_value="hello")):
             with pytest.raises(RuntimeError):
@@ -2952,7 +2941,7 @@ class TestDeliveryAcknowledgedAnnouncements:
                           AsyncMock(return_value="<silent/>")):
             await agent.handle_message(msg)
 
-        assert stub.finalize_response_stream.call_count == 0
+        assert stub.send_response.call_count == 0
         assert acks == []
 
     async def test_a_generic_error_reply_acknowledges_nothing(self, tmp_path):
@@ -2960,7 +2949,6 @@ class TestDeliveryAcknowledgedAnnouncements:
         the delegation's narration. They were told something broke; they were
         not told what their delegation did."""
         agent, stub = self._agent(tmp_path)
-        stub.finalize_stream.return_value = DeliveryOutcome.DELIVERED
         stub.send.return_value = DeliveryOutcome.DELIVERED
         acks: list = []
         msg = _msg("telegram", "123", "hi")
@@ -2971,14 +2959,14 @@ class TestDeliveryAcknowledgedAnnouncements:
             await agent.handle_message(msg)
 
         # Something WAS delivered — just not the announcement.
-        assert (stub.finalize_stream.call_count + stub.send.call_count) == 1
+        assert stub.send.call_count == 1
         assert acks == []
 
     async def test_a_failing_acknowledgement_leaves_the_obligation_owed(
         self, tmp_path, caplog,
     ):
         agent, stub = self._agent(tmp_path)
-        stub.finalize_response_stream.return_value = DeliveryOutcome.DELIVERED
+        stub.send_response.return_value = DeliveryOutcome.DELIVERED
         msg = _msg("telegram", "123", "hi")
         calls: list = []
 
@@ -2995,7 +2983,7 @@ class TestDeliveryAcknowledgedAnnouncements:
 
     async def test_the_acknowledgement_fires_at_most_once(self, tmp_path):
         agent, stub = self._agent(tmp_path)
-        stub.finalize_response_stream.return_value = DeliveryOutcome.DELIVERED
+        stub.send_response.return_value = DeliveryOutcome.DELIVERED
         acks: list = []
         msg = _msg("telegram", "123", "hi")
         msg.on_delivery = self._notice(acks)
@@ -3008,7 +2996,7 @@ class TestDeliveryAcknowledgedAnnouncements:
 
     async def test_an_ordinary_turn_carries_no_obligation(self, tmp_path):
         agent, stub = self._agent(tmp_path)
-        stub.finalize_response_stream.return_value = DeliveryOutcome.DELIVERED
+        stub.send_response.return_value = DeliveryOutcome.DELIVERED
         msg = _msg("telegram", "123", "hi")
         assert msg.on_delivery is None
 
@@ -3032,8 +3020,6 @@ class _RecordingStreamChannel:
         self.tokens: list[str] = []
         self.send = AsyncMock()
         self.send_response = AsyncMock()
-        self.finalize_stream = AsyncMock()
-        self.finalize_response_stream = AsyncMock()
         self.turn_finished = AsyncMock()
 
     def create_on_token(self, _context):
@@ -3076,8 +3062,6 @@ class TestIssue666SentinelHold:
         assert channel.tokens == []
         assert channel.send.call_count == 0
         assert channel.send_response.call_count == 0
-        assert channel.finalize_stream.call_count == 0
-        assert channel.finalize_response_stream.call_count == 0
         # ...and turn_finished is now the ONLY release of the typing lease,
         # because create_on_token's first-token teardown never runs.
         assert channel.turn_finished.call_count == 1
@@ -3095,7 +3079,7 @@ class TestIssue666SentinelHold:
         FakeClient.response_text = "<silent/> actually, meeting at 3pm."
         agent = _make_agent(tmp_path, role="assistant")
         channel = _RecordingStreamChannel()
-        channel.finalize_response_stream.return_value = DeliveryOutcome.DELIVERED
+        channel.send_response.return_value = DeliveryOutcome.DELIVERED
         agent._channel_manager.register(channel)
 
         msg = BusMessage(
@@ -3110,6 +3094,6 @@ class TestIssue666SentinelHold:
             result = await agent.handle_message(msg)
 
         assert channel.tokens == ["actually, meeting at 3pm."]
-        assert channel.finalize_response_stream.call_count == 1
+        assert channel.send_response.call_count == 1
         assert channel.turn_finished.call_count == 0
         assert result.content == "actually, meeting at 3pm."

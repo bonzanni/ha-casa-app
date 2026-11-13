@@ -15,6 +15,7 @@ def _mk_channel_with_fake_bot(supergroup_id: int = -1001):
         return_value=MagicMock(message_id=12345)
     )
     fake_bot.edit_message_text = AsyncMock()
+    fake_bot.send_message_draft = AsyncMock(return_value=True)
 
     fake_app = MagicMock()
     fake_app.bot = fake_bot

@@ -140,16 +140,13 @@ def _patch_retry_sleep():
 
 class _TelegramStub:
     """Tool sends land on ``send``; the final reply of a buffered turn on
-    ``send_response`` (no token callback, so never a stream finalize)."""
+    ``send_response``."""
 
     name = "telegram"
 
     def __init__(self, send_outcome=DeliveryOutcome.DELIVERED) -> None:
         self.send = AsyncMock(return_value=send_outcome)
         self.send_response = AsyncMock(return_value=DeliveryOutcome.DELIVERED)
-        self.finalize_stream = AsyncMock(return_value=DeliveryOutcome.DELIVERED)
-        self.finalize_response_stream = AsyncMock(
-            return_value=DeliveryOutcome.DELIVERED)
         self.turn_finished = AsyncMock()
         self.on_token_created = 0
 
@@ -161,10 +158,7 @@ class _TelegramStub:
         return _on_token
 
     def final_texts(self) -> list[str]:
-        calls = (self.send_response.await_args_list
-                 + self.finalize_stream.await_args_list
-                 + self.finalize_response_stream.await_args_list)
-        return [str(c.args[0]) for c in calls]
+        return [str(c.args[0]) for c in self.send_response.await_args_list]
 
     def tool_sends(self) -> list[str]:
         return [str(c.args[0]) for c in self.send.await_args_list]

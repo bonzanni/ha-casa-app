@@ -213,11 +213,10 @@ whose label names the action and the destination domain, with the address carrie
 link's destination — the one exception being the message tool, which is not rendered, so a
 plain address is what belongs there.
 
-Three things that shape does *not* do, all of them pre-existing properties of every labelled
-link rather than consequences of asking for one. A Telegram text reply and a button question
-pass through the rich renderer, but a streamed reply's text is unrendered until its final
-edit, so the raw form is briefly visible. A voice reply is spoken rather than rendered, and
-an `/invoke` response is returned to its caller verbatim as JSON, where a labelled link
+Two things that shape does *not* do, both of them pre-existing properties of every labelled
+link rather than consequences of asking for one. A Telegram text reply, its draft while the
+model writes it, and a button question pass through the rich renderer, but a voice reply is
+spoken rather than rendered, and an `/invoke` response is returned to its caller verbatim as JSON, where a labelled link
 arrives as markup with its address intact. The reply is written for the chat surface either
 way; a consumer receiving it as data parses what it gets. Two things can go wrong with the
 formatting, and both are repaired in the text before it is handed to the transport: Telegram

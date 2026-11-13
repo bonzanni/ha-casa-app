@@ -128,9 +128,6 @@ class _Tg:
         self._stream = stream
         self.send = AsyncMock(return_value=DeliveryOutcome.DELIVERED)
         self.send_response = AsyncMock(return_value=DeliveryOutcome.DELIVERED)
-        self.finalize_stream = AsyncMock(return_value=DeliveryOutcome.DELIVERED)
-        self.finalize_response_stream = AsyncMock(
-            return_value=DeliveryOutcome.DELIVERED)
         self.turn_finished = AsyncMock()
 
     def create_on_token(self, _context):
@@ -147,8 +144,7 @@ class _Tg:
 
     def all_calls(self) -> int:
         return sum(getattr(self, m).await_count for m in (
-            "send", "send_response", "finalize_stream",
-            "finalize_response_stream"))
+            "send", "send_response"))
 
 
 def _register(agent, tg: _Tg) -> None:
@@ -210,8 +206,7 @@ async def test_rc1_dm_progress_stays_and_one_line_follows(tmp_path, caplog):
     _register(agent, tg)
     _reset(_limit_script("One new lead worth chasing..."))
     await _run(agent, _dm())
-    assert tg.texts("finalize_response_stream") == ["One new lead worth chasing..."]
-    assert tg.texts("finalize_stream") == []
+    assert tg.texts("send_response") == ["One new lead worth chasing..."]
     lines = tg.lines()
     assert len(lines) == 1 and tg.send.await_count == 1
     assert "continue" in lines[0][0].lower()
@@ -226,8 +221,7 @@ async def test_rc2_dm_no_text_gets_the_line_alone(tmp_path, caplog):
     _register(agent, tg)
     _reset(_limit_script(None))
     await _run(agent, _dm())
-    assert tg.texts("finalize_response_stream") == []
-    assert tg.texts("finalize_stream") == []
+    assert tg.texts("send_response") == []
     lines = tg.lines()
     assert len(lines) == 1 and tg.send.await_count == 1
     assert lines[0][1].get("chat_id") == "123"
@@ -245,8 +239,7 @@ async def test_rc3_retry_then_limit_is_not_an_error_and_not_a_strike(
     _reset(_sdk_error_attempt(), _limit_script(None))
     await _run(agent, _dm(chat="fault-scope", role="butler"))
     assert len(ScriptedToolClient.instances) == 2      # the retry, no more
-    assert _USER_MESSAGES[ErrorKind.SDK_ERROR] not in (
-        tg.texts("finalize_stream") + tg.texts("send"))
+    assert _USER_MESSAGES[ErrorKind.SDK_ERROR] not in tg.texts("send")
     assert len(tg.lines()) == 1
     e = reg._data[build_scoped_session_key("telegram", "butler", "fault-scope")]
     assert e.get("sdk_session_id") == SID
@@ -382,7 +375,7 @@ async def test_rc9_streaming_plugin_setup_turn_gets_exactly_one_line(tmp_path):
     _reset(_limit_script("Connected the ledger; now the mailbox..."))
     with patch("plugin_setup_episodes.dispatch_still_owed", return_value=True):
         await _run(agent, msg)
-    assert tg.texts("finalize_response_stream") == [
+    assert tg.texts("send_response") == [
         "Connected the ledger; now the mailbox..."]
     lines = tg.lines()
     assert len(lines) == 1 and tg.send.await_count == 1
@@ -476,7 +469,7 @@ async def test_rc18_line_and_warning_survive_a_raising_delivery(
     caplog.set_level(logging.INFO)
     agent = _make_agent(tmp_path, role="assistant")
     tg = _Tg()
-    tg.finalize_response_stream = AsyncMock(
+    tg.send_response = AsyncMock(
         side_effect=RuntimeError("channel down"))
     _register(agent, tg)
     _reset(_limit_script("progress"))

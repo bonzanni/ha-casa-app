@@ -250,14 +250,12 @@ async def test_a_setup_turn_stays_on_casas_bot_after_its_role_is_bound_elsewhere
 
     await transport.send("a", ctx)
     await transport.send_response("b", ctx)
-    on_token = transport.create_on_token(ctx)
-    await transport.finalize_stream("c", ctx, on_token)
-    await transport.finalize_response_stream("d", ctx, on_token)
+    transport.create_on_token(ctx)
     await transport.send_media(b"x", "document", "f.txt", ctx)
     await transport.turn_finished(ctx)
     assert [c[0] for c in calls(casa)] == [
-        "send", "send_response", "create_on_token", "finalize_stream",
-        "finalize_response_stream", "send_media", "turn_finished"]
+        "send", "send_response", "create_on_token", "send_media",
+        "turn_finished"]
     assert calls(finance) == []
 
 

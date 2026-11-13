@@ -8,7 +8,8 @@ parameter still carrying a lone surrogate raises ``NetworkError`` (cause
 ``UnicodeEncodeError``) before any request leaves the process. A fresh
 interpreter sees the real library; a real ``Bot`` over an ``httpx.MockTransport``
 records every request that reached the transport, and each arm asserts the
-COUNT of ``sendMessage`` / ``editMessageText`` / ``sendDocument`` requests —
+COUNT of ``sendMessage`` / ``editMessageText`` / ``sendMessageDraft`` /
+``sendDocument`` requests —
 never a status — plus the decoded form values: no surrogate remains, and each
 raw surrogate the input carried contributes exactly one U+FFFD.
 
@@ -59,6 +60,8 @@ _SCRIPT = textwrap.dedent(
         if request.url.path.endswith("getMe"):
             return httpx.Response(200, json={"ok": True, "result": {
                 "id": 1, "is_bot": True, "first_name": "t", "username": "t"}})
+        if request.url.path.endswith("sendMessageDraft"):
+            return httpx.Response(200, json={"ok": True, "result": True})
         return httpx.Response(200, json={"ok": True, "result": {
             "message_id": 7, "date": 0, "chat": {"id": 42, "type": "private"}}})
 
@@ -67,7 +70,8 @@ _SCRIPT = textwrap.dedent(
 
     def counts():
         return {n: sum(1 for r in seen if endpoint(r) == n)
-                for n in ("sendMessage", "editMessageText", "sendDocument")}
+                for n in ("sendMessage", "editMessageText", "sendMessageDraft",
+                          "sendDocument")}
 
     def flat(r):
         return {k: v[0] for k, v in parse_qs(
@@ -81,6 +85,7 @@ _SCRIPT = textwrap.dedent(
                  part.get_param("filename", header="content-disposition"),
                  part.get_payload(decode=True)) for part in msg.get_payload()]
 
+    TEXT_ENDPOINTS = ("sendMessage", "editMessageText", "sendMessageDraft")
     R = "�"
     MEDIA = b"\x00casa-media\xff"
     CTX = lambda: {"chat_id": "42"}
@@ -92,7 +97,7 @@ _SCRIPT = textwrap.dedent(
         # character included, so deletion, a shifted replacement or a rewritten
         # neighbour all fail here, not only a wrong count.
         got = [(endpoint(r), flat(r).get("text")) for r in seen
-               if endpoint(r) in ("sendMessage", "editMessageText")]
+               if endpoint(r) in TEXT_ENDPOINTS]
         reason = (f"{type(exc).__name__}(cause={type(exc.__cause__).__name__})"
                   if exc is not None else "no raise")
         line = f"{name}: {counts()} outcome={got_outcome} raise={reason}"
@@ -102,12 +107,12 @@ _SCRIPT = textwrap.dedent(
             print(f"  {name}: texts differ: got {[(e, len(t or ''), (t or '')[:8]) for e, t in got]}"
                   f" expected {[(e, len(t), t[:8]) for e, t in expect]}")
         for r in seen:
-            if endpoint(r) in ("sendMessage", "editMessageText") and flat(r).get("chat_id") != "42":
+            if endpoint(r) in TEXT_ENDPOINTS and flat(r).get("chat_id") != "42":
                 ok = False
                 print(f"  {name}: chat_id was not 42")
         if not ok:
             failures.append(line)
-        return [flat(r) for r in seen if endpoint(r) in ("sendMessage", "editMessageText")]
+        return [flat(r) for r in seen if endpoint(r) in TEXT_ENDPOINTS]
 
     async def run_arm(name, coro, expect, outcome=None):
         seen.clear()
@@ -161,22 +166,9 @@ _SCRIPT = textwrap.dedent(
             if flats and '"bold"' not in flats[0].get("entities", ""):
                 failures.append("convertible-2-pages: page 1 lost its bold entity")
 
-            # ARM6 — streamed reply: page 1 is an EDIT of the streamed message;
-            # pages 2-3 lose their spans to the surrogate and take the
-            # conversion-failure arm, which already replaced it at the base.
-            a6 = ("**bold** " + "a" * 4080 + "\ud800\n"
-                  + "".join("**\ud800" + "b" * 4093 + "**\n" for _ in range(2)))
-            state = {"message_id": 99}
-            async def on_token(_t):
-                state  # a closure CELL: the finalizer peeks the message id there
-            flats = await run_arm("stream-finalize",
-                          ch.finalize_response_stream(admitted(a6), CTX(), on_token),
-                          [("editMessageText", "bold " + "a" * 4080 + R),
-                           ("sendMessage", R + "b" * 4093),
-                           ("sendMessage", R + "b" * 4093 + "\n")],
-                          outcome=DeliveryOutcome.DELIVERED)
-            if flats and flats[0].get("message_id") != "99":
-                failures.append("stream-finalize: the edit did not target the streamed message")
+            # Draft — the text a reply is written into while the model writes.
+            await run_arm("draft", ch._send_draft("42", 7, admitted("x\ud800")),
+                          [("sendMessageDraft", "x" + R)])
 
             # Media — the caption is a form value too; the bytes are not.
             await run_arm("media-caption",
@@ -213,14 +205,13 @@ _SCRIPT = textwrap.dedent(
 def test_pin_inv_tg_009_no_request_leaves_with_a_surrogate_code_point():
     """INV-TG-009: every string parameter of every request Casa's Telegram bot
     makes has each surrogate code point replaced by one U+FFFD below every
-    sender — block, single-page, plain, convertible-entities, streamed edit and
-    media caption — so the reply is DELIVERED with the character replaced
+    sender — block, single-page, plain, convertible-entities, the draft send
+    and media caption — so the reply is DELIVERED with the character replaced
     instead of raising before any request leaves.
 
     Counts are the assertion. At the base every block arm raises
-    ``NetworkError`` whose cause is ``UnicodeEncodeError`` with ZERO requests,
-    and the streamed arm loses its edit (0 edits, 2 sends, UNKNOWN); the
-    subprocess prints each arm's counts and raise so the failure names the
+    ``NetworkError`` whose cause is ``UnicodeEncodeError`` with ZERO requests;
+    the subprocess prints each arm's counts and raise so the failure names the
     reason. The nested control (an entity url carrying a surrogate) passes on
     both trees: the library JSON-escapes it and the boundary must not rewrite
     the literal escape.

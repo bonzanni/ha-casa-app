@@ -327,7 +327,7 @@ async def test_an_unposted_keyboard_then_silence_retains(wired, monkeypatch):
 async def test_a_recant_follows_the_transport(wired, monkeypatch, outcome, acks):
     agent, _ob, install = wired
     stub = install(_TelegramStub())
-    stub.finalize_response_stream.return_value = outcome
+    stub.send_response.return_value = outcome
     counted = _Counted()
     factory = _Factory([[_mk_assistant(
         f"{SILENCE_SENTINEL}\nActually — the ledger reconciles.")]])

@@ -12,7 +12,7 @@ the boundary asks: who authored the words?
   admitted when posted, a Casa *status* that replaces it, or a *plugin*-authored
   consent body;
 * every raw Bot API text call (``bot.send_message`` / ``edit_message_text`` /
-  media) by enclosing function — the function takes an ``Admitted``, is a
+  ``send_message_draft`` / media) by enclosing function — the function takes an ``Admitted``, is a
   derived edit, is a Casa notice, or streams what ``_emit`` admitted.
 
 These catch an accidental bypass. They are not a sandbox against Casa
@@ -29,8 +29,8 @@ import pytest
 pytestmark = [pytest.mark.unit]
 
 CODE = pathlib.Path(__file__).resolve().parents[1] / "casa" / "rootfs" / "opt" / "casa"
-RAW_TEXT_CALLS = {"send_message", "edit_message_text", "send_document", "send_photo",
-                  "send_audio", "send_voice"}
+RAW_TEXT_CALLS = {"send_message", "edit_message_text", "send_message_draft",
+                  "send_document", "send_photo", "send_audio", "send_voice"}
 
 
 def _enclosing(tree: ast.AST, node: ast.AST) -> str | None:
@@ -105,14 +105,12 @@ RAW_TRANSPORT_FUNCTIONS = {
     # admitted — the function takes an Admitted (INV-OUT-001)
     ("channels/telegram.py", "send"): "admitted",
     ("channels/telegram.py", "send_response"): "admitted",
-    ("channels/telegram.py", "finalize_response_stream"): "admitted",
-    ("channels/telegram.py", "finalize_stream"): "admitted",
     ("channels/telegram.py", "post_dm_keyboard"): "admitted",
     ("channels/telegram.py", "post_job_question"): "admitted",     # a job's question, admitted by ask_operator
     ("channels/telegram.py", "_send_one"): "admitted",             # helper of the two above
-    ("channels/telegram.py", "_send_overflow_line"): "admitted",   # the admission's lines as their own message (§6.6 as amended)
-    # stream — fed only from agent._emit, which admits every cumulative
-    ("channels/telegram.py", "_stream_token"): "stream",
+    # stream — the draft a reply is written into, fed only from agent._emit,
+    # which admits every cumulative; the function refuses a bare string
+    ("channels/telegram.py", "_send_draft"): "stream",
     # derived — a re-render of an admitted body
     ("channels/telegram.py", "edit_dm_message"): "derived",
     # notice — Casa-composed
@@ -145,8 +143,8 @@ RAW_TRANSPORT_FUNCTIONS = {
 }
 
 
-CHANNEL_METHODS = {"send", "send_response", "finalize_stream", "finalize_response_stream",
-                   "post_dm_keyboard", "send_media", "post_job_question", "guest_finish"}
+CHANNEL_METHODS = {"send", "send_response", "post_dm_keyboard", "send_media",
+                   "post_job_question", "guest_finish"}
 # (file, enclosing function) → what the call hands the method. "admitted" = a value
 # minted by TurnScope.admit or carried from one; "casa_text" = the Casa template
 # class; "forward" = the channel forwarding an already-admitted value to a sibling
@@ -160,15 +158,11 @@ CHANNEL_METHOD_CALLERS = {
     ("casa_core.py", "_notify_plugin_health_locked"): "casa_text",
     ("casa_core.py", "notify_placeholder_rewrites"): "casa_text",
     ("casa_core.py", "_telegram_outbound"): "casa_text",
-    ("channels/telegram.py", "finalize_response_stream"): "forward",
-    ("channels/telegram.py", "finalize_stream"): "forward",
     ("channels/telegram.py", "send_response"): "forward",
     # The transport resolves one endpoint and hands it the same value unchanged.
     ("channels/telegram_transport.py", "send"): "forward",
     ("channels/telegram_transport.py", "send_media"): "forward",
     ("channels/telegram_transport.py", "send_response"): "forward",
-    ("channels/telegram_transport.py", "finalize_response_stream"): "forward",
-    ("channels/telegram_transport.py", "finalize_stream"): "forward",
     ("channels/telegram_transport.py", "post_job_question"): "forward",
     ("channels/telegram_transport.py", "guest_finish"): "forward",
     ("tools.py", "send_message"): "admitted",
@@ -234,8 +228,8 @@ def test_every_raw_transport_call_is_inside_a_recorded_function():
     assert set(RAW_TRANSPORT_FUNCTIONS.values()) <= {"admitted", "stream", "derived", "notice"}
 
 
-ADMITTED_METHODS = {"send", "send_response", "finalize_stream", "finalize_response_stream",
-                    "post_dm_keyboard", "send_media", "post_job_question", "guest_finish"}
+ADMITTED_METHODS = {"send", "send_response", "post_dm_keyboard", "send_media",
+                    "post_job_question", "guest_finish"}
 DERIVED_METHODS = {"edit_dm_message"}
 NOTICE_METHODS = {"deliver_operator_link", "deliver_operator_message", "deliver_operator_page",
                   "deliver_operator_file", "deliver_casa_notice", "reply",

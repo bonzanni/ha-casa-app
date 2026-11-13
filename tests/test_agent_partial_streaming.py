@@ -467,21 +467,71 @@ async def test_malformed_stream_event_ignored_without_aborting_turn(
     ), [r.message for r in caplog.records]
 
 
-async def test_include_partial_messages_voice_only(agent_fixture, monkeypatch):
-    """§2.1: ``include_partial_messages`` is derived from ``channel`` — True
-    only for voice; a telegram turn's captured options must not set it."""
+async def test_include_partial_messages_voice_and_telegram(
+    agent_fixture, monkeypatch,
+):
+    """``include_partial_messages`` is derived from ``channel`` — True for
+    voice and telegram, which both show a reply as it is written; False for
+    a webhook turn, which nobody watches."""
     factory = QueuedScriptFactory([
         [_mk_assistant("hi")],
         [_mk_assistant("hi2")],
+        [_mk_assistant("hi3")],
     ])
     monkeypatch.setattr("sdk_client_pool._default_make_client", factory)
     agent = agent_fixture
 
     await agent._process(_msg("voice", "lr", "hi"))
     await agent._process(_msg("telegram", "123", "hi"))
+    await agent._process(_msg("webhook", "hook", "hi"))
 
     assert factory.clients[0].options.include_partial_messages is True
-    assert factory.clients[1].options.include_partial_messages is False
+    assert factory.clients[1].options.include_partial_messages is True
+    assert factory.clients[2].options.include_partial_messages is False
+
+
+async def test_sub_agent_stream_events_are_not_streamed(
+    agent_fixture, monkeypatch,
+):
+    """A sub-agent's in-flight text deltas never reach the token stream: two
+    sub-agents writing at once would interleave. The delta adds nothing to
+    the partial, so the next main-loop delta emits only its own text."""
+    sub = _mk_stream_event("sub-agent words")
+    sub.parent_tool_use_id = "toolu_1"
+    factory = QueuedScriptFactory([[
+        sub,
+        _mk_stream_event("Main"),
+        _mk_assistant("Main"),
+    ]])
+    monkeypatch.setattr("sdk_client_pool._default_make_client", factory)
+    agent = agent_fixture
+    seen: list[str] = []
+
+    async def on_token(text: str) -> None:
+        seen.append(str(text))
+
+    text = await agent._process(_msg("telegram", "123", "hi"), on_token=on_token)
+
+    assert seen == ["Main"]
+    assert text == "Main"
+
+
+async def test_fold_still_takes_a_sub_agent_message(agent_fixture, monkeypatch):
+    """Only the in-flight deltas are filtered: a finished AssistantMessage
+    carrying ``parent_tool_use_id`` is folded into the reply as before."""
+    sub_msg = _mk_assistant("From the sub-agent.")
+    # The SDK marks a sub-agent's message by its parent_tool_use_id (not frozen).
+    object.__setattr__(sub_msg, "parent_tool_use_id", "toolu_1")
+    factory = QueuedScriptFactory([[
+        sub_msg,
+        _mk_assistant("Done."),
+    ]])
+    monkeypatch.setattr("sdk_client_pool._default_make_client", factory)
+    agent = agent_fixture
+
+    text = await agent._process(_msg("telegram", "123", "hi"))
+
+    assert text == "From the sub-agent.\n\nDone."
 
 
 # ---------------------------------------------------------------------------

@@ -69,7 +69,7 @@ async def test_a_successful_silent_turn_gets_no_limit_line(
     _reset(script)
     await _run(agent, _dm())
     assert tg.send.await_count == 0
-    assert tg.texts("finalize_response_stream") == []
+    assert tg.texts("send_response") == []
     assert _limit_warnings(caplog, "assistant", "telegram") == []
 
 
