@@ -443,6 +443,8 @@ EXPECTED_SITES = {
     ("agent.py", "Agent._build_options"): "test_resident_options",
     ("tools.py", "_build_specialist_options"):
         "test_specialist_and_executor_options",
+    ("tools.py", "_build_guest_options"):
+        "test_guest_options.py::test_no_casa_tools_no_handoff_no_delegates_no_builtins",
     ("tools.py", "_build_plugin_job_options"):
         "test_plugin_job_launch.py::test_worker_options_record_and_topic",
     ("tools.py", "_synthesize_answer"): "test_query_engager_synthesis_options",

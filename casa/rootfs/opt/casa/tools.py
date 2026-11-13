@@ -43,9 +43,10 @@ from plugin_grants import (
     declared_tools_for_resolution, env_remediation_hint,
     grants_for_resolution, grants_for_resolved,
     make_fail_closed_can_use_tool, mcp_json_malformed,
-    profile_plan,
-    required_env_vars_for_resolved, sanitized_env_for_paths,
-    sanitized_env_for_resolution,
+    profile_plan, protected_map,
+    required_env_vars_for_resolved, result_contract_map,
+    sanitized_env_for_paths, sanitized_env_for_resolution,
+    withhold_env_unresolved,
 )
 from authz_grants import CHALLENGES, GRANTS, normalize_role
 from handoff import child_chain, operator_words, requester_of
@@ -3499,6 +3500,107 @@ def _build_specialist_options(
         # instead of hanging on an unanswerable CC prompt.
         can_use_tool=make_fail_closed_can_use_tool(
             getattr(cfg, "role", "unknown")),
+    )
+
+
+def _build_guest_options(
+    cfg,
+    *,
+    resolution=None,
+    system_prompt: str,
+) -> ClaudeAgentOptions:
+    """Build the LOCKED-DOWN options of a guest run — a friend's summons of
+    *cfg*'s bot in a group the operator allowed, answered by a bounded turn
+    that reaches only the plugin tools the specialist's author marked for
+    guests.
+
+    A standalone constructor, like the restricted webhook's: nothing of the
+    specialist's own grant set is read — not ``cfg.tools.allowed``, its hooks
+    document, its MCP server list, the hand-off, inbox or job grants. The
+    allow-list is the guest-flagged, non-protected tools of the specialist's
+    resolved plugins, narrowed by its access profile and never widened by it
+    (the intersection is computed last). Two admission layers hold the list
+    independently, because the CLI runs matching PreToolUse hooks
+    concurrently and one deny does not stop its siblings: the guest pin is
+    the first matcher and denies every tool outside the list, plugin tools
+    included; the result broker's admission hook judges the same list as
+    its own first check.
+
+    No built-in tools (``tools=[]``), no skills, no setting source, no
+    ambient ``.mcp.json`` (``setting_sources=[]`` keeps it out; the plugin's
+    own server loads through ``plugins=``, which a strict MCP config would
+    drop), no Casa MCP server (``mcp_servers={}``), no sub-agents, no shell,
+    the CLI's own hooks disabled, every ungranted call denied fast, and no
+    transcript: ``extra_args=ephemeral_extra_args()`` starts a session the
+    CLI never persists, so nothing of the guest conversation is stored."""
+    from guest_run import GUEST_MAX_TURNS, guest_tool_names
+    from hooks import guest_pin_matcher, profile_guard_matcher
+
+    role = getattr(cfg, "role", "unknown")
+    if resolution is None:
+        resolution = _delegated_resolution(cfg)
+    resolution, _withheld = withhold_env_unresolved(
+        resolution, context=f"guest {role} options")
+    _protected = protected_map(resolution)
+    contract_map = result_contract_map(resolution)
+    guest = guest_tool_names(contract_map, _protected)
+    _plan = profile_plan(resolution, target=f"specialist:{role}",
+                         withheld=[rp for rp, _ in _withheld])
+    allowed, _denies = apply_profile_plan(sorted(guest), [], _plan)
+    # the intersection, last: a profile narrows the list, never widens it
+    allowed = [t for t in allowed if t in guest]
+
+    hooks: dict[str, list] = {"PreToolUse": [guest_pin_matcher(frozenset(allowed))]}
+    _profile_guard = profile_guard_matcher(_plan)
+    if _profile_guard is not None:
+        hooks["PreToolUse"].append(_profile_guard)
+    _broker_env: dict[str, str] = {}
+    if resolution.plugins:
+        import result_broker
+        _client_id = result_broker.new_client_id()
+        for _event, _matchers in result_broker.broker_matchers(
+                role, resolution, client_id=_client_id, authz_hook=None,
+                protected=_protected, guest_tools=frozenset(allowed)).items():
+            hooks[_event] = [*hooks.get(_event, []), *_matchers]
+        _broker_env = result_broker.broker_env(_client_id)
+
+    disallowed_tools = with_cross_session_tools_denied(
+        [*_denies, "Bash", "Task", "Agent", "ToolSearch", "Skill"])
+    try:
+        logger.info(
+            "agent_capabilities_effective role=%s surface=guest model=%s "
+            "tool_count=%d tools=%s plugins=%s",
+            role, getattr(cfg, "model", "?"), len(allowed), allowed,
+            sorted(rp.name for rp in resolution.plugins),
+        )
+    except Exception:  # noqa: BLE001 — an observability line must never break the build
+        logger.warning("agent_capabilities_effective log failed for role=%s",
+                       role, exc_info=True)
+
+    return ClaudeAgentOptions(
+        model=cfg.model,
+        effort=effort_for(cfg.model),
+        cli_path=CLAUDE_CLI_PATH,
+        max_buffer_size=SDK_MAX_BUFFER_SIZE,
+        system_prompt=system_prompt,
+        allowed_tools=allowed,
+        disallowed_tools=disallowed_tools,
+        permission_mode="dontAsk",
+        max_turns=min(cfg.tools.max_turns, GUEST_MAX_TURNS),
+        mcp_servers={},
+        hooks=hooks,
+        cwd=specialist_cwd(cfg),
+        resume=None,
+        setting_sources=[],
+        skills=[],
+        tools=[],
+        strict_mcp_config=False,
+        plugins=[{"type": "local", "path": rp.path} for rp in resolution.plugins],
+        settings=cli_session_settings({"disableAllHooks": True}),
+        env={**sanitized_env_for_resolution(resolution), **_broker_env},
+        can_use_tool=make_fail_closed_can_use_tool(role),
+        include_partial_messages=False,
+        extra_args=ephemeral_extra_args(),
     )
 
 

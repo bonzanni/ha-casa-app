@@ -1053,6 +1053,25 @@ def profile_guard_matcher(plan):
     return HookMatcher(matcher=pattern, hooks=[_hook])
 
 
+def guest_pin_matcher(allowed: frozenset[str]):
+    """The first PreToolUse matcher of a guest run: deny every tool whose
+    name is not in *allowed* — built-ins, Casa's own tools and plugin tools
+    alike (the pin of a stored-call turn lets plugin tools through to the
+    broker; this one does not). The result broker's admission hook judges
+    the same list as its own first check, because the CLI runs matching
+    hooks concurrently and one hook's deny does not stop its siblings."""
+    from claude_agent_sdk import HookMatcher
+    names = frozenset(allowed)
+
+    async def _hook(input_data: dict[str, Any], tool_use_id, context) -> dict[str, Any]:
+        name = str((input_data or {}).get("tool_name") or "")
+        if name in names:
+            return {}
+        return _deny(f"{name} is not available here")
+
+    return HookMatcher(matcher=None, hooks=[_hook])
+
+
 # ---------------------------------------------------------------------------
 # managed_component_guard — #210 (v0.101.0): typed-pipeline-only state
 #
