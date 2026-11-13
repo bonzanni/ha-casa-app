@@ -284,6 +284,8 @@ def _projection_name_for_turn(channel: str, origin_route: str | None) -> str:
     treating it as restricted."""
     if origin_route == "webhook_trigger":
         return "restricted_webhook"
+    if channel == "telegram_guest":
+        return "guest"
     if channel == "voice":
         return "voice"
     return "text"

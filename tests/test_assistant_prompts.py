@@ -600,6 +600,8 @@ def _compiled_resident_carriers() -> list[tuple[str, str]]:
             safety_kernel=safety_kernel,
         )
         for surface, compiled in sorted(projections.items()):
+            if surface == "guest":
+                continue  # a specialist-only surface; no resident is served it
             carriers.append((f"{slot}:{surface}", compiled.system_prompt))
     return carriers
 
@@ -1380,6 +1382,8 @@ def test_the_retention_telling_is_scoped_by_channel_because_invoke_gets_text():
         role_id="resident:assistant", resolved_model="opus",
         text=_proj("text"), voice=_proj("voice"),
         restricted_webhook=_proj("restricted_webhook"),
+        guest=CompiledProjection(system_prompt="stub guest", digest="stub-guest",
+                                 estimated_tokens=0),
         binding_digest="stub-binding-digest",
     )
     routed = {

@@ -27,6 +27,9 @@ def test_build_specialist_options_prefers_compiled_bundle_when_present() -> None
                                       estimated_tokens=10),
             restricted_webhook=CompiledProjection(system_prompt="COMPILED RW\n",
                                                     digest="sha256:" + "2" * 64, estimated_tokens=5),
+            guest=CompiledProjection(
+                system_prompt="COMPILED GUEST\n",
+                digest="sha256:" + "4" * 64, estimated_tokens=5),
             binding_digest="sha256:" + "3" * 64,
         )
 

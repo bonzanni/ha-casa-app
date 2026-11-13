@@ -473,3 +473,76 @@ def test_a_core_that_is_not_the_core_root_costs_one_byte_on_text(persona_factory
     assert text.count(PREAMBLE_CORE_SENT) == 1
     assert voice.count(PREAMBLE_CORE_SENT) == 0
     assert len(text.encode("utf-8")) == 813
+
+
+# --- the guest surface -------------------------------------------------------
+
+_GUEST_DOCTRINE = (
+    "# Core doctrine\n\nControl things.\n\n## Text projection\n\nTEXT ONLY\n\n"
+    "## Voice projection\n\nVOICE ONLY\n\n"
+    "## Restricted webhook projection\n\nRW ONLY\n\n"
+    "## Guest projection\n\nGUEST ONLY\n"
+)
+
+
+def _guest_bundle(role_factory, persona_factory, binding_factory, doctrine, persona=None):
+    role = dataclasses.replace(role_factory(), doctrine=doctrine)
+    persona = persona or persona_factory()
+    return compile_prompt_bundle(
+        role=role, persona=persona, binding=binding_factory(role, persona),
+        platform_frame="Platform.\n", safety_kernel="Safety.\n",
+    )
+
+
+def test_the_guest_projection_carries_core_and_the_guest_section_only(
+        role_factory, persona_factory, binding_factory) -> None:
+    bundle = _guest_bundle(role_factory, persona_factory, binding_factory, _GUEST_DOCTRINE)
+    guest = bundle.guest.system_prompt
+    assert "Control things." in guest
+    assert guest.count("GUEST ONLY") == 1
+    for other in ("TEXT ONLY", "VOICE ONLY", "RW ONLY"):
+        assert other not in guest
+    for surface in (bundle.text, bundle.voice, bundle.restricted_webhook):
+        assert "GUEST ONLY" not in surface.system_prompt
+
+
+def test_a_doctrine_without_a_guest_section_compiles_core_alone(
+        role_factory, persona_factory, binding_factory) -> None:
+    doctrine = "# Core doctrine\n\nControl things.\n\n## Text projection\n\nTEXT ONLY\n"
+    guest = _guest_bundle(role_factory, persona_factory, binding_factory,
+                          doctrine).guest.system_prompt
+    assert "Control things." in guest
+    assert "TEXT ONLY" not in guest
+
+
+def test_the_guest_persona_body_is_the_short_one(persona_factory) -> None:
+    persona = dataclasses.replace(
+        persona_factory(),
+        quirks=tuple({"frequency": "often", "context": f"c{i}", "tendency": f"t{i}"}
+                     for i in range(3)),
+        examples=({"surface": "text", "user": "EXUSER", "good": "g", "bad": "b"},),
+    )
+    body = _persona_body(persona, "guest")
+    assert "EXUSER" not in body
+    assert body.count("Quirk (") == 2
+
+
+def test_projection_for_selects_guest_on_the_guest_channel(
+        role_factory, persona_factory, binding_factory) -> None:
+    from prompt_compiler import projection_for
+    bundle = _guest_bundle(role_factory, persona_factory, binding_factory, _GUEST_DOCTRINE)
+    for route in (None, "telegram_guest"):
+        assert projection_for(bundle, channel="telegram_guest", origin_route=route) is bundle.guest
+    assert projection_for(bundle, channel="telegram", origin_route=None) is bundle.text
+
+
+def test_projection_name_for_a_guest_turn() -> None:
+    from agent import _projection_name_for_turn
+    assert _projection_name_for_turn("telegram_guest", "telegram_guest") == "guest"
+    assert _projection_name_for_turn("telegram", None) == "text"
+
+
+def test_the_guest_ceiling_is_enforced(role_factory, persona_factory, binding_factory) -> None:
+    doctrine = _GUEST_DOCTRINE + "\n" + ("word " * 14000)
+    with pytest.raises(ValueError, match="guest prompt exceeds admission ceiling"):
+        _guest_bundle(role_factory, persona_factory, binding_factory, doctrine)

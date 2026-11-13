@@ -93,7 +93,7 @@ def _bundle() -> CompiledPromptBundle:
     return CompiledPromptBundle(
         role_id="resident:assistant", resolved_model="claude-sonnet-4-6",
         text=text, voice=voice, restricted_webhook=restricted,
-        binding_digest="bd-ellen",
+        guest=restricted, binding_digest="bd-ellen",
     )
 
 
