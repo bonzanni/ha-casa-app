@@ -62,8 +62,8 @@ DOCTRINE_PARAGRAPH = (
     "on the card I just posted\", is not an answer: the posts have already "
     "reached the person and speak for themselves, so that line is not passed on. "
     "When a delegation comes back pending, the person would "
-    "otherwise wait in silence: say only that it is still running, in one "
-    "short line such as \"Alex is still on it.\", with nothing added: not "
+    "otherwise wait in silence: say only that it is under way, in one "
+    "short line such as \"Alex is on it.\", with nothing added: not "
     "the task again, not what you have done, not what will happen next. "
     "That line is only for work the person cannot see: when Casa's note "
     "says they are watching it in the delegate's own chat, write nothing "
@@ -141,12 +141,12 @@ CASES = [
               "tonight or tomorrow morning")},
 ]
 
-# A holding line says only that the delegation is still running: one of a
+# A holding line says only that the delegation is under way: one of a
 # bounded set of renderings of the doctrine's own example, so a short line
 # that claims anything else (a completion, a failure, an unrelated figure)
 # fails (#1348 x2). Every live run's line matched the example exactly.
 HOLDING_LINE = re.compile(
-    r"Alex(?: is|'s) still (?:on it|working on it|looking into it)\.?")
+    r"Alex(?: is|'s) (?:still )?(?:on it|working on it|looking into it)\.?")
 
 
 def _system_prompt(variant: str) -> tuple[str, str]:

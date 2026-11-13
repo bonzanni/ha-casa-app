@@ -740,6 +740,24 @@ async def test_the_persons_words_follow_the_answer_note(world, monkeypatch, mode
     assert result.endswith(f"{note}\n\n{WORDS_LINE}")
 
 
+@pytest.mark.parametrize("mode", ["sync", "async"])
+async def test_a_run_that_left_a_specialist_without_its_chat_says_so_to_the_resident(
+        world, monkeypatch, mode):
+    """#1586: a commit inside the run that returned ``offer_due`` puts Casa's
+    current fact beside the answer, on both completion paths."""
+    async def commit_mid_run(client):
+        tools._note_offer_due("finance")
+
+    Client.on_query = commit_mid_run
+    monkeypatch.setattr(own_voice, "declared", lambda slug: True)
+    monkeypatch.setattr(own_voice, "own_chat_state", lambda slug: "no_bot")
+    _FakeSpecialistClient.reset(response="Installed.")
+    _, result = await _ellens_result(world, mode)
+    line = tools.OWN_CHAT_OFFER_NOTE.format(name=tools._display_name_for_role("finance"))
+    assert result.endswith(line)
+    assert tools._OFFER_DUE == {}
+
+
 # A closing answer longer than the result cap that opens with the marker: its
 # capped copy is nothing but the marker and blank lines, its whole text is an
 # answer.

@@ -1071,6 +1071,42 @@ def _with_operator_words(text: str, said: "list[str]", executor: str) -> str:
         return text
 
 
+#: #1586: Casa's current fact beside a run's answer when an install, upgrade or
+#: rollback it committed left a specialist that can have its own chat without
+#: one. The resident's memory may still say it has one (from before an
+#: uninstall); this line is the state now.
+OWN_CHAT_OFFER_NOTE = ("(Casa: {name} can have a chat of its own and has none now, "
+                       "whatever your notes say. Offer it one with offer_own_chat.)")
+
+#: delegation id -> the slugs whose commit in that run returned ``offer_due``
+_OFFER_DUE: "dict[str, set[str]]" = {}
+
+
+def _note_offer_due(slug: str) -> None:
+    """Remember that the running delegation's commit left *slug* without its
+    own chat. Never raises."""
+    key = _delegation_quota_key.get()
+    if key:
+        _OFFER_DUE.setdefault(key, set()).add(slug)
+
+
+def _with_own_chat_offer_note(text: str, task_id: str) -> str:
+    """*text* with :data:`OWN_CHAT_OFFER_NOTE` for each specialist the run
+    *task_id* left without its own chat and still without one, taken once.
+    Never raises."""
+    try:
+        import own_voice
+        slugs = _OFFER_DUE.pop(task_id, set())
+        for slug in sorted(slugs):
+            if own_voice.declared(slug) and own_voice.own_chat_state(slug) == "no_bot":
+                line = OWN_CHAT_OFFER_NOTE.format(name=_display_name_for_role(slug))
+                text = f"{text}\n\n{line}" if text else line
+        return text
+    except Exception:  # noqa: BLE001 — a steer, never the work's fault
+        logger.warning("own-chat offer note not added", exc_info=True)
+        return text
+
+
 def _take_said(task_id: str) -> "list[str]":
     """What the person wrote into the task *task_id* while it ran, taken
     once. Never raises."""
@@ -5706,6 +5742,7 @@ def _attach_completion_callback(
                     bounded, _shown, _answer_posts(birth, raw_text))
                 bounded = _with_operator_words(
                     bounded, said, getattr(record, "executor", "") or record.agent)
+                bounded = _with_own_chat_offer_note(bounded, record.id)
                 complete = DelegationComplete(
                     delegation_id=record.id,
                     agent=record.agent,
@@ -8773,6 +8810,7 @@ async def delegate_to_agent(args: dict) -> dict:
             _answer = _closing_text(delegated_output)
             text = _with_own_chat_answer_note(text, _shown, _answer_posts(_birth, _answer))
             text = _with_operator_words(text, _take_said(delegation_id), agent_name)
+            text = _with_own_chat_offer_note(text, delegation_id)
         if not is_voice:
             # #321: the specialist's work is DONE and its answer is in hand —
             # a failed terminal snapshot write must not raise it away (the
@@ -17087,6 +17125,7 @@ async def _after_own_chat_change(out: dict, slug: str, hook: str,
     try:
         if own_voice.declared(slug) and own_voice.own_chat_state(slug) == "no_bot":
             out["own_chat"] = "offer_due"
+            _note_offer_due(slug)
     except Exception:  # noqa: BLE001 — the result just does not say so
         logger.warning("own chat state for %s unreadable", slug, exc_info=True)
 

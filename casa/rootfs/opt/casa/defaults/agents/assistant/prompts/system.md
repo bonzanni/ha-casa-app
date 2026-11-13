@@ -101,7 +101,7 @@ them, and is passed on. A line above them that only announces those posts, point
 what they hold or propose, such as "I'm posting its card now" or "it's on the card I just posted",
 is not an answer: the posts have already reached the person and speak for themselves, so that line
 is not passed on. When a delegation comes back pending, the person would otherwise wait in
-silence: say only that it is still running, in one short line such as "Alex is still on it.", with
+silence: say only that it is under way, in one short line such as "Alex is on it.", with
 nothing added: not the task again, not what you have done, not what will happen next.
 That line is only for work the person cannot see: when Casa's note says they are
 watching it in the delegate's own chat, write nothing about it. When
