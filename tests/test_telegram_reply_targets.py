@@ -242,9 +242,11 @@ async def test_a_quote_not_in_his_message_gives_a_plain_reply(quote):
     assert sent["reply_parameters"].quote is None
 
 
+@pytest.mark.parametrize("refusal", ["Bad Request: QUOTE_TEXT_INVALID",
+                                     "Bad Request: something else"], ids=["quote", "other"])
 @pytest.mark.parametrize("text", ['<reply quote="Tue"/>Tue works.',
                                   '<reply quote="Tue"/>**Tue** works.'], ids=["plain", "rich"])
-async def test_a_refused_quote_is_resent_without_it(text):
+async def test_a_refused_quote_is_resent_without_it(text, refusal):
     ch, _bus = _channel()
     bot = ch._app.bot
     real = bot.send_message
@@ -254,7 +256,7 @@ async def test_a_refused_quote_is_resent_without_it(text):
         tries.append(kw)
         rp = kw.get("reply_parameters")
         if rp is not None and rp.quote:
-            raise BadRequest("Bad Request: QUOTE_TEXT_INVALID")
+            raise BadRequest(refusal)
         return await real(**kw)
     bot.send_message = refuse_quote
     await ch.send_response(_marked(text), dict(_ASKED))
@@ -266,14 +268,30 @@ async def test_a_refused_quote_is_resent_without_it(text):
     assert ("entities" in tries[1]) == ("entities" in tries[0])   # same rendering
 
 
-async def test_another_bad_request_is_not_taken_for_a_quote():
+async def test_a_refusal_of_the_resend_without_the_quote_propagates():
     ch, _bus = _channel()
+    tries = []
 
     async def refuse(**kw):
+        tries.append(kw)
         raise BadRequest("Bad Request: chat not found")
     ch._app.bot.send_message = refuse
     with pytest.raises(BadRequest):
         await ch.send_response(_marked('<reply quote="Tue"/>Tue works.'), dict(_ASKED))
+    assert [t["reply_parameters"].quote for t in tries] == ["Tue", None]
+
+
+async def test_a_refusal_without_a_quote_is_not_resent():
+    ch, _bus = _channel()
+    tries = []
+
+    async def refuse(**kw):
+        tries.append(kw)
+        raise BadRequest("Bad Request: chat not found")
+    ch._app.bot.send_message = refuse
+    with pytest.raises(BadRequest):
+        await ch.send_response(_marked("<reply/>Tue works."), dict(_ASKED))
+    assert len(tries) == 1
 
 
 async def test_casa_s_target_wins_over_the_marker():

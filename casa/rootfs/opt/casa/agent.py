@@ -198,7 +198,8 @@ COPIED_CONTEXT_MARKERS = (
     # #1277: read only by ``background_jobs.job_started_by``.
     ANSWERED_BY_OPERATOR,
     # Browser executor §5.5: the operator's own typed words (Telegram
-    # ingress); read only by handoff.operator_words.
+    # ingress); read by handoff.operator_words, and by
+    # TelegramChannel._reply_parameters to check a reply's quote.
     "_operator_words",
     # The operator's inbound Telegram message, ``[bot_id, chat_id,
     # message_id]`` (Telegram ingress): what an answer sent later replies to.

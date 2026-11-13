@@ -106,8 +106,8 @@ target on another bot, in another chat, without a message id or malformed sends 
 Without a `_reply_to`, an answer whose admission kept a reply marker (`Admitted.reply`, see
 [`output-boundary.md`](output-boundary.md)) replies to `_tg_request` under the same rules. Its
 quote rides only when it is a substring of the operator's words (`_operator_words`) of at most
-1024 UTF-16 units, else the reply goes without one; a quote Telegram still refuses
-(`QUOTE_TEXT_INVALID`) is resent once without it (`TelegramChannel._send_message`). The marker
+1024 UTF-16 units, else the reply goes without one; a quoted message Telegram refuses, for
+any reason, is resent once without the quote (`TelegramChannel._send_message`). The marker
 lives on the answer's own text, so Casa's other sends under the same context stay plain.
 
 **Persisted shapes are strict.** A stored record or key that should carry its bot and does not

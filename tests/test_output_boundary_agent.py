@@ -216,15 +216,14 @@ async def test_a_half_written_marker_never_reaches_the_draft(tmp_path, monkeypat
     # then only the words.
     s = _scope()
     assert [s.admit(K.STREAM_UPDATE, c) for c in cumulatives] == ["", "", "Su", "Sure"]
-    # Through the real stream: the draft, which shows empty until the first
-    # word, is handed the words only.
+    # Through the real stream: the draft is handed the words only.
     deltas = ["<rep", 'ly quote="Mon', '"/>Su', "re"]
     monkeypatch.setattr("sdk_client_pool._default_make_client", QueuedScriptFactory([[
         *(_mk_stream_event(d) for d in deltas), _mk_assistant(cumulatives[-1])]]))
     a = _make_agent(tmp_path, role="assistant")
     msg = _msg("telegram", "777", "Mon or Tue?")
     msg.context["_turn_scope"] = ob.TurnScope.mint(msg, a.config)
-    drafts: list[str] = [""]
+    drafts: list[str] = []
 
     async def on_token(cum: str) -> None:
         drafts.append(cum)
@@ -233,7 +232,8 @@ async def test_a_half_written_marker_never_reaches_the_draft(tmp_path, monkeypat
         out = await a._process(msg, on_token=on_token)
     finally:
         await a.aclose()
-    assert drafts == ["", "Su", "Sure"]
+    # The empty draft before "Su" is the stream's own, shown at its start.
+    assert drafts == ["Su", "Sure"]
     assert out == cumulatives[-1]          # the model's own text; admission is at delivery
 
 

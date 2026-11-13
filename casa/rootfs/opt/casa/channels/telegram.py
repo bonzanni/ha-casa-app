@@ -5439,16 +5439,16 @@ class TelegramChannel(Channel):
         return {"reply_parameters": reply} if reply is not None else {}
 
     async def _send_message(self, **kw):
-        """``send_message``, once more without the reply's quote when Telegram
-        refuses the quote (``QUOTE_TEXT_INVALID``: not exact text of the
-        message replied to). The answer then goes as a plain reply; any other
-        refusal propagates unchanged."""
+        """``send_message``; when Telegram refuses a message whose reply
+        carries a quote (a quote that is not exact text of the message
+        replied to is one such refusal), the same message once more without
+        the quote, as a plain reply. A refusal of that resend, or of a
+        message with no quote, propagates unchanged."""
         try:
             return await self._app.bot.send_message(**kw)
         except BadRequest as exc:
             reply = kw.get("reply_parameters")
-            if (reply is None or not reply.quote
-                    or "QUOTE_TEXT_INVALID" not in str(exc).upper()):
+            if reply is None or not reply.quote:
                 raise
             logger.warning("reply quote refused; sent without it: %s",
                            type(exc).__name__)
