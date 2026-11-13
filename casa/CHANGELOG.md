@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.373.1] - 2026-11-13
+
+### Fixed
+
+- An internal check of how Casa's private files are protected runs again; nothing you see changes.
+
 ## [0.373.0] - 2026-11-13
 
 ### Changed
