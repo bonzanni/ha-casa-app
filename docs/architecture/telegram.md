@@ -12,7 +12,9 @@ How Telegram messages become turns and how answers come back: transport selectio
 authentication, and interactive keyboards. How an answer is
 rendered and paginated for the platform — the markdown grammar, the message budgets,
 link-destination fallbacks and the UTF-16 measurement — is
-[`architecture/telegram-rendering.md`](telegram-rendering.md). It does not cover the Bot API
+[`architecture/telegram-rendering.md`](telegram-rendering.md); a reply shown as a draft while
+the model writes it, and Stop on it, is [`telegram-reply-drafts.md`](telegram-reply-drafts.md).
+It does not cover the Bot API
 itself, nor what an agent does with a message once dispatched.
 
 ## Mental model
@@ -86,34 +88,32 @@ own request budget; nothing on the direct-chat path waits on it
 **Text leaves for the Bot API through one request seam, and a character the platform cannot
 carry is replaced there.** The client library sends every request as UTF-8 form data, so a
 string parameter still carrying a lone surrogate — a JSON `\ud800` escape in a model or tool
-result decodes to one — would raise before any request left the process: the whole reply in
-block mode, the first page of a streamed one, and the loss classed as unknown so the health
-notice is not re-offered. The channel therefore installs its own request class on the
-ordinary Bot API pool, below every sender — plain and rich, streamed edits, narration, media
+result decodes to one — would raise before any request left the process: the whole reply,
+and the loss classed as unknown so the health notice is not re-offered. The channel therefore installs its own request class on the
+ordinary Bot API pool, below every sender — plain and rich, the draft send, narration, media
 captions — and it replaces each surrogate code point with one U+FFFD, one code point for
 one, so entity offsets computed upstream stay valid. Nothing is normalised at the send
 sites, so a new sender cannot forget it. A value nested inside a JSON-encoded parameter (an
 entity address, a button label) is already an ASCII escape by the time it is serialised and
 is left for the platform to judge; a bot injected for a test is outside the seam.
 
-**Model text enters the seven model-text methods only as admitted text.** `send`,
-`send_response`, `finalize_stream`, `finalize_response_stream`, `post_dm_keyboard`,
-`send_media`'s caption and `guest_finish` accept an `Admitted` — the value the authoring
-turn's scope mints, or Casa's own `casa_text` — and refuse a bare string with an `ERROR` log.
-The first six then make zero Bot API calls and return the method's own failure value:
+**Model text enters the six model-text methods only as admitted text.** `send`,
+`send_response`, the draft send (`_send_draft`), `post_dm_keyboard`, `send_media`'s caption
+and `guest_finish` accept an `Admitted` — the value the authoring turn's scope mints, or
+Casa's own `casa_text` — and refuse a bare string with an `ERROR` log.
+The first five then make zero Bot API calls and return the method's own failure value:
 `NOT_DELIVERED`, `None`, or `UnadmittedText` from `send_media`; `guest_finish` still owes the
 group its one edit and makes it Casa's failure line ([`guest-summons.md`](guest-summons.md)). `edit_dm_message` stays string-typed, because it re-renders a body admitted
 when it was posted or replaces it with a Casa status; the arrival replies and the
 delivered-link message are outside the contract, and so is the agent log, which is no channel
-method and posts plain text. When a streamed
-reply's page-1 unit did not land, both finalizers send the admission's lines once, as their
-own message, before the overflow pages, which go untouched. The contract is INV-OUT-001 in
+method and posts plain text. The contract is INV-OUT-001 in
 [`output-boundary.md`](output-boundary.md), which also records every call site.
 
 **Casa's bot also hears of the bots it manages; an agent's bot passes its lifecycle first.**
 Each endpoint states the update types it wants on every `setWebhook` and `getUpdates`
 (`allowed_updates`): `message` and `callback_query`, plus `managed_bot` on Casa's bot alone
-and `guest_message` on an agent's own bots alone.
+and `guest_message` on an agent's own bots alone, and on both `stopped_message_generation`, a
+press of Stop on a reply's draft ([`telegram-reply-drafts.md`](telegram-reply-drafts.md)).
 On Casa's bot a `managed_bot_created` service message is caught by its own handler, registered
 ahead of the non-text one (which would otherwise answer it as an unreadable message): from the
 operator in his chat it is handed to the own-chat lifecycle and is never a turn; anything else
@@ -203,16 +203,12 @@ make true mid-turn. A caller that suppresses a one-shot notice on a normal retur
 consumes notices that were never displayed.
 
 Because such a notice is prepended at the *head* of the text, the outcome keys on the first
-unit of output rather than on total success: the first chunk of a split message, page 1 of a
-paginated response, or the final edit of a streamed one. A later page failing does not
-un-show what page 1 displayed. Two consequences worth stating, because both invert the
-naive reading:
-
-- An edit refused as "not modified" is **delivered** — the message already displays exactly
-  this text, notice included.
-- A streamed message whose final edit never ran is **not delivered**, even though the
-  operator watched prose arrive. The notice is prepended after streaming, so it was never
-  in what they saw.
+unit of output rather than on total success: the first chunk of a split message or page 1 of
+a paginated response — a streamed reply included, since it ends through the same send. A
+later page failing does not un-show what page 1 displayed. One consequence worth stating,
+because it inverts the naive reading: a streamed reply whose final send never landed is
+**not delivered**, even though the operator watched its draft arrive. The notice is
+prepended after streaming, so it was never in what they saw.
 
 A raise carries the same question and cannot answer it through a return value, so the head
 fact is stamped on the turn context and consulted on the exception path.

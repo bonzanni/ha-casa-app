@@ -116,13 +116,16 @@ resolves none refuses, so the absence is loud rather than a permissive default.
 
 ## Contracts & invariants
 
-**INV-OUT-001**: Model-authored text reaches the Telegram transport only as an `Admitted` minted by the authoring turn's scope — `send`, `send_response`, `finalize_stream`, `finalize_response_stream`, `post_dm_keyboard` and `send_media`'s caption refuse a bare string with an error log, zero Bot API calls and the method's own failure value.
+**INV-OUT-001**: Model-authored text reaches the Telegram transport only as an `Admitted` minted by the authoring turn's scope — `send`, `send_response`, the draft send (`_send_draft`), `post_dm_keyboard` and `send_media`'s caption refuse a bare string with an error log, zero Bot API calls and the method's own failure value.
 
 The failure value is each method's own contract, so every existing consumer already
-handles it: `NOT_DELIVERED` from the four senders, `None` from the keyboard post, and
-`UnadmittedText` — distinct from the channel-unavailable `RuntimeError` — from
+handles it: `NOT_DELIVERED` from `send` and `send_response`, `None` from the keyboard post
+and from the draft send, and `UnadmittedText` — distinct from the channel-unavailable `RuntimeError` — from
 `send_media`, which the tool's send classifier reports as `refused` rather than as a down
-channel. `edit_dm_message` stays string-typed on purpose: every caller re-renders a body that
+channel. The draft send is no reply sender: it is the one call a turn's draft stream makes
+to show the reply while the model writes it ([`telegram.md`](telegram.md)), classed as a
+stream site in the recorded lists, and its `None` makes no call and leaves the turn
+untouched. `edit_dm_message` stays string-typed on purpose: every caller re-renders a body that
 was admitted when it was posted, replaces it with a Casa status, or edits a plugin-authored
 consent body — an approval card's status edits pass `literal=True` and are sent as given,
 never rendered — and each caller is recorded and classified in
@@ -142,24 +145,20 @@ recorded lists class as notices; and the voice channel, which has not adopted th
 catch an accidental bypass; they are not a sandbox against Casa deliberately fabricating an
 admission.
 
-**INV-OUT-002**: In a turn where inbound files were listed and none read or handed off, every model-text emission committed after the listing carries the disclosure line at its head — streamed cumulatives included — and when a streamed reply's page-1 unit did not land, the line goes out once as its own message before the overflow pages; after a successful `Read` or hand-off of any armed file none does; a turn that received a file of its own owes that file alone; a turn with no file of its own is never told the person sent it files; and a silent turn stays silent.
+**INV-OUT-002**: In a turn where inbound files were listed and none read or handed off, every model-text emission committed after the listing carries the disclosure line at its head — streamed cumulatives included; after a successful `Read` or hand-off of any armed file none does; a turn that received a file of its own owes that file alone; a turn with no file of its own is never told the person sent it files; and a silent turn stays silent.
 
 The final reply passes through `scope.admit(FINAL_REPLY, …)` in `handle_message`, which
 judges closing silence itself before annotating; a classified-error reply is Casa's text and is never annotated; the
 health notice is prepended outermost over the admitted value. Every streamed cumulative
 `_emit` releases is admitted as `STREAM_UPDATE` after the INV-TURN-009 hold has judged the
-unannotated cumulative, so what is on screen is true at every moment and a failed final
-edit leaves the line there. `send_message` admits as `DISCRETE`, `ask_user` admits the body
+unannotated cumulative, so the draft on screen carries the line at every moment, and the
+reply that follows it is one ordinary send of the admitted final reply. `send_message` admits as `DISCRETE`, `ask_user` admits the body
 as `KEYBOARD` before its plain and scheduled arms branch — so the posted keyboard, the stored
 scheduled record and every settle edit derived from that body carry the same line — and
 `send_media` admits the caption as `CAPTION`, with the length cap applied to the model's body
-— never to the line — and the shortened caption re-wrapped under the same admission. When a
-streamed reply's page-1 unit did not land — the outcome is anything but `DELIVERED`,
-`UNKNOWN` included, since an unconfirmed head may not be showing the line — both finalizers
-send the admission's lines once, as their own plain message (`_overflow_head`), before the
-overflow pages — only when one follows — which then go exactly as they do when the head
-landed; a head whose outcome is `DELIVERED`, a "not modified" edit included, sends no line
-message.
+— never to the line — and the shortened caption re-wrapped under the same admission. A
+streamed reply's final send is the same `send_response` a turn that never streamed makes, so
+its first page carries the line as any reply's does.
 
 What it does not cover: a reply about a file the turn never listed and never tried to read,
 or a message sent before the turn's first listing, gets no line; the SDK transcript and
@@ -220,16 +219,6 @@ engagement launch with no scope bound stores no note and proceeds.
 **The evidence recorder fails.** Logged at WARN with the traceback; the hook returns an
 empty decision, so a fault in evidence never breaks the `Read`.
 
-**The page-1 unit of a streamed reply does not land.** The admission's lines go out once, as
-their own message, before the overflow pages; the pages themselves go exactly as they do
-when the head landed — rich, with the plain fallback — so no page is re-split around a
-prefix and no destination is cut; with nothing to follow (a failed single-page edit) no
-line message goes out. If the line message itself fails it is logged and the pages still
-go (a failed line message withholds none of the model's words; the pages keep their own send policies): the
-operator then sees a reply starting at page 2 with no line, and the log names it. An
-`UNKNOWN` head — the edit may have applied with its acknowledgement lost — gets the line
-message too; a line shown twice costs less than claims shown with none.
-
 **The persona name is longer than 64 characters.** The line names the role instead — the
 rule the authorization challenge headline already applies — so the line is bounded whatever
 the operator configured, and the caption cap stays meaningful.
@@ -278,7 +267,6 @@ model-text methods with that method's own failure value; the voice channel has n
 - `casa/rootfs/opt/casa/output_boundary.py`
 - `casa/rootfs/opt/casa/hooks.py::read_evidence_matchers`
 - `casa/rootfs/opt/casa/channels/telegram.py::_unadmitted`
-- `casa/rootfs/opt/casa/channels/telegram.py::_overflow_head`
 - `casa/rootfs/opt/casa/tools.py::_current_scope`
 - `casa/rootfs/opt/casa/tools.py::_launch_note`
 - `casa/rootfs/opt/casa/agent.py::Agent.handle_message`

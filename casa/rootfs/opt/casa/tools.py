@@ -460,11 +460,9 @@ async def send_message(args: dict) -> dict:
         # request; "it may have been delivered" is false for a `Forbidden`,
         # which the API evaluated and declined; "then X stopped the rest" is
         # false when the raising call was the last chunk. So the judgment is
-        # cut rather than sharpened a third time. Casa DOES own that taxonomy —
-        # `channels/telegram.py`'s `_SERVER_REFUSALS` and
-        # `_edit_failure_outcome`, built by review for this exact question
-        # — and it belongs to the channel, which knows its own transport, not
-        # to a channel-agnostic tool inferring from an exception class. The
+        # cut rather than sharpened a third time. That taxonomy belongs to the
+        # channel, which knows its own transport, not to a channel-agnostic
+        # tool inferring from an exception class. The
         # only delivery claim this tool makes is the one the channel itself
         # reports through `DeliveryOutcome`.
         #

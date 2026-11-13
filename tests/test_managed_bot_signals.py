@@ -9,7 +9,8 @@ endpoint, and the update types every endpoint asks for.
 * A ``managed_bot`` update alone is handed to the lifecycle's update entry,
   never to its creation entry.
 * ``allowed_updates`` is stated on every ``setWebhook`` and ``getUpdates``:
-  only Casa's bot asks for ``managed_bot``.
+  only Casa's bot asks for ``managed_bot``, and both ask for a Stop pressed
+  on a draft.
 
 The payloads keep the shape of the two updates Telegram sent when an operator
 created a bot (the creation message first, then the ``managed_bot`` update, in
@@ -230,7 +231,7 @@ def _rebuild_registrations(monkeypatch, *, casa: bool):
     monkeypatch.setattr(tg_ext, "ManagedBotUpdatedHandler", _Updated, raising=False)
     registered = []
     app = MagicMock()
-    app.add_handler = registered.append
+    app.add_handler = lambda handler, group=0: registered.append(handler)
     app.initialize = AsyncMock(side_effect=RuntimeError("stop after registration"))
     app.shutdown, app.stop = AsyncMock(), AsyncMock()
     chain = MagicMock()
@@ -325,8 +326,10 @@ async def test_a_webhook_states_the_endpoints_update_types(monkeypatch, casa, ex
 
 
 def test_only_casas_bot_asks_for_managed_bot_updates():
-    assert ALLOWED_UPDATES_CASA == ("message", "callback_query", "managed_bot")
-    assert ALLOWED_UPDATES_AGENT == ("message", "callback_query", "guest_message")
+    assert ALLOWED_UPDATES_CASA == (
+        "message", "callback_query", "managed_bot", "stopped_message_generation")
+    assert ALLOWED_UPDATES_AGENT == (
+        "message", "callback_query", "guest_message", "stopped_message_generation")
 
 
 # ---------------------------------------------------------------------------
@@ -372,7 +375,9 @@ def test_real_ptb_routes_the_two_signals_as_the_endpoint_assumes():
     (so the registration order is what keeps it from the "can't read" reply)
     and no text filter; the managed_bot update matches only its handler; a
     guest summons matches only the guest filter; the bot is read as the
-    endpoint passes it; the stated update types are Telegram's. Needs python-telegram-bot 22.8 (Bot API 10.0)."""
+    endpoint passes it; the stated update types are Telegram's, and the
+    library names all of them but a Stop pressed on a draft. Needs
+    python-telegram-bot 22.8 (Bot API 10.0)."""
     root = os.path.join(os.path.dirname(__file__), "..", "casa", "rootfs", "opt", "casa")
     r = subprocess.run([sys.executable, "-c", _REAL_PTB, os.path.abspath(root),
                         json.dumps(CREATED), json.dumps(UPDATED), json.dumps(GUEST)],
@@ -388,4 +393,4 @@ def test_real_ptb_routes_the_two_signals_as_the_endpoint_assumes():
     assert out["bot"] == CREATED["message"]["managed_bot_created"]["bot"]
     assert out["from"] == OPERATOR
     assert out["managed"] == [UPDATED["managed_bot"]["bot"], OPERATOR]
-    assert out["types"] == []
+    assert out["types"] == ["stopped_message_generation"]

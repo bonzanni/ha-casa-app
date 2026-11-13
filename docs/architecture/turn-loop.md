@@ -36,7 +36,10 @@ a direct caller that arrives without it, and puts the same object on the origin 
 `turn_scope` — a live value like `speaker_provenance`, never persisted — where the tool
 handlers and the read-evidence hooks find it, and hands `_make_on_message` the same scope.
 Whether the turn streams is the scope's `streaming_allowed` — a scheduled turn, event
-wake or own-chat greeting is minted with `NoStream`: no token callback. The model's final text
+wake or own-chat greeting is minted with `NoStream`: no token callback. On Telegram the
+callback writes a draft, which `handle_message` ends on every way out of the model's turn
+before the reply goes out as one ordinary send, and a press of the draft's Stop ends the turn
+([`telegram-reply-drafts.md`](telegram-reply-drafts.md)). The model's final text
 passes through `scope.admit(FINAL_REPLY, …)`, which judges closing silence itself, on the
 unannotated text, so a `<silent/>` turn is suppressed before any line could be added and
 prose after a sentinel is delivered whole; a classified-error reply is Casa's own text; the
@@ -97,7 +100,7 @@ conversation the next turn could continue.
 What it does not cover: a fault scoped to a sub-agent rather than the main loop is suppressed
 without ending the turn, because the resident may still answer; the result message's stop
 reason is read as a second carrier, so a refusal reported only there is still classified; text
-already streamed to a channel before the fault stays delivered, since it cannot be recalled;
+a channel already showed while streaming, before the fault, is not recalled;
 and this is a statement about the *turn* boundary. The other read loops that fold assistant
 text apply the same suppression and then report *their own* failure rather than a turn error:
 a delegated specialist run raises, so all four of its consumers fail the delegation with the
@@ -151,7 +154,8 @@ the refusal-only registration clearing of INV-TURN-007 is untouched.
 
 What it does not cover: the notice does not extend to delegation-completion synthesis
 turns (no trusted ingress; a delegation fault surfaces through the delegation machinery's
-own consumers), and text a channel streamed before classification stays streamed. The
+own consumers), and text a channel showed while streaming, before classification, is not
+recalled. The
 silence sentinel is no longer part of that residue — it is never streamed at all
 (INV-TURN-009), so the reclassified reply is one fresh send rather than a posted literal
 and a superseding edit.

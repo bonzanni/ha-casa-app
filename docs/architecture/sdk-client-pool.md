@@ -64,13 +64,27 @@ compared against the aware clock, so it is rejected as an invalid entry like any
 value. Nothing rewrites the offending entry, so a gate that treated such a value as an error
 rather than a rejection would fail the same way on every subsequent turn for that channel.
 
-**INV-TURN-002**: An error result invalidates the pool entry before the client can return to warm; an entry is never left warm after an error.
+**INV-TURN-002**: An error result invalidates the pool entry before the client can return to warm, unless `interrupt_turn` asked the CLI to stop that turn; an entry is never left warm after any other error result.
 
 The sequencing is looser than "before anything else": the error result is still forwarded to
 the turn's message handler like any other message, and invalidation happens after the receive
 loop — what is guaranteed is that the entry is invalid by the time the call returns.
 Retryable errors are re-raised so the retry wrapper sees them; non-retryable ones return
 with the entry marked invalid for the pool to drop.
+
+The one exception is a stop. `ManagedSdkClient.interrupt_turn` marks the entry `stopped` and
+asks the client's `interrupt()`, bounded at two seconds; it refuses an entry with no turn in
+flight or one whose turn has already received its result, and when the interrupt cannot be delivered the mark is withdrawn and the turn goes on.
+Nothing is cancelled: the CLI ends an interrupted turn with an error result, which is the
+expected ending, so `run_turn` returns the turn's session id and leaves the client warm for
+the next query. The mark is cleared when the next turn starts, and `PoolTurnResult.stopped`
+tells the caller. The module-level `interrupt_turns(cid)` asks every pooled turn running under
+that correlation id, in any agent's pool — on a client in the pool's map, or on one an
+invalidation or the pool's close has taken out of the map and is waiting on; an empty id or
+the `-` placeholder matches nothing, and a turn that built its own client outside the pool is
+out of its reach, as is one whose client a reset or an eviction took out of the map. Who
+calls it, and what a stopped turn delivers, is
+[`telegram-reply-drafts.md`](telegram-reply-drafts.md).
 
 **INV-TURN-003**: A cancelled turn interrupts, then drains its buffered messages until the terminal result or stream end before the entry may return to warm; any failure in that window — including a second cancellation — invalidates the entry instead.
 
@@ -251,10 +265,12 @@ handler call — starts its drain at the swap, as before.
 - `casa/rootfs/opt/casa/sdk_client_pool.py::ManagedSdkClient`
 - `casa/rootfs/opt/casa/sdk_client_pool.py::PoolUnavailable`
 - `casa/rootfs/opt/casa/sdk_client_pool.py::PoolClosing`
+- `casa/rootfs/opt/casa/sdk_client_pool.py::interrupt_turns`
 
 **Tests**
 - `tests/test_sdk_client_pool_pool.py`
 - `tests/test_sdk_client_pool_client.py`
+- `tests/test_sdk_pool_stop.py`
 - `tests/test_pool_close_final_sweep.py`
 - `tests/test_shutdown_pool_and_refusal.py`
 

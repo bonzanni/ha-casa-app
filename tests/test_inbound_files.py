@@ -375,7 +375,7 @@ async def test_the_non_text_handler_is_registered(monkeypatch):
                         lambda f, cb, block=True: ("MessageHandler", f, cb, block))
     registered = []
     app = MagicMock()
-    app.add_handler = registered.append
+    app.add_handler = lambda handler, group=0: registered.append(handler)
     app.initialize = AsyncMock(side_effect=RuntimeError("stop after registration"))
     app.shutdown = AsyncMock()
     app.stop = AsyncMock()

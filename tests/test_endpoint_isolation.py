@@ -23,6 +23,7 @@ verifies is reported to the transport before the endpoint is ready.
 from __future__ import annotations
 
 import asyncio
+import functools
 import itertools
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, MagicMock
@@ -31,6 +32,7 @@ import pytest
 
 import verdict_broker
 from channels import DeliveryOutcome
+from channels.telegram_draft import DraftStream
 from channels.tg_address import (
     CASA,
     DuplicateEndpoint,
@@ -46,6 +48,7 @@ from two_endpoints import (  # noqa: F401 — the harness
     feed_update,
 )
 from output_boundary_testing import admitted
+from test_telegram_draft_stream import FakeTime, run_until
 from verdict_broker import VerdictBroker
 
 pytestmark = pytest.mark.asyncio
@@ -66,6 +69,7 @@ def _fake_bot(bot_id: int) -> MagicMock:
     ids = itertools.count(1000)
     bot.send_message = AsyncMock(side_effect=lambda **kw: NS(message_id=next(ids)))
     bot.edit_message_text = AsyncMock(return_value=True)
+    bot.send_message_draft = AsyncMock(return_value=True)
     bot.edit_message_reply_markup = AsyncMock(return_value=True)
     bot.send_chat_action = AsyncMock(return_value=True)
     bot.delete_message = AsyncMock(return_value=True)
@@ -289,16 +293,24 @@ async def test_a_typed_message_ends_only_its_own_bots_pending_question(
 
 
 async def test_a_turn_on_222_is_answered_through_222_only(pair):
+    ft = FakeTime()
+    for ep in (pair.casa, pair.finance):
+        ep._new_draft_stream = functools.partial(
+            DraftStream, clock=ft.clock, sleep=ft.sleep)
     context = await _dm(pair.finance, pair)
     before = len(calls(pair.casa))
     on_token = pair.transport.create_on_token(context)
-    await on_token("partial")
+    await on_token(admitted("partial"))
+    await run_until(ft, 1.0)                    # the draft goes out
+    on_token.end()
     out = await pair.transport.send_response(admitted("the answer"), context)
     await pair.transport.turn_finished(context)
     assert out is DeliveryOutcome.DELIVERED
     assert len(calls(pair.casa)) == before == 0
-    sent = [kw for name, kw in calls(pair.finance) if name == "send_message"]
-    assert [kw["text"] for kw in sent] == ["partial", "the answer"]
+    sent = [(name, kw["text"]) for name, kw in calls(pair.finance)
+            if name in ("send_message_draft", "send_message")]
+    assert sent == [("send_message_draft", "partial"),
+                    ("send_message", "the answer")]
 
 
 # ---------------------------------------------------------------------------
@@ -565,6 +577,7 @@ async def test_an_endpoint_with_no_id_yet_behaves_as_an_unready_channel():
     on_token = ep.create_on_token(ctx)
     assert callable(on_token)
     await on_token("partial")       # raises nothing
+    on_token.end()
 
 
 async def test_getme_reports_the_id_before_the_endpoint_is_ready(built):

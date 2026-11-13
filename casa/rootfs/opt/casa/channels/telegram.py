@@ -13,16 +13,14 @@ one bot. Every turn this endpoint builds carries its route (``_tg_bot``, the
 bot it arrived on), and every message it stores or looks up is a
 :class:`~channels.tg_address.TgAddress` carrying this endpoint's bot id.
 
-Supports two transport modes and two delivery modes:
+Supports two transport modes:
 
-Transport:
 - **Polling** (default): long-polls Telegram for updates.
 - **Webhook**: Telegram pushes updates. Set ``webhook_url``.
 
-Delivery:
-- **stream**: send first token immediately, edit message in-place as
-  more tokens arrive (~1 s throttle). Feels real-time.
-- **block**: wait for the full response before sending (classic).
+A reply is shown while it is written: the turn's token callback feeds a
+draft (``sendMessageDraft``, see :mod:`channels.telegram_draft`), and the
+turn then ends with one ordinary message.
 """
 
 from __future__ import annotations
@@ -33,6 +31,7 @@ import contextvars
 import logging
 import os
 import re
+import secrets
 import time
 
 from dataclasses import dataclass
@@ -46,10 +45,7 @@ from telegram.constants import ChatAction
 from telegram.request import HTTPXRequest
 from telegram.error import (
     BadRequest,
-    ChatMigrated,
-    Conflict,
     Forbidden,
-    InvalidToken,
     NetworkError,
     RetryAfter,
     TelegramError,
@@ -65,9 +61,11 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
+import sdk_client_pool
 from bus import BusMessage, MessageBus, MessageType
 from ingress_identity import (
     TELEGRAM_NON_OPERATOR_CLEARANCE,
@@ -87,6 +85,7 @@ from channels.tg_address import (
 # A job keyboard post as ``(address, kind)``: the one reading of the in-memory
 # pair and the stored row, shared with the transport that hands them out.
 from channels.telegram_transport import _post_parts as _job_post_parts
+from channels.telegram_draft import DraftStream, DraftTooLong
 from output_boundary import Admitted, UnadmittedText
 from media_policies import MEDIA_POLICIES
 from text_util import replace_lone_surrogates, utf16_len, utf16_prefix_end
@@ -203,19 +202,6 @@ def _plain(text):
     return shown
 
 
-def _overflow_head(text: Any, outcome: DeliveryOutcome) -> str:
-    """#1038 §6.6 (as amended in plan round 3): when the page-1 unit of a
-    streamed reply did not land, the admission's lines go out once, as their
-    own message, before the overflow pages — otherwise the operator can see the
-    claims on pages 2+ with no line before them. Empty when the head landed or
-    nothing was annotated. ``UNKNOWN`` is an unconfirmed head — the edit may
-    have applied with its acknowledgement lost — and deliberately gets the line
-    message too: a line shown twice costs less than claims shown with none."""
-    if outcome is DeliveryOutcome.DELIVERED:
-        return ""
-    lines = getattr(text, "annotations", ()) or ()
-    return "\n\n".join(lines) if lines else ""
-
 # Telegram typing indicator lasts ~5 s; resend every 4 s to keep it alive.
 _TYPING_INTERVAL = 4.0
 
@@ -243,8 +229,6 @@ _TYPING_LEASE_TTL_S = 300.0
 # and non-alarmist — the bucket refills within a minute.
 _RATE_LIMIT_REPLY = "Slow down — try again in a minute."
 
-# Stream edit throttle (seconds between editMessageText calls).
-_STREAM_THROTTLE = 1.0
 # How long an agent's own greeting (TelegramChannel.speak_first) counts as on
 # its way when no delivery or refusal ends it sooner (a silent or failed turn).
 GREETING_IN_FLIGHT_S = 120.0
@@ -258,7 +242,7 @@ def _resolve_chat_id(context: dict[str, Any], default: int | str) -> int | str:
     scheduled triggers and voice scope probes it carries a session-keying
     label like ``"interval:heartbeat"`` or ``"probe-scope"``. The Telegram
     API rejects non-numeric values with ``BadRequest: Chat not found``,
-    which used to bubble through ``finalize_stream → send`` and surface
+    which used to bubble through ``send`` and surface
     as a full traceback at the bus dispatcher. Fall back to the channel's
     registered default when the value isn't a valid chat id.
     """
@@ -305,17 +289,18 @@ class _SurrogateSafeRequest(HTTPXRequest):
 
     PTB sends every request as UTF-8 FORM data, so a string parameter still
     carrying a lone surrogate raises ``NetworkError(UnicodeEncodeError)``
-    before any request leaves the process — the whole reply vanishes in block
-    mode, page 1 in stream mode, and the loss is classed unknown so the health
-    notice is not re-offered. Normalising here, below every sender (plain,
-    rich, streamed edits, narration, captions) and above the encoder, is what
-    "replace it once where the text leaves for the transport" means: no send
-    site can forget it and no sender changes. Replacement is one code point
-    for one, so entities computed upstream stay valid. Installed by
-    ``_rebuild`` on the ordinary pool only — ``getUpdates`` carries no
-    Casa-authored text. A bot injected through ``bot=`` is outside this
-    guarantee; ``tests/test_telegram_surrogate_boundary.py`` pins it against
-    the real library."""
+    before any request leaves the process — the message vanishes, and the
+    loss is classed unknown so the health notice is not re-offered.
+    Normalising here, below every sender (the ordinary sends, plain and rich,
+    narration, captions, edits of Casa's own messages, the draft send) and
+    above the encoder, is what "replace it once where the text leaves for the
+    transport" means: no send site can forget it and no sender changes.
+    Replacement is one code point for one, so entities computed upstream stay
+    valid. Installed by ``_rebuild`` on the ordinary pool only —
+    ``getUpdates`` carries no Casa-authored text. A bot injected through
+    ``bot=`` is outside this guarantee;
+    ``tests/test_telegram_surrogate_boundary.py`` pins it against the real
+    library."""
 
     async def do_request(  # type: ignore[override]
         self, url: str, method: str, request_data: Any = None, **timeouts: Any,
@@ -325,22 +310,6 @@ class _SurrogateSafeRequest(HTTPXRequest):
         return await super().do_request(
             url, method, request_data=request_data, **timeouts)
 
-
-def _peek_stream_message_id(on_token: "OnTokenCallback") -> int | None:
-    """Recover the streamed message_id from the on_token closure state.
-
-    Mirrors the closure-peek in ``finalize_stream``; ``None`` means streaming
-    never sent a message (block mode, or an empty/suppressed stream).
-    """
-    if hasattr(on_token, "__closure__") and on_token.__closure__:
-        for cell in on_token.__closure__:
-            try:
-                val = cell.cell_contents
-            except ValueError:
-                continue
-            if isinstance(val, dict) and "message_id" in val:
-                return val["message_id"]
-    return None
 
 # M11 (v0.52.0): MarkdownV2 escaping for permission-relay text. Telegram
 # rejects a message with parse_mode="MarkdownV2" if reserved chars in the
@@ -857,9 +826,11 @@ def _managed_bot_updated_handler(callback):
 #: The update types each endpoint asks Telegram for, stated on every
 #: ``setWebhook`` and ``getUpdates`` (an omitted list keeps whatever was set
 #: before). Only Casa's bot manages other bots, so only it hears of them;
-#: only an agent's own bot can be summoned into a group as a guest.
-ALLOWED_UPDATES_CASA = ("message", "callback_query", "managed_bot")
-ALLOWED_UPDATES_AGENT = ("message", "callback_query", "guest_message")
+#: only an agent's own bot can be summoned into a group as a guest. Either
+#: can be writing a reply's draft when Stop is pressed on it.
+_STOP_UPDATE = "stopped_message_generation"
+ALLOWED_UPDATES_CASA = ("message", "callback_query", "managed_bot", _STOP_UPDATE)
+ALLOWED_UPDATES_AGENT = ("message", "callback_query", "guest_message", _STOP_UPDATE)
 
 #: While an agent's held update is being released, the bus outcomes its
 #: delivery met (see :meth:`TelegramChannel.release_update`).
@@ -1168,6 +1139,10 @@ class TelegramChannel(Channel):
         # each other's indicator — a turn releases only ITS lease.
         self._typing_leases: dict[str, dict[str, float]] = {}
         self._typing_loops: dict[str, asyncio.Task] = {}
+        # The drafts being written right now: draft id as text → (target chat
+        # as text, the stream writing it). An entry lives from the turn's
+        # token callback being made until its stream is ended.
+        self._streams: dict[str, tuple[str, DraftStream]] = {}
         # Typing backoff state (shared across all chats) — item-E-orthogonal.
         self._typing_consecutive_failures: int = 0
         self._typing_suspended: bool = False
@@ -1441,6 +1416,12 @@ class TelegramChannel(Channel):
         app.add_handler(
             CallbackQueryHandler(self._on_inline_callback, block=False)
         )
+        # Stop pressed on a reply's draft. The library has no handler for
+        # that update, so this one takes every update and looks for it — in
+        # a group of its own: within a group only the first matching handler
+        # runs, and this one matches everything.
+        app.add_handler(
+            TypeHandler(Update, self._on_stop_update, block=False), group=1)
         app.add_error_handler(self._on_ptb_error)
         # M8 (v0.52.0): roll back a half-started Application if any bring-up
         # step raises, so a started-but-unpublished app (fetcher task,
@@ -2132,11 +2113,12 @@ class TelegramChannel(Channel):
         """Add/refresh a turn-owned typing lease and ensure the chat's loop.
 
         r1-1: the lease is keyed by *lease_id* (the turn's cid), so overlapping
-        same-chat turns each own a lease and one turn's finalizer can't cancel
-        another's indicator. r1-2: the lease carries an expiry (``ttl_s``,
-        default ``_TYPING_LEASE_TTL_S``) the loop enforces, so the indicator is
-        bounded even if no teardown ever runs. Suspended (401 circuit breaker)
-        → no-op, exactly as before.
+        same-chat turns each own a lease, and what releases one turn's lease
+        (its reply's send, its first streamed token, or ``turn_finished``)
+        can't cancel another's indicator. r1-2: the lease carries an expiry
+        (``ttl_s``, default ``_TYPING_LEASE_TTL_S``) the loop enforces, so the
+        indicator is bounded even if no teardown ever runs. Suspended (401
+        circuit breaker) → no-op, exactly as before.
         """
         if self._typing_suspended:
             return
@@ -2543,8 +2525,14 @@ class TelegramChannel(Channel):
 
         user_name = user.first_name if user else "unknown"
 
+        # An inherited cid is kept only when it is one: the variable can also
+        # hold the "-" placeholder or, in a context that began inside a pooled
+        # SDK client, that client's cid box — an object the pool rewrites for
+        # every turn. This turn's cid is a string of its own, since its typing
+        # lease, its draft and its Stop are all found by it.
         inherited = cid_var.get()
-        cid = inherited if inherited != "-" else new_cid()
+        cid = (inherited if isinstance(inherited, str) and inherited != "-"
+               else new_cid())
 
         # Task 9: server-created trusted ingress identity (never decoded
         # from payload) — the sole source Agent._process reads to persist
@@ -5351,7 +5339,7 @@ class TelegramChannel(Channel):
     # ------------------------------------------------------------------
     # Rich-text response delivery (v0.70.0). ONLY reached via the
     # response-provenant methods below (agent.py gates on error_kind is None);
-    # send()/finalize_stream() stay plain for tools, bus
+    # send() stays plain for tools, bus
     # routing, notices, permission prompts, and error text.
     # ------------------------------------------------------------------
 
@@ -5387,24 +5375,6 @@ class TelegramChannel(Channel):
                 continue
             targets.append(url)
         return [display, *_split_message("\n".join(targets))]
-
-    async def _send_overflow_line(self, chat_id, line: str) -> None:
-        """#1038 §6.6 (plan round 3): the admission's lines as ONE plain message
-        before the overflow pages of a head that did not land. The pages then go
-        exactly as they do when the head landed — never re-split around a
-        prefix, which is where four findings in three rounds lived. A failure
-        here is logged and the pages still go: the model's words are never
-        withheld (#1036 ruling 2); the pages keep their own policies — the rich
-        finalizer's overflow sends log and continue, the plain finalizer's
-        chunk sends propagate, as before. The callers send this only when an
-        overflow send follows; ``UNKNOWN`` (an unconfirmed head) counts as not
-        landed, deliberately — see ``_overflow_head``."""
-        if not line:
-            return
-        try:
-            await self._app.bot.send_message(chat_id=chat_id, text=line)
-        except TelegramError as exc:
-            logger.warning("Final stream disclosure send failed: %s", exc)
 
     def _record_post(self, chat_id, sent, post) -> None:
         """File each landed message of a task under its task — as it lands, one
@@ -5936,104 +5906,6 @@ class TelegramChannel(Channel):
                         self.default_agent, type(exc).__name__)
             return DeliveryOutcome.NOT_DELIVERED
 
-    async def finalize_response_stream(
-        self, full_text: str, context: dict[str, Any], on_token: OnTokenCallback,
-    ) -> DeliveryOutcome:
-        """Streamed agent response: apply entities on the final edit only.
-
-        Block mode / no streamed message → send_response(). Plain (no markup) or
-        oversize → the existing plain finalize_stream(). Entity edit falls back to
-        the ORIGINAL text edited into the SAME message on BadRequest."""
-        # Release the lease before the availability guard (reconnect-safe).
-        target_chat = _resolve_chat_id(context, self.chat_id)
-        self._release_typing(context, target_chat)
-        if _unadmitted("finalize_response_stream", full_text):
-            return DeliveryOutcome.NOT_DELIVERED
-        if self._app is None:
-            return DeliveryOutcome.NOT_DELIVERED
-        message_id = _peek_stream_message_id(on_token)
-        if message_id is None:
-            return await self.send_response(full_text, context)  # verbatim
-        # v2 (RC3): an oversized SUCCESSFUL response no longer delegates to
-        # the plain finalize_stream (raw-marker chunks); page 1 rich-edits the
-        # streamed message, the rest send rendered. Single page keeps the
-        # v0.70.0 contract (no markup → plain finalize of ``plain_text``,
-        # #1330; BadRequest → raw edit).
-        pages = render_paged(full_text)
-        if len(pages) == 1 and pages[0][1] is None:
-            return await self.finalize_stream(  # verbatim (§2.1)
-                _plain(full_text), context, on_token)
-        display0, entities0 = pages[0]
-        # #831: a rejected multi-page page-1 edit carries its link
-        # destinations; the single page keeps its authored text verbatim.
-        chunks0 = ([full_text] if len(pages) == 1
-                   else self._plain_fallback_chunks(display0, entities0))
-        fallback0 = chunks0[0]
-        # Page 1 carries a prepended operator notice, so page 1 decides the
-        # outcome; the overflow sends below swallow their errors and cannot
-        # downgrade it (#556 design §2.3).
-        outcome = DeliveryOutcome.NOT_DELIVERED
-        fell_back0 = False
-        try:
-            try:
-                if entities0 is not None:
-                    await self._app.bot.edit_message_text(
-                        chat_id=target_chat, message_id=message_id,
-                        text=display0, entities=entities0,
-                    )
-                else:
-                    await self._app.bot.edit_message_text(
-                        chat_id=target_chat, message_id=message_id,
-                        text=fallback0,
-                    )
-            except BadRequest:
-                fell_back0 = True
-                await self._app.bot.edit_message_text(
-                    chat_id=target_chat, message_id=message_id, text=fallback0,
-                )
-        except TelegramError as exc:
-            if "not modified" not in str(exc).lower():
-                logger.warning("Final stream edit failed: %s", exc)
-                outcome = _edit_failure_outcome(exc)
-            else:
-                # Already displays this exact text, notice included.
-                outcome = DeliveryOutcome.DELIVERED
-                context["_delivery_head_sent"] = True
-        else:
-            outcome = DeliveryOutcome.DELIVERED
-            context["_delivery_head_sent"] = True
-        # An edit cannot be split, so page 1's overflow destinations follow as
-        # ordinary messages — after the outcome above is decided, under the
-        # same log-and-continue policy the overflow pages use.
-        # #1038 §6.6: a head that did not land cannot carry the disclosure for
-        # the pages that follow, so the admission's lines go out first, once,
-        # as their own message — only when something follows; the pages
-        # themselves are untouched.
-        tail0 = chunks0[1:] if fell_back0 else []
-        if tail0 or pages[1:]:
-            await self._send_overflow_line(target_chat, _overflow_head(full_text, outcome))
-        for chunk in tail0:
-            try:
-                await self._app.bot.send_message(
-                    chat_id=target_chat, text=chunk)
-            except TelegramError as exc:
-                logger.warning("Final stream link-target send failed: %s", exc)
-        for display, entities in pages[1:]:
-            try:
-                if entities is None:
-                    await self._app.bot.send_message(
-                        chat_id=target_chat, text=display)
-                else:
-                    chunks = self._plain_fallback_chunks(display, entities)
-                    if await self._send_one(
-                            target_chat, chunks[0], display, entities):
-                        for chunk in chunks[1:]:
-                            await self._app.bot.send_message(
-                                chat_id=target_chat, text=chunk)
-            except TelegramError as exc:
-                logger.warning("Final stream overflow send failed: %s", exc)
-        return outcome
-
     # ------------------------------------------------------------------
     # Outbound: a turn this bot was summoned to in a group it is not a
     # member of. Telegram allows one inline message there, opened before the
@@ -6080,7 +5952,7 @@ class TelegramChannel(Channel):
         """L7 (v0.52.0): teardown for turns that end WITHOUT delivery.
 
         When a turn produces empty / whitespace-only / `<silent/>` output the
-        agent never calls send()/finalize_stream(), so the per-chat typing
+        agent never calls send()/send_response(), so the per-chat typing
         loop started in _handle would keep issuing send_chat_action forever
         (permanent 'typing…' plus one Bot API call every 4s). The agent calls
         this hook on the suppressed-turn path to stop it. In block mode the
@@ -6114,209 +5986,127 @@ class TelegramChannel(Channel):
     # Outbound: streaming
     # ------------------------------------------------------------------
 
-    def create_on_token(self, context: dict[str, Any]) -> "OnTokenCallback | None":
-        """Return a callback for streaming tokens to this chat.
+    #: What builds a turn's draft stream (a test passes its own clock here).
+    _new_draft_stream = DraftStream
 
-        The callback receives the *accumulated* response text on each token and
-        edits the message in place. v0.125.0 (#228) removed the
-        ``telegram_delivery_mode`` option and with it the ``block`` mode, whose
-        only behaviour was to make this a no-op and let the final send deliver
-        everything at once.
+    def create_on_token(self, context: dict[str, Any]) -> "OnTokenCallback | None":
+        """Return this turn's token callback: the reply is written into a
+        draft while the model writes it.
+
+        The callback receives the *accumulated* reply text on each token. It
+        releases this turn's typing lease at its first call, then only hands
+        the text to the turn's :class:`DraftStream`, which sends it on its own
+        clock through :meth:`_send_draft` — the model's message loop never
+        waits on the network. The callback's ``end`` attribute stops the
+        stream; whoever runs the turn calls it once the model is done, and
+        the reply then goes out as an ordinary message. A draft decides
+        nothing about the turn.
 
         ``None`` for a summoned turn: its one inline message takes only the
-        final text (:meth:`guest_finish`), so nothing streams.
+        final text (:meth:`guest_finish`), so nothing streams. ``None`` also
+        for a turn in a group or supergroup — a chat with a negative id —
+        because a draft exists in a private chat only: that reply is
+        delivered whole.
         """
         if self.guest_reply_for(context) is not None:
             return None
         target_chat = str(_resolve_chat_id(context, self.chat_id))
-        # r1-1: release THIS turn's lease by its cid on first-token teardown
+        try:
+            if int(target_chat) < 0:
+                return None
+        except ValueError:
+            pass
+        # This turn's typing lease is released by its cid at the first token
         # (captured once — the context is fixed for this callback's turn).
         _lease_cid = context.get("cid")
         _lease_cid = _lease_cid if isinstance(_lease_cid, str) and _lease_cid else None
-        state: dict[str, Any] = {
-            "message_id": None,
-            "last_edit": 0.0,
-        }
+        draft_id = secrets.randbelow(2**31 - 2) + 1
+        key = str(draft_id)
+
+        async def _send(text: Any) -> float | None:
+            return await self._send_draft(target_chat, draft_id, text)
+
+        stream = self._new_draft_stream(
+            send=_send, cid=_lease_cid,
+            on_end=lambda: self._streams.pop(key, None))
+        self._streams[key] = (target_chat, stream)
+        typing_released = False
 
         async def _stream_token(accumulated_text: str) -> None:
-            # First-token teardown releases THIS turn's lease BEFORE the
-            # availability guard — local bookkeeping must not depend on channel
-            # health. Idempotent, so repeated pre-message calls during a
-            # reconnect window stay a no-op.
-            if state["message_id"] is None:
+            # The first token releases THIS turn's lease before anything
+            # else — local bookkeeping that depends on no network call and
+            # not on the channel's health.
+            nonlocal typing_released
+            if not typing_released:
+                typing_released = True
                 self._stop_typing(target_chat, _lease_cid)
+            await stream.on_token(accumulated_text)
 
-            if self._app is None:
-                return
-
-            now = time.monotonic()
-
-            if state["message_id"] is None:
-                # First token: send new message (typing already stopped above).
-                # #305 (Sol r1): the first send needs the same UTF-16 guard as
-                # the edits — an oversized first payload would be rejected on
-                # every callback; skip and let finalize_stream split it.
-                if utf16_len(accumulated_text) > _TG_MAX_LENGTH:
-                    return
-                try:
-                    result = await self._app.bot.send_message(
-                        chat_id=target_chat,
-                        text=accumulated_text,
-                    )
-                    state["message_id"] = result.message_id
-                    state["last_edit"] = now
-                except TelegramError as exc:
-                    logger.warning("Stream send failed: %s", exc)
-            elif now - state["last_edit"] >= _STREAM_THROTTLE:
-                # Throttled edit (#305: UTF-16 units, Telegram's unit)
-                if utf16_len(accumulated_text) > _TG_MAX_LENGTH:
-                    return  # Stop editing, final send will split
-                try:
-                    await self._app.bot.edit_message_text(
-                        chat_id=target_chat,
-                        message_id=state["message_id"],
-                        text=accumulated_text,
-                    )
-                    state["last_edit"] = now
-                except TelegramError as exc:
-                    # "Message is not modified" is fine (identical text)
-                    if "not modified" not in str(exc).lower():
-                        logger.warning("Stream edit failed: %s", exc)
-
+        _stream_token.end = stream.end  # type: ignore[attr-defined]
         return _stream_token
 
-    async def finalize_stream(
-        self, full_text: str, context: dict[str, Any], on_token: OnTokenCallback
-    ) -> DeliveryOutcome:
-        """Send the final version of a streamed response.
+    async def _send_draft(
+        self, target_chat: str, draft_id: int, text: Any,
+    ) -> float | None:
+        """One draft call for a turn's :class:`DraftStream`: show *text* as
+        the draft *draft_id* in *target_chat*, with Telegram's Stop button.
 
-        In stream mode, does a final edit to ensure the complete text
-        is displayed.  Falls back to send() if streaming never started
-        (e.g., empty response or stream mode was block).
-
-        #556: the outcome describes the FINAL EDIT, not the token stream. A
-        one-shot notice is prepended after streaming, so tokens the operator
-        already watched never contained it — only this edit can show it.
+        Returns ``None``, or the seconds a flood wait asks for. Raises
+        :class:`DraftTooLong` — before any call — when the text no longer
+        fits one message; any other failure of the call propagates to the
+        stream, which logs it once and carries on. Text that was not admitted
+        makes no call (INV-OUT-001), nor does a channel that is not started.
         """
-        # Release the lease before the availability guard (reconnect-safe).
-        target_chat = _resolve_chat_id(context, self.chat_id)
-        self._release_typing(context, target_chat)
-
-        if _unadmitted("finalize_stream", full_text):
-            return DeliveryOutcome.NOT_DELIVERED
+        if _unadmitted("send_draft", text):
+            return None
+        display, entities = render(text)
+        if entities is None:
+            display = _plain(text)
+        if utf16_len(display) > _TG_MAX_LENGTH:
+            raise DraftTooLong()
         if self._app is None:
-            return DeliveryOutcome.NOT_DELIVERED
+            return None
+        try:
+            await self._app.bot.send_message_draft(
+                chat_id=int(target_chat), draft_id=draft_id, text=display,
+                entities=entities,
+                # not parameters of this library version's method yet
+                api_kwargs={"can_stop": True, "keep_on_stop": True},
+            )
+        except RetryAfter as exc:
+            wait = exc.retry_after
+            return (wait.total_seconds() if hasattr(wait, "total_seconds")
+                    else float(wait))
+        return None
 
-        # Retrieve state from the closure
-        state = getattr(on_token, "__self__", None)
-        # For closures we peek at the cell variables
-        message_id = None
-        if hasattr(on_token, "__closure__") and on_token.__closure__:
-            for cell in on_token.__closure__:
-                try:
-                    val = cell.cell_contents
-                    if isinstance(val, dict) and "message_id" in val:
-                        message_id = val["message_id"]
-                        break
-                except ValueError:
-                    continue
+    async def _on_stop_update(self, update: Any, _context: Any = None) -> None:
+        """Stop was pressed on a draft: end that draft's stream and ask the
+        running turn to stop. The turn then ends as it always does, and what
+        it wrote so far is delivered as an ordinary message.
 
-        if message_id is None:
-            # Streaming never sent a message — fall back to regular send
-            return await self.send(full_text, context)   # verbatim (§2.1)
-
-        # Final edit with complete text (#305: UTF-16 units)
-        if utf16_len(full_text) <= _TG_MAX_LENGTH:
-            try:
-                await self._app.bot.edit_message_text(
-                    chat_id=target_chat,
-                    message_id=message_id,
-                    text=full_text,
-                )
-            except TelegramError as exc:
-                if "not modified" not in str(exc).lower():
-                    logger.warning("Final stream edit failed: %s", exc)
-                    return _edit_failure_outcome(exc)
-                # "not modified" — the message ALREADY displays this exact
-                # text, notice included. A positive outcome (§2.4 ruling 1).
-            context["_delivery_head_sent"] = True
-            return DeliveryOutcome.DELIVERED
-        else:
-            # Response exceeded the limit — edit first chunk, send the rest
-            chunks = _split_message(full_text)
-            if not chunks:
-                # Whitespace-only overflow (#305 drops unsendable chunks) —
-                # keep the streamed message as-is rather than index [].
-                # Nothing was shown, so nothing may be suppressed on it.
-                return DeliveryOutcome.NOT_DELIVERED
-            outcome = DeliveryOutcome.NOT_DELIVERED
-            try:
-                await self._app.bot.edit_message_text(
-                    chat_id=target_chat,
-                    message_id=message_id,
-                    text=chunks[0],
-                )
-            except TelegramError as exc:
-                if "not modified" in str(exc).lower():
-                    outcome = DeliveryOutcome.DELIVERED
-                    context["_delivery_head_sent"] = True
-                else:
-                    outcome = _edit_failure_outcome(exc)
-            else:
-                outcome = DeliveryOutcome.DELIVERED
-                context["_delivery_head_sent"] = True
-            # #1038 §6.6: a head that did not land cannot carry the
-            # disclosure for the chunks that follow — the lines go out first,
-            # once, as their own message, only when a chunk follows; the
-            # chunks are untouched.
-            if chunks[1:]:
-                await self._send_overflow_line(target_chat, _overflow_head(full_text, outcome))
-            for chunk in chunks[1:]:
-                await self._app.bot.send_message(
-                    chat_id=target_chat,
-                    text=chunk,
-                )
-            # The head chunk decides: later chunks cannot un-show it.
-            return outcome
-
-
-# A REFUSAL, not a transport failure: PTB builds each of these from a response
-# Telegram actually sent, so the API evaluated the call and declined it and
-# nothing was displayed. Membership is an explicit allowlist rather than a class
-# test, because the hierarchy cuts across the distinction that matters here —
-# `BadRequest` (HTTP 400, a refusal) and `TimedOut` (no response at all) are
-# BOTH `NetworkError` subclasses in PTB 22.8, so classifying by base class gets
-# it exactly backwards.
-_SERVER_REFUSALS = (
-    BadRequest, Forbidden, InvalidToken, RetryAfter, ChatMigrated, Conflict,
-)
-
-
-def _edit_failure_outcome(exc: TelegramError) -> DeliveryOutcome:
-    """Classify a failed edit: established negative, or merely ambiguous?
-
-    ``NOT_DELIVERED`` is a CLAIM — that nothing reached the operator — and a
-    caller acts on it by re-offering a one-shot notice. Both errors are costly
-    and they are costly in opposite directions, so the taxonomy has to be right
-    in both:
-
-    - A lost acknowledgement does not support the claim. PTB raises ``TimedOut``
-      when no response arrives, but Telegram may well have applied the edit, in
-      which case the operator has read the notice and re-offering it nags them
-      about something they have seen. That is ``UNKNOWN``.
-    - A refusal does support it. The call was evaluated and declined, so the
-      notice was certainly not shown, and withholding it would leave a blocking
-      issue unreported — the very defect #556 exists to fix. An operator who
-      blocks the bot mid-stream produces ``Forbidden`` here, and must still be
-      told once they unblock it.
-
-    Both halves were found by review: collapsing ambiguity into NOT_DELIVERED
-    was a regression against pre-contract behavior (Sol + Terra, diff r1), and
-    the first fix then over-corrected by treating every non-``BadRequest``
-    refusal as ambiguous (Sol, diff r2).
-    """
-    return (DeliveryOutcome.NOT_DELIVERED if isinstance(exc, _SERVER_REFUSALS)
-            else DeliveryOutcome.UNKNOWN)
+        The library has no field for this update; its payload — the chat and
+        the draft's id, which arrives as text — is among the update's
+        unparsed fields. A press is acted on only for a draft this channel is
+        writing now, in the chat it is writing it to; every other update,
+        and every other press, is left alone. Nothing but the turn is
+        touched, and nothing is sent."""
+        stopped = (getattr(update, "api_kwargs", None) or {}).get(_STOP_UPDATE)
+        if not isinstance(stopped, dict):
+            return
+        entry = self._streams.get(str(stopped.get("draft_id")))
+        chat = (stopped.get("chat") or {}).get("id")
+        if entry is None or entry[0] != str(chat):
+            return
+        stream = entry[1]
+        try:
+            stream.end()
+            asked = await sdk_client_pool.interrupt_turns(stream.cid)
+            # 0 is a press that reached no turn.
+            logger.info("Stop pressed on a draft (cid=%s): turns interrupted=%d",
+                        stream.cid, asked)
+        except Exception:  # noqa: BLE001 — a failed stop leaves the turn running
+            logger.exception("stopping the turn of a draft failed (cid=%s)",
+                             stream.cid)
 
 
 _TG_MAX_LENGTH = 4096

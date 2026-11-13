@@ -1,7 +1,7 @@
 """L7 (v0.52.0): turn_finished must stop the per-chat typing indicator.
 
-In block mode (and on any empty/`<silent/>` turn) no send()/finalize_stream()
-first-token teardown runs, so the typing loop started in _handle would issue
+In block mode (and on any empty/`<silent/>` turn) no send()/send_response()
+or first-token teardown runs, so the typing loop started in _handle would issue
 send_chat_action forever. turn_finished() is the teardown hook the agent
 calls on the suppressed-turn path.
 """
@@ -38,7 +38,7 @@ async def test_turn_finished_cancels_typing_task():
 
 async def test_turn_finished_falls_back_to_default_chat():
     """A non-numeric context chat_id resolves to the channel default (mirrors
-    send()/finalize_stream() via _resolve_chat_id)."""
+    send()/send_response() via _resolve_chat_id)."""
     ch = TelegramChannel(
         bot_token="t", chat_id="123", default_agent="a",
     )

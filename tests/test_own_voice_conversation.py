@@ -179,7 +179,7 @@ async def test_a_direct_message_is_the_agents_own_turn_and_resumes_its_session(w
     assert entry["sdk_session_id"] == "sid-alex-1"
     assert world.registry.get(ELLEN_KEY) is None
     sent = [c[0] for c in calls(world.eps.finance)]
-    assert sent[0] == "create_on_token" and sent[-1] == "finalize_response_stream"
+    assert sent[0] == "create_on_token" and sent[-1] == "send_response"
     assert calls(world.eps.casa) == []
     assert _Client.made[0].resume is None
 
@@ -580,7 +580,7 @@ async def test_a_job_started_in_the_agents_chat_narrates_its_result_there(world)
     assert "12 transactions imported" in _Client.prompts[0]
     assert world.registry.get(ALEX_KEY)["sdk_session_id"] == "sid-alex-1"
     assert world.registry.get(ELLEN_KEY) is None
-    assert [c[0] for c in calls(world.eps.finance)][-1] == "finalize_response_stream"
+    assert [c[0] for c in calls(world.eps.finance)][-1] == "send_response"
     assert calls(world.eps.casa) == []
 
 

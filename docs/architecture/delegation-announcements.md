@@ -182,7 +182,7 @@ acknowledged voice delivery still keeps its answer for the continuations that re
 Two limits are stated rather than designed away. A narration whose HEAD reached the transport
 discharges the obligation even if its tail then raised, by the rule above, and the answer is
 dropped with it — Casa does not re-narrate a turn the operator has already begun reading. That
-head is the one the channel's finalize reports; a streamed draft stamps nothing, which is why a
+head is the one the channel's send reports; a streamed draft stamps nothing, which is why a
 replay cannot say what, if anything, was seen. And
 a delegation still executing when a stop begins boots as a lost row, which never held an
 answer: what this retains is an answer that had already been written, not one that never was.

@@ -769,8 +769,8 @@ class TurnScope:
                 and self.streaming_allowed):
             # #1512: a streaming turn shows its words as they are written, so
             # a leading or closing run of ``<silent/>`` markers around them is
-            # dropped from every stream update and from the final edit — the
-            # tag never reaches the operator, the words still do.
+            # dropped from every stream update and from the reply — the tag
+            # never reaches the operator, the words still do.
             text = without_sentinels(text)
         send = None
         if kind in _SENT_INTENTS:

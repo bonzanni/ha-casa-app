@@ -28,8 +28,8 @@ in BotFather's Mini App — the operator's own summons needs it too. Casa never 
 minutes.
 
 **Only an agent's own bot hears a summons.** An agent's bot asks Telegram for
-`guest_message` beside `message` and `callback_query` (`ALLOWED_UPDATES_AGENT`); Casa's bot
-does not, and registers no handler for it. On an agent's bot `_IntakeQueue.put` queues a
+`guest_message` beside `message`, `callback_query` and the draft Stop update
+(`ALLOWED_UPDATES_AGENT`); Casa's bot does not, and registers no handler for it. On an agent's bot `_IntakeQueue.put` queues a
 guest update straight for the guest handler: a summons is not a message of the agent's chat,
 so it never passes the own-chat lifecycle's intake nor enters its held journal. The handler
 (`MessageHandler(filters.UpdateType.GUEST_MESSAGE, …)`, `TelegramChannel._on_guest_message`)

@@ -278,6 +278,7 @@ def _install_telegram_stubs() -> None:
     tg_ext.Application.builder = _application_builder
     tg_ext.ContextTypes = MagicMock()
     tg_ext.MessageHandler = MagicMock()
+    tg_ext.TypeHandler = MagicMock()
     tg_ext.filters = MagicMock()
     tg.ext = tg_ext
 

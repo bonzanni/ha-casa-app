@@ -653,6 +653,10 @@ _strips_to_silence = strips_to_silence
 _may_still_be_silence = may_still_be_silence
 _SILENCE_SENTINEL = "<silent/>"
 
+# Channels whose turns ask the SDK for partial messages, so a reply reaches
+# the user word by word as the model writes it.
+_PARTIAL_CHANNELS = frozenset({"voice", "telegram"})
+
 
 def _resume_fault_streak(entry: dict | None, sid: str | None) -> int:
     """The advisory #650 fault streak *entry* holds AGAINST *sid*, else 0.
@@ -1398,8 +1402,8 @@ class Agent:
         """Process an inbound message and return a response BusMessage.
 
         If the channel supports streaming, tokens are delivered
-        incrementally via ``on_token``.  The full response is sent or
-        finalized after the SDK completes.
+        incrementally via ``on_token``.  The full response is sent after
+        the SDK completes.
         """
         # Phase 3.1: late-completion delegation NOTIFICATION — synthesize
         # a fresh turn so the delegating resident narrates the result
@@ -1475,20 +1479,32 @@ class Agent:
         error_kind: ErrorKind | None = None
         turn_report: dict[str, Any] = {}
         try:
-            text = await self._process(
-                msg, on_token=on_token, turn_report=turn_report,
-                **process_kwargs,
-            )
-        except Exception as exc:
-            error_kind = _classify_error(exc)
-            logger.error(
-                "Agent '%s' error [%s]: %s",
-                self.config.character.name,
-                error_kind.value,
-                exc,
-                exc_info=(error_kind == ErrorKind.UNKNOWN),
-            )
-            text = _USER_MESSAGES[error_kind]
+            try:
+                text = await self._process(
+                    msg, on_token=on_token, turn_report=turn_report,
+                    **process_kwargs,
+                )
+            except Exception as exc:
+                error_kind = _classify_error(exc)
+                logger.error(
+                    "Agent '%s' error [%s]: %s",
+                    self.config.character.name,
+                    error_kind.value,
+                    exc,
+                    exc_info=(error_kind == ErrorKind.UNKNOWN),
+                )
+                text = _USER_MESSAGES[error_kind]
+        finally:
+            # Whatever the channel showed while the model wrote stops here,
+            # on every way out of the turn — a cancellation included. The
+            # reply itself is delivered below, as on a turn that never
+            # streamed.
+            end_stream = getattr(on_token, "end", None)
+            if end_stream is not None:
+                try:
+                    end_stream()
+                except Exception:  # noqa: BLE001 — teardown never breaks the turn
+                    logger.exception("ending the reply stream failed")
 
         # #650 fix (a): a trusted-ingress turn that consumed SDK retries and
         # ended in nothing but silence is a FAILED ask, not chosen silence —
@@ -1503,6 +1519,8 @@ class Agent:
         # #1121: a turn that stopped at its turn limit is never this silence —
         # whatever retries preceded it, it ran; Casa's own line says so below
         # (INV-TURN-014).
+        # Nor is a turn the operator stopped before it wrote anything: that
+        # silence is what they asked for, whatever retries preceded it.
         limit_stop = turn_report.get("limit_stop")
         if (
             error_kind is None
@@ -1510,6 +1528,7 @@ class Agent:
             and turn_report.get("retries")
             and msg.trusted_user_origin is not None
             and not limit_stop
+            and not turn_report.get("stopped")
         ):
             last_kind = turn_report["retries"][-1]
             error_kind = (
@@ -1547,7 +1566,7 @@ class Agent:
         # Deliver the response via the channel.
         # For voice (or any channel that supplies emit_error_line), prefer
         # the persona-voice error pipeline on error paths. Otherwise fall
-        # through to the existing text-based finalize_stream / send flow.
+        # through to the existing text-based send_response / send flow.
         if error_kind is not None and channel is not None \
                 and hasattr(channel, "emit_error_line"):
             try:
@@ -1684,25 +1703,16 @@ class Agent:
 
         if text and channel is not None:
             # Rich-text (v0.70.0) renders only genuine agent responses
-            # (error_kind is None). Error/system text stays plain via the
-            # original finalize_stream/send paths.
+            # (error_kind is None). Error/system text stays plain via send().
+            # A streamed turn ends the same way: what the channel showed while
+            # the model wrote was ended above, and the reply is one ordinary
+            # send.
             outcome = None
             delivered = False
             try:
                 if guest:
                     outcome = await channel.guest_finish(
                         text, error_kind, delivery_context)
-                elif on_token is not None and hasattr(channel, "finalize_stream"):
-                    if error_kind is None and hasattr(
-                        channel, "finalize_response_stream",
-                    ):
-                        outcome = await channel.finalize_response_stream(
-                            text, delivery_context, on_token,
-                        )
-                    else:
-                        outcome = await channel.finalize_stream(
-                            text, delivery_context, on_token,
-                        )
                 elif error_kind is None and hasattr(channel, "send_response"):
                     outcome = await channel.send_response(text, delivery_context)
                 else:
@@ -1769,7 +1779,7 @@ class Agent:
                     plugin_health.forget_notice(self.config.role, health_notice)
         elif channel is not None:
             # L7 (v0.52.0): a turn that strips to empty / `<silent/>` never
-            # calls send()/finalize_stream(), so give the channel a chance to
+            # calls send()/send_response(), so give the channel a chance to
             # tear down per-turn state (e.g. the Telegram typing indicator).
             # hasattr-guarded so channels without the hook are unaffected;
             # teardown must never break the turn.
@@ -1829,7 +1839,7 @@ class Agent:
         # (casa_core.py) block on bus.request(timeout=300); a None return here
         # would leave their pending future unresolved for the full window.
         # Channel delivery of the empty text was already suppressed above
-        # (send()/finalize_stream() are skipped, turn_finished() torn down).
+        # (send()/send_response() are skipped, turn_finished() torn down).
         # Note: the delegation-synthesis path rebinds ``msg`` to REQUEST, so an
         # empty delegation turn now returns an empty RESPONSE too — but
         # bus._dispatch keys off the ORIGINAL message (a NOTIFICATION with no
@@ -2544,6 +2554,9 @@ class Agent:
                     ),
                 )
                 last_resume["sid"] = result.resume_sid
+                # A stop was requested while this attempt ran. Its text may
+                # still be complete: the request can land as the turn ends.
+                state["stopped"] = result.stopped
                 return (
                     state["text"], result.sid, state["usage"],
                     result.resume_sid, session_published,
@@ -2816,6 +2829,13 @@ class Agent:
                 # #1158: the WINNING attempt's returned error result, if any.
                 report["error_result"] = (
                     turn_state.get("state") or {}).get("error_result")
+                # The WINNING attempt was asked to stop. The CLI closes an
+                # interrupted turn with an error result; that is how a stop
+                # ends, not an error result for any reader.
+                report["stopped"] = bool(
+                    (turn_state.get("state") or {}).get("stopped"))
+                if report["stopped"]:
+                    report["error_result"] = None
                 # #1252: the WINNING attempt's approval cut — an int (the
                 # messages kept) or None. The final-reply admission reads it.
                 _approval = (turn_state.get("state") or {}).get("approval_cut")
@@ -3660,12 +3680,11 @@ class Agent:
             # ungranted tools instead of hanging on CC's prompt. New closure
             # per build is fine: the pool reuses clients, not options objects.
             can_use_tool=make_fail_closed_can_use_tool(self.config.role),
-            # Voice partial-message streaming (2026-07-11 design §2 point 1):
-            # SDK partial StreamEvents are opt-in and constant per channel,
-            # so this stays pool-key compatible (spec §Q6). Non-voice
-            # channels are byte-for-byte unaffected — StreamEvents simply
-            # never arrive when this is False.
-            include_partial_messages=(channel == "voice"),
+            # Partial-message streaming: SDK partial StreamEvents are opt-in
+            # and constant per channel, so this stays pool-key compatible.
+            # Channels outside _PARTIAL_CHANNELS are byte-for-byte unaffected
+            # — StreamEvents simply never arrive when this is False.
+            include_partial_messages=(channel in _PARTIAL_CHANNELS),
         )
         return sdk_logging.with_stderr_callback(options, engagement_id=None)
 
@@ -3718,7 +3737,7 @@ class Agent:
         options = dataclasses.replace(
             options, system_prompt=system_prompt, hooks=hooks,
             mcp_servers=mcp_servers, resume=resume_sid,
-            include_partial_messages=(channel == "voice"),
+            include_partial_messages=(channel in _PARTIAL_CHANNELS),
         )
 
         extras = _session_extras_var.get()
@@ -3761,15 +3780,16 @@ class Agent:
         capture, which the warm client / pool now owns (spec Q7). A fresh state
         per call resets the streaming accumulator per attempt (spec §3.2).
 
-        Voice partial-message streaming (2026-07-11 design, AR-A/AR-B/AR-E):
+        Partial-message streaming (voice and Telegram turns; AR-A/AR-B/AR-E):
         ``state["partial"]`` accumulates the in-flight message's text deltas
-        from ``StreamEvent`` messages (only ever produced when
-        ``include_partial_messages=True``, i.e. voice turns — see
-        ``_build_options``). ``_cum()`` is the single pinned formula (AR-A)
-        joining the folded ``state["text"]`` to the in-flight partial with
-        the same "\\n\\n" separator the canonical fold uses, so a partial
-        emission and the eventual fold never disagree — this is what makes
-        message N+1's FIRST partial emission already carry the joiner.
+        from ``StreamEvent`` messages, which are only ever produced when
+        ``include_partial_messages=True``, i.e. voice and Telegram turns (see
+        ``_build_options``); a sub-agent's deltas are skipped. ``_cum()`` is
+        the single pinned formula (AR-A) joining the folded ``state["text"]``
+        to the in-flight partial with the same "\\n\\n" separator the
+        canonical fold uses, so a partial emission and the eventual fold
+        never disagree — this is what makes message N+1's FIRST partial
+        emission already carry the joiner.
         ``state["last_emitted"]`` dedupes: on_token only fires when the
         computed cumulative actually changed (AR-A/AR-B)."""
         state: dict[str, Any] = {
@@ -3852,10 +3872,11 @@ class Agent:
             if _may_still_be_silence(cum) if partial else _strips_to_silence(cum):
                 return
             # #1038: a stream update is admitted like any other emission —
-            # while a disclosure is owed and undischarged, every streamed
-            # edit carries the line at its head, so what is on screen is
-            # true at every moment and a failed final edit leaves the line
-            # there. The hold above ran on the UNANNOTATED cumulative.
+            # while a disclosure is owed and undischarged, every update
+            # written to the draft (or spoken on voice) carries the line at
+            # its head, so what is on screen is true at every moment; the
+            # reply itself is admitted separately at the end. The hold above
+            # ran on the UNANNOTATED cumulative.
             emitted = (scope.admit(IntentKind.STREAM_UPDATE, cum)
                        if scope is not None else cum)
             if emitted == state["last_emitted"]:
@@ -3873,12 +3894,17 @@ class Agent:
         async def on_message(sdk_msg: Any) -> None:
             if observe is not None:
                 await observe(sdk_msg)
-            # Voice partial streaming — handled EARLY so a StreamEvent never
+            # Partial streaming — handled EARLY so a StreamEvent never
             # falls through to the phase4b dispatch below (no per-token log
             # lines, no idx/tool bookkeeping). AR-E: defensive parsing — the
             # CLI can forward raw `error` events with no `delta` key, or any
             # other shape; a malformed event must never abort the turn.
             if isinstance(sdk_msg, StreamEvent):
+                # A sub-agent's in-flight text stays out of the stream: two
+                # sub-agents writing at once would interleave. Its finished
+                # message is still folded below, unchanged.
+                if getattr(sdk_msg, "parent_tool_use_id", None):
+                    return
                 try:
                     ev = getattr(sdk_msg, "event", None) or {}
                     if ev.get("type") == "content_block_delta":
@@ -4277,13 +4303,14 @@ class Agent:
         silent return whose consumed retries include SDK_ERROR — the two
         doomed-ask shapes. A terminal RATE_LIMIT/TIMEOUT, and silence whose
         retries carried no SDK_ERROR, are congestion-shaped: no verdict
-        either way. Reset (health evidence): a real answer, or clean silence
-        with no retries consumed — a FRESH healthy turn resets too, which is
-        what retires leftover fields after the fault-streak escape — or a turn
-        that stopped at its turn limit, whatever retries preceded it (#1121:
-        not counted toward the streak). Never
-        raises — a bookkeeping failure must not fail a turn that already has
-        an answer.
+        either way. Nor does a turn that was stopped before it wrote anything
+        carry one; a stopped turn with text is an answer. Reset (health
+        evidence): a real answer, or clean silence with no retries consumed —
+        a FRESH healthy turn resets too, which is what retires leftover fields
+        after the fault-streak escape — or a turn that stopped at its turn
+        limit, whatever retries preceded it (#1121: not counted toward the
+        streak). Never raises — a bookkeeping failure must not fail a turn
+        that already has an answer.
         """
         report["resumed_sid"] = resumed_sid
         report["channel_key"] = channel_key
@@ -4299,6 +4326,10 @@ class Agent:
             # retries preceded it — the resumed session did its work. Reset,
             # as a limit stop with text already did (INV-TURN-014).
             healthy = True
+        elif report.get("stopped") and _strips_to_silence(final_text):
+            # Stopped before it wrote anything: the silence says nothing
+            # about the session either way.
+            return
         elif _strips_to_silence(final_text):
             if ErrorKind.SDK_ERROR in retries:
                 if resumed_sid is None:

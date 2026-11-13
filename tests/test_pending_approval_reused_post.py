@@ -134,5 +134,4 @@ async def test_reused_challenge_cuts_only_a_delivered_keyboard(
         assert channel.final_texts() == []
         assert channel.turn_finished.await_count == 1
     assert channel.send.await_count == 0
-    assert channel.send_response.await_count == 0
     assert len(factory.clients) == 1

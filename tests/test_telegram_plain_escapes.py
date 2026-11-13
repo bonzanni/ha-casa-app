@@ -105,15 +105,6 @@ async def test_a_plain_reply_shows_no_backslash():
     assert bot.send_message.await_args.kwargs["text"] == SHOWN
 
 
-async def test_a_plain_streamed_reply_finalizes_without_backslash():
-    ch, bot = _mk_channel_with_fake_bot()
-    ctx = {"chat_id": "42"}
-    on_token = ch.create_on_token(ctx)
-    await on_token("partial")
-    await ch.finalize_response_stream(admitted(ESCAPED), ctx, on_token)
-    assert bot.edit_message_text.await_args.kwargs["text"] == SHOWN
-
-
 async def test_a_refused_card_still_retries_with_the_authored_text():
     ch, bot = _mk_channel_with_fake_bot()
     ch._record_post = MagicMock()

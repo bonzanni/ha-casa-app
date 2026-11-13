@@ -481,8 +481,8 @@ class TestAgentStrikeShapes:
 
 
 class _StreamingTelegramLikeChannel:
-    """Reproduces telegram's first-token-send + final-edit shape (seam r2,
-    Terra): the first on_token call 'sends', later finalize edits it."""
+    """A Telegram-shaped channel that records what the token stream carried
+    (the first on_token call, then every later one) and every final send."""
 
     name = "telegram"
 
@@ -500,13 +500,6 @@ class _StreamingTelegramLikeChannel:
             else:
                 self.edits.append(accumulated)
         return _tok
-
-    async def finalize_stream(self, text, context, on_token):
-        if self._message_id is None:
-            self.final_sends.append(text)
-        else:
-            self.edits.append(text)
-        return None
 
     async def send(self, text, context):
         self.final_sends.append(text)
@@ -538,10 +531,8 @@ class TestNoticeDeliveryShapes:
         classified retry-tainted reply is ONE fresh send and no edit.
 
         This pin previously asserted one streamed sentinel plus one superseding
-        edit — the pre-existing G-3 cost. With the sentinel held, Telegram's
-        on_token closure holds no message id, `finalize_stream` takes its
-        fresh-send branch, and the failed-final-edit residual disappears with
-        the message that carried it."""
+        edit — the pre-existing G-3 cost. With the sentinel held, nothing is
+        streamed, and the reply is one ordinary send."""
         CLIConnectionError = type("CLIConnectionError", (RuntimeError,), {})
         FakeClient.reset()
         FakeClient.failure_schedule = [CLIConnectionError("x"), None]

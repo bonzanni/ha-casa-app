@@ -2,9 +2,6 @@
 
 * an authorization challenge raised under a bound ENGAGEMENT with no ambient turn
   resolves the engagement's scope, so the persisted note reaches its body (Astra S1);
-* on the failed-head path nothing of the reply is lost and a page's link destination
-  survives (Astra S1 ×2 — originally pinned on the prefixed units; restated in plan
-  round 3 for the line unit that replaced them);
 * the scheduled `ask_user` arm and `send_media` report the line they added, as the
   documented result contract promises (Astra S2);
 * the LIVE completion callback carries the launch note on the notification it posts
@@ -26,20 +23,12 @@ import tools
 from channels import DeliveryOutcome
 from output_boundary import Admitted, IntentKind as K
 from output_boundary_testing import scope as _scope
-from telegram_channel_double import _mk_channel_with_fake_bot
-from text_util import utf16_len
 
 pytestmark = [pytest.mark.unit]
 
 INVOICE = ("/data/agent-inbox/assistant/ready/1758500000000-a1b2.pdf", "invoice.pdf")
 ANSWERED = "(Test hasn't opened “invoice.pdf”.)"
 WROTE = "(Test wrote this without opening “invoice.pdf”.)"
-LINE = "(Ellen hasn't opened “invoice.pdf”.)"
-
-
-def _admitted(text: str, *lines: str) -> Admitted:
-    body = ("\n\n".join(lines) + "\n\n" + text) if lines else text
-    return Admitted(body, scope_id="t1", kind=K.FINAL_REPLY, annotations=tuple(lines))
 
 
 # ---------------------------------------------------------------------------
@@ -64,71 +53,6 @@ async def test_a_challenge_under_a_bound_engagement_carries_the_engagements_note
     body = channel.posts[0][2]
     assert isinstance(body, Admitted)
     assert body.startswith(WROTE) and "INV-1" in body
-
-
-# ---------------------------------------------------------------------------
-# The failed-head overflow: nothing lost, links intact
-# ---------------------------------------------------------------------------
-
-def _long_rich(n: int = 400) -> str:
-    return "\n\n".join(f"**para {i}** the invoice is €412 due Friday" for i in range(n))
-
-
-async def test_the_line_unit_precedes_the_pages_and_nothing_is_lost_after_a_failed_head():
-    from telegram.error import TelegramError
-
-    ch, bot = _mk_channel_with_fake_bot()
-    ctx = {"chat_id": "42"}
-    on_token = ch.create_on_token(ctx)
-    await on_token("I can help.")
-    bot.send_message.reset_mock()
-    bot.edit_message_text = AsyncMock(side_effect=TelegramError("boom"))
-    await ch.finalize_response_stream(_admitted(_long_rich(), LINE), ctx, on_token)
-    texts = [c.kwargs["text"] for c in bot.send_message.await_args_list]
-    assert texts[0] == LINE
-    assert all(utf16_len(t) <= 4096 for t in texts), [utf16_len(t) for t in texts]
-    assert not any(t.startswith("Casa:") for t in texts[1:])
-    # page 1 was the failed EDIT; the overflow carries pages 2+ — the last
-    # paragraph is there, and the pages cover the tail without a gap
-    joined = "\n".join(texts[1:])
-    assert "para 399 " in joined
-    seen = {int(w) for w in __import__("re").findall(r"para (\d+) ", joined)}
-    assert seen == set(range(min(seen), 400)), sorted(set(range(min(seen), 400)) - seen)[:5]
-
-
-async def test_the_line_unit_precedes_the_plain_chunks_and_nothing_is_lost():
-    from telegram.error import TelegramError
-
-    ch, bot = _mk_channel_with_fake_bot()
-    ctx = {"chat_id": "42"}
-    on_token = ch.create_on_token(ctx)
-    await on_token("I can help.")
-    bot.send_message.reset_mock()
-    bot.edit_message_text = AsyncMock(side_effect=TelegramError("boom"))
-    plain = "\n\n".join(f"para {i} the invoice is €412" for i in range(400))
-    await ch.finalize_stream(_admitted(plain, LINE), ctx, on_token)
-    texts = [c.kwargs["text"] for c in bot.send_message.await_args_list]
-    assert texts[0] == LINE
-    assert all(utf16_len(t) <= 4096 for t in texts) and not any(t.startswith("Casa:") for t in texts[1:])
-    assert "para 399 " in "\n".join(texts[1:])
-
-
-async def test_a_link_destination_survives_a_failed_head():
-    from telegram.error import TelegramError
-
-    ch, bot = _mk_channel_with_fake_bot()
-    ctx = {"chat_id": "42"}
-    on_token = ch.create_on_token(ctx)
-    await on_token("I can help.")
-    bot.send_message.reset_mock()
-    bot.edit_message_text = AsyncMock(side_effect=TelegramError("boom"))
-    text = _long_rich(300) + "\n\n[Pay invoice](https://example.com/pay/invoice)"
-    await ch.finalize_response_stream(_admitted(text, LINE), ctx, on_token)
-    calls = bot.send_message.await_args_list
-    assert calls[0].kwargs["text"] == LINE
-    # the page goes out rich, untouched: the destination is on its entity
-    urls = [getattr(e, "url", None) for c in calls[1:] for e in (c.kwargs.get("entities") or [])]
-    assert "https://example.com/pay/invoice" in urls, urls
 
 
 # ---------------------------------------------------------------------------

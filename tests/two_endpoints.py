@@ -131,11 +131,6 @@ class FakeEndpoint:
         self._record("send_response", message, context)
         return DeliveryOutcome.DELIVERED if self._ready else DeliveryOutcome.NOT_DELIVERED
 
-    async def finalize_response_stream(self, full_text: str, context: dict,
-                                       on_token: Any) -> DeliveryOutcome:
-        self._record("finalize_response_stream", full_text, context, on_token)
-        return DeliveryOutcome.DELIVERED if self._ready else DeliveryOutcome.NOT_DELIVERED
-
     async def turn_finished(self, context: dict) -> None:
         self._record("turn_finished", context)
 
@@ -147,11 +142,6 @@ class FakeEndpoint:
 
         self.last_on_token = on_token
         return on_token
-
-    async def finalize_stream(self, full_text: str, context: dict,
-                              on_token: Any) -> DeliveryOutcome:
-        self._record("finalize_stream", full_text, context, on_token)
-        return DeliveryOutcome.DELIVERED if self._ready else DeliveryOutcome.NOT_DELIVERED
 
     # -- job records -----------------------------------------------------
     async def post_job_start_line(self, rec: Any) -> "int | None":

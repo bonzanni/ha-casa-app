@@ -86,9 +86,6 @@ class _Channel:
         self.posts: list = []
         self.send = AsyncMock(return_value=DeliveryOutcome.DELIVERED)
         self.send_response = AsyncMock(return_value=DeliveryOutcome.DELIVERED)
-        self.finalize_stream = AsyncMock(return_value=DeliveryOutcome.DELIVERED)
-        self.finalize_response_stream = AsyncMock(
-            return_value=DeliveryOutcome.DELIVERED)
         self.turn_finished = AsyncMock()
 
     def create_on_token(self, _context):
@@ -109,7 +106,7 @@ class _Channel:
 
     def final_texts(self) -> list[str]:
         return [str(c.args[0]) for c in
-                self.finalize_response_stream.await_args_list]
+                self.send_response.await_args_list]
 
 
 @pytest.fixture
@@ -224,13 +221,11 @@ async def test_pending_approval_keeps_only_pre_result_text(
     assert held["tokens"] == expected_tokens
     assert channel.tokens == expected_tokens
     assert channel.send.await_count == 0
-    assert channel.send_response.await_count == 0
-    assert channel.finalize_stream.await_count == 0
     if prefix == "BEFORE":
         assert channel.final_texts() == ["BEFORE"]
         assert channel.turn_finished.await_count == 0
     else:
-        assert channel.finalize_response_stream.await_count == 0
+        assert channel.send_response.await_count == 0
         assert channel.turn_finished.await_count == 1
     assert len(channel.posts) == 1
     assert len(factory.clients) == 1

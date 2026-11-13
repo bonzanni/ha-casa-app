@@ -69,8 +69,8 @@ message, a trailing whitespace message (even after a sentinel) and a reply with 
 per-message fact are judged as before.
 
 A streaming turn never takes the #1075 silence: its earlier words are already on screen.
-What it used to show instead was the tag itself — `Done.` streamed, then the closing
-`<silent/>` folded into the next stream update and the final edit (#1512). Admission now
+Left alone it would show the tag itself — `Done.` streamed, then the closing `<silent/>`
+folded into the next draft update and the reply sent after it (#1512). Admission therefore
 drops a leading or closing run of sentinels from a streaming turn's `STREAM_UPDATE` and
 `FINAL_REPLY` (`without_sentinels`, the same helper a delegate's words use), after the
 whole-text silence test and before the disclosure line: the words arrive as written, the
@@ -103,7 +103,8 @@ a count of text-bearing messages, kept per attempt; `_process` puts the winning 
 on the report as `approval_cut`, beside `reply_messages`, which keeps every message. Admission
 reads the report, never the scope: it keeps the messages before the cut — suppressed, not
 chosen, when they strip to silence, so the turn ends with the channel's `turn_finished` and
-discharges no announcement — and a streamed message is re-edited to exactly that prefix.
+discharges no announcement — and on a streamed turn the one message sent after the draft is
+exactly that prefix.
 A synchronous `delegate_to_agent` call is read the same way (#1207): its child's view never
 shares these records, so before the handler returns it copies the child's outcome onto this
 scope by delegation id — every grant the child's hook consumed, then each grant the child's
@@ -148,8 +149,8 @@ on it.
 
 **The report's cut does not belong to this text.** When `reply_messages` does not join to
 exactly the text being admitted, or the cut lies outside them, the #1252 rule withholds the
-whole reply and logs a warning; the stream already stopped at the cut, so the operator keeps
-what it showed.
+whole reply and logs a warning; the draft already stopped at the cut, and no message
+follows it.
 
 ## Extension points
 

@@ -60,7 +60,7 @@ async def test_the_synthesized_narration_turn_inherits_the_note(tmp_path):
                      context={"cid": "c", "chat_id": "500", "delegation_id": "d1"})
     with patch.object(agent, "_process", AsyncMock(return_value="Your invoice is €412, due Friday.")):
         await agent.handle_message(msg)
-    delivered = stub.finalize_response_stream.await_args.args[0]
+    delivered = stub.send_response.await_args.args[0]
     assert isinstance(delivered, Admitted)
     assert delivered == WROTE + "\n\nYour invoice is €412, due Friday."
 
@@ -77,7 +77,7 @@ async def test_a_completion_without_a_note_narrates_clean(tmp_path):
                      content=complete, channel="telegram", context={"cid": "c", "chat_id": "500"})
     with patch.object(agent, "_process", AsyncMock(return_value="Done.")):
         await agent.handle_message(msg)
-    assert stub.finalize_response_stream.await_args.args[0] == "Done."
+    assert stub.send_response.await_args.args[0] == "Done."
 
 
 # ---------------------------------------------------------------------------

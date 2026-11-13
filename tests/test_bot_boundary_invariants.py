@@ -1194,11 +1194,8 @@ def _b_route_bound(transport, ctx):
         "send": lambda: transport.send("hi", ctx),
         "send_media": lambda: transport.send_media(b"x", "document", "a.pdf", ctx),
         "send_response": lambda: transport.send_response(admitted("hi"), ctx),
-        "finalize_response_stream": lambda: transport.finalize_response_stream(
-            "hi", ctx, None),
         "turn_finished": lambda: transport.turn_finished(ctx),
         "create_on_token": lambda: transport.create_on_token(ctx),
-        "finalize_stream": lambda: transport.finalize_stream("hi", ctx, None),
     }
 
 
@@ -2268,7 +2265,8 @@ async def test_before_casas_bot_has_an_id_a_streamed_reply_is_harmless(
     on_token = env.transport.create_on_token(msg.context)
     assert callable(on_token)
     await on_token("partial answer")
-    out = await env.transport.finalize_stream("the answer", msg.context, on_token)
+    on_token.end()
+    out = await env.transport.send_response(admitted("the answer"), msg.context)
     assert out is DeliveryOutcome.NOT_DELIVERED
     await env.transport.turn_finished(msg.context)
     assert env.sent() == []
@@ -2369,8 +2367,7 @@ async def _e_turn_reply(env, tmp_path, monkeypatch):
         finally:
             await agent.aclose()
     replies = [bot for bot, ep in env.ep.items() for name, _ in calls(ep)
-               if name in ("send", "send_response", "finalize_response_stream",
-                           "finalize_stream")]
+               if name in ("send", "send_response")]
     assert len(origins) == 1 and len(replies) == 1
     return [o.get("_tg_bot") for o in origins] + replies
 

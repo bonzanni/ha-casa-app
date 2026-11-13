@@ -1,15 +1,10 @@
-"""Plan round 2 findings on R1 (#1038), each pinned before it was fixed:
+"""Two bounds on the disclosure line (#1038):
 
-* a disclosure head at or over the platform limit drove the failed-head overflow
-  path into an endless loop (Terra S1, Astra S1): the line is bounded at its source —
-  a persona name over 64 characters names the role instead, the rule the
-  authorization challenge headline already applies;
-* the caption cap cut the line while the tool result reported it delivered
-  (Astra S1): the cap falls on the model's body, never on the line;
-* the prefixed overflow re-split a page's plain form at the budget and could cut a
-  destination across units (Astra S1) — the prefixed-unit mechanism was then cut in
-  plan round 3 (`test_output_boundary_plan_p3.py`); the splitter and destination pins
-  of this round went with it.
+* the line is bounded at its source: a persona name over 64 characters names
+  the role instead, the rule the authorization challenge headline already
+  applies — so a head can never reach the platform limit by itself;
+* a capped caption cuts the model's body, never the line, so a send reported
+  delivered really carried the line.
 """
 from __future__ import annotations
 

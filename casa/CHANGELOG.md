@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.371.0] - 2026-11-13
+
+### Changed
+
+- In a private chat, a reply to a message you send is now written word by word as the agent composes it, with Telegram's **Stop** button under it. When it is done, the reply arrives as an ordinary message. Scheduled messages, reminders and an agent's greeting still arrive whole.
+- **Stop** ends the reply and keeps what was written so far; the agent remembers what it wrote. It stops only the reply: an approval card, a background job or a browsing request the agent had already started keeps running, each with its own way to stop.
+
+### Removed
+
+- Replies are no longer sent early and then edited as the agent writes.
+
 ## [0.370.0] - 2026-11-13
 
 ### Added

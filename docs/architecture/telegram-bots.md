@@ -45,7 +45,8 @@ known, `set_endpoint_role` binds or releases the role (Casa's endpoint keeps its
 delivery (`_job_endpoint`), decided at its birth; a job with no delivery posts nothing. Each
 endpoint states the update types it asks Telegram for on every `setWebhook` and `getUpdates`:
 Casa's bot adds `managed_bot` to `message` and `callback_query`, an agent's own bot
-`guest_message` (`ALLOWED_UPDATES_CASA`, `ALLOWED_UPDATES_AGENT`).
+`guest_message`, and both ask for `stopped_message_generation`, the Stop on a reply's draft
+(`ALLOWED_UPDATES_CASA`, `ALLOWED_UPDATES_AGENT`; [`telegram-reply-drafts.md`](telegram-reply-drafts.md)).
 
 Resolution never falls back. A bot with no endpoint is `EndpointUnavailable`, never answered
 by another endpoint. The transport adds no outcome of its own: an endpoint that is not ready

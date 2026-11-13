@@ -1,5 +1,5 @@
-# Manifest shard: the Telegram bots document (moved to its own shard: the T-Z shard stands
-# just under the index ceiling).
+# Manifest shard: the Telegram bots document and the reply-draft document (moved to their own
+# shard: the T-Z shard stands just under the index ceiling).
 - doc: architecture/telegram-bots.md
   summary: How Casa names a Telegram bot and its messages — one endpoint per bot behind one transport, the route a turn carries, the address a stored message carries, Casa's persisted bot id and the per-bot webhook route.
   when_changing: which Telegram bot a turn or a send goes through, a stored Telegram message's address, an identity keyed by bot, Casa's persisted bot id, or the per-bot webhook route
@@ -32,3 +32,24 @@
     INV-TG-020: [tests/test_endpoint_isolation.py::test_equal_update_ids_on_two_bots_are_both_taken_and_a_replay_is_not, tests/test_endpoint_isolation.py::test_a_reply_on_222_to_message_5_never_reaches_111s_live_job, tests/test_endpoint_isolation.py::test_a_tap_on_111_looks_only_in_111s_lanes, tests/test_ask_scopes.py::test_new_on_one_bot_leaves_the_other_bots_ask_challenge_and_grant, tests/test_fresh_routes.py::test_chat_notes_are_per_bot, tests/test_plugin_identities.py::test_an_equal_request_key_on_two_bots_is_two_requests, tests/test_plugin_identities.py::test_an_equal_delivery_key_on_two_bots_delivers_on_both, tests/test_job_addresses.py::TestEqualMessageIdsOnTwoBots::test_live_owners_are_distinct_per_bot, tests/test_bot_boundary_sites.py::test_every_bot_keyed_identity_names_a_test_that_keeps_two_bots_apart, tests/test_bot_boundary_sites.py::test_the_endpoint_module_holds_no_state_shared_between_endpoints, tests/test_bot_boundary_invariants.py::test_two_endpoints_for_one_bot_are_refused]
     INV-TG-021: [tests/test_telegram_transport.py::test_routes_use_the_persisted_casa_id_before_the_endpoint_is_ready, tests/test_telegram_transport.py::test_casa_bot_id_store_round_trip, tests/test_telegram_transport.py::test_identity_observation, tests/test_endpoint_isolation.py::test_getme_reports_the_id_before_the_endpoint_is_ready, tests/test_bot_webhook_routes.py::test_a_replaced_token_is_routed_to_casas_endpoint_until_verified, tests/test_bot_webhook_routes.py::test_casas_bot_id_is_persisted_and_read_back_before_the_next_start, tests/test_bot_boundary_invariants.py::test_after_a_normal_reboot_a_turn_born_before_the_bot_connects_carries_its_id, tests/test_bot_boundary_invariants.py::test_once_casas_bot_connects_its_id_is_stored_for_this_token_and_new_turns_carry_it, tests/test_bot_boundary_invariants.py::test_a_token_that_turns_out_to_be_another_endpoints_bot_stays_stopped]
     INV-TG-022: [tests/test_bot_boundary_invariants.py::test_a_turn_born_before_casas_bot_has_an_id_delivers_through_it_once_it_connects, tests/test_bot_boundary_invariants.py::test_records_persisted_before_casas_bot_has_an_id_deliver_through_it_after_a_restart, tests/test_bot_boundary_invariants.py::test_before_casas_bot_has_an_id_a_send_reports_not_delivered_as_it_always_has, tests/test_bot_boundary_invariants.py::test_before_casas_bot_has_an_id_a_file_is_unavailable_and_stays_owed, tests/test_bot_boundary_invariants.py::test_before_casas_bot_has_an_id_a_streamed_reply_is_harmless, tests/test_bot_boundary_invariants.py::test_before_casas_bot_has_an_id_a_protected_call_is_denied_and_nothing_is_keyed, tests/test_bot_boundary_invariants.py::test_before_casas_bot_has_an_id_a_scheduled_question_is_not_posted_and_nothing_is_stored, tests/test_bot_boundary_invariants.py::test_before_casas_bot_has_an_id_a_card_that_names_it_is_not_posted]
+
+- doc: architecture/telegram-reply-drafts.md
+  summary: How a reply in a private Telegram chat is written into a draft while the model writes it — the draft stream and its clock, the draft call, its end before the ordinary send — and what Stop on the draft does to the running turn.
+  when_changing: a reply's draft while the model writes it, the draft stream's clock or its draft call, which chats get a draft, the Stop button on a draft or the stopped_message_generation update, interrupting a pooled turn, or what a stopped turn delivers
+  covers:
+    - casa/rootfs/opt/casa/channels/telegram_draft.py
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.create_on_token
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._send_draft
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_stop_update
+  tests:
+    - tests/test_telegram_draft_stream.py
+    - tests/test_telegram_stop_update.py
+    - tests/test_turn_stop.py
+    - tests/test_sdk_pool_stop.py
+    - tests/test_agent_partial_streaming.py
+  related: [architecture/telegram.md, architecture/turn-loop.md, architecture/sdk-client-pool.md, architecture/output-boundary.md, architecture/output-scope-properties.md, architecture/guest-summons.md]
+  defines_invariants: [INV-TG-023, INV-TG-024, INV-TURN-016]
+  invariant_tests:
+    INV-TG-023: [tests/test_turn_stop.py::test_stream_is_ended_before_the_reply_is_delivered, tests/test_turn_stop.py::test_stream_is_ended_when_process_returns, tests/test_turn_stop.py::test_stream_is_ended_when_process_raises, tests/test_turn_stop.py::test_stream_is_ended_when_the_turn_is_cancelled, tests/test_turn_stop.py::test_reply_goes_out_through_send_response_after_streaming, tests/test_turn_stop.py::test_a_failing_end_only_logs]
+    INV-TG-024: [tests/test_telegram_stop_update.py::test_stop_ends_the_stream_and_interrupts_by_cid, tests/test_telegram_stop_update.py::test_stop_matches_a_string_draft_id_against_an_int, tests/test_telegram_stop_update.py::test_stop_for_an_unknown_draft_is_ignored, tests/test_telegram_stop_update.py::test_stop_from_another_chat_is_ignored, tests/test_telegram_stop_update.py::test_other_updates_do_not_reach_the_stop_path]
+    INV-TURN-016: [tests/test_turn_stop.py::test_stop_with_text_delivers_the_text_once, tests/test_turn_stop.py::test_stop_on_an_empty_retry_attempt_is_silence_not_an_error, tests/test_turn_stop.py::test_stop_on_an_empty_retry_attempt_is_no_health_strike]
