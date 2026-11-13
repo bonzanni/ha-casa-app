@@ -5,7 +5,7 @@ The decision, per call path under the shipped option defaults: the assistant
 on Opus 5.5 at medium; the butler, the concierge, the tier classifier and
 query_engager's synthesis on Haiku 5.5 at low; the finance
 specialist on Sonnet 5.5 at medium; the configurator on
-Sonnet 5 at high; the Casa Browser action check on Opus 5.5 at high, fixed; the memory writer on Opus 5.5 at medium. The CLI's own defaults (model and effort) move with every
+Sonnet 5 at high; the Casa Browser action check on Opus 5.5 at high, fixed; the memory writer on Opus 5.5 at medium; a guest run (``tools._build_guest_options``) on its specialist's model at that model's effort. The CLI's own defaults (model and effort) move with every
 CLI release, so a call that leaves either out silently changes behaviour on
 the next bump — which is what these tests pin.
 """
@@ -93,7 +93,7 @@ def test_every_options_site_passes_effort_for_its_own_model():
                     or len(effort.args) != 1
                     or ast.unparse(effort.args[0]) != ast.unparse(model)):
                 problems.append(f"{where}: effort is not effort_for(<model>)")
-    assert count == 10, count
+    assert count == 11, count
     assert fixed_seen == set(FIXED_EFFORT), fixed_seen
     assert not problems, problems
 
