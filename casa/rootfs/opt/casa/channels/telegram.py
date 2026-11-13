@@ -1015,6 +1015,7 @@ class _AckEntry:
     claim: _AckClaim | None = None
     covered: bool = False            # a dispatched caption turn acts on it
     reacted: bool = False            # stored, and acknowledged with a reaction
+    reacting: bool = False           # its reaction is under way: no line yet
 
 
 @dataclass(eq=False)
@@ -1036,7 +1037,7 @@ def _ack_text(burst: _AckBurst) -> str:
     file acknowledged with a reaction needs no line."""
     import agent_inbox
     shown = [e for e in burst.entries if e.line is not None and not e.covered
-             and not e.reacted
+             and not e.reacted and not e.reacting
              and not (e.claim is not None and not e.claim.done)]
     if len(shown) == 1 and len(burst.entries) == 1:
         return shown[0].line
@@ -4352,14 +4353,31 @@ class TelegramChannel(Channel):
 
     async def _ack_react(self, chat_id: Any, burst: _AckBurst, entry: _AckEntry) -> bool:
         """A stored file is acknowledged with a reaction on its message. Telegram
-        shows a single reaction for a whole album, so an album is reacted to
-        once, on its first stored file, and that one outcome stands for every
-        file of it. ``False`` sends the file back to its line."""
-        if entry.group is None:
-            return await self.react(chat_id, entry.message_id)
-        if burst.reaction is None:
-            burst.reaction = asyncio.ensure_future(self.react(chat_id, entry.message_id))
-        return await asyncio.shield(burst.reaction)
+        shows one reaction for a whole album, and only on its first message, so
+        an album is reacted to once, there, and that one outcome stands for
+        every file of it. The file shows no line while its reaction is under
+        way; ``False`` sends it back to its line."""
+        entry.reacting = True
+        try:
+            if entry.group is None:
+                return await self.react(chat_id, entry.message_id)
+            if burst.reaction is None:
+                burst.reaction = asyncio.ensure_future(self._react_album(chat_id, burst))
+            return await asyncio.shield(burst.reaction)
+        finally:
+            entry.reacting = False
+
+    async def _react_album(self, chat_id: Any, burst: _AckBurst) -> bool:
+        """An album's one reaction: once no file of it has arrived or landed for
+        ``ALBUM_SETTLE_S`` (at most ``ALBUM_MAX_WAIT_S``), on its lowest message
+        id, the album's first message."""
+        deadline = time.monotonic() + self.ALBUM_MAX_WAIT_S
+        while (time.monotonic() - burst.touched < self.ALBUM_SETTLE_S
+               and time.monotonic() < deadline):
+            await asyncio.sleep(0.1)
+        first = min((e.message_id for e in burst.entries if e.message_id is not None),
+                    default=None)
+        return first is not None and await self.react(chat_id, first)
 
     async def react(self, chat_id: int, message_id: int) -> bool:
         """Put the 👍 reaction on one message. ``False`` when it did not go

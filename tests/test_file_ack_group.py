@@ -35,8 +35,11 @@ class _Bot:
         self.fail_edit = False
         self.reactions: list[tuple[int, int]] = []
         self.fail_reaction = False
+        self.reaction_delay = 0.0    # a reaction's round trip, as on a real network
 
     async def set_message_reaction(self, *, chat_id, message_id, reaction):
+        if self.reaction_delay:
+            await asyncio.sleep(self.reaction_delay)
         if self.fail_reaction:
             raise RuntimeError("reactions are off in this chat")
         assert [r.emoji for r in reaction] == ["\N{THUMBS UP SIGN}"]
@@ -347,6 +350,26 @@ async def test_an_album_gets_one_thumbs_up_however_its_files_land(wired):
     bot = ch._app.bot
     await asyncio.gather(*(_send(ch, f"{n}.pdf", group="g1") for n in "abc"))
     assert len(bot.reactions) == 1 and bot.chat == {}
+
+
+async def test_an_album_is_reacted_to_on_its_first_message(wired):
+    """Telegram displays an album's reaction only on the album's first message
+    (its lowest message id), whichever of its files is stored first."""
+    ch, _ = _ch()
+    bot = ch._app.bot
+    await asyncio.gather(*(_send(ch, f"{n}.pdf", group="g1", mid=mid)
+                           for n, mid in (("c", 12), ("a", 10), ("b", 11))))
+    assert bot.reactions == [(OPERATOR, 10)]
+
+
+async def test_an_album_whose_reaction_succeeds_never_shows_a_line(wired):
+    """No "Got …" line is sent while the album's reaction is pending, so the
+    chat never flashes a line that the reaction then takes away."""
+    ch, _ = _ch()
+    bot = ch._app.bot
+    bot.reaction_delay = 0.2
+    await asyncio.gather(*(_send(ch, f"{n}.pdf", group="g1") for n in "abc"))
+    assert bot.sends == 0 and bot.chat == {} and len(bot.reactions) == 1
 
 
 async def test_an_album_whose_reaction_fails_gets_todays_listing(wired):

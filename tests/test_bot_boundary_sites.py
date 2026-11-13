@@ -395,6 +395,7 @@ IDENTITY_SITE_HITS = {
     "configurator_continue.py": {"_continuation": 1},
     "channels/telegram.py": {
         "TelegramChannel.__init__": 4, "TelegramChannel._ack_react": 2,
+        "TelegramChannel._react_album": 1,
         "TelegramChannel._clear_typing_loop": 2,
         "TelegramChannel._dispatch_dm_turn": 3,
         "TelegramChannel._dispatch_engagement_continuation": 2,

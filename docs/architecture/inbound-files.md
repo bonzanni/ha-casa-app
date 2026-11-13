@@ -119,10 +119,13 @@ turn's message.
 
 A stored file is acknowledged with a 👍 reaction on its own message (`TelegramChannel.react`,
 the reaction `REACTION`), and draws no line; a caption's files only once its turn is
-dispatched (above). Telegram shows one reaction for a whole album
-whichever of its messages carries it, so an album is reacted to once, on its first stored
-file, and that one outcome stands for every file of it (`TelegramChannel._ack_react`). A
-reaction that fails is logged with its exception class, and the file falls back to its line.
+dispatched (above). Telegram shows one reaction for a whole album, and only when it sits
+on the album's first message, so an album is reacted to once: when none of its files has
+arrived or landed for `ALBUM_SETTLE_S`, on its lowest message id, and that one outcome
+stands for every file of it (`TelegramChannel._ack_react`, `_react_album`). While a file's
+reaction is under way it shows no line, so a reaction that succeeds never follows a line it
+takes away. A reaction that fails is logged with its exception class, and the file falls
+back to its line.
 The lines — refusals, failures, and stored files with no 👍 — of files that
 arrive together make ONE acknowledgement, edited as each lands
 (`TelegramChannel._render_ack`, `_ack_text`). Together is decided mechanically
